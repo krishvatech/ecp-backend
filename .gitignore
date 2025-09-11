@@ -1,0 +1,56 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.Python
+.venv/
+venv/
+
+# ---------- Django ----------
+db.sqlite3
+/media/
+static/
+staticfiles/
+# Collected static or build artifacts
+build/
+dist/
+
+# ---------- Env / Secrets ----------
+.env
+*.env
+.envrc
+*.key
+*.secret
+# If you keep cloud creds in a dedicated folder, uncomment next line:
+# credentials/*.json
+
+# ---------- Testing / Tools ----------
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.cache/
+.ruff_cache/
+
+# ---------- Docker ----------
+*.pid
+*.log
+docker-compose.override.yml
+
+# ---------- Editors / IDE ----------
+.vscode/
+.idea/
+*.code-workspace
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+
+# ---------- Node (if you add a frontend folder later) ----------
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
