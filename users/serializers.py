@@ -6,7 +6,7 @@ profiles, and serializing user profiles.
 """
 from django.contrib.auth.models import User
 from rest_framework import serializers
-
+from django.contrib.auth.password_validation import validate_password
 from .models import UserProfile
 
 
@@ -48,3 +48,17 @@ class RegisterSerializer(serializers.ModelSerializer):
             setattr(user.profile, key, value)
         user.profile.save()
         return user
+    
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True, trim_whitespace=False)
+    new_password = serializers.CharField(write_only=True, trim_whitespace=False)
+    confirm_new_password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["confirm_new_password"]:
+            raise serializers.ValidationError({"confirm_new_password": "Passwords do not match."})
+        # Run Django’s password validators (length, common, numeric, etc.)
+        validate_password(attrs["new_password"], self.context["request"].user)
+        return attrs
+    
+

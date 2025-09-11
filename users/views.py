@@ -6,10 +6,12 @@ authenticated user via a custom `me` action, and register new users.
 """
 from django.contrib.auth.models import User
 from rest_framework import mixins, permissions, status, viewsets
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
-
-from .serializers import UserSerializer, RegisterSerializer
+from rest_framework.views import APIView
+from django.contrib.auth import update_session_auth_hash
+from .serializers import UserSerializer, RegisterSerializer, ChangePasswordSerializer
 
 
 class UserViewSet(mixins.ListModelMixin,
@@ -54,3 +56,30 @@ class RegisterView(viewsets.ViewSet):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+    
+    
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        old_password = serializer.validated_data["old_password"]
+        new_password = serializer.validated_data["new_password"]
+
+        if not user.check_password(old_password):
+            return Response({"old_password": ["Old password is incorrect."]},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(new_password)  # hashes automatically
+        user.save()
+
+        # Keep the user’s session valid if they use session auth (optional)
+        update_session_auth_hash(request, user)
+
+        # If you want to force re-login for JWT, you can ask client to discard tokens.
+        return Response({"detail": "Password changed successfully."}, status=status.HTTP_200_OK)
+    
+    

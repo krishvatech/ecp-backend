@@ -1,19 +1,20 @@
-"""
-Serializers for the organizations app.
-
-Provides a serializer that returns organization details including a
-read-only `owner_id` and computed `members_count`.  On creation, the
-requesting user is set as the owner automatically.
-"""
+from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
-
 from .models import Organization
 
+User = get_user_model()
 
 class OrganizationSerializer(serializers.ModelSerializer):
-    """Serializer for the Organization model."""
     owner_id = serializers.IntegerField(read_only=True)
     members_count = serializers.IntegerField(read_only=True)
+
+    members = serializers.SlugRelatedField(
+        slug_field="username",
+        queryset=User.objects.all(),
+        many=True,
+        required=False,
+    )
 
     class Meta:
         model = Organization
@@ -38,5 +39,20 @@ class OrganizationSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
+        members = validated_data.pop("members", [])   
         org = Organization.objects.create(owner=user, **validated_data)
+        if user not in members:
+            members.append(user)
+        org.members.set(members)                     
         return org
+
+    def update(self, instance, validated_data):
+        members = validated_data.pop("members", None)  
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if members is not None:
+            instance.members.set(members)
+        return instance
+    
+

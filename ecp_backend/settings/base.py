@@ -129,9 +129,10 @@ elif os.getenv("GCS_BUCKET_NAME"):
 
 # Django REST Framework configuration
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": (
+    "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
-    ),
+        "rest_framework.authentication.SessionAuthentication",  # optional, for browsable API login
+    ],
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),

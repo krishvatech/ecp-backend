@@ -19,7 +19,13 @@ class UserProfileInline(admin.StackedInline):
 class UserAdmin(admin.ModelAdmin):
     inlines = [UserProfileInline]
     list_display = ("username", "email", "is_active", "date_joined")
-
+    def save_model(self, request, obj, form, change):
+        if "password" in form.changed_data:
+            raw = obj.password or ""
+            # Only hash if it looks like plaintext (not already hashed)
+            if not raw.startswith(("pbkdf2_", "argon2", "bcrypt", "scrypt")):
+                obj.set_password(raw)
+        super().save_model(request, obj, form, change)
 
 # Unregister the default User admin and register the customized one
 admin.site.unregister(User)
