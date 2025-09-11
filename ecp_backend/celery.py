@@ -10,8 +10,8 @@ from celery import Celery
 # Set default Django settings for Celery to pick configuration from settings
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "ecp_backend.settings.dev")
 
-celery_app = Celery("ecp_backend")
+app = Celery("ecp_backend")
 
 # Namespacing Celery settings with the "CELERY_" prefix in Django settings
-celery_app.config_from_object("django.conf:settings", namespace="CELERY")
-celery_app.autodiscover_tasks()
+app.config_from_object("django.conf:settings", namespace="CELERY")
+app.autodiscover_tasks()
