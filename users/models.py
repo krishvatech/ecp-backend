@@ -1,0 +1,23 @@
+"""
+Models for the users app.
+
+A `UserProfile` model extends the built-in `auth.User` with additional
+fields.  A `OneToOneField` links each profile to its user.  The
+`UserProfile` is created automatically via signals when a new user
+instance is saved.
+"""
+from django.conf import settings
+from django.db import models
+from django.contrib.auth.models import User
+
+
+class UserProfile(models.Model):
+    """Extension of Django's built-in User model."""
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+    full_name = models.CharField(max_length=255, blank=True)
+    timezone = models.CharField(max_length=64, default="Asia/Kolkata")
+    bio = models.TextField(blank=True)
+
+    def __str__(self) -> str:
+        return f"Profile<{self.user.username}>"

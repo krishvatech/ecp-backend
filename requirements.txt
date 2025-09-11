@@ -1,0 +1,28 @@
+# Core
+Django==5.2.6
+djangorestframework==3.15.2
+djangorestframework-simplejwt==5.3.1
+django-cors-headers>=4.4,<5
+
+# Realtime / ASGI
+channels==4.1.0
+channels-redis==4.2.0
+uvicorn[standard]==0.30.6
+daphne==4.1.2
+
+# Postgres & tasking
+psycopg[binary]==3.2.10
+redis==5.0.8
+celery==5.4.0
+django-celery-beat==2.8.1
+
+# Object storage
+django-storages==1.14.4
+boto3==1.34.145
+google-cloud-storage==2.17.0
+
+# Env / Testing
+python-dotenv==1.0.1
+pytest==8.3.2
+pytest-django==4.8.0
+factory-boy==3.3.0

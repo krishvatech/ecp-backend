@@ -1,0 +1,12 @@
+[
+  {
+    "model": "organizations.organization",
+    "pk": 1,
+    "fields": {
+      "name": "Demo Org",
+      "slug": "demo-org",
+      "owner": 2,
+      "description": "Seed org"
+    }
+  }
+]

@@ -1,0 +1,1 @@
+# Package for common utilities shared across Django apps.
