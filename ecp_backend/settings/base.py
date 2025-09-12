@@ -6,11 +6,14 @@ configurations.  Most values can be overridden via environment
 variables defined in `.env`.
 """
 import os
+from .base import *  # noqa
 from pathlib import Path
 from datetime import timedelta
+from dotenv import load_dotenv
 
 # Root of the project directory
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-insecure")
 DEBUG = os.getenv("DJANGO_DEBUG", "True") == "True"
@@ -43,6 +46,7 @@ INSTALLED_APPS = [
 
     # Third-party apps
     "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
     "rest_framework.authtoken",
     "corsheaders",
     "channels",
@@ -103,7 +107,15 @@ CHANNEL_LAYERS = {
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
+        "OPTIONS": {
+            # only compare with email (ignore username), or tweak the list to your needs
+            "user_attributes": ("email",),
+            # raise threshold (default is 0.7). Higher = less strict
+            "max_similarity": 0.8,
+        },
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator", "OPTIONS": {"min_length": 8}},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -172,3 +184,18 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_BROWSER_XSS_FILTER = True
 SESSION_COOKIE_SECURE = False  # Should be True in production
 CSRF_COOKIE_SECURE = False     # Should be True in production
+
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
+EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "False") == "True"
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@example.com")
+
+# A frontend URL to build the reset link (your React/Next.js page)
+FRONTEND_RESET_PASSWORD_URL = os.getenv(
+    "FRONTEND_RESET_PASSWORD_URL",
+    "http://localhost:3000/reset-password"  # e.g. https://app.example.com/reset-password
+)

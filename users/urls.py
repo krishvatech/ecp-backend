@@ -2,19 +2,31 @@
 Authentication and registration endpoints for the users app.
 
 This module exposes JWT obtain/refresh views and a custom registration
-endpoint.
+endpoint. Login is via email + password only.
 """
 from django.urls import path
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-
-from .views import RegisterView,ChangePasswordView
-
+from rest_framework_simplejwt.views import TokenRefreshView
+from .views import (
+    RegisterView,
+    ChangePasswordView,
+    ForgotPasswordView,
+    ResetPasswordView,
+    EmailTokenObtainPairView,
+    LogoutView
+)
 
 urlpatterns = [
-    # Obtain a pair of JWT tokens (access + refresh)
-    path("token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+    # Email + password login (returns refresh + access)
+    path("login/", EmailTokenObtainPairView.as_view(), name="login"),
+    path("logout/", LogoutView.as_view(), name="logout"),
+
+    # Also allow obtaining tokens at /token/
+    path("token/", EmailTokenObtainPairView.as_view(), name="token_obtain_pair_email"),
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
-    path("login/", TokenObtainPairView.as_view(), name="login"),
-    path("register/", RegisterView.as_view({"post": "create"}), name="register"),
+
+    # Registration & password flows
+    path("register/", RegisterView.as_view(), name="register"),
     path("password/change/", ChangePasswordView.as_view(), name="password_change"),
+    path("password/forgot/", ForgotPasswordView.as_view(), name="password_forgot"),
+    path("password/reset/", ResetPasswordView.as_view(), name="password_reset"),
 ]
