@@ -19,6 +19,14 @@ from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework import generics, status, permissions
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+import os, time, json, base64, secrets, requests
+from datetime import datetime, timezone, timedelta
+from urllib.parse import urlencode
+from django.conf import settings
+from django.shortcuts import redirect
+from django.utils.crypto import get_random_string
+from rest_framework_simplejwt.tokens import RefreshToken
+from .models import LinkedInAccount
 
 
 from .serializers import (
@@ -30,6 +38,14 @@ from .serializers import (
     ResetPasswordSerializer,
 )
 
+LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
+LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
+API_ME = "https://api.linkedin.com/v2/me"
+API_EMAIL = "https://api.linkedin.com/v2/emailAddress?q=members&projection=(elements*(handle~))"
+OIDC_USERINFO = "https://www.linkedin.com/oauth/v2/userinfo"  # if using OIDC product
+
+def _state_cookie():
+    return get_random_string(32)
 
 class UserViewSet(
     mixins.ListModelMixin,
@@ -176,3 +192,82 @@ class LogoutView(APIView):
             return Response({"error": "Refresh token is required."}, status=status.HTTP_400_BAD_REQUEST)
         except TokenError:
             return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
+        
+class LinkedInAuthURL(APIView):
+    permission_classes = [permissions.AllowAny]
+    def get(self, request):
+        state = _state_cookie()
+        request.session["li_oauth_state"] = state
+        params = {
+            "response_type": "code",
+            "client_id": settings.LINKEDIN_CLIENT_ID,
+            "redirect_uri": settings.LINKEDIN_REDIRECT_URI,
+            "state": state,
+            "scope": " ".join(settings.LINKEDIN_SCOPES),
+        }
+        return Response({"authorization_url": f"{LINKEDIN_AUTH_URL}?{urlencode(params)}"})
+
+class LinkedInCallback(APIView):
+    permission_classes = [permissions.AllowAny]
+    def get(self, request):
+        if "error" in request.query_params:
+            return Response({"error": request.query_params.get("error_description", "denied")}, status=400)
+        code = request.query_params.get("code")
+        state = request.query_params.get("state")
+        if not code or state != request.session.get("li_oauth_state"):
+            return Response({"error": "invalid_state_or_code"}, status=400)
+
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": settings.LINKEDIN_REDIRECT_URI,
+            "client_id": settings.LINKEDIN_CLIENT_ID,
+            "client_secret": settings.LINKEDIN_CLIENT_SECRET,
+        }
+        tok = requests.post(LINKEDIN_TOKEN_URL, data=data, timeout=15)
+        if tok.status_code != 200:
+            return Response({"error": "token_exchange_failed", "detail": tok.text}, status=400)
+        t = tok.json()  # {access_token, expires_in, ...}
+        access_token = t["access_token"]
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(t.get("expires_in", 0)))
+
+        # Fetch profile (lite)
+        headers = {"Authorization": f"Bearer {access_token}"}
+        me = requests.get(API_ME, headers=headers, timeout=15)
+        if me.status_code != 200:
+            return Response({"error": "profile_fetch_failed", "detail": me.text}, status=400)
+        mej = me.json()
+
+        # Fetch email
+        em = requests.get(API_EMAIL, headers=headers, timeout=15)
+        email = ""
+        if em.status_code == 200:
+            ej = em.json()
+            try:
+                email = ej["elements"][0]["handle~"]["emailAddress"]
+            except Exception:
+                email = ""
+
+        # Resolve or create a local user by email (or create a placeholder)
+        from django.contrib.auth.models import User
+        if email:
+            user, _ = User.objects.get_or_create(username=email, defaults={"email": email})
+        else:
+            # fallback: use linkedin id for username
+            lid = mej.get("id")
+            user, _ = User.objects.get_or_create(username=f"li_{lid}")
+
+        # Upsert LinkedIn account link
+        acc, _ = LinkedInAccount.objects.get_or_create(user=user, defaults={"linkedin_id": mej.get("id")})
+        acc.linkedin_id = mej.get("id", acc.linkedin_id)
+        acc.access_token = access_token
+        acc.expires_at = expires_at
+        # map a few lite fields
+        acc.email = email or acc.email
+        # headline & picture may require projections/products; keep best-effort
+        acc.raw_profile_json = mej
+        acc.save()
+
+        # Issue your own JWT for the user so frontend can proceed
+        refresh = RefreshToken.for_user(user)
+        return Response({"access": str(refresh.access_token), "refresh": str(refresh)})

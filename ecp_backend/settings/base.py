@@ -18,7 +18,25 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-insecure")
 DEBUG = os.getenv("DJANGO_DEBUG", "True") == "True"
 ALLOWED_HOSTS = [h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")]
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
+EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "False") == "True"
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@example.com")
 
+# A frontend URL to build the reset link (your React/Next.js page)
+FRONTEND_RESET_PASSWORD_URL = os.getenv(
+    "FRONTEND_RESET_PASSWORD_URL",
+    "http://localhost:3000/reset-password"  # e.g. https://app.example.com/reset-password
+)
+
+LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID", "")
+LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET", "")
+LINKEDIN_REDIRECT_URI = os.getenv("LINKEDIN_REDIRECT_URI", "")
+LINKEDIN_SCOPES = os.getenv("LINKEDIN_SCOPES", "r_liteprofile r_emailaddress").split()
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
@@ -58,6 +76,9 @@ INSTALLED_APPS = [
     "organizations",
     "events",
     "common",
+    
+    "drf_spectacular",
+    "drf_spectacular_sidecar"
 ]
 
 MIDDLEWARE = [
@@ -158,7 +179,44 @@ REST_FRAMEWORK = {
         "anon": os.getenv("DRF_THROTTLE_ANON", "10/min"),
         "user": os.getenv("DRF_THROTTLE_USER", "100/min"),
     },
+    
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # keep any others you use
+    ],
+    
+    "DATETIME_INPUT_FORMATS": [
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%z",      # 2025-09-13T10:47:00+0530 / +05:30
+        "%Y-%m-%dT%H:%M:%S.%f%z",   # 2025-09-13T10:47:00.123+05:30
+        "%Y-%m-%dT%H:%M:%S.%fZ",    # 2025-09-13T05:10:47.007Z  <-- what you sent
+    ]
+    
 }
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Events & Community Platform API",
+    "DESCRIPTION": "Django + DRF endpoints for auth, users, organizations, events, etc.",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,  # we’ll expose schema via a separate route
+    # Add JWT “Authorize” button in Swagger
+    "COMPONENT_SPLIT_REQUEST": True,
+    "SECURITY": [{"bearerAuth": []}],
+    "COMPONENTS": {
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+            }
+        }
+    },
+}
+
 
 # CORS configuration
 CORS_ALLOWED_ORIGINS = [
@@ -185,17 +243,3 @@ SECURE_BROWSER_XSS_FILTER = True
 SESSION_COOKIE_SECURE = False  # Should be True in production
 CSRF_COOKIE_SECURE = False     # Should be True in production
 
-EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
-EMAIL_HOST = os.getenv("EMAIL_HOST", "")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
-EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
-EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
-EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
-EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "False") == "True"
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@example.com")
-
-# A frontend URL to build the reset link (your React/Next.js page)
-FRONTEND_RESET_PASSWORD_URL = os.getenv(
-    "FRONTEND_RESET_PASSWORD_URL",
-    "http://localhost:3000/reset-password"  # e.g. https://app.example.com/reset-password
-)

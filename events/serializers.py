@@ -21,11 +21,13 @@ class EventSerializer(serializers.ModelSerializer):
         allow_null=True,
         format="%Y-%m-%dT%H:%M",
         input_formats=[
-            "%Y-%m-%dT%H:%M",       # HTML5 datetime-local (no seconds/tz)
+            "%Y-%m-%dT%H:%M",
             "%Y-%m-%d %H:%M",
+            "%Y-%m-%dT%H:%M:%S",
             "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S%z",  # ISO with timezone
-            "%Y-%m-%dT%H:%M:%S",    # ISO without tz
+            "%Y-%m-%dT%H:%M:%S%z",      
+            "%Y-%m-%dT%H:%M:%S.%f%z",   
+            "%Y-%m-%dT%H:%M:%S.%fZ",
         ],
         style={"input_type": "datetime-local"},  # 'min' is injected dynamically in __init__
     )
@@ -36,9 +38,11 @@ class EventSerializer(serializers.ModelSerializer):
         input_formats=[
             "%Y-%m-%dT%H:%M",
             "%Y-%m-%d %H:%M",
+            "%Y-%m-%dT%H:%M:%S",
             "%Y-%m-%d %H:%M:%S",
             "%Y-%m-%dT%H:%M:%S%z",
-            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+            "%Y-%m-%dT%H:%M:%S.%fZ",   
         ],
         style={"input_type": "datetime-local"},
     )

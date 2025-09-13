@@ -21,3 +21,17 @@ class UserProfile(models.Model):
 
     def __str__(self) -> str:
         return f"Profile<{self.user.username}>"
+    
+    
+class LinkedInAccount(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="linkedin")
+    linkedin_id = models.CharField(max_length=64, unique=True)
+    access_token = models.TextField()
+    refresh_token = models.TextField(blank=True, default="")  # LinkedIn may issue or not; handle nulls
+    expires_at = models.DateTimeField(null=True, blank=True)
+    raw_profile_json = models.JSONField(default=dict, blank=True)
+    email = models.EmailField(blank=True, default="")
+    headline = models.CharField(max_length=255, blank=True, default="")
+    picture_url = models.URLField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
