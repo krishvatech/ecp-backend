@@ -42,7 +42,7 @@ LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 API_ME = "https://api.linkedin.com/v2/me"
 API_EMAIL = "https://api.linkedin.com/v2/emailAddress?q=members&projection=(elements*(handle~))"
-OIDC_USERINFO = "https://www.linkedin.com/oauth/v2/userinfo"  # if using OIDC product
+OIDC_USERINFO = "https://api.linkedin.com/v2/userinfo"  # if using OIDC product
 
 def _state_cookie():
     return get_random_string(32)
@@ -233,20 +233,39 @@ class LinkedInCallback(APIView):
 
         # Fetch profile (lite)
         headers = {"Authorization": f"Bearer {access_token}"}
-        me = requests.get(API_ME, headers=headers, timeout=15)
-        if me.status_code != 200:
-            return Response({"error": "profile_fetch_failed", "detail": me.text}, status=400)
-        mej = me.json()
+        if "openid" in settings.LINKEDIN_SCOPES or "profile" in settings.LINKEDIN_SCOPES:
+            # ✅ OIDC path (works with: openid profile email)
+            resp = requests.get(OIDC_USERINFO, headers=headers, timeout=15)
+            if resp.status_code != 200:
+                return Response({"error": "userinfo_fetch_failed", "detail": resp.text}, status=400)
 
-        # Fetch email
-        em = requests.get(API_EMAIL, headers=headers, timeout=15)
-        email = ""
-        if em.status_code == 200:
-            ej = em.json()
-            try:
-                email = ej["elements"][0]["handle~"]["emailAddress"]
-            except Exception:
-                email = ""
+            uj = resp.json()
+            linkedin_id = uj.get("sub")
+            email = uj.get("email") or ""
+
+            # Build a lite 'me' dict so downstream code keeps working
+            mej = {
+                "id": linkedin_id,
+                "localizedFirstName": uj.get("given_name", ""),
+                "localizedLastName": uj.get("family_name", ""),
+                "localizedHeadline": "",
+                "profilePicture": {"displayImage": uj.get("picture", "")},
+            }
+
+        else:
+            # Classic fallback (requires r_liteprofile + r_emailaddress)
+            me = requests.get(API_ME, headers=headers, timeout=15)
+            if me.status_code != 200:
+                return Response({"error": "profile_fetch_failed", "detail": me.text}, status=400)
+            mej = me.json()
+            email = ""
+            er = requests.get(API_EMAIL, headers=headers, timeout=15)
+            if er.status_code == 200:
+                try:
+                    email = er.json()["elements"][0]["handle~"]["emailAddress"]
+                except Exception:
+                    email = ""
+
 
         # Resolve or create a local user by email (or create a placeholder)
         from django.contrib.auth.models import User

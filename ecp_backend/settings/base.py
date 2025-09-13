@@ -36,7 +36,7 @@ FRONTEND_RESET_PASSWORD_URL = os.getenv(
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID", "")
 LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET", "")
 LINKEDIN_REDIRECT_URI = os.getenv("LINKEDIN_REDIRECT_URI", "")
-LINKEDIN_SCOPES = os.getenv("LINKEDIN_SCOPES", "r_liteprofile r_emailaddress").split()
+LINKEDIN_SCOPES = os.getenv("LINKEDIN_SCOPES", "openid profile email").split()
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
