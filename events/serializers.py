@@ -15,6 +15,39 @@ class EventSerializer(serializers.ModelSerializer):
     organization_id = serializers.IntegerField()
     created_by_id = serializers.IntegerField(read_only=True)
 
+    class Meta:
+        model = Event
+        fields = [
+            "id",
+            "organization_id",
+            "title",
+            "slug",
+            "description",
+            "start_time",
+            "end_time",
+            "status",
+            "is_live",
+            "active_speaker",
+            "recording_url",
+            "created_by_id",
+            "created_at",
+            "updated_at",
+            "live_started_at",
+            "live_ended_at",
+        ]
+
+        # Mark auto‑managed fields and new live metadata fields as read only.
+        read_only_fields = [
+            "id",
+            "slug",
+            "created_by_id",
+            "created_at",
+            "updated_at",
+            "active_speaker",
+            "live_started_at",
+            "live_ended_at",
+        ]
+
     # Browsable API uses these formats for rendering/parsing
     start_time = serializers.DateTimeField(
         required=False,
@@ -46,25 +79,6 @@ class EventSerializer(serializers.ModelSerializer):
         ],
         style={"input_type": "datetime-local"},
     )
-
-    class Meta:
-        model = Event
-        fields = [
-            "id",
-            "organization_id",
-            "title",
-            "slug",
-            "description",
-            "start_time",
-            "end_time",
-            "status",
-            "is_live",
-            "recording_url",
-            "created_by_id",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = ["id", "slug", "created_by_id", "created_at", "updated_at"]
 
     def __init__(self, *args, **kwargs):
         """

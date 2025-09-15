@@ -78,7 +78,10 @@ INSTALLED_APPS = [
     "common",
     
     "drf_spectacular",
-    "drf_spectacular_sidecar"
+    "drf_spectacular_sidecar",
+
+    # Realtime app for CPaaS token issuance
+    "realtime",
 ]
 
 MIDDLEWARE = [
@@ -243,3 +246,8 @@ SECURE_BROWSER_XSS_FILTER = True
 SESSION_COOKIE_SECURE = False  # Should be True in production
 CSRF_COOKIE_SECURE = False     # Should be True in production
 
+# Realtime streaming (Agora) configuration
+# The CPaaS integration uses these values to generate streaming tokens.
+AGORA_APP_ID = os.getenv("AGORA_APP_ID", "")
+AGORA_APP_CERTIFICATE = os.getenv("AGORA_APP_CERTIFICATE", "")
+AGORA_EXPIRE_SECONDS = int(os.getenv("AGORA_EXPIRE_SECONDS", "3600"))

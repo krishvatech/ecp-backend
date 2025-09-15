@@ -30,10 +30,26 @@ class Event(models.Model):
     end_time = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="draft")
     is_live = models.BooleanField(default=False)
+    # The current speaker for live sessions (optional).  Stored as a
+    # reference to a user who is currently broadcasting.  This is
+    # updated via state transition endpoints.
+    active_speaker = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="active_events",
+    )
     recording_url = models.URLField(blank=True)
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_events")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Timestamps tracking when a live session was started/stopped.  These
+    # are useful for analytics and for cleaning up resources.  They may
+    # remain null if the event never goes live.
+    live_started_at = models.DateTimeField(null=True, blank=True)
+    live_ended_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at"]

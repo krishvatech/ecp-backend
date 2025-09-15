@@ -12,6 +12,7 @@ from rest_framework.routers import DefaultRouter
 from users.views import UserViewSet, RegisterView,LinkedInAuthURL, LinkedInCallback
 from organizations.views import OrganizationViewSet
 from events.views import EventViewSet
+from realtime.urls import urlpatterns as realtime_urls
 
 # drf-spectacular views
 from drf_spectacular.views import (
@@ -47,5 +48,6 @@ urlpatterns = [
     ),
     path("api/auth/linkedin/url/", LinkedInAuthURL.as_view(), name="linkedin_auth_url"),
     path("api/auth/linkedin/callback/", LinkedInCallback.as_view(), name="linkedin_callback"),
-
+    # Realtime endpoints (stream token issuance)
+    path("api/", include((realtime_urls, "realtime"), namespace="realtime")),
 ]
