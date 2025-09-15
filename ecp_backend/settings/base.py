@@ -40,7 +40,10 @@ LINKEDIN_SCOPES = os.getenv("LINKEDIN_SCOPES", "openid profile email").split()
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [BASE_DIR / "templates"],   # optional project-level templates/
+        "DIRS": [
+            BASE_DIR / "templates",                    # project-level (optional)
+            BASE_DIR / "ecp_backend" / "templates",    # ✅ add this line
+        ],
         "APP_DIRS": True,                   # looks inside each app’s templates/
         "OPTIONS": {
             "context_processors": [

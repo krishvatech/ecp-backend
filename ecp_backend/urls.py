@@ -13,6 +13,7 @@ from users.views import UserViewSet, RegisterView,LinkedInAuthURL, LinkedInCallb
 from organizations.views import OrganizationViewSet
 from events.views import EventViewSet
 from realtime.urls import urlpatterns as realtime_urls
+from django.views.generic import TemplateView
 
 # drf-spectacular views
 from drf_spectacular.views import (
@@ -50,4 +51,5 @@ urlpatterns = [
     path("api/auth/linkedin/callback/", LinkedInCallback.as_view(), name="linkedin_callback"),
     # Realtime endpoints (stream token issuance)
     path("api/", include((realtime_urls, "realtime"), namespace="realtime")),
+    path("", TemplateView.as_view(template_name="index.html")),
 ]
