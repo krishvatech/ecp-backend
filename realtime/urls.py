@@ -11,6 +11,6 @@ from realtime.views import EventStreamTokenView
 
 
 urlpatterns = [
-    # POST /api/events/<event_id>/token/ → generate short‑lived token
-    path("events/<int:event_id>/token/", EventStreamTokenView.as_view(), name="event_stream_token"),
+    # resolves to /api/events/<pk>/token/ because project urls.py includes realtime under "api/"
+    path("events/<int:pk>/token/", EventStreamTokenView.as_view(), name="event-token"),
 ]

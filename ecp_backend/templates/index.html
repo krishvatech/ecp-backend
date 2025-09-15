@@ -1,391 +1,711 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ECP Backend — API Test UI</title>
+  <meta charset="utf-8" />
+  <title>Events & Community Platform</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root { --bg:#0f172a; --panel:#111827; --muted:#94a3b8; --accent:#22c55e; --error:#ef4444; --border:#1f2937; }
-    * { box-sizing: border-box; }
-    body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background:var(--bg); color:#e5e7eb; }
-    header{ padding:18px 20px; border-bottom:1px solid var(--border); position:sticky; top:0; background:linear-gradient(0deg, rgba(15,23,42,.94), rgba(15,23,42,.94)); backdrop-filter: blur(6px);}
-    h1{ font-size:18px; margin:0; letter-spacing: .3px; }
-    main{ display:grid; grid-template-columns: 360px 1fr; gap:16px; padding:16px; }
-    .col{ display:flex; flex-direction:column; gap:16px; }
-    .card{ background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:14px; }
-    .card h2{ font-size:14px; margin:2px 0 12px; color:#cbd5e1; letter-spacing:.2px; }
-    label{ font-size:12px; color: var(--muted); display:block; margin:10px 0 6px; }
-    input, select, textarea{ width:100%; background:#0b1220; border:1px solid var(--border); color:#e5e7eb; border-radius:10px; padding:10px 12px; outline:none; }
-    input:focus, textarea:focus, select:focus{ border-color:#334155; }
-    .row{ display:flex; gap:8px; align-items:center; }
-    .row > *{ flex:1; }
-    button{ background:#1f2937; border:1px solid var(--border); color:#e5e7eb; padding:10px 12px; border-radius:10px; cursor:pointer; }
-    button.primary{ background:var(--accent); border-color:#16a34a; color:#072a12; font-weight:700; }
-    button.warn{ background:#334155; border-color:#475569; }
-    button.danger{ background:#3b0d0d; border-color:#7f1d1d; color:#fecaca; }
-    .muted{ color: var(--muted); font-size:12px; }
-    .status{ font-size:12px; margin-top:8px; }
-    .status.ok{ color: var(--accent); }
-    .status.err{ color: var(--error); }
-    pre{ background:#0b1220; border:1px solid var(--border); padding:12px; border-radius:12px; overflow:auto; max-height:300px; }
-    .grid-2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-    .pill{ display:inline-flex; align-items:center; gap:8px; padding:6px 8px; border-radius:999px; background:#0b1220; border:1px solid var(--border); font-size:12px; }
-    .footer{ padding:12px 16px; color:var(--muted); font-size:12px; border-top:1px solid var(--border); text-align:center; }
-    a { color:#93c5fd; text-decoration:none; }
+    :root{
+      --bg:#0f1220; --card:#161a2b; --muted:#8b92b2; --text:#e9ecff;
+      --brand:#6C63FF; --border:#232745; --ok:#2ecc71; --err:#e74c3c;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:linear-gradient(180deg,#0c1020,#0a0d19 40%,#0b0e1d);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    a{color:var(--brand);text-decoration:none}
+    .hidden{display:none !important}
+
+    /* Header / Layout */
+    .app{display:grid;grid-template-rows:56px 1fr;min-height:100svh}
+    header{display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--border);background:#0e1230aa;backdrop-filter:blur(8px);position:sticky;top:0;z-index:5}
+    .logo{display:flex;align-items:center;gap:10px;font-weight:700}
+    .logo-mark{width:26px;height:26px;border-radius:8px;background:conic-gradient(from 230deg,var(--brand),#A3D2CA)}
+    .badge{font-size:.75rem;background:#121736;border:1px solid #27306e;padding:.25rem .5rem;border-radius:999px;color:#aeb7ff}
+    .btn{border:1px solid var(--border);background:#1a1f35;color:var(--text);padding:.55rem .9rem;border-radius:10px;cursor:pointer}
+    .btn.brand{background:var(--brand);border-color:#5a53ff;color:white}
+    .btn.small{padding:.4rem .6rem;font-size:.9rem}
+    .btn.full{width:100%}
+    .layout{display:grid;grid-template-columns:260px 1fr;min-height:0}
+    nav{border-right:1px solid var(--border);background:#0e1330}
+    .nav-inner{position:sticky;top:56px;padding:16px;display:flex;flex-direction:column;gap:8px}
+    .nav-item{padding:10px 12px;border-radius:10px;color:#cfd6ff;cursor:pointer}
+    .nav-item:hover,.nav-item.active{background:#1a1f35}
+    .main{padding:20px;min-width:0}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
+    .muted{color:var(--muted)}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    .input{width:100%;background:#10142a;border:1px solid var(--border);color:var(--text);padding:.7rem .8rem;border-radius:10px}
+    label{font-size:.9rem;color:#cfd6ff;margin-top:10px;display:block}
+    .error{background:#421b1b;border:1px solid #6e2e2e;color:#ffc9c9;padding:10px;border-radius:10px;margin-top:8px}
+    .success{background:#12351f;border:1px solid #1f6e46;color:#b9ffd4;padding:10px;border-radius:10px;margin-top:8px}
+
+    /* Auth screen */
+    .center-wrap{display:grid;place-items:center;min-height:calc(100svh - 56px);padding:24px}
+    .auth{max-width:920px;width:100%;display:grid;grid-template-columns:1.1fr .9fr;gap:16px}
+    @media (max-width:900px){.auth{grid-template-columns:1fr}}
+    .hero{padding:24px;border:1px solid var(--border);border-radius:16px;background:radial-gradient(1200px 400px at -10% -10%, #6c63ff26, transparent 60%)}
+    .pill{display:inline-flex;gap:8px;align-items:center;background:#14193b;border:1px solid #2a2f63;padding:.35rem .6rem;border-radius:999px;font-size:.8rem;color:#cfd6ff}
+
+    /* Live area */
+    .live-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    @media (max-width:900px){.live-grid{grid-template-columns:1fr}}
+    .video-area{
+      background:#0b0f25;border:1px dashed #2e356a;border-radius:12px;
+      display:grid;grid-template-rows:auto 1fr auto;overflow:hidden;min-height:340px;
+    }
+    .tile-header{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px dashed #2e356a;color:#9aa3d9}
+    .player, #local-player, .remote-player{width:100%;height:100%;min-height:300px;background:#000}
   </style>
 </head>
 <body>
+<div class="app">
+
+  <!-- Header -->
   <header>
-    <h1>🧪 ECP Backend — API Test UI</h1>
+    <div class="logo"><div class="logo-mark"></div> Events & Community Platform</div>
+    <div class="row" style="align-items:center">
+      <span id="headerStatus" class="badge">Signed out</span>
+      <button class="btn small hidden" id="btnSignOut">Sign out</button>
+    </div>
   </header>
 
-  <main>
-    <!-- LEFT COLUMN: Controls -->
-    <div class="col">
-      <div class="card" id="serverCard">
-        <h2>Server</h2>
-        <label>Base URL</label>
-        <input id="baseUrl" value="http://127.0.0.1:8000" />
-        <div class="row">
-          <button onclick="ping()">Ping</button>
-          <button class="warn" onclick="openSwagger()">Open Swagger</button>
-        </div>
-        <div id="serverStatus" class="status muted">Ready</div>
-      </div>
+  <!-- AUTH -->
+  <div id="authScreen" class="center-wrap">
+    <div class="auth">
+      <section class="hero card">
+        <span class="pill">Register → Host → Go Live</span>
+        <h2 style="margin:.6rem 0 0 0;">Welcome!</h2>
+        <p class="muted">Create an account or sign in to manage organizations and events, then go live with real-time video.</p>
+      </section>
 
-      <div class="card">
-        <h2>Auth — Register</h2>
-        <label>Email</label>
-        <input id="regEmail" placeholder="you@example.com" />
-        <label>Password</label>
-        <input id="regPassword" type="password" placeholder="min 8 chars" />
-        <div class="grid-2">
-          <div>
-            <label>First name</label>
-            <input id="regFirst" placeholder="(optional)" />
-          </div>
-          <div>
-            <label>Last name</label>
-            <input id="regLast" placeholder="(optional)" />
-          </div>
+      <section class="card">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <h3>Authenticate</h3>
+          <span class="badge">JWT</span>
         </div>
-        <label>Full name (profile)</label>
-        <input id="regFull" placeholder="(optional) e.g., Alex Patel" />
-        <button class="primary" onclick="registerUser()">Create account</button>
-        <pre id="registerOut"></pre>
-      </div>
+        <div class="row" style="margin-bottom:10px">
+          <button class="btn small brand" id="tabLogin">Login</button>
+          <button class="btn small" id="tabRegister">Register</button>
+        </div>
 
-      <div class="card">
-        <h2>Auth — Login (JWT)</h2>
-        <label>Email</label>
-        <input id="loginEmail" placeholder="you@example.com" />
-        <label>Password</label>
-        <input id="loginPassword" type="password" />
-        <div class="row">
-          <button class="primary" onclick="loginUser()">Login</button>
-          <button class="warn" onclick="refreshToken()">Refresh</button>
-          <button class="danger" onclick="clearTokens()">Clear tokens</button>
-        </div>
-        <div class="row">
-          <span class="pill">Access: <span id="accessShort">—</span></span>
-          <span class="pill">Refresh: <span id="refreshShort">—</span></span>
-        </div>
-        <pre id="loginOut"></pre>
-      </div>
+        <!-- Login -->
+        <form id="formLogin">
+          <label>Email</label>
+          <input class="input" type="email" id="loginEmail" placeholder="you@company.com" required />
+          <label>Password</label>
+          <input class="input" type="password" id="loginPass" placeholder="••••••••" required />
+          <div style="height:8px"></div>
+          <button class="btn brand full" type="submit">Login</button>
+          <div id="loginMsg"></div>
+        </form>
 
-      <div class="card">
-        <h2>Auth — Sign in with LinkedIn</h2>
-        <p class="muted">Starts the OAuth flow by requesting <code>/api/auth/linkedin/url/</code> and redirecting the browser.</p>
-        <div class="row">
-          <button class="primary" onclick="startLinkedIn()">Continue with LinkedIn</button>
-          <button class="warn" onclick="captureTokensFromURL()">Capture tokens from URL</button>
-        </div>
-        <pre id="linkedinOut"></pre>
-        <p class="muted">Tip: If your backend callback redirects back here with <code>?access=...&refresh=...</code>, click “Capture tokens from URL”.</p>
-      </div>
-
-      <div class="card">
-        <h2>Me</h2>
-        <div class="row">
-          <button onclick="getMe()">GET /api/users/me/</button>
-          <button onclick="updateMe()">PUT /api/users/me/</button>
-        </div>
-        <label>Update full name</label>
-        <input id="meFull" placeholder="e.g., Alex P." />
-        <pre id="meOut"></pre>
-      </div>
+        <!-- Register -->
+        <form id="formRegister" class="hidden">
+          <label>Full Name</label>
+          <input class="input" type="text" id="regName" placeholder="Your Name" required />
+          <label>Email</label>
+          <input class="input" type="email" id="regEmail" placeholder="you@company.com" required />
+          <label>Password</label>
+          <input class="input" type="password" id="regPass" placeholder="Create a password" required />
+          <div style="height:8px"></div>
+          <button class="btn brand full" type="submit">Create account</button>
+          <div id="registerMsg" class="muted" style="margin-top:10px;font-size:.85rem">We’ll auto-login after successful registration.</div>
+        </form>
+      </section>
     </div>
+  </div>
 
-    <!-- RIGHT COLUMN: Domain APIs -->
-    <div class="col">
-      <div class="card">
-        <h2>Organizations</h2>
-        <div class="row">
-          <button onclick="listOrgs()">List (GET /api/organizations/)</button>
-        </div>
-        <div class="row">
-          <input id="orgName" placeholder="Org name" />
-          <button class="primary" onclick="createOrg()">Create (POST)</button>
-        </div>
-        <pre id="orgOut"></pre>
+  <!-- APP (hidden until login) -->
+  <div id="mainLayout" class="layout hidden">
+    <nav>
+      <div class="nav-inner">
+        <div class="nav-item active" data-route="live">📺 Go Live / Watch</div>
+        <div class="nav-item" data-route="organizations">🏢 Organizations</div>
+        <div class="nav-item" data-route="events">🎫 Events</div>
+        <div class="nav-item" data-route="profile">👤 Profile</div>
       </div>
+    </nav>
 
-      <div class="card">
-        <h2>Events</h2>
-        <div class="row">
-          <button onclick="listEvents()">List (GET /api/events/)</button>
-        </div>
-        <div class="grid-2">
-          <div>
-            <label>Organization ID</label>
-            <input id="evOrgId" placeholder="e.g., 1" />
-          </div>
-          <div>
-            <label>Title</label>
-            <input id="evTitle" placeholder="Demo Event" />
-          </div>
-        </div>
-        <button class="primary" onclick="createEvent()">Create (POST)</button>
-        <hr style="border-color:var(--border); margin:14px 0;">
-        <div class="grid-2">
-          <div>
-            <label>Event ID</label>
-            <input id="evId" placeholder="e.g., 1" />
-          </div>
-          <div>
-            <label>Stream Role</label>
-            <select id="evRole">
-              <option value="publisher">publisher (host)</option>
-              <option value="subscriber">subscriber (viewer)</option>
-            </select>
-          </div>
-        </div>
-        <div class="row">
-          <button onclick="getEvent()">GET /api/events/{id}/</button>
-          <button class="primary" onclick="getStreamToken()">POST /api/events/{id}/token/</button>
-        </div>
-        <pre id="eventOut"></pre>
-      </div>
-
-      <div class="card">
-        <h2>Raw Request</h2>
-        <p class="muted">Fire any request against your API (JWT added automatically if present).</p>
-        <label>Method & Path</label>
-        <div class="row">
-          <select id="rawMethod">
-            <option>GET</option>
-            <option>POST</option>
-            <option>PUT</option>
-            <option>PATCH</option>
-            <option>DELETE</option>
+    <main class="main">
+      <!-- LIVE -->
+      <section id="view-live" class="card">
+        <h3>Go Live / Join</h3>
+        <form id="formGoLive">
+          <label>Event ID</label>
+          <input class="input" id="liveEventId" placeholder="e.g. 1" />
+          <label>Role</label>
+          <select class="input" id="liveRole">
+            <option value="publisher">publisher (host)</option>
+            <option value="audience">audience (viewer)</option>
           </select>
-          <input id="rawPath" value="/api/events/" />
+          <label>Token</label>
+          <input class="input" id="liveToken" placeholder="Token will appear here..." readonly />
+          <div class="row" style="margin-top:10px">
+            <button class="btn brand" type="submit" id="btnGetToken">Get Token</button>
+            <button class="btn" type="button" id="btnJoin">Join</button>
+            <button class="btn" type="button" id="btnLeave">Leave</button>
+          </div>
+          <div id="tokenMsg"></div>
+        </form>
+
+        <div class="live-grid" style="margin-top:12px">
+          <div class="video-area">
+            <div class="tile-header">
+              <span id="localLabel">Local</span>
+              <span id="localState" class="badge">idle</span>
+            </div>
+            <div class="player" id="local-player"></div>
+            <div style="text-align:center; padding:6px; font-size:.85rem; color:#9aa3d9" id="localRoleLabel"></div>
+          </div>
+          <div class="video-area">
+            <div class="tile-header">
+              <span id="remoteLabel">Remote</span>
+              <span id="remoteState" class="badge">waiting</span>
+            </div>
+            <div class="player" id="remote-wrap"></div>
+            <div style="text-align:center; padding:6px; font-size:.85rem; color:#9aa3d9" id="remoteRoleLabel"></div>
+          </div>
         </div>
-        <label>JSON Body</label>
-        <textarea id="rawBody" rows="6">{}</textarea>
-        <div class="row">
-          <button onclick="sendRaw()">Send</button>
-          <button class="warn" onclick="copyLastResponse()">Copy last response</button>
+
+        <div class="row" style="margin-top:10px">
+          <button class="btn small" id="btnToggleCam">Toggle Camera</button>
+          <button class="btn small" id="btnToggleMic">Toggle Mic</button>
         </div>
-        <pre id="rawOut"></pre>
-      </div>
-    </div>
-  </main>
+      </section>
 
-  <div class="footer">ECP Test UI • Handy harness for your Django APIs</div>
+      <!-- ORGS -->
+      <section id="view-organizations" class="hidden card">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <h3>Organizations</h3>
+          <span class="badge" id="orgCount">0</span>
+        </div>
 
-  <script>
-    // ================= Helpers =================
-    const $ = (id) => document.getElementById(id);
-    const j = (v) => JSON.stringify(v, null, 2);
+        <!-- CREATE ORG -->
+        <div class="card" style="margin:10px 0">
+          <h4 style="margin-top:0">Create Organization</h4>
+          <form id="formCreateOrg" class="row" style="gap:10px;align-items:flex-end">
+            <div style="flex:1;min-width:220px">
+              <label>Organization name</label>
+              <input class="input" id="orgName" placeholder="e.g. Krishva Tech" required />
+            </div>
+            <div style="flex:2;min-width:280px">
+              <label>Description</label>
+              <input class="input" id="orgDesc" placeholder="What does your org do?" required />
+            </div>
+            <button class="btn brand" type="submit">Create</button>
+          </form>
+          <div id="orgCreateMsg" style="margin-top:8px"></div>
+        </div>
 
-    function base() {
-      let url = $("baseUrl").value.trim().replace(/\/$/, "");
-      return url || "http://127.0.0.1:8000";
-    }
+        <div id="orgWrap" class="row"><div class="muted">Loading…</div></div>
+      </section>
 
-    function setStatus(el, ok, msg){
-      el.className = "status " + (ok?"ok":"err");
-      el.textContent = msg;
-    }
+      <!-- EVENTS -->
+      <section id="view-events" class="hidden card">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <h3>Events</h3>
+          <span class="badge" id="evtCount">0</span>
+        </div>
 
-    function short(token){
-      if(!token) return "—";
-      return token.slice(0,12) + "…" + token.slice(-6);
-    }
+        <!-- CREATE EVENT -->
+        <div class="card" style="margin:10px 0">
+          <h4 style="margin-top:0">Create Event</h4>
+          <form id="formCreateEvent" class="row" style="gap:10px;align-items:flex-end">
+            <div style="flex:1;min-width:220px">
+              <label>Title</label>
+              <input class="input" id="evTitle" placeholder="e.g. Product Launch" required />
+            </div>
 
-    function saveTokens({access, refresh}){
-      if(access) localStorage.setItem("access", access);
-      if(refresh) localStorage.setItem("refresh", refresh);
-      $("accessShort").textContent = short(localStorage.getItem("access"));
-      $("refreshShort").textContent = short(localStorage.getItem("refresh"));
-    }
+            <div style="flex:1;min-width:220px">
+              <label>Organization</label>
+              <select class="input" id="evOrg" required>
+                <option value="">Select organization…</option>
+              </select>
+            </div>
 
-    function clearTokens(){
-      localStorage.removeItem("access");
-      localStorage.removeItem("refresh");
-      saveTokens({access:null, refresh:null});
-      $("loginOut").textContent = "(cleared)";
-    }
+            <div style="flex:1;min-width:220px">
+              <label>Start time</label>
+              <input class="input" type="datetime-local" id="evStart" />
+            </div>
 
-    async function api(method, path, body){
-      const url = base() + path;
-      const headers = { "Content-Type": "application/json" };
-      const access = localStorage.getItem("access");
-      if(access) headers["Authorization"] = `Bearer ${access}`;
-      const res = await fetch(url, { method, headers, body: body?JSON.stringify(body):undefined });
-      const text = await res.text();
-      let data;
-      try { data = text? JSON.parse(text) : {}; } catch { data = { raw:text }; }
-      if(!res.ok){ throw { status:res.status, data }; }
-      return data;
-    }
+            <div style="flex:1;min-width:220px">
+              <label>End time</label>
+              <input class="input" type="datetime-local" id="evEnd" />
+            </div>
 
-    // Capture tokens from query string (optional pattern: ?access=..&refresh=..)
-    function captureTokensFromURL(){
-      const p = new URLSearchParams(location.search);
-      const access = p.get("access");
-      const refresh = p.get("refresh");
-      if(access || refresh){
-        saveTokens({access, refresh});
-        history.replaceState({}, "", location.pathname); // clean URL
-        $("linkedinOut").textContent = j({saved:true, access: short(access), refresh: short(refresh)});
-      } else {
-        $("linkedinOut").textContent = "No tokens present in URL params.";
+            <div style="flex:2;min-width:280px">
+              <label>Description</label>
+              <input class="input" id="evDesc" placeholder="Short summary (optional)" />
+            </div>
+
+            <button class="btn brand" type="submit">Create</button>
+          </form>
+          <div id="eventCreateMsg" style="margin-top:8px"></div>
+        </div>
+
+        <div id="evtWrap" class="row"><div class="muted">Loading…</div></div>
+      </section>
+
+      <!-- PROFILE -->
+      <section id="view-profile" class="hidden card">
+        <h3>Profile</h3>
+        <label>Full name</label>
+        <input class="input" id="pfName" />
+        <label>Job title</label>
+        <input class="input" id="pfTitle" />
+        <label>Company</label>
+        <input class="input" id="pfCompany" />
+        <div style="height:8px"></div>
+        <button class="btn brand" id="btnProfileSave">Save</button>
+        <div id="profileMsg"></div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- Agora Web SDK 4.x -->
+<script src="https://download.agora.io/sdk/release/AgoraRTC_N.js"></script>
+<script>
+/* ===================== CONFIG ===================== */
+const apiBase = ""; // same origin; set to "http://127.0.0.1:8000" if serving elsewhere
+const tokenKey = "demo_access_token";
+const AGORA_FALLBACK_APP_ID = "YOUR_REAL_AGORA_APP_ID"; // only used if backend forgets app_id
+
+/* ===================== UTIL ===================== */
+const qs=(s,el=document)=>el.querySelector(s);
+const qsa=(s,el=document)=>[...el.querySelectorAll(s)];
+function setHTML(el, html, cls){ if(!el) return; el.innerHTML=html; el.className=cls||el.className; }
+function msg(el, text, ok=false){ if(!el) return; el.className = ok?"success":"error"; el.textContent = text; }
+const authHeader=()=>{ const t=localStorage.getItem(tokenKey); return t?{Authorization:"Bearer "+t}:{ }; };
+async function apiFetch(path, opts={}){
+  const headers = { "Content-Type":"application/json", ...(opts.headers||{}), ...authHeader() };
+  const res = await fetch(apiBase+path, { ...opts, headers });
+  let data=null; try{ data=await res.json(); }catch{}
+  if(!res.ok){
+    let m = `${res.status} ${res.statusText}`;
+    if (data) {
+      if (typeof data === "string") {
+        m += " - " + data;
+      } else if (data.detail || data.error) {
+        m += " - " + (data.detail || data.error);
+      } else if (typeof data === "object") {
+        // pretty print field errors like name: ["..."], description: ["..."]
+        const parts = Object.entries(data).map(([k,v])=>{
+          if (Array.isArray(v)) return `${k}: ${v.join("; ")}`;
+          if (typeof v === "object") return `${k}: ${JSON.stringify(v)}`;
+          return `${k}: ${String(v)}`;
+        });
+        if (parts.length) m += " - " + parts.join(" | ");
       }
     }
+    const err = new Error(m);
+    err.data = data;
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+function normalizeListPayload(payload){
+  if (Array.isArray(payload)) return payload;
+  if (payload && Array.isArray(payload.results)) return payload.results;
+  if (payload && Array.isArray(payload.items)) return payload.items;
+  if (payload && Array.isArray(payload.data)) return payload.data;
+  return [];
+}
 
-    // ================= Server =================
-    async function ping(){
-      try{
-        const res = await fetch(base()+"/", {method:"GET"});
-        setStatus($("serverStatus"), res.ok, `GET / → ${res.status}`);
-      }catch(err){
-        setStatus($("serverStatus"), false, `Ping failed: ${err}`);
-      }
+// Try multiple endpoints in order until one works (useful if API exposes /?mine=1 or /owned/)
+async function getListWithFallback(paths){
+  for(const path of paths){
+    try{
+      const data = await apiFetch(path);
+      const list = normalizeListPayload(data);
+      if (list.length || (Array.isArray(list) && data)) return list;
+    }catch(e){
+      // ignore and try next
     }
-    function openSwagger(){ window.open(base()+"/api/docs/", "_blank"); }
+  }
+  // last attempt still returns normalized (maybe empty) from first path
+  try{
+    const data = await apiFetch(paths[0]);
+    return normalizeListPayload(data);
+  }catch(_){
+    return [];
+  }
+}
 
-    // ================= Register/Login =================
-    async function registerUser(){
-      const body = {
-        email: $("regEmail").value.trim(),
-        password: $("regPassword").value,
-        first_name: $("regFirst").value.trim() || undefined,
-        last_name: $("regLast").value.trim() || undefined,
-        profile: { full_name: $("regFull").value.trim() || undefined }
-      };
-      try{
-        const out = await api("POST", "/api/auth/register/", body);
-        $("registerOut").textContent = j(out);
-      }catch(e){ $("registerOut").textContent = j(e); }
+/* ===================== AUTH / ROUTING ===================== */
+const headerStatus = qs("#headerStatus");
+const btnSignOut = qs("#btnSignOut");
+const authScreen = qs("#authScreen");
+const mainLayout = qs("#mainLayout");
+const tabLogin = qs("#tabLogin");
+const tabRegister = qs("#tabRegister");
+const formLogin = qs("#formLogin");
+const formRegister = qs("#formRegister");
+const loginMsg = qs("#loginMsg");
+const registerMsg = qs("#registerMsg");
+
+let me = null;     // current user data for labels
+let orgCache = []; // org list for event creation
+
+function showApp(){
+  headerStatus.textContent = "Signed in";
+  btnSignOut.classList.remove("hidden");
+  authScreen.classList.add("hidden");
+  mainLayout.classList.remove("hidden");
+  hydrateAfterLogin();
+}
+function showAuth(){
+  headerStatus.textContent = "Signed out";
+  btnSignOut.classList.add("hidden");
+  authScreen.classList.remove("hidden");
+  mainLayout.classList.add("hidden");
+}
+function renderAuthState(){ localStorage.getItem(tokenKey) ? showApp() : showAuth(); }
+
+tabLogin.onclick = ()=>{ formLogin.classList.remove("hidden"); formRegister.classList.add("hidden"); };
+tabRegister.onclick = ()=>{ formRegister.classList.remove("hidden"); formLogin.classList.add("hidden"); };
+
+formLogin.onsubmit = async (e)=>{
+  e.preventDefault(); setHTML(loginMsg,"");
+  const email = qs("#loginEmail").value.trim();
+  const password = qs("#loginPass").value;
+  try{
+    const data = await apiFetch("/api/auth/token/", { method:"POST", body: JSON.stringify({ email, password }) });
+    localStorage.setItem(tokenKey, data.access);
+    renderAuthState();
+  }catch(err){ msg(loginMsg, "Login failed: "+err.message); }
+};
+
+formRegister.onsubmit = async (e)=>{
+  e.preventDefault(); setHTML(registerMsg,"");
+  const full_name = qs("#regName").value.trim();
+  const email = qs("#regEmail").value.trim();
+  const password = qs("#regPass").value;
+  try{
+    await apiFetch("/api/auth/register/", { method:"POST", body: JSON.stringify({ email, password, profile:{ full_name } }) });
+    const login = await apiFetch("/api/auth/token/", { method:"POST", body: JSON.stringify({ email, password }) });
+    localStorage.setItem(tokenKey, login.access);
+    msg(registerMsg, "Account created and signed in.", true);
+    renderAuthState();
+  }catch(err){ msg(registerMsg, "Registration failed: "+err.message); }
+};
+
+btnSignOut.onclick = async ()=>{
+  // If joined, leave first to free camera/mic
+  const id = qs("#liveEventId").value.trim();
+  if(joined){ try{ await leaveAgora(id); }catch(_){} }
+  localStorage.removeItem(tokenKey);
+  // reset some fields
+  qs("#liveEventId").value = "";
+  qs("#liveToken").value = "";
+  showAuth();
+};
+
+/* ===================== NAV (minimal) ===================== */
+const routes = { live: qs("#view-live"), organizations: qs("#view-organizations"), events: qs("#view-events"), profile: qs("#view-profile") };
+qsa("[data-route]").forEach(n=>n.onclick=()=>{
+  const route = n.dataset.route;
+  Object.entries(routes).forEach(([k,el])=>el.classList.toggle("hidden", k!==route));
+  qsa(".nav-item").forEach(m=>m.classList.toggle("active", m.dataset.route===route));
+  if(route==="organizations") loadOrganizations();
+  if(route==="events") loadEvents();
+});
+
+/* ===================== DATA HYDRATION ===================== */
+async function hydrateAfterLogin(){ loadMe(); loadOrganizations(); loadEvents(); }
+async function loadMe(){
+  try{
+    me = await apiFetch("/api/users/me/");
+    qs("#pfName").value = me.profile?.full_name || "";
+    qs("#pfTitle").value = me.profile?.job_title || "";
+    qs("#pfCompany").value = me.profile?.company || "";
+  }catch(_){}
+}
+async function loadOrganizations(){
+  const wrap = qs("#orgWrap"); setHTML(wrap, "<div class='muted'>Loading…</div>");
+  try{
+    // Try common variants: paginated, mine-only, etc.
+    const orgs = await getListWithFallback([
+      "/api/organizations/?page_size=100",
+      "/api/organizations/?mine=1",
+      "/api/organizations/owned/",
+      "/api/organizations/"
+    ]);
+
+    orgCache = Array.isArray(orgs) ? orgs : [];
+    qs("#orgCount").textContent = orgCache.length;
+
+    // Populate the Event → Organization select
+    const orgSel = qs("#evOrg");
+    if (orgSel) {
+      orgSel.innerHTML = '<option value="">Select organization…</option>';
+      orgCache.forEach(o=>{
+        const opt = document.createElement("option");
+        opt.value = o.id ?? o.pk ?? o.organization_id ?? "";
+        opt.textContent = o.name || o.title || `Org #${opt.value}`;
+        orgSel.appendChild(opt);
+      });
     }
 
-    async function loginUser(){
-      const body = { email: $("loginEmail").value.trim(), password: $("loginPassword").value };
-      try{
-        const out = await api("POST", "/api/auth/token/", body);
-        saveTokens(out);
-        $("loginOut").textContent = j(out);
-      }catch(e){ $("loginOut").textContent = j(e); }
-    }
+    if(!orgCache.length) return setHTML(wrap, "<div class='muted'>No organizations yet.</div>");
 
-    async function refreshToken(){
-      const refresh = localStorage.getItem("refresh");
-      if(!refresh){ $("loginOut").textContent = "No refresh token"; return; }
-      try{
-        const out = await api("POST", "/api/auth/token/refresh/", { refresh });
-        saveTokens(out);
-        $("loginOut").textContent = j(out);
-      }catch(e){ $("loginOut").textContent = j(e); }
-    }
+    wrap.innerHTML = "";
+    orgCache.forEach(o=>{
+      const id   = o.id ?? o.pk ?? o.organization_id ?? null;
+      const name = o.name || o.title || `Org #${id ?? "?"}`;
+      const desc = o.description || o.bio || "";
+      const ownerId = o.owner_id ?? o.owner ?? o.ownerId ?? null;
 
-    // ================= LinkedIn =================
-    async function startLinkedIn(){
-      try{
-        const out = await api("GET", "/api/auth/linkedin/url/");
-        $("linkedinOut").textContent = j(out);
-        if(out && out.authorization_url){
-          window.location = out.authorization_url; // start OAuth
-        }
-      }catch(e){ $("linkedinOut").textContent = j(e); }
-    }
+      const card = document.createElement("div");
+      card.className="card"; card.style.minWidth="260px";
 
-    // ================= Me =================
-    async function getMe(){
-      try{ $("meOut").textContent = j(await api("GET", "/api/users/me/")); }
-      catch(e){ $("meOut").textContent = j(e); }
-    }
-    async function updateMe(){
-      const full = $("meFull").value.trim();
-      const body = full ? { profile: { full_name: full } } : {};
-      try{ $("meOut").textContent = j(await api("PUT", "/api/users/me/", body)); }
-      catch(e){ $("meOut").textContent = j(e); }
-    }
+      const ownerBadge = (me && ownerId && (String(ownerId) === String(me.id))) ?
+        ' <span class="badge" style="margin-left:6px;background:#12351f;border-color:#215d3a">Owner</span>' : '';
 
-    // ================= Orgs =================
-    async function listOrgs(){
-      try{ $("orgOut").textContent = j(await api("GET", "/api/organizations/")); }
-      catch(e){ $("orgOut").textContent = j(e); }
-    }
-    async function createOrg(){
-      const name = $("orgName").value.trim();
-      if(!name){ $("orgOut").textContent = "Enter organization name"; return; }
-      try{ $("orgOut").textContent = j(await api("POST", "/api/organizations/", { name })); }
-      catch(e){ $("orgOut").textContent = j(e); }
-    }
+      card.innerHTML = `<h4>${name}${ownerBadge}</h4>
+        <div class="muted">${desc || "-"}</div>
+        <div class="muted">Owner: ${o.owner_email || o.owner_email_id || "-"}</div>`;
+      wrap.appendChild(card);
+    });
+  }catch(err){
+    setHTML(wrap, `<div class="error">Failed to load orgs: ${err.message}</div>`);
+  }
+}
+async function loadEvents(){
+  const wrap = qs("#evtWrap"); setHTML(wrap, "<div class='muted'>Loading…</div>");
+  try{
+    const events = await getListWithFallback([
+      "/api/events/?page_size=100",
+      "/api/events/?mine=1",
+      "/api/events/"
+    ]);
 
-    // ================= Events =================
-    async function listEvents(){
-      try{ $("eventOut").textContent = j(await api("GET", "/api/events/")); }
-      catch(e){ $("eventOut").textContent = j(e); }
-    }
-    async function createEvent(){
-      const organization = parseInt($("evOrgId").value, 10);
-      const title = $("evTitle").value.trim();
-      if(!organization || !title){ $("eventOut").textContent = "Provide organization id & title"; return; }
-      try{ $("eventOut").textContent = j(await api("POST", "/api/events/", { organization, title })); }
-      catch(e){ $("eventOut").textContent = j(e); }
-    }
-    async function getEvent(){
-      const id = $("evId").value.trim();
-      if(!id){ $("eventOut").textContent = "Enter Event ID"; return; }
-      try{ $("eventOut").textContent = j(await api("GET", `/api/events/${id}/`)); }
-      catch(e){ $("eventOut").textContent = j(e); }
-    }
-    async function getStreamToken(){
-      const id = $("evId").value.trim();
-      const role = $("evRole").value;
-      if(!id){ $("eventOut").textContent = "Enter Event ID"; return; }
-      try{ $("eventOut").textContent = j(await api("POST", `/api/events/${id}/token/`, { role })); }
-      catch(e){ $("eventOut").textContent = j(e); }
-    }
+    qs("#evtCount").textContent = Array.isArray(events)?events.length:0;
+    if(!events.length) return setHTML(wrap, "<div class='muted'>No events yet.</div>");
+    wrap.innerHTML = "";
 
-    // ================= Raw =================
-    let lastResponseForCopy = "";
-    async function sendRaw(){
-      const method = $("rawMethod").value;
-      const path = $("rawPath").value.trim();
-      const bodyText = $("rawBody").value.trim();
-      let body = undefined;
-      try{ body = bodyText ? JSON.parse(bodyText) : undefined; } catch { /* keep undefined */ }
-      try{
-        const out = await api(method, path, body);
-        $("rawOut").textContent = j(out);
-        lastResponseForCopy = $("rawOut").textContent;
-      }catch(e){ $("rawOut").textContent = j(e); lastResponseForCopy = $("rawOut").textContent; }
-    }
-    function copyLastResponse(){
-      if(!lastResponseForCopy){ return; }
-      navigator.clipboard.writeText(lastResponseForCopy);
-    }
+    events.forEach(ev=>{
+      const id = ev.id ?? ev.pk ?? ev.event_id ?? null;
+      const title = ev.title || ev.name || `Event #${id ?? "?"}`;
+      const when = ev.start_time ? new Date(ev.start_time).toLocaleString() : "-";
+      const mine = (me && (String(ev.created_by_id ?? ev.owner_id ?? ev.user_id ?? "") === String(me.id)));
+      const mineBadge = mine ? '<span class="badge" style="margin-left:6px;background:#12351f;border-color:#215d3a">Created by you</span>' : '';
+      const liveBadge = ev.is_live ? '<span class="badge" style="margin-left:6px;background:#12351f;border-color:#215d3a">LIVE</span>' : '';
+      const orgName = ev.organization_name || ev.organization_title || ev.organization || "-";
 
-    // Init on load
-    (function init(){
-      saveTokens({access: localStorage.getItem("access"), refresh: localStorage.getItem("refresh")});
-      // auto-capture tokens if present in URL (?access=&refresh=)
-      captureTokensFromURL();
-    })();
-  </script>
+      const card = document.createElement("div");
+      card.className="card"; card.style.minWidth="260px";
+      card.innerHTML = `
+        <h4>${title}${mineBadge}</h4>
+        <div class="muted">Org: ${orgName}</div>
+        <div class="muted">${when} ${liveBadge}</div>
+        <div class="muted">${ev.description ? ev.description : ""}</div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn small" data-live="${id}">Go Live</button>
+          <button class="btn small" data-join="${id}">Join</button>
+        </div>`;
+      wrap.appendChild(card);
+    });
+
+    qsa("[data-live]").forEach(b=>b.onclick=()=>{ qs("#liveEventId").value=b.dataset.live; qsa("[data-route='live']")[0].click(); });
+    qsa("[data-join]").forEach(b=>b.onclick=()=>{ qs("#liveEventId").value=b.dataset.join; qsa("[data-route='live']")[0].click(); });
+  }catch(err){
+    setHTML(wrap, `<div class="error">Failed to load events: ${err.message}</div>`);
+  }
+}
+qs("#btnProfileSave").onclick = async ()=>{
+  setHTML(qs("#profileMsg"),"");
+  const full_name = qs("#pfName").value.trim();
+  const job_title = qs("#pfTitle").value.trim();
+  const company = qs("#pfCompany").value.trim();
+  try{
+    await apiFetch("/api/users/me/", { method:"PUT", body: JSON.stringify({ profile:{ full_name, job_title, company } }) });
+    msg(qs("#profileMsg"), "Profile updated.", true);
+  }catch(err){ msg(qs("#profileMsg"), "Update failed: "+err.message); }
+};
+
+/* Create Org */
+const formCreateOrg = document.getElementById("formCreateOrg");
+if (formCreateOrg) {
+  formCreateOrg.onsubmit = async (e)=>{
+    e.preventDefault();
+    setHTML(qs("#orgCreateMsg"), "");
+    const name = qs("#orgName").value.trim();
+    const description = qs("#orgDesc").value.trim();
+    if(!name || !description) return msg(qs("#orgCreateMsg"), "Name and description are required.");
+    try{
+      await apiFetch("/api/organizations/", { method:"POST", body: JSON.stringify({ name, description }) });
+      msg(qs("#orgCreateMsg"), "Organization created.", true);
+      qs("#orgName").value = ""; qs("#orgDesc").value = "";
+      await loadOrganizations();
+    }catch(err){ msg(qs("#orgCreateMsg"), "Create failed: " + err.message); }
+  };
+}
+
+/* Create Event */
+const formCreateEvent = document.getElementById("formCreateEvent");
+if (formCreateEvent) {
+  formCreateEvent.onsubmit = async (e)=>{
+    e.preventDefault();
+    setHTML(qs("#eventCreateMsg"), "");
+    const title = qs("#evTitle").value.trim();
+    const organization_id = parseInt(qs("#evOrg").value, 10);
+    const description = qs("#evDesc").value.trim();
+    const startRaw = qs("#evStart").value;
+    const endRaw   = qs("#evEnd").value;
+    const start_time = startRaw ? new Date(startRaw).toISOString() : null;
+    const end_time   = endRaw   ? new Date(endRaw).toISOString()   : null;
+    if(!title || !organization_id) return msg(qs("#eventCreateMsg"), "Title and organization are required.");
+    try{
+      await apiFetch("/api/events/", {
+        method:"POST",
+        body: JSON.stringify({ title, description, organization_id, start_time, end_time })
+      });
+      msg(qs("#eventCreateMsg"), "Event created.", true);
+      qs("#evTitle").value = ""; qs("#evDesc").value = ""; qs("#evOrg").value = "";
+      qs("#evStart").value = ""; qs("#evEnd").value = "";
+      await loadEvents();
+    }catch(err){ msg(qs("#eventCreateMsg"), "Create failed: " + err.message); }
+  };
+}
+
+/* ===================== TOKEN / JOIN FLOW ===================== */
+const tokenMsg = qs("#tokenMsg"), localState = qs("#localState"), remoteState = qs("#remoteState");
+async function fetchEventToken(eventId, role){
+  const data = await apiFetch(`/api/events/${eventId}/token/`, {
+    method:"POST", body: JSON.stringify({ role })
+  });
+  return {
+    token: data.token || null,
+    appId: (data.app_id || AGORA_FALLBACK_APP_ID || "").trim(),
+    channel: String(data.channel || "").trim()
+  };
+}
+
+let rtcClient=null, localAudioTrack=null, localVideoTrack=null, joined=false, joinedInfo={ appId:"", channel:"", role:"", uid:null };
+
+function ensurePlayer(elId){
+  const el = qs("#"+elId);
+  el.style.width="100%"; el.style.height="100%";
+  return el;
+}
+
+async function joinAgora(role, eventId){
+  if(joined) throw new Error("Already joined. Click Leave first.");
+  const { token, appId, channel } = await fetchEventToken(eventId, role);
+  if(!appId || !channel) throw new Error("Missing appId or channel from server.");
+  console.info("[AGORA] join params", { appId, channel, role, tokenPreview: token ? token.slice(0,12)+"…" : null });
+
+  rtcClient = AgoraRTC.createClient({ mode:"rtc", codec:"vp8" });
+
+  rtcClient.on("user-published", async (user, mediaType)=>{
+    await rtcClient.subscribe(user, mediaType);
+    if(mediaType==="video"){
+      const container = ensurePlayer("remote-wrap"); container.innerHTML = "";
+      const remoteDiv = document.createElement("div");
+      remoteDiv.id = `remote-player-${user.uid}`; remoteDiv.className="remote-player";
+      container.appendChild(remoteDiv);
+      user.videoTrack.play(remoteDiv);
+      remoteState.textContent = "playing";
+      // Role label stays from our own perspective; no change needed here
+    }
+    if(mediaType==="audio"){ user.audioTrack.play(); }
+  });
+  rtcClient.on("user-unpublished", (user, type)=>{
+    const el = qs(`#remote-player-${user.uid}`); if(el && el.parentNode) el.parentNode.removeChild(el);
+    if(type==="video") remoteState.textContent = "waiting";
+  });
+
+  const uid = await rtcClient.join(appId, channel, token || null, 0);
+  joined = true; joinedInfo = { appId, channel, role, uid };
+
+  // Always create local preview (publisher & audience)
+  localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+  localVideoTrack = await AgoraRTC.createCameraVideoTrack();
+
+  const localEl = ensurePlayer("local-player");
+  localEl.innerHTML = "";
+  const localDiv = document.createElement("div");
+  localDiv.style.width = "100%";
+  localDiv.style.height = "100%";
+  localEl.appendChild(localDiv);
+
+  // Show my camera locally
+  localVideoTrack.play(localDiv);
+
+  if (role === "publisher") {
+    // Publisher: publish tracks so others can see/hear me
+    await rtcClient.publish([localAudioTrack, localVideoTrack]);
+    localState.textContent = "publishing";
+    try {
+      await apiFetch(`/api/events/${eventId}/`, {
+        method: "PATCH",
+        body: JSON.stringify({ is_live: true })
+      });
+    } catch (_) {}
+    qs("#localRoleLabel").textContent = "Publisher";
+    qs("#remoteRoleLabel").textContent = "Joiner(s)";
+  } else {
+    // Audience: only preview locally, do not publish
+    localState.textContent = "preview";
+    remoteState.textContent = "waiting";
+    const container = ensurePlayer("remote-wrap");
+    container.innerHTML =
+      '<div style="display:grid;place-items:center;height:100%;color:#8aa;">Waiting for host…</div>';
+    qs("#localRoleLabel").textContent = "Joiner";
+    qs("#remoteRoleLabel").textContent = "Publisher";
+  }
+}
+
+async function leaveAgora(eventId){
+  try{
+    if(localAudioTrack){ localAudioTrack.stop(); localAudioTrack.close(); localAudioTrack=null; }
+    if(localVideoTrack){ localVideoTrack.stop(); localVideoTrack.close(); localVideoTrack=null; }
+    if(rtcClient){ await rtcClient.leave(); rtcClient=null; }
+    joined=false; localState.textContent="idle"; remoteState.textContent="waiting";
+    qs("#local-player").innerHTML=""; qs("#remote-wrap").innerHTML="";
+    if(joinedInfo.role==="publisher" && eventId){
+      try{ await apiFetch(`/api/events/${eventId}/`, { method:"PATCH", body: JSON.stringify({ is_live:false }) }); }catch(_){}
+    }
+    qs("#localRoleLabel").textContent = "";
+    qs("#remoteRoleLabel").textContent = "";
+  }catch(e){ console.warn("Leave error", e); }
+}
+
+/* Buttons */
+qs("#btnGetToken").onclick = async (e)=>{
+  e.preventDefault(); setHTML(tokenMsg,"");
+  const id = qs("#liveEventId").value.trim(); const role = qs("#liveRole").value;
+  if(!id) return msg(tokenMsg,"Event ID required.");
+  try{ const { token } = await fetchEventToken(id, role); qs("#liveToken").value = token || ""; msg(tokenMsg, `Token issued for ${role}.`, true); }
+  catch(err){ msg(tokenMsg, "Failed to get token: "+err.message); }
+};
+qs("#btnJoin").onclick = async ()=>{
+  setHTML(tokenMsg,"");
+  const id = qs("#liveEventId").value.trim(); const role = qs("#liveRole").value;
+  if(!id) return msg(tokenMsg,"Event ID required.");
+  try{ await joinAgora(role, id); msg(tokenMsg, `Joined as ${role}.`, true); }
+  catch(err){ msg(tokenMsg, "Join failed: "+err.message); }
+};
+qs("#btnLeave").onclick = async ()=>{ const id = qs("#liveEventId").value.trim(); await leaveAgora(id); msg(tokenMsg, "Left channel.", true); };
+
+/* Friendly toggles for both roles */
+qs("#btnToggleCam").onclick = async ()=>{
+  if(!localVideoTrack) return alert("Join first.");
+  const enabled = localVideoTrack._enabled !== false;
+  await localVideoTrack.setEnabled(!enabled);
+  localState.textContent = (!enabled)
+    ? (joinedInfo.role === "publisher" ? "publishing" : "preview")
+    : "video off";
+};
+qs("#btnToggleMic").onclick = async ()=>{
+  if(!localAudioTrack) return alert("Join first.");
+  const enabled = localAudioTrack._enabled !== false;
+  await localAudioTrack.setEnabled(!enabled);
+};
+
+/* ===================== START ===================== */
+renderAuthState();
+</script>
 </body>
 </html>
