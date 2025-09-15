@@ -21,6 +21,12 @@ from django.shortcuts import get_object_or_404
 from events.models import Event
 from realtime.services import AgoraService
 
+from drf_spectacular.utils import (
+    extend_schema,
+    OpenApiParameter,
+    OpenApiTypes,
+)
+from .serializers import EventTokenRequestSerializer
 
 class EventStreamTokenView(APIView):
     """Issue a short‑lived streaming token for a given event.
@@ -39,37 +45,75 @@ class EventStreamTokenView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
-
+    @extend_schema(
+        summary="Issue a short-lived streaming token for an event",
+        description=(
+            'Pass {"role":"publisher"} for broadcaster, otherwise "audience" is used. '
+            'You may also pass role via query string: ?role=publisher'
+        ),
+        request=EventTokenRequestSerializer,  
+        parameters=[
+            OpenApiParameter(
+                name="role",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Role for the token: "audience" (default) or "publisher".',
+            ),
+        ],
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "token": {"type": "string"},
+                    "expires_at": {"type": "string", "format": "date-time"},
+                    "channel": {"type": "string"},
+                    "app_id": {"type": "string"},
+                    "role": {"type": "string", "enum": ["audience", "publisher"]},
+                },
+            },
+            400: {"type": "object"},
+            403: {"type": "object"},
+            404: {"type": "object"},
+        },
+    )
     def post(self, request, event_id: int) -> Response:
-        # Look up the event and ensure the user is a member of its organization
         event = get_object_or_404(Event, pk=event_id)
+
         user = request.user
         if not event.organization.members.filter(pk=user.pk).exists():
             raise PermissionDenied("You do not have access to this event.")
 
-        # Determine desired role: allow explicit role in POST data or query string
-        role = request.data.get("role") or request.query_params.get("role") or "audience"
-        role = role.lower()
-        # Validate role; only 'publisher' and 'audience' supported for now
+        # accept both JSON body and query param
+        role = (request.data.get("role") or request.query_params.get("role") or "audience").lower()
+
         if role not in {"publisher", "audience"}:
             return Response(
                 {"error": "invalid_role", "detail": "Role must be 'publisher' or 'audience'."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Enforce that only event creators or organization owners can be publishers
         if role == "publisher":
             if not (event.created_by_id == user.id or event.organization.owner_id == user.id):
                 raise PermissionDenied("Only the event creator or organization owner may broadcast.")
 
-        # Generate the token using the configured CPaaS service
         svc = AgoraService()
         token, expires_at = svc.generate_token(event.slug, user.id, role=role)
-        response_data = {
-            "token": token,
-            "expires_at": expires_at.isoformat() + "Z",  # ensure UTC and include Z suffix
-            "channel": event.slug,
-            "app_id": svc.app_id,
-            "role": role,
-        }
-        return Response(response_data, status=status.HTTP_200_OK)
+
+        # ensure ISO8601 with Z (UTC)
+        expires_iso = (
+            expires_at.replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
+            if hasattr(expires_at, "tzinfo")
+            else str(expires_at)
+        )
+
+        return Response(
+            {
+                "token": token,
+                "expires_at": expires_iso,
+                "channel": event.slug,
+                "app_id": svc.app_id,
+                "role": role,
+            },
+            status=status.HTTP_200_OK,
+        )
