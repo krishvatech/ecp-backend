@@ -17,7 +17,8 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-insecure")
 DEBUG = os.getenv("DJANGO_DEBUG", "True") == "True"
-ALLOWED_HOSTS = [h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")]
+# ALLOWED_HOSTS = [h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")]
+ALLOWED_HOSTS = ["127.0.0.1", "localhost", ".ngrok-free.app"]
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
@@ -35,6 +36,12 @@ FRONTEND_RESET_PASSWORD_URL = os.getenv(
     "FRONTEND_RESET_PASSWORD_URL",
     "http://localhost:3000/reset-password"  # e.g. https://app.example.com/reset-password
 )
+
+CSRF_TRUSTED_ORIGINS = ["https://6cc0f266086b.ngrok-free.app"]
+
+CORS_ALLOWED_ORIGINS = [
+    "https://6cc0f266086b.ngrok-free.app",
+]
 
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID", "")
 LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET", "")
