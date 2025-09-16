@@ -283,7 +283,7 @@
 /* ===================== CONFIG ===================== */
 const apiBase = "https://6cc0f266086b.ngrok-free.app";
 const tokenKey = "demo_access_token";
-const AGORA_FALLBACK_APP_ID = "";
+const AGORA_FALLBACK_APP_ID = "7ca059944f01496681677b21c2169cf8";
 
 /* ===================== UTIL ===================== */
 const qs=(s,el=document)=>el.querySelector(s);
@@ -331,6 +331,25 @@ async function getListWithFallback(paths){
   try{ const data = await apiFetch(paths[0]); return normalizeListPayload(data); }catch(_){ return []; }
 }
 
+/* NEW: Show/Hide Live menu based on whether user has created any event */
+function updateLiveMenuVisibility(canLive){
+  const liveNav  = document.querySelector("[data-route='live']");
+  const liveView = document.getElementById("view-live");
+  if (!liveNav || !liveView) return;
+
+  liveNav.classList.toggle("hidden", !canLive);
+  liveView.classList.toggle("hidden", !canLive);
+
+  // If currently on Live while not allowed, redirect to Events
+  if (!canLive) {
+    const current = document.querySelector(".nav-item.active");
+    if (current && current.dataset.route === "live") {
+      const to = document.querySelector("[data-route='events']");
+      if (to) to.click();
+    }
+  }
+}
+
 /* ===================== AUTH / ROUTING ===================== */
 const headerStatus = qs("#headerStatus");
 const btnSignOut = qs("#btnSignOut");
@@ -345,7 +364,18 @@ const registerMsg = qs("#registerMsg");
 
 let me = null; let orgCache = [];
 
-function showApp(){ headerStatus.textContent="Signed in"; btnSignOut.classList.remove("hidden"); authScreen.classList.add("hidden"); mainLayout.classList.remove("hidden"); hydrateAfterLogin(); }
+/* MOD: hide Live by default after login until events check completes */
+function showApp(){
+  headerStatus.textContent="Signed in";
+  btnSignOut.classList.remove("hidden");
+  authScreen.classList.add("hidden");
+  mainLayout.classList.remove("hidden");
+
+  /* NEW: hide Live until we verify user has created an event */
+  updateLiveMenuVisibility(false);
+
+  hydrateAfterLogin();
+}
 function showAuth(){ headerStatus.textContent="Signed out"; btnSignOut.classList.add("hidden"); authScreen.classList.remove("hidden"); mainLayout.classList.add("hidden"); }
 function renderAuthState(){ localStorage.getItem(tokenKey) ? showApp() : showAuth(); }
 tabLogin.onclick = ()=>{ formLogin.classList.remove("hidden"); formRegister.classList.add("hidden"); };
@@ -374,6 +404,14 @@ async function loadEvents(){
   try{
     const events = await getListWithFallback(["/api/events/?page_size=100","/api/events/?mine=1","/api/events/"]);
     qs("#evtCount").textContent = Array.isArray(events)?events.length:0;
+
+    /* NEW: decide if the logged-in user has created any event */
+    const myId = String(me?.id ?? "");
+    const hasMine = Array.isArray(events) && events.some(ev =>
+      String(ev.created_by_id ?? ev.owner_id ?? ev.user_id ?? "") === myId
+    );
+    updateLiveMenuVisibility(!!hasMine);
+
     if(!events.length) return setHTML(wrap, "<div class='muted'>No events yet.</div>");
     wrap.innerHTML="";
     events.forEach(ev=>{
