@@ -21,6 +21,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . /app/
 
+# Gunicorn with Uvicorn worker for ASGI (Channels)
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "ecp_backend.asgi:application", "--bind", "0.0.0.0:8000"]
+
 # Create non-root user for better security
 RUN useradd -ms /bin/bash appuser
 USER appuser

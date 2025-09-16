@@ -5,7 +5,7 @@ Users can list, create, retrieve, update, and delete events belonging to
 organizations they are members of.  Creation is restricted to users
 belonging to the target organization.
 """
-from rest_framework import permissions, viewsets, status
+from rest_framework import permissions, viewsets, status, views
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from .models import Event
 from .serializers import EventSerializer
 
+from .tasks import download_event_recording
 
 class EventViewSet(viewsets.ModelViewSet):
     """CRUD operations for events."""
@@ -89,3 +90,20 @@ class EventViewSet(viewsets.ModelViewSet):
         # Do not clear active_speaker to allow analytics; leaving as last speaker
         event.save()
         return Response(EventSerializer(event, context=self.get_serializer_context()).data)
+
+
+class RecordingWebhookView(views.APIView):
+    """
+    Endpoint for CPaaS/webhooks to notify that a recording is available.
+    Expects JSON body: {"event_id": int, "recording_url": str}
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        event_id = request.data.get("event_id")
+        recording_url = request.data.get("recording_url")
+        if not event_id or not recording_url:
+            return Response({"error": "event_id and recording_url required"}, status=status.HTTP_400_BAD_REQUEST)
+        # Kick off asynchronous download; Celery eager mode for tests
+        download_event_recording.delay(event_id, recording_url)
+        return Response({"message": "Recording download started"}, status=status.HTTP_202_ACCEPTED)

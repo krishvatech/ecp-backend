@@ -9,11 +9,12 @@ from django.contrib import admin
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from users.views import UserViewSet, RegisterView,LinkedInAuthURL, LinkedInCallback
+from users.views import UserViewSet, LinkedInAuthURL, LinkedInCallback
 from organizations.views import OrganizationViewSet
-from events.views import EventViewSet
+from events.views import EventViewSet, RecordingWebhookView
 from realtime.urls import urlpatterns as realtime_urls
 from django.views.generic import TemplateView
+from realtime.urls import urlpatterns as realtime_urls
 
 # drf-spectacular views
 from drf_spectacular.views import (
@@ -52,4 +53,7 @@ urlpatterns = [
     # Realtime endpoints (stream token issuance)
     path("api/", include((realtime_urls, "realtime"), namespace="realtime")),
     path("", TemplateView.as_view(template_name="index.html")),
+
+    # recording webhook endpoint
+    path("api/events/recording-webhook/", RecordingWebhookView.as_view(), name="recording_webhook"),
 ]

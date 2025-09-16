@@ -95,6 +95,8 @@ INSTALLED_APPS = [
 
     # Realtime app for CPaaS token issuance
     "realtime",
+
+    "interactions",  # enable live chat/Q&A
 ]
 
 MIDDLEWARE = [
@@ -264,3 +266,6 @@ CSRF_COOKIE_SECURE = False     # Should be True in production
 AGORA_APP_ID = os.getenv("AGORA_APP_ID", "")
 AGORA_APP_CERTIFICATE = os.getenv("AGORA_APP_CERTIFICATE", "")
 AGORA_EXPIRE_SECONDS = int(os.getenv("AGORA_EXPIRE_SECONDS", "3600"))
+
+# Celery eager mode for tests
+CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "False") == "True"
