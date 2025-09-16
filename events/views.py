@@ -20,10 +20,12 @@ class EventViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        user = self.request.user
-        # Restrict events to those where the user is a member of the organization
-        return Event.objects.filter(organization__members=user).select_related("organization")
-
+        qs = Event.objects.all().select_related("organization")
+        mine = self.request.query_params.get("mine")
+        if mine: 
+            qs = qs.filter(created_by=self.request.user)
+        return qs.order_by("-start_time")
+    
     def perform_create(self, serializer):
         org_id = serializer.validated_data["organization_id"]
         # Ensure the user is a member of the organization they are creating an event for

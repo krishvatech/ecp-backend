@@ -142,32 +142,43 @@
   <div id="mainLayout" class="layout hidden">
     <nav>
       <div class="nav-inner">
-        <div class="nav-item active" data-route="live">📺 Go Live / Watch</div>
+        <!-- <div class="nav-item " data-route="live">📺 Go Live / Watch</div> -->
         <div class="nav-item" data-route="organizations">🏢 Organizations</div>
-        <div class="nav-item" data-route="events">🎫 Events</div>
+        <div class="nav-item active" data-route="events">🎫 Events</div>
         <div class="nav-item" data-route="profile">👤 Profile</div>
       </div>
     </nav>
 
     <main class="main">
       <!-- LIVE -->
-      <section id="view-live" class="card">
+      <section id="view-live" class="hidden card">
         <h3>Go Live / Join</h3>
         <form id="formGoLive">
-          <label>Event ID</label>
-          <input class="input" id="liveEventId" placeholder="e.g. 1" />
-          <label>Role</label>
-          <select class="input" id="liveRole">
+          <!-- NEW: Event select (adds, does not remove the original field) -->
+          <!-- Hidden selects (kept for compatibility, JS will fill/lock them) -->
+          <select class="input hidden" id="liveEventSelect" disabled>
+            <option value="">Select event…</option>
+          </select>
+          <input class="input hidden" id="liveEventId" />
+
+          <select class="input hidden" id="liveRole" disabled>
             <option value="publisher">publisher (host)</option>
             <option value="audience">audience (viewer)</option>
           </select>
+
+          <!-- Read-only summary shown to user -->
+          <div class="row" id="liveSummary" style="gap:8px;margin:8px 0">
+            <span class="badge">Event: <strong id="summaryEventTitle">—</strong></span>
+            <span class="badge">Role: <strong id="summaryRole">—</strong></span>
+          </div>
+
           <label>Token</label>
           <input class="input" id="liveToken" placeholder="Token will appear here..." readonly />
           <div class="row" style="margin-top:10px">
-            <button class="btn brand" type="submit" id="btnGetToken">Get Token</button>
             <button class="btn" type="button" id="btnJoin">Join</button>
             <button class="btn" type="button" id="btnLeave">Leave</button>
           </div>
+
           <div id="tokenMsg"></div>
         </form>
 
@@ -221,7 +232,7 @@
       </section>
 
       <!-- EVENTS -->
-      <section id="view-events" class="hidden card">
+      <section id="view-events" class="card">
         <div class="row" style="justify-content:space-between;align-items:center">
           <h3>Events</h3>
           <span class="badge" id="evtCount">0</span>
@@ -283,7 +294,7 @@
 /* ===================== CONFIG ===================== */
 const apiBase = "https://6cc0f266086b.ngrok-free.app";
 const tokenKey = "demo_access_token";
-const AGORA_FALLBACK_APP_ID = "7ca059944f01496681677b21c2169cf8";
+const AGORA_FALLBACK_APP_ID = "";
 
 /* ===================== UTIL ===================== */
 const qs=(s,el=document)=>el.querySelector(s);
@@ -333,23 +344,11 @@ async function getListWithFallback(paths){
 
 /* NEW: Show/Hide Live menu based on whether user has created any event */
 function updateLiveMenuVisibility(canLive){
-  const liveNav  = document.querySelector("[data-route='live']");
-  const liveView = document.getElementById("view-live");
-  if (!liveNav || !liveView) return;
-
+  const liveNav = document.querySelector("[data-route='live']");
+  if (!liveNav) return;
+  // Only hide/show the sidebar item; routing controls which view is visible
   liveNav.classList.toggle("hidden", !canLive);
-  liveView.classList.toggle("hidden", !canLive);
-
-  // If currently on Live while not allowed, redirect to Events
-  if (!canLive) {
-    const current = document.querySelector(".nav-item.active");
-    if (current && current.dataset.route === "live") {
-      const to = document.querySelector("[data-route='events']");
-      if (to) to.click();
-    }
-  }
 }
-
 /* ===================== AUTH / ROUTING ===================== */
 const headerStatus = qs("#headerStatus");
 const btnSignOut = qs("#btnSignOut");
@@ -363,6 +362,7 @@ const loginMsg = qs("#loginMsg");
 const registerMsg = qs("#registerMsg");
 
 let me = null; let orgCache = [];
+let eventCache = []; // NEW: keep events for populating the live select
 
 /* MOD: hide Live by default after login until events check completes */
 function showApp(){
@@ -371,10 +371,12 @@ function showApp(){
   authScreen.classList.add("hidden");
   mainLayout.classList.remove("hidden");
 
-  /* NEW: hide Live until we verify user has created an event */
   updateLiveMenuVisibility(false);
-
   hydrateAfterLogin();
+
+  // Restore last route or default to events
+  const last = localStorage.getItem("lastRoute") || "events";
+  go(last);
 }
 function showAuth(){ headerStatus.textContent="Signed out"; btnSignOut.classList.add("hidden"); authScreen.classList.remove("hidden"); mainLayout.classList.add("hidden"); }
 function renderAuthState(){ localStorage.getItem(tokenKey) ? showApp() : showAuth(); }
@@ -385,8 +387,17 @@ formRegister.onsubmit = async (e)=>{ e.preventDefault(); setHTML(registerMsg,"")
 btnSignOut.onclick = async ()=>{ const id=qs("#liveEventId").value.trim(); if(joined){ try{ await leaveAgora(id); }catch(_){} } localStorage.removeItem(tokenKey); qs("#liveEventId").value=""; qs("#liveToken").value=""; showAuth(); };
 
 const routes = { live: qs("#view-live"), organizations: qs("#view-organizations"), events: qs("#view-events"), profile: qs("#view-profile") };
-qsa("[data-route]").forEach(n=>n.onclick=()=>{ const route=n.dataset.route; Object.entries(routes).forEach(([k,el])=>el.classList.toggle("hidden", k!==route)); qsa(".nav-item").forEach(m=>m.classList.toggle("active", m.dataset.route===route)); if(route==="organizations") loadOrganizations(); if(route==="events") loadEvents(); });
+function go(route){
+  Object.entries(routes).forEach(([k,el])=>el.classList.toggle("hidden", k!==route));
+  qsa(".nav-item").forEach(m=>m.classList.toggle("active", m.dataset.route===route));
+  if(route==="organizations") loadOrganizations();
+  if(route==="events") loadEvents();
 
+  localStorage.setItem("lastRoute", route);
+}
+qsa("[data-route]").forEach(n=>{
+  n.onclick = ()=> go(n.dataset.route);
+});
 async function hydrateAfterLogin(){ loadMe(); loadOrganizations(); loadEvents(); }
 async function loadMe(){ try{ me = await apiFetch("/api/users/me/"); qs("#pfName").value = me.profile?.full_name || ""; qs("#pfTitle").value = me.profile?.job_title || ""; qs("#pfCompany").value = me.profile?.company || ""; }catch(_){} }
 async function loadOrganizations(){
@@ -400,36 +411,216 @@ async function loadOrganizations(){
   }catch(err){ setHTML(wrap, `<div class="error">Failed to load orgs: ${err.message}</div>`); }
 }
 async function loadEvents(){
-  const wrap = qs("#evtWrap"); setHTML(wrap, "<div class='muted'>Loading…</div>");
-  try{
-    const events = await getListWithFallback(["/api/events/?page_size=100","/api/events/?mine=1","/api/events/"]);
-    qs("#evtCount").textContent = Array.isArray(events)?events.length:0;
+  const wrap = qs("#evtWrap");
+  setHTML(wrap, "<div class='muted'>Loading…</div>");
 
-    /* NEW: decide if the logged-in user has created any event */
+  try{
+    const events = await getListWithFallback([
+      "/api/events/?page_size=100",
+      "/api/events/?mine=1",
+      "/api/events/"
+    ]);
+    eventCache = Array.isArray(events) ? events : [];
+
+    // Hide ended events
+    const activeEvents = eventCache.filter(ev =>
+      String(ev.status || "").toLowerCase() !== "ended"
+    );
+
+    qs("#evtCount").textContent = activeEvents.length;
+
+    // Populate the select (active only)
+    const sel = qs("#liveEventSelect");
+    if (sel) {
+      sel.innerHTML = '<option value="">Select event…</option>';
+      if (!activeEvents.length) {
+        const opt = document.createElement("option");
+        opt.value = ""; opt.disabled = true; opt.textContent = "No active events";
+        sel.appendChild(opt);
+        qs("#liveEventId").value = "";
+      } else {
+        activeEvents.forEach(ev=>{
+          const id = ev.id ?? ev.pk ?? ev.event_id ?? "";
+          const title = ev.title || ev.name || `Event #${id}`;
+          const opt = document.createElement("option");
+          opt.value = id;
+          opt.textContent = title;
+          sel.appendChild(opt);
+        });
+        sel.value = sel.value || (activeEvents[0]?.id ?? "");
+        qs("#liveEventId").value = sel.value;
+        refreshRoleLockFromSelect();
+      }
+    }
+
+    // Sidebar live item visibility (only show if user has any of their own events)
     const myId = String(me?.id ?? "");
-    const hasMine = Array.isArray(events) && events.some(ev =>
+    const hasMine = activeEvents.some(ev =>
       String(ev.created_by_id ?? ev.owner_id ?? ev.user_id ?? "") === myId
     );
-    updateLiveMenuVisibility(!!hasMine);
+    updateLiveMenuVisibility(hasMine);
 
-    if(!events.length) return setHTML(wrap, "<div class='muted'>No events yet.</div>");
-    wrap.innerHTML="";
-    events.forEach(ev=>{
-      const id=ev.id ?? ev.pk ?? ev.event_id ?? null;
-      const title=ev.title || ev.name || `Event #${id ?? "?"}`;
+    // Render cards
+    if (!activeEvents.length){
+      setHTML(wrap, "<div class='muted'>No active events.</div>");
+      return;
+    }
+
+    wrap.innerHTML = "";
+    activeEvents.forEach(ev => {
+      const id = ev.id ?? ev.pk ?? ev.event_id ?? null;
+      const title = ev.title || ev.name || `Event #${id ?? "?"}`;
       const when = ev.start_time ? new Date(ev.start_time).toLocaleString() : "-";
+      const orgId = ev.organization_id ?? ev.organization ?? null;
+let orgName = "-";
+
+// try to resolve from embedded object
+if (ev.organization && typeof ev.organization === "object" && ev.organization.name) {
+  orgName = ev.organization.name;
+}
+// fallback to separate fields
+else if (ev.organization_name) {
+  orgName = ev.organization_name;
+}
+// lookup in orgCache
+else if (orgId) {
+  const orgObj = orgCache.find(o =>
+    String(o.id ?? o.pk ?? o.organization_id) === String(orgId)
+  );
+  if (orgObj) orgName = orgObj.name || orgObj.title || `Org #${orgId}`;
+}
+
+      // Is this event created by me?
       const mine = (me && (String(ev.created_by_id ?? ev.owner_id ?? ev.user_id ?? "") === String(me.id)));
-      const mineBadge = mine ? '<span class="badge" style="margin-left:6px;background:#12351f;border-color:#215d3a">Created by you</span>' : '';
-      const liveBadge = ev.is_live ? '<span class="badge" style="margin-left:6px;background:#12351f;border-color:#215d3a">LIVE</span>' : '';
-      const orgName = ev.organization_name || ev.organization_title || ev.organization || "-";
-      const card=document.createElement("div"); card.className="card"; card.style.minWidth="260px";
-      card.innerHTML = `<h4>${title}${mineBadge}</h4><div class="muted">Org: ${orgName}</div><div class="muted">${when} ${liveBadge}</div><div class="muted">${ev.description ? ev.description : ""}</div><div class="row" style="margin-top:8px"><button class="btn small" data-live="${id}">Go Live</button><button class="btn small" data-join="${id}">Join</button></div>`;
+      const mineBadge = mine
+        ? '<span class="badge" style="margin-left:6px;background:#12351f;border-color:#215d3a">Created by you</span>'
+        : "";
+
+      // Buttons: mine => Go Live + Join, others => Join only
+      const ph  = phaseOf(ev);          // 'before' | 'window' | 'after'
+const tip = phaseTooltip(ev);
+
+let buttons = "";
+if (mine) {
+  // Host can go live any time before end; block after end.
+  buttons = `
+    <button class="btn small"
+            data-live="${id}"
+            ${ph === "after" ? "disabled" : ""}
+            title="${tip}">
+      Go Live
+    </button>`;
+} else {
+  // Audience: keep button clickable when early so the handler can show the message.
+  if (ph === "after") {
+    buttons = `
+      <button class="btn small"
+              disabled
+              title="This meeting has already ended.">
+        Join
+      </button>`;
+  } else {
+    // 'before' or 'window' -> clickable; handler will show "early" msg if needed
+    const msgTip = ph === "before" ? "You are early! This event hasn’t started yet." : tip;
+    buttons = `
+      <button class="btn small"
+              data-join="${id}"
+              title="${msgTip}">
+        Join
+      </button>`;
+  }
+}
+
+      const card = document.createElement("div");
+      card.className = "card";
+      card.style.minWidth = "260px";
+      card.innerHTML = `
+        <h4>${title} ${mineBadge}</h4>
+        <div class="muted">Organization: ${orgName}</div>
+        <div class="muted">${when}</div>
+        <div class="muted">${ev.description ? ev.description : ""}</div>
+        <div class="muted">Status: ${ev.status}</div>
+        <div class="row" style="margin-top:8px">
+          ${buttons}
+        </div>`;
       wrap.appendChild(card);
     });
-    qsa("[data-live]").forEach(b=>b.onclick=()=>{ qs("#liveEventId").value=b.dataset.live; qsa("[data-route='live']")[0].click(); });
-    qsa("[data-join]").forEach(b=>b.onclick=()=>{ qs("#liveEventId").value=b.dataset.join; qsa("[data-route='live']")[0].click(); });
-  }catch(err){ setHTML(wrap, `<div class="error">Failed to load events: ${err.message}</div>`); }
+
+    // Handlers
+    qsa("[data-live]").forEach(b=>b.onclick=async ()=>{
+  const id = b.dataset.live;
+  const ev = getEventById(id);
+  if (!ev) return msg(qs("#tokenMsg"), "Event not found");
+
+  const now = new Date();
+  const start = ev.start_time ? new Date(ev.start_time) : null;
+  const end   = ev.end_time ? new Date(ev.end_time) : null;
+
+  if (end && now > end) {
+    return msg(qs("#tokenMsg"), "This meeting has already ended.");
+  }
+
+  // Host can go live any time before end time, but not after
+  go('live');
+  applyLiveSelection(id, true); // lock as publisher
+
+  try {
+    const { token } = await fetchEventToken(id, "publisher");
+    qs("#liveToken").value = token || "";
+    msg(qs("#tokenMsg"), "Token issued for publisher. Click Join to start.", true);
+  } catch (err) {
+    msg(qs("#tokenMsg"), "Failed to get token: " + err.message);
+  }
+});
+
+qsa("[data-join]").forEach(b => b.onclick = async () => {
+  const id = b.dataset.join;
+  const ev = getEventById(id);
+  if (!ev) return msg(qs("#tokenMsg"), "Event not found");
+
+  // Go to the Live view first so messages are visible
+  go('live');
+  applyLiveSelection(id, false);   // lock as audience
+  setHTML(qs("#tokenMsg"), "");    // clear previous message
+
+  const now   = new Date();
+  const start = ev.start_time ? new Date(ev.start_time) : null;
+  const end   = ev.end_time ? new Date(ev.end_time) : null;
+
+  // Show messages on the visible Live view
+  if (start && now < start) {
+    return msg(qs("#tokenMsg"), "You’re early! This event hasn’t started yet.");
+  }
+  if (end && now > end) {
+    return msg(qs("#tokenMsg"), "This meeting has already ended.");
+  }
+
+  // Inside window → fetch token (do NOT auto-join)
+  try {
+    const { token } = await fetchEventToken(id, "audience");
+    qs("#liveToken").value = token || "";
+    msg(qs("#tokenMsg"), "Token issued for audience. Click Join to enter.", true);
+  } catch (err) {
+    msg(qs("#tokenMsg"), "Failed to get token: " + err.message);
+  }
+});
+
+  }catch(err){
+    setHTML(wrap, `<div class="error">Failed to load events: ${err.message}</div>`);
+  }
 }
+
+/* NEW: keep hidden input synced with the new select */
+const liveEventSelect = document.getElementById("liveEventSelect");
+if (liveEventSelect) {
+  liveEventSelect.addEventListener("change", ()=>{
+    const id = liveEventSelect.value || "";
+    const input = qs("#liveEventId");
+    if (input) input.value = id;
+    refreshRoleLockFromSelect(); // 🔒 auto-set + lock role based on creator
+  });
+}
+
 qs("#btnProfileSave").onclick = async ()=>{
   setHTML(qs("#profileMsg"),"");
   const full_name=qs("#pfName").value.trim(), job_title=qs("#pfTitle").value.trim(), company=qs("#pfCompany").value.trim();
@@ -455,8 +646,16 @@ const remoteUsers = new Map(); // uid -> { container, videoDiv, audioTrack }
 function ensurePlayer(elId){ const el = qs("#"+elId); el.style.width="100%"; el.style.height="100%"; return el; }
 function updateRemoteCount(){
   const n = remoteUsers.size;
-  if (n === 0) { remoteState.textContent = "waiting"; qs("#remoteRoleLabel").textContent = ""; }
-  else { remoteState.textContent = `${n} playing`; qs("#remoteRoleLabel").textContent = (joinedInfo.role==="publisher"?"Joiner(s)":"Publisher + others"); }
+  if (n === 0) {
+    // show a clearer label for viewers
+    const label = (joinedInfo.role === "audience") ? "waiting for host" : "waiting";
+    remoteState.textContent = label;
+    qs("#remoteRoleLabel").textContent = "";
+  } else {
+    remoteState.textContent = `${n} playing`;
+    qs("#remoteRoleLabel").textContent =
+      (joinedInfo.role === "publisher" ? "Joiner(s)" : "Publisher + others");
+  }
 }
 
 async function joinAgora(role, eventId){
@@ -544,58 +743,111 @@ async function joinAgora(role, eventId){
 
   // ---- Post-join nudge: satisfy autoplay by replaying remote audio after user click ----
   const unlock = () => {
-  try { AgoraRTC.resumeAudioContext && AgoraRTC.resumeAudioContext(); } catch(_) {}
-  remoteUsers.forEach(({ audioTrack }) => {
-    try { audioTrack && audioTrack.play(); } catch (_) {}
-  });
-  document.removeEventListener('click', unlock);
-};
-// try immediately (works if not blocked) AND ensure it runs on first user click
-setTimeout(unlock, 0);
-document.addEventListener('click', unlock, { once: true });
+    try { AgoraRTC.resumeAudioContext && AgoraRTC.resumeAudioContext(); } catch(_) {}
+    remoteUsers.forEach(({ audioTrack }) => {
+      try { audioTrack && audioTrack.play(); } catch (_) {}
+    });
+    document.removeEventListener('click', unlock);
+  };
+  // try immediately (works if not blocked) AND ensure it runs on first user click
+  setTimeout(unlock, 0);
+  document.addEventListener('click', unlock, { once: true });
 }
 
 async function leaveAgora(eventId){
-  try{
-    if(localAudioTrack){ localAudioTrack.stop(); localAudioTrack.close(); localAudioTrack=null; }
-    if(localVideoTrack){ localVideoTrack.stop(); localVideoTrack.close(); localVideoTrack=null; }
-    if(rtcClient){ await rtcClient.leave(); rtcClient=null; }
-    joined=false; localState.textContent="idle";
-    remoteUsers.forEach(({container})=>{ try{ container.remove(); }catch(_){ } });
-    remoteUsers.clear(); updateRemoteCount();
-    qs("#local-player").innerHTML="";
-    if(joinedInfo.role==="publisher" && eventId){
-      try{ await apiFetch(`/api/events/${eventId}/`, { method:"PATCH", body: JSON.stringify({ is_live:false }) }); }catch(_){}
-    }
+  let wasPublisher = (joinedInfo.role === "publisher");
+  try {
+    // try to stop/leave, but don't let errors block cleanup
+    if (localAudioTrack){ try{ localAudioTrack.stop(); localAudioTrack.close(); }catch(_){} }
+    if (localVideoTrack){ try{ localVideoTrack.stop(); localVideoTrack.close(); }catch(_){} }
+    if (rtcClient){ try{ await rtcClient.leave(); }catch(_){ } }
+  } catch (e) {
+    console.warn("Leave error (ignored for cleanup)", e);
+  } finally {
+    // ALWAYS reset UI/state
+    localAudioTrack = null;
+    localVideoTrack = null;
+    rtcClient = null;
+    joined = false;
+
+    localState.textContent = "idle";
     qs("#localRoleLabel").textContent = "";
-  }catch(e){ console.warn("Leave error", e); }
+    qs("#local-player").innerHTML = "";
+
+    // remove all remote tiles
+    // remove all remote tiles
+  remoteUsers.forEach(({container}) => { try { container.remove(); } catch(_){} });
+  remoteUsers.clear();
+
+  // explicitly reset remote label
+  if (remoteState) {
+    remoteState.textContent = (joinedInfo.role === "audience") ? "waiting for host" : "waiting";
+  }
+  qs("#remoteRoleLabel").textContent = "";
+
+  updateRemoteCount();
+
+    // mark event not live if you were the publisher
+    if (wasPublisher && eventId) {
+      try { await apiFetch(`/api/events/${eventId}/`, { method: "PATCH", body: JSON.stringify({ is_live:false }) }); } catch(_){}
+    }
+  }
 }
 
 /* Buttons */
-qs("#btnGetToken").onclick = async (e)=>{
-  e.preventDefault(); setHTML(tokenMsg,"");
-  const id = qs("#liveEventId").value.trim(); const role = qs("#liveRole").value;
-  if(!id) return msg(tokenMsg,"Event ID required.");
-  try{ const { token } = await fetchEventToken(id, role); qs("#liveToken").value = token || ""; msg(tokenMsg, `Token issued for ${role}.`, true); }
-  catch(err){ msg(tokenMsg, "Failed to get token: "+err.message); }
-};
-qs("#btnJoin").onclick = async ()=>{
-  setHTML(tokenMsg,"");
-  const id = qs("#liveEventId").value.trim(); const role = qs("#liveRole").value;
-  if(!id) return msg(tokenMsg,"Event ID required.");
-  try{
-    await joinAgora(role, id);
-    msg(tokenMsg, `Joined as ${role}.`, true);
-  }catch(err){
-    const hint = (String(err?.message||"").includes("appId") || String(err?.message||"").includes("channel"))
-      ? " (Tip: ensure your token API returns app_id & channel, or set AGORA_FALLBACK_APP_ID)"
-      : "";
-    msg(tokenMsg, "Join failed: " + err.message + hint);
-    console.error("[JOIN ERROR]", err);
-  }
-};
-qs("#btnLeave").onclick = async ()=>{ const id = qs("#liveEventId").value.trim(); await leaveAgora(id); msg(tokenMsg, "Left channel.", true); };
+const btnGetToken = qs("#btnGetToken");
+if (btnGetToken) {
+  btnGetToken.onclick = async (e) => {
+    e.preventDefault(); setHTML(tokenMsg,"");
+    const id = qs("#liveEventId").value.trim(); const role = qs("#liveRole").value;
+    if(!id) return msg(tokenMsg,"Event is required.");
+    try {
+      const { token } = await fetchEventToken(id, role);
+      qs("#liveToken").value = token || "";
+      msg(tokenMsg, `Token issued for ${role}.`, true);
+    } catch(err){ msg(tokenMsg, "Failed to get token: "+err.message); }
+  };
+}
 
+const btnJoin = qs("#btnJoin");
+if (btnJoin) {
+  btnJoin.onclick = async () => {
+    setHTML(tokenMsg,"");
+    const id = qs("#liveEventId").value.trim();
+    const role = qs("#liveRole").value;
+
+    // prevent join outside window if user landed directly on Live
+    const ev = getEventById(id);
+    const ph = phaseOf(ev);
+    if (ph === "before") return msg(tokenMsg, "You’re early. Please come back at the scheduled time.");
+    if (ph === "after")  return msg(tokenMsg, "Meeting has ended.");
+
+    if(!id) return msg(tokenMsg,"Event is required.");
+    try {
+      await joinAgora(role, id);
+      msg(tokenMsg, `Joined as ${role}.`, true);
+    } catch(err){
+      const hint = (String(err?.message||"").includes("appId") || String(err?.message||"").includes("channel"))
+        ? " (Tip: ensure your token API returns app_id & channel, or set AGORA_FALLBACK_APP_ID)"
+        : "";
+      msg(tokenMsg, "Join failed: " + err.message + hint);
+      console.error("[JOIN ERROR]", err);
+    }
+  };
+}
+
+const btnLeave = qs("#btnLeave");
+if (btnLeave) {
+  btnLeave.onclick = async () => {
+    const id = qs("#liveEventId").value.trim();
+    try {
+      await leaveAgora(id);
+      msg(tokenMsg, "Left channel.", true);
+    } catch (err) {
+      msg(tokenMsg, "Leave failed: " + err.message);
+    }
+  };
+}
 /* Toggles */
 qs("#btnToggleCam").onclick = async ()=>{
   if(!localVideoTrack) return alert("Join first.");
@@ -632,6 +884,100 @@ AgoraRTC.onAutoplayFailed = () => {
     btn.remove();
   };
 };
+
+function getEventById(id){
+  return eventCache.find(e => String(e.id ?? e.pk ?? e.event_id ?? "") === String(id));
+}
+function isMineEvent(ev){
+  if (!ev || !me) return false;
+  const creator = ev.created_by_id ?? ev.owner_id ?? ev.user_id ?? ev.creator ?? ev.creator_id ?? null;
+  return String(creator ?? "") === String(me.id ?? "");
+}
+
+/** Set role value and lock the opposite option */
+function lockRoleFor(isMine){
+  const roleSel = qs("#liveRole");
+  if (!roleSel) return;
+  const pubOpt = [...roleSel.options].find(o => o.value === "publisher");
+  const audOpt = [...roleSel.options].find(o => o.value === "audience");
+
+  if (isMine){
+    roleSel.value = "publisher";
+    if (pubOpt) pubOpt.disabled = false;
+    if (audOpt) audOpt.disabled = true;
+  } else {
+    roleSel.value = "audience";
+    if (pubOpt) pubOpt.disabled = true;
+    if (audOpt) audOpt.disabled = false;
+  }
+}
+
+/** Recompute lock for whatever is currently selected in the event dropdown */
+function refreshRoleLockFromSelect(){
+  const sel = qs("#liveEventSelect");
+  if (!sel) return;
+  const ev = getEventById(sel.value);
+  lockRoleFor(isMineEvent(ev));
+}
+function applyLiveSelection(eventId, isMine){
+  const sel = qs("#liveEventSelect");
+  const roleSel = qs("#liveRole");
+  const idStr = String(eventId ?? "");
+
+  if (sel){ sel.value = idStr; sel.disabled = true; }
+  if (roleSel){ roleSel.value = isMine ? "publisher" : "audience"; roleSel.disabled = true; }
+  const idInput = qs("#liveEventId");
+  if (idInput) idInput.value = idStr;
+
+  const ev = eventCache.find(e => String(e.id ?? e.pk ?? e.event_id ?? "") === idStr);
+  qs("#summaryEventTitle").textContent = ev?.title || ev?.name || `Event #${idStr}`;
+  qs("#summaryRole").textContent = isMine ? "publisher (host)" : "audience (viewer)";
+}
+// --- Time helpers ---
+function getStartTime(ev){ return ev?.start_time ? new Date(ev.start_time) : null; }
+function getEndTime(ev){ return ev?.end_time ? new Date(ev.end_time) : null; }
+
+/** returns 'before' | 'window' | 'after' based on now vs start/end */
+function phaseOf(ev){
+  const now = Date.now();
+  const s = getStartTime(ev)?.getTime() ?? null;
+  const e = getEndTime(ev)?.getTime() ?? null;
+
+  if (e && now >= e) return "after";
+  if (s && now < s) return "before";
+  // if no times provided, treat as allowed
+  return "window";
+}
+
+function phaseTooltip(ev){
+  const s = getStartTime(ev), e = getEndTime(ev);
+  if (!s && !e) return "";
+  const sTxt = s ? s.toLocaleString() : "unscheduled";
+  const eTxt = e ? e.toLocaleString() : "—";
+  return `Scheduled ${sTxt}${e ? " → "+eTxt : ""}`;
+}
+
+async function autoEndOverdueEvents(){
+  const now = Date.now();
+  for (const ev of eventCache){
+    const e = getEndTime(ev)?.getTime();
+    if (e && now >= e && String(ev.status||"").toLowerCase()!=="ended"){
+      try{
+        await apiFetch(`/api/events/${ev.id}/`, {
+          method:"PATCH",
+          body: JSON.stringify({ status:"ended", is_live:false })
+        });
+        ev.status = "ended";
+      }catch(_){ /* ignore backend refusal */ }
+    }
+  }
+  // If you are looking at the list, refresh statuses shown
+  const currentRoute = localStorage.getItem("lastRoute");
+  if (currentRoute === "events") { try { loadEvents(); } catch(_){} }
+}
+
+// run every 60s
+setInterval(autoEndOverdueEvents, 60000);
 
 /* ===================== START ===================== */
 renderAuthState();
