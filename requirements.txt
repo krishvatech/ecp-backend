@@ -32,3 +32,6 @@ pytz
 email_validator
 drf_spectacular
 drf_spectacular_sidecar
+
+#agora token
+agora-token-builder
