@@ -283,7 +283,7 @@
 /* ===================== CONFIG ===================== */
 const apiBase = "https://6cc0f266086b.ngrok-free.app";
 const tokenKey = "demo_access_token";
-const AGORA_FALLBACK_APP_ID = "YOUR_REAL_AGORA_APP_ID";
+const AGORA_FALLBACK_APP_ID = "7ca059944f01496681677b21c2169cf8";
 
 /* ===================== UTIL ===================== */
 const qs=(s,el=document)=>el.querySelector(s);
@@ -331,7 +331,7 @@ async function getListWithFallback(paths){
   try{ const data = await apiFetch(paths[0]); return normalizeListPayload(data); }catch(_){ return []; }
 }
 
-/* ===================== AUTH / ROUTING (unchanged UI binding) ===================== */
+/* ===================== AUTH / ROUTING ===================== */
 const headerStatus = qs("#headerStatus");
 const btnSignOut = qs("#btnSignOut");
 const authScreen = qs("#authScreen");
@@ -398,7 +398,7 @@ qs("#btnProfileSave").onclick = async ()=>{
   try{ await apiFetch("/api/users/me/", { method:"PUT", body: JSON.stringify({ profile:{ full_name, job_title, company } }) }); msg(qs("#profileMsg"), "Profile updated.", true); }catch(err){ msg(qs("#profileMsg"), "Update failed: "+err.message); }
 };
 
-/* Create Org / Event (unchanged) */
+/* Create Org / Event */
 const formCreateOrg=document.getElementById("formCreateOrg");
 if(formCreateOrg){ formCreateOrg.onsubmit=async(e)=>{ e.preventDefault(); setHTML(qs("#orgCreateMsg"), ""); const name=qs("#orgName").value.trim(); const description=qs("#orgDesc").value.trim(); if(!name||!description) return msg(qs("#orgCreateMsg"), "Name and description are required."); try{ await apiFetch("/api/organizations/", { method:"POST", body: JSON.stringify({ name, description }) }); msg(qs("#orgCreateMsg"), "Organization created.", true); qs("#orgName").value=""; qs("#orgDesc").value=""; await loadOrganizations(); }catch(err){ msg(qs("#orgCreateMsg"), "Create failed: "+err.message); } }; }
 const formCreateEvent=document.getElementById("formCreateEvent");
@@ -412,7 +412,7 @@ async function fetchEventToken(eventId, role){
 }
 
 let rtcClient=null, localAudioTrack=null, localVideoTrack=null, joined=false, joinedInfo={ appId:"", channel:"", role:"", uid:null };
-const remoteUsers = new Map(); // uid -> { container, videoDiv }
+const remoteUsers = new Map(); // uid -> { container, videoDiv, audioTrack }
 
 function ensurePlayer(elId){ const el = qs("#"+elId); el.style.width="100%"; el.style.height="100%"; return el; }
 function updateRemoteCount(){
@@ -429,38 +429,57 @@ async function joinAgora(role, eventId){
 
   rtcClient = AgoraRTC.createClient({ mode:"rtc", codec:"vp8" });
 
-  rtcClient.on("user-published", async (user, mediaType)=>{
+  // volume indicator bound to the active client
+  rtcClient.enableAudioVolumeIndicator();
+  rtcClient.on("volume-indicator", (vols) => {
+    vols.forEach(({uid, level}) => {
+      const el = document.querySelector(`#remote-tile-${uid} .remote-footer`);
+      if (el) {
+        const badge = el.querySelector(".badge");
+        if (badge) badge.textContent = `${Math.min(100, level)}%`;
+      }
+    });
+  });
+
+  rtcClient.on("user-published", async (user, mediaType) => {
     await rtcClient.subscribe(user, mediaType);
 
     // Create a tile for this uid if missing
     let tile = remoteUsers.get(user.uid);
-    if(!tile){
+    if (!tile) {
       const wrap = ensurePlayer("remote-wrap");
       const container = document.createElement("div");
       container.className = "remote-tile";
       container.id = `remote-tile-${user.uid}`;
+
       const videoDiv = document.createElement("div");
       videoDiv.className = "remote-video";
       videoDiv.id = `remote-video-${user.uid}`;
+
       const footer = document.createElement("div");
       footer.className = "remote-footer";
       footer.innerHTML = `<span>UID ${user.uid}</span><span class="badge">remote</span>`;
+
       container.appendChild(videoDiv);
       container.appendChild(footer);
       wrap.appendChild(container);
-      tile = { container, videoDiv };
+
+      tile = { container, videoDiv, audioTrack: null };
       remoteUsers.set(user.uid, tile);
       updateRemoteCount();
     }
 
-    if(mediaType==="video"){ user.videoTrack.play(tile.videoDiv); }
-    if(mediaType==="audio"){ user.audioTrack.play(); }
+    if (mediaType === "video") {
+      user.videoTrack.play(tile.videoDiv);
+    }
+    if (mediaType === "audio") {
+      user.audioTrack.play();
+    }
   });
 
   rtcClient.on("user-unpublished", (user, type)=>{
     const tile = remoteUsers.get(user.uid);
     if (tile) {
-      // Clean DOM
       try { tile.container.remove(); } catch(_){}
       remoteUsers.delete(user.uid);
       updateRemoteCount();
@@ -478,33 +497,34 @@ async function joinAgora(role, eventId){
   localEl.appendChild(localDiv);
   localVideoTrack.play(localDiv);
 
-  if (role === "publisher") {
-    await rtcClient.publish([localAudioTrack, localVideoTrack]);
-    localState.textContent = "publishing";
-    try { await apiFetch(`/api/events/${eventId}/`, { method: "PATCH", body: JSON.stringify({ is_live: true }) }); } catch (_){}
-    qs("#localRoleLabel").textContent = "Publisher";
-    updateRemoteCount();
-  } else {
-    // Meeting style: audience also publishes
-    await rtcClient.publish([localAudioTrack, localVideoTrack]);
-    localState.textContent = "publishing";
-    qs("#localRoleLabel").textContent = "Joiner";
-    updateRemoteCount();
-  }
+  // Meeting-style: both roles publish so both sides can hear each other
+  await rtcClient.publish([localAudioTrack, localVideoTrack]);
+  localState.textContent = "publishing";
+  qs("#localRoleLabel").textContent = role === "publisher" ? "Publisher" : "Joiner";
+  if (role === "publisher") { try { await apiFetch(`/api/events/${eventId}/`, { method: "PATCH", body: JSON.stringify({ is_live: true }) }); } catch (_){ } }
+  updateRemoteCount();
+
+  // ---- Post-join nudge: satisfy autoplay by replaying remote audio after user click ----
+  const unlock = () => {
+  try { AgoraRTC.resumeAudioContext && AgoraRTC.resumeAudioContext(); } catch(_) {}
+  remoteUsers.forEach(({ audioTrack }) => {
+    try { audioTrack && audioTrack.play(); } catch (_) {}
+  });
+  document.removeEventListener('click', unlock);
+};
+// try immediately (works if not blocked) AND ensure it runs on first user click
+setTimeout(unlock, 0);
+document.addEventListener('click', unlock, { once: true });
 }
 
 async function leaveAgora(eventId){
   try{
-    // stop local
     if(localAudioTrack){ localAudioTrack.stop(); localAudioTrack.close(); localAudioTrack=null; }
     if(localVideoTrack){ localVideoTrack.stop(); localVideoTrack.close(); localVideoTrack=null; }
-    // leave
     if(rtcClient){ await rtcClient.leave(); rtcClient=null; }
     joined=false; localState.textContent="idle";
-    // clear remote grid
     remoteUsers.forEach(({container})=>{ try{ container.remove(); }catch(_){ } });
     remoteUsers.clear(); updateRemoteCount();
-    // clear local DOM
     qs("#local-player").innerHTML="";
     if(joinedInfo.role==="publisher" && eventId){
       try{ await apiFetch(`/api/events/${eventId}/`, { method:"PATCH", body: JSON.stringify({ is_live:false }) }); }catch(_){}
@@ -525,8 +545,16 @@ qs("#btnJoin").onclick = async ()=>{
   setHTML(tokenMsg,"");
   const id = qs("#liveEventId").value.trim(); const role = qs("#liveRole").value;
   if(!id) return msg(tokenMsg,"Event ID required.");
-  try{ await joinAgora(role, id); msg(tokenMsg, `Joined as ${role}.`, true); }
-  catch(err){ msg(tokenMsg, "Join failed: "+err.message); }
+  try{
+    await joinAgora(role, id);
+    msg(tokenMsg, `Joined as ${role}.`, true);
+  }catch(err){
+    const hint = (String(err?.message||"").includes("appId") || String(err?.message||"").includes("channel"))
+      ? " (Tip: ensure your token API returns app_id & channel, or set AGORA_FALLBACK_APP_ID)"
+      : "";
+    msg(tokenMsg, "Join failed: " + err.message + hint);
+    console.error("[JOIN ERROR]", err);
+  }
 };
 qs("#btnLeave").onclick = async ()=>{ const id = qs("#liveEventId").value.trim(); await leaveAgora(id); msg(tokenMsg, "Left channel.", true); };
 
@@ -541,6 +569,30 @@ qs("#btnToggleMic").onclick = async ()=>{
   if(!localAudioTrack) return alert("Join first.");
   const enabled = localAudioTrack._enabled !== false;
   await localAudioTrack.setEnabled(!enabled);
+};
+
+// If the browser blocks autoplay, show a one-tap button to enable sound
+AgoraRTC.onAutoplayFailed = () => {
+  if (document.getElementById("unlock-audio")) return;
+
+  const btn = document.createElement("button");
+  btn.id = "unlock-audio";
+  btn.textContent = "Enable audio";
+  Object.assign(btn.style, {
+    position: "fixed", right: "16px", bottom: "16px", zIndex: 9999,
+    padding: "10px 14px", borderRadius: "10px",
+    border: "1px solid #232745", background: "#6C63FF", color: "#fff",
+    cursor: "pointer"
+  });
+  document.body.appendChild(btn);
+
+  btn.onclick = () => {
+    try { AgoraRTC.resumeAudioContext && AgoraRTC.resumeAudioContext(); } catch(_) {}
+    remoteUsers.forEach((tile) => {
+      try { tile.audioTrack && tile.audioTrack.play(); } catch (_) {}
+    });
+    btn.remove();
+  };
 };
 
 /* ===================== START ===================== */
