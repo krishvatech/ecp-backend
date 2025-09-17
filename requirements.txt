@@ -35,3 +35,5 @@ drf_spectacular_sidecar
 
 #agora token
 agora-token-builder
+
+django-filter==25.1

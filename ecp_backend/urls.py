@@ -35,6 +35,8 @@ urlpatterns = [
     # recording webhook endpoint
     path("api/events/recording-webhook/", RecordingWebhookView.as_view(), name="recording_webhook"),
     path("api/", include(router.urls)),
+    path("api/content/", include("content.urls")),
+    path("api/activity/", include("activity_feed.urls")),
 
     # Auth endpoints (JWT and register)
     path("api/auth/", include("users.urls")),
