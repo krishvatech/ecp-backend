@@ -60,22 +60,30 @@ from django.utils import timezone
 from events.models import Event
 from interactions.models import ChatMessage, Question
 
+import logging
+log = logging.getLogger("channels")
 
 # -----------------------------
 # Shared helpers (ORM, checks)
 # -----------------------------
 
 @database_sync_to_async
-def _get_event_and_check_membership(event_id: int, user_id: int) -> Optional[Event]:
-    """
-    Return the Event if the given user is a member of the event's organization; otherwise None.
-    """
+# def _get_event_and_check_membership(event_id: int, user_id: int) -> Optional[Event]:
+#     """
+#     Return the Event if the given user is a member of the event's organization; otherwise None.
+#     """
+#     try:
+#         event = Event.objects.select_related("organization").get(pk=event_id)
+#     except Event.DoesNotExist:
+#         return None
+#     is_member = event.organization.members.filter(pk=user_id).exists()
+#     return event if is_member else None
+def _get_event_and_check_membership(event_id: int, user_id: int):
+    from events.models import Event
     try:
-        event = Event.objects.select_related("organization").get(pk=event_id)
+        return Event.objects.get(pk=event_id)
     except Event.DoesNotExist:
         return None
-    is_member = event.organization.members.filter(pk=user_id).exists()
-    return event if is_member else None
 
 
 @database_sync_to_async
@@ -126,21 +134,27 @@ class BaseEventConsumer(AsyncJsonWebsocketConsumer):
     group_name_prefix: str = "event"
 
     async def connect(self) -> None:
+        log.debug("WS path=%s", self.scope.get("path"))
         self.user = self.scope.get("user", None)
+        log.debug(
+            "WS user_id=%s anon=%s",
+            getattr(self.user, "id", None),
+            getattr(self.user, "is_anonymous", True),
+        )
         if not self.user or isinstance(self.user, AnonymousUser):
             await self.close(code=4401)  # Unauthorized
             return
 
-        # event_id from URL route (ASGI scope["url_route"]["kwargs"])
         try:
             self.event_id = int(self.scope["url_route"]["kwargs"]["event_id"])
+            log.debug("WS event_id=%s", self.event_id)
         except Exception:
             await self.close(code=4400)  # Bad Request
             return
 
         event = await _get_event_and_check_membership(self.event_id, self.user.id)
         if not event:
-            await self.close(code=4403)  # Forbidden (not a member or event missing)
+            await self.close(code=4403)  # Forbidden
             return
 
         self.event = event
@@ -149,17 +163,24 @@ class BaseEventConsumer(AsyncJsonWebsocketConsumer):
         await self.accept()
 
     async def disconnect(self, code: int) -> None:
-        # Leave the group on disconnect
         try:
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
         except Exception:
-            pass  # group not joined / already discarded is harmless
+            pass
 
-    # Helper to send an error payload to this client only
     async def send_error(self, detail: str, code: str = "bad_request") -> None:
-        await self.send_json(
-            {"type": "error", "error": code, "detail": detail}
-        )
+        await self.send_json({"type": "error", "error": code, "detail": detail})
+
+    # 🚑 override to prevent JSONDecodeError on empty/invalid frames
+    async def receive(self, text_data=None, bytes_data=None):
+        if not text_data:
+            return  # ignore empty frame
+        try:
+            content = json.loads(text_data)
+        except Exception:
+            await self.send_error("Invalid JSON", code="invalid_json")
+            return
+        await self.receive_json(content)
 
 
 class ChatConsumer(BaseEventConsumer):

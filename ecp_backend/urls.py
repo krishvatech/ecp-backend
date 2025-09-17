@@ -30,7 +30,10 @@ router.register(r"organizations", OrganizationViewSet, basename="organization")
 router.register(r"events", EventViewSet, basename="event")
 
 urlpatterns = [
+    
     path("admin/", admin.site.urls),
+    # recording webhook endpoint
+    path("api/events/recording-webhook/", RecordingWebhookView.as_view(), name="recording_webhook"),
     path("api/", include(router.urls)),
 
     # Auth endpoints (JWT and register)
@@ -54,6 +57,5 @@ urlpatterns = [
     path("api/", include((realtime_urls, "realtime"), namespace="realtime")),
     path("", TemplateView.as_view(template_name="index.html")),
 
-    # recording webhook endpoint
-    path("api/events/recording-webhook/", RecordingWebhookView.as_view(), name="recording_webhook"),
+
 ]
