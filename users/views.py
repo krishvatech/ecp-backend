@@ -28,6 +28,9 @@ from django.utils.crypto import get_random_string
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import LinkedInAccount
 
+from django_filters.rest_framework import DjangoFilterBackend
+from django.db.models import Q
+from .filters import UserFilter
 
 from .serializers import (
     UserSerializer,
@@ -51,10 +54,10 @@ class UserViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet
-):
+    ):
     """
     ViewSet for listing and retrieving users. Anonymous users must
-    authenticate via JWT to access these endpoints. A custom `me`
+    authenticate via JWT to access these endpoints.  A custom `me`
     action allows the current authenticated user to view or update
     their own profile.
     """
@@ -62,6 +65,37 @@ class UserViewSet(
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    # enable advanced search via django-filter
+    filter_backends = [DjangoFilterBackend]
+    filterset_class = UserFilter
+
+    def get_queryset(self):
+        """
+        Determine the base queryset for the user directory.
+
+        Staff and superusers can view all users.  Non‑staff users may only
+        see themselves and other users who share an organization with
+        them (either as members or as owners).  This method returns a
+        queryset filtered accordingly.
+        """
+        qs = super().get_queryset().select_related("profile").prefetch_related(
+            "organizations", "owned_organizations"
+        )
+        user = self.request.user
+        if not user.is_authenticated:
+            return qs.none()
+        if user.is_staff or user.is_superuser:
+            return qs
+        org_ids = set(user.organizations.values_list("id", flat=True))
+        org_ids.update(user.owned_organizations.values_list("id", flat=True))
+        if not org_ids:
+            return qs.filter(id=user.id)
+        return qs.filter(
+            Q(id=user.id)
+            | Q(organizations__id__in=org_ids)
+            | Q(owned_organizations__id__in=org_ids)
+        ).distinct()
+    
     @action(detail=False, methods=["get", "put"], url_path="me")
     def me(self, request):
         user = request.user
@@ -91,6 +125,7 @@ class UserViewSet(
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class RegisterView(APIView):
     """Register a new user (email + password + optional profile)."""

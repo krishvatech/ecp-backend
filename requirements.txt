@@ -37,3 +37,8 @@ drf_spectacular_sidecar
 agora-token-builder
 
 django-filter==25.1
+
+# Monetization & integrations
+dj-stripe==3.1.0
+stripe==7.14.0
+requests==2.32.3

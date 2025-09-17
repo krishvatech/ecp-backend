@@ -19,11 +19,13 @@ from django.utils.http import urlsafe_base64_decode
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email as django_validate_email
+from django.core.validators import URLValidator
 
 from rest_framework.validators import UniqueValidator
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
 
 from .validators import (
     validate_email_smart,      # kept for direct use if needed
@@ -50,26 +52,23 @@ def _looks_like_email(value: str) -> bool:
 # ---------------------------
 # Serializers
 # ---------------------------
+    
 class UserProfileSerializer(serializers.ModelSerializer):
     """Serializer for the UserProfile model."""
 
     class Meta:
         model = UserProfile
-        fields = ["full_name", "timezone", "bio"]
-
-    # Full name validations
-    def validate_full_name(self, value: str) -> str:
-        v = (value or "").strip()
-        # Reject numeric-only
-        if v.isdigit():
-            raise serializers.ValidationError("Full name cannot be only numbers.")
-        # Reject if contains any digits
-        if re.search(r"\d", v):
-            raise serializers.ValidationError("Full name cannot contain digits.")
-        # Allow letters and spaces only (optional, comment out if not desired)
-        if not re.match(r"^[A-Za-z\s]+$", v):
-            raise serializers.ValidationError("Full name must contain only letters and spaces.")
-        return v
+        fields = [
+            "full_name",
+            "timezone",
+            "bio",
+            "job_title",
+            "company",
+            "location",
+            "headline",
+            "skills",
+            "links",
+        ]
 
     # Timezone validation (IANA / pytz name)
     def validate_timezone(self, value: str) -> str:
@@ -78,6 +77,33 @@ class UserProfileSerializer(serializers.ModelSerializer):
                 "Invalid timezone. Please use a valid timezone like 'Asia/Kolkata' or 'UTC'."
             )
         return value
+    
+    def validate_full_name(self, value: str) -> str:
+        v = (value or "").strip()
+        if v.isdigit():
+            raise serializers.ValidationError("Full name cannot be only numbers.")
+        if re.search(r"\d", v):
+            raise serializers.ValidationError("Full name cannot contain digits.")
+        if not re.match(r"^[A-Za-z\s]+$", v):
+            raise serializers.ValidationError("Full name must contain only letters and spaces.")
+        return v
+
+    def validate_links(self, value):
+        if not value:
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Links must be a mapping of site name to URL.")
+        validator = URLValidator()
+        validated_links = {}
+        for key, url in value.items():
+            if not isinstance(url, str) or not url:
+                raise serializers.ValidationError({key: "URL must be a non-empty string."})
+            try:
+                validator(url)
+            except DjangoValidationError:
+                raise serializers.ValidationError({key: "Invalid URL."})
+            validated_links[key] = url
+        return validated_links
 
 
 class UserSerializer(serializers.ModelSerializer):

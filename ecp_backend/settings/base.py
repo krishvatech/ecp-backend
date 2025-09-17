@@ -94,6 +94,7 @@ INSTALLED_APPS = [
     "common",
     "content",
     "activity_feed",
+    "messaging",
     
     "drf_spectacular",
     "drf_spectacular_sidecar",
@@ -102,6 +103,12 @@ INSTALLED_APPS = [
     "realtime",
 
     "interactions",  # enable live chat/Q&A
+
+    # Monetization and integrations
+    "djstripe",
+    "payments",
+    "analytics",
+    "integrations",
 ]
 
 MIDDLEWARE = [
@@ -279,3 +286,11 @@ AGORA_EXPIRE_SECONDS = int(os.getenv("AGORA_EXPIRE_SECONDS", "3600"))
 
 # Celery eager mode for tests
 CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "False") == "True"
+
+# Stripe configuration (test mode by default)
+STRIPE_LIVE_MODE = os.getenv("STRIPE_LIVE_MODE", "False").lower() in ("1", "true", "t", "yes")
+STRIPE_TEST_PUBLIC_KEY = os.getenv("STRIPE_TEST_PUBLIC_KEY", "")
+STRIPE_TEST_SECRET_KEY = os.getenv("STRIPE_TEST_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+DJSTRIPE_WEBHOOK_SECRET = STRIPE_WEBHOOK_SECRET
+DJSTRIPE_FOREIGN_KEY_TO_FIELD = "id"

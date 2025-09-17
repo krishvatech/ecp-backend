@@ -37,6 +37,10 @@ urlpatterns = [
     path("api/", include(router.urls)),
     path("api/content/", include("content.urls")),
     path("api/activity/", include("activity_feed.urls")),
+    path("api/messaging/", include("ecp_backend.messaging.urls")),
+    path("api/payments/", include("ecp_backend.payments.urls")),
+    path("api/analytics/", include("ecp_backend.analytics.urls")),
+    path("api/integrations/", include("ecp_backend.integrations.urls")),
 
     # Auth endpoints (JWT and register)
     path("api/auth/", include("users.urls")),
