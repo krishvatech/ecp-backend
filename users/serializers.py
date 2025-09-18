@@ -173,13 +173,26 @@ class RegisterSerializer(serializers.ModelSerializer):
         write_only=True,
         style={"input_type": "password"},
     )
+
+    # NEW: frontend sends these
+    first_name = serializers.CharField(required=False, allow_blank=True)
+    last_name = serializers.CharField(required=False, allow_blank=True)
+
     profile = UserProfileSerializer(required=False)
 
     class Meta:
         model = User
-        fields = ["username", "email", "password", "password2", "profile"]
+        fields = [
+            "username",
+            "email",
+            "password",
+            "password2",
+            "first_name",
+            "last_name",
+            "profile",
+        ]
 
-    # username rules: not all digits, and must NOT look like an email
+    # username rules
     def validate_username(self, value: str) -> str:
         if value.isdigit():
             raise serializers.ValidationError("Username cannot be only numbers.")
@@ -196,7 +209,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         if attrs["password"] != attrs["password2"]:
             raise serializers.ValidationError({"password": "Passwords do not match."})
 
-        # Run Django's password validators with user context so similarity checks work
+        # Run Django's password validators with user context
         pseudo_user = User(username=attrs.get("username"), email=attrs.get("email"))
         validate_password(attrs["password"], user=pseudo_user)
 
@@ -207,16 +220,39 @@ class RegisterSerializer(serializers.ModelSerializer):
         validated_data.pop("password2")
         password = validated_data.pop("password")
 
-        # email already normalized by validate_email_strict
+        # names from payload
+        first = (validated_data.pop("first_name", "") or "").strip()
+        last  = (validated_data.pop("last_name", "") or "").strip()
+        full_name = f"{first} {last}".strip()
+
+        # create user
         user = User(**validated_data)
+        user.first_name = first
+        user.last_name = last
         user.set_password(password)
         user.save()
 
-        if profile_data:
-            for k, v in profile_data.items():
-                setattr(user.profile, k, v)
-            user.profile.save()
+        # ensure profile exists and set full_name -> "meera patel"
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        if full_name:
+            profile.full_name = full_name
+
+        # apply any extra profile fields from payload
+        for k, v in (profile_data or {}).items():
+            setattr(profile, k, v)
+
+        profile.save()
         return user
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # expose full_name consistently
+        prof = getattr(instance, "profile", None)
+        if prof and getattr(prof, "full_name", ""):
+            data["full_name"] = prof.full_name
+        else:
+            data["full_name"] = f"{instance.first_name} {instance.last_name}".strip()
+        return data
 
 
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):

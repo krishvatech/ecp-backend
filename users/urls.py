@@ -25,7 +25,7 @@ urlpatterns = [
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 
     # Registration & password flows
-    path("register/", RegisterView.as_view(), name="register"),
+    path("register/", RegisterView.as_view(), name="auth_register"),
     path("password/change/", ChangePasswordView.as_view(), name="password_change"),
     path("password/forgot/", ForgotPasswordView.as_view(), name="password_forgot"),
     path("password/reset/", ResetPasswordView.as_view(), name="password_reset"),

@@ -6,14 +6,14 @@ Authentication endpoints are nested under `/api/auth/`.
 """
 
 from django.contrib import admin
+from django.conf import settings
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
-
+from django.views.generic import RedirectView
 from users.views import UserViewSet, LinkedInAuthURL, LinkedInCallback
 from organizations.views import OrganizationViewSet
 from events.views import EventViewSet, RecordingWebhookView
 from realtime.urls import urlpatterns as realtime_urls
-from django.views.generic import TemplateView
 from realtime.urls import urlpatterns as realtime_urls
 
 # drf-spectacular views
@@ -61,7 +61,9 @@ urlpatterns = [
     path("api/auth/linkedin/callback/", LinkedInCallback.as_view(), name="linkedin_callback"),
     # Realtime endpoints (stream token issuance)
     path("api/", include((realtime_urls, "realtime"), namespace="realtime")),
-    path("", TemplateView.as_view(template_name="index.html")),
-
+    path("", RedirectView.as_view(
+        url=getattr(settings, "FRONTEND_URL", "http://127.0.0.1:5173/"),
+        permanent=False
+    )),
 
 ]

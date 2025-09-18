@@ -30,17 +30,17 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-repl
 AGORA_APP_ID = os.environ.get("AGORA_APP_ID", "")
 AGORA_APP_CERTIFICATE = os.environ.get("AGORA_APP_CERTIFICATE", "")
 AGORA_TOKEN_EXP_SECONDS = int(os.environ.get("AGORA_TOKEN_EXP_SECONDS", "7200"))
-
+FRONTEND_URL = "http://127.0.0.1:5173/"
 # A frontend URL to build the reset link (your React/Next.js page)
 FRONTEND_RESET_PASSWORD_URL = os.getenv(
     "FRONTEND_RESET_PASSWORD_URL",
     "http://localhost:3000/reset-password"  # e.g. https://app.example.com/reset-password
 )
 
-CSRF_TRUSTED_ORIGINS = ["https://68b046a2851c.ngrok-free.app"]
+CSRF_TRUSTED_ORIGINS = ["http://localhost:5173"]
 
 CORS_ALLOWED_ORIGINS = [
-    "https://68b046a2851c.ngrok-free.app",
+    "http://127.0.0.1:8000",
 ]
 
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID", "")

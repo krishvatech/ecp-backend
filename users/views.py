@@ -128,15 +128,21 @@ class UserViewSet(
 
 
 class RegisterView(APIView):
-    """Register a new user (email + password + optional profile)."""
     permission_classes = [permissions.AllowAny]
-    serializer_class = RegisterSerializer 
 
-    def post(self, request):
+    def post(self, request, *args, **kwargs):
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+
+        # issue JWT (simplejwt)
+        refresh = RefreshToken.for_user(user)
+        payload = serializer.data
+        payload.update({
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+        })
+        return Response(payload, status=status.HTTP_201_CREATED)
 
 class EmailTokenObtainPairView(TokenObtainPairView):
     """
@@ -324,4 +330,6 @@ class LinkedInCallback(APIView):
 
         # Issue your own JWT for the user so frontend can proceed
         refresh = RefreshToken.for_user(user)
-        return Response({"access": str(refresh.access_token), "refresh": str(refresh)})
+        tokens = {"access": str(refresh.access_token), "refresh": str(refresh)}
+        qs = urlencode(tokens)
+        return redirect(f"{settings.FRONTEND_URL}/oauth/callback?{qs}")
