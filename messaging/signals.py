@@ -14,7 +14,7 @@ def on_message_created(sender, instance: Message, created: bool, **kwargs) -> No
     """Increment message count metric on creation."""
     if created:
         try:
-            from ecp_backend.analytics.tasks import increment_metric  # local import
+            from analytics.tasks import increment_metric  # local import
 
             # Messages are not associated with an event or organization
             increment_metric.delay(

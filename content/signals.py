@@ -11,7 +11,7 @@ from django.dispatch import receiver
 from django.contrib.contenttypes.models import ContentType
 
 from .models import Resource
-from ecp_backend.activity_feed.tasks import create_feed_item_task
+from activity_feed.tasks import create_feed_item_task
 
 
 @receiver(post_save, sender=Resource)
@@ -43,7 +43,7 @@ def on_resource_created(sender, instance: Resource, created: bool, **kwargs) -> 
         )
         # Increment analytics for resource upload
         try:
-            from ecp_backend.analytics.tasks import increment_metric  # local import to avoid circulars
+            from analytics.tasks import increment_metric  # local import to avoid circulars
 
             increment_metric.delay(
                 metric_name="resource_count",

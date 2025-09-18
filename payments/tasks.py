@@ -12,8 +12,8 @@ from __future__ import annotations
 from celery import shared_task
 from django.db import transaction
 from .models import TicketPurchase
-from ecp_backend.analytics.tasks import increment_metric
-from ecp_backend.activity_feed.tasks import create_feed_item_task
+from analytics.tasks import increment_metric
+from activity_feed.tasks import create_feed_item_task
 from django.contrib.contenttypes.models import ContentType
 
 

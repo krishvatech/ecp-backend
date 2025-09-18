@@ -30,7 +30,7 @@ from events.models import Event
 from .models import TicketPlan, TicketPurchase
 from .serializers import TicketPlanSerializer, TicketPurchaseSerializer, CheckoutRequestSerializer
 from .tasks import process_purchase_success
-from ecp_backend.analytics.tasks import increment_metric
+from analytics.tasks import increment_metric
 
 
 class IsOrgAdmin(permissions.BasePermission):
