@@ -205,6 +205,18 @@
           <button class="btn small" id="btnToggleCam">Toggle Camera</button>
           <button class="btn small" id="btnToggleMic">Toggle Mic</button>
         </div>
+        <!-- Q&A / Chat -->
+        <div class="card" style="margin-top:16px">
+          <h4>Live Q&A / Chat</h4>
+          <div id="qnaWrap" style="max-height:220px;overflow-y:auto;background:#0d1125;
+              border:1px solid var(--border);border-radius:10px;padding:8px;margin-bottom:8px">
+            <div class="muted">No messages yet…</div>
+          </div>
+          <form id="formQna" class="row" style="gap:8px">
+            <input class="input" id="qnaInput" placeholder="Type your question…" required />
+            <button class="btn brand" type="submit">Send</button>
+          </form>
+        </div>
       </section>
 
       <!-- ORGS -->
@@ -267,8 +279,37 @@
           </form>
           <div id="eventCreateMsg" style="margin-top:8px"></div>
         </div>
-
+        <div class="card" style="margin:10px 0">
+        <h4 style="margin-top:0">Recording Webhook (Test)</h4>
+        <form id="formRecordingWebhook" class="row" style="gap:10px;align-items:flex-end">
+          <div style="flex:1;min-width:200px">
+            <label>Event ID</label>
+            <input class="input" id="recEventId" placeholder="e.g. 39" required />
+          </div>
+          <div style="flex:2;min-width:300px">
+            <label>Recording URL</label>
+            <input class="input" id="recUrl" placeholder="https://cdn.example.com/recordings/file.mp4" required />
+          </div>
+          <button class="btn brand" type="submit">Send</button>
+        </form>
+        <div id="recMsg" style="margin-top:8px"></div>
+      </div>
         <div id="evtWrap" class="row"><div class="muted">Loading…</div></div>
+        <div class="card" style="margin:10px 0">
+  <h4 style="margin-top:0">Recording Webhook (Test)</h4>
+  <form id="formRecordingWebhook" class="row" style="gap:10px;align-items:flex-end">
+    <div style="flex:1;min-width:200px">
+      <label>Event ID</label>
+      <input class="input" id="recEventId" placeholder="e.g. 39" required />
+    </div>
+    <div style="flex:2;min-width:300px">
+      <label>Recording URL</label>
+      <input class="input" id="recUrl" placeholder="https://cdn.example.com/recordings/file.mp4" required />
+    </div>
+    <button class="btn brand" type="submit">Send</button>
+  </form>
+  <div id="recMsg" style="margin-top:8px"></div>
+</div>
       </section>
 
       <!-- PROFILE -->
@@ -292,9 +333,9 @@
 <script src="https://download.agora.io/sdk/release/AgoraRTC_N.js"></script>
 <script>
 /* ===================== CONFIG ===================== */
-const apiBase = "https://6cc0f266086b.ngrok-free.app";
+const apiBase = "https://68b046a2851c.ngrok-free.app";
 const tokenKey = "demo_access_token";
-const AGORA_FALLBACK_APP_ID = "";
+const AGORA_FALLBACK_APP_ID = "7ca059944f01496681677b21c2169cf8";
 
 /* ===================== UTIL ===================== */
 const qs=(s,el=document)=>el.querySelector(s);
@@ -826,6 +867,7 @@ if (btnJoin) {
     try {
       await joinAgora(role, id);
       msg(tokenMsg, `Joined as ${role}.`, true);
+
     } catch(err){
       const hint = (String(err?.message||"").includes("appId") || String(err?.message||"").includes("channel"))
         ? " (Tip: ensure your token API returns app_id & channel, or set AGORA_FALLBACK_APP_ID)"
@@ -976,6 +1018,127 @@ async function autoEndOverdueEvents(){
   if (currentRoute === "events") { try { loadEvents(); } catch(_){} }
 }
 
+/* ========== Q&A WebSocket (token via query string, ngrok-safe) ========== */
+let qnaSocket = null;
+
+function connectQna(eventId){
+  // ✅ Already connected to this event? do nothing.
+  if (qnaSocket && qnaSocket.readyState === 1 && qnaSocket.__eventId === String(eventId)) {
+    console.log("[QNA] already connected");
+    return;
+  }
+
+  // close any existing socket (different event or not open)
+  if (qnaSocket) { try { qnaSocket.close(); } catch(_) {} qnaSocket = null; }
+
+  const token = localStorage.getItem(tokenKey) || "";
+  const base = new URL(apiBase || window.location.origin);
+  const wsProto = base.protocol === "https:" ? "wss" : "ws";
+  const wsUrl = `${wsProto}://${base.host}/ws/events/${eventId}/qna/?token=${encodeURIComponent(token)}`;
+
+  console.log("[QNA] connecting:", wsUrl);
+  qnaSocket = new WebSocket(wsUrl);
+  qnaSocket.__eventId = String(eventId);   // ✅ remember which event this socket belongs to
+
+  qnaSocket.onopen = () => console.log("[QNA] connected");
+  qnaSocket.onclose = () => console.log("[QNA] closed");
+  qnaSocket.onerror = (e) => console.warn("[QNA] error", e);
+  qnaSocket.onmessage = (e) => {
+  try {
+    const data = JSON.parse(e.data);   // may be {message, user, uid} or {type: "...", ...}
+
+    const wrap = qs("#qnaWrap");
+
+    // derive my user_id from JWT
+    let myId = null;
+    try {
+      const token = localStorage.getItem(tokenKey) || "";
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      myId = payload.user_id || payload.sub || null;
+    } catch (_) {}
+
+    // normalize what to display
+    const text = data.message || data.content || "";       // chat or qna.question
+    const who  = (data.uid && myId && String(data.uid) === String(myId))
+                  ? "You" : (data.user || "Guest");
+
+    if (!text) return;  // ignore events without displayable text
+
+    const line = document.createElement("div");
+    line.textContent = `${who}: ${text}`;
+    wrap.appendChild(line);
+    wrap.scrollTop = wrap.scrollHeight;
+  } catch (err) {
+    console.warn("[QNA] parse failed", err);
+  }
+};
+}
+
+// Q&A form send
+const qnaForm = qs("#formQna");
+if (qnaForm) {
+  qnaForm.onsubmit = (e) => {
+    e.preventDefault();
+    const input = qs("#qnaInput");
+    const message = (input.value || "").trim();
+    if (!message) return;
+    if (!qnaSocket || qnaSocket.readyState !== 1) {
+      return msg(qs("#tokenMsg"), "Chat not connected yet. Join the event first.");
+    }
+    qnaSocket.send(JSON.stringify({ message }));
+    input.value = "";
+  };
+}
+
+// Close chat when we leave
+const __origLeave = qs("#btnLeave")?.onclick;
+qs("#btnLeave").onclick = async () => {
+  try{ if (qnaSocket) { qnaSocket.close(); qnaSocket = null; } }catch(_){}
+  if (typeof __origLeave === "function") {
+    try { await __origLeave(); } catch(_) {}
+  } else {
+    const id = qs("#liveEventId").value.trim();
+    await leaveAgora(id);
+    msg(qs("#tokenMsg"), "Left channel.", true);
+  }
+};
+
+// Safely wrap Join to start Q&A after successful join (ADD-ONLY)
+const __origJoin = qs("#btnJoin")?.onclick;
+qs("#btnJoin").onclick = async () => {
+  try {
+    if (typeof __origJoin === "function") {
+      await __origJoin();
+    } else {
+      const id = qs("#liveEventId").value.trim();
+      const role = qs("#liveRole").value;
+      if(!id) return msg(qs("#tokenMsg"),"Event ID required.");
+      await joinAgora(role, id);
+      msg(qs("#tokenMsg"), `Joined as ${role}.`, true);
+    }
+  } catch (e) { return; }
+  const id = (qs("#liveEventId").value || "").trim();
+  if (id) { try { connectQna(id); } catch(_){} }   // ✅ called exactly once
+};
+/* ========== Recording Webhook Tester ========== */
+const formRec = qs("#formRecordingWebhook");
+if (formRec) {
+  formRec.onsubmit = async (e) => {
+    e.preventDefault();
+    const event_id = parseInt(qs("#recEventId").value, 10);
+    const recording_url = (qs("#recUrl").value || "").trim();
+    setHTML(qs("#recMsg"), "");
+    try {
+      await apiFetch("/api/events/recording-webhook/", {
+        method: "POST",
+        body: JSON.stringify({ event_id, recording_url })
+      });
+      msg(qs("#recMsg"), "Webhook accepted.", true);
+    } catch (err) {
+      msg(qs("#recMsg"), "Webhook failed: " + (err?.message || err));
+    }
+  };
+}
 // run every 60s
 setInterval(autoEndOverdueEvents, 60000);
 

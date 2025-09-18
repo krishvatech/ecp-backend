@@ -63,6 +63,24 @@ from interactions.models import ChatMessage, Question
 import logging
 log = logging.getLogger("channels")
 
+def _display_name(user):
+    """Best-effort printable name for a user."""
+    try:
+        full = getattr(user, "get_full_name", lambda: "")()
+        if full:
+            return full
+        for f in ("first_name", "username"):
+            v = getattr(user, f, "") or ""
+            if v:
+                return v
+        email = getattr(user, "email", "") or ""
+        if email:
+            return email.split("@")[0]
+    except Exception:
+        pass
+    uid = getattr(user, "id", None)
+    return f"User {uid}" if uid else "User"
+
 # -----------------------------
 # Shared helpers (ORM, checks)
 # -----------------------------
@@ -202,17 +220,17 @@ class ChatConsumer(BaseEventConsumer):
             await self.send_error("Field 'message' (string) is required.", code="invalid_payload")
             return
 
-        # Persist and broadcast
         cm = await _create_chat_message(self.event_id, self.user.id, msg)
 
         payload = {
             "type": "chat.message",
             "event_id": self.event_id,
             "user_id": self.user.id,
-            "message": cm.content,
+            "uid": self.user.id,                     # ✅ for client-side "You" tag
+            "user": _display_name(self.user),        # ✅ human name
+            "message": cm.content,                   # ✅ matches your UI expectation
             "created_at": cm.created_at.isoformat(),
         }
-        # broadcast to group
         await self.channel_layer.group_send(self.group_name, {"type": "chat.message", "payload": payload})
 
     async def chat_message(self, event: Dict[str, Any]) -> None:
@@ -224,32 +242,22 @@ class ChatConsumer(BaseEventConsumer):
 
 
 class QnAConsumer(BaseEventConsumer):
-    """
-    Q&A for an event.
-
-    Client -> Server (ask question):
-      {"content": "What time is the keynote?"}
-
-    Client -> Server (answer question):
-      {"question_id": 42, "content": "10:00 AM IST"}
-
-    Server -> Clients (new question):
-      {"type": "qna.question", "event_id": 1, "question_id": 42, "user_id": 5, "content": "...", "created_at": "..."}
-
-    Server -> Clients (answer question):
-      {"type": "qna.answer", "event_id": 1, "question_id": 42, "answer": "10:00 AM IST", "answered_by": 5, "answered_at": "..."}
-    """
-
     group_name_prefix = "event_qna"
 
     async def receive_json(self, content: Dict[str, Any], **kwargs: Any) -> None:
+        # accept {content: "..."} or {message: "..."} for questions/answers
         question_id = content.get("question_id")
         text = content.get("content")
+        if text is None and "message" in content:
+            text = content.get("message")
 
-        # Answer a question
+        # ---------- Answer a question ----------
         if question_id is not None:
             if not isinstance(question_id, int) or not text or not isinstance(text, str):
-                await self.send_error("For answers, provide integer 'question_id' and string 'content'.", code="invalid_payload")
+                await self.send_error(
+                    "For answers, provide integer 'question_id' and string 'content'.",
+                    code="invalid_payload",
+                )
                 return
 
             q = await _answer_question(question_id, self.user.id, text)
@@ -263,12 +271,15 @@ class QnAConsumer(BaseEventConsumer):
                 "question_id": q.id,
                 "answer": q.answer,
                 "answered_by": self.user.id,
+                "answered_by_name": _display_name(self.user),
                 "answered_at": q.answered_at.isoformat() if q.answered_at else None,
             }
-            await self.channel_layer.group_send(self.group_name, {"type": "qna.answer", "payload": payload})
+            await self.channel_layer.group_send(
+                self.group_name, {"type": "qna.answer", "payload": payload}
+            )
             return
 
-        # Ask a new question
+        # ---------- Ask a new question ----------
         if not text or not isinstance(text, str):
             await self.send_error("For questions, provide string 'content'.", code="invalid_payload")
             return
@@ -279,10 +290,14 @@ class QnAConsumer(BaseEventConsumer):
             "event_id": self.event_id,
             "question_id": q.id,
             "user_id": self.user.id,
+            "uid": self.user.id,                 # lets the client label "You"
+            "user": _display_name(self.user),    # display name for UI
             "content": q.content,
             "created_at": q.created_at.isoformat(),
         }
-        await self.channel_layer.group_send(self.group_name, {"type": "qna.question", "payload": payload})
+        await self.channel_layer.group_send(
+            self.group_name, {"type": "qna.question", "payload": payload}
+        )
 
     async def qna_question(self, event: Dict[str, Any]) -> None:
         """
