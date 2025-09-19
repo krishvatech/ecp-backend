@@ -119,6 +119,13 @@ class TestConnectionView(views.APIView):
             return Response({"detail": "Unsupported integration type."}, status=status.HTTP_400_BAD_REQUEST)
         token = config.secrets.get("token")
         if not token:
+            SyncLog.objects.create(
+                organization_id=config.organization_id,
+                integration_type=config.type,
+                status="failure",
+                payload_snippet=f"test-connection config_id={config.id}",
+                error="Missing token",
+            )
             return Response({"detail": "Missing token."}, status=status.HTTP_400_BAD_REQUEST)
         # Attempt to hit HubSpot authentication/health endpoint
         url = "https://api.hubapi.com/integrations/v1/me"
@@ -126,8 +133,30 @@ class TestConnectionView(views.APIView):
         try:
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code < 300:
+                SyncLog.objects.create(
+                    organization_id=config.organization_id,
+                    integration_type=config.type,
+                    status="success",
+                    payload_snippet=f"test-connection config_id={config.id}",
+                    error="",
+                )
                 return Response({"status": "success"})
             else:
-                return Response({"status": "failed", "detail": resp.text[:512]}, status=status.HTTP_502_BAD_GATEWAY)
+                detail = (resp.text or "")[:512]
+                SyncLog.objects.create(
+                    organization_id=config.organization_id,
+                    integration_type=config.type,
+                    status="failure",
+                    payload_snippet=f"test-connection config_id={config.id}",
+                    error=detail,
+                )
+                return Response({"status": "failed", "detail": detail}, status=status.HTTP_502_BAD_GATEWAY)
         except requests.RequestException as exc:
+            SyncLog.objects.create(
+                organization_id=config.organization_id,
+                integration_type=config.type,
+                status="failure",
+                payload_snippet=f"test-connection config_id={config.id}",
+                error=str(exc),
+            )
             return Response({"status": "failed", "detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
