@@ -37,10 +37,10 @@ FRONTEND_RESET_PASSWORD_URL = os.getenv(
     "http://localhost:3000/reset-password"  # e.g. https://app.example.com/reset-password
 )
 
-CSRF_TRUSTED_ORIGINS = [" https://af0d6abef60b.ngrok-free.app"]
+CSRF_TRUSTED_ORIGINS = [" https://486c3d7e132b.ngrok-free.app"]
 
 CORS_ALLOWED_ORIGINS = [
-    " https://af0d6abef60b.ngrok-free.app",
+    " https://486c3d7e132b.ngrok-free.app",
 ]
 
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID", "")

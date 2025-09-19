@@ -45,6 +45,14 @@
     .hero{padding:24px;border:1px solid var(--border);border-radius:16px;background:radial-gradient(1200px 400px at -10% -10%, #6c63ff26, transparent 60%)}
     .pill{display:inline-flex;gap:8px;align-items:center;background:#14193b;border:1px solid #2a2f63;padding:.35rem .6rem;border-radius:999px;font-size:.8rem;color:#cfd6ff}
 
+    .dm-me    { text-align:right }
+    .dm-me .bubble{ background:#1f2444 }
+    .dm-other .bubble{ background:#151a33 }
+    .bubble{
+      display:inline-block; padding:8px 10px; border-radius:10px;
+      border:1px solid var(--border); margin:4px 0; max-width:90%;
+    }
+
 
     /* === Recording UI helpers === */
     .link-btn{ border:1px solid var(--border); background:#151a33; color:var(--text);
@@ -154,6 +162,8 @@
         <div class="nav-item" data-route="organizations">🏢 Organizations</div>
         <div class="nav-item active" data-route="events">🎫 Events</div>
         <div class="nav-item" data-route="profile">👤 Profile</div>
+        <div class="nav-item" data-route="directory">🧭 Directory</div>
+        <div class="nav-item" data-route="messaging">💬 Messaging</div>
       </div>
     </nav>
 
@@ -339,6 +349,78 @@
         <button class="btn brand" id="btnProfileSave">Save</button>
         <div id="profileMsg"></div>
       </section>
+      <!-- DIRECTORY -->
+<section id="view-directory" class="hidden card">
+  <div class="row" style="justify-content:space-between;align-items:center">
+    <h3>User Directory</h3>
+    <span class="badge" id="dirCount">0</span>
+  </div>
+
+  <form id="formDirSearch" class="row" style="gap:10px;align-items:flex-end;margin-bottom:10px">
+    <div style="flex:2;min-width:220px">
+      <label>Free text (q)</label>
+      <input class="input" id="dirQ" placeholder="name, company, title, skills…" />
+    </div>
+    <div style="flex:1;min-width:180px">
+      <label>Company</label>
+      <input class="input" id="dirCompany" placeholder="Acme Corp" />
+    </div>
+    <div style="flex:1;min-width:180px">
+      <label>Job title</label>
+      <input class="input" id="dirTitle" placeholder="Manager" />
+    </div>
+    <div style="flex:1;min-width:180px">
+      <label>Location</label>
+      <input class="input" id="dirLocation" placeholder="Mumbai" />
+    </div>
+    <div style="flex:1;min-width:180px">
+      <label>Skills (comma separated)</label>
+      <input class="input" id="dirSkills" placeholder="Python, Django" />
+    </div>
+    <button class="btn brand" type="submit">Search</button>
+  </form>
+
+  <div id="dirWrap" class="row"><div class="muted">Search to view results…</div></div>
+</section>
+
+<!-- MESSAGING -->
+<section id="view-messaging" >
+  <div class="row" style="justify-content:space-between;align-items:center">
+    <h3>Direct Messages</h3>
+    <span class="badge" id="dmBadge">0</span>
+  </div>
+
+  <div class="row" style="gap:16px;align-items:flex-start">
+    <div style="flex:1;min-width:260px">
+      <h4 style="margin:0 0 8px 0">Conversations</h4>
+      <form id="formConvSearch" class="row" style="gap:8px;align-items:flex-end;margin-bottom:8px">
+        <input class="input" id="convQ" placeholder="Search by other participant (name/company)…" />
+        <button class="btn small">Search</button>
+      </form>
+      <div id="convList" class="card" style="min-height:220px"><div class="muted">Loading…</div></div>
+
+      <h4 style="margin:12px 0 8px 0">Start new conversation</h4>
+      <form id="formConvCreate" class="row" style="gap:8px;align-items:flex-end">
+        <input class="input" id="convRecipientId" placeholder="Recipient user id (e.g. 42)" />
+        <button class="btn small brand" type="submit">Create / Fetch</button>
+      </form>
+      <div id="convCreateMsg"></div>
+    </div>
+
+    <div style="flex:2;min-width:320px">
+      <h4 id="threadTitle" style="margin:0 0 8px 0">Thread</h4>
+      <div id="msgList" class="card" style="min-height:260px;max-height:360px;overflow:auto">
+        <div class="muted">Select a conversation…</div>
+      </div>
+      <form id="formMsgSend" class="row" style="gap:8px;align-items:flex-end;margin-top:8px">
+        <input class="input" id="msgBody" placeholder="Type a message…" />
+        <button class="btn brand">Send</button>
+      </form>
+      <div id="msgSendMsg"></div>
+    </div>
+  </div>
+</section>
+
     </main>
   </div>
 </div>
@@ -352,25 +434,42 @@
     <video id="recModalVideo" controls style="width:100%; height:auto; background:#000" playsinline></video>
   </div>
 </div>
+<!-- Profile Modal -->
+<div id="profileModal" class="hidden" style="
+  position:fixed; inset:0; background:rgba(0,0,0,.6);
+  display:flex; align-items:center; justify-content:center; z-index:2000;">
+  <div style="background:#0e1330; width:min(860px, 96vw); padding:12px; border:1px solid #232745; border-radius:12px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px">
+      <h4 id="pfModalTitle" style="margin:0">Profile</h4>
+      <button id="pfModalClose" class="btn small">Close</button>
+    </div>
+
+    <div id="pfModalBody" class="card" style="background:#121736;">
+      <!-- populated by JS -->
+      <div class="muted">Loading…</div>
+    </div>
+  </div>
+</div>
+
 
 <!-- Agora Web SDK 4.x -->
 <!-- Agora Web SDK 4.x -->
 <script src="https://download.agora.io/sdk/release/AgoraRTC_N.js"></script>
 <script>
 /* ===================== CONFIG ===================== */
-const apiBase = " https://af0d6abef60b.ngrok-free.app";
+const apiBase = "https://af0d6abef60b.ngrok-free.app";
 const tokenKey = "demo_access_token";
 const AGORA_FALLBACK_APP_ID = "7ca059944f01496681677b21c2169cf8";
 
 /* ===================== UTIL ===================== */
 const qs=(s,el=document)=>el.querySelector(s);
 const qsa=(s,el=document)=>[...el.querySelectorAll(s)];
-function setHTML(el, html, cls){ if(!el) return; el.innerHTML=html; el.className=cls||el.className; }
-function msg(el, text, ok=false){ if(!el) return; el.className = ok?"success":"error"; el.textContent = text; }
-const authHeader=()=>{ const t=localStorage.getItem(tokenKey); return t?{Authorization:"Bearer "+t}:{ }; };
-async function apiFetch(path, opts={}){
+function setHTML(el, html, cls){ if(!el) return; el.innerHTML = html; el.className = cls || el.className; }
+function msg(el, text, ok=false){ if(!el) return; el.className = ok ? "success" : "error"; el.textContent = text; }
+function authHeader(){ const t=localStorage.getItem(tokenKey); return t ? { Authorization:"Bearer "+t } : {}; }
+async function apiFetch(path, opts = {}){
   const headers = { "Content-Type":"application/json", ...(opts.headers||{}), ...authHeader() };
-  const res = await fetch(apiBase+path, { ...opts, headers });
+  const res = await fetch(apiBase + path, { ...opts, headers });
   let data=null; try{ data=await res.json(); }catch{}
   if(!res.ok){
     let m = `${res.status} ${res.statusText}`;
@@ -452,7 +551,15 @@ formLogin.onsubmit = async (e)=>{ e.preventDefault(); setHTML(loginMsg,""); cons
 formRegister.onsubmit = async (e)=>{ e.preventDefault(); setHTML(registerMsg,""); const full_name=qs("#regName").value.trim(); const email=qs("#regEmail").value.trim(); const password=qs("#regPass").value; try{ await apiFetch("/api/auth/register/", { method:"POST", body: JSON.stringify({ email, password, profile:{ full_name } }) }); const login=await apiFetch("/api/auth/token/", { method:"POST", body: JSON.stringify({ email, password }) }); localStorage.setItem(tokenKey, login.access); msg(registerMsg, "Account created and signed in.", true); renderAuthState(); }catch(err){ msg(registerMsg, "Registration failed: "+err.message); } };
 btnSignOut.onclick = async ()=>{ const id=qs("#liveEventId").value.trim(); if(joined){ try{ await leaveAgora(id); }catch(_){} } localStorage.removeItem(tokenKey); qs("#liveEventId").value=""; qs("#liveToken").value=""; showAuth(); };
 
-const routes = { live: qs("#view-live"), organizations: qs("#view-organizations"), events: qs("#view-events"), profile: qs("#view-profile") };
+const routes = {
+  live: qs("#view-live"),
+  organizations: qs("#view-organizations"),
+  events: qs("#view-events"),
+  profile: qs("#view-profile"),
+  directory: qs("#view-directory"),
+  messaging: qs("#view-messaging"),
+};
+
 function go(route){
   Object.entries(routes).forEach(([k,el])=>el.classList.toggle("hidden", k!==route));
   qsa(".nav-item").forEach(m=>m.classList.toggle("active", m.dataset.route===route));
@@ -1294,6 +1401,333 @@ function renderRecordings(list){
     });
   });
 }
+/* ===================== DIRECTORY ===================== */
+async function loadDirectory(params={}){
+  const { q, company, job_title, location, skills } = params;
+  const qsParts = [];
+  if (q) qsParts.push(`q=${encodeURIComponent(q)}`);
+  if (company) qsParts.push(`company=${encodeURIComponent(company)}`);
+  if (job_title) qsParts.push(`job_title=${encodeURIComponent(job_title)}`);
+  if (location) qsParts.push(`location=${encodeURIComponent(location)}`);
+  if (skills) qsParts.push(`skills=${encodeURIComponent(skills)}`);
+  const query = qsParts.length? `?${qsParts.join("&")}` : "";
+
+  const wrap = document.getElementById("dirWrap");
+  setHTML(wrap, "<div class='muted'>Loading…</div>");
+  try{
+    const data = await apiFetch(`/api/users/${query}`);
+    const list = normalizeListPayload(data);
+    document.getElementById("dirCount").textContent = list.length;
+
+    if (!list.length) return setHTML(wrap, "<div class='muted'>No users.</div>");
+    wrap.innerHTML = "";
+    list.forEach(u=>{
+      const p = u.profile || {};
+      const el = document.createElement("div");
+      el.className="card"; el.style.minWidth="260px";
+
+      const displayName = u.username || p.full_name || `User #${u.id}`;
+      const line2 = `${p.job_title || "-" } • ${p.company || "-" } • ${p.location || "-"}`;
+      const skillsTxt = Array.isArray(p.skills) ? p.skills.join(", ") : (p.skills || "");
+
+      el.innerHTML = `
+        <div style="font-weight:600">${displayName}</div>
+        <div class="muted">${line2}</div>
+        <div class="muted" style="font-size:.9rem">${skillsTxt}</div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn small" data-view-profile="${u.id}">View</button>
+          <button class="btn small brand" data-start-conv="${u.id}">Message</button>
+        </div>`;
+
+      wrap.appendChild(el);
+    });
+
+    // wire Message buttons (unchanged)
+    wrap.querySelectorAll("[data-start-conv]").forEach(b=>{
+      b.onclick = async ()=>{
+        try{
+          const res = await apiFetch("/api/messaging/conversations/", {
+            method:"POST",
+            body: JSON.stringify({ recipient_id: parseInt(b.dataset.startConv,10) })
+          });
+          go("messaging");
+          await refreshConversations();
+          openConversation(res.id);
+        }catch(err){ alert("Failed to create conversation: "+err.message); }
+      };
+    });
+
+    // ✅ wire View buttons
+    wrap.querySelectorAll("[data-view-profile]").forEach(btn=>{
+      btn.onclick = ()=> openProfileModal(parseInt(btn.dataset.viewProfile,10));
+    });
+  }catch(err){
+    setHTML(wrap, `<div class="error">Directory failed: ${err.message}</div>`);
+  }
+}
+const formDirSearch = document.getElementById("formDirSearch");
+if (formDirSearch){
+  formDirSearch.onsubmit = (e)=>{
+    e.preventDefault();
+    loadDirectory({
+      q: document.getElementById("dirQ").value.trim(),
+      company: document.getElementById("dirCompany").value.trim(),
+      job_title: document.getElementById("dirTitle").value.trim(),
+      location: document.getElementById("dirLocation").value.trim(),
+      skills: document.getElementById("dirSkills").value.trim()
+    });
+  };
+}
+
+function closeProfileModal(){
+  const m = document.getElementById("profileModal");
+  if (!m) return;
+  m.classList.add("hidden");
+}
+
+async function openProfileModal(userId){
+  const m = document.getElementById("profileModal");
+  const title = document.getElementById("pfModalTitle");
+  const body  = document.getElementById("pfModalBody");
+  if (!m || !body) return;
+
+  m.classList.remove("hidden");
+  body.innerHTML = `<div class="muted">Loading…</div>`;
+  title.textContent = `Profile • #${userId}`;
+
+  try{
+    // Expect: GET /api/users/{id}/ returns { id, username, email, profile: { full_name, headline, bio, company, job_title, location, skills, links } }
+    const u = await apiFetch(`/api/users/${userId}/`);
+    const p = u.profile || {};
+
+    // Normalize fields
+    const fullName = p.full_name || u.username || `User #${u.id}`;
+    const headline = p.headline || "";
+    const job      = p.job_title || "";
+    const company  = p.company || "";
+    const loc      = p.location || "";
+    const bio      = p.bio || "";
+    const email    = u.email || "";
+    const skills   = Array.isArray(p.skills) ? p.skills : (p.skills ? String(p.skills).split(",").map(s=>s.trim()).filter(Boolean) : []);
+    const links    = Array.isArray(p.links) ? p.links : (p.links ? [] : []);  // adjust if backend returns objects
+
+    title.textContent = fullName;
+
+    const skillsHTML = skills.length
+      ? `<div class="row" style="gap:6px;flex-wrap:wrap">${skills.map(s=>`<span class="badge">${s}</span>`).join("")}</div>`
+      : `<div class="muted">—</div>`;
+
+    const linksHTML = links.length
+      ? links.map(l=>{
+          if (typeof l === "string") return `<div><a href="${l}" target="_blank" rel="noopener">${l}</a></div>`;
+          if (l && l.url) return `<div><a href="${l.url}" target="_blank" rel="noopener">${l.title || l.url}</a></div>`;
+          return "";
+        }).join("")
+      : `<div class="muted">—</div>`;
+
+    body.innerHTML = `
+      <div class="row" style="gap:12px; align-items:flex-start; flex-wrap:wrap">
+        <div style="flex:2; min-width:260px">
+          <div style="font-size:1.1rem; font-weight:700; margin-bottom:2px">${fullName}</div>
+          <div class="muted">${headline || ""}</div>
+          <div class="muted" style="margin-top:6px">${job ? job : "-" } • ${company ? company : "-" } • ${loc ? loc : "-"}</div>
+          ${email ? `<div class="muted" style="margin-top:6px">${email}</div>` : ""}
+        </div>
+        <div style="flex:3; min-width:300px">
+          <div class="muted" style="font-size:.85rem; margin-bottom:6px">Bio</div>
+          <div style="white-space:pre-wrap">${bio || "<span class='muted'>—</span>"}</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px">
+        <div class="muted" style="font-size:.85rem; margin-bottom:6px">Skills</div>
+        ${skillsHTML}
+      </div>
+
+      <div class="card" style="margin-top:12px">
+        <div class="muted" style="font-size:.85rem; margin-bottom:6px">Links</div>
+        ${linksHTML}
+      </div>
+    `;
+  }catch(err){
+    body.innerHTML = `<div class="error">Failed to load profile: ${err.message}</div>`;
+  }
+}
+
+// modal close bindings (one-time)
+(() => {
+  const closeBtn = document.getElementById("pfModalClose");
+  const modal = document.getElementById("profileModal");
+  if (closeBtn) closeBtn.onclick = closeProfileModal;
+  if (modal) modal.addEventListener("click", (e)=>{ if (e.target === modal) closeProfileModal(); });
+})();
+
+
+/* ===================== MESSAGING ===================== */
+let currentConvId = null;
+let msgSocket = null;
+
+async function refreshConversations(qStr=""){
+  const listEl = document.getElementById("convList");
+  setHTML(listEl, "<div class='muted'>Loading…</div>");
+  try{
+    const qsPart = qStr ? `?q=${encodeURIComponent(qStr)}` : "";
+    const payload = await apiFetch(`/api/messaging/conversations/${qsPart}`);
+    const list = normalizeListPayload(payload);
+    document.getElementById("dmBadge").textContent = list.length;
+
+    if (!list.length) return setHTML(listEl, "<div class='muted'>No conversations yet.</div>");
+    listEl.innerHTML = "";
+    list.forEach(c=>{
+      const item = document.createElement("div");
+      item.className="row";
+      item.style.cssText = "justify-content:space-between;border-bottom:1px solid var(--border);padding:8px 0;cursor:pointer";
+      const preview = (c.last_message?.body || c.last_message || "").toString().slice(0,80);
+      item.innerHTML = `
+        <div>
+          <div style="font-weight:600">Conversation #${c.id}</div>
+          <div class="muted" style="font-size:.85rem">${preview || "—"}</div>
+        </div>
+        <div class="badge">${c.unread_count ?? 0}</div>`;
+      item.onclick = ()=> openConversation(c.id);
+      listEl.appendChild(item);
+    });
+  }catch(err){
+    setHTML(listEl, `<div class="error">Failed to load conversations: ${err.message}</div>`);
+  }
+}
+
+async function loadMessages(convId){
+  const listEl = document.getElementById("msgList");
+  setHTML(listEl, "<div class='muted'>Loading…</div>");
+  try{
+    const payload = await apiFetch(`/api/messaging/conversations/${convId}/messages/`);
+    const results = Array.isArray(payload.results) ? payload.results : (Array.isArray(payload)? payload : []);
+    if (!results.length) return setHTML(listEl, "<div class='muted'>No messages yet.</div>");
+    listEl.innerHTML = "";
+    const myId = me?.id;
+    results.forEach(m=>{
+      const row = document.createElement("div");
+      const mine = String(m.sender_id) === String(myId);
+      row.className = mine ? "dm-me" : "dm-other";
+      row.innerHTML = `<div class="bubble">${m.body || ""}</div>`;
+      listEl.appendChild(row);
+    });
+    listEl.scrollTop = listEl.scrollHeight;
+  }catch(err){
+    setHTML(listEl, `<div class="error">Failed to load messages: ${err.message}</div>`);
+  }
+}
+
+function openConversation(convId){
+  currentConvId = convId;
+  document.getElementById("threadTitle").textContent = `Thread • #${convId}`;
+  loadMessages(convId);
+  connectMsgSocket(convId); // realtime
+  markIncomingRead();
+}
+
+function connectMsgSocket(convId){
+  if (msgSocket){ try{ msgSocket.close(); }catch(_){ } msgSocket=null; }
+
+  const token = localStorage.getItem(tokenKey) || "";
+  const base = new URL(apiBase || window.location.origin);
+  const wsProto = base.protocol === "https:" ? "wss" : "ws";
+  const wsUrl = `${wsProto}://${base.host}/ws/messaging/${convId}/?token=${encodeURIComponent(token)}`;
+
+  msgSocket = new WebSocket(wsUrl);
+  msgSocket.onopen = ()=> console.log("[DM] ws open");
+  msgSocket.onclose = ()=> console.log("[DM] ws closed");
+  msgSocket.onerror = e => console.warn("[DM] ws error", e);
+  msgSocket.onmessage = (e)=>{
+    try{
+      const msg = JSON.parse(e.data);
+      if (msg.type === "message.created" && msg.message){
+        const m = msg.message;
+        const listEl = document.getElementById("msgList");
+        const mine = String(m.sender_id) === String(me?.id);
+        const row = document.createElement("div");
+        row.className = mine ? "dm-me" : "dm-other";
+        row.innerHTML = `<div class="bubble">${m.body || ""}</div>`;
+        listEl.appendChild(row);
+        listEl.scrollTop = listEl.scrollHeight;
+      }
+    }catch(err){ console.warn("[DM] parse failed", err); }
+  };
+}
+
+// send message
+const formMsgSend = document.getElementById("formMsgSend");
+if (formMsgSend){
+  formMsgSend.onsubmit = async (e)=>{
+    e.preventDefault();
+    const body = document.getElementById("msgBody").value.trim();
+    if (!currentConvId) return msg(document.getElementById("msgSendMsg"), "Open a conversation first.");
+    if (!body) return;
+
+    try{
+      if (msgSocket && msgSocket.readyState === 1){
+        msgSocket.send(JSON.stringify({ type:"message.send", body, attachments: [] }));
+      } else {
+        await apiFetch(`/api/messaging/conversations/${currentConvId}/messages/`, {
+          method:"POST",
+          body: JSON.stringify({ body })
+        });
+      }
+      document.getElementById("msgBody").value = "";
+      msg(document.getElementById("msgSendMsg"), "Sent.", true);
+    }catch(err){
+      msg(document.getElementById("msgSendMsg"), "Send failed: "+err.message);
+    }
+  };
+}
+
+// conversations search & create
+const formConvSearch = document.getElementById("formConvSearch");
+if (formConvSearch){
+  formConvSearch.onsubmit = (e)=>{
+    e.preventDefault();
+    const q = document.getElementById("convQ").value.trim();
+    refreshConversations(q);
+  };
+}
+const formConvCreate = document.getElementById("formConvCreate");
+if (formConvCreate){
+  formConvCreate.onsubmit = async (e)=>{
+    e.preventDefault();
+    setHTML(document.getElementById("convCreateMsg"), "");
+    const rid = parseInt(document.getElementById("convRecipientId").value, 10);
+    if (!rid) return msg(document.getElementById("convCreateMsg"), "Recipient id required.");
+    try{
+      const res = await apiFetch("/api/messaging/conversations/", { method:"POST", body: JSON.stringify({ recipient_id: rid }) });
+      msg(document.getElementById("convCreateMsg"), `Conversation #${res.id} ready.`, true);
+      await refreshConversations();
+      openConversation(res.id);
+    }catch(err){
+      msg(document.getElementById("convCreateMsg"), "Create failed: "+err.message);
+    }
+  };
+}
+
+// mark all unread incoming in current thread (helper)
+async function markIncomingRead(){
+  if (!currentConvId) return;
+  const payload = await apiFetch(`/api/messaging/conversations/${currentConvId}/messages/`);
+  const results = Array.isArray(payload.results) ? payload.results : (Array.isArray(payload) ? payload : []);
+  const myId = me?.id;
+  for (const m of results){
+    if (String(m.sender_id) !== String(myId) && !m.is_read){
+      try{ await apiFetch(`/api/messaging/messages/${m.id}/read/`, { method:"POST" }); }catch(_){}
+    }
+  }
+}
+
+function afterRoute(route){
+  if (route === "messaging") { refreshConversations(); }
+  if (route === "directory") { loadDirectory(); }
+}
+const _go = go; go = (route)=>{ _go(route); afterRoute(route); };
+
 
 /* ===================== START ===================== */
 renderAuthState();
