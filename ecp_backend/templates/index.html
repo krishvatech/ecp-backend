@@ -164,6 +164,8 @@
         <div class="nav-item" data-route="profile">👤 Profile</div>
         <div class="nav-item" data-route="directory">🧭 Directory</div>
         <div class="nav-item" data-route="messaging">💬 Messaging</div>
+        <div class="nav-item" data-route="content">📚 Content</div>
+        <div class="nav-item" data-route="activity">📰 Activity</div>
       </div>
     </nav>
 
@@ -421,6 +423,140 @@
   </div>
 </section>
 
+  <!-- CONTENT (Resources) -->
+  <section id="view-content" class="hidden card">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h3>Content Hub</h3>
+      <span class="badge" id="resCount">0</span>
+    </div>
+
+    <!-- Filters -->
+    <div class="card" style="margin:10px 0">
+      <h4 style="margin-top:0">Filter</h4>
+      <form id="formContentFilter" class="row" style="gap:10px;align-items:flex-end">
+        <div style="flex:1;min-width:160px">
+          <label>Type</label>
+          <select class="input" id="resType">
+            <option value="">Any</option>
+            <option value="file">file</option>
+            <option value="link">link</option>
+            <option value="video">video</option>
+          </select>
+        </div>
+        <!-- Add inside #formContentFilter -->
+        <div style="flex:1;min-width:160px">
+          <label>Organization</label>
+          <select class="input" id="resFilterOrg">
+            <option value="">Any</option>
+          </select>
+        </div>
+
+        <div style="flex:1;min-width:160px">
+          <label>Event</label>
+          <select class="input" id="resFilterEvent">
+            <option value="">Any</option>
+          </select>
+        </div>
+        <div style="flex:1;min-width:160px">
+          <label>Is published</label>
+          <select class="input" id="resPublished">
+            <option value="">Any</option>
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label>Tag</label>
+          <input class="input" id="resTag" placeholder="e.g. keynote" />
+        </div>
+        <button class="btn brand" type="submit">Apply</button>
+      </form>
+    </div>
+
+    <!-- Create Resource -->
+    <div class="card" style="margin:10px 0">
+      <h4 style="margin-top:0">Create Resource</h4>
+      <form id="formCreateResource" class="row" style="gap:10px;align-items:flex-end">
+        <div style="flex:1;min-width:220px">
+          <label>Title</label>
+          <input class="input" id="resTitle" placeholder="e.g. Keynote Slides" required />
+        </div>
+        <div style="flex:1;min-width:160px">
+          <label>Type</label>
+          <select class="input" id="resCreateType" required>
+            <option value="link">link</option>
+            <option value="file">file</option>
+            <option value="video">video</option>
+          </select>
+        </div>
+        <!-- Add inside #formCreateResource -->
+        <div style="flex:1;min-width:220px">
+          <label>Organization</label>
+          <select class="input" id="resOrg" required>
+            <option value="">Select organization…</option>
+          </select>
+        </div>
+
+        <div style="flex:1;min-width:220px">
+          <label>Event (optional)</label>
+          <select class="input" id="resEvent">
+            <option value="">(none)</option>
+          </select>
+        </div>
+        <div style="flex:2;min-width:280px">
+          <label>Link/File URL (for link/video) — or S3/GCS key</label>
+          <input class="input" id="resURL" placeholder="https://…" />
+        </div>
+        <div style="flex:1;min-width:160px">
+          <label>Published</label>
+          <select class="input" id="resCreatePublished">
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+        </div>
+        <div style="flex:2;min-width:280px">
+          <label>Tags (comma separated)</label>
+          <input class="input" id="resCreateTags" placeholder="slides,keynote" />
+        </div>
+        <button class="btn brand" type="submit">Create</button>
+      </form>
+      <div id="resCreateMsg" style="margin-top:8px"></div>
+    </div>
+
+    <!-- List -->
+    <div id="resWrap" class="row"><div class="muted">Loading…</div></div>
+  </section>
+
+  <!-- ACTIVITY FEED -->
+  <section id="view-activity" class="hidden card">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h3>Activity Feed</h3>
+      <span class="badge" id="feedCount">0</span>
+    </div>
+
+    <div class="card" style="margin:10px 0">
+      <h4 style="margin-top:0">Filter</h4>
+      <form id="formActivityFilter" class="row" style="gap:10px;align-items:flex-end">
+        <div style="flex:1;min-width:200px">
+          <label>Verb</label>
+          <input class="input" id="feedVerb" placeholder="e.g. resource_published" />
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label>Org ID</label>
+          <input class="input" id="feedOrg" placeholder="e.g. 1" />
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label>Event ID</label>
+          <input class="input" id="feedEvent" placeholder="e.g. 70" />
+        </div>
+        <button class="btn brand" type="submit">Apply</button>
+      </form>
+    </div>
+
+    <div id="feedWrap" class="col" style="gap:10px"><div class="muted">Loading…</div></div>
+  </section>
+
+
     </main>
   </div>
 </div>
@@ -558,6 +694,8 @@ const routes = {
   profile: qs("#view-profile"),
   directory: qs("#view-directory"),
   messaging: qs("#view-messaging"),
+  content: qs("#view-content"),
+  activity: qs("#view-activity")
 };
 
 function go(route){
@@ -565,13 +703,15 @@ function go(route){
   qsa(".nav-item").forEach(m=>m.classList.toggle("active", m.dataset.route===route));
   if(route==="organizations") loadOrganizations();
   if(route==="events") loadEvents();
+  if(route==="content") loadResources();   // NEW
+  if(route==="activity") loadActivity();    // NEW
 
   localStorage.setItem("lastRoute", route);
 }
 qsa("[data-route]").forEach(n=>{
   n.onclick = ()=> go(n.dataset.route);
 });
-async function hydrateAfterLogin(){ loadMe(); loadOrganizations(); loadEvents(); }
+async function hydrateAfterLogin(){ loadMe(); loadOrganizations(); loadEvents(); loadResources(); loadActivity(); }
 async function loadMe(){ try{ me = await apiFetch("/api/users/me/"); qs("#pfName").value = me.profile?.full_name || ""; qs("#pfTitle").value = me.profile?.job_title || ""; qs("#pfCompany").value = me.profile?.company || ""; }catch(_){} }
 async function loadOrganizations(){
   const wrap = qs("#orgWrap"); setHTML(wrap, "<div class='muted'>Loading…</div>");
@@ -940,6 +1080,7 @@ async function joinAgora(role, eventId){
   setTimeout(unlock, 0);
   document.addEventListener('click', unlock, { once: true });
 }
+
 
 async function leaveAgora(eventId){
   let wasPublisher = (joinedInfo.role === "publisher");
@@ -1708,6 +1849,246 @@ if (formConvCreate){
     }
   };
 }
+
+
+
+/* ========= Content tab: selectors ========= */
+function populateResOrgSelects() {
+  const orgSelCreate = qs("#resOrg");
+  const orgSelFilter = qs("#resFilterOrg");
+  const orgs = orgCache || [];
+  const build = (sel, first) => {
+    if (!sel) return;
+    sel.innerHTML = first || "";
+    orgs.forEach(o => {
+      const id = o.id ?? o.pk ?? o.organization_id ?? "";
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = o.name || o.title || `Org #${id}`;
+      sel.appendChild(opt);
+    });
+  };
+  build(orgSelCreate, '<option value="">Select organization…</option>');
+  build(orgSelFilter, '<option value="">Any</option>');
+}
+
+function populateResEventSelects() {
+  const orgIdCreate = (qs("#resOrg")?.value || "").trim();
+  const orgIdFilter = (qs("#resFilterOrg")?.value || "").trim();
+  const evSelCreate = qs("#resEvent");
+  const evSelFilter = qs("#resFilterEvent");
+
+  const add = (sel, list, first) => {
+    if (!sel) return;
+    sel.innerHTML = first || "";
+    list.forEach(ev => {
+      const id = ev.id ?? ev.pk ?? ev.event_id ?? "";
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = ev.title || ev.name || `Event #${id}`;
+      sel.appendChild(opt);
+    });
+  };
+
+  const filterByOrg = (orgId) =>
+    (eventCache || []).filter(ev =>
+      String(ev.organization_id ?? ev.organization ?? "") === String(orgId)
+    );
+
+  // Create form event list depends on selected org
+  add(evSelCreate,
+      orgIdCreate ? filterByOrg(orgIdCreate) : [],
+      '<option value="">(none)</option>');
+
+  // Filter form event list depends on selected org (or all events)
+  const filterList = orgIdFilter
+    ? filterByOrg(orgIdFilter)
+    : (eventCache || []);
+  add(evSelFilter, filterList, '<option value="">Any</option>');
+}
+
+// Rebuild the selects after orgs/events load
+const __origLoadOrganizations = loadOrganizations;
+loadOrganizations = async function() {
+  await __origLoadOrganizations();
+  try { populateResOrgSelects(); populateResEventSelects(); } catch {}
+};
+
+const __origLoadEvents = loadEvents;
+loadEvents = async function() {
+  await __origLoadEvents();
+  try { populateResOrgSelects(); populateResEventSelects(); } catch {}
+};
+
+// React to org changes to refresh events lists
+document.addEventListener("change", (e) => {
+  if (e.target && (e.target.id === "resOrg" || e.target.id === "resFilterOrg")) {
+    try { populateResEventSelects(); } catch {}
+  }
+});
+
+
+
+// Activity Feed & Content
+
+/* ===================== CONTENT (Resources) ===================== */
+async function loadResources(){
+  const wrap = qs("#resWrap");
+  setHTML(wrap, "<div class='muted'>Loading…</div>");
+
+  // read filters
+  const type  = (qs("#resType")?.value || "").trim();
+  const pub   = (qs("#resPublished")?.value || "").trim();
+  const tag   = (qs("#resTag")?.value || "").trim();
+  const orgId = (qs("#resFilterOrg")?.value || "").trim();
+  const evtId = (qs("#resFilterEvent")?.value || "").trim();
+
+  const params = new URLSearchParams();
+  if (type) params.set("type", type);
+  if (pub)  params.set("is_published", pub);
+  if (tag)  params.set("tag", tag);
+  if (orgId) params.set("organization", orgId);   // or organization_id if your API expects that
+  if (evtId) params.set("event", evtId);   
+  params.set("page_size", "100");
+
+  try{
+    const list = await getListWithFallback([
+      `/api/content/resources/?${params.toString()}`
+    ]);
+    qs("#resCount").textContent = list.length;
+
+    if (!list.length) return setHTML(wrap, "<div class='muted'>No resources yet.</div>");
+    wrap.innerHTML = "";
+
+    list.forEach(r=>{
+      const id = r.id ?? r.pk ?? r.resource_id ?? "";
+      const title = r.title || `Resource #${id}`;
+      const kind = r.type || "-";
+      const published = String(r.is_published) === "true" || r.is_published === true ? "true" : "false";
+      const url = r.link_url || r.file_url || r.video_url || "";
+      const tags = Array.isArray(r.tags) ? r.tags.join(", ") : "";
+
+      const card = document.createElement("div");
+      card.className = "card";
+      card.style.minWidth = "260px";
+      card.innerHTML = `
+        <h4>${title}</h4>
+        <div class="muted">Type: ${kind} • Published: ${published}</div>
+        <div class="muted">Tags: ${tags || "-"}</div>
+        ${url ? `<div class="muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          <a href="${url}" target="_blank" rel="noopener">${url}</a></div>` : ""}
+      `;
+      wrap.appendChild(card);
+    });
+  }catch(err){
+    setHTML(wrap, `<div class="error">Failed to load resources: ${err.message}</div>`);
+  }
+}
+
+// Filters submit
+const formContentFilter = qs("#formContentFilter");
+if (formContentFilter){
+  formContentFilter.onsubmit = (e)=>{ e.preventDefault(); loadResources(); };
+}
+
+// Create resource
+const formCreateResource = qs("#formCreateResource");
+if (formCreateResource){
+  formCreateResource.onsubmit = async (e)=>{
+    e.preventDefault();
+    setHTML(qs("#resCreateMsg"), "");
+
+    const title = (qs("#resTitle").value || "").trim();
+    const type  = qs("#resCreateType").value;
+    const is_published = qs("#resCreatePublished").value === "true";
+    const url = (qs("#resURL").value || "").trim();
+    const tags = (qs("#resCreateTags").value || "").split(",").map(s=>s.trim()).filter(Boolean);
+    const organization_id = parseInt(qs("#resOrg").value, 10);
+    const event_id = (qs("#resEvent").value || "").trim(); // optional
+    if (!organization_id) return msg(qs("#resCreateMsg"), "Organization is required.");
+
+    if(!title) return msg(qs("#resCreateMsg"), "Title is required.");
+    if(!type)  return msg(qs("#resCreateMsg"), "Type is required.");
+
+    // Map URL to proper field; backend also supports file uploads via django-storages
+    const payload = { title, type, is_published, tags, organization_id };
+    if (event_id) payload.event_id = parseInt(event_id, 10);
+    if (type === "link")  payload.link_url  = url;
+    if (type === "video") payload.video_url = url;
+    if (type === "file")  payload.file_url  = url; // if you expose a signed key/path
+
+    try{
+      await apiFetch("/api/content/resources/", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      msg(qs("#resCreateMsg"), "Resource created.", true);
+      // clear form
+      qs("#resTitle").value = "";
+      qs("#resURL").value = "";
+      qs("#resCreateTags").value = "";
+      // refresh
+      await loadResources();
+    }catch(err){
+      msg(qs("#resCreateMsg"), "Create failed: " + err.message);
+    }
+  };
+}
+
+/* ===================== ACTIVITY FEED ===================== */
+async function loadActivity(){
+  const wrap = qs("#feedWrap");
+  setHTML(wrap, "<div class='muted'>Loading…</div>");
+
+  const verb = (qs("#feedVerb")?.value || "").trim();
+  const org  = (qs("#feedOrg")?.value || "").trim();
+  const evt  = (qs("#feedEvent")?.value || "").trim();
+
+  const params = new URLSearchParams();
+  if (verb) params.set("verb", verb);
+  if (org)  params.set("organization", org);
+  if (evt)  params.set("event", evt);
+  params.set("page_size", "100");
+
+  try{
+    const list = await getListWithFallback([
+      `/api/activity/feed/?${params.toString()}`
+    ]);
+    qs("#feedCount").textContent = list.length;
+
+    if (!list.length) return setHTML(wrap, "<div class='muted'>No activity yet.</div>");
+    wrap.innerHTML = list.map(item=>{
+      const ts = item.created_at ? new Date(item.created_at).toLocaleString() : "";
+      const v  = item.verb || "-";
+      const subj = item.resource_title || item.title || item.object || "";
+      const meta = item.metadata ? JSON.stringify(item.metadata) : "";
+
+      return `
+        <div class="row" style="gap:10px; align-items:center; border:1px solid var(--border);
+             background:#0e1330; padding:10px; border-radius:10px">
+          <div style="flex:3;min-width:240px">
+            <div style="font-weight:600">${v}</div>
+            <div class="muted" style="font-size:.85rem">${ts}</div>
+          </div>
+          <div style="flex:3;min-width:240px">
+            <div class="muted">${subj || "-"}</div>
+          </div>
+          <div style="flex:3;min-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <div class="muted" title='${meta}'>${meta || ""}</div>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }catch(err){
+    setHTML(wrap, `<div class="error">Failed to load activity: ${err.message}</div>`);
+  }
+}
+
+const formActivityFilter = qs("#formActivityFilter");
+if (formActivityFilter){
+  formActivityFilter.onsubmit = (e)=>{ e.preventDefault(); loadActivity(); };
+}
+
 
 // mark all unread incoming in current thread (helper)
 async function markIncomingRead(){
