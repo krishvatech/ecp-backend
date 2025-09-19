@@ -1,0 +1,1303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Events & Community Platform</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{
+      --bg:#0f1220; --card:#161a2b; --muted:#8b92b2; --text:#e9ecff;
+      --brand:#6C63FF; --border:#232745; --ok:#2ecc71; --err:#e74c3c;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:linear-gradient(180deg,#0c1020,#0a0d19 40%,#0b0e1d);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    a{color:var(--brand);text-decoration:none}
+    .hidden{display:none !important}
+
+    /* Header / Layout */
+    .app{display:grid;grid-template-rows:56px 1fr;min-height:100svh}
+    header{display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--border);background:#0e1230aa;backdrop-filter:blur(8px);position:sticky;top:0;z-index:5}
+    .logo{display:flex;align-items:center;gap:10px;font-weight:700}
+    .logo-mark{width:26px;height:26px;border-radius:8px;background:conic-gradient(from 230deg,var(--brand),#A3D2CA)}
+    .badge{font-size:.75rem;background:#121736;border:1px solid #27306e;padding:.25rem .5rem;border-radius:999px;color:#aeb7ff}
+    .btn{border:1px solid var(--border);background:#1a1f35;color:var(--text);padding:.55rem .9rem;border-radius:10px;cursor:pointer}
+    .btn.brand{background:var(--brand);border-color:#5a53ff;color:white}
+    .btn.small{padding:.4rem .6rem;font-size:.9rem}
+    .btn.full{width:100%}
+    .layout{display:grid;grid-template-columns:260px 1fr;min-height:0}
+    nav{border-right:1px solid var(--border);background:#0e1330}
+    .nav-inner{position:sticky;top:56px;padding:16px;display:flex;flex-direction:column;gap:8px}
+    .nav-item{padding:10px 12px;border-radius:10px;color:#cfd6ff;cursor:pointer}
+    .nav-item:hover,.nav-item.active{background:#1a1f35}
+    .main{padding:20px;min-width:0}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
+    .muted{color:var(--muted)}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    .input{width:100%;background:#10142a;border:1px solid var(--border);color:var(--text);padding:.7rem .8rem;border-radius:10px}
+    label{font-size:.9rem;color:#cfd6ff;margin-top:10px;display:block}
+    .error{background:#421b1b;border:1px solid #6e2e2e;color:#ffc9c9;padding:10px;border-radius:10px;margin-top:8px}
+    .success{background:#12351f;border:1px solid #1f6e46;color:#b9ffd4;padding:10px;border-radius:10px;margin-top:8px}
+
+    /* Auth screen */
+    .center-wrap{display:grid;place-items:center;min-height:calc(100svh - 56px);padding:24px}
+    .auth{max-width:920px;width:100%;display:grid;grid-template-columns:1.1fr .9fr;gap:16px}
+    @media (max-width:900px){.auth{grid-template-columns:1fr}}
+    .hero{padding:24px;border:1px solid var(--border);border-radius:16px;background:radial-gradient(1200px 400px at -10% -10%, #6c63ff26, transparent 60%)}
+    .pill{display:inline-flex;gap:8px;align-items:center;background:#14193b;border:1px solid #2a2f63;padding:.35rem .6rem;border-radius:999px;font-size:.8rem;color:#cfd6ff}
+
+
+    /* === Recording UI helpers === */
+    .link-btn{ border:1px solid var(--border); background:#151a33; color:var(--text);
+    padding:.35rem .6rem; border-radius:8px; cursor:pointer; }
+    .link-btn:hover{ background:#1a2040; }
+
+    /* Hide helper */
+    .hidden{ display:none; }
+    /* Live area */
+    .live-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    @media (max-width:1100px){.live-grid{grid-template-columns:1fr}}
+    .video-area{
+      background:#0b0f25;border:1px dashed #2e356a;border-radius:12px;
+      display:grid;grid-template-rows:auto 1fr auto;overflow:hidden;min-height:340px;
+    }
+    .tile-header{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px dashed #2e356a;color:#9aa3d9}
+    .player{width:100%;height:100%;min-height:300px;background:#000}
+
+    /* Remote grid for many joiners */
+    #remote-wrap{
+      display:grid;
+      grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
+      gap:8px;
+      padding:8px;
+      background:#050814;
+    }
+    .remote-tile{
+      display:grid;
+      grid-template-rows:1fr auto;
+      border:1px solid #2e356a;
+      border-radius:10px;
+      overflow:hidden;
+      background:#000;
+      min-height:180px;
+    }
+    .remote-video{width:100%;height:100%;background:#000}
+    .remote-footer{
+      display:flex;align-items:center;justify-content:space-between;
+      font-size:.8rem;color:#9aa3d9;background:#0e1330;padding:6px 8px;
+    }
+    #local-player{background:#000}
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo"><div class="logo-mark"></div> Events & Community Platform</div>
+    <div class="row" style="align-items:center">
+      <span id="headerStatus" class="badge">Signed out</span>
+      <button class="btn small hidden" id="btnSignOut">Sign out</button>
+    </div>
+  </header>
+
+  <!-- AUTH -->
+  <div id="authScreen" class="center-wrap">
+    <div class="auth">
+      <section class="hero card">
+        <span class="pill">Register → Host → Go Live</span>
+        <h2 style="margin:.6rem 0 0 0;">Welcome!</h2>
+        <p class="muted">Create an account or sign in to manage organizations and events, then go live with real-time video.</p>
+      </section>
+
+      <section class="card">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <h3>Authenticate</h3>
+          <span class="badge">JWT</span>
+        </div>
+        <div class="row" style="margin-bottom:10px">
+          <button class="btn small brand" id="tabLogin">Login</button>
+          <button class="btn small" id="tabRegister">Register</button>
+        </div>
+
+        <!-- Login -->
+        <form id="formLogin">
+          <label>Email</label>
+          <input class="input" type="email" id="loginEmail" placeholder="you@company.com" required />
+          <label>Password</label>
+          <input class="input" type="password" id="loginPass" placeholder="••••••••" required />
+          <div style="height:8px"></div>
+          <button class="btn brand full" type="submit">Login</button>
+          <div id="loginMsg"></div>
+        </form>
+
+        <!-- Register -->
+        <form id="formRegister" class="hidden">
+          <label>Full Name</label>
+          <input class="input" type="text" id="regName" placeholder="Your Name" required />
+          <label>Email</label>
+          <input class="input" type="email" id="regEmail" placeholder="you@company.com" required />
+          <label>Password</label>
+          <input class="input" type="password" id="regPass" placeholder="Create a password" required />
+          <div style="height:8px"></div>
+          <button class="btn brand full" type="submit">Create account</button>
+          <div id="registerMsg" class="muted" style="margin-top:10px;font-size:.85rem">We’ll auto-login after successful registration.</div>
+        </form>
+      </section>
+    </div>
+  </div>
+
+  <!-- APP (hidden until login) -->
+  <div id="mainLayout" class="layout hidden">
+    <nav>
+      <div class="nav-inner">
+        <!-- <div class="nav-item " data-route="live">📺 Go Live / Watch</div> -->
+        <div class="nav-item" data-route="organizations">🏢 Organizations</div>
+        <div class="nav-item active" data-route="events">🎫 Events</div>
+        <div class="nav-item" data-route="profile">👤 Profile</div>
+      </div>
+    </nav>
+
+    <main class="main">
+      <!-- LIVE -->
+      <section id="view-live" class="hidden card">
+        <h3>Go Live / Join</h3>
+        <form id="formGoLive">
+          <!-- NEW: Event select (adds, does not remove the original field) -->
+          <!-- Hidden selects (kept for compatibility, JS will fill/lock them) -->
+          <select class="input hidden" id="liveEventSelect" disabled>
+            <option value="">Select event…</option>
+          </select>
+          <input class="input hidden" id="liveEventId" />
+
+          <select class="input hidden" id="liveRole" disabled>
+            <option value="publisher">publisher (host)</option>
+            <option value="audience">audience (viewer)</option>
+          </select>
+
+          <!-- Read-only summary shown to user -->
+          <div class="row" id="liveSummary" style="gap:8px;margin:8px 0">
+            <span class="badge">Event: <strong id="summaryEventTitle">—</strong></span>
+            <span class="badge">Role: <strong id="summaryRole">—</strong></span>
+          </div>
+
+          <label>Token</label>
+          <input class="input" id="liveToken" placeholder="Token will appear here..." readonly />
+          <div class="row" style="margin-top:10px">
+            <button class="btn" type="button" id="btnJoin">Join</button>
+            <button class="btn" type="button" id="btnLeave">Leave</button>
+          </div>
+
+          <div id="tokenMsg"></div>
+        </form>
+
+        <div class="live-grid" style="margin-top:12px">
+          <div class="video-area">
+            <div class="tile-header">
+              <span id="localLabel">Local</span>
+              <span id="localState" class="badge">idle</span>
+            </div>
+            <div class="player" id="local-player"></div>
+            <div style="text-align:center; padding:6px; font-size:.85rem; color:#9aa3d9" id="localRoleLabel"></div>
+          </div>
+          <div class="video-area">
+            <div class="tile-header">
+              <span id="remoteLabel">Remote</span>
+              <span id="remoteState" class="badge">waiting</span>
+            </div>
+            <div class="player" id="remote-wrap"></div>
+            <div style="text-align:center; padding:6px; font-size:.85rem; color:#9aa3d9" id="remoteRoleLabel"></div>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:10px">
+          <button class="btn small" id="btnToggleCam">Toggle Camera</button>
+          <button class="btn small" id="btnToggleMic">Toggle Mic</button>
+        </div>
+        <!-- Q&A / Chat -->
+        <div class="card" style="margin-top:16px">
+          <h4>Live Q&A / Chat</h4>
+          <div id="qnaWrap" style="max-height:220px;overflow-y:auto;background:#0d1125;
+              border:1px solid var(--border);border-radius:10px;padding:8px;margin-bottom:8px">
+            <div class="muted">No messages yet…</div>
+          </div>
+          <form id="formQna" class="row" style="gap:8px">
+            <input class="input" id="qnaInput" placeholder="Type your question…" required />
+            <button class="btn brand" type="submit">Send</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- ORGS -->
+      <section id="view-organizations" class="hidden card">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <h3>Organizations</h3>
+          <span class="badge" id="orgCount">0</span>
+        </div>
+        <div class="card" style="margin:10px 0">
+          <h4 style="margin-top:0">Create Organization</h4>
+          <form id="formCreateOrg" class="row" style="gap:10px;align-items:flex-end">
+            <div style="flex:1;min-width:220px">
+              <label>Organization name</label>
+              <input class="input" id="orgName" placeholder="e.g. Krishva Tech" required />
+            </div>
+            <div style="flex:2;min-width:280px">
+              <label>Description</label>
+              <input class="input" id="orgDesc" placeholder="What does your org do?" required />
+            </div>
+            <button class="btn brand" type="submit">Create</button>
+          </form>
+          <div id="orgCreateMsg" style="margin-top:8px"></div>
+        </div>
+        <div id="orgWrap" class="row"><div class="muted">Loading…</div></div>
+      </section>
+
+      <!-- EVENTS -->
+      <section id="view-events" class="card">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <h3>Events</h3>
+          <span class="badge" id="evtCount">0</span>
+        </div>
+
+        <div class="card" style="margin:10px 0">
+          <h4 style="margin-top:0">Create Event</h4>
+          <form id="formCreateEvent" class="row" style="gap:10px;align-items:flex-end">
+            <div style="flex:1;min-width:220px">
+              <label>Title</label>
+              <input class="input" id="evTitle" placeholder="e.g. Product Launch" required />
+            </div>
+            <div style="flex:1;min-width:220px">
+              <label>Organization</label>
+              <select class="input" id="evOrg" required>
+                <option value="">Select organization…</option>
+              </select>
+            </div>
+            <div style="flex:1;min-width:220px">
+              <label>Start time</label>
+              <input class="input" type="datetime-local" id="evStart" />
+            </div>
+            <div style="flex:1;min-width:220px">
+              <label>End time</label>
+              <input class="input" type="datetime-local" id="evEnd" />
+            </div>
+            <div style="flex:2;min-width:280px">
+              <label>Description</label>
+              <input class="input" id="evDesc" placeholder="Short summary (optional)" />
+            </div>
+            <button class="btn brand" type="submit">Create</button>
+          </form>
+          <div id="eventCreateMsg" style="margin-top:8px"></div>
+        </div>
+        <div class="card" style="margin:10px 0">
+        <h4 style="margin-top:0">Recording Webhook (Test)</h4>
+        <form id="formRecordingWebhook" class="row" style="gap:10px;align-items:flex-end">
+          <div style="flex:1;min-width:200px">
+            <label>Event ID</label>
+            <input class="input" id="recEventId" placeholder="e.g. 39" required />
+          </div>
+          <div style="flex:2;min-width:300px">
+            <label>Recording URL</label>
+            <input class="input" id="recUrl" placeholder="https://cdn.example.com/recordings/file.mp4" required />
+          </div>
+          <button class="btn brand" type="submit">Send</button>
+        </form>
+        <div id="recMsg" style="margin-top:8px"></div>
+      </div>
+        <div id="evtWrap" class="row"><div class="muted">Loading…</div></div>
+        <div class="card" style="margin:10px 0">
+        <h3 style="margin:0 0 8px 0">Past Events (Watch Recordings)</h3>
+        <div id="recWrap" class="col" style="gap:10px">
+            <div class="muted">Fetching recordings…</div>
+        </div>
+        </div>
+        <div class="card" style="margin:10px 0">
+  <h4 style="margin-top:0">Recording Webhook (Test)</h4>
+  <form id="formRecordingWebhook" class="row" style="gap:10px;align-items:flex-end">
+    <div style="flex:1;min-width:200px">
+      <label>Event ID</label>
+      <input class="input" id="recEventId" placeholder="e.g. 39" required />
+    </div>
+    <div style="flex:2;min-width:300px">
+      <label>Recording URL</label>
+      <input class="input" id="recUrl" placeholder="https://cdn.example.com/recordings/file.mp4" required />
+    </div>
+    <button class="btn brand" type="submit">Send</button>
+  </form>
+  <div id="recMsg" style="margin-top:8px"></div>
+</div>
+      </section>
+
+      <!-- PROFILE -->
+      <section id="view-profile" class="hidden card">
+        <h3>Profile</h3>
+        <label>Full name</label>
+        <input class="input" id="pfName" />
+        <label>Job title</label>
+        <input class="input" id="pfTitle" />
+        <label>Company</label>
+        <input class="input" id="pfCompany" />
+        <div style="height:8px"></div>
+        <button class="btn brand" id="btnProfileSave">Save</button>
+        <div id="profileMsg"></div>
+      </section>
+    </main>
+  </div>
+</div>
+<div id="recordingModal" class="hidden" style="
+  position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; z-index:2000;">
+  <div style="background:#0e1330; width:min(900px, 96vw); padding:12px; border:1px solid var(--border); border-radius:12px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px">
+      <h4 id="recModalTitle" style="margin:0">Recording</h4>
+      <button id="recModalClose" class="btn small">Close</button>
+    </div>
+    <video id="recModalVideo" controls style="width:100%; height:auto; background:#000" playsinline></video>
+  </div>
+</div>
+
+<!-- Agora Web SDK 4.x -->
+<!-- Agora Web SDK 4.x -->
+<script src="https://download.agora.io/sdk/release/AgoraRTC_N.js"></script>
+<script>
+/* ===================== CONFIG ===================== */
+const apiBase = " https://af0d6abef60b.ngrok-free.app";
+const tokenKey = "demo_access_token";
+const AGORA_FALLBACK_APP_ID = "7ca059944f01496681677b21c2169cf8";
+
+/* ===================== UTIL ===================== */
+const qs=(s,el=document)=>el.querySelector(s);
+const qsa=(s,el=document)=>[...el.querySelectorAll(s)];
+function setHTML(el, html, cls){ if(!el) return; el.innerHTML=html; el.className=cls||el.className; }
+function msg(el, text, ok=false){ if(!el) return; el.className = ok?"success":"error"; el.textContent = text; }
+const authHeader=()=>{ const t=localStorage.getItem(tokenKey); return t?{Authorization:"Bearer "+t}:{ }; };
+async function apiFetch(path, opts={}){
+  const headers = { "Content-Type":"application/json", ...(opts.headers||{}), ...authHeader() };
+  const res = await fetch(apiBase+path, { ...opts, headers });
+  let data=null; try{ data=await res.json(); }catch{}
+  if(!res.ok){
+    let m = `${res.status} ${res.statusText}`;
+    if (data) {
+      if (typeof data === "string") m += " - " + data;
+      else if (data.detail || data.error) m += " - " + (data.detail || data.error);
+      else if (typeof data === "object") {
+        const parts = Object.entries(data).map(([k,v])=>{
+          if (Array.isArray(v)) return `${k}: ${v.join("; ")}`;
+          if (typeof v === "object") return `${k}: ${JSON.stringify(v)}`;
+          return `${k}: ${String(v)}`;
+        });
+        if (parts.length) m += " - " + parts.join(" | ");
+      }
+    }
+    const err = new Error(m); err.data=data; err.status=res.status; throw err;
+  }
+  return data;
+}
+function normalizeListPayload(payload){
+  if (Array.isArray(payload)) return payload;
+  if (payload && Array.isArray(payload.results)) return payload.results;
+  if (payload && Array.isArray(payload.items)) return payload.items;
+  if (payload && Array.isArray(payload.data)) return payload.data;
+  return [];
+}
+async function getListWithFallback(paths){
+  for(const path of paths){
+    try{
+      const data = await apiFetch(path);
+      const list = normalizeListPayload(data);
+      if (list.length || (Array.isArray(list) && data)) return list;
+    }catch(e){}
+  }
+  try{ const data = await apiFetch(paths[0]); return normalizeListPayload(data); }catch(_){ return []; }
+}
+
+/* NEW: Show/Hide Live menu based on whether user has created any event */
+function updateLiveMenuVisibility(canLive){
+  const liveNav = document.querySelector("[data-route='live']");
+  if (!liveNav) return;
+  // Only hide/show the sidebar item; routing controls which view is visible
+  liveNav.classList.toggle("hidden", !canLive);
+}
+/* ===================== AUTH / ROUTING ===================== */
+const headerStatus = qs("#headerStatus");
+const btnSignOut = qs("#btnSignOut");
+const authScreen = qs("#authScreen");
+const mainLayout = qs("#mainLayout");
+const tabLogin = qs("#tabLogin");
+const tabRegister = qs("#tabRegister");
+const formLogin = qs("#formLogin");
+const formRegister = qs("#formRegister");
+const loginMsg = qs("#loginMsg");
+const registerMsg = qs("#registerMsg");
+
+let me = null; let orgCache = [];
+let eventCache = []; // NEW: keep events for populating the live select
+
+/* MOD: hide Live by default after login until events check completes */
+function showApp(){
+  headerStatus.textContent="Signed in";
+  btnSignOut.classList.remove("hidden");
+  authScreen.classList.add("hidden");
+  mainLayout.classList.remove("hidden");
+
+  updateLiveMenuVisibility(false);
+  hydrateAfterLogin();
+
+  // Restore last route or default to events
+  const last = localStorage.getItem("lastRoute") || "events";
+  go(last);
+}
+function showAuth(){ headerStatus.textContent="Signed out"; btnSignOut.classList.add("hidden"); authScreen.classList.remove("hidden"); mainLayout.classList.add("hidden"); }
+function renderAuthState(){ localStorage.getItem(tokenKey) ? showApp() : showAuth(); }
+tabLogin.onclick = ()=>{ formLogin.classList.remove("hidden"); formRegister.classList.add("hidden"); };
+tabRegister.onclick = ()=>{ formRegister.classList.remove("hidden"); formLogin.classList.add("hidden"); };
+formLogin.onsubmit = async (e)=>{ e.preventDefault(); setHTML(loginMsg,""); const email=qs("#loginEmail").value.trim(); const password=qs("#loginPass").value; try{ const data=await apiFetch("/api/auth/token/", { method:"POST", body: JSON.stringify({ email, password }) }); localStorage.setItem(tokenKey, data.access); renderAuthState(); }catch(err){ msg(loginMsg, "Login failed: "+err.message); } };
+formRegister.onsubmit = async (e)=>{ e.preventDefault(); setHTML(registerMsg,""); const full_name=qs("#regName").value.trim(); const email=qs("#regEmail").value.trim(); const password=qs("#regPass").value; try{ await apiFetch("/api/auth/register/", { method:"POST", body: JSON.stringify({ email, password, profile:{ full_name } }) }); const login=await apiFetch("/api/auth/token/", { method:"POST", body: JSON.stringify({ email, password }) }); localStorage.setItem(tokenKey, login.access); msg(registerMsg, "Account created and signed in.", true); renderAuthState(); }catch(err){ msg(registerMsg, "Registration failed: "+err.message); } };
+btnSignOut.onclick = async ()=>{ const id=qs("#liveEventId").value.trim(); if(joined){ try{ await leaveAgora(id); }catch(_){} } localStorage.removeItem(tokenKey); qs("#liveEventId").value=""; qs("#liveToken").value=""; showAuth(); };
+
+const routes = { live: qs("#view-live"), organizations: qs("#view-organizations"), events: qs("#view-events"), profile: qs("#view-profile") };
+function go(route){
+  Object.entries(routes).forEach(([k,el])=>el.classList.toggle("hidden", k!==route));
+  qsa(".nav-item").forEach(m=>m.classList.toggle("active", m.dataset.route===route));
+  if(route==="organizations") loadOrganizations();
+  if(route==="events") loadEvents();
+
+  localStorage.setItem("lastRoute", route);
+}
+qsa("[data-route]").forEach(n=>{
+  n.onclick = ()=> go(n.dataset.route);
+});
+async function hydrateAfterLogin(){ loadMe(); loadOrganizations(); loadEvents(); }
+async function loadMe(){ try{ me = await apiFetch("/api/users/me/"); qs("#pfName").value = me.profile?.full_name || ""; qs("#pfTitle").value = me.profile?.job_title || ""; qs("#pfCompany").value = me.profile?.company || ""; }catch(_){} }
+async function loadOrganizations(){
+  const wrap = qs("#orgWrap"); setHTML(wrap, "<div class='muted'>Loading…</div>");
+  try{
+    const orgs = await getListWithFallback(["/api/organizations/?page_size=100","/api/organizations/?mine=1","/api/organizations/owned/","/api/organizations/"]);
+    orgCache = Array.isArray(orgs) ? orgs : []; qs("#orgCount").textContent = orgCache.length;
+    const orgSel = qs("#evOrg"); if (orgSel) { orgSel.innerHTML = '<option value="">Select organization…</option>'; orgCache.forEach(o=>{ const opt=document.createElement("option"); opt.value = o.id ?? o.pk ?? o.organization_id ?? ""; opt.textContent = o.name || o.title || `Org #${opt.value}`; orgSel.appendChild(opt); }); }
+    if(!orgCache.length) return setHTML(wrap, "<div class='muted'>No organizations yet.</div>");
+    wrap.innerHTML=""; orgCache.forEach(o=>{ const id=o.id ?? o.pk ?? o.organization_id ?? null; const name=o.name || o.title || `Org #${id ?? "?"}`; const desc=o.description || o.bio || ""; const ownerId=o.owner_id ?? o.owner ?? o.ownerId ?? null; const card=document.createElement("div"); card.className="card"; card.style.minWidth="260px"; const ownerBadge=(me && ownerId && String(ownerId)===String(me.id))? ' <span class="badge" style="margin-left:6px;background:#12351f;border-color:#215d3a">Owner</span>' : ''; card.innerHTML = `<h4>${name}${ownerBadge}</h4><div class="muted">${desc || "-"}</div><div class="muted">Owner: ${o.owner_email || o.owner_email_id || "-"}</div>`; wrap.appendChild(card); });
+  }catch(err){ setHTML(wrap, `<div class="error">Failed to load orgs: ${err.message}</div>`); }
+}
+async function loadEvents(){
+  const wrap = qs("#evtWrap");
+  setHTML(wrap, "<div class='muted'>Loading…</div>");
+
+  try{
+    const events = await getListWithFallback([
+      "/api/events/?page_size=100",
+      "/api/events/?mine=1",
+      "/api/events/"
+    ]);
+    eventCache = Array.isArray(events) ? events : [];
+
+    // Hide ended events
+    const activeEvents = eventCache.filter(ev =>
+      String(ev.status || "").toLowerCase() !== "ended"
+    );
+
+    qs("#evtCount").textContent = activeEvents.length;
+
+    // Populate the select (active only)
+    const sel = qs("#liveEventSelect");
+    if (sel) {
+      sel.innerHTML = '<option value="">Select event…</option>';
+      if (!activeEvents.length) {
+        const opt = document.createElement("option");
+        opt.value = ""; opt.disabled = true; opt.textContent = "No active events";
+        sel.appendChild(opt);
+        qs("#liveEventId").value = "";
+      } else {
+        activeEvents.forEach(ev=>{
+          const id = ev.id ?? ev.pk ?? ev.event_id ?? "";
+          const title = ev.title || ev.name || `Event #${id}`;
+          const opt = document.createElement("option");
+          opt.value = id;
+          opt.textContent = title;
+          sel.appendChild(opt);
+        });
+        sel.value = sel.value || (activeEvents[0]?.id ?? "");
+        qs("#liveEventId").value = sel.value;
+        refreshRoleLockFromSelect();
+      }
+    }
+
+    // Sidebar live item visibility (only show if user has any of their own events)
+    const myId = String(me?.id ?? "");
+    const hasMine = activeEvents.some(ev =>
+      String(ev.created_by_id ?? ev.owner_id ?? ev.user_id ?? "") === myId
+    );
+    updateLiveMenuVisibility(hasMine);
+
+    // Render cards
+    if (!activeEvents.length){
+      setHTML(wrap, "<div class='muted'>No active events.</div>");
+      // === ADDED: ensure Recording UI exists and render list even if no active ===
+      try { __ensureRecordingUI(); renderRecordings(eventCache); } catch(_) {}
+      return;
+    }
+
+    wrap.innerHTML = "";
+    activeEvents.forEach(ev => {
+      const id = ev.id ?? ev.pk ?? ev.event_id ?? null;
+      const title = ev.title || ev.name || `Event #${id ?? "?"}`;
+      const when = ev.start_time ? new Date(ev.start_time).toLocaleString() : "-";
+      const orgId = ev.organization_id ?? ev.organization ?? null;
+let orgName = "-";
+
+// try to resolve from embedded object
+if (ev.organization && typeof ev.organization === "object" && ev.organization.name) {
+  orgName = ev.organization.name;
+}
+// fallback to separate fields
+else if (ev.organization_name) {
+  orgName = ev.organization_name;
+}
+// lookup in orgCache
+else if (orgId) {
+  const orgObj = orgCache.find(o =>
+    String(o.id ?? o.pk ?? o.organization_id) === String(orgId)
+  );
+  if (orgObj) orgName = orgObj.name || orgObj.title || `Org #${orgId}`;
+}
+
+      // Is this event created by me?
+      const mine = (me && (String(ev.created_by_id ?? ev.owner_id ?? ev.user_id ?? "") === String(me.id)));
+      const mineBadge = mine
+        ? '<span class="badge" style="margin-left:6px;background:#12351f;border-color:#215d3a">Created by you</span>'
+        : "";
+
+      // Buttons: mine => Go Live + Join, others => Join only
+      const ph  = phaseOf(ev);          // 'before' | 'window' | 'after'
+const tip = phaseTooltip(ev);
+
+let buttons = "";
+if (mine) {
+  // Host can go live any time before end; block after end.
+  buttons = `
+    <button class="btn small"
+            data-live="${id}"
+            ${ph === "after" ? "disabled" : ""}
+            title="${tip}">
+      Go Live
+    </button>`;
+} else {
+  // Audience: keep button clickable when early so the handler can show the message.
+  if (ph === "after") {
+    buttons = `
+      <button class="btn small"
+              disabled
+              title="This meeting has already ended.">
+        Join
+      </button>`;
+  } else {
+    // 'before' or 'window' -> clickable; handler will show "early" msg if needed
+    const msgTip = ph === "before" ? "You are early! This event hasn’t started yet." : tip;
+    buttons = `
+      <button class="btn small"
+              data-join="${id}"
+              title="${msgTip}">
+        Join
+      </button>`;
+  }
+}
+
+      const card = document.createElement("div");
+      card.className = "card";
+      card.style.minWidth = "260px";
+      card.innerHTML = `
+        <h4>${title} ${mineBadge}</h4>
+        <div class="muted">Organization: ${orgName}</div>
+        <div class="muted">${when}</div>
+        <div class="muted">${ev.description ? ev.description : ""}</div>
+        <div class="muted">Status: ${ev.status}</div>
+        <div class="row" style="margin-top:8px">
+          ${buttons}
+        </div>`;
+      wrap.appendChild(card);
+    });
+
+    // Handlers
+    qsa("[data-live]").forEach(b=>b.onclick=async ()=>{
+  const id = b.dataset.live;
+  const ev = getEventById(id);
+  if (!ev) return msg(qs("#tokenMsg"), "Event not found");
+
+  const now = new Date();
+  const start = ev.start_time ? new Date(ev.start_time) : null;
+  const end   = ev.end_time ? new Date(ev.end_time) : null;
+
+  if (end && now > end) {
+    return msg(qs("#tokenMsg"), "This meeting has already ended.");
+  }
+
+  // Host can go live any time before end time, but not after
+  go('live');
+  applyLiveSelection(id, true); // lock as publisher
+
+  try {
+    const { token } = await fetchEventToken(id, "publisher");
+    qs("#liveToken").value = token || "";
+    msg(qs("#tokenMsg"), "Token issued for publisher. Click Join to start.", true);
+  } catch (err) {
+    msg(qs("#tokenMsg"), "Failed to get token: " + err.message);
+  }
+});
+
+qsa("[data-join]").forEach(b => b.onclick = async () => {
+  const id = b.dataset.join;
+  const ev = getEventById(id);
+  if (!ev) return msg(qs("#tokenMsg"), "Event not found");
+
+  // Go to the Live view first so messages are visible
+  go('live');
+  applyLiveSelection(id, false);   // lock as audience
+  setHTML(qs("#tokenMsg"), "");    // clear previous message
+
+  const now   = new Date();
+  const start = ev.start_time ? new Date(ev.start_time) : null;
+  const end   = ev.end_time ? new Date(ev.end_time) : null;
+
+  // Show messages on the visible Live view
+  if (start && now < start) {
+    return msg(qs("#tokenMsg"), "You’re early! This event hasn’t started yet.");
+  }
+  if (end && now > end) {
+    return msg(qs("#tokenMsg"), "This meeting has already ended.");
+  }
+
+  // Inside window → fetch token (do NOT auto-join)
+  try {
+    const { token } = await fetchEventToken(id, "audience");
+    qs("#liveToken").value = token || "";
+    msg(qs("#tokenMsg"), "Token issued for audience. Click Join to enter.", true);
+  } catch (err) {
+    msg(qs("#tokenMsg"), "Failed to get token: " + err.message);
+  }
+});
+
+    /* === ADDED: ensure Recording UI exists + render from fetched cache === */
+    try { __ensureRecordingUI(); renderRecordings(eventCache); } catch(_) {}
+
+  }catch(err){
+    setHTML(wrap, `<div class="error">Failed to load events: ${err.message}</div>`);
+    /* still attempt to build recordings shell so the card appears */
+    try { __ensureRecordingUI(); renderRecordings(eventCache||[]); } catch(_) {}
+  }
+}
+
+/* NEW: keep hidden input synced with the new select */
+const liveEventSelect = document.getElementById("liveEventSelect");
+if (liveEventSelect) {
+  liveEventSelect.addEventListener("change", ()=>{
+    const id = liveEventSelect.value || "";
+    const input = qs("#liveEventId");
+    if (input) input.value = id;
+    refreshRoleLockFromSelect(); // 🔒 auto-set + lock role based on creator
+  });
+}
+
+qs("#btnProfileSave").onclick = async ()=>{
+  setHTML(qs("#profileMsg"),"");
+  const full_name=qs("#pfName").value.trim(), job_title=qs("#pfTitle").value.trim(), company=qs("#pfCompany").value.trim();
+  try{ await apiFetch("/api/users/me/", { method:"PUT", body: JSON.stringify({ profile:{ full_name, job_title, company } }) }); msg(qs("#profileMsg"), "Profile updated.", true); }catch(err){ msg(qs("#profileMsg"), "Update failed: "+err.message); }
+};
+
+/* Create Org / Event */
+const formCreateOrg=document.getElementById("formCreateOrg");
+if(formCreateOrg){ formCreateOrg.onsubmit=async(e)=>{ e.preventDefault(); setHTML(qs("#orgCreateMsg"), ""); const name=qs("#orgName").value.trim(); const description=qs("#orgDesc").value.trim(); if(!name||!description) return msg(qs("#orgCreateMsg"), "Name and description are required."); try{ await apiFetch("/api/organizations/", { method:"POST", body: JSON.stringify({ name, description }) }); msg(qs("#orgCreateMsg"), "Organization created.", true); qs("#orgName").value=""; qs("#orgDesc").value=""; await loadOrganizations(); }catch(err){ msg(qs("#orgCreateMsg"), "Create failed: "+err.message); } }; }
+const formCreateEvent=document.getElementById("formCreateEvent");
+if(formCreateEvent){ formCreateEvent.onsubmit=async(e)=>{ e.preventDefault(); setHTML(qs("#eventCreateMsg"), ""); const title=qs("#evTitle").value.trim(); const organization_id=parseInt(qs("#evOrg").value,10); const description=qs("#evDesc").value.trim(); const startRaw=qs("#evStart").value; const endRaw=qs("#evEnd").value; const start_time=startRaw?new Date(startRaw).toISOString():null; const end_time=endRaw?new Date(endRaw).toISOString():null; if(!title||!organization_id) return msg(qs("#eventCreateMsg"), "Title and organization are required."); try{ await apiFetch("/api/events/", { method:"POST", body: JSON.stringify({ title, description, organization_id, start_time, end_time }) }); msg(qs("#eventCreateMsg"), "Event created.", true); qs("#evTitle").value=""; qs("#evDesc").value=""; qs("#evOrg").value=""; qs("#evStart").value=""; qs("#evEnd").value=""; await loadEvents(); }catch(err){ msg(qs("#eventCreateMsg"), "Create failed: "+err.message); } }; }
+
+/* ===================== TOKEN / JOIN FLOW ===================== */
+const tokenMsg = qs("#tokenMsg"), localState = qs("#localState"), remoteState = qs("#remoteState");
+async function fetchEventToken(eventId, role){
+  const data = await apiFetch(`/api/events/${eventId}/token/`, { method:"POST", body: JSON.stringify({ role }) });
+  return { token: data.token || null, appId: (data.app_id || AGORA_FALLBACK_APP_ID || "").trim(), channel: String(data.channel || "").trim() };
+}
+
+let rtcClient=null, localAudioTrack=null, localVideoTrack=null, joined=false, joinedInfo={ appId:"", channel:"", role:"", uid:null };
+const remoteUsers = new Map(); // uid -> { container, videoDiv, audioTrack }
+
+function ensurePlayer(elId){ const el = qs("#"+elId); el.style.width="100%"; el.style.height="100%"; return el; }
+function updateRemoteCount(){
+  const n = remoteUsers.size;
+  if (n === 0) {
+    // show a clearer label for viewers
+    const label = (joinedInfo.role === "audience") ? "waiting for host" : "waiting";
+    remoteState.textContent = label;
+    qs("#remoteRoleLabel").textContent = "";
+  } else {
+    remoteState.textContent = `${n} playing`;
+    qs("#remoteRoleLabel").textContent =
+      (joinedInfo.role === "publisher" ? "Joiner(s)" : "Publisher + others");
+  }
+}
+
+async function joinAgora(role, eventId){
+  if(joined) throw new Error("Already joined. Click Leave first.");
+  const { token, appId, channel } = await fetchEventToken(eventId, role);
+  if(!appId || !channel) throw new Error("Missing appId or channel from server.");
+  console.info("[AGORA] join params", { appId, channel, role, tokenPreview: token ? token.slice(0,12)+"…" : null });
+
+  rtcClient = AgoraRTC.createClient({ mode:"rtc", codec:"vp8" });
+
+  // volume indicator bound to the active client
+  rtcClient.enableAudioVolumeIndicator();
+  rtcClient.on("volume-indicator", (vols) => {
+    vols.forEach(({uid, level}) => {
+      const el = document.querySelector(`#remote-tile-${uid} .remote-footer`);
+      if (el) {
+        const badge = el.querySelector(".badge");
+        if (badge) badge.textContent = `${Math.min(100, level)}%`;
+      }
+    });
+  });
+
+  rtcClient.on("user-published", async (user, mediaType) => {
+    await rtcClient.subscribe(user, mediaType);
+
+    // Create a tile for this uid if missing
+    let tile = remoteUsers.get(user.uid);
+    if (!tile) {
+      const wrap = ensurePlayer("remote-wrap");
+      const container = document.createElement("div");
+      container.className = "remote-tile";
+      container.id = `remote-tile-${user.uid}`;
+
+      const videoDiv = document.createElement("div");
+      videoDiv.className = "remote-video";
+      videoDiv.id = `remote-video-${user.uid}`;
+
+      const footer = document.createElement("div");
+      footer.className = "remote-footer";
+      footer.innerHTML = `<span>UID ${user.uid}</span><span class="badge">remote</span>`;
+
+      container.appendChild(videoDiv);
+      container.appendChild(footer);
+      wrap.appendChild(container);
+
+      tile = { container, videoDiv, audioTrack: null };
+      remoteUsers.set(user.uid, tile);
+      updateRemoteCount();
+    }
+
+    if (mediaType === "video") {
+      user.videoTrack.play(tile.videoDiv);
+    }
+    if (mediaType === "audio") {
+      user.audioTrack.play();
+    }
+  });
+
+  rtcClient.on("user-unpublished", (user, type)=>{
+    const tile = remoteUsers.get(user.uid);
+    if (tile) {
+      try { tile.container.remove(); } catch(_){}
+      remoteUsers.delete(user.uid);
+      updateRemoteCount();
+    }
+  });
+
+  const uid = await rtcClient.join(appId, channel, token || null, 0);
+  joined = true; joinedInfo = { appId, channel, role, uid };
+
+  // Local tracks
+  localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+  localVideoTrack = await AgoraRTC.createCameraVideoTrack();
+  const localEl = ensurePlayer("local-player"); localEl.innerHTML = "";
+  const localDiv = document.createElement("div"); localDiv.style.width="100%"; localDiv.style.height="100%";
+  localEl.appendChild(localDiv);
+  localVideoTrack.play(localDiv);
+
+  // Meeting-style: both roles publish so both sides can hear each other
+  await rtcClient.publish([localAudioTrack, localVideoTrack]);
+  localState.textContent = "publishing";
+  qs("#localRoleLabel").textContent = role === "publisher" ? "Publisher" : "Joiner";
+  if (role === "publisher") {
+    try {
+        await apiFetch(`/api/events/${eventId}/start/`, { method: "POST" });
+        console.log("✅ Event marked live");
+    } catch (err) {
+        console.error("❌ Failed to mark event live:", err);
+    }
+    }
+  updateRemoteCount();
+
+  // ---- Post-join nudge: satisfy autoplay by replaying remote audio after user click ----
+  const unlock = () => {
+    try { AgoraRTC.resumeAudioContext && AgoraRTC.resumeAudioContext(); } catch(_) {}
+    remoteUsers.forEach(({ audioTrack }) => {
+      try { audioTrack && audioTrack.play(); } catch (_) {}
+    });
+    document.removeEventListener('click', unlock);
+  };
+  // try immediately (works if not blocked) AND ensure it runs on first user click
+  setTimeout(unlock, 0);
+  document.addEventListener('click', unlock, { once: true });
+}
+
+async function leaveAgora(eventId){
+  let wasPublisher = (joinedInfo.role === "publisher");
+  try {
+    // cleanup tracks
+    if (localAudioTrack){ try{ localAudioTrack.stop(); localAudioTrack.close(); } catch { } }
+    if (localVideoTrack){ try{ localVideoTrack.stop(); localVideoTrack.close(); } catch { } }
+    if (rtcClient){ try{ await rtcClient.leave(); } catch { } }
+  } catch (e) {
+    console.warn("Leave error (ignored for cleanup)", e);
+  } finally {
+    localAudioTrack = null;
+    localVideoTrack = null;
+    rtcClient = null;
+    joined = false;
+
+    localState.textContent = "idle";
+    qs("#localRoleLabel").textContent = "";
+    qs("#local-player").innerHTML = "";
+
+    remoteUsers.forEach(({container}) => { try { container.remove(); } catch { } });
+    remoteUsers.clear();
+
+    if (remoteState) {
+      remoteState.textContent = (joinedInfo.role === "audience") ? "waiting for host" : "waiting";
+    }
+    qs("#remoteRoleLabel").textContent = "";
+    updateRemoteCount();
+
+    if (wasPublisher && eventId) {
+      try {
+        await apiFetch(`/api/events/${eventId}/stop/`, { method: "POST" });
+        console.log("✅ Event marked ended (backend will fetch recording)");
+      } catch (err) {
+        console.error("Failed to stop event:", err);
+      }
+    }
+  }
+}
+
+
+/* Buttons */
+const btnGetToken = qs("#btnGetToken");
+if (btnGetToken) {
+  btnGetToken.onclick = async (e) => {
+    e.preventDefault(); setHTML(tokenMsg,"");
+    const id = qs("#liveEventId").value.trim(); const role = qs("#liveRole").value;
+    if(!id) return msg(tokenMsg,"Event is required.");
+    try {
+      const { token } = await fetchEventToken(id, role);
+      qs("#liveToken").value = token || "";
+      msg(tokenMsg, `Token issued for ${role}.`, true);
+    } catch(err){ msg(tokenMsg, "Failed to get token: "+err.message); }
+  };
+}
+
+const btnJoin = qs("#btnJoin");
+if (btnJoin) {
+  btnJoin.onclick = async () => {
+    setHTML(tokenMsg,"");
+    const id = qs("#liveEventId").value.trim();
+    const role = qs("#liveRole").value;
+
+    // prevent join outside window if user landed directly on Live
+    const ev = getEventById(id);
+    const ph = phaseOf(ev);
+    if (ph === "before") return msg(tokenMsg, "You’re early. Please come back at the scheduled time.");
+    if (ph === "after")  return msg(tokenMsg, "Meeting has ended.");
+
+    if(!id) return msg(tokenMsg,"Event is required.");
+    try {
+      await joinAgora(role, id);
+      msg(tokenMsg, `Joined as ${role}.`, true);
+
+    } catch(err){
+      const hint = (String(err?.message||"").includes("appId") || String(err?.message||"").includes("channel"))
+        ? " (Tip: ensure your token API returns app_id & channel, or set AGORA_FALLBACK_APP_ID)"
+        : "";
+      msg(tokenMsg, "Join failed: " + err.message + hint);
+      console.error("[JOIN ERROR]", err);
+    }
+  };
+}
+
+const btnLeave = qs("#btnLeave");
+if (btnLeave) {
+  btnLeave.onclick = async () => {
+    const id = qs("#liveEventId").value.trim();
+    try {
+      await leaveAgora(id);
+      msg(tokenMsg, "Left channel.", true);
+    } catch (err) {
+      msg(tokenMsg, "Leave failed: " + err.message);
+    }
+  };
+}
+/* Toggles */
+qs("#btnToggleCam").onclick = async ()=>{
+  if(!localVideoTrack) return alert("Join first.");
+  const enabled = localVideoTrack._enabled !== false;
+  await localVideoTrack.setEnabled(!enabled);
+  localState.textContent = (!enabled) ? (joinedInfo.role === "publisher" ? "publishing" : "preview") : "video off";
+};
+qs("#btnToggleMic").onclick = async ()=>{
+  if(!localAudioTrack) return alert("Join first.");
+  const enabled = localAudioTrack._enabled !== false;
+  await localAudioTrack.setEnabled(!enabled);
+};
+
+// If the browser blocks autoplay, show a one-tap button to enable sound
+AgoraRTC.onAutoplayFailed = () => {
+  if (document.getElementById("unlock-audio")) return;
+
+  const btn = document.createElement("button");
+  btn.id = "unlock-audio";
+  btn.textContent = "Enable audio";
+  Object.assign(btn.style, {
+    position: "fixed", right: "16px", bottom: "16px", zIndex: 9999,
+    padding: "10px 14px", borderRadius: "10px",
+    border: "1px solid #232745", background: "#6C63FF", color: "#fff",
+    cursor: "pointer"
+  });
+  document.body.appendChild(btn);
+
+  btn.onclick = () => {
+    try { AgoraRTC.resumeAudioContext && AgoraRTC.resumeAudioContext(); } catch(_) {}
+    remoteUsers.forEach((tile) => {
+      try { tile.audioTrack && tile.audioTrack.play(); } catch (_) {}
+    });
+    btn.remove();
+  };
+};
+
+function getEventById(id){
+  return eventCache.find(e => String(e.id ?? e.pk ?? e.event_id ?? "") === String(id));
+}
+function isMineEvent(ev){
+  if (!ev || !me) return false;
+  const creator = ev.created_by_id ?? ev.owner_id ?? ev.user_id ?? ev.creator ?? ev.creator_id ?? null;
+  return String(creator ?? "") === String(me.id ?? "");
+}
+
+/** Set role value and lock the opposite option */
+function lockRoleFor(isMine){
+  const roleSel = qs("#liveRole");
+  if (!roleSel) return;
+  const pubOpt = [...roleSel.options].find(o => o.value === "publisher");
+  const audOpt = [...roleSel.options].find(o => o.value === "audience");
+
+  if (isMine){
+    roleSel.value = "publisher";
+    if (pubOpt) pubOpt.disabled = false;
+    if (audOpt) audOpt.disabled = true;
+  } else {
+    roleSel.value = "audience";
+    if (pubOpt) pubOpt.disabled = true;
+    if (audOpt) audOpt.disabled = false;
+  }
+}
+
+/** Recompute lock for whatever is currently selected in the event dropdown */
+function refreshRoleLockFromSelect(){
+  const sel = qs("#liveEventSelect");
+  if (!sel) return;
+  const ev = getEventById(sel.value);
+  lockRoleFor(isMineEvent(ev));
+}
+function applyLiveSelection(eventId, isMine){
+  const sel = qs("#liveEventSelect");
+  const roleSel = qs("#liveRole");
+  const idStr = String(eventId ?? "");
+
+  if (sel){ sel.value = idStr; sel.disabled = true; }
+  if (roleSel){ roleSel.value = isMine ? "publisher" : "audience"; roleSel.disabled = true; }
+  const idInput = qs("#liveEventId");
+  if (idInput) idInput.value = idStr;
+
+  const ev = eventCache.find(e => String(e.id ?? e.pk ?? e.event_id ?? "") === idStr);
+  qs("#summaryEventTitle").textContent = ev?.title || ev?.name || `Event #${idStr}`;
+  qs("#summaryRole").textContent = isMine ? "publisher (host)" : "audience (viewer)";
+}
+// --- Time helpers ---
+function getStartTime(ev){ return ev?.start_time ? new Date(ev.start_time) : null; }
+function getEndTime(ev){ return ev?.end_time ? new Date(ev.end_time) : null; }
+
+/** returns 'before' | 'window' | 'after' based on now vs start/end */
+function phaseOf(ev){
+  const now = Date.now();
+  const s = getStartTime(ev)?.getTime() ?? null;
+  const e = getEndTime(ev)?.getTime() ?? null;
+
+  if (e && now >= e) return "after";
+  if (s && now < s) return "before";
+  // if no times provided, treat as allowed
+  return "window";
+}
+
+function phaseTooltip(ev){
+  const s = getStartTime(ev), e = getEndTime(ev);
+  if (!s && !e) return "";
+  const sTxt = s ? s.toLocaleString() : "unscheduled";
+  const eTxt = e ? e.toLocaleString() : "—";
+  return `Scheduled ${sTxt}${e ? " → "+eTxt : ""}`;
+}
+
+async function autoEndOverdueEvents(){
+  const now = Date.now();
+  for (const ev of eventCache){
+    const e = getEndTime(ev)?.getTime();
+    if (e && now >= e && String(ev.status||"").toLowerCase()!=="ended"){
+      try{
+        await apiFetch(`/api/events/${ev.id}/`, {
+          method:"PATCH",
+          body: JSON.stringify({ status:"ended", is_live:false })
+        });
+        ev.status = "ended";
+      }catch(_){ /* ignore backend refusal */ }
+    }
+  }
+  // If you are looking at the list, refresh statuses shown
+  const currentRoute = localStorage.getItem("lastRoute");
+  if (currentRoute === "events") { try { loadEvents(); } catch{}_ }
+}
+
+/* ========== Q&A WebSocket (token via query string, ngrok-safe) ========== */
+let qnaSocket = null;
+
+function connectQna(eventId){
+  // ✅ Already connected to this event? do nothing.
+  if (qnaSocket && qnaSocket.readyState === 1 && qnaSocket.__eventId === String(eventId)) {
+    console.log("[QNA] already connected");
+    return;
+  }
+
+  // close any existing socket (different event or not open)
+  if (qnaSocket) { try { qnaSocket.close(); } catch(_) {} qnaSocket = null; }
+
+  const token = localStorage.getItem(tokenKey) || "";
+  const base = new URL(apiBase || window.location.origin);
+  const wsProto = base.protocol === "https:" ? "wss" : "ws";
+  const wsUrl = `${wsProto}://${base.host}/ws/events/${eventId}/qna/?token=${encodeURIComponent(token)}`;
+
+  console.log("[QNA] connecting:", wsUrl);
+  qnaSocket = new WebSocket(wsUrl);
+  qnaSocket.__eventId = String(eventId);   // ✅ remember which event this socket belongs to
+
+  qnaSocket.onopen = () => console.log("[QNA] connected");
+  qnaSocket.onclose = () => console.log("[QNA] closed");
+  qnaSocket.onerror = (e) => console.warn("[QNA] error", e);
+  qnaSocket.onmessage = (e) => {
+  try {
+    const data = JSON.parse(e.data);   // may be {message, user, uid} or {type: "...", ...}
+
+    const wrap = qs("#qnaWrap");
+
+    // derive my user_id from JWT
+    let myId = null;
+    try {
+      const token = localStorage.getItem(tokenKey) || "";
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      myId = payload.user_id || payload.sub || null;
+    } catch (_) {}
+
+    // normalize what to display
+    const text = data.message || data.content || "";       // chat or qna.question
+    const who  = (data.uid && myId && String(data.uid) === String(myId))
+                  ? "You" : (data.user || "Guest");
+
+    if (!text) return;  // ignore events without displayable text
+
+    const line = document.createElement("div");
+    line.textContent = `${who}: ${text}`;
+    wrap.appendChild(line);
+    wrap.scrollTop = wrap.scrollHeight;
+  } catch (err) {
+    console.warn("[QNA] parse failed", err);
+  }
+};
+}
+
+// Q&A form send
+const qnaForm = qs("#formQna");
+if (qnaForm) {
+  qnaForm.onsubmit = (e) => {
+    e.preventDefault();
+    const input = qs("#qnaInput");
+    const message = (input.value || "").trim();
+    if (!message) return;
+    if (!qnaSocket || qnaSocket.readyState !== 1) {
+      return msg(qs("#tokenMsg"), "Chat not connected yet. Join the event first.");
+    }
+    qnaSocket.send(JSON.stringify({ message }));
+    input.value = "";
+  };
+}
+
+// Close chat when we leave
+const __origLeave = qs("#btnLeave")?.onclick;
+qs("#btnLeave").onclick = async () => {
+  try{ if (qnaSocket) { qnaSocket.close(); qnaSocket = null; } }catch(_){}
+  if (typeof __origLeave === "function") {
+    try { await __origLeave(); } catch(_) {}
+  } else {
+    const id = qs("#liveEventId").value.trim();
+    await leaveAgora(id);
+    msg(qs("#tokenMsg"), "Left channel.", true);
+  }
+};
+
+// Safely wrap Join to start Q&A after successful join (ADD-ONLY)
+const __origJoin = qs("#btnJoin")?.onclick;
+qs("#btnJoin").onclick = async () => {
+  try {
+    if (typeof __origJoin === "function") {
+      await __origJoin();
+    } else {
+      const id = qs("#liveEventId").value.trim();
+      const role = qs("#liveRole").value;
+      if(!id) return msg(qs("#tokenMsg"),"Event ID required.");
+      await joinAgora(role, id);
+      msg(qs("#tokenMsg"), `Joined as ${role}.`, true);
+    }
+  } catch (e) { return; }
+  const id = (qs("#liveEventId").value || "").trim();
+  if (id) { try { connectQna(id); } catch{}_ }   // ✅ called exactly once
+};
+/* ========== Recording Webhook Tester ========== */
+const formRec = qs("#formRecordingWebhook");
+if (formRec) {
+  formRec.onsubmit = async (e) => {
+    e.preventDefault();
+    const event_id = parseInt(qs("#recEventId").value, 10);
+    const recording_url = (qs("#recUrl").value || "").trim();
+    setHTML(qs("#recMsg"), "");
+    try {
+      await apiFetch("/api/events/recording-webhook/", {
+        method: "POST",
+        body: JSON.stringify({ event_id, recording_url })
+      });
+      msg(qs("#recMsg"), "Webhook accepted.", true);
+      /* === ADDED: refresh events/recordings after webhook === */
+      try { await loadEvents(); } catch(_) {}
+    } catch (err) {
+      msg(qs("#recMsg"), "Webhook failed: " + (err?.message || err));
+    }
+  };
+}
+// run every 60s
+setInterval(autoEndOverdueEvents, 60000);
+
+/* ===================== ADDED: Recording UI (no HTML edits required) ===================== */
+/** Creates the "Past Events (Recordings)" card and the modal player if missing. */
+function __ensureRecordingUI(){
+  // 1) Past Events card under #evtWrap
+  const evtWrap = qs("#evtWrap");
+  if (evtWrap && !qs("#recWrap")){
+    const card = document.createElement("div");
+    card.className = "card";
+    card.style.margin = "10px 0";
+    card.innerHTML = `
+      <h3 style="margin:0 0 8px 0">Past Events (Watch Recordings)</h3>
+      <div id="recWrap" class="col" style="gap:10px">
+        <div class="muted">Fetching recordings…</div>
+      </div>
+    `;
+    // insert after evtWrap's parent card if present, else after evtWrap node
+    const parentCard = evtWrap.closest(".card");
+    if (parentCard && parentCard.parentNode) parentCard.parentNode.insertBefore(card, parentCard.nextSibling);
+    else evtWrap.insertAdjacentElement("afterend", card);
+  }
+
+  // 2) Modal for video playback
+  if (!qs("#recordingModal")){
+    const modal = document.createElement("div");
+    modal.id = "recordingModal";
+    modal.className = "hidden";
+    Object.assign(modal.style, {
+      position:"fixed", inset:"0", background:"rgba(0,0,0,.6)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:2000
+    });
+    modal.innerHTML = `
+      <div style="background:#0e1330; width:min(900px, 96vw); padding:12px; border:1px solid #2a3160; border-radius:12px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px">
+          <h4 id="recModalTitle" style="margin:0">Recording</h4>
+          <button id="recModalClose" class="btn small">Close</button>
+        </div>
+        <video id="recModalVideo" controls style="width:100%; height:auto; background:#000" playsinline></video>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    const closeBtn = qs("#recModalClose");
+    closeBtn.onclick = () => {
+      const vid = qs("#recModalVideo");
+      if (vid) { try { vid.pause(); } catch(_){} }
+      modal.classList.add("hidden");
+    };
+    modal.addEventListener("click", (e)=>{
+      if (e.target === modal) closeBtn.click();
+    });
+  }
+}
+
+/** Renders ended events that have a recording_url into #recWrap and wires the modal. */
+function renderRecordings(list){
+  const recWrap = qs("#recWrap");
+  if (!recWrap) return;
+
+  const pastWithRecording = (list||[]).filter(ev =>
+    String(ev.status || "").toLowerCase() === "ended" &&
+    (ev.recording_url || "").trim() !== ""
+  );
+
+  if (!pastWithRecording.length){
+    recWrap.innerHTML = '<div class="muted">No recordings yet.</div>';
+    return;
+  }
+
+  const rows = pastWithRecording.map(ev=>{
+    const id = ev.id ?? ev.pk ?? ev.event_id ?? "";
+    const title = ev.title || ev.name || `Event #${id}`;
+    const when = (ev.start_time && ev.end_time)
+      ? new Date(ev.start_time).toLocaleString() + " → " + new Date(ev.end_time).toLocaleString()
+      : (ev.start_time ? new Date(ev.start_time).toLocaleString() : "");
+    const orgName = (ev.organization && (ev.organization.name || ev.organization.title))
+      || ev.organization_name || "";
+
+    return `
+      <div class="row" style="gap:10px; align-items:center; border:1px solid #2a3160;
+           background:#0e1330; padding:10px; border-radius:10px">
+        <div style="flex:3; min-width:240px">
+          <div style="font-weight:600">${title}</div>
+          <div class="muted" style="font-size:.85rem">${orgName ? orgName + " • " : ""}${when}</div>
+        </div>
+        <div style="flex:2; min-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="${ev.recording_url}">
+          <span class="muted" style="font-size:.85rem">Recording:</span>
+          <a href="${ev.recording_url}" target="_blank" rel="noopener">${ev.recording_url}</a>
+        </div>
+        <div style="flex:0">
+          <button class="btn small" data-watch="${id}">Watch</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  recWrap.innerHTML = rows;
+
+  recWrap.querySelectorAll("[data-watch]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const id = btn.getAttribute("data-watch");
+      const ev = pastWithRecording.find(e => String(e.id ?? e.pk ?? e.event_id ?? "") === String(id));
+      if (!ev || !(ev.recording_url||"").trim()) return;
+      qs("#recModalTitle").textContent = ev.title || `Event #${id}`;
+      const vid = qs("#recModalVideo");
+      vid.src = ev.recording_url;
+      vid.currentTime = 0;
+      try { vid.play(); } catch(_){}
+      qs("#recordingModal").classList.remove("hidden");
+    });
+  });
+}
+
+/* ===================== START ===================== */
+renderAuthState();
+</script>
+
+</body>
+</html>

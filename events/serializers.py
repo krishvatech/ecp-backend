@@ -34,6 +34,9 @@ class EventSerializer(serializers.ModelSerializer):
             "updated_at",
             "live_started_at",
             "live_ended_at",
+            "agora_channel",
+            "agora_resource_id",
+            "agora_sid",
         ]
 
         # Mark auto‑managed fields and new live metadata fields as read only.
@@ -46,6 +49,9 @@ class EventSerializer(serializers.ModelSerializer):
             "active_speaker",
             "live_started_at",
             "live_ended_at",
+            "agora_channel",
+            "agora_resource_id",
+            "agora_sid",
         ]
 
     # Browsable API uses these formats for rendering/parsing

@@ -37,10 +37,10 @@ FRONTEND_RESET_PASSWORD_URL = os.getenv(
     "http://localhost:3000/reset-password"  # e.g. https://app.example.com/reset-password
 )
 
-CSRF_TRUSTED_ORIGINS = ["http://localhost:5173"]
+CSRF_TRUSTED_ORIGINS = [" https://af0d6abef60b.ngrok-free.app"]
 
 CORS_ALLOWED_ORIGINS = [
-    "http://127.0.0.1:8000",
+    " https://af0d6abef60b.ngrok-free.app",
 ]
 
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID", "")
@@ -294,3 +294,24 @@ STRIPE_TEST_SECRET_KEY = os.getenv("STRIPE_TEST_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 DJSTRIPE_WEBHOOK_SECRET = STRIPE_WEBHOOK_SECRET
 DJSTRIPE_FOREIGN_KEY_TO_FIELD = "id"
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",  # 👈 show info logs
+    },
+    "loggers": {
+        "events": {   # 👈 our app name
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}

@@ -41,6 +41,9 @@ class Event(models.Model):
         related_name="active_events",
     )
     recording_url = models.URLField(blank=True)
+    agora_resource_id = models.CharField(max_length=128, blank=True, null=True)
+    agora_sid = models.CharField(max_length=128, blank=True, null=True)
+    agora_channel = models.CharField(max_length=128, blank=True, null=True)
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_events")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

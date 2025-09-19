@@ -8,6 +8,10 @@ from celery import shared_task
 from django.core.files.base import ContentFile
 from django.utils import timezone
 import requests
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 @shared_task
@@ -18,13 +22,13 @@ def example_cleanup_task() -> str:
 @shared_task
 def download_event_recording(event_id: int, file_url: str) -> str:
     """
-    Download a recording for an event and save it via django-storages.
-    In this sandbox environment, we simply set the event.recording_url.
+    Download a recording for an event and save it.
+    For now, just update the recording_url in the Event model.
     """
-    from events.models import Event
-    event = Event.objects.get(pk=event_id)
-    # In production: stream file and store to S3/GCS via default_storage.save(...)
-    # For now, just update the URL.
-    event.recording_url = file_url
-    event.save(update_fields=["recording_url", "updated_at"])
-    return f"Stored recording for event {event_id}"
+    from .models import Event
+    try:
+        event = Event.objects.get(id=event_id)
+        event.recording_url = file_url
+        event.save(update_fields=["recording_url"])
+    except Event.DoesNotExist:
+        print(f"[ERROR] Event {event_id} not found")
