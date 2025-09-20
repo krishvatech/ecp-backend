@@ -27,10 +27,13 @@ from django.shortcuts import redirect
 from django.utils.crypto import get_random_string
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import LinkedInAccount
-
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q
 from .filters import UserFilter
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.utils.decorators import method_decorator
+from django.contrib.auth import login as django_login, logout as django_logout
+from django.contrib.auth import get_user_model
 
 from .serializers import (
     UserSerializer,
@@ -46,6 +49,9 @@ LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 API_ME = "https://api.linkedin.com/v2/me"
 API_EMAIL = "https://api.linkedin.com/v2/emailAddress?q=members&projection=(elements*(handle~))"
 OIDC_USERINFO = "https://api.linkedin.com/v2/userinfo"  # if using OIDC product
+
+
+UserModel = get_user_model()
 
 def _state_cookie():
     return get_random_string(32)
@@ -234,6 +240,66 @@ class LogoutView(APIView):
         except TokenError:
             return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
         
+
+class SessionLoginView(APIView):
+    """
+    Session-based login. Expects JSON: {"email": "...", "password": "..."}
+    On success, creates a Django session (cookie-based).
+    """
+    permission_classes = []  # allow unauthenticated
+    authentication_classes = []
+
+    @method_decorator(ensure_csrf_cookie)
+    def post(self, request):
+        data = request.data or {}
+        email = (data.get("email") or "").strip().lower()
+        password = data.get("password") or ""
+        if not email or not password:
+            return Response({"error": "email and password are required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = UserModel.objects.get(email__iexact=email)
+        except UserModel.DoesNotExist:
+            return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
+        if not user.is_active or not user.check_password(password):
+            return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
+
+        django_login(request, user)          # <- creates session
+        request.session.cycle_key()          # optional: rotate session id
+
+        from .serializers import UserSerializer
+        return Response({"detail": "logged_in", "user": UserSerializer(user).data}, status=status.HTTP_200_OK)
+
+
+class SessionLogoutView(APIView):
+    """Session-based logout. Destroys the user's session cookie."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        django_logout(request)
+        return Response({"detail": "logged_out"}, status=status.HTTP_200_OK)
+
+
+class SessionMeView(APIView):
+    """Return the current session-authenticated user (401 if not logged in)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .serializers import UserSerializer
+        return Response(UserSerializer(request.user).data, status=status.HTTP_200_OK)
+
+
+class CSRFCookieView(APIView):
+    """
+    GET to set the CSRF cookie. Call this before POST /session/login from a browser.
+    """
+    permission_classes = []
+    authentication_classes = []
+
+    @method_decorator(ensure_csrf_cookie)
+    def get(self, request):
+        return Response({"detail": "CSRF cookie set"}, status=status.HTTP_200_OK)
+
+
 class LinkedInAuthURL(APIView):
     permission_classes = [permissions.AllowAny]
     def get(self, request):

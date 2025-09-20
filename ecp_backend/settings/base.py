@@ -37,10 +37,10 @@ FRONTEND_RESET_PASSWORD_URL = os.getenv(
     "http://localhost:3000/reset-password"  # e.g. https://app.example.com/reset-password
 )
 
-CSRF_TRUSTED_ORIGINS = [" https://486c3d7e132b.ngrok-free.app"]
+CSRF_TRUSTED_ORIGINS = [" http://localhost:8000"]
 
 CORS_ALLOWED_ORIGINS = [
-    " https://486c3d7e132b.ngrok-free.app",
+    " http://localhost:8000",
 ]
 
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID", "")
@@ -277,6 +277,7 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_BROWSER_XSS_FILTER = True
 SESSION_COOKIE_SECURE = False  # Should be True in production
 CSRF_COOKIE_SECURE = False     # Should be True in production
+SESSION_COOKIE_SAMESITE = "Lax"   # "None" if you later do cross-site HTTPS
 
 # Realtime streaming (Agora) configuration
 # The CPaaS integration uses these values to generate streaming tokens.
