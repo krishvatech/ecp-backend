@@ -170,4 +170,4 @@ class RecordingWebhookView(views.APIView):
         if not event_id:
             return Response({"error": "Missing event_id"}, status=400)
         download_event_recording.delay(event_id, recording_url)
-return Response({"message": "Recording saved"}, status=202)
+        return Response({"message": "Recording saved"}, status=202)
