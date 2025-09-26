@@ -27,6 +27,12 @@ class EventSerializer(serializers.ModelSerializer):
             "end_time",
             "status",
             "is_live",
+            "category",
+            "format",
+            "location",
+            "price",
+            "attending_count",
+            "preview_image",
             "active_speaker",
             "recording_url",
             "created_by_id",
@@ -47,6 +53,7 @@ class EventSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "active_speaker",
+            "attending_count",
             "live_started_at",
             "live_ended_at",
             "agora_channel",
@@ -110,6 +117,11 @@ class EventSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
     # ---------- Field-level validations ----------
+
+    def validate_price(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError("Price cannot be negative.")
+        return value
 
     def validate_title(self, value: str) -> str:
         if value and value.isdigit():
