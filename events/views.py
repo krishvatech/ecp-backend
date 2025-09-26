@@ -6,6 +6,7 @@ belonging to the target organization.
 """
 from rest_framework import permissions, viewsets, status, views
 from rest_framework.permissions import AllowAny, IsAuthenticatedOrReadOnly
+from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, BasePermission, SAFE_METHODS
@@ -18,7 +19,7 @@ from .serializers import EventSerializer
 from .tasks import download_event_recording
 from django.utils import timezone
 from datetime import timedelta
-import calendar
+from django.utils.dateparse import parse_date
 from django.db.models.functions import Lower
 import logging
 
@@ -52,6 +53,15 @@ class EventViewSet(viewsets.ModelViewSet):
     permission_classes = [IsCreatorOrReadOnly]
     pagination_class = EventLimitOffsetPagination
     throttle_classes = []
+    
+    # 🔎 ADD THIS
+    filter_backends = [SearchFilter, OrderingFilter]
+    # Search across title, location, and category (topic). Add more if you want.
+    search_fields = ["title", "location", "category", "description", "organization__name"]
+    # (Optional) ordering support
+    ordering_fields = ["start_time", "created_at", "title"]
+    ordering = ["-start_time"]
+    
     def get_queryset(self):
         user = self.request.user
         qs = Event.objects.select_related("organization")
@@ -108,6 +118,27 @@ class EventViewSet(viewsets.ModelViewSet):
 
             # Simple rule: show events whose *start* falls inside the window
             qs = qs.filter(start_time__gte=start_win, start_time__lt=end_win)
+            
+        loc = self.request.query_params.get("location", "").strip()
+        if loc:
+            qs = qs.filter(location__iexact=loc)  
+            
+            
+        start_date = params.get("start_date")
+        end_date   = params.get("end_date")
+
+        if start_date or end_date:
+            s = parse_date(start_date) if start_date else None
+            e = parse_date(end_date)   if end_date   else None
+            if s and e and s > e:
+                s, e = e, s  # swap if user inverted
+
+            if s and e:
+                qs = qs.filter(start_time__date__gte=s, start_time__date__lte=e)
+            elif s:
+                qs = qs.filter(start_time__date__gte=s)
+            elif e:
+                qs = qs.filter(start_time__date__lte=e)
 
         return qs
 
@@ -216,6 +247,18 @@ class EventViewSet(viewsets.ModelViewSet):
             .order_by(Lower("format"))
         )
         return Response({"results": list(fmts)})
+    
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="locations")
+    def locations(self, request):
+        qs = self.get_queryset()
+        locs = (
+            qs.exclude(location__isnull=True)        # ← if your field is named differently,
+            .exclude(location__exact="")           #    replace 'location' with that name
+            .values_list("location", flat=True)
+            .distinct()
+            .order_by(Lower("location"))
+        )
+        return Response({"results": list(locs)})
     
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated], url_path="stop")
     def stop_event(self, request, pk=None):
