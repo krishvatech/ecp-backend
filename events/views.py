@@ -22,6 +22,8 @@ from datetime import timedelta
 from django.utils.dateparse import parse_date
 from django.db.models.functions import Lower
 import logging
+from django.db.models import Max
+
 
 logger = logging.getLogger("events")
 # 🔑 Agora credentials from env
@@ -121,8 +123,7 @@ class EventViewSet(viewsets.ModelViewSet):
             
         loc = self.request.query_params.get("location", "").strip()
         if loc:
-            qs = qs.filter(location__iexact=loc)  
-            
+            qs = qs.filter(location__iexact=loc)   
             
         start_date = params.get("start_date")
         end_date   = params.get("end_date")
@@ -139,12 +140,16 @@ class EventViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(start_time__date__gte=s)
             elif e:
                 qs = qs.filter(start_time__date__lte=e)
+                
+        min_price = params.get("min_price")
+        max_price = params.get("max_price")
+        if min_price:
+            qs = qs.filter(price__gte=min_price)
+        if max_price:
+            qs = qs.filter(price__lte=max_price)
 
         return qs
 
-        
-
-    
     def get_permissions(self):
         if self.action in ["list", "retrieve"]:
             return [AllowAny()]
@@ -260,6 +265,12 @@ class EventViewSet(viewsets.ModelViewSet):
         )
         return Response({"results": list(locs)})
     
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="max-price")
+    def max_price(self, request):
+        qs = self.get_queryset()  # respects all current filters & visibility
+        mx = qs.aggregate(mx=Max("price"))["mx"] or 0
+        return Response({"max_price": float(mx)})
+        
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated], url_path="stop")
     def stop_event(self, request, pk=None):
         event = self.get_object()
