@@ -17,17 +17,23 @@ from .models import Event
 from .serializers import EventSerializer
 from .tasks import download_event_recording
 from django.utils import timezone
+from datetime import timedelta
+import calendar
+from django.db.models.functions import Lower
 import logging
+
 logger = logging.getLogger("events")
 # 🔑 Agora credentials from env
 APP_ID = os.getenv("AGORA_APP_ID")
 CUSTOMER_ID = os.getenv("AGORA_CUSTOMER_ID")
 CUSTOMER_SECRET = os.getenv("AGORA_CUSTOMER_SECRET")
+
 class EventLimitOffsetPagination(LimitOffsetPagination):
     default_limit = 9           # 9 per page
     limit_query_param = "limit"
     offset_query_param = "offset"
     max_limit = 50
+    
 class IsCreatorOrReadOnly(BasePermission):
     def has_permission(self, request, view):
         # Anyone can read; must be authenticated to write
@@ -39,6 +45,7 @@ class IsCreatorOrReadOnly(BasePermission):
         if request.method in SAFE_METHODS:
             return True
         return bool(request.user and (request.user.is_staff or obj.created_by_id == request.user.id))
+
 class EventViewSet(viewsets.ModelViewSet):
     """CRUD operations for events."""
     serializer_class = EventSerializer
@@ -48,11 +55,64 @@ class EventViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = Event.objects.select_related("organization")
-        # Anonymous users → only published
+
+        # Base visibility
         if not user.is_authenticated:
-            return qs.filter(status="published")
-        # Logged-in users → published OR events from orgs they belong to (includes drafts)
-        return qs.filter(Q(status="published") | Q(organization__members=user)).distinct()
+            qs = qs.filter(status="published")
+        else:
+            qs = qs.filter(Q(status="published") | Q(organization__members=user)).distinct()
+
+        # ---- Filters (applied only when provided) ----
+        params = self.request.query_params
+
+        # Event format (use 'event_format' if that's your field name)
+        fmts = params.getlist("event_format")
+        if not fmts:
+            raw_fmts = params.get("event_format", "")
+            if raw_fmts:
+                fmts = [v.strip() for v in raw_fmts.split(",") if v.strip()]
+
+        if fmts:
+            qs = qs.filter(format__in=fmts)
+        # Category / Topic (supports ?category=A&category=B and ?category=A,B)
+        cats = params.getlist("category")
+        if not cats:
+            raw = params.get("category", "")
+            if raw:
+                cats = [c.strip() for c in raw.split(",") if c.strip()]
+        if cats:
+            qs = qs.filter(category__in=cats)
+            
+
+        dr = params.get("date_range")
+        if dr in {"This Week", "This Month", "Next 90 days"}:
+            now = timezone.now()
+
+            if dr == "This Week":
+                # Monday 00:00 to next Monday 00:00 (half-open interval)
+                start_win = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+                end_win = start_win + timedelta(days=7)
+
+            elif dr == "This Month":
+                # 1st day 00:00 to 1st of next month 00:00
+                start_win = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                # next month first day 00:00
+                if start_win.month == 12:
+                    end_win = start_win.replace(year=start_win.year + 1, month=1)
+                else:
+                    end_win = start_win.replace(month=start_win.month + 1)
+
+            else:  # "next_90_days"
+                start_win = now
+                end_win = now + timedelta(days=90)
+
+            # Simple rule: show events whose *start* falls inside the window
+            qs = qs.filter(start_time__gte=start_win, start_time__lt=end_win)
+
+        return qs
+
+        
+
     
     def get_permissions(self):
         if self.action in ["list", "retrieve"]:
@@ -125,6 +185,38 @@ class EventViewSet(viewsets.ModelViewSet):
         event.save()
         logger.info(f"✅ Saved Event {event.id}: resourceId={resource_id}, sid={sid}, channel={channel_name}")
         return Response(EventSerializer(event, context=self.get_serializer_context()).data)
+    
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="categories")
+    def categories(self, request):
+        """
+        Return distinct category values (published for anon; published+org for authed via get_queryset()).
+        """
+        qs = self.get_queryset()  # ← uses the same auth logic you already have
+        cats = (
+            qs.exclude(category__isnull=True)
+              .exclude(category__exact="")
+              .values_list("category", flat=True)
+              .distinct()
+              .order_by(Lower("category"))
+        )
+        return Response({"results": list(cats)})
+    
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="formats")
+    def formats(self, request):
+        """
+        Return distinct event format values (e.g., In-Person, Virtual, Hybrid, …).
+        """
+        qs = self.get_queryset()
+        # ⚠️ If your field is named 'event_format' instead of 'format', change below to 'event_format'
+        fmts = (
+            qs.exclude(format__isnull=True)
+            .exclude(format__exact="")
+            .values_list("format", flat=True)
+            .distinct()
+            .order_by(Lower("format"))
+        )
+        return Response({"results": list(fmts)})
+    
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated], url_path="stop")
     def stop_event(self, request, pk=None):
         event = self.get_object()
@@ -153,6 +245,7 @@ class EventViewSet(viewsets.ModelViewSet):
                     event.save()
                     logger.info(f"✅ Event {event.id} recording saved: {recording_url}")
         return Response(EventSerializer(event, context=self.get_serializer_context()).data)
+
 class RecordingWebhookView(views.APIView):
     """
     Agora recording webhook.
