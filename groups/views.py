@@ -356,10 +356,13 @@ class GroupViewSet(viewsets.ModelViewSet):
         created_by = self.request.query_params.get("created_by")
         search = self.request.query_params.get("search")
 
+        # only top-level (parent is NULL) when filtering by "me"
         if created_by == "me" and self.request.user.is_authenticated:
-            qs = qs.filter(created_by=self.request.user)
+            qs = qs.filter(created_by=self.request.user, parent__isnull=True)
+
         if search:
             qs = qs.filter(Q(name__icontains=search) | Q(description__icontains=search))
+
         return qs
 
     def get_object(self):
