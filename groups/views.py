@@ -1100,6 +1100,39 @@ class GroupViewSet(viewsets.ModelViewSet):
                 return item, None
 
         return None, "Item is not a post"
+    # inside GroupViewSet
+
+    @action(detail=False, methods=["get"], url_path="explore")
+    def explore(self, request):
+        """
+        Public, top-level groups. Keeps groups visible even if *you* are already pending,
+        so the UI can show a disabled 'Request pending' button.
+        """
+        qs = (
+            self.get_queryset()
+            .filter(visibility=Group.VISIBILITY_PUBLIC, parent__isnull=True)
+            .order_by("-created_at")
+        )
+        page = self.paginate_queryset(qs)
+        ser = self.get_serializer(page or qs, many=True, context={"request": request})
+        return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+
+    @action(detail=False, methods=["get"], url_path="joined", permission_classes=[IsAuthenticated])
+    def joined(self, request):
+        """
+        My Groups = active + pending (invited/requested).
+        """
+        statuses = [GroupMembership.STATUS_ACTIVE, GroupMembership.STATUS_PENDING]
+        qs = (
+            Group.objects.filter(memberships__user=request.user, memberships__status__in=statuses)
+            .annotate(member_count=Count("memberships"))
+            .order_by("-created_at")
+            .distinct()
+        )
+        page = self.paginate_queryset(qs)
+        ser = self.get_serializer(page or qs, many=True, context={"request": request})
+        return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+
 
     @action(detail=True, methods=["post"], url_path="moderation/delete-post")
     def moderation_delete_post(self, request, pk=None):

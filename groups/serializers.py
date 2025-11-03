@@ -12,6 +12,11 @@ class GroupSerializer(serializers.ModelSerializer):
     created_by = serializers.SerializerMethodField(read_only=True)
     remove_cover_image = serializers.BooleanField(write_only=True, required=False, default=False)
     current_user_role = serializers.SerializerMethodField(read_only=True)
+
+    # NEW ↓
+    membership_status = serializers.SerializerMethodField(read_only=True)
+    invited = serializers.SerializerMethodField(read_only=True)
+
     community_id = serializers.PrimaryKeyRelatedField(
         source="community", queryset=Community.objects.all(), required=False
     )
@@ -28,6 +33,8 @@ class GroupSerializer(serializers.ModelSerializer):
             "member_count", "created_by",
             "created_at", "updated_at",
             "current_user_role",
+            "membership_status",  # NEW
+            "invited",            # NEW
             "community_id",
             "parent_id",
         ]
@@ -110,6 +117,23 @@ class GroupSerializer(serializers.ModelSerializer):
             return m.role
         except GroupMembership.DoesNotExist:
             return None
+    
+    def get_membership_status(self, obj):
+        request = self.context.get("request")
+        uid = getattr(getattr(request, "user", None), "id", None)
+        if not uid:
+            return None
+        m = GroupMembership.objects.filter(group=obj, user_id=uid).only("status").first()
+        return getattr(m, "status", None) if m else None
+
+    # NEW ↓
+    def get_invited(self, obj):
+        request = self.context.get("request")
+        uid = getattr(getattr(request, "user", None), "id", None)
+        if not uid:
+            return False
+        m = GroupMembership.objects.filter(group=obj, user_id=uid).only("invited_by_id", "status").first()
+        return bool(m and m.status == GroupMembership.STATUS_PENDING and getattr(m, "invited_by_id", None))
 
 class GroupSettingsSerializer(serializers.ModelSerializer):
     """
