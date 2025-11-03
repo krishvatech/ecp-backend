@@ -15,18 +15,21 @@ class GroupSerializer(serializers.ModelSerializer):
     community_id = serializers.PrimaryKeyRelatedField(
         source="community", queryset=Community.objects.all(), required=False
     )
+    parent_id = serializers.PrimaryKeyRelatedField(
+        source="parent", queryset=Group.objects.all(), required=False, allow_null=True
+    )
 
     class Meta:
         model = Group
         fields = [
             "id", "name", "slug", "description",
-            "visibility",               # already present
-            "join_policy",              # ✅ NEW: expose this so clients can set it
+            "visibility", "join_policy",
             "cover_image", "remove_cover_image",
             "member_count", "created_by",
             "created_at", "updated_at",
-            "current_user_role", 
+            "current_user_role",
             "community_id",
+            "parent_id",
         ]
     read_only_fields = ["id", "slug", "member_count", "created_by", "created_at", "updated_at"]
 
@@ -46,7 +49,14 @@ class GroupSerializer(serializers.ModelSerializer):
         if vis == Group.VISIBILITY_PRIVATE and jp not in {Group.JOIN_INVITE, Group.JOIN_APPROVAL}:
             raise serializers.ValidationError({"join_policy": "Private groups must be 'invite' or 'approval'."})
 
-        return attrs  # ✅ IMPORTANT: return attrs
+        # ⬇️ NEW: keep sub-group in same community as parent (server will also enforce)
+        parent = attrs.get("parent", getattr(self.instance, "parent", None))
+        community = attrs.get("community", getattr(self.instance, "community", None))
+        if parent:
+            # prefer parent's community
+            attrs["community"] = parent.community
+
+        return attrs
 
     def get_created_by(self, obj):
         u = getattr(obj, "created_by", None)

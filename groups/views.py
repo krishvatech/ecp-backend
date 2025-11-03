@@ -8,7 +8,7 @@ from django.utils import timezone
 from urllib.parse import urljoin
 from django.db import transaction
 from django.core import signing
-
+from django.core.files.storage import default_storage
 from rest_framework import status, viewsets, serializers
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -95,6 +95,12 @@ class GroupViewSet(viewsets.ModelViewSet):
             "settings_message_mode", "can_send",
         }
 
+        if self.action == "create":
+            data = getattr(self.request, "data", {}) or {}
+            if data.get("parent_id") or data.get("parent"):
+                return [IsAuthenticated()]
+            return [GroupCreateByAdminOnly()]
+
         if self.action in admin_only:
             return [GroupCreateByAdminOnly()]
         if self.action in auth_only:
@@ -157,6 +163,18 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         return False, "admins_only"
     
+    def _ensure_parent_membership_active(self, group: Group, user_id: int):
+        if not group.parent_id:
+            return
+        GroupMembership.objects.get_or_create(
+            group=group.parent,
+            user_id=user_id,
+            defaults={
+                "role": GroupMembership.ROLE_MEMBER,
+                "status": GroupMembership.STATUS_ACTIVE,   # parent is active once you join a child
+            },
+        )
+
     def _is_active_member(self, user_id, group) -> bool:
         return GroupMembership.objects.filter(
             group=group, user_id=user_id, status=GroupMembership.STATUS_ACTIVE
@@ -191,6 +209,14 @@ class GroupViewSet(viewsets.ModelViewSet):
         event: {type:"event", title, starts_at?, ends_at?, text?}
         """
         group = self.get_object()
+        if group.parent_id:
+            uid = getattr(request.user, "id", None)
+            if not (
+                self._can_moderate_any(request, group) or
+                (uid and self._is_active_member(uid, group))
+            ):
+                return Response({"detail": "Only sub-group members can view its posts."}, status=403)
+            
         FeedItem = self._get_feeditem_model()
         if not FeedItem:
             return Response({"detail": "activity_feed.FeedItem not installed"}, status=409)
@@ -361,7 +387,11 @@ class GroupViewSet(viewsets.ModelViewSet):
         return GroupMembership.objects.filter(
             group=group, user_id=user_id, role=ADMIN, user__is_staff=True
         ).exists()
-
+    def _is_admin_any(self, user_id, group) -> bool:
+        return GroupMembership.objects.filter(
+            group=group, user_id=user_id, role=GroupMembership.ROLE_ADMIN
+        ).exists()
+    
     def _is_moderator(self, user_id, group) -> bool:
         MOD = getattr(GroupMembership, "ROLE_MODERATOR", "moderator")
         # STAFF-ONLY ADMIN/MOD: must be staff
@@ -388,9 +418,51 @@ class GroupViewSet(viewsets.ModelViewSet):
 
     # ---------- create (ADMIN/STAFF only) ----------
     def create(self, request, *args, **kwargs):
-        if not request.user.is_staff:
-            return Response({"detail": "Only admins can create groups."}, status=status.HTTP_403_FORBIDDEN)
+        data = request.data
+        parent_id = data.get("parent_id") or data.get("parent")
+        uid = getattr(request.user, "id", None)
 
+        # SUB-GROUP creation path
+        if parent_id:
+            try:
+                parent = Group.objects.get(pk=int(parent_id))
+            except Exception:
+                return Response({"detail": "Invalid parent_id"}, status=400)
+
+            # owner/creator OR admin (no staff requirement) OR site staff
+            if not (
+                self._can_manage(request, parent)        # owner/creator/staff on parent
+                or self._is_admin_any(uid, parent)       # admin on parent (even if not staff)
+                or getattr(request.user, "is_staff", False)
+            ):
+                return Response({"detail": "Only parent owner/admin can create sub-groups."}, status=403)
+
+            serializer = self.get_serializer(data=data)
+            serializer.is_valid(raise_exception=True)
+
+            # force community to match parent
+            group = serializer.save(
+                created_by=request.user,
+                owner=request.user,
+                parent=parent,
+                community=parent.community,
+            )
+
+            # (Optional) ensure the creator is a member of the new sub-group
+            GroupMembership.objects.get_or_create(
+                group=group, user=request.user,
+                defaults={"role": GroupMembership.ROLE_MEMBER, "status": GroupMembership.STATUS_ACTIVE}
+            )
+
+            out = self.get_serializer(group)
+            headers = self.get_success_headers(out.data)
+            return Response(out.data, status=status.HTTP_201_CREATED, headers=headers)
+
+        # TOP-LEVEL creation remains staff-only (your old rule)
+        if not request.user.is_staff:
+            return Response({"detail": "Only admins can create groups."}, status=403)
+
+        # ... your existing top-level create logic (unchanged) ...
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -402,28 +474,15 @@ class GroupViewSet(viewsets.ModelViewSet):
             try:
                 community_obj = Community.objects.get(pk=int(community_id))
             except Exception:
-                return Response({"detail": "Invalid community_id"}, status=status.HTTP_400_BAD_REQUEST)
-
+                return Response({"detail": "Invalid community_id"}, status=400)
         if community_obj is None and hasattr(owner, "owned_community"):
             community_obj = owner.owned_community.all().order_by("created_at").first()
         if community_obj is None and hasattr(owner, "community"):
             community_obj = owner.community.all().order_by("created_at").first()
 
         if community_obj is None:
-            return Response(
-                {"detail": "No community found for this owner. Pass community_id explicitly."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+            return Response({"detail": "No community found for this owner. Pass community_id explicitly."}, status=400)
         group = serializer.save(created_by=owner, owner=owner, community=community_obj)
-
-        # status_active = getattr(GroupMembership, "STATUS_ACTIVE", "active")
-        # GroupMembership.objects.get_or_create(
-        #     group=group,
-        #     user=owner,
-        #     defaults={"role": getattr(GroupMembership, "ROLE_MEMBER", "member"), "status": status_active},
-        # )
-
         out = self.get_serializer(group)
         headers = self.get_success_headers(out.data)
         return Response(out.data, status=status.HTTP_201_CREATED, headers=headers)
@@ -536,6 +595,19 @@ class GroupViewSet(viewsets.ModelViewSet):
                 GroupMembership.objects.filter(pk=membership.pk).update(invited_by_id=getattr(request.user, "id", None))
 
         memberships = GroupMembership.objects.filter(group=group).select_related("user")
+        if group.parent_id:
+            parent = group.parent
+            for uid in ids:
+                try:
+                    uid_int = int(uid)
+                except Exception:
+                    continue
+                GroupMembership.objects.get_or_create(
+                    group=parent,
+                    user_id=uid_int,
+                    defaults={"role": GroupMembership.ROLE_MEMBER, "status": GroupMembership.STATUS_ACTIVE,
+                            "invited_by_id": getattr(request.user, "id", None)}
+                )
         return Response(GroupMemberOutSerializer(memberships, many=True).data, status=status.HTTP_200_OK)
 
     @extend_schema(
@@ -625,12 +697,22 @@ class GroupViewSet(viewsets.ModelViewSet):
         STATUS_ACTIVE = GroupMembership.STATUS_ACTIVE
         STATUS_PENDING = GroupMembership.STATUS_PENDING
 
-        updated = GroupMembership.objects.filter(
+        # perform update
+        GroupMembership.objects.filter(
             group=group, user_id__in=ids, status=STATUS_PENDING
         ).update(status=STATUS_ACTIVE)
 
+        # 🔁 ensure parent memberships if this group is a sub-group
+        if group.parent_id:
+            for uid in ids:
+                try:
+                    uid_int = int(uid)
+                except Exception:
+                    continue
+                self._ensure_parent_membership_active(group, uid_int)
+
         memberships = GroupMembership.objects.filter(group=group).select_related("user")
-        return Response({"ok": True, "updated": updated,
+        return Response({"ok": True,
                         "members": GroupMemberOutSerializer(memberships, many=True).data})
 
     @extend_schema(
@@ -1414,6 +1496,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         STATUS_PENDING = GroupMembership.STATUS_PENDING
 
         if GroupMembership.objects.filter(group=group, user_id=uid).exists():
+            # also ensure parent membership if this is a sub-group
+            self._ensure_parent_membership_active(group, uid)
             return Response({"ok": True, "status": "already_member"}, status=200)
 
         jp, vis = group.join_policy, group.visibility
@@ -1421,11 +1505,13 @@ class GroupViewSet(viewsets.ModelViewSet):
         # open + public => instant join
         if vis == Group.VISIBILITY_PUBLIC and jp == Group.JOIN_OPEN:
             GroupMembership.objects.create(group=group, user_id=uid, role=ROLE_MEMBER, status=STATUS_ACTIVE)
+            self._ensure_parent_membership_active(group, uid)
             return Response({"ok": True, "status": "joined"}, status=201)
 
-        # approval + public => pending
+        # approval + public => pending (but parent can be active)
         if vis == Group.VISIBILITY_PUBLIC and jp == Group.JOIN_APPROVAL:
             GroupMembership.objects.create(group=group, user_id=uid, role=ROLE_MEMBER, status=STATUS_PENDING)
+            self._ensure_parent_membership_active(group, uid)
             return Response({"ok": True, "status": "pending_approval"}, status=201)
 
         # invite + private => only admins can add
@@ -1443,6 +1529,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                 # keep group hidden — don’t leak existence
                 raise NotFound("Group not found.")
             GroupMembership.objects.create(group=group, user_id=uid, role=ROLE_MEMBER, status=STATUS_PENDING)
+            self._ensure_parent_membership_active(group, uid)
             return Response({"ok": True, "status": "pending_approval"}, status=201)
 
         return Response({"detail": "Invalid group configuration."}, status=400)
@@ -1592,6 +1679,14 @@ class GroupViewSet(viewsets.ModelViewSet):
     def polls(self, request, pk=None):
         group = self.get_object()
 
+        if group.parent_id:
+            uid = getattr(request.user, "id", None)
+            if not (
+                self._can_moderate_any(request, group) or
+                (uid and self._is_active_member(uid, group))
+            ):
+                return Response({"detail": "Only sub-group members can view its polls."}, status=403)
+            
         if request.method.lower() == "get":
             qs = (
                 GroupPoll.objects

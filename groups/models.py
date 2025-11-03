@@ -34,6 +34,14 @@ class Group(models.Model):
         related_name='groups',
         null=True, blank=True,
     )
+    parent = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="subgroups",
+    )
+
 
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=220, unique=True, db_index=True)
@@ -64,6 +72,8 @@ class Group(models.Model):
         indexes = [
             models.Index(fields=['slug']),
             models.Index(fields=['community', 'slug']),
+            models.Index(fields=['parent']),
+            models.Index(fields=['parent', 'community']),
         ]
 
     def __str__(self):
@@ -86,6 +96,11 @@ class Group(models.Model):
             from django.core.exceptions import ValidationError
             raise ValidationError("Cover image must be ≤ 50MB.")
         super().save(*args, **kwargs)
+        
+    @property
+    def is_subgroup(self) -> bool:
+        return bool(self.parent_id)
+
 
 
 class GroupMembership(models.Model):
