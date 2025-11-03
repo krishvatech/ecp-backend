@@ -6,13 +6,14 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 
-from .models import Friendship, FriendRequest
+from .models import Friendship, FriendRequest,Notification
 from .serializers import (
     friendserializer,
     FriendshipCreateSerializer,
     FriendRequestSerializer,
     FriendRequestCreateSerializer,
     UserTinySerializer,
+    NotificationSerializer
 )
 from .permissions import IsAuthenticatedOnly
 
@@ -214,3 +215,25 @@ class FriendRequestViewSet(
             return Response({"detail": "Only the sender can cancel."}, status=403)
         fr.cancel()
         return Response(FriendRequestSerializer(fr).data)
+    
+    
+class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    permission_classes = [IsAuthenticatedOnly]
+    serializer_class = NotificationSerializer
+
+    def get_queryset(self):
+        me = self.request.user
+        qs = Notification.objects.filter(recipient=me).order_by("-created_at")
+        kind = self.request.query_params.get("kind")
+        unread = self.request.query_params.get("unread")
+        if kind:
+            qs = qs.filter(kind=kind)
+        if unread in {"1", "true", "True"}:
+            qs = qs.filter(is_read=False)
+        return qs
+
+    @action(detail=False, methods=["post"], url_path="mark-read")
+    def mark_read(self, request):
+        ids = request.data.get("ids", [])
+        Notification.objects.filter(recipient=request.user, id__in=ids).update(is_read=True)
+        return Response({"ok": True})

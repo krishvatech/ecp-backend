@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
-from .models import Friendship, FriendRequest
+from .models import Friendship, FriendRequest,Notification
 
 User = get_user_model()
 
@@ -63,6 +63,31 @@ class FriendshipCreateSerializer(serializers.Serializer):
         return friendship
 
 
+class NotificationActorSerializer(serializers.ModelSerializer):
+    display_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ("id", "username", "email", "display_name")
+
+    def get_display_name(self, obj):
+        for attr in ("name", "full_name", "get_full_name"):
+            if hasattr(obj, attr):
+                v = getattr(obj, attr)
+                return v() if callable(v) else v
+        return obj.username or obj.email
+
+class NotificationSerializer(serializers.ModelSerializer):
+    actor = NotificationActorSerializer(read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = (
+            "id", "kind", "title", "description", "state",
+            "is_read", "created_at", "actor", "data",
+        )
+        read_only_fields = fields
+
 class FriendRequestSerializer(serializers.ModelSerializer):
     from_user = UserTinySerializer(read_only=True)
     to_user = UserTinySerializer(read_only=True)
@@ -102,4 +127,6 @@ class FriendRequestCreateSerializer(serializers.ModelSerializer):
         fr = FriendRequest.objects.create(
             from_user=request.user, to_user=validated_data["to_user"]
         )
+        from .models import notify_friend_request_created
+        notify_friend_request_created(fr)
         return fr
