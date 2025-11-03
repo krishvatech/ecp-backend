@@ -5,6 +5,7 @@ This module defines shared settings across development and production
 configurations.  Most values can be overridden via environment
 variables defined in `.env`.
 """
+
 import os
 from .base import *  # noqa
 from pathlib import Path
@@ -17,8 +18,13 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-insecure")
 DEBUG = os.getenv("DJANGO_DEBUG", "True") == "True"
-# ALLOWED_HOSTS = [h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")]
-ALLOWED_HOSTS = ["127.0.0.1", "localhost", ".ngrok-free.app"]
+
+DJANGO_ALLOWED_HOSTS = os.getenv(
+    "DJANGO_ALLOWED_HOSTS",
+    "localhost,127.0.0.1,colligatus.com,www.colligatus.com,63.180.39.182",
+)
+
+ALLOWED_HOSTS = [h.strip() for h in DJANGO_ALLOWED_HOSTS.split(",") if h.strip()]
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
@@ -27,21 +33,23 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
 EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "False") == "True"
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@example.com")
-AGORA_APP_ID = os.environ.get("AGORA_APP_ID", "")
-AGORA_APP_CERTIFICATE = os.environ.get("AGORA_APP_CERTIFICATE", "")
-AGORA_TOKEN_EXP_SECONDS = int(os.environ.get("AGORA_TOKEN_EXP_SECONDS", "7200"))
-FRONTEND_URL = "http://127.0.0.1:5173/"
+AGORA_APP_ID = os.getenv("AGORA_APP_ID", "")
+AGORA_APP_CERTIFICATE = os.getenv("AGORA_APP_CERTIFICATE", "")
+AGORA_TOKEN_EXPIRE_SECS = 7200
+# AWS S3 Configuration (load credentials only)
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
+AWS_S3_REGION_NAME = os.getenv("AWS_REGION_NAME")
+
+# Google Cloud Storage Configuration
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
+
 # A frontend URL to build the reset link (your React/Next.js page)
 FRONTEND_RESET_PASSWORD_URL = os.getenv(
     "FRONTEND_RESET_PASSWORD_URL",
     "http://localhost:3000/reset-password"  # e.g. https://app.example.com/reset-password
 )
-
-CSRF_TRUSTED_ORIGINS = [" http://localhost:8000"]
-
-CORS_ALLOWED_ORIGINS = [
-    " http://localhost:8000",
-]
 
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID", "")
 LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET", "")
@@ -50,10 +58,7 @@ LINKEDIN_SCOPES = os.getenv("LINKEDIN_SCOPES", "openid profile email").split()
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [
-            BASE_DIR / "templates",                    # project-level (optional)
-            BASE_DIR / "ecp_backend" / "templates",    # ✅ add this line
-        ],
+        "DIRS": [BASE_DIR / "templates"],   # optional project-level templates/
         "APP_DIRS": True,                   # looks inside each app’s templates/
         "OPTIONS": {
             "context_processors": [
@@ -74,9 +79,6 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "django.contrib.postgres",
-
-    "django_filters",
 
     # Third-party apps
     "rest_framework",
@@ -89,26 +91,19 @@ INSTALLED_APPS = [
 
     # Local apps
     "users",
-    "organizations",
+    "community",
     "events",
     "common",
+    "orders",
+    "realtime",
+    "messaging",
+    "interactions",
     "content",
     "activity_feed",
-    "messaging",
+    'groups',
     
     "drf_spectacular",
-    "drf_spectacular_sidecar",
-
-    # Realtime app for CPaaS token issuance
-    "realtime",
-
-    "interactions",  # enable live chat/Q&A
-
-    # Monetization and integrations
-    "djstripe",
-    "payments",
-    "analytics",
-    "integrations",
+    "drf_spectacular_sidecar"
 ]
 
 MIDDLEWARE = [
@@ -177,18 +172,38 @@ TIME_ZONE = "Asia/Kolkata"
 USE_I18N = True
 USE_TZ = True
 
-# Static and media files
 STATIC_URL = "/static/"
-MEDIA_URL = "/media/"
-STATIC_ROOT = BASE_DIR / "static"
-MEDIA_ROOT = BASE_DIR / "media"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
-# Default file storage: fallback to filesystem; override with S3 or GCS
-DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
-if os.getenv("AWS_STORAGE_BUCKET_NAME"):
+# Google Cloud Storage Configuration
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
+GS_CREDENTIALS = os.getenv("GCS_CREDENTIALS")
+
+# File storage backend selection
+if AWS_STORAGE_BUCKET_NAME:
+    # Use AWS S3 for media files
+    STORAGES = {
+        "default": {"BACKEND": "storages.backends.s3boto3.S3Boto3Storage"},
+        # keep whatever you already use for staticfiles; whitenoise is common:
+        "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+    }
     DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
-elif os.getenv("GCS_BUCKET_NAME"):
+    AWS_S3_CUSTOM_DOMAIN = f"{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com"
+    MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/"
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_DEFAULT_ACL = None
+    
+elif GCS_BUCKET_NAME:
+    # Use Google Cloud Storage for media files
     DEFAULT_FILE_STORAGE = "storages.backends.gcloud.GoogleCloudStorage"
+    GS_BUCKET_NAME = GCS_BUCKET_NAME
+    MEDIA_URL = f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/"
+    
+else:
+    # Fallback to local file system storage
+    DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
+    MEDIA_URL = "/media/"
+    MEDIA_ROOT = BASE_DIR / "media"
 
 # Django REST Framework configuration
 REST_FRAMEWORK = {
@@ -199,13 +214,8 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
-    # "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
-    "DEFAULT_PAGINATION_CLASS": "common.pagination.DefaultPagination",
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
-    "DEFAULT_FILTER_BACKENDS": [
-        "django_filters.rest_framework.DjangoFilterBackend",
-    ],
-
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
@@ -216,10 +226,7 @@ REST_FRAMEWORK = {
     },
     
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-        # keep any others you use
-    ],
+ 
     
     "DATETIME_INPUT_FORMATS": [
         "%Y-%m-%dT%H:%M",
@@ -235,9 +242,10 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "Events & Community Platform API",
-    "DESCRIPTION": "Django + DRF endpoints for auth, users, organizations, events, etc.",
+    "DESCRIPTION": "Django + DRF endpoints for auth, users, community, events, etc.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,  # we’ll expose schema via a separate route
+    "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
     # Add JWT “Authorize” button in Swagger
     "COMPONENT_SPLIT_REQUEST": True,
     "SECURITY": [{"bearerAuth": []}],
@@ -253,11 +261,39 @@ SPECTACULAR_SETTINGS = {
 }
 
 
+CSRF_TRUSTED_ORIGINS = [
+    o.strip()
+    for o in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if o.strip()
+] + [
+    "https://colligatus.com",
+    "https://www.colligatus.com",
+]
+
+
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
 # CORS configuration
 CORS_ALLOWED_ORIGINS = [
     o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()
 ]
+
+# --- Cookies & CSRF 
+SESSION_COOKIE_NAME = "ecp_sessionid"
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SECURE = False        
+SESSION_COOKIE_SAMESITE = "Lax"      
+
+CSRF_COOKIE_NAME = "csrftoken"
+CSRF_COOKIE_HTTPONLY = False        
+CSRF_COOKIE_SECURE = False    
+
 CORS_ALLOW_CREDENTIALS = True
+
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173/")
+AUTH_HOME_URL = os.getenv("AUTH_HOME_URL", "/dashboard/")
+LOGIN_REDIRECT_URL = AUTH_HOME_URL   
+LOGIN_URL = "/login/" 
 
 # Simple JWT configuration; token lifetimes read from environment
 SIMPLE_JWT = {
@@ -277,42 +313,3 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_BROWSER_XSS_FILTER = True
 SESSION_COOKIE_SECURE = False  # Should be True in production
 CSRF_COOKIE_SECURE = False     # Should be True in production
-SESSION_COOKIE_SAMESITE = "Lax"   # "None" if you later do cross-site HTTPS
-
-# Realtime streaming (Agora) configuration
-# The CPaaS integration uses these values to generate streaming tokens.
-AGORA_APP_ID = os.getenv("AGORA_APP_ID", "")
-AGORA_APP_CERTIFICATE = os.getenv("AGORA_APP_CERTIFICATE", "")
-AGORA_EXPIRE_SECONDS = int(os.getenv("AGORA_EXPIRE_SECONDS", "3600"))
-
-# Celery eager mode for tests
-CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "False") == "True"
-
-# Stripe configuration (test mode by default)
-STRIPE_LIVE_MODE = os.getenv("STRIPE_LIVE_MODE", "False").lower() in ("1", "true", "t", "yes")
-STRIPE_TEST_PUBLIC_KEY = os.getenv("STRIPE_TEST_PUBLIC_KEY", "")
-STRIPE_TEST_SECRET_KEY = os.getenv("STRIPE_TEST_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-DJSTRIPE_WEBHOOK_SECRET = STRIPE_WEBHOOK_SECRET
-DJSTRIPE_FOREIGN_KEY_TO_FIELD = "id"
-
-LOGGING = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "handlers": {
-        "console": {
-            "class": "logging.StreamHandler",
-        },
-    },
-    "root": {
-        "handlers": ["console"],
-        "level": "INFO",  # 👈 show info logs
-    },
-    "loggers": {
-        "events": {   # 👈 our app name
-            "handlers": ["console"],
-            "level": "INFO",
-            "propagate": False,
-        },
-    },
-}

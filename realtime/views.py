@@ -1,37 +1,70 @@
 # realtime/views.py
-from django.shortcuts import get_object_or_404
+import time
+from typing import Any
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import permissions, status
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticatedOrReadOnly
 
-from events.models import Event
-from .services import AgoraService
+from .serializers import EventTokenRequestSerializer
+from .services import AgoraService, AgoraConfig
 
-class EventStreamTokenView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+class EventRtcTokenView(APIView):
+    """
+    POST /api/events/<event_id>/token/
+    Body: {"role": "publisher" | "audience", "uid": 1234}
+    """
+    permission_classes = [IsAuthenticatedOrReadOnly]
 
-    def post(self, request, pk=None, *args, **kwargs):
-        pk = pk or kwargs.get("pk")
-        if pk is None:
-            return Response({"error": "Missing event id (pk)"}, status=400)
+    def post(self, request, event_id: int, *args: Any, **kwargs: Any):
+        ser = EventTokenRequestSerializer(data=request.data or {})
+        ser.is_valid(raise_exception=True)
 
-        event = get_object_or_404(Event, pk=pk)
+        role = ser.validated_data.get("role") or "audience"
+        uid = ser.validated_data.get("uid")  # may be None; service will randomize if absent
 
-        # 👇 Decide role server-side:
-        # Replace "event.owner" with your actual owner/creator field.
-        is_host = (getattr(event, "owner", None) == request.user) or \
-                  (hasattr(event, "hosts") and request.user in getattr(event, "hosts").all())
+        cfg = AgoraConfig.from_env()
+        svc = AgoraService(cfg)
+        token, signed_uid, expires_at, channel = svc.build_uid_token(
+            event_id=int(event_id),
+            role=role,
+            uid=uid,
+        )
 
-        role = "publisher" if is_host else "audience"
+        # IMPORTANT: return numbers, not ISO strings
+        return Response(
+            {
+                "app_id": cfg.app_id,
+                "token": token,
+                "channel": channel,
+                "uid": int(signed_uid),
+                "expires_at": int(expires_at),   # epoch seconds
+                "server_time": int(time.time()), # epoch seconds
+                "role": role,
+            },
+            status=status.HTTP_200_OK,
+        )
 
-        channel = f"event-{event.id}"  # or event.slug, just use same on client
-        svc = AgoraService()
-        token, expire_at = svc.generate_token(channel_name=channel, role=role, uid=0)
 
-        return Response({
-            "token": token,                 # may be None when cert disabled
-            "app_id": svc.app_id,
-            "channel": channel,
-            "role": role,                   # 👈 return the final role
-            "expires_at": expire_at.isoformat(),
-        }, status=200)
+class AgoraDiagnosticView(APIView):
+    """
+    GET /api/agora/diag/
+    """
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def get(self, request, *args: Any, **kwargs: Any):
+        payload = {}
+        try:
+            cfg = AgoraConfig.from_env()
+            svc = AgoraService(cfg)
+            payload = {
+                "has_env": True,
+                "app_id_prefix": cfg.app_id[:8],
+                "cert_set": bool(cfg.app_certificate),
+                "now": int(time.time()),
+                "sample": svc.diagnostic_sample(),
+            }
+        except Exception as e:
+            payload = {"has_env": False, "error": str(e)}
+        return Response(payload)

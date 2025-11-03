@@ -16,16 +16,15 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
-
+from .models import User as UserModel, UserProfile, Experience, Education
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email as django_validate_email
-from django.core.validators import URLValidator
 
 from rest_framework.validators import UniqueValidator
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-
+from .models import Education, Experience
 
 from .validators import (
     validate_email_smart,      # kept for direct use if needed
@@ -52,9 +51,39 @@ def _looks_like_email(value: str) -> bool:
 # ---------------------------
 # Serializers
 # ---------------------------
-    
+
+class EducationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Education
+        fields = (
+            "id", "school", "degree", "field_of_study",
+            "start_date", "end_date", "grade", "description",
+            # no "user" field exposed → bound from request.user
+        )
+
+class ExperienceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Experience
+        fields = (
+            "id", "community_name", "position",
+            "start_date", "end_date", "currently_work_here",
+            "location", "description",
+        )
+
+class UserProfileMiniSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserProfile
+        fields = ("full_name", "headline", "company")  # keep it minimal
+
+class UserRosterSerializer(serializers.ModelSerializer):
+    profile = UserProfileMiniSerializer(read_only=True)
+
+    class Meta:
+        model = User
+        fields = ("id", "first_name", "last_name", "email", "profile")
+
 class UserProfileSerializer(serializers.ModelSerializer):
-    """Serializer for the UserProfile model."""
+    """Serializer for the UserProfile model, exposing extra fields for editing."""
 
     class Meta:
         model = UserProfile
@@ -62,59 +91,46 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "full_name",
             "timezone",
             "bio",
+            "headline",
             "job_title",
             "company",
             "location",
-            "headline",
-            "skills",
             "links",
+            "skills",
         ]
 
-    # Timezone validation (IANA / pytz name)
     def validate_timezone(self, value: str) -> str:
-        if value not in pytz.all_timezones:
-            raise serializers.ValidationError(
-                "Invalid timezone. Please use a valid timezone like 'Asia/Kolkata' or 'UTC'."
-            )
+        if value and value not in pytz.all_timezones:
+            raise serializers.ValidationError("Invalid timezone. Use a valid IANA zone like 'Asia/Kolkata' or 'UTC'.")
         return value
-    
-    def validate_full_name(self, value: str) -> str:
-        v = (value or "").strip()
-        if v.isdigit():
-            raise serializers.ValidationError("Full name cannot be only numbers.")
-        if re.search(r"\d", v):
-            raise serializers.ValidationError("Full name cannot contain digits.")
-        if not re.match(r"^[A-Za-z\s]+$", v):
-            raise serializers.ValidationError("Full name must contain only letters and spaces.")
-        return v
 
     def validate_links(self, value):
-        if not value:
+        if value in (None, ""):
             return {}
         if not isinstance(value, dict):
-            raise serializers.ValidationError("Links must be a mapping of site name to URL.")
-        validator = URLValidator()
-        validated_links = {}
-        for key, url in value.items():
-            if not isinstance(url, str) or not url:
-                raise serializers.ValidationError({key: "URL must be a non-empty string."})
-            try:
-                validator(url)
-            except DjangoValidationError:
-                raise serializers.ValidationError({key: "Invalid URL."})
-            validated_links[key] = url
-        return validated_links
+            raise serializers.ValidationError("Links must be a JSON object.")
+        return value
 
+    def validate_skills(self, value):
+        if value in (None, ""):
+            return []
+        if not isinstance(value, list) or not all(isinstance(s, str) for s in value):
+            raise serializers.ValidationError("Skills must be a list of strings.")
+        return [s.strip() for s in value if isinstance(s, str) and s.strip()]
+    
 
 class UserSerializer(serializers.ModelSerializer):
     """Serializer for the Django User model with nested profile."""
     profile = UserProfileSerializer()
     username = serializers.CharField(required=False, allow_blank=True)
+    educations = EducationSerializer(many=True, read_only=True)
+    experiences = ExperienceSerializer(many=True, read_only=True)
+
 
     class Meta:
         model = User
-        fields = ["id", "username", "email", "profile", "is_active", "date_joined"]
-        read_only_fields = ["id", "is_active", "date_joined"]
+        fields = ["id", "username", "email", "profile", "first_name", "is_active","is_staff", "date_joined","educations", "experiences"]
+        read_only_fields = ["id", "is_active","is_staff",  "date_joined"]
 
     # username must not be numeric-only
     def validate_username(self, value: str) -> str:
@@ -173,26 +189,13 @@ class RegisterSerializer(serializers.ModelSerializer):
         write_only=True,
         style={"input_type": "password"},
     )
-
-    # NEW: frontend sends these
-    first_name = serializers.CharField(required=False, allow_blank=True)
-    last_name = serializers.CharField(required=False, allow_blank=True)
-
     profile = UserProfileSerializer(required=False)
 
     class Meta:
         model = User
-        fields = [
-            "username",
-            "email",
-            "password",
-            "password2",
-            "first_name",
-            "last_name",
-            "profile",
-        ]
+        fields = ["username", "email", "password", "password2", "profile"]
 
-    # username rules
+    # username rules: not all digits, and must NOT look like an email
     def validate_username(self, value: str) -> str:
         if value.isdigit():
             raise serializers.ValidationError("Username cannot be only numbers.")
@@ -209,7 +212,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         if attrs["password"] != attrs["password2"]:
             raise serializers.ValidationError({"password": "Passwords do not match."})
 
-        # Run Django's password validators with user context
+        # Run Django's password validators with user context so similarity checks work
         pseudo_user = User(username=attrs.get("username"), email=attrs.get("email"))
         validate_password(attrs["password"], user=pseudo_user)
 
@@ -220,39 +223,16 @@ class RegisterSerializer(serializers.ModelSerializer):
         validated_data.pop("password2")
         password = validated_data.pop("password")
 
-        # names from payload
-        first = (validated_data.pop("first_name", "") or "").strip()
-        last  = (validated_data.pop("last_name", "") or "").strip()
-        full_name = f"{first} {last}".strip()
-
-        # create user
+        # email already normalized by validate_email_strict
         user = User(**validated_data)
-        user.first_name = first
-        user.last_name = last
         user.set_password(password)
         user.save()
 
-        # ensure profile exists and set full_name -> "meera patel"
-        profile, _ = UserProfile.objects.get_or_create(user=user)
-        if full_name:
-            profile.full_name = full_name
-
-        # apply any extra profile fields from payload
-        for k, v in (profile_data or {}).items():
-            setattr(profile, k, v)
-
-        profile.save()
+        if profile_data:
+            for k, v in profile_data.items():
+                setattr(user.profile, k, v)
+            user.profile.save()
         return user
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        # expose full_name consistently
-        prof = getattr(instance, "profile", None)
-        if prof and getattr(prof, "full_name", ""):
-            data["full_name"] = prof.full_name
-        else:
-            data["full_name"] = f"{instance.first_name} {instance.last_name}".strip()
-        return data
 
 
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -340,3 +320,61 @@ class ResetPasswordSerializer(serializers.Serializer):
         validate_password(attrs["new_password"], user)
         attrs["user"] = user
         return attrs
+
+class UserRosterSerializer(serializers.ModelSerializer):
+    profile = UserProfileMiniSerializer(read_only=True)
+    # NEW:
+    company_from_experience = serializers.SerializerMethodField()
+    position_from_experience = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = (
+            "id", "first_name", "last_name", "email", "profile",
+            "company_from_experience", "position_from_experience",  # NEW
+        )
+
+    def _best_experience(self, obj):
+        # use prefetched related if present; fall back to query
+        qs = getattr(obj, "experiences", None)
+        if hasattr(qs, "all"):
+            qs = qs.all()
+        else:
+            qs = Experience.objects.filter(user=obj)
+        return qs.order_by("-currently_work_here", "-end_date", "-start_date", "-id").first()
+
+    def get_company_from_experience(self, obj):
+        ex = self._best_experience(obj)
+        return ex.community_name if ex else ""
+
+    def get_position_from_experience(self, obj):
+        ex = self._best_experience(obj)
+        return ex.position if ex else ""
+
+class ExperiencePublicSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Experience
+        fields = ("id", "position", "community_name",
+                  "start_date", "end_date", "currently_work_here")
+
+class EducationPublicSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Education
+        fields = ("id", "school", "degree", "field_of_study",
+                  "start_date", "end_date")
+
+class UserMiniSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserModel
+        fields = ("id", "first_name", "last_name", "email")
+
+class UserProfileMiniSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserProfile
+        fields = ("full_name", "job_title", "headline", "company", "location")
+
+class PublicProfileSerializer(serializers.Serializer):
+    user = UserMiniSerializer()
+    profile = UserProfileMiniSerializer(allow_null=True)
+    experiences = ExperiencePublicSerializer(many=True)
+    educations = EducationPublicSerializer(many=True)

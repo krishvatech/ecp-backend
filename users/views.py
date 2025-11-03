@@ -6,7 +6,7 @@ authenticated user via a custom `me` action, and register new users.
 """
 from django.contrib.auth.models import User
 from rest_framework import mixins, permissions, status, viewsets
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -29,11 +29,14 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from .models import LinkedInAccount
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q
-from .filters import UserFilter
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.utils.decorators import method_decorator
 from django.contrib.auth import login as django_login, logout as django_logout
 from django.contrib.auth import get_user_model
+from .serializers import UserRosterSerializer
+from .serializers import PublicProfileSerializer
+from .models import Education, Experience
+from .serializers import EducationSerializer, ExperienceSerializer
 
 from .serializers import (
     UserSerializer,
@@ -52,6 +55,7 @@ OIDC_USERINFO = "https://api.linkedin.com/v2/userinfo"  # if using OIDC product
 
 
 UserModel = get_user_model()
+
 
 def _state_cookie():
     return get_random_string(32)
@@ -73,33 +77,32 @@ class UserViewSet(
 
     # enable advanced search via django-filter
     filter_backends = [DjangoFilterBackend]
-    filterset_class = UserFilter
 
     def get_queryset(self):
         """
         Determine the base queryset for the user directory.
 
         Staff and superusers can view all users.  Non‑staff users may only
-        see themselves and other users who share an organization with
+        see themselves and other users who share an community with
         them (either as members or as owners).  This method returns a
         queryset filtered accordingly.
         """
         qs = super().get_queryset().select_related("profile").prefetch_related(
-            "organizations", "owned_organizations"
+            "community", "owned_community"
         )
         user = self.request.user
         if not user.is_authenticated:
             return qs.none()
         if user.is_staff or user.is_superuser:
             return qs
-        org_ids = set(user.organizations.values_list("id", flat=True))
-        org_ids.update(user.owned_organizations.values_list("id", flat=True))
+        org_ids = set(user.community.values_list("id", flat=True))
+        org_ids.update(user.owned_community.values_list("id", flat=True))
         if not org_ids:
             return qs.filter(id=user.id)
         return qs.filter(
             Q(id=user.id)
-            | Q(organizations__id__in=org_ids)
-            | Q(owned_organizations__id__in=org_ids)
+            | Q(community__id__in=org_ids)
+            | Q(owned_community__id__in=org_ids)
         ).distinct()
     
     @action(detail=False, methods=["get", "put"], url_path="me")
@@ -131,6 +134,44 @@ class UserViewSet(
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+
+    @action(detail=True, methods=["get"], permission_classes=[AllowAny], url_path="profile")
+    def public_profile(self, request, pk=None):
+        try:
+            target = UserModel.objects.select_related("profile").get(pk=pk)
+        except UserModel.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        exps = (Experience.objects
+                .filter(user=target)
+                .order_by("-currently_work_here", "-end_date", "-start_date", "-id"))
+        edus = (Education.objects
+                .filter(user=target)
+                .order_by("-end_date", "-start_date", "-id"))
+
+        payload = {
+            "user": target,
+            "profile": getattr(target, "profile", None),
+            "experiences": list(exps),
+            "educations": list(edus),
+        }
+        data = PublicProfileSerializer(payload, context={"request": request}).data
+        return Response(data)
+
+
+   # users/views.py  (inside UserViewSet)
+    @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="roster")
+    def roster(self, request):
+        qs = (
+            UserModel.objects
+            .all()
+            .exclude(id=request.user.id)
+            .prefetch_related("experiences")   # NEW: so serializer is fast
+            .order_by("first_name", "last_name")[:500]
+        )
+        data = UserRosterSerializer(qs, many=True, context={"request": request}).data
+        return Response(data)
 
 
 class RegisterView(APIView):
@@ -399,3 +440,68 @@ class LinkedInCallback(APIView):
         tokens = {"access": str(refresh.access_token), "refresh": str(refresh)}
         qs = urlencode(tokens)
         return redirect(f"{settings.FRONTEND_URL}/oauth/callback?{qs}")
+    
+
+
+class MeEducationViewSet(viewsets.ModelViewSet):
+    """
+    /api/users/me/educations/  (GET list, POST)
+    /api/users/me/educations/<id>/  (GET, PUT, PATCH, DELETE)
+    Only the logged in user's rows are visible/editable.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EducationSerializer
+
+    def get_queryset(self):
+        return (
+            Education.objects
+            .filter(user=self.request.user)
+            .order_by("-end_date", "-start_date", "-id")
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class MeExperienceViewSet(viewsets.ModelViewSet):
+    """
+    /api/users/me/experiences/  (GET list, POST)
+    /api/users/me/experiences/<id>/  (GET, PUT, PATCH, DELETE)
+    Only the logged in user's rows are visible/editable.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ExperienceSerializer
+
+    def get_queryset(self):
+        return (
+            Experience.objects
+            .filter(user=self.request.user)
+            .order_by("-currently_work_here", "-end_date", "-start_date", "-id")
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class MeProfileView(APIView):
+    """
+    Compact payload for your Profile page preview:
+    /api/users/me/profile/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        edus = EducationSerializer(
+            Education.objects.filter(user=request.user).order_by("-end_date", "-start_date", "-id"),
+            many=True,
+        ).data
+        exps = ExperienceSerializer(
+            Experience.objects.filter(user=request.user).order_by("-currently_work_here", "-end_date", "-start_date", "-id"),
+            many=True,
+        ).data
+
+        return Response({
+            "educations": edus,
+            "experiences": exps,
+            # add more sections later if needed (skills, links, etc.)
+        })

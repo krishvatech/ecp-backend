@@ -21,7 +21,7 @@ This repository contains a headless Django backend for an Events & Community Pla
    ```bash
    docker compose exec web python manage.py migrate
    docker compose exec web python manage.py loaddata data/fixtures/users.json
-   docker compose exec web python manage.py loaddata data/fixtures/organizations.json
+   docker compose exec web python manage.py loaddata data/fixtures/community.json
    docker compose exec web python manage.py loaddata data/fixtures/events.json
    ```
 
@@ -66,11 +66,11 @@ pytest
 - `POST /api/auth/token/refresh/` – Refresh an access token
 - `GET /api/users/me/` – Retrieve the authenticated user’s details
 - `PUT /api/users/me/` – Update authenticated user’s email or profile
-- `GET /api/organizations/` – List organizations the user belongs to
-- `POST /api/organizations/` – Create a new organization (user becomes owner)
-- `GET/PATCH/DELETE /api/organizations/<id>/` – Retrieve, update, or delete an organization
-- `GET /api/events/` – List events in organizations the user belongs to
-- `POST /api/events/` – Create an event within an organization
+- `GET /api/community/` – List community the user belongs to
+- `POST /api/community/` – Create a new community (user becomes owner)
+- `GET/PATCH/DELETE /api/community/<id>/` – Retrieve, update, or delete an community
+- `GET /api/events/` – List events in community the user belongs to
+- `POST /api/events/` – Create an event within an community
 - `GET/PATCH/DELETE /api/events/<id>/` – Manage an event
 
 WebSocket endpoint (authenticated via JWT):

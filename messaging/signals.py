@@ -16,7 +16,7 @@ def on_message_created(sender, instance: Message, created: bool, **kwargs) -> No
         try:
             from analytics.tasks import increment_metric  # local import
 
-            # Messages are not associated with an event or organization
+            # Messages are not associated with an event or community
             increment_metric.delay(
                 metric_name="message_count",
                 org_id=None,

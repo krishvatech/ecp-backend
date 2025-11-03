@@ -2,7 +2,7 @@
 Models for the activity feed app.
 
 The ``FeedItem`` model stores a record of an action taken within the
-platform.  Each item may be associated with an organization and/or an
+platform.  Each item may be associated with an community and/or an
 event, the user who performed the action, and an arbitrary target
 object via Django’s generic relations.  Additional metadata is stored
 in a JSON field to allow clients to render rich feed entries without
@@ -12,13 +12,13 @@ from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
-from organizations.models import Organization
+from community.models import Community
 from events.models import Event
 
 class FeedItem(models.Model):
     """Represents a single activity entry in the community feed."""
-    organization = models.ForeignKey(
-        Organization,
+    community = models.ForeignKey(
+        Community,
         on_delete=models.CASCADE,
         related_name="feed_items",
         blank=True,
@@ -52,7 +52,7 @@ class FeedItem(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["organization", "event", "created_at"]),
+            models.Index(fields=["community", "event", "created_at"]),
         ]
         ordering = ["-created_at"]
 

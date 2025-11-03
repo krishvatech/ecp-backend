@@ -1,16 +1,7 @@
-"""
-URL configuration for the realtime app.
-
-These routes are included under the ``/api/`` prefix in the project
-level ``urls.py``.  They expose endpoints for generating tokens to
-join or broadcast in live event streams.
-"""
 from django.urls import path
-
-from realtime.views import EventStreamTokenView
-
+from .views import EventRtcTokenView, AgoraDiagnosticView
 
 urlpatterns = [
-    # resolves to /api/events/<pk>/token/ because project urls.py includes realtime under "api/"
-    path("events/<int:pk>/token/", EventStreamTokenView.as_view(), name="event-token"),
+    path("rtc/events/<int:event_id>/token/", EventRtcTokenView.as_view(), name="rtc-token"),
+    path("agora/diag/", AgoraDiagnosticView.as_view(), name="agora-diag"),
 ]

@@ -1,6 +1,6 @@
 [
   {
-    "model": "organizations.organization",
+    "model": "community.community",
     "pk": 1,
     "fields": {
       "name": "Demo Org",

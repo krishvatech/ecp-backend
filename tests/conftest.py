@@ -2,12 +2,12 @@
 Common test fixtures for Django REST Framework API tests.
 
 Provides fixtures for creating a user and authenticating a client
-with a JWT token.  Also provides an organization fixture used in
-organizations and events tests.
+with a JWT token.  Also provides an community fixture used in
+community and events tests.
 """
 import pytest
 from django.contrib.auth.models import User
-from organizations.models import Organization
+from community.models import Community
 
 
 @pytest.fixture
@@ -31,8 +31,8 @@ def auth_client(client, db, user):
 
 
 @pytest.fixture
-def organization(db, user):
-    """Create an organization with the given user as owner and member."""
-    org = Organization.objects.create(name="Org A", owner=user, description="Test org")
+def community(db, user):
+    """Create an community with the given user as owner and member."""
+    org = Community.objects.create(name="Org A", owner=user, description="Test org")
     org.members.add(user)
     return org

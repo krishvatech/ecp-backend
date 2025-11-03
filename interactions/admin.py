@@ -6,7 +6,7 @@ Registers ChatMessage and Question models for basic moderation and review.
 
 from django.contrib import admin
 
-from .models import ChatMessage, Question
+from .models import ChatMessage, Question,QuestionUpvote
 
 
 @admin.register(ChatMessage)
@@ -24,12 +24,19 @@ class ChatMessageAdmin(admin.ModelAdmin):
 
 @admin.register(Question)
 class QuestionAdmin(admin.ModelAdmin):
-    list_display = ("id", "event", "user", "is_answered", "short_question", "answered_by", "answered_at", "created_at")
-    list_filter = ("event", "is_answered")
-    search_fields = ("content", "answer", "user__username", "event__title")
-    readonly_fields = ("created_at", "updated_at", "answered_at")
+    list_display = ("id", "event", "user", "short_question", "upvote_count", "created_at")
+    list_filter = ("event",)
+    search_fields = ("content", "user__username", "event__title")
+    readonly_fields = ("created_at", "updated_at")
     date_hierarchy = "created_at"
 
     @admin.display(description="question")
     def short_question(self, obj: Question) -> str:
         return (obj.content or "")[:80]
+
+@admin.register(QuestionUpvote)
+class QuestionUpvoteAdmin(admin.ModelAdmin):
+    list_display = ("id", "question", "user", "created_at")
+    list_filter = ("question__event",)
+    search_fields = ("question__content", "user__username")
+    readonly_fields = ("created_at",)

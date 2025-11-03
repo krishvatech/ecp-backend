@@ -3,7 +3,7 @@
     "model": "events.event",
     "pk": 1,
     "fields": {
-      "organization": 1,
+      "community": 1,
       "title": "Demo Event",
       "slug": "demo-event-1",
       "description": "Seed event",

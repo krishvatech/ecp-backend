@@ -1,9 +1,9 @@
 """
 Tests for the realtime token issuance endpoint.
 
-These tests verify that authenticated members of an organization can
+These tests verify that authenticated members of an community can
 obtain short‑lived streaming tokens for an event, that only the event
-creator or organization owner can request a publisher token, and that
+creator or community owner can request a publisher token, and that
 non‑members are denied.
 """
 import pytest
@@ -11,10 +11,10 @@ from django.contrib.auth.models import User
 
 
 @pytest.mark.django_db
-def test_audience_token(auth_client, organization):
+def test_audience_token(auth_client, community):
     """Members should receive an audience token for events they belong to."""
     # Create event
-    payload = {"organization_id": organization.id, "title": "Kickoff", "description": "Live"}
+    payload = {"community_id": community.id, "title": "Kickoff", "description": "Live"}
     resp = auth_client.post("/api/events/", payload, content_type="application/json")
     event_id = resp.json()["id"]
     # Request token as audience (default)
@@ -29,10 +29,10 @@ def test_audience_token(auth_client, organization):
 
 
 @pytest.mark.django_db
-def test_publisher_token_permissions(auth_client, organization):
+def test_publisher_token_permissions(auth_client, community):
     """Only event creator or org owner can request a publisher token."""
     # Create event as authenticated user
-    payload = {"organization_id": organization.id, "title": "Meetup", "description": "Welcome"}
+    payload = {"community_id": community.id, "title": "Meetup", "description": "Welcome"}
     resp = auth_client.post("/api/events/", payload, content_type="application/json")
     event_id = resp.json()["id"]
     # Creator requests publisher token
@@ -41,7 +41,7 @@ def test_publisher_token_permissions(auth_client, organization):
     assert pub_resp.json()["role"] == "publisher"
     # Create another member who is not owner
     other = User.objects.create_user(username="charlie", password="pass12345", email="charlie@example.com")
-    organization.members.add(other)
+    community.members.add(other)
     # Login as charlie
     login_resp = auth_client.post(
         "/api/auth/token/",
@@ -62,10 +62,10 @@ def test_publisher_token_permissions(auth_client, organization):
 
 
 @pytest.mark.django_db
-def test_token_denied_for_non_members(auth_client, organization):
-    """Users who are not members of the organization cannot obtain a token."""
+def test_token_denied_for_non_members(auth_client, community):
+    """Users who are not members of the community cannot obtain a token."""
     # Create event
-    payload = {"organization_id": organization.id, "title": "Session", "description": "Open"}
+    payload = {"community_id": community.id, "title": "Session", "description": "Open"}
     resp = auth_client.post("/api/events/", payload, content_type="application/json")
     event_id = resp.json()["id"]
     # Create another user who is not a member

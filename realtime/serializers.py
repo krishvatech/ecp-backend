@@ -7,3 +7,4 @@ class EventTokenRequestSerializer(serializers.Serializer):
         required=False,
         help_text='Defaults to "audience".'
     )
+    uid = serializers.IntegerField(required=False, help_text="UID to sign the token for.")

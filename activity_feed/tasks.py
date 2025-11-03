@@ -14,7 +14,7 @@ def create_feed_item_task(
     verb: str,
     target_content_type_id: int,
     target_object_id: int,
-    organization_id: int | None = None,
+    community_id: int | None = None,
     event_id: int | None = None,
     actor_id: int | None = None,
     metadata: dict | None = None,
@@ -22,11 +22,11 @@ def create_feed_item_task(
     """
     Create a new feed item asynchronously.  The caller must provide the
     generic target content type id and object id, along with optional
-    references to an organization, event and actor.  The metadata argument
+    references to an community, event and actor.  The metadata argument
     should be a JSON‑serializable dictionary.
     """
     FeedItem.objects.create(
-        organization_id=organization_id,
+        community_id=community_id,
         event_id=event_id,
         actor_id=actor_id,
         verb=verb,

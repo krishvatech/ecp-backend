@@ -29,16 +29,7 @@ factory-boy==3.3.0
 
 # Timezone validation
 pytz
+
 email_validator
 drf_spectacular
 drf_spectacular_sidecar
-
-#agora token
-agora-token-builder
-
-django-filter==25.1
-
-# Monetization & integrations
-dj-stripe==2.10.1
-stripe>=11.3.0,<12
-requests==2.32.3

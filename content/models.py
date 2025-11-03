@@ -3,7 +3,7 @@ Models for the content app.
 
 The ``Resource`` model represents a piece of post‑event content such as
 uploaded files, external links or embedded videos.  Resources belong to
-an organization and may optionally be associated with a specific event.
+an community and may optionally be associated with a specific event.
 They can be tagged to aid discoverability and filtered by publication
 state.  When a resource is created and marked as published a signal
 emits an activity entry via Celery (see ``content.signals``).
@@ -11,8 +11,14 @@ emits an activity entry via Celery (see ``content.signals``).
 from django.conf import settings
 from django.db import models
 from django.contrib.postgres.fields import ArrayField
-from organizations.models import Organization
+from community.models import Community
 from events.models import Event
+from django.utils import timezone
+
+def resource_upload_path(instance, filename):
+    # Use event name, fallback to event ID if name is missing
+    event_name = instance.event.title.replace(" ", "_") if instance.event and instance.event.title else f"event_{instance.event_id}"
+    return f"event_resources/{event_name}/{filename}"
 
 class Resource(models.Model):
     """Represents a file, link or video uploaded after an event."""
@@ -25,8 +31,8 @@ class Resource(models.Model):
         (TYPE_VIDEO, "Video"),
     ]
 
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, related_name="resources"
+    community = models.ForeignKey(
+        Community, on_delete=models.CASCADE, related_name="resources"
     )
     event = models.ForeignKey(
         Event,
@@ -39,7 +45,7 @@ class Resource(models.Model):
     description = models.TextField(blank=True)
     type = models.CharField(max_length=10, choices=TYPE_CHOICES)
     file = models.FileField(
-        upload_to="resources/files/",
+        upload_to=resource_upload_path,
         blank=True,
         null=True,
         help_text="Uploaded file (required when type='file')",
@@ -53,6 +59,7 @@ class Resource(models.Model):
         help_text="List of tags as strings",
     )
     is_published = models.BooleanField(default=True)
+    publish_at = models.DateTimeField(null=True, blank=True, db_index=True)
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -65,7 +72,7 @@ class Resource(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["organization", "event", "type", "is_published"]),
+            models.Index(fields=["community", "event", "type", "is_published"]),
         ]
         ordering = ["-created_at"]
 

@@ -91,37 +91,47 @@ class Question(models.Model):
         help_text="User who asked the question.",
     )
     content = models.TextField(help_text="Question text.")
-    is_answered = models.BooleanField(default=False, help_text="Whether the question has an answer.")
-    answer = models.TextField(blank=True, default="", help_text="Answer text, if provided.")
-    answered_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="answered_questions",
-        help_text="User who answered the question.",
-    )
-    answered_at = models.DateTimeField(null=True, blank=True, help_text="When the question was answered.")
     created_at = models.DateTimeField(auto_now_add=True, help_text="Creation timestamp.")
     updated_at = models.DateTimeField(auto_now=True, help_text="Last update timestamp.")
+    upvoters = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        through="QuestionUpvote",
+        related_name="upvoted_questions",
+        blank=True,
+        help_text="Users who upvoted this question.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["event", "-created_at"], name="qna_event_created_idx"),
-            models.Index(fields=["event", "is_answered"], name="qna_event_answered_idx"),
         ]
         verbose_name = "Question"
         verbose_name_plural = "Questions"
 
-    def mark_answered(self, answer: str, by_user_id: int) -> None:
-        """Convenience method to set answer metadata."""
-        self.answer = answer
-        self.is_answered = True
-        self.answered_by_id = by_user_id
-        self.answered_at = timezone.now()
-        self.save(update_fields=["answer", "is_answered", "answered_by", "answered_at", "updated_at"])
+    def upvote_count(self) -> int:
+        return self.upvoters.count()
 
     def __str__(self) -> str:
-        status = "answered" if self.is_answered else "open"
-        return f"[{self.event_id}] {status}: {self.content[:50]}"
+        return f"[{self.event_id}] {self.content[:50]} (▲{self.upvote_count})"
+    
+
+class QuestionUpvote(models.Model):
+    """
+    Through table for Question <-> User upvotes.
+    One user can upvote a question at most once.
+    """
+
+    question = models.ForeignKey(Question, on_delete=models.CASCADE, related_name="upvote_links")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="question_upvotes")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("question", "user")
+        indexes = [
+            models.Index(fields=["question", "created_at"], name="qna_upvote_time_idx"),
+            models.Index(fields=["user", "question"], name="qna_upvote_user_q_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Q{self.question_id} ▲ by U{self.user_id}"

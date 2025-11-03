@@ -8,9 +8,10 @@ from the authenticated request user during creation.
 """
 from rest_framework import serializers
 from .models import Resource
+from django.utils import timezone
 
 class ResourceSerializer(serializers.ModelSerializer):
-    organization_id = serializers.IntegerField()
+    community_id = serializers.IntegerField()
     event_id = serializers.IntegerField(required=False, allow_null=True)
     uploaded_by_id = serializers.IntegerField(read_only=True)
 
@@ -18,7 +19,7 @@ class ResourceSerializer(serializers.ModelSerializer):
         model = Resource
         fields = [
             "id",
-            "organization_id",
+            "community_id",
             "event_id",
             "title",
             "description",
@@ -28,6 +29,7 @@ class ResourceSerializer(serializers.ModelSerializer):
             "video_url",
             "tags",
             "is_published",
+            "publish_at", 
             "uploaded_by_id",
             "created_at",
             "updated_at",
@@ -54,6 +56,8 @@ class ResourceSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"video_url": "This field is required for video resources."})
         else:
             raise serializers.ValidationError({"type": "Invalid resource type."})
+        if data.get("publish_at") and data["publish_at"] <= timezone.now():
+            data["is_published"] = True
         return data
 
     def create(self, validated_data):
