@@ -111,3 +111,4 @@ class FeedItemSerializer(serializers.ModelSerializer):
 
         data["metadata"] = m
         return data
+    

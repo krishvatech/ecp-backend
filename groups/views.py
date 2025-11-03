@@ -8,13 +8,16 @@ from django.utils import timezone
 from urllib.parse import urljoin
 from django.db import transaction
 from django.core import signing
-from django.core.files.storage import default_storage
 from rest_framework import status, viewsets, serializers
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from uuid import uuid4
+from pathlib import Path
+from django.utils.text import slugify
+from storages.backends.s3boto3 import S3Boto3Storage
 
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter, OpenApiExample
@@ -293,12 +296,15 @@ class GroupViewSet(viewsets.ModelViewSet):
             f = request.FILES.get("image")
             if not f:
                 return Response({"detail": "image file is required"}, status=400)
-            # store with default storage, keep URL/path in metadata
-            path = default_storage.save(f"feed_images/{f.name}", f)
-            try:
-                url = default_storage.url(path)
-            except Exception:
-                url = path
+            # Build an S3 key similar to how Event previews do it (slug + short uuid + ext)
+            # Events use "previews/event/..." — we’ll use "previews/feed/..." here.
+            # If you want EXACTLY the same folder as events, change to "previews/event/".
+            name = slugify(Path(f.name).stem) or "image"
+            ext = (Path(f.name).suffix or ".jpg").lower()
+            key = f"previews/feed/{name}-{uuid4().hex[:8]}{ext}"
+            storage = S3Boto3Storage()   # uses AWS_* settings from Django
+            path = storage.save(key, f)  # upload the file bytes to S3
+            url = storage.url(path)      # public or signed URL depending on AWS_* settings
             meta["image"] = url
             cap = (request.data.get("text") or "").strip()
             if cap:
@@ -1482,6 +1488,16 @@ class GroupViewSet(viewsets.ModelViewSet):
         now = timezone.now()
         updated = q.update(status=PromotionRequest.STATUS_REJECTED, reviewed_by_id=decider_id, reviewed_at=now)
         return Response({"ok": True, "rejected": updated}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'])
+    def subgroups(self, request, pk=None):
+        parent = self.get_object()
+        qs = Group.objects.filter(parent=parent).select_related('community', 'created_by').order_by('-created_at')
+        page = self.paginate_queryset(qs)
+        ser = GroupSerializer(page or qs, many=True, context={'request': request})
+        if page is not None:
+            return self.get_paginated_response(ser.data)
+        return Response(ser.data)
 
     # ---------- JOIN / JOIN-LINK ----------
     @action(detail=True, methods=["post"], url_path="join")
