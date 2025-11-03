@@ -22,7 +22,7 @@ class UserTinySerializer(serializers.ModelSerializer):
         return obj.username or obj.email
 
 
-class FriendshipSerializer(serializers.ModelSerializer):
+class friendserializer(serializers.ModelSerializer):
     friend = serializers.SerializerMethodField()
 
     class Meta:

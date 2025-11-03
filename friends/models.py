@@ -12,12 +12,12 @@ class Friendship(models.Model):
 
     user1 = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        related_name="friendships_as_user1",
+        related_name="friends_as_user1",
         on_delete=models.CASCADE,
     )
     user2 = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        related_name="friendships_as_user2",
+        related_name="friends_as_user2",
         on_delete=models.CASCADE,
     )
     created_at = models.DateTimeField(auto_now_add=True)
@@ -55,7 +55,7 @@ class Friendship(models.Model):
 
 class FriendRequest(models.Model):
     """
-    Request/approval flow for friendships.
+    Request/approval flow for friends.
     """
 
     PENDING = "pending"

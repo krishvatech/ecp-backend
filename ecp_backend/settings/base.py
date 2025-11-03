@@ -101,7 +101,7 @@ INSTALLED_APPS = [
     "content",
     "activity_feed",
     'groups',
-    'friendships',
+    'friends',
     
     "drf_spectacular",
     "drf_spectacular_sidecar"

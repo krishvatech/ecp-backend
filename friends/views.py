@@ -8,7 +8,7 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 
 from .models import Friendship, FriendRequest
 from .serializers import (
-    FriendshipSerializer,
+    friendserializer,
     FriendshipCreateSerializer,
     FriendRequestSerializer,
     FriendRequestCreateSerializer,
@@ -38,7 +38,7 @@ class FriendshipViewSet(
     def get_serializer_class(self):
         if self.action == "create":
             return FriendshipCreateSerializer
-        return FriendshipSerializer
+        return friendserializer
 
     def destroy(self, request, *args, **kwargs):
         """Unfriend by friendship id OR by ?user_id=..."""
@@ -92,7 +92,7 @@ class FriendshipViewSet(
             .filter(Q(user1_id=target_id) | Q(user2_id=target_id))
             .order_by("-created_at")
         )
-        ser = FriendshipSerializer(
+        ser = friendserializer(
             qs, many=True, context={"request": request, "perspective_id": target_id}
         )
         return Response(ser.data)
