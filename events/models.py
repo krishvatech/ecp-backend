@@ -1,26 +1,16 @@
 """
 Models for the events app.
-
 An `Event` is associated with a single community and has a state
 machine to represent its current status.  Slugs are automatically
 generated based on the title and community ID.  The creator of the
 event is stored in the `created_by` field.
 """
-
 from django.db import models
 from django.contrib.auth.models import User
 from community.models import Community
 from django.utils.text import slugify
 from django.conf import settings
-from django.core.files.storage import FileSystemStorage
 import os, uuid
-
-
-_preview_storage = FileSystemStorage(
-    location=getattr(settings, "PREVIEW_MEDIA_ROOT", settings.MEDIA_ROOT),
-    base_url=getattr(settings, "PREVIEW_MEDIA_URL", settings.MEDIA_URL),
-)
-
 def event_preview_upload_to(instance, filename):
     """
     Save preview images directly under:
@@ -29,10 +19,7 @@ def event_preview_upload_to(instance, filename):
     """
     name, ext = os.path.splitext(filename or "")
     base = slugify(name) or "preview"
-
-    return f"event/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
-
-
+    return f"previews/event/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
 class Event(models.Model):
     """Represents an event within an community."""
     STATUS_CHOICES = [
@@ -65,8 +52,7 @@ class Event(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     attending_count = models.PositiveIntegerField(default=0)
     preview_image = models.ImageField(
-        upload_to=event_preview_upload_to,  
-        storage=_preview_storage,         
+        upload_to=event_preview_upload_to,
         blank=True,
         null=True,
     )
@@ -109,7 +95,6 @@ class EventRegistration(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='registrations')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='event_registrations')
     registered_at = models.DateTimeField(auto_now_add=True)
-
     class Meta:
         db_table = 'event_registrations'
         unique_together = ('event', 'user')                 
@@ -117,6 +102,5 @@ class EventRegistration(models.Model):
             models.Index(fields=['event', 'user']),
             models.Index(fields=['user']),
         ]
-
     def __str__(self):
         return f'{self.user_id} -> {self.event_id}'
