@@ -1,56 +1,98 @@
-# ---------- Python ----------
+# -------- OS junk --------
+.DS_Store
+Thumbs.db
+
+# -------- Python / Django --------
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.so
 *.egg-info/
-*.egg
+.eggs/
 .Python
+
+# Virtual envs
 .venv/
 venv/
+ENV/
+env/
+.python-version
 
-# ---------- Django ----------
+# 🔒 Ignore ALL Django migrations (you said you don't want to keep them)
+**/migrations/**
+
+# Django logs & local overrides
+*.log
+local_settings.py
+
+# SQLite (if any)
 db.sqlite3
-/media/
-static/
+db.sqlite3-journal
+
+# Media uploads & collected static output
+media/
 staticfiles/
-# Collected static or build artifacts
-build/
-dist/
+static_root/
 
-# ---------- Env / Secrets ----------
-.env
-*.env
-.envrc
-*.key
-*.secret
-# If you keep cloud creds in a dedicated folder, uncomment next line:
-# credentials/*.json
-
-# ---------- Testing / Tools ----------
-.coverage
+# Testing / typing / tooling caches
+.coverage*
 htmlcov/
 .pytest_cache/
 .mypy_cache/
+.pytype/
+.pyre/
+.hypothesis/
 .cache/
-.ruff_cache/
 
-# ---------- Docker ----------
+# Packaging/build artifacts
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+pip-log.txt
+
+# Celery / runtime pids
+celerybeat-schedule
+celerybeat.pid
 *.pid
-*.log
-docker-compose.override.yml
 
-# ---------- Editors / IDE ----------
+# -------- JavaScript / React / Vite --------
+**/node_modules/
+**/dist/
+**/build/
+.npm/
+.eslintcache
+.nyc_output/
+coverage/
+*.tsbuildinfo
+
+# Vite/CRA/Next env files (keep examples)
+.env
+.env.*
+!.env.example
+!.env.sample
+.env.local
+.env.*.local
+
+# -------- Editors / IDE --------
 .vscode/
 .idea/
 *.code-workspace
 
-# ---------- OS ----------
-.DS_Store
-Thumbs.db
+# -------- Docker / Dev data (local volumes) --------
+.docker/
+docker-data/
+**/pgdata/
+**/postgres-data/
+**/db-data/
+**/redis-data/
+tmp/
+tmp/**
 
-# ---------- Node (if you add a frontend folder later) ----------
-node_modules/
-npm-debug.log*
-pnpm-debug.log*
-yarn-error.log*
+# -------- Misc secrets / tools --------
+.sentryclirc
+.ipynb_checkpoints/
+*.pem
+*.key
+*.crt
