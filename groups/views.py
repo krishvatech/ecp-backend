@@ -364,10 +364,25 @@ class GroupViewSet(viewsets.ModelViewSet):
             qs = qs.filter(Q(name__icontains=search) | Q(description__icontains=search))
 
         return qs
+    
+    def get_queryset_all(self):
+        qs = Group.objects.all().annotate(member_count=Count("memberships"))
+        created_by = self.request.query_params.get("created_by")
+        search = self.request.query_params.get("search")
+
+        # only top-level (parent is NULL) when filtering by "me"
+        if created_by == "me" and self.request.user.is_authenticated:
+            qs = qs.filter(created_by=self.request.user)
+
+        if search:
+            qs = qs.filter(Q(name__icontains=search) | Q(description__icontains=search))
+
+        return qs
 
     def get_object(self):
+        print("---- get_object called with pk =", self.kwargs.get("pk"))
         lookup = self.kwargs.get("pk")
-        base = self.get_queryset()
+        base = self.get_queryset_all()
         if lookup is None:
             raise NotFound("Group not specified.")
 
@@ -427,21 +442,45 @@ class GroupViewSet(viewsets.ModelViewSet):
 
     # ---------- create (ADMIN/STAFF only) ----------
     def create(self, request, *args, **kwargs):
-        data = request.data
+        # make a mutable copy
+        data = request.data.copy()
         parent_id = data.get("parent_id") or data.get("parent")
         uid = getattr(request.user, "id", None)
 
-        # SUB-GROUP creation path
+        # --- helper: build a unique slug like "test", "test-1", "test-2", ... ---
+        from django.utils.text import slugify
+        def ensure_unique_slug(text: str) -> str:
+            base = slugify(text or "") or "group"
+            # respect model's max_length
+            try:
+                max_len = Group._meta.get_field("slug").max_length or 50
+            except Exception:
+                max_len = 50
+            base = base[:max_len]
+            cand = base
+            i = 1
+            # case-insensitive uniqueness
+            while Group.objects.filter(slug__iexact=cand).exists():
+                suffix = f"-{i}"
+                cand = f"{base[: max_len - len(suffix)]}{suffix}"
+                i += 1
+            return cand
+
+        # If a slug or name was provided, pre-resolve a unique slug BEFORE validation
+        if data.get("slug") or data.get("name"):
+            data["slug"] = ensure_unique_slug(data.get("slug") or data.get("name"))
+
+        # -------------------- SUB-GROUP path --------------------
         if parent_id:
             try:
                 parent = Group.objects.get(pk=int(parent_id))
             except Exception:
                 return Response({"detail": "Invalid parent_id"}, status=400)
 
-            # owner/creator OR admin (no staff requirement) OR site staff
+            # owner/creator OR admin on parent OR site staff
             if not (
-                self._can_manage(request, parent)        # owner/creator/staff on parent
-                or self._is_admin_any(uid, parent)       # admin on parent (even if not staff)
+                self._can_manage(request, parent)
+                or self._is_admin_any(uid, parent)
                 or getattr(request.user, "is_staff", False)
             ):
                 return Response({"detail": "Only parent owner/admin can create sub-groups."}, status=403)
@@ -449,7 +488,6 @@ class GroupViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(data=data)
             serializer.is_valid(raise_exception=True)
 
-            # force community to match parent
             group = serializer.save(
                 created_by=request.user,
                 owner=request.user,
@@ -457,7 +495,6 @@ class GroupViewSet(viewsets.ModelViewSet):
                 community=parent.community,
             )
 
-            # (Optional) ensure the creator is a member of the new sub-group
             GroupMembership.objects.get_or_create(
                 group=group, user=request.user,
                 defaults={"role": GroupMembership.ROLE_MEMBER, "status": GroupMembership.STATUS_ACTIVE}
@@ -467,16 +504,15 @@ class GroupViewSet(viewsets.ModelViewSet):
             headers = self.get_success_headers(out.data)
             return Response(out.data, status=status.HTTP_201_CREATED, headers=headers)
 
-        # TOP-LEVEL creation remains staff-only (your old rule)
+        # -------------------- TOP-LEVEL path (staff-only) --------------------
         if not request.user.is_staff:
             return Response({"detail": "Only admins can create groups."}, status=403)
 
-        # ... your existing top-level create logic (unchanged) ...
-        serializer = self.get_serializer(data=request.data)
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
 
         owner = request.user
-        community_id = request.data.get("community_id") or request.data.get("community")
+        community_id = data.get("community_id") or data.get("community")
         community_obj = None
 
         if community_id:
@@ -491,6 +527,7 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         if community_obj is None:
             return Response({"detail": "No community found for this owner. Pass community_id explicitly."}, status=400)
+
         group = serializer.save(created_by=owner, owner=owner, community=community_obj)
         out = self.get_serializer(group)
         headers = self.get_success_headers(out.data)
@@ -560,7 +597,8 @@ class GroupViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"])
     def mine(self, request):
-        qs = self.get_queryset().filter(created_by=request.user)
+        print("---- fetching my groups for user:", request.user)
+        qs = self.get_queryset_all().filter(created_by=request.user)
         page = self.paginate_queryset(qs)
         ser = self.get_serializer(page or qs, many=True)
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
@@ -1100,7 +1138,6 @@ class GroupViewSet(viewsets.ModelViewSet):
                 return item, None
 
         return None, "Item is not a post"
-    # inside GroupViewSet
 
     @action(detail=False, methods=["get"], url_path="explore")
     def explore(self, request):
@@ -1109,8 +1146,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         so the UI can show a disabled 'Request pending' button.
         """
         qs = (
-            self.get_queryset()
-            .filter(visibility=Group.VISIBILITY_PUBLIC, parent__isnull=True)
+            self.get_queryset_all()
+            .filter(visibility=Group.VISIBILITY_PUBLIC)
             .order_by("-created_at")
         )
         page = self.paginate_queryset(qs)
