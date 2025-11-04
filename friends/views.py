@@ -122,6 +122,15 @@ class FriendshipViewSet(
         users = User.objects.filter(id__in=mutual_ids)
         return Response(UserTinySerializer(users, many=True).data)
 
+    @extend_schema(
+        parameters=[OpenApiParameter(
+            name="user_id",
+            type=OpenApiTypes.INT,
+            location=OpenApiParameter.QUERY,
+            required=True,
+            description="Target user's ID",
+        )]
+    )
     @action(detail=False, methods=["get"], url_path="status")
     def status(self, request):
         """Return relationship status with ?user_id=<target>."""
