@@ -1,3 +1,11 @@
+# -------------------------------------------------------------
+# NOTE: Per request, ONLY COMMENTS have been added below.
+#       No executable logic, signatures, or query behavior changed.
+#       Comments explain endpoint purpose, permissions, payloads,
+#       and where/why order_by is used. All code remains identical
+#       to the original aside from added comments.
+# -------------------------------------------------------------
+
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Count, Q
@@ -44,6 +52,21 @@ from .serializers import (
 
 class GroupViewSet(viewsets.ModelViewSet):
     """
+    ViewSet for managing Groups and their related actions (posts, polls,
+    membership, moderation, and join-link flows).
+
+    ORDERING NOTES:
+    - explore(): groups ordered by '-created_at' (newest first)
+    - joined(): groups ordered by '-created_at' (newest first)
+    - posts(): FeedItems ordered by '-created_at' (newest first)
+    - promotion_requests(): requests ordered by '-created_at' (newest first)
+    - subgroups(): ordered by '-created_at' (newest first)
+    - pending_requests(): pending memberships ordered by '-joined_at' (most recent pending first)
+    - polls() GET: polls ordered by '-created_at' (newest first)
+
+    All other querysets rely on default DB ordering unless stated.
+    """
+    """
     Existing:
     - GET   /api/groups/?created_by=me&search=term
     - POST  /api/groups/                  (staff via GroupCreateByAdminOnly)
@@ -77,6 +100,7 @@ class GroupViewSet(viewsets.ModelViewSet):
     queryset = Group.objects.all()
     lookup_field = "pk"
 
+    # Permission map for various actions on the viewset.
     def get_permissions(self):
         admin_only = {
             "create", "update", "partial_update", "destroy",
@@ -112,13 +136,16 @@ class GroupViewSet(viewsets.ModelViewSet):
         return [IsAuthenticatedOrReadOnly()]
 
     # ----- join link helpers -----
+    # Creates a salt that invalidates old join tokens when updated_at changes.
     def _join_salt(self, group: Group) -> str:
         ts = int(group.updated_at.timestamp()) if group.updated_at else 0
         return f"group-join:{group.pk}:{ts}"
 
+    # Generates a signed join token for a group.
     def _make_join_token(self, group: Group) -> str:
         return signing.dumps({"gid": group.pk}, salt=self._join_salt(group))
 
+    # Validates a provided join token for the given group.
     def _validate_join_token(self, token: str, group: Group) -> bool:
         try:
             data = signing.loads(token, max_age=self.JOIN_LINK_MAX_AGE, salt=self._join_salt(group))
@@ -126,6 +153,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         except Exception:
             return False
         
+    # Utility to load a message and assert it belongs to this group's conversation.
     def _get_message_for_group(self, group, message_id):
         try:
             mid = int(message_id)
@@ -141,6 +169,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             return None, "Message does not belong to this group"
         return msg, None
     
+    # Enforces WhatsApp-like sending rules for group messages.
     def _can_send_message_to_group(self, request, group) -> (bool, str):
         """
         WhatsApp-like rule:
@@ -167,6 +196,7 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         return False, "admins_only"
     
+    # Ensures a user is also ACTIVE in the parent group when they join a sub-group.
     def _ensure_parent_membership_active(self, group: Group, user_id: int):
         if not group.parent_id:
             return
@@ -179,11 +209,13 @@ class GroupViewSet(viewsets.ModelViewSet):
             },
         )
 
+    # Checks active membership in a group for a specific user.
     def _is_active_member(self, user_id, group) -> bool:
         return GroupMembership.objects.filter(
             group=group, user_id=user_id, status=GroupMembership.STATUS_ACTIVE
         ).exists()
     
+    # True if user is owner/admin or site staff for a group.
     def _is_owner_admin_or_staff(self, user_id, group: Group) -> bool:
         return bool(
             user_id and (
@@ -194,12 +226,16 @@ class GroupViewSet(viewsets.ModelViewSet):
             )
         )
 
+    # Minimal user dict for response payloads.
     def _user_short(self, u):
         if not u:
             return None
         name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", None)
         return {"id": getattr(u, "id", None), "email": getattr(u, "email", None), "name": name}
     
+    # Endpoint: GET/POST /api/groups/{id-or-slug}/posts/
+    # GET lists feed posts for the group; ORDER BY '-created_at' (newest first).
+    # POST creates a new feed item of type text/image/link/poll/event (moderator-only).
     @action(detail=True, methods=["get", "post"], url_path="posts", parser_classes=[JSONParser, MultiPartParser, FormParser])
     def posts(self, request, pk=None):
         """
@@ -236,7 +272,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                         # keep legacy targeting (old rows)
                         | models.Q(target_content_type=ct, target_object_id=group.id)
                     )
-                    .order_by("-created_at"))
+                    .order_by("-created_at"))  # ORDER: newest first
 
             out = []
             for it in items:
@@ -357,7 +393,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         )
         return Response({"ok": True, "id": item.id}, status=201)
     
-    # ---------- queryset / object helpers ----------
+    # Base queryset for groups in list views (annotates member_count).
     def get_queryset(self):
         qs = Group.objects.all().annotate(member_count=Count("memberships"))
         created_by = self.request.query_params.get("created_by")
@@ -370,8 +406,10 @@ class GroupViewSet(viewsets.ModelViewSet):
         if search:
             qs = qs.filter(Q(name__icontains=search) | Q(description__icontains=search))
 
+        # No explicit order_by here → default DB order
         return qs
     
+    # Expanded queryset variant that also includes sub-groups for "me" filter.
     def get_queryset_all(self):
         qs = Group.objects.all().annotate(member_count=Count("memberships"))
         created_by = self.request.query_params.get("created_by")
@@ -384,8 +422,10 @@ class GroupViewSet(viewsets.ModelViewSet):
         if search:
             qs = qs.filter(Q(name__icontains=search) | Q(description__icontains=search))
 
+        # No explicit order_by here → default DB order
         return qs
 
+    # Resolves a group by numeric id or slug (checks both ways). Uses get_queryset_all().
     def get_object(self):
         print("---- get_object called with pk =", self.kwargs.get("pk"))
         lookup = self.kwargs.get("pk")
@@ -412,17 +452,20 @@ class GroupViewSet(viewsets.ModelViewSet):
                 raise NotFound(f"Group '{lookup}' not found.")
 
     # ----- ROLE CHECKS (with STAFF requirement for admin/mod) -----
+    # Admin must be staff; checks a concrete ADMIN role membership.
     def _is_admin(self, user_id, group) -> bool:
         ADMIN = getattr(GroupMembership, "ROLE_ADMIN", "admin")
         # STAFF-ONLY ADMIN/MOD: must be staff
         return GroupMembership.objects.filter(
             group=group, user_id=user_id, role=ADMIN, user__is_staff=True
         ).exists()
+    # Admin without requiring staff (used for some creation checks).
     def _is_admin_any(self, user_id, group) -> bool:
         return GroupMembership.objects.filter(
             group=group, user_id=user_id, role=GroupMembership.ROLE_ADMIN
         ).exists()
     
+    # Moderator must be staff; checks a concrete MODERATOR role membership.
     def _is_moderator(self, user_id, group) -> bool:
         MOD = getattr(GroupMembership, "ROLE_MODERATOR", "moderator")
         # STAFF-ONLY ADMIN/MOD: must be staff
@@ -431,6 +474,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         ).exists()
 
     # ---------- existing helpers ----------
+    # True if request.user is owner/creator or site staff for a group.
     def _can_manage(self, request, group: Group) -> bool:
         uid = getattr(request.user, "id", None)
         return bool(
@@ -443,11 +487,13 @@ class GroupViewSet(viewsets.ModelViewSet):
             )
         )
 
+    # True if user can manage or is staff-admin.
     def _can_set_roles(self, request, group: Group) -> bool:
         uid = getattr(request.user, "id", None)
         return self._can_manage(request, group) or (uid and self._is_admin(uid, group))
 
     # ---------- create (ADMIN/STAFF only) ----------
+    # Creates top-level or sub-group; ensures unique slug BEFORE validate.
     def create(self, request, *args, **kwargs):
         # make a mutable copy
         data = request.data.copy()
@@ -541,12 +587,14 @@ class GroupViewSet(viewsets.ModelViewSet):
         return Response(out.data, status=status.HTTP_201_CREATED, headers=headers)
 
     # ---------- update / partial_update (OWNER/ADMIN only) ----------
+    # Full update restricted to managers.
     def update(self, request, *args, **kwargs):
         group = self.get_object()
         if not self._can_manage(request, group):
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
         return super().update(request, *args, **kwargs)
 
+    # Partial update with optional cover removal support.
     def partial_update(self, request, *args, **kwargs):
         group = self.get_object()
         if not self._can_manage(request, group):
@@ -564,12 +612,14 @@ class GroupViewSet(viewsets.ModelViewSet):
         return super().partial_update(request, *args, **kwargs)
 
     # ---------- destroy (OWNER/ADMIN only) ----------
+    # Deletes a group (authorized owners/admins only).
     def destroy(self, request, *args, **kwargs):
         group = self.get_object()
         if not self._can_manage(request, group):
             return Response({"detail": "Only owner/admin can delete a group."}, status=status.HTTP_403_FORBIDDEN)
         return super().destroy(request, *args, **kwargs)
 
+    # Hook used by DRF create(); also emits a FeedItem('group_created').
     def perform_create(self, serializer):
         community = serializer.validated_data.get("community")
         if not community:
@@ -603,6 +653,8 @@ class GroupViewSet(viewsets.ModelViewSet):
                 },
             )
 
+    # Endpoint: GET /api/groups/mine/
+    # Lists groups created_by current user (uses get_queryset_all; default DB order).
     @action(detail=False, methods=["get"])
     def mine(self, request):
         print("---- fetching my groups for user:", request.user)
@@ -611,12 +663,16 @@ class GroupViewSet(viewsets.ModelViewSet):
         ser = self.get_serializer(page or qs, many=True)
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
 
+    # Endpoint: GET /api/groups/{id-or-slug}/members/
+    # Returns ACTIVE members only; no explicit ordering specified.
     @action(detail=True, methods=["get"], url_path="members")
     def members(self, request, pk=None):
         group = self.get_object()
         memberships = GroupMembership.objects.filter(group=group, status="active").select_related("user")
         return Response(GroupMemberOutSerializer(memberships, many=True).data)
 
+    # Endpoint: POST /api/groups/{id-or-slug}/add-members/
+    # Owner/admin explicitly adds users (status ACTIVE). If sub-group, also ensures parent membership.
     @action(detail=True, methods=["post"], url_path="add-members")
     def add_members(self, request, pk=None):
         """Owner/admin invites/adds users (explicit add = ACTIVE)."""
@@ -665,6 +721,8 @@ class GroupViewSet(viewsets.ModelViewSet):
                 )
         return Response(GroupMemberOutSerializer(memberships, many=True).data, status=status.HTTP_200_OK)
 
+    # Endpoint: POST /api/groups/{id-or-slug}/request-add-members
+    # Creates/updates PENDING invites (moderator or manager only). No order_by involved.
     @extend_schema(
         request=inline_serializer(
             name='RequestAddMembersBody',
@@ -732,6 +790,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         memberships = GroupMembership.objects.filter(group=group).select_related("user")
         return Response(GroupMemberOutSerializer(memberships, many=True).data, status=status.HTTP_200_OK)
 
+    # Activates pending members, and ensures parent membership for sub-groups.
     def _activate_members(self, group, user_ids):
         STATUS_ACTIVE = GroupMembership.STATUS_ACTIVE
         STATUS_PENDING = GroupMembership.STATUS_PENDING
@@ -749,6 +808,8 @@ class GroupViewSet(viewsets.ModelViewSet):
                     pass
         return updated
 
+    # Endpoint: POST /api/groups/{id}/approve-member-requests/{user_id}
+    # Approves a single pending member. No order_by.
     @extend_schema(
         request=None,
         parameters=[OpenApiParameter("user_id", OpenApiTypes.INT, OpenApiParameter.PATH,
@@ -765,6 +826,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         updated = self._activate_members(group, [uid])
         return Response({"ok": True, "updated": updated, "user_id": uid})
     
+    # Endpoint: POST /api/groups/{id}/approve-member-requests
+    # Bulk-approves pending members. Ensures parent membership for sub-groups.
     @extend_schema(
         request=inline_serializer(
             name='ApproveMemberRequestsBody',
@@ -803,6 +866,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         return Response({"ok": True,
                         "members": GroupMemberOutSerializer(memberships, many=True).data})
     
+    # Endpoint: POST /api/groups/{id}/reject-member-requests/{user_id}
+    # Rejects a single pending request (deletes the PENDING membership).
     @extend_schema(
         request=None,
         parameters=[OpenApiParameter("user_id", OpenApiTypes.INT, OpenApiParameter.PATH,
@@ -821,6 +886,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         ).delete()
         return Response({"ok": True, "deleted": deleted, "user_id": uid})
 
+    # Endpoint: POST /api/groups/{id}/reject-member-requests
+    # Bulk-rejects pending requests. No order_by.
     @extend_schema(
         request=inline_serializer(
             name='RejectMemberRequestsBody',
@@ -848,6 +915,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         ).data
         return Response({"ok": True, "deleted": deleted, "members": memberships})
 
+    # Endpoint: POST /api/groups/{id-or-slug}/remove-member
+    # Removes a member (cannot remove owner). No order_by.
     @action(detail=True, methods=["post"], url_path="remove-member")
     def remove_member(self, request, pk=None):
         group = self.get_object()
@@ -870,7 +939,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         membership.delete()
         return Response({"ok": True}, status=status.HTTP_200_OK)
 
-    # ---------- MODERATOR CAPABILITIES ----------
+    # Endpoint: GET /api/groups/{id}/moderator/can-i/
+    # Returns booleans for moderator capabilities for current user.
     @action(detail=True, methods=["get"], url_path="moderator/can-i")
     def moderator_can_i(self, request, pk=None):
         group = self.get_object()
@@ -894,12 +964,14 @@ class GroupViewSet(viewsets.ModelViewSet):
         return Response(out)
 
     # ===== helpers to access external apps =====
+    # Lazy import of FeedItem.
     def _get_feeditem_model(self):
         try:
             return apps.get_model('activity_feed', 'FeedItem')
         except Exception:
             return None
 
+    # Lazy import of Message.
     def _get_message_model(self):
         try:
             return apps.get_model('messaging', 'Message')
@@ -910,6 +982,7 @@ class GroupViewSet(viewsets.ModelViewSet):
     # Moderator MANAGEMENT (PROMOTE)
     # =========================
 
+    # True if the user can moderate content (staff, owner, admin, moderator).
     def _can_moderate_any(self, request, group) -> bool:
         """
         True if the user can moderate content for this group:
@@ -927,6 +1000,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         )
 
     # ===== FEED POSTS (stored as activity_feed.FeedItem with target=Group) =====
+    # Moderator creates a legacy 'post' FeedItem (unless type='poll', then delegates).
     @action(detail=True, methods=["post"], url_path="moderation/create-post")
     def moderation_create_post(self, request, pk=None):
         group = self.get_object()
@@ -966,12 +1040,14 @@ class GroupViewSet(viewsets.ModelViewSet):
         )
         return Response({"ok": True, "feed_item_id": item.id}, status=201)
     
+    # Returns ContentType id for a model (safe helper).
     def _ct_id(self, model):
         try:
             return ContentType.objects.get_for_model(model).id
         except Exception:
             return None
 
+    # Resolves a FeedItem belonging to this group; supports identifying by FeedItem.id or poll_id.
     def _load_group_item(self, group, identifier):
         """
         Return a FeedItem that belongs to this group.
@@ -1161,6 +1237,7 @@ class GroupViewSet(viewsets.ModelViewSet):
 
 
 
+    # Loads a legacy 'post' for moderation; validates it belongs to the group.
     def _load_group_post(self, group, feed_item_id):
         """
         Load a FeedItem for moderation. Accepts:
@@ -1204,6 +1281,8 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         return None, "Item is not a post"
 
+    # Endpoint: GET /api/groups/explore
+    # Public top-level groups; ORDER BY '-created_at' (newest first).
     @action(detail=False, methods=["get"], url_path="explore")
     def explore(self, request):
         """
@@ -1219,6 +1298,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         ser = self.get_serializer(page or qs, many=True, context={"request": request})
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
 
+    # Endpoint: GET /api/groups/joined  (auth required)
+    # Current user's groups (ACTIVE + PENDING); ORDER BY '-created_at'. DISTINCT to avoid dupes.
     @action(detail=False, methods=["get"], url_path="joined", permission_classes=[IsAuthenticated])
     def joined(self, request):
         """
@@ -1236,6 +1317,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
 
 
+    # Endpoint: POST /api/groups/{id}/moderation/delete-post
+    # Soft-deletes any feed item (post/poll/image/link/event) via metadata flags.
     @action(detail=True, methods=["post"], url_path="moderation/delete-post")
     def moderation_delete_post(self, request, pk=None):
         group = self.get_object()
@@ -1258,9 +1341,12 @@ class GroupViewSet(viewsets.ModelViewSet):
         item.save(update_fields=["metadata"])
         return Response({"ok": True, "deleted": "soft"}, status=200)
     
+    # Input schema for hide-post.
     class HidePostIn(serializers.Serializer):
         id = serializers.IntegerField(help_text="Feed item ID to hide")
 
+    # Endpoint: POST /api/groups/{id}/moderation/hide-post
+    # Marks a feed item as hidden (soft action). No order_by.
     @extend_schema(request=HidePostIn)
     @action(detail=True, methods=["post"], url_path="moderation/hide-post")
     def moderation_hide_post(self, request, pk=None):
@@ -1286,6 +1372,8 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         return Response({"ok": True, "hidden": True}, status=200)
 
+    # Endpoint: POST /api/groups/{id}/moderation/unhide-post
+    # Marks a feed item as visible (undo hide). No order_by.
     @extend_schema(
         parameters=[
             OpenApiParameter(
@@ -1319,6 +1407,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         return Response({"ok": True, "hidden": False}, status=200)
 
     # ===== MESSAGE moderation (optional – if you have messaging app) =====
+    # Validates whether a message belongs to this group (group chat / event group / legacy room_key).
     def _ensure_message_in_group(self, msg, group):
         conv = getattr(msg, "conversation", None)
         if not conv:
@@ -1341,6 +1430,7 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         return False
 
+    # Loads message for moderation; ensures group association.
     def _load_message_for_group(self, group, message_id):
         Message = self._get_message_model()
         if not Message:
@@ -1353,6 +1443,8 @@ class GroupViewSet(viewsets.ModelViewSet):
             return None, "Message does not belong to this group"
         return msg, None
 
+    # Endpoint: POST /api/groups/{id}/moderation/hide-message
+    # Sets is_hidden=True on a message if supported by the Message model.
     @action(detail=True, methods=["post"], url_path="moderation/hide-message")
     def moderation_hide_message(self, request, pk=None):
         group = self.get_object()
@@ -1367,6 +1459,8 @@ class GroupViewSet(viewsets.ModelViewSet):
             return Response({"ok": True, "hidden": True})
         return Response({"detail":"This Message model does not support is_hidden"}, status=409)
 
+    # Endpoint: POST /api/groups/{id}/moderation/unhide-message
+    # Sets is_hidden=False on a message if supported by the Message model.
     @action(detail=True, methods=["post"], url_path="moderation/unhide-message")
     def moderation_unhide_message(self, request, pk=None):
         group = self.get_object()
@@ -1381,6 +1475,8 @@ class GroupViewSet(viewsets.ModelViewSet):
             return Response({"ok": True, "hidden": False})
         return Response({"detail":"This Message model does not support is_hidden"}, status=409)
 
+    # Endpoint: POST /api/groups/{id}/moderation/delete-message
+    # Soft-deletes a message by setting is_deleted=True and deleted_at.
     @action(detail=True, methods=["post"], url_path="moderation/delete-message")
     def moderation_delete_message(self, request, pk=None):
         group = self.get_object()
@@ -1405,6 +1501,8 @@ class GroupViewSet(viewsets.ModelViewSet):
     # =========================
     # ROLE MANAGEMENT (PROMOTE)
     # =========================
+    # Endpoint: POST /api/groups/{id}/set-role
+    # Assigns role to a member (admin/mod/member). Admin/Mod require staff users.
     @action(detail=True, methods=["post"], url_path="set-role")
     def set_role(self, request, pk=None):
         """
@@ -1454,10 +1552,13 @@ class GroupViewSet(viewsets.ModelViewSet):
         membership.save(update_fields=["role"])
         return Response({"ok": True}, status=status.HTTP_200_OK)
 
+    # Endpoint: POST /api/groups/{id}/change-role  → alias of set_role.
     @action(detail=True, methods=["post"], url_path="change-role")
     def change_role(self, request, pk=None):
         return self.set_role(request, pk)
 
+    # Endpoint: POST /api/groups/{id}/request-promotion
+    # Staff moderator requests promotion to ADMIN.
     @action(detail=True, methods=["post"], url_path="request-promotion", parser_classes=[JSONParser])
     def request_promotion(self, request, pk=None):
         """
@@ -1498,6 +1599,8 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         return Response({"ok": True, "request_id": req.id, "status": req.status}, status=status.HTTP_201_CREATED)
 
+    # Endpoint: GET /api/groups/{id}/promotion-requests?status=pending|approved|rejected
+    # Lists promotion requests; ORDER BY '-created_at' (newest first).
     @action(detail=True, methods=["get"], url_path="promotion-requests")
     def promotion_requests(self, request, pk=None):
         group = self.get_object()
@@ -1511,7 +1614,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         rows = (PromotionRequest.objects
                 .filter(group=group, status=status_q)
                 .select_related("user", "reviewed_by")
-                .order_by("-created_at"))
+                .order_by("-created_at"))  # ORDER: newest requests first
 
         out = []
         for r in rows:
@@ -1532,6 +1635,8 @@ class GroupViewSet(viewsets.ModelViewSet):
             })
         return Response(out)
 
+    # Endpoint: POST /api/groups/{id}/promotion-requests/approve
+    # Approves pending promotion requests; assigns ADMIN if user is staff.
     @action(detail=True, methods=["post"], url_path="promotion-requests/approve", parser_classes=[JSONParser])
     def approve_promotion_requests(self, request, pk=None):
         """
@@ -1600,6 +1705,8 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         return Response({"ok": True, "approved": approved}, status=status.HTTP_200_OK)
 
+    # Endpoint: POST /api/groups/{id}/promotion-requests/reject
+    # Bulk-rejects pending promotion requests.
     @action(detail=True, methods=["post"], url_path="promotion-requests/reject", parser_classes=[JSONParser])
     def reject_promotion_requests(self, request, pk=None):
         """
@@ -1627,6 +1734,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         updated = q.update(status=PromotionRequest.STATUS_REJECTED, reviewed_by_id=decider_id, reviewed_at=now)
         return Response({"ok": True, "rejected": updated}, status=status.HTTP_200_OK)
 
+    # Endpoint: GET /api/groups/{id}/subgroups
+    # Lists direct sub-groups for a parent; ORDER BY '-created_at'.
     @action(detail=True, methods=['get'])
     def subgroups(self, request, pk=None):
         parent = self.get_object()
@@ -1637,6 +1746,8 @@ class GroupViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(ser.data)
         return Response(ser.data)
 
+    # Endpoint: GET /api/groups/{id}/pending-requests
+    # Lists pending membership requests for the group; ORDER BY '-joined_at'.
     @action(detail=True, methods=["get"], url_path="pending-requests")
     def pending_requests(self, request, pk=None):
         """
@@ -1659,7 +1770,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         # if include != "all":
         #     qs = qs.filter(invited_by__isnull=True)
 
-        qs = qs.select_related("user").order_by("-joined_at")
+        qs = qs.select_related("user").order_by("-joined_at")  # ORDER: most recent pending first
 
         if not qs.exists():
             return Response(
@@ -1671,6 +1782,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         return Response({"ok": True, "count": len(data), "requests": data}, status=200)
     
     # ---------- JOIN / JOIN-LINK ----------
+    # Endpoint: POST /api/groups/{id}/join
+    # Handles all join policy/visibility combinations. Ensures parent membership for sub-groups.
     @action(detail=True, methods=["post"], url_path="join")
     def join(self, request, pk=None):
         group = self.get_object()
@@ -1721,6 +1834,8 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         return Response({"detail": "Invalid group configuration."}, status=400)
 
+    # Endpoint: GET /api/groups/{id}/join-link
+    # Generates a short-lived join token for approval+private groups; returns relative link.
     @action(detail=True, methods=["get"], url_path="join-link")
     def join_link(self, request, pk=None):
         group = self.get_object()
@@ -1735,6 +1850,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         rel = f"/groups/{group.slug or group.pk}?join_token={token}"
         return Response({"ok": True, "join_token": token, "relative_link": rel})
 
+    # Endpoint: POST /api/groups/{id}/join-link/rotate
+    # Rotates the join token by touching updated_at; returns new token & relative link.
     @action(detail=True, methods=["post"], url_path="join-link/rotate")
     def rotate_join_link(self, request, pk=None):
         group = self.get_object()
@@ -1752,6 +1869,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         rel = f"/groups/{group.slug or group.pk}?join_token={token}"
         return Response({"ok": True, "join_token": token, "relative_link": rel})
 
+    # Endpoint: GET/POST /api/groups/{id}/settings/message-mode
+    # GET returns current message_mode; POST updates it (owner/admin/mod/staff only).
     @action(detail=True, methods=["get", "post"], url_path="settings/message-mode", parser_classes=[JSONParser])
     def settings_message_mode(self, request, pk=None):
         """
@@ -1772,6 +1891,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         ser.save()
         return Response(ser.data, status=200)
 
+    # Endpoint: GET /api/groups/{id}/can-send
+    # Quick probe for client's UI to check message send permission.
     @action(detail=True, methods=["get"], url_path="can-send")
     def can_send(self, request, pk=None):
         """
@@ -1781,6 +1902,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         ok, reason = self._can_send_message_to_group(request, group)
         return Response({"ok": ok, "reason": reason, "message_mode": group.message_mode})
 
+    # Endpoint: POST /api/groups/{id}/pin-message
+    # Creates a GLOBAL pin (elevated) or PERSONAL pin (member). No order_by.
     @action(detail=True, methods=["post"], url_path="pin-message", parser_classes=[JSONParser])
     def pin_message(self, request, pk=None):
         group = self.get_object()
@@ -1808,6 +1931,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         return Response({"ok": True, "pin": GroupPinnedMessageOutSerializer(pin).data}, status=200)
 
 
+    # Endpoint: POST /api/groups/{id}/unpin-message
+    # Removes GLOBAL or PERSONAL pins depending on scope/elevation.
     @action(detail=True, methods=["post"], url_path="unpin-message", parser_classes=[JSONParser])
     def unpin_message(self, request, pk=None):
         group = self.get_object()
