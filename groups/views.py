@@ -484,6 +484,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         Fallback: use parent.community if group's own community is null.
         """
         comm = getattr(group, "community", None)
+        print(f"++++++++++++++++++++ comm : {comm}")
         if comm:
             return comm
         parent = getattr(group, "parent", None)
