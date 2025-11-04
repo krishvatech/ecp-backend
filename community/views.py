@@ -1,4 +1,6 @@
+# community/view.py
 from django.db.models import Q
+from friends.models import Friendship
 from rest_framework import permissions,viewsets,serializers
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import action
@@ -28,7 +30,7 @@ class CommunityViewSet(viewsets.ModelViewSet):
     class _CommunityPostCreateSerializer(serializers.Serializer):
         # common
         type = serializers.ChoiceField(choices=[("text","text"),("image","image"),("link","link"),("poll","poll")], required=False, default="text")
-        visibility = serializers.ChoiceField(choices=[("public","public"),("friends","friends")], required=False, default="public")
+        visibility = serializers.ChoiceField(choices=[("public","public"),("friends","friends")], required=False, default="friends")
         tags = serializers.ListField(child=serializers.CharField(max_length=50), required=False)
 
         # text
@@ -61,7 +63,11 @@ class CommunityViewSet(viewsets.ModelViewSet):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
         typ = data.get("type", "text")
-        visibility = data.get("visibility", "public")
+        visibility = data.get("visibility") or "friends"
+        # force normal members' default to friends-only
+        is_owner = getattr(community, "owner_id", None) == getattr(user, "id", None)
+        if not is_owner and not getattr(user, "is_staff", False) and visibility not in ("friends",):
+            visibility = "friends"
         tags = data.get("tags") or []
 
         meta = {"type": typ, "visibility": visibility, "tags": tags}
@@ -122,6 +128,7 @@ class CommunityViewSet(viewsets.ModelViewSet):
             "type": typ,
             "created_at": fi.created_at,
             "community": {"id": community.id, "name": community.name},
+            "actor": {"id": fi.actor_id, "name": getattr(fi.actor, "get_full_name", lambda: fi.actor.username)()},
             "visibility": visibility,
             "tags": tags,
         }
@@ -150,6 +157,26 @@ class CommunityViewSet(viewsets.ModelViewSet):
 
         FeedItem = apps.get_model("activity_feed", "FeedItem")
         qs = FeedItem.objects.filter(community_id=community.id, group__isnull=True, verb="posted").order_by("-created_at")
+
+        # === audience gating (owner/staff see all) ===
+        if not (is_owner or user.is_staff):
+            # accepted friends (either direction)
+            pairs = Friendship.objects.filter(
+                Q(sender=user) | Q(receiver=user),
+                status=getattr(Friendship, "STATUS_ACCEPTED", "accepted"),
+            ).values_list("sender_id", "receiver_id")
+            friend_ids = set()
+            for a, b in pairs:
+                friend_ids.add(b if a == user.id else a)
+
+            qs = qs.filter(
+                Q(metadata__visibility="public")
+                | Q(actor_id=user.id)  # always see own posts
+                | Q(metadata__visibility="friends", actor_id__in=friend_ids)
+                # treat missing visibility as public (optional but handy)
+                | ~Q(metadata__has_key="visibility")
+            )
+
 
         q = (request.query_params.get("search") or "").strip()
         if q:
@@ -205,7 +232,7 @@ class CommunityViewSet(viewsets.ModelViewSet):
                 verb="posted",
                 target_content_type=ct,
                 target_object_id=community.id,
-                metadata__type="post",
+                metadata__type="text",
             ),
             pk=post_id,
         )
@@ -226,7 +253,7 @@ class CommunityViewSet(viewsets.ModelViewSet):
 
         # update the JSON metadata
         meta = dict(post.metadata or {})
-        meta["type"] = "post"
+        meta["type"] = "text"
         meta["text"] = new_text
         post.metadata = meta
         post.save(update_fields=["metadata"])

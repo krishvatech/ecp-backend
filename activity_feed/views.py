@@ -1,3 +1,4 @@
+# activity_feed/view.py
 from django.db.models import Q
 from rest_framework.viewsets import ReadOnlyModelViewSet
 from rest_framework.permissions import IsAuthenticated
@@ -18,7 +19,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
     
     def _friend_user_ids(self, user_id: int):
         pairs = Friendship.objects.filter(
-            Q(user1_id=user_id) | Q(user2_id=user_id)
+            Q(user1_id=user_id) | Q(user2_id=user_id),
+            status=getattr(Friendship, "STATUS_ACCEPTED", "accepted"),
         ).values_list("user1_id", "user2_id")
         ids = set()
         for u1, u2 in pairs:
@@ -59,7 +61,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                         Q(metadata__group_id=gid_num) |
                         Q(metadata__group_id=str(gid_num))
                     )
-            return qs
+            return qs.select_related("actor").order_by("-created_at")
 
         # --- NEW: community-level user posts with privacy ---
         if scope in ("community", "home", "friends_and_public"):
@@ -76,7 +78,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 event__isnull=True,
                 community_id__in=my_comm_ids,
                 verb="posted",
-                metadata__type="post",
+                metadata__type__in=["text", "image", "link", "poll"],
             )
 
             # If caller asked for a specific community
@@ -94,16 +96,14 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             # Privacy:
             #   - visibility missing or "public"  → visible to everyone in same community
             #   - visibility "friends"            → visible only if actor is in my friends OR it's my own post
-            privacy_q = (
-                Q(metadata__visibility__isnull=True) |
-                Q(metadata__visibility="public") |
-                Q(actor_id__in=friend_ids) |
-                Q(actor_id=me.id)
-            )
-            comm_posts = comm_posts.filter(privacy_q)
+            vis_public    = Q(metadata__visibility="public")
+            vis_missing   = ~Q(metadata__has_key="visibility")  # missing → public
+            vis_friends   = Q(metadata__visibility="friends", actor_id__in=friend_ids)
+            own_posts     = Q(actor_id=me.id)
+            comm_posts = comm_posts.filter(vis_public | vis_missing | vis_friends | own_posts)
 
             if scope == "community":
-                return comm_posts
+                return comm_posts.select_related("actor").order_by("-created_at")
 
             if scope in ("home", "friends_and_public"):
                 # Combine with the existing "member_groups" scope for a single home feed
@@ -118,7 +118,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     Q(metadata__group_id__in=[str(gid) for gid in member_group_ids])
                 )
                 # Return union of both
-                return group_feed.union(comm_posts).order_by("-created_at")
+                return (group_feed | comm_posts).select_related("actor").order_by("-created_at")
 
         # Fallback (unchanged)
         return qs
