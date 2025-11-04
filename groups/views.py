@@ -825,7 +825,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                     pass
         return updated
 
-    # Use (Endpoint): POST /api/groups/{id}/approve-member-requests/{user_id}
+    # Use (Endpoint): POST /api/groups/{id}/member-requests/approve/{user_id}
     # - Approve a single pending request.
     # Ordering: Not applicable.
     @extend_schema(
@@ -834,7 +834,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                                     description="User ID to approve")],
         examples=[OpenApiExample("Approve one", value=None)],
     )
-    @action(detail=True, methods=["post"], url_path=r"approve-member-requests/(?P<user_id>\d+)")
+    @action(detail=True, methods=["post"], url_path=r"member-requests/approve/(?P<user_id>\d+)")
     def approve_member_request_one(self, request, pk=None, user_id=None):
         group = self.get_object()
         if not self._can_set_roles(request, group):
@@ -844,7 +844,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         updated = self._activate_members(group, [uid])
         return Response({"ok": True, "updated": updated, "user_id": uid})
     
-    # Use (Endpoint): POST /api/groups/{id}/approve-member-requests
+    # Use (Endpoint): POST /api/groups/{id}/member-requests/approve
     # - Approve multiple pending requests at once.
     # Ordering: Not applicable.
     @extend_schema(
@@ -854,7 +854,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         ),
         examples=[OpenApiExample('Approve two', value={'user_ids': [3, 4]})],
     )
-    @action(detail=True, methods=["post"], url_path="approve-member-requests", parser_classes=[JSONParser])
+    @action(detail=True, methods=["post"], url_path="member-requests/approve", parser_classes=[JSONParser])
     def approve_member_requests(self, request, pk=None):
         group = self.get_object()
         if not self._can_set_roles(request, group):
@@ -885,7 +885,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         return Response({"ok": True,
                         "members": GroupMemberOutSerializer(memberships, many=True).data})
 
-    # Use (Endpoint): POST /api/groups/{id}/reject-member-requests/{user_id}
+    # Use (Endpoint): POST /api/groups/{id}/member-requests/reject/{user_id}
     # - Reject a single pending request (delete pending membership).
     # Ordering: Not applicable.
     @extend_schema(
@@ -893,7 +893,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         parameters=[OpenApiParameter("user_id", OpenApiTypes.INT, OpenApiParameter.PATH,
                                     description="User ID to reject")],
     )
-    @action(detail=True, methods=["post"], url_path=r"reject-member-requests/(?P<user_id>\d+)")
+    @action(detail=True, methods=["post"], url_path=r"member-requests/reject/(?P<user_id>\d+)")
     def reject_member_request_one(self, request, pk=None, user_id=None):
         group = self.get_object()
         if not self._can_set_roles(request, group):
@@ -906,7 +906,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         ).delete()
         return Response({"ok": True, "deleted": deleted, "user_id": uid})
 
-    # Use (Endpoint): POST /api/groups/{id}/reject-member-requests
+    # Use (Endpoint): POST /api/groups/{id}/member-requests/reject
     # - Reject multiple pending requests (bulk delete).
     # Ordering: Not applicable.
     @extend_schema(
@@ -916,7 +916,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         ),
         examples=[OpenApiExample('Reject one', value={'user_ids': [5]})],
     )
-    @action(detail=True, methods=["post"], url_path="reject-member-requests", parser_classes=[JSONParser])
+    @action(detail=True, methods=["post"], url_path="member-requests/reject", parser_classes=[JSONParser])
     def reject_member_requests(self, request, pk=None):
         group = self.get_object()
         if not self._can_set_roles(request, group):
@@ -1785,13 +1785,13 @@ class GroupViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(ser.data)
         return Response(ser.data)
 
-    # Use (Endpoint): GET /api/groups/{id}/pending-requests
+    # Use (Endpoint): GET /api/groups/{id}/member-requests
     # - List PENDING group memberships (join requests). Owner/admin/mod/staff only.
     # Ordering: Explicit order_by("-joined_at") (latest requests first).
-    @action(detail=True, methods=["get"], url_path="pending-requests")
+    @action(detail=True, methods=["get"], url_path="member-requests")
     def pending_requests(self, request, pk=None):
         """
-        GET /api/groups/{id-or-slug}/pending-requests/
+        GET /api/groups/{id-or-slug}/member-requests/
         By default shows *user-initiated* pending requests (invited_by is NULL).
         Add ?include=all to also include admin-initiated pending invites.
         """
