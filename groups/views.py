@@ -757,15 +757,18 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="moderator/request-add-members", parser_classes=[JSONParser])
     def request_add_members(self, request, pk=None):
         """
-        Body: {"user_ids":[...]} or {"user_id": 3} (+ optional "group_id")
-        Creates/updates memberships with status=PENDING and invited_by=request.user.
+        Body (JSON):
+        {"user_id": 3}
+        (optional) {"group_id": 1}  # sanity check against URL group
+        Effect: create/update membership with status=PENDING and invited_by=request.user.
         """
         group = self.get_object()
         requester_id = getattr(request.user, "id", None)
+
         if not (request.user and request.user.is_authenticated and requester_id):
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-        # allow if owner/admin OR moderator of this group (and moderator must be staff due to _is_moderator)
+        # allow if owner/admin OR moderator of this group
         if not (self._can_manage(request, group) or self._is_moderator(requester_id, group)):
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
@@ -773,39 +776,46 @@ class GroupViewSet(viewsets.ModelViewSet):
         if body_gid is not None and int(body_gid) != int(group.pk):
             return Response({"detail": "group_id mismatch with URL"}, status=status.HTTP_400_BAD_REQUEST)
 
-        ids = request.data.get("user_ids")
-        if ids is None and request.data.get("user_id") is not None:
-            ids = [request.data.get("user_id")]
-        if not isinstance(ids, list):
-            return Response({"detail": "user_ids must be a list (or pass user_id)"},
-                            status=status.HTTP_400_BAD_REQUEST)
+        uid = request.data.get("user_id")
+        if uid is None:
+            return Response({"detail": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            uid = int(uid)
+        except Exception:
+            return Response({"detail": "user_id must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
 
         default_role = GroupMembership.ROLE_MEMBER
         STATUS_ACTIVE = GroupMembership.STATUS_ACTIVE
         STATUS_PENDING = GroupMembership.STATUS_PENDING
 
-        for uid in ids:
-            try:
-                uid = int(uid)
-            except Exception:
-                continue
-            membership, created = GroupMembership.objects.get_or_create(
-                group=group,
-                user_id=uid,
-                defaults={"role": default_role, "status": STATUS_PENDING, "invited_by_id": requester_id},
-            )
-            if not created:
-                updates = {}
-                if membership.status != STATUS_ACTIVE:
-                    updates["status"] = STATUS_PENDING
-                if getattr(membership, "invited_by_id", None) is None:
-                    updates["invited_by_id"] = requester_id
-                if updates:
-                    GroupMembership.objects.filter(pk=membership.pk).update(**updates)
+        membership, created = GroupMembership.objects.get_or_create(
+            group=group,
+            user_id=uid,
+            defaults={"role": default_role, "status": STATUS_PENDING, "invited_by_id": requester_id},
+        )
+
+        updated = False
+        if not created:
+            updates = {}
+            if membership.status != STATUS_ACTIVE:
+                updates["status"] = STATUS_PENDING
+            if getattr(membership, "invited_by_id", None) is None:
+                updates["invited_by_id"] = requester_id
+            if updates:
+                GroupMembership.objects.filter(pk=membership.pk).update(**updates)
+                updated = True
 
         memberships = GroupMembership.objects.filter(group=group).select_related("user")
-        return Response(GroupMemberOutSerializer(memberships, many=True).data, status=status.HTTP_200_OK)
-
+        return Response(
+            {
+                "detail": "Member request processed.",
+                "created": bool(created),
+                "updated": bool(updated),
+                "members": GroupMemberOutSerializer(memberships, many=True).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+    
     # Use: Internal helper to activate PENDING members (and parent activation for sub-groups).
     # Ordering: Not applicable.
     def _activate_members(self, group, user_ids):
@@ -1761,6 +1771,96 @@ class GroupViewSet(viewsets.ModelViewSet):
             return Response({"ok": True, "status": "pending_approval"}, status=201)
 
         return Response({"detail": "Invalid group configuration."}, status=400)
+
+    # Use (Endpoint): POST /api/groups/{id}/join-group/request/
+    # - Purpose: Submit a join request for groups that require approval.
+    @action(detail=True, methods=["post"], url_path="join-group/request", parser_classes=[JSONParser])
+    def request_join_group(self, request, pk=None):
+        """
+        POST /api/groups/{id}/join-group/request/
+        For groups with join policy = public_approval.
+        Creates (or reactivates) a pending membership request for the current user.
+        """
+        group = self.get_object()
+        user = request.user
+        if not (user and user.is_authenticated):
+            return Response({"detail": "Authentication required."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Join request allowed only for PUBLIC + APPROVAL
+        policy = getattr(group, "join_policy", None)
+        visibility = getattr(group, "visibility", None)
+
+        pol = str(policy or "").lower()
+        vis = str(visibility or "").lower()
+
+        JOIN_OPEN = str(getattr(type(group), "JOIN_OPEN", "open")).lower()
+        JOIN_APPROVAL = str(getattr(type(group), "JOIN_APPROVAL", "approval")).lower()
+        VIS_PUBLIC = str(getattr(type(group), "VISIBILITY_PUBLIC", "public")).lower()
+        VIS_PRIVATE = str(getattr(type(group), "VISIBILITY_PRIVATE", "private")).lower()
+
+        is_public = (vis == VIS_PUBLIC)
+        is_open = pol in {JOIN_OPEN, "open"}
+        is_approval = pol in {JOIN_APPROVAL, "approval", "public_approval"}
+
+        # If PUBLIC+OPEN, directly invoke the /join-group/ action (no 400)
+        if is_public and is_open:
+            if hasattr(self, "join_group"):
+                return self.join_group(request, pk=pk)  # delegate to open-join endpoint
+
+            # ---- fallback inline "open join" if join_group action isn't present ----
+            default_role = GroupMembership.ROLE_MEMBER
+            STATUS_ACTIVE = GroupMembership.STATUS_ACTIVE
+            membership, created = GroupMembership.objects.get_or_create(
+                group=group,
+                user=request.user,
+                defaults={"role": default_role, "status": STATUS_ACTIVE},
+            )
+            if not created and membership.status != STATUS_ACTIVE:
+                GroupMembership.objects.filter(pk=membership.pk).update(status=STATUS_ACTIVE)
+                membership.refresh_from_db()
+            return Response(
+                {"detail": "Joined successfully.", "membership": GroupMemberOutSerializer(membership).data},
+                status=status.HTTP_200_OK,
+            )
+
+        # Allow only PUBLIC+APPROVAL to proceed with pending request logic below
+        if not (is_public and is_approval):
+            return Response({"detail": "This group doesn't accept join requests."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        default_role = GroupMembership.ROLE_MEMBER
+        STATUS_ACTIVE = GroupMembership.STATUS_ACTIVE
+        STATUS_PENDING = GroupMembership.STATUS_PENDING
+
+        membership, created = GroupMembership.objects.get_or_create(
+            group=group,
+            user=user,
+            defaults={"role": default_role, "status": STATUS_PENDING}
+        )
+
+        # Already a member
+        if not created and membership.status == STATUS_ACTIVE:
+            return Response({"detail": "You are already a member."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # Already requested
+        if not created and membership.status == STATUS_PENDING:
+            return Response({
+                "detail": "Join request already pending.",
+                "membership": GroupMemberOutSerializer(membership).data
+            }, status=status.HTTP_200_OK)
+
+        # If membership exists in another status (e.g., left/removed), flip back to pending
+        if not created and membership.status != STATUS_PENDING:
+            GroupMembership.objects.filter(pk=membership.pk).update(status=STATUS_PENDING)
+
+        # Fresh read for response
+        membership = GroupMembership.objects.select_related("user").get(pk=membership.pk)
+
+        return Response({
+            "detail": "Join request submitted.",
+            "membership": GroupMemberOutSerializer(membership).data
+        }, status=status.HTTP_200_OK)
 
     # Use (Endpoint): GET /api/groups/{id}/join-group-link
     # - Generate a join token + relative URL for approval+private groups. Owner/admin/staff only.
