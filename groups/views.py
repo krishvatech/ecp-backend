@@ -1,6 +1,6 @@
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Exists, OuterRef
 from django.contrib.auth import get_user_model
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import NotFound
@@ -1211,14 +1211,26 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="explore-groups")
     def explore_groups(self, request):
         """
-        Public, top-level groups. Keeps groups visible even if *you* are already pending,
-        so the UI can show a disabled 'Request pending' button.
+        Public, top-level groups.
+        Hides groups where the current user is already an ACTIVE member,
+        but keeps groups visible if the user's membership is PENDING.
         """
         qs = (
             self.get_queryset_all()
             .filter(visibility=Group.VISIBILITY_PUBLIC)
-            .order_by("-created_at")  # Ordering: newest first
+            .order_by("-created_at")
         )
+
+        user = request.user
+        if user and user.is_authenticated:
+            active_membership = GroupMembership.objects.filter(
+                group_id=OuterRef("pk"),
+                user_id=user.id,
+                status=GroupMembership.STATUS_ACTIVE,
+            )
+            # Exclude groups where ACTIVE membership exists
+            qs = qs.annotate(_joined=Exists(active_membership)).filter(_joined=False)
+
         page = self.paginate_queryset(qs)
         ser = self.get_serializer(page or qs, many=True, context={"request": request})
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
