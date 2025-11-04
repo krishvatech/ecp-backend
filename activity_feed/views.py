@@ -26,18 +26,27 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 ).values_list("group_id", flat=True)
             )
             qs = qs.filter(
-                Q(metadata__group_id__in=member_group_ids) |
-                Q(metadata__group_id__in=[str(g) for g in member_group_ids])
-            )
+                    Q(group_id__in=member_group_ids) |
+                    Q(metadata__group_id__in=member_group_ids) |
+                    Q(metadata__group_id__in=[str(g) for g in member_group_ids])
+                )
 
+            community_id = self.request.query_params.get("community_id")
+            if community_id:
+                try:
+                    qs = qs.filter(community_id=int(community_id))
+                except (TypeError, ValueError):
+                    qs = qs.none()
         gid_param = self.request.query_params.get("group_id")
         if gid_param:
             try:
                 gid_num = int(gid_param)
             except ValueError:
-                qs = qs.filter(metadata__group_id=gid_param)
+                # string id fallback (very rare)
+                qs = qs.filter(Q(metadata__group_id=gid_param))
             else:
                 qs = qs.filter(
+                    Q(group_id=gid_num) |
                     Q(metadata__group_id=gid_num) |
                     Q(metadata__group_id=str(gid_num))
                 )
@@ -49,12 +58,16 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         if page is not None:
             page_gids = set()
             for item in page:
-                try:
-                    gid = item.metadata.get("group_id")
-                    if gid is not None:
-                        page_gids.add(int(gid))
-                except Exception:
-                    pass
+                # Prefer FK, fall back to metadata
+                if getattr(item, "group_id", None):
+                    page_gids.add(int(item.group_id))
+                else:
+                    try:
+                        gid = item.metadata.get("group_id")
+                        if gid is not None:
+                            page_gids.add(int(gid))
+                    except Exception:
+                        pass
 
             groups_qs = Group.objects.filter(id__in=page_gids)
             names = {g.id: g.name for g in groups_qs}

@@ -7,6 +7,7 @@ from django.contrib.contenttypes.models import ContentType
 class FeedItemSerializer(serializers.ModelSerializer):
     actor_name = serializers.SerializerMethodField()
     actor_username = serializers.SerializerMethodField()
+    group_id = serializers.IntegerField(source="group.id", read_only=True)  
 
     class Meta:
         model = FeedItem
@@ -14,7 +15,7 @@ class FeedItemSerializer(serializers.ModelSerializer):
             "id", "community_id", "event_id",
             "actor_id", "actor_name", "actor_username",
             "verb", "target_content_type_id", "target_object_id",
-            "metadata", "created_at",
+            "metadata", "created_at","group_id",
         ]
 
     def get_actor_name(self, obj):
@@ -54,6 +55,10 @@ class FeedItemSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         m = dict(data.get("metadata") or {})
+        
+        # Ensure group_id exists in metadata for older frontends
+        if not m.get("group_id") and getattr(instance, "group_id", None):
+            m["group_id"] = instance.group_id
 
         # ---- group name / cover (your existing code) ----
         gid = m.get("group_id")

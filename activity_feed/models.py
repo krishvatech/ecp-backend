@@ -14,6 +14,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from community.models import Community
 from events.models import Event
+from groups.models import Group
 
 class FeedItem(models.Model):
     """Represents a single activity entry in the community feed."""
@@ -23,6 +24,14 @@ class FeedItem(models.Model):
         related_name="feed_items",
         blank=True,
         null=True,
+    )
+    group = models.ForeignKey(
+        Group, 
+        on_delete=models.CASCADE,
+        related_name="feed_items",
+        blank=True, 
+        null=True,
+        db_index=True
     )
     event = models.ForeignKey(
         Event,
@@ -53,6 +62,8 @@ class FeedItem(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=["community", "event", "created_at"]),
+            models.Index(fields=["group", "created_at"]),
+            models.Index(fields=["community", "group", "created_at"]),
         ]
         ordering = ["-created_at"]
 

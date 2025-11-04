@@ -18,6 +18,7 @@ from uuid import uuid4
 from pathlib import Path
 from django.utils.text import slugify
 from storages.backends.s3boto3 import S3Boto3Storage
+from django.db import models
 
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter, OpenApiExample
@@ -229,7 +230,12 @@ class GroupViewSet(viewsets.ModelViewSet):
         # ------- LIST -------
         if request.method.lower() == "get":
             items = (FeedItem.objects
-                    .filter(target_content_type=ct, target_object_id=group.id)
+                    .filter(
+                        # prefer FK (new rows)
+                        models.Q(group_id=group.id)
+                        # keep legacy targeting (old rows)
+                        | models.Q(target_content_type=ct, target_object_id=group.id)
+                    )
                     .order_by("-created_at"))
 
             out = []
@@ -341,6 +347,7 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         item = FeedItem.objects.create(
             community=getattr(group, "community", None),
+            group=group,
             event=None,
             actor=request.user,
             verb="posted",
@@ -582,6 +589,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         if FeedItem:
             FeedItem.objects.create(
                 community=community,
+                group=group, 
                 event=None,
                 actor=self.request.user,
                 verb="group_created",
@@ -897,6 +905,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         }
         item = FeedItem.objects.create(
             community=getattr(group, "community", None),
+            group=group,
             event=None,
             actor=request.user,
             verb="posted",
@@ -936,7 +945,9 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         # -------- 1) Treat identifier as a FeedItem id --------
         item = FeedItem.objects.filter(pk=ident).first()
-        if item:
+        if item: 
+            if getattr(item, "group_id", None) == group.id:
+                return item, None
             ct_group = self._ct_id(Group)
             if item.target_content_type_id == ct_group:
                 # feed item targets a Group
@@ -975,6 +986,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                 }
                 linked = FeedItem.objects.create(
                     community=getattr(group, "community", None),
+                    group=group,  
                     event=None,
                     actor=getattr(self.request, "user", None),
                     verb="created_poll",
@@ -1041,6 +1053,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             }
             linked = FeedItem.objects.create(
                 community=getattr(group, "community", None),
+                group=group,  
                 event=None,
                 actor=getattr(self.request, "user", None),
                 verb="created_poll",
@@ -1085,6 +1098,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         }
         linked = FeedItem.objects.create(
             community=getattr(group, "community", None),
+            group=group,
             event=None,
             actor=getattr(self.request, "user", None),
             verb="created_poll",
@@ -1949,6 +1963,7 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         item = FeedItem.objects.create(
             community=getattr(group, "community", None),
+            group=group,
             event=None,
             actor=request.user,                       # matches your FeedItem usage
             verb="created_poll",
