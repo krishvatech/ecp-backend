@@ -614,7 +614,7 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="members")
     def members(self, request, pk=None):
         group = self.get_object()
-        memberships = GroupMembership.objects.filter(group=group).select_related("user")
+        memberships = GroupMembership.objects.filter(group=group, status="active").select_related("user")
         return Response(GroupMemberOutSerializer(memberships, many=True).data)
 
     @action(detail=True, methods=["post"], url_path="add-members")
@@ -732,6 +732,39 @@ class GroupViewSet(viewsets.ModelViewSet):
         memberships = GroupMembership.objects.filter(group=group).select_related("user")
         return Response(GroupMemberOutSerializer(memberships, many=True).data, status=status.HTTP_200_OK)
 
+    def _activate_members(self, group, user_ids):
+        STATUS_ACTIVE = GroupMembership.STATUS_ACTIVE
+        STATUS_PENDING = GroupMembership.STATUS_PENDING
+
+        updated = GroupMembership.objects.filter(
+            group=group, user_id__in=user_ids, status=STATUS_PENDING
+        ).update(status=STATUS_ACTIVE)
+
+        # ensure parent membership(s) if this is a sub-group
+        if group.parent_id:
+            for uid in user_ids:
+                try:
+                    self._ensure_parent_membership_active(group, int(uid))
+                except Exception:
+                    pass
+        return updated
+
+    @extend_schema(
+        request=None,
+        parameters=[OpenApiParameter("user_id", OpenApiTypes.INT, OpenApiParameter.PATH,
+                                    description="User ID to approve")],
+        examples=[OpenApiExample("Approve one", value=None)],
+    )
+    @action(detail=True, methods=["post"], url_path=r"approve-member-requests/(?P<user_id>\d+)")
+    def approve_member_request_one(self, request, pk=None, user_id=None):
+        group = self.get_object()
+        if not self._can_set_roles(request, group):
+            return Response({"detail": "Forbidden"}, status=403)
+
+        uid = int(user_id)
+        updated = self._activate_members(group, [uid])
+        return Response({"ok": True, "updated": updated, "user_id": uid})
+    
     @extend_schema(
         request=inline_serializer(
             name='ApproveMemberRequestsBody',
@@ -769,6 +802,24 @@ class GroupViewSet(viewsets.ModelViewSet):
         memberships = GroupMembership.objects.filter(group=group).select_related("user")
         return Response({"ok": True,
                         "members": GroupMemberOutSerializer(memberships, many=True).data})
+    
+    @extend_schema(
+        request=None,
+        parameters=[OpenApiParameter("user_id", OpenApiTypes.INT, OpenApiParameter.PATH,
+                                    description="User ID to reject")],
+    )
+    @action(detail=True, methods=["post"], url_path=r"reject-member-requests/(?P<user_id>\d+)")
+    def reject_member_request_one(self, request, pk=None, user_id=None):
+        group = self.get_object()
+        if not self._can_set_roles(request, group):
+            return Response({"detail": "Forbidden"}, status=403)
+
+        uid = int(user_id)
+        STATUS_PENDING = GroupMembership.STATUS_PENDING
+        deleted, _ = GroupMembership.objects.filter(
+            group=group, user_id=uid, status=STATUS_PENDING
+        ).delete()
+        return Response({"ok": True, "deleted": deleted, "user_id": uid})
 
     @extend_schema(
         request=inline_serializer(
@@ -1586,6 +1637,39 @@ class GroupViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(ser.data)
         return Response(ser.data)
 
+    @action(detail=True, methods=["get"], url_path="pending-requests")
+    def pending_requests(self, request, pk=None):
+        """
+        GET /api/groups/{id-or-slug}/pending-requests/
+        By default shows *user-initiated* pending requests (invited_by is NULL).
+        Add ?include=all to also include admin-initiated pending invites.
+        """
+        group = self.get_object()
+
+        # Owner/Admin/Moderator/Staff can view
+        if not self._can_moderate_any(request, group):
+            return Response({"detail": "Forbidden"}, status=403)
+
+        # include = (request.query_params.get("include") or "").lower()
+        qs = GroupMembership.objects.filter(
+            group=group,
+            status=GroupMembership.STATUS_PENDING,
+        )
+        # Only show real "requests to join" unless include=all is passed
+        # if include != "all":
+        #     qs = qs.filter(invited_by__isnull=True)
+
+        qs = qs.select_related("user").order_by("-joined_at")
+
+        if not qs.exists():
+            return Response(
+                {"ok": True, "message": "No pending requests", "requests": []},
+                status=200,
+            )
+
+        data = GroupMemberOutSerializer(qs, many=True).data
+        return Response({"ok": True, "count": len(data), "requests": data}, status=200)
+    
     # ---------- JOIN / JOIN-LINK ----------
     @action(detail=True, methods=["post"], url_path="join")
     def join(self, request, pk=None):
