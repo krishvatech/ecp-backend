@@ -1805,7 +1805,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         # If PUBLIC+OPEN, directly invoke the /join-group/ action (no 400)
         if is_public and is_open:
             if hasattr(self, "join_group"):
-                return self.join_group(request, pk=pk)  # delegate to open-join endpoint
+                return self.join(request, pk=pk)  # delegate to open-join endpoint
 
             # ---- fallback inline "open join" if join_group action isn't present ----
             default_role = GroupMembership.ROLE_MEMBER
