@@ -6,6 +6,9 @@ from rest_framework.response import Response
 from django.contrib.contenttypes.models import ContentType
 from rest_framework import status
 from django.apps import apps
+from uuid import uuid4
+from django.core.files.storage import default_storage
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .models import Community
 
 from .serializers import CommunitySerializer
@@ -23,46 +26,86 @@ class CommunityViewSet(viewsets.ModelViewSet):
 
     # ---------- Community Feed: create a post ----------
     class _CommunityPostCreateSerializer(serializers.Serializer):
-        content = serializers.CharField(max_length=4000)
-        visibility = serializers.ChoiceField(
-            choices=[("public", "public"), ("friends", "friends")],
-            required=False,
-            default="public",
-        )
+        # common
+        type = serializers.ChoiceField(choices=[("text","text"),("image","image"),("link","link"),("poll","poll")], required=False, default="text")
+        visibility = serializers.ChoiceField(choices=[("public","public"),("friends","friends")], required=False, default="public")
+        tags = serializers.ListField(child=serializers.CharField(max_length=50), required=False)
 
-    @action(detail=True, methods=["post"], url_path="posts/create")
+        # text
+        content = serializers.CharField(max_length=4000, required=False, allow_blank=True)
+
+        # image
+        image = serializers.ImageField(required=False, allow_empty_file=False)
+        caption = serializers.CharField(max_length=4000, required=False, allow_blank=True)
+
+        # link
+        url = serializers.URLField(required=False)
+        title = serializers.CharField(max_length=255, required=False, allow_blank=True)
+        description = serializers.CharField(max_length=1000, required=False, allow_blank=True)
+
+        # poll
+        question = serializers.CharField(max_length=500, required=False, allow_blank=True)
+        options = serializers.ListField(child=serializers.CharField(max_length=120), required=False)
+
+    @action(detail=True, methods=["post"], url_path="posts/create", parser_classes=[MultiPartParser, FormParser, JSONParser])
     def create_post(self, request, pk=None):
-        """
-        Create a community-level post (no group).
-        Permissions: any member of the community (owner/staff/member).
-        Body (application/json):
-        {
-            "content": "string",
-            "visibility": "public" | "friends"   # optional, default "public"
-        }
-        """
         community = self.get_object()
         user = request.user
 
-        # ✅ allow any member (including owner and staff)
+        # any member/owner/staff
         is_member = community.members.filter(pk=user.id).exists() or getattr(community, "owner_id", None) == getattr(user, "id", None)
         if not is_member and not getattr(user, "is_staff", False):
             return Response({"detail": "Only community members can create posts."}, status=403)
 
         ser = self._CommunityPostCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        text = (ser.validated_data["content"] or "").strip()
-        visibility = ser.validated_data.get("visibility", "public")
+        data = ser.validated_data
+        typ = data.get("type", "text")
+        visibility = data.get("visibility", "public")
+        tags = data.get("tags") or []
 
-        if not text:
-            return Response({"detail": "content is required"}, status=400)
+        meta = {"type": typ, "visibility": visibility, "tags": tags}
 
+        # ----- handle types -----
+        if typ == "text":
+            text = (data.get("content") or "").strip()
+            if not text:
+                return Response({"detail": "content is required"}, status=400)
+            meta["text"] = text
+
+        elif typ == "image":
+            file = request.FILES.get("image")
+            if not file:
+                return Response({"detail": "image file is required"}, status=400)
+            key = f"community_posts/{community.id}/{uuid4()}_{file.name}"
+            saved_path = default_storage.save(key, file)               # ← uploads to S3 if configured
+            meta["image_url"] = default_storage.url(saved_path)
+            if data.get("caption"):
+                meta["caption"] = data["caption"]
+
+        elif typ == "link":
+            if not data.get("url"):
+                return Response({"detail": "url is required"}, status=400)
+            meta.update({
+                "url": data["url"],
+                "title": data.get("title") or "",
+                "description": data.get("description") or "",
+            })
+
+        elif typ == "poll":
+            q = (data.get("question") or "").strip()
+            opts = [o.strip() for o in (data.get("options") or []) if o and o.strip()]
+            if not q or len(opts) < 2:
+                return Response({"detail": "poll requires question and at least 2 options"}, status=400)
+            meta.update({"question": q, "options": opts})
+
+        else:
+            return Response({"detail": f"unsupported type: {typ}"}, status=400)
+
+        # ----- create FeedItem -----
         FeedItem = apps.get_model("activity_feed", "FeedItem")
-        if not FeedItem:
-            return Response({"detail": "activity_feed.FeedItem not installed"}, status=409)
-
         ct = ContentType.objects.get_for_model(Community)
-        item = FeedItem.objects.create(
+        fi = FeedItem.objects.create(
             community=community,
             group=None,
             event=None,
@@ -70,14 +113,75 @@ class CommunityViewSet(viewsets.ModelViewSet):
             verb="posted",
             target_content_type=ct,
             target_object_id=community.id,
-            metadata={
-                "type": "post",        # keep same shape you already use
-                "text": text,
-                "visibility": visibility,   # <-- NEW
-                # no group_id here → community-level
-            },
+            metadata=meta,
         )
-        return Response({"ok": True, "id": item.id}, status=201)
+
+        # unified response
+        row = {
+            "id": fi.id,
+            "type": typ,
+            "created_at": fi.created_at,
+            "community": {"id": community.id, "name": community.name},
+            "visibility": visibility,
+            "tags": tags,
+        }
+        if typ == "text":
+            row["text"] = meta["text"]
+        elif typ == "image":
+            row["image_url"] = meta["image_url"]
+            row["caption"] = meta.get("caption", "")
+        elif typ == "link":
+            row["url"] = meta["url"]; row["title"] = meta.get("title"); row["description"] = meta.get("description")
+        elif typ == "poll":
+            row["question"] = meta["question"]; row["options"] = meta["options"]
+
+        return Response(row, status=201)
+    
+    # GET /api/communities/{community_id}/posts/?search=...
+    @action(detail=True, methods=["get"], url_path="posts")
+    def list_posts(self, request, pk=None):
+        community = self.get_object()
+        user = request.user
+
+        is_owner = getattr(community, "owner_id", None) == getattr(user, "id", None)
+        is_member = community.members.filter(pk=user.id).exists()
+        if not (is_owner or is_member or user.is_staff):
+            return Response({"detail": "Forbidden"}, status=403)
+
+        FeedItem = apps.get_model("activity_feed", "FeedItem")
+        qs = FeedItem.objects.filter(community_id=community.id, group__isnull=True, verb="posted").order_by("-created_at")
+
+        q = (request.query_params.get("search") or "").strip()
+        if q:
+            qs = qs.filter(metadata__text__icontains=q)  # simple search on text
+
+        results = []
+        for fi in qs:
+            meta = fi.metadata or {}
+            typ = (meta.get("type") or "text").lower()
+            row = {
+                "id": fi.id,
+                "type": typ,
+                "created_at": fi.created_at,
+                "community": {"id": community.id, "name": community.name},
+                "visibility": meta.get("visibility", "public"),
+                "tags": meta.get("tags") or [],
+            }
+            if typ == "text":
+                row["text"] = meta.get("text", "")
+            elif typ == "image":
+                row["image_url"] = meta.get("image_url")
+                row["caption"] = meta.get("caption", "")
+            elif typ == "link":
+                row["url"] = meta.get("url")
+                row["title"] = meta.get("title")
+                row["description"] = meta.get("description")
+            elif typ == "poll":
+                row["question"] = meta.get("question")
+                row["options"] = meta.get("options") or []
+            results.append(row)
+
+        return Response({"results": results}, status=200)
     
     # PATCH/PUT /api/communities/{community_id}/posts/{post_id}/edit/
     @action(
