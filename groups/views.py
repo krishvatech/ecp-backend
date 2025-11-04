@@ -382,7 +382,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             return Response({"detail": f"Unsupported type '{t}'"}, status=400)
 
         item = FeedItem.objects.create(
-            community=getattr(group, "community", None),
+            community=self._resolve_group_community(group),
             group=group,
             event=None,
             actor=request.user,
@@ -486,6 +486,19 @@ class GroupViewSet(viewsets.ModelViewSet):
                 or (hasattr(group, "owner_id") and group.owner_id == uid)
             )
         )
+
+    def _resolve_group_community(self, group):
+        """
+        Always return a Community for this group.
+        Fallback: use parent.community if group's own community is null.
+        """
+        comm = getattr(group, "community", None)
+        if comm:
+            return comm
+        parent = getattr(group, "parent", None)
+        if parent and getattr(parent, "community", None):
+            return parent.community
+        return None
 
     # True if user can manage or is staff-admin.
     def _can_set_roles(self, request, group: Group) -> bool:
@@ -1029,7 +1042,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             "group_id": group.id,
         }
         item = FeedItem.objects.create(
-            community=getattr(group, "community", None),
+            community=self._resolve_group_community(group),
             group=group,
             event=None,
             actor=request.user,
@@ -1112,7 +1125,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                     "is_closed": bool(getattr(poll, "is_closed", False)),
                 }
                 linked = FeedItem.objects.create(
-                    community=getattr(group, "community", None),
+                    community=self._resolve_group_community(group),
                     group=group,  
                     event=None,
                     actor=getattr(self.request, "user", None),
@@ -1179,7 +1192,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                 "is_closed": bool(getattr(poll, "is_closed", False)),
             }
             linked = FeedItem.objects.create(
-                community=getattr(group, "community", None),
+                community=self._resolve_group_community(group),
                 group=group,  
                 event=None,
                 actor=getattr(self.request, "user", None),
@@ -1224,7 +1237,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             "is_closed": bool(getattr(poll, "is_closed", False)),
         }
         linked = FeedItem.objects.create(
-            community=getattr(group, "community", None),
+            community=self._resolve_group_community(group),
             group=group,
             event=None,
             actor=getattr(self.request, "user", None),
@@ -2171,7 +2184,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         }
 
         item = FeedItem.objects.create(
-            community=getattr(group, "community", None),
+            community=self._resolve_group_community(group),
             group=group,
             event=None,
             actor=request.user,                       # matches your FeedItem usage
