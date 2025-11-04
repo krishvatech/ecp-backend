@@ -24,22 +24,36 @@ class CommunityViewSet(viewsets.ModelViewSet):
     # ---------- Community Feed: create a post ----------
     class _CommunityPostCreateSerializer(serializers.Serializer):
         content = serializers.CharField(max_length=4000)
+        visibility = serializers.ChoiceField(
+            choices=[("public", "public"), ("friends", "friends")],
+            required=False,
+            default="public",
+        )
 
     @action(detail=True, methods=["post"], url_path="posts/create")
     def create_post(self, request, pk=None):
         """
         Create a community-level post (no group).
-        Permissions: community owner or staff.
-        Body: { "content": "string" }
+        Permissions: any member of the community (owner/staff/member).
+        Body (application/json):
+        {
+            "content": "string",
+            "visibility": "public" | "friends"   # optional, default "public"
+        }
         """
         community = self.get_object()
         user = request.user
-        if (getattr(community, "owner_id", None) != getattr(user, "id", None)) and (not getattr(user, "is_staff", False)):
-            return Response({"detail": "Only community owner or staff can create posts."}, status=403)
+
+        # ✅ allow any member (including owner and staff)
+        is_member = community.members.filter(pk=user.id).exists() or getattr(community, "owner_id", None) == getattr(user, "id", None)
+        if not is_member and not getattr(user, "is_staff", False):
+            return Response({"detail": "Only community members can create posts."}, status=403)
 
         ser = self._CommunityPostCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         text = (ser.validated_data["content"] or "").strip()
+        visibility = ser.validated_data.get("visibility", "public")
+
         if not text:
             return Response({"detail": "content is required"}, status=400)
 
@@ -56,9 +70,10 @@ class CommunityViewSet(viewsets.ModelViewSet):
             verb="posted",
             target_content_type=ct,
             target_object_id=community.id,
-            metadata={  # align with group-post shape
-                "type": "post",
+            metadata={
+                "type": "post",        # keep same shape you already use
                 "text": text,
+                "visibility": visibility,   # <-- NEW
                 # no group_id here → community-level
             },
         )
