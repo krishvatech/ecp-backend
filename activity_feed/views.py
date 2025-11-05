@@ -3,6 +3,7 @@ from django.db.models import Q
 from rest_framework.viewsets import ReadOnlyModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.decorators import action
 from itertools import chain
 from django.utils.dateparse import parse_datetime
 from django.utils import timezone
@@ -30,11 +31,23 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         for u1, u2 in pairs:
             ids.add(u2 if u1 == user_id else u1)
         return ids
-
+    
+    def _parse_actor_id(self, request):
+        a = request.query_params.get("actor") or request.query_params.get("actor_id")
+        if not a:
+            return None
+        if str(a).lower() in ("me", "self"):
+            return getattr(request.user, "id", None)
+        try:
+            return int(a)
+        except (TypeError, ValueError):
+            return None
+        
     def get_queryset(self):
         qs = super().get_queryset()
         req = self.request
         me = req.user
+        actor_id = self._parse_actor_id(req) 
 
         scope = req.query_params.get("scope", "member_groups")  # existing default
         # Optional: allow narrowing to one community
@@ -128,6 +141,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 return (group_feed | comm_posts).select_related("actor").order_by("-created_at")
 
         # Fallback (unchanged)
+        if actor_id:  # <-- NEW
+            qs = qs.filter(actor_id=actor_id)
         return qs
     
     def _visible_events_qs(self, request):
@@ -349,3 +364,37 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         # ---- paginate the merged list (single pagination pass) ----
         page = self.paginator.paginate_queryset(combined, request, view=self)
         return self.paginator.get_paginated_response(page)
+    
+    @action(detail=False, methods=["get"], url_path=r"posts/me")
+    def actor_me(self, request, *args, **kwargs):
+        # build from the base manager to avoid default scope filtering
+        qs = (FeedItem.objects
+            .select_related("actor")
+            .filter(actor_id=request.user.id)
+            .order_by("-created_at"))
+
+        # still allow DRF filter_backends/pagination to run
+        qs = self.filter_queryset(qs)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            data = self.get_serializer(page, many=True).data
+            return self.get_paginated_response(data)
+        data = self.get_serializer(qs, many=True).data
+        return Response(data)
+        
+    
+    @action(detail=False, methods=["get"], url_path=r"posts/(?P<actor_id>\d+)")
+    def actor_by_id(self, request, actor_id=None, *args, **kwargs):
+        qs = (FeedItem.objects
+            .select_related("actor")
+            .filter(actor_id=int(actor_id))
+            .order_by("-created_at"))
+
+        # still allow DRF filter_backends/pagination to run
+        qs = self.filter_queryset(qs)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            data = self.get_serializer(page, many=True).data
+            return self.get_paginated_response(data)
+        data = self.get_serializer(qs, many=True).data
+        return Response(data)
