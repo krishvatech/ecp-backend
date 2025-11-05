@@ -7,9 +7,11 @@ wraps the routes with a custom JWT authentication middleware stack.
 from events.routing import websocket_urlpatterns as events_ws
 from messaging.routing import websocket_urlpatterns as messaging_ws
 from interactions.routing import websocket_urlpatterns as interactions_ws
+from activity_feed.routing import websocket_urlpatterns as feed_ws
 
 websocket_urlpatterns = [
     *events_ws,
     *messaging_ws,
     *interactions_ws,
+    *feed_ws,  
 ]
