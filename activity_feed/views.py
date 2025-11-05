@@ -20,7 +20,6 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
     def _friend_user_ids(self, user_id: int):
         pairs = Friendship.objects.filter(
             Q(user1_id=user_id) | Q(user2_id=user_id),
-            status=getattr(Friendship, "STATUS_ACCEPTED", "accepted"),
         ).values_list("user1_id", "user2_id")
         ids = set()
         for u1, u2 in pairs:
@@ -98,9 +97,11 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             #   - visibility "friends"            → visible only if actor is in my friends OR it's my own post
             vis_public    = Q(metadata__visibility="public")
             vis_missing   = ~Q(metadata__has_key="visibility")  # missing → public
+            vis_community = Q(metadata__visibility="community")
             vis_friends   = Q(metadata__visibility="friends", actor_id__in=friend_ids)
+            
             own_posts     = Q(actor_id=me.id)
-            comm_posts = comm_posts.filter(vis_public | vis_missing | vis_friends | own_posts)
+            comm_posts = comm_posts.filter(vis_public | vis_missing | vis_community | vis_friends | own_posts)
 
             if scope == "community":
                 return comm_posts.select_related("actor").order_by("-created_at")

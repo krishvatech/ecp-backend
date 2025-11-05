@@ -170,7 +170,6 @@ class CommunityViewSet(viewsets.ModelViewSet):
             # accepted friends (either direction)
             pairs = Friendship.objects.filter(
                 Q(sender=user) | Q(receiver=user),
-                status=getattr(Friendship, "STATUS_ACCEPTED", "accepted"),
             ).values_list("sender_id", "receiver_id")
             friend_ids = set()
             for a, b in pairs:
