@@ -131,27 +131,57 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         page = self.paginate_queryset(qs)
         if page is not None:
             page_gids = set()
+            page_cids = set()
+
             for item in page:
-                if getattr(item, "group_id", None):
-                    page_gids.add(int(item.group_id))
-                else:
+                # ---- GROUP ID: from column or metadata ----
+                gid = getattr(item, "group_id", None)
+                if gid is None:
+                    m = getattr(item, "metadata", {}) or {}
+                    gid = m.get("group_id")
+                if gid not in (None, "", 0, "0"):
                     try:
-                        gid = item.metadata.get("group_id")
-                        if gid is not None:
-                            page_gids.add(int(gid))
-                    except Exception:
+                        page_gids.add(int(gid))
+                    except (TypeError, ValueError):
                         pass
 
+                # ---- COMMUNITY ID: from column or metadata ----
+                cid = getattr(item, "community_id", None)
+                if cid is None:
+                    m = getattr(item, "metadata", {}) or {}
+                    cid = m.get("community_id")
+                if cid not in (None, "", 0, "0"):
+                    try:
+                        page_cids.add(int(cid))
+                    except (TypeError, ValueError):
+                        pass
+
+            # ---- lookup maps for groups ----
             groups_qs = Group.objects.filter(id__in=page_gids)
-            names = {g.id: g.name for g in groups_qs}
-            covers = {
-                g.id: (request.build_absolute_uri(g.cover_image.url) if g.cover_image else None)
+            group_names = {g.id: g.name for g in groups_qs}
+            group_covers = {
+                g.id: (request.build_absolute_uri(g.cover_image.url) if getattr(g, "cover_image", None) else None)
                 for g in groups_qs
             }
 
+            # ---- lookup maps for communities ----
+            communities_qs = Community.objects.filter(id__in=page_cids)
+            community_names = {c.id: c.name for c in communities_qs}
+            community_covers = {
+                c.id: (request.build_absolute_uri(c.cover_image.url) if getattr(c, "cover_image", None) else None)
+                for c in communities_qs
+            }
+
             ser = self.get_serializer(
-                page, many=True,
-                context={"group_names": names, "group_covers": covers, "request": request}
+                page,
+                many=True,
+                context={
+                    "group_names": group_names,
+                    "group_covers": group_covers,
+                    "community_names": community_names,      # NEW
+                    "community_covers": community_covers,    # NEW
+                    "request": request,
+                },
             )
             return self.get_paginated_response(ser.data)
 

@@ -8,15 +8,37 @@ class FeedItemSerializer(serializers.ModelSerializer):
     actor_name = serializers.SerializerMethodField()
     actor_username = serializers.SerializerMethodField()
     group_id = serializers.IntegerField(source="group.id", read_only=True)  
+    community_name = serializers.SerializerMethodField()
+    community_cover_url = serializers.SerializerMethodField()
 
     class Meta:
         model = FeedItem
         fields = [
-            "id", "community_id", "event_id",
+            "id", "community_id","community_name", "community_cover_url", "event_id",
             "actor_id", "actor_name", "actor_username",
             "verb", "target_content_type_id", "target_object_id",
             "metadata", "created_at","group_id",
         ]
+        
+    def get_community_name(self, obj):
+        cid = getattr(obj, "community_id", None)
+        if not cid:
+            return None
+        names = (self.context or {}).get("community_names") or {}
+        try:
+            return names.get(int(cid))
+        except Exception:
+            return None
+
+    def get_community_cover_url(self, obj):
+        cid = getattr(obj, "community_id", None)
+        if not cid:
+            return None
+        covers = (self.context or {}).get("community_covers") or {}
+        try:
+            return covers.get(int(cid))
+        except Exception:
+            return None
 
     def get_actor_name(self, obj):
         u = getattr(obj, "actor", None)
