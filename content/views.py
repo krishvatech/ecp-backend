@@ -46,20 +46,66 @@ class ResourceViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_class = ResourceFilter
+    # content/views.py (inside ResourceViewSet)
+    def _paid_event_ids(self, user):
+        """
+        Return event IDs the user has purchased.
+        UNCOMMENT the block that matches your schema and delete the others.
+        """
+
+        # A) If you have Ticket/Order with status
+        # from events.models import Ticket
+        # return set(
+        #     Ticket.objects.filter(user_id=user.id, status__in=["paid", "completed"])
+        #           .values_list("event_id", flat=True)
+        # )
+
+        # B) If you have EventRegistration with is_paid flag
+        # from events.models import EventRegistration
+        # return set(
+        #     EventRegistration.objects.filter(user_id=user.id, is_paid=True)
+        #         .values_list("event_id", flat=True)
+        # )
+
+        # C) If you keep purchases in Orders/OrderItems
+        # from orders.models import OrderItem
+        # return set(
+        #     OrderItem.objects.filter(order__user_id=user.id, order__status="paid", event__isnull=False)
+        #         .values_list("event_id", flat=True)
+        # )
+
+        return set()  # TODO: replace with your real query
 
     def get_queryset(self):
         user = self.request.user
         qs = Resource.objects.all().select_related("community", "event", "uploaded_by")
-        if not (user.is_staff or user.is_superuser):
-            qs = qs.filter(is_published=True)
-            org_ids = list(user.community.values_list("id", flat=True))
-            org_ids += list(getattr(user, "owned_community", []).values_list("id", flat=True))
-            qs = qs.filter(Q(community_id__in=org_ids))
+
+        if user.is_staff or user.is_superuser:
+            return qs.order_by("-created_at")
+
+        # Community membership
+        org_ids = list(user.community.values_list("id", flat=True))
+        org_ids += list(getattr(user, "owned_community", []).values_list("id", flat=True))
+
+        # Paid event access
+        paid_eids = self._paid_event_ids(user)
+
+        # Show:
+        #  - community-level resources (no event) for communities the user belongs to
+        #  - event-level resources for events the user purchased
+        qs = qs.filter(is_published=True).filter(
+            Q(event__isnull=True, community_id__in=org_ids) |
+            Q(event_id__in=paid_eids)
+        )
         return qs.order_by("-created_at")
+
 
     def perform_create(self, serializer):
         user = self.request.user
-        org_id = serializer.validated_data["community_id"]
+        org = serializer.validated_data["community"]      # <— object, not *_id
+        event = serializer.validated_data.get("event")    # <— object or None
+        org_id = org.id
+
         if not (
             user.is_staff
             or user.is_superuser
@@ -67,16 +113,11 @@ class ResourceViewSet(viewsets.ModelViewSet):
             or user.owned_community.filter(id=org_id).exists()
         ):
             raise PermissionDenied("You must be a member of the community to upload resources.")
-        event_id = serializer.validated_data.get("event_id")
-        if event_id is not None:
-            from events.models import Event
-            try:
-                event = Event.objects.get(pk=event_id)
-            except Event.DoesNotExist:
-                raise PermissionDenied("Invalid event ID.")
-            if event.community_id != org_id:
-                raise PermissionDenied("Event does not belong to the specified community.")
-        serializer.save()
+
+        if event and event.community_id != org_id:
+            raise PermissionDenied("Event does not belong to the specified community.")
+
+        serializer.save()  # uploaded_by is set in serializer.create
 
     def perform_update(self, serializer):
         user = self.request.user
@@ -110,16 +151,16 @@ class ResourceViewSet(viewsets.ModelViewSet):
             else:
                 publish_resource_task.apply_async(args=[instance.id], eta=instance.publish_at)
 
-    def perform_create(self, serializer):
-        # ... your existing org/event permission checks stay the same ...
-        super().perform_create(serializer)
-        instance = serializer.save()
-        self._maybe_schedule(instance)
+    # def perform_create(self, serializer):
+    #     # ... your existing org/event permission checks stay the same ...
+    #     super().perform_create(serializer)
+    #     instance = serializer.save()
+    #     self._maybe_schedule(instance)
 
-    def perform_update(self, serializer):
-        instance = self.get_object()
-        super().perform_update(serializer)
-        self._maybe_schedule(self.get_object())
+    # def perform_update(self, serializer):
+    #     instance = self.get_object()
+    #     super().perform_update(serializer)
+    #     self._maybe_schedule(self.get_object())
 
 
 # Download endpoint - OUTSIDE the class

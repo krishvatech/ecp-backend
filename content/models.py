@@ -14,10 +14,15 @@ from django.contrib.postgres.fields import ArrayField
 from community.models import Community
 from events.models import Event
 from django.utils import timezone
-
+# content/models.py
 def resource_upload_path(instance, filename):
-    # Use event name, fallback to event ID if name is missing
-    event_name = instance.event.title.replace(" ", "_") if instance.event and instance.event.title else f"event_{instance.event_id}"
+    ev = getattr(instance, "event", None)
+    if ev and ev.title:
+        event_name = ev.title.replace(" ", "_")
+    elif instance.event_id:
+        event_name = f"event_{instance.event_id}"
+    else:
+        event_name = "unscoped"   # <- when no event selected
     return f"event_resources/{event_name}/{filename}"
 
 class Resource(models.Model):

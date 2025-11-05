@@ -8,31 +8,30 @@ from the authenticated request user during creation.
 """
 from rest_framework import serializers
 from .models import Resource
+from community.models import Community
+from events.models import Event
 from django.utils import timezone
 
 class ResourceSerializer(serializers.ModelSerializer):
-    community_id = serializers.IntegerField()
-    event_id = serializers.IntegerField(required=False, allow_null=True)
+    # map request keys → actual FK fields via `source`
+    community_id = serializers.PrimaryKeyRelatedField(
+        source="community", queryset=Community.objects.all()
+    )
+    event_id = serializers.PrimaryKeyRelatedField(
+        source="event", queryset=Event.objects.all(),
+        required=False, allow_null=True
+    )
     uploaded_by_id = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Resource
         fields = [
             "id",
-            "community_id",
-            "event_id",
-            "title",
-            "description",
-            "type",
-            "file",
-            "link_url",
-            "video_url",
-            "tags",
-            "is_published",
-            "publish_at", 
-            "uploaded_by_id",
-            "created_at",
-            "updated_at",
+            "community_id", "event_id",
+            "title", "description", "type",
+            "file", "link_url", "video_url",
+            "tags", "is_published", "publish_at",
+            "uploaded_by_id", "created_at", "updated_at",
         ]
         read_only_fields = ["id", "uploaded_by_id", "created_at", "updated_at"]
 
@@ -56,8 +55,16 @@ class ResourceSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"video_url": "This field is required for video resources."})
         else:
             raise serializers.ValidationError({"type": "Invalid resource type."})
+
         if data.get("publish_at") and data["publish_at"] <= timezone.now():
             data["is_published"] = True
+        return data
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # return raw ids for your UI
+        data["community_id"] = instance.community_id
+        data["event_id"] = instance.event_id
         return data
 
     def create(self, validated_data):
