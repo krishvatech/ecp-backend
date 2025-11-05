@@ -85,8 +85,13 @@ class Event(models.Model):
         ordering = ["-created_at"]
     def save(self, *args, **kwargs):
         if not self.slug:
-            base = f"{self.title}-{self.community_id}"
-            self.slug = slugify(base)
+            base_slug = slugify(f"{self.title}-{self.community_id}")
+            slug = base_slug
+            suffix = 1
+            while Event.objects.filter(slug=slug).exists():
+                slug = f"{base_slug}-{suffix}"
+                suffix += 1
+            self.slug = slug
         super().save(*args, **kwargs)
     def __str__(self) -> str:
         return f"{self.title} ({self.community.name})"

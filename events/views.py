@@ -56,6 +56,9 @@ from .serializers import (
     EventLiteSerializer,             # For lighter list/mine responses
     EventRegistrationSerializer,     # Used by EventRegistrationViewSet
 )
+from activity_feed.models import FeedItem 
+from django.contrib.contenttypes.models import ContentType
+
 
 # ============================================================
 # ================== Env / Settings Bootstrap ================
@@ -291,7 +294,22 @@ class EventViewSet(viewsets.ModelViewSet):
         if not self.request.user.community.filter(id=org.id).exists():
             raise PermissionDenied("You must be a member of the community to create events.")
         # Attach creator automatically
-        serializer.save(created_by=self.request.user, status="published")
+        event = serializer.save(status='published')
+        event_ct = ContentType.objects.get_for_model(event)
+
+        FeedItem.objects.create(
+            community=event.community,
+            event=event,
+            actor=self.request.user,
+            verb="created event",
+            target_content_type=event_ct,
+            target_object_id=event.id,
+            metadata={
+                "title": event.title,
+                "description": event.description,
+                "start_time": event.start_time.isoformat() if event.start_time else None,
+            },
+        )
 
     # ------------------ Dictionary Endpoints -----------------
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="categories")
