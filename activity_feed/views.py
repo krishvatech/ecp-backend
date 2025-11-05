@@ -70,6 +70,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     Q(owner_id=me.id) | Q(members=me)
                 ).values_list("id", flat=True)
             )
+            
 
             # Base: community posts only (no group, no event), same shape you already produce
             comm_posts = FeedItem.objects.filter(
