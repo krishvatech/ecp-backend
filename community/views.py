@@ -30,7 +30,10 @@ class CommunityViewSet(viewsets.ModelViewSet):
     class _CommunityPostCreateSerializer(serializers.Serializer):
         # common
         type = serializers.ChoiceField(choices=[("text","text"),("image","image"),("link","link"),("poll","poll")], required=False, default="text")
-        visibility = serializers.ChoiceField(choices=[("public","public"),("friends","friends")], required=False, default="friends")
+        visibility = serializers.ChoiceField(
+            choices=[("public","public"),("community","community"),("friends","friends")],
+            required=False  # ← no default
+        )
         tags = serializers.ListField(child=serializers.CharField(max_length=50), required=False)
 
         # text
@@ -63,10 +66,14 @@ class CommunityViewSet(viewsets.ModelViewSet):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
         typ = data.get("type", "text")
-        visibility = data.get("visibility") or "friends"
-        # force normal members' default to friends-only
+        requested_vis = data.get("visibility") if "visibility" in data else None
         is_owner = getattr(community, "owner_id", None) == getattr(user, "id", None)
-        if not is_owner and not getattr(user, "is_staff", False) and visibility not in ("friends",):
+
+        if getattr(user, "is_staff", False) or is_owner:
+            # Admin/Owner (community-level): default to community if not provided
+            visibility = requested_vis or "community"
+        else:
+            # Regular member: always friends at community-level
             visibility = "friends"
         tags = data.get("tags") or []
 
@@ -171,10 +178,10 @@ class CommunityViewSet(viewsets.ModelViewSet):
 
             qs = qs.filter(
                 Q(metadata__visibility="public")
-                | Q(actor_id=user.id)  # always see own posts
+                | Q(metadata__visibility="community")             # ← new: visible to all members
+                | Q(actor_id=user.id)                             # always see own
                 | Q(metadata__visibility="friends", actor_id__in=friend_ids)
-                # treat missing visibility as public (optional but handy)
-                | ~Q(metadata__has_key="visibility")
+                | ~Q(metadata__has_key="visibility")              # treat missing as public (optional)
             )
 
 
