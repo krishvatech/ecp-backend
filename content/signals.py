@@ -10,6 +10,7 @@ from django.dispatch import receiver
 from django.contrib.contenttypes.models import ContentType
 
 from .models import Resource
+from django.conf import settings
 from activity_feed.tasks import create_feed_item_task
 
 logger = logging.getLogger(__name__)
@@ -59,22 +60,25 @@ def on_resource_saved(sender, instance: Resource, created: bool, **kwargs) -> No
     }
     ct = ContentType.objects.get_for_model(Resource)
 
-    # Activity feed
-    try:
-        create_feed_item_task.delay(
-            verb="uploaded_resource",
-            target_content_type_id=ct.id,
-            target_object_id=instance.id,
-            community_id=instance.community_id,
-            event_id=instance.event_id,
-            actor_id=instance.uploaded_by_id,
-            metadata=metadata,
-        )
-        print("✅ Feed item task dispatched")
-    except Exception as e:
-        logger.error(f"Error creating feed item: {e}")
-        print(f"❌ Error: {e}")
-
+    # Activity feed: DISABLED by default.
+    # Set CONTENT_RESOURCE_TO_FEED=True in settings.py to re-enable.
+    if getattr(settings, "CONTENT_RESOURCE_TO_FEED", False):
+        try:
+            create_feed_item_task.delay(
+                verb="uploaded_resource",
+                target_content_type_id=ct.id,
+                target_object_id=instance.id,
+                community_id=instance.community_id,
+                event_id=instance.event_id,
+                actor_id=instance.uploaded_by_id,
+                metadata=metadata,
+            )
+            print("✅ Feed item task dispatched")
+        except Exception as e:
+            logger.error(f"Error creating feed item: {e}")
+            print(f"❌ Error: {e}")
+    else:
+        logger.info("Resource publish: skipping FeedItem (CONTENT_RESOURCE_TO_FEED=False)")
     # Analytics (only when it actually becomes published)
     try:
         from analytics.tasks import increment_metric

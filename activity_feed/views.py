@@ -13,9 +13,13 @@ from .models import FeedItem
 from .serializers import FeedItemSerializer
 from .pagination import FeedPagination
 from groups.models import GroupMembership, Group
-from events.models import Event
+from events.models import Event,EventRegistration
+from content.models import Resource
+from django.contrib.auth import get_user_model
 from friends.models import Friendship           
 from community.models import Community
+
+User = get_user_model()
 
 class FeedItemViewSet(ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
@@ -163,6 +167,93 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             except ValueError:
                 pass
         return qs
+    
+    def _registered_event_ids(self, user_id: int):
+        return list(
+            EventRegistration.objects.filter(user_id=user_id)
+            .values_list("event_id", flat=True)
+        )
+
+    # --- NEW: Resource queryset restricted to viewer's registrations ---
+    def _visible_resources_qs(self, request, workset_size: int):
+        """
+        Only Resources that are (a) published, (b) attached to an event,
+        and (c) that event is one the current user registered for.
+        Optional ?community_id filter is respected.
+        """
+        me = request.user
+        if not me.is_authenticated:
+            return Resource.objects.none()
+
+        reg_event_ids = self._registered_event_ids(me.id)
+        if not reg_event_ids:
+            return Resource.objects.none()
+
+        qs = (
+            Resource.objects
+            .select_related("uploaded_by", "community", "event")
+            .filter(is_published=True, event_id__isnull=False, event_id__in=reg_event_ids)
+            .order_by("-created_at")
+        )
+
+        cid = request.query_params.get("community_id")
+        if cid:
+            try:
+                qs = qs.filter(community_id=int(cid))
+            except ValueError:
+                pass
+
+        return qs[:workset_size]
+
+    # --- NEW: Convert a Resource to the same API row shape you use for events ---
+    def _resource_to_api_row(self, r: Resource, request):
+        def _iso(v):
+            from django.utils import timezone
+            import datetime as dt
+            if isinstance(v, (dt.datetime,)):
+                if timezone.is_naive(v):
+                    v = timezone.make_aware(v, timezone.utc)
+                return v.isoformat()
+            return v
+
+        actor = getattr(r, "uploaded_by", None)
+        actor_name = (
+            getattr(actor, "get_full_name", lambda: "")() or
+            getattr(actor, "username", "") or
+            "Resource"
+        )
+
+        # Build absolute URLs where applicable
+        file_url = None
+        if r.type == Resource.TYPE_FILE and r.file:
+            try:
+                file_url = request.build_absolute_uri(r.file.url)
+            except Exception:
+                file_url = r.file.url if r.file else None
+
+        return {
+            "id": f"resource-{r.id}",
+            "created_at": _iso(getattr(r, "created_at", None)),
+            "actor_id": getattr(actor, "id", None),
+            "actor_name": actor_name,
+            "community_id": r.community_id,
+            "metadata": {
+                "type": "resource",
+                "resource_id": r.id,
+                "resource_type": r.type,
+                "title": r.title,
+                "description": r.description or "",
+                "event_id": r.event_id,
+                "tags": list(r.tags or []),
+                "file_url": file_url,
+                "link_url": r.link_url or None,
+                "video_url": r.video_url or None,
+                # Optional: pass community + group names for convenience
+                "community_name": getattr(r.community, "name", None),
+                "group_id": getattr(r.event, "group_id", None),
+                "group_name": getattr(getattr(r.event, "group", None), "name", None),
+            },
+        }
 
     def _event_to_api_row(self, e):
         """
@@ -331,8 +422,11 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 },
             })
 
+        resource_qs = self._visible_resources_qs(request, workset_size)
+        resource_rows = [self._resource_to_api_row(r, request) for r in resource_qs]
+            
         # ---- merge & sort by timestamp (created_at or event start_time) ----
-        combined = list(feed_rows) + event_rows
+        combined = list(feed_rows) + event_rows + resource_rows
 
         def _ts(row):
             m = row.get("metadata") or {}
