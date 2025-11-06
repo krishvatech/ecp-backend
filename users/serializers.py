@@ -73,8 +73,8 @@ class ExperienceSerializer(serializers.ModelSerializer):
 class UserProfileMiniSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
-        fields = ("full_name", "headline", "company")  # keep it minimal
-
+        fields = ("full_name", "job_title", "headline", "company", "location")
+        
 class UserRosterSerializer(serializers.ModelSerializer):
     profile = UserProfileMiniSerializer(read_only=True)
 
@@ -368,10 +368,7 @@ class UserMiniSerializer(serializers.ModelSerializer):
         model = UserModel
         fields = ("id", "first_name", "last_name", "email")
 
-class UserProfileMiniSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = UserProfile
-        fields = ("full_name", "job_title", "headline", "company", "location")
+
 
 class PublicProfileSerializer(serializers.Serializer):
     user = UserMiniSerializer()
