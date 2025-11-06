@@ -226,10 +226,10 @@ class CommunityViewSet(viewsets.ModelViewSet):
         community = self.get_object()
         user = request.user
 
-        # find the exact community-level post FeedItem
         FeedItem = apps.get_model("activity_feed", "FeedItem")
         ct = ContentType.objects.get_for_model(Community)
 
+        # find the community-level FeedItem (any type)
         post = get_object_or_404(
             FeedItem.objects.filter(
                 community_id=community.id,
@@ -238,33 +238,78 @@ class CommunityViewSet(viewsets.ModelViewSet):
                 verb="posted",
                 target_content_type=ct,
                 target_object_id=community.id,
-                metadata__type="text",
             ),
             pk=post_id,
         )
 
-        # permissions: community owner or staff or the original actor
+        # permissions: owner/staff/original actor
         is_owner = getattr(community, "owner_id", None) == getattr(user, "id", None)
         is_staff = getattr(user, "is_staff", False)
         is_actor = getattr(post, "actor_id", None) == getattr(user, "id", None)
         if not (is_owner or is_staff or is_actor):
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-        # validate new content using the same schema as create
+        # validate with same serializer you use for create
         ser = self._CommunityPostCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        new_text = (ser.validated_data["content"] or "").strip()
-        if not new_text:
-            return Response({"detail": "content is required"}, status=400)
+        data = ser.validated_data
 
-        # update the JSON metadata
         meta = dict(post.metadata or {})
-        meta["type"] = "text"
-        meta["text"] = new_text
+        orig_type = (meta.get("type") or "text").lower()
+
+        # IMPORTANT: we keep the original type; editing doesn't convert types
+        if orig_type == "text":
+            new_text = (data.get("content") or "").strip()
+            if not new_text:
+                return Response({"detail": "content is required"}, status=400)
+            meta["type"] = "text"
+            meta["text"] = new_text
+
+        elif orig_type == "image":
+            # optional image replace
+            file = request.FILES.get("image")
+            if file:
+                key = f"community_posts/{community.id}/{uuid4()}_{file.name}"
+                saved_path = default_storage.save(key, file)
+                meta["image_url"] = default_storage.url(saved_path)
+            # caption can always be edited
+            if "caption" in data:
+                meta["caption"] = data.get("caption") or ""
+
+        elif orig_type == "link":
+            # allow partial updates
+            if "url" in data:
+                meta["url"] = data["url"]
+            if "title" in data:
+                meta["title"] = data.get("title") or ""
+            if "description" in data:
+                meta["description"] = data.get("description") or ""
+
+        elif orig_type == "poll":
+            # allow editing question/options (careful if you later add votes!)
+            q = (data.get("question") or meta.get("question", "")).strip()
+            opts = data.get("options") if "options" in data else meta.get("options", [])
+            opts = [o.strip() for o in (opts or []) if o and o.strip()]
+            if not q or len(opts) < 2:
+                return Response({"detail": "poll requires question and at least 2 options"}, status=400)
+            meta["question"] = q
+            meta["options"] = opts
+
+        else:
+            return Response({"detail": f"edit not supported for type: {orig_type}"}, status=400)
+
+        # (optional) update visibility/tags if provided
+        if "visibility" in data:
+            meta["visibility"] = data["visibility"]
+        if "tags" in data:
+            meta["tags"] = data.get("tags") or []
+
         post.metadata = meta
         post.save(update_fields=["metadata"])
 
-        return Response({"ok": True, "id": post.id, "content": new_text}, status=200)
+        # minimal success payload
+        return Response({"ok": True, "id": post.id, "type": orig_type, "metadata": meta}, status=200)
+
 
     # DELETE /api/communities/{community_id}/posts/{post_id}/delete/
     @action(
@@ -287,7 +332,6 @@ class CommunityViewSet(viewsets.ModelViewSet):
                 verb="posted",
                 target_content_type=ct,
                 target_object_id=community.id,
-                metadata__type="post",
             ),
             pk=post_id,
         )
