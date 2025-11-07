@@ -83,21 +83,96 @@ class ConversationViewSet(viewsets.ViewSet):
         return Response(serializer.data)
 
     def create(self, request):
-        """Create or return an existing conversation between the requesting user and a recipient."""
+        """
+        Create or return an existing conversation.
+        Supports:
+        - DM:          {recipient_id}
+        - Group chat:  {group: <group_id>}
+        - Event chat:  {event: <event_id>}
+        """
         user = request.user
+        event_id = request.data.get("event")
+        group_id = request.data.get("group")
         recipient_id = request.data.get("recipient_id")
+
+        # --- Event chat ---
+        if event_id is not None:
+            from events.models import Event
+            try:
+                event_id = int(event_id)
+            except (TypeError, ValueError):
+                raise ValidationError({"event": "Invalid event id."})
+            event = get_object_or_404(Event, pk=event_id)
+
+            # One row per event chat
+            conv, created = Conversation.objects.get_or_create(
+                is_event_group=True,
+                event=event,
+                defaults={
+                    "created_by": user,
+                    "title": event.title,  # stored, but UI should show event.title
+                },
+            )
+
+            # Backfills if an older row existed without proper flags/links
+            changed = False
+            if not conv.is_event_group:
+                conv.is_event_group = True
+                changed = True
+            if conv.event_id != event.id:
+                conv.event = event
+                changed = True
+            if not conv.title:
+                conv.title = event.title
+                changed = True
+            if changed:
+                conv.save()
+
+            ser = ConversationSerializer(conv, context={"request": request})
+            return Response(ser.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+        # --- Group chat (shortcut; you also have ensure_group) ---
+        if group_id is not None:
+            from groups.models import Group
+            try:
+                group_id = int(group_id)
+            except (TypeError, ValueError):
+                raise ValidationError({"group": "Invalid group id."})
+            group = get_object_or_404(Group, pk=group_id)
+
+            conv, created = Conversation.objects.get_or_create(
+                is_group=True,
+                group=group,
+                defaults={
+                    "created_by": user,
+                    "title": group.name,
+                },
+            )
+            if not conv.is_group or conv.group_id != group.id or not conv.title:
+                conv.is_group = True
+                conv.group = group
+                if not conv.title:
+                    conv.title = group.name
+                conv.save()
+
+            ser = ConversationSerializer(conv, context={"request": request})
+            return Response(ser.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+        # --- DM (existing behavior) ---
         if not recipient_id:
-            raise ValidationError({"recipient_id": "This field is required."})
+            raise ValidationError({"recipient_id": "This field is required when 'event' and 'group' are not provided."})
         try:
             recipient_id = int(recipient_id)
         except (TypeError, ValueError):
             raise ValidationError({"recipient_id": "Invalid recipient ID."})
         if recipient_id == user.id:
             raise ValidationError({"recipient_id": "Cannot start a conversation with yourself."})
+
         try:
             recipient = User.objects.get(pk=recipient_id)
         except User.DoesNotExist:
             raise ValidationError({"recipient_id": "Recipient not found."})
+
         user_ids = sorted([user.id, recipient_id])
         conv, created = Conversation.objects.get_or_create(
             user1_id=user_ids[0], user2_id=user_ids[1], is_group=False
@@ -200,40 +275,67 @@ class ConversationViewSet(viewsets.ViewSet):
     @action(detail=False, methods=["post"], url_path="ensure-event")
     def ensure_event(self, request):
         """
-        Upsert an event chat. Accept either:
-          1) { "event": <event_id>, "title": "..." }
-          2) { "room_key": "event:<event_id>", "title": "..." }  (legacy key)
+        Upsert an event chat. Accepts:
+        { "event": <event_id>, "title": "..." }
+        or legacy:
+        { "room_key": "event:<id>", "title": "..." }
+        Guarantees Conversation.event_id is set and is_event_group=True.
         """
-        title = request.data.get("title", "")
+        from events.models import Event
+
+        title = (request.data.get("title") or "").strip()
         event_id = request.data.get("event")
-        room_key = request.data.get("room_key")
+        room_key = (request.data.get("room_key") or "").strip()
 
-        if not event_id and not room_key:
-            raise ValidationError({"event": "Provide event or room_key"})
+        # Parse event id from room_key if needed
+        if not event_id and room_key.startswith("event:"):
+            try:
+                event_id = int(room_key.split(":", 1)[1])
+            except Exception:
+                event_id = None
 
-        defaults = {
-            "is_event_group": True,
-            "title": title,
-            "created_by": request.user if request.user.is_authenticated else None,
-        }
+        if not event_id:
+            raise ValidationError({"event": "Provide event (id) or room_key like 'event:<id>'."})
 
-        if event_id:
-            conv, _ = Conversation.objects.get_or_create(
-                is_event_group=True, event_id=event_id,
-                defaults=defaults,
-            )
-        else:
-            # fallback by room_key
-            conv, _ = Conversation.objects.get_or_create(
-                room_key=room_key,
-                defaults=defaults,
-            )
-            if not conv.is_event_group:
-                conv.is_event_group = True
-                conv.save(update_fields=["is_event_group"])
+        try:
+            event_id = int(event_id)
+        except (TypeError, ValueError):
+            raise ValidationError({"event": "Invalid event id."})
+
+        event = get_object_or_404(Event, pk=event_id)
+
+        # One conversation per event
+        conv, created = Conversation.objects.get_or_create(
+            is_event_group=True,
+            event=event,
+            defaults={
+                "created_by": request.user if request.user.is_authenticated else None,
+                "title": title or event.title,
+            },
+        )
+
+        # Backfill/normalize
+        changed = False
+        if not conv.is_event_group:
+            conv.is_event_group = True
+            changed = True
+        if conv.event_id != event.id:
+            conv.event = event
+            changed = True
+        if not conv.title:
+            conv.title = title or event.title
+            changed = True
+        # optionally persist a canonical room_key
+        if room_key and not conv.room_key:
+            conv.room_key = room_key
+            changed = True
+
+        if changed:
+            conv.save()
 
         serializer = ConversationSerializer(conv, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
     
     # views.py  (inside ConversationViewSet)
 
