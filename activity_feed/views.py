@@ -57,6 +57,12 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         req = self.request
         me = req.user
         actor_id = self._parse_actor_id(req) 
+        pk = self.kwargs.get(getattr(self, "lookup_field", "pk"))
+        if pk is not None:
+            try:
+                return qs.select_related("actor").filter(pk=int(pk))
+            except (TypeError, ValueError):
+                return qs.none()
 
         scope = req.query_params.get("scope", "member_groups")  # existing default
         # Optional: allow narrowing to one community
@@ -113,15 +119,22 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     Q(owner_id=me.id) | Q(members=me)
                 ).values_list("id", flat=True)
             )
-            
+            if community_id_param:
+                try:
+                    cid = int(community_id_param)
+                    if cid not in my_comm_ids:
+                        my_comm_ids.append(cid)
+                except ValueError:
+                    pass
 
             # Base: community posts only (no group, no event), same shape you already produce
             comm_posts = FeedItem.objects.filter(
                 group__isnull=True,
                 event__isnull=True,
                 community_id__in=my_comm_ids,
-                verb="posted",
                 metadata__type__in=["text", "image", "link", "poll"],
+            ).filter(
+                Q(verb="posted") | Q(verb="created_poll")   
             )
 
             # If caller asked for a specific community
