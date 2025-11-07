@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import re
 import pytz
-
+from django.conf import settings
+from urllib.parse import urljoin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.validators import UnicodeUsernameValidator
@@ -83,21 +84,49 @@ class UserRosterSerializer(serializers.ModelSerializer):
         fields = ("id", "first_name", "last_name", "email", "profile")
 
 class UserProfileSerializer(serializers.ModelSerializer):
-    """Serializer for the UserProfile model, exposing extra fields for editing."""
+    user_image_url = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = UserProfile
         fields = [
-            "full_name",
-            "timezone",
-            "bio",
-            "headline",
-            "job_title",
-            "company",
-            "location",
-            "links",
-            "skills",
+            "full_name","timezone","bio","headline","job_title","company",
+            "location","links","user_image","user_image_url","skills",
         ]
+
+    def get_user_image_url(self, obj):
+        request = self.context.get("request")
+
+        # 1) prefer the real field you have:
+        if getattr(obj, "user_image", None):
+            try:
+                url = obj.user_image.url
+                return request.build_absolute_uri(url) if request else url
+            except Exception:
+                pass
+
+        # 2) fallback to other common names (kept from your code)
+        for attr in ["image", "avatar", "profile_image", "profile_pic", "photo", "picture"]:
+            f = getattr(obj, attr, None)
+            if f:
+                try:
+                    url = f.url
+                    return request.build_absolute_uri(url) if request else url
+                except Exception:
+                    pass
+
+        # 3) last resort: check related User
+        user = getattr(obj, "user", None)
+        if user:
+            for attr in ["avatar", "image", "profile_image", "photo", "picture"]:
+                f = getattr(user, attr, None)
+                if f:
+                    try:
+                        url = f.url
+                        return request.build_absolute_uri(url) if request else url
+                    except Exception:
+                        pass
+        return None
+
 
     def validate_timezone(self, value: str) -> str:
         if value and value not in pytz.all_timezones:
@@ -323,7 +352,7 @@ class ResetPasswordSerializer(serializers.Serializer):
 
 class UserRosterSerializer(serializers.ModelSerializer):
     profile = UserProfileMiniSerializer(read_only=True)
-    # NEW:
+    avatar_url = serializers.SerializerMethodField()
     company_from_experience = serializers.SerializerMethodField()
     position_from_experience = serializers.SerializerMethodField()
 
@@ -331,8 +360,52 @@ class UserRosterSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             "id", "first_name", "last_name", "email", "profile",
-            "company_from_experience", "position_from_experience",  # NEW
+            "company_from_experience", "position_from_experience", "avatar_url",
         )
+
+    def get_avatar_url(self, obj):
+        prof = getattr(obj, "profile", None)
+
+        # include your real field name
+        candidates = [
+            getattr(prof, "user_image", None),   # profile user_image (ImageField/FileField)
+            getattr(obj,  "user_image", None),   # if ever on User
+            getattr(obj,  "avatar", None),
+            getattr(obj,  "avatar_url", None),
+            getattr(prof, "avatar", None),
+            getattr(prof, "photo", None),
+            getattr(prof, "image", None),
+            getattr(prof, "image_url", None),
+        ]
+
+        url = next((c for c in candidates if c), None)
+        if not url:
+            return ""
+
+        # If it's a File/ImageField object, use its .url
+        if hasattr(url, "url"):
+            url = url.url
+
+        # Now url is a string. Handle 3 cases cleanly.
+        if not isinstance(url, str) or not url:
+            return ""
+
+        # 1) Already absolute -> return as-is (prevents "https://s3/...https://s3/..." bug)
+        if url.startswith(("http://", "https://")):
+            return url
+
+        # 2) Absolute path -> build absolute with request (e.g. "/media/avatars/x.jpg")
+        if url.startswith("/"):
+            request = self.context.get("request")
+            return request.build_absolute_uri(url) if request else url
+
+        # 3) Bare filename/relative path -> join with MEDIA_URL (works whether MEDIA_URL is /media/ or S3 URL)
+        media_url = getattr(settings, "MEDIA_URL", "/media/")
+        if not media_url.endswith("/"):
+            media_url += "/"
+        full = urljoin(media_url, url)
+
+        return full
 
     def _best_experience(self, obj):
         # use prefetched related if present; fall back to query
@@ -363,12 +436,56 @@ class EducationPublicSerializer(serializers.ModelSerializer):
         fields = ("id", "school", "degree", "field_of_study",
                   "start_date", "end_date")
 
+
 class UserMiniSerializer(serializers.ModelSerializer):
+    avatar_url = serializers.SerializerMethodField()
+
     class Meta:
-        model = UserModel
-        fields = ("id", "first_name", "last_name", "email")
+        model = User
+        fields = ("id", "username", "email", "first_name", "last_name", "avatar_url")
 
+    def _pick_image_field(self, user):
+        prof = getattr(user, "profile", None)
+        # your DB column comes first:
+        for cand in (
+            getattr(prof, "user_image", None),   # <-- your real column
+            getattr(prof, "avatar", None),
+            getattr(prof, "photo", None),
+            getattr(prof, "image", None),
+            getattr(user, "avatar", None),
+        ):
+            if cand:
+                return cand
+        return None
 
+    def get_avatar_url(self, obj):
+        url = self._pick_image_field(obj)
+        if not url:
+            return ""
+
+        # If it's a File/ImageField
+        if hasattr(url, "url"):
+            url = url.url
+
+        url = str(url).strip()
+        # Already absolute? return as-is (prevents “double S3”)
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+
+        media = (settings.MEDIA_URL or "").strip()
+        # MEDIA_URL absolute (S3 style)
+        if media.startswith("http://") or media.startswith("https://"):
+            if url.startswith("/"):
+                url = url[1:]
+            return media + url
+
+        # local dev: build full URL
+        req = self.context.get("request")
+        if req:
+            if not url.startswith("/"):
+                url = "/" + url
+            return req.build_absolute_uri(url)
+        return url
 
 class PublicProfileSerializer(serializers.Serializer):
     user = UserMiniSerializer()

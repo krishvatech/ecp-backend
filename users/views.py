@@ -5,6 +5,8 @@ Provides endpoints to list and retrieve user information, update the
 authenticated user via a custom `me` action, and register new users.
 """
 from django.contrib.auth.models import User
+from rest_framework import status
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import action
@@ -105,22 +107,19 @@ class UserViewSet(
             | Q(owned_community__id__in=org_ids)
         ).distinct()
     
-    @action(detail=False, methods=["get", "put"], url_path="me")
+    @action(detail=False, methods=["get", "put", "patch"], url_path="me")
     def me(self, request):
         user = request.user
 
         if request.method == "GET":
-            return Response(UserSerializer(user).data)
+            return Response(UserSerializer(user, context={"request": request}).data)
 
-        # Build a mutable copy and collapse dotted profile keys (from HTML form)
         data = request.data.copy()
         profile = {}
 
-        # If JSON sent {"profile": {...}}, keep it
         if isinstance(data.get("profile"), dict):
             profile.update(data["profile"])
 
-        # Also handle HTML form dotted keys: profile.full_name, profile.timezone, profile.bio
         for k in list(data.keys()):
             if k.startswith("profile."):
                 subkey = k.split(".", 1)[1]
@@ -129,11 +128,34 @@ class UserViewSet(
         if profile:
             data["profile"] = profile
 
-        # ✅ Use serializer so validations run
-        serializer = UserSerializer(user, data=request.data, partial=True)
+        serializer = UserSerializer(user, data=data, partial=(request.method == "PATCH"), context={"request": request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=["post"], url_path="me/avatar")
+    def upload_avatar(self, request):
+        """
+        Accepts multipart/form-data with key 'avatar' OR 'user_image'.
+        Saves to request.user.profile.user_image and returns the URL.
+        """
+        file = request.FILES.get("avatar") or request.FILES.get("user_image")
+        if not file:
+            return Response({"detail": "avatar (file) is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        profile = getattr(request.user, "profile", None)
+        if profile is None:
+            return Response({"detail": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        profile.user_image = file
+        profile.save(update_fields=["user_image"])
+
+        # send back absolute URL
+        data = {
+            "user_image": profile.user_image.name,
+            "user_image_url": request.build_absolute_uri(profile.user_image.url),
+        }
+        return Response(data, status=status.HTTP_200_OK)
     
 
     @action(detail=True, methods=["get"], permission_classes=[AllowAny], url_path="profile")
@@ -167,6 +189,7 @@ class UserViewSet(
             UserModel.objects
             .all()
             .exclude(id=request.user.id)
+            .select_related("profile") 
             .prefetch_related("experiences")   # NEW: so serializer is fast
             .order_by("first_name", "last_name")[:500]
         )

@@ -10,15 +10,74 @@ class FeedItemSerializer(serializers.ModelSerializer):
     group_id = serializers.IntegerField(source="group.id", read_only=True)  
     community_name = serializers.SerializerMethodField()
     community_cover_url = serializers.SerializerMethodField()
+    actor_avatar = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = FeedItem
         fields = [
             "id", "community_id","community_name", "community_cover_url", "event_id",
-            "actor_id", "actor_name", "actor_username",
+            "actor_id", "actor_name", "actor_username","actor_avatar",
             "verb", "target_content_type_id", "target_object_id",
             "metadata", "created_at","group_id",
         ]
+        
+    def _abs_url(self, val):
+        """
+        Turn a File/ImageField or relative path into an absolute URL.
+        If it's already absolute (http/https), return as-is.
+        """
+        if not val:
+            return ""
+        # File/ImageField -> .url
+        if hasattr(val, "url"):
+            val = val.url
+
+        val = str(val)
+        # already absolute?
+        if val.startswith("http://") or val.startswith("https://"):
+            return val
+
+        # ensure leading slash for request.build_absolute_uri
+        if not val.startswith("/"):
+            val = "/" + val
+
+        req = self.context.get("request")
+        return req.build_absolute_uri(val) if req else val
+
+    def _pick_user_photo(self, user):
+        """
+        Try common fields where your app may store the profile image.
+        (You said your DB column is `user_image`.)
+        """
+        prof = getattr(user, "profile", None)
+        candidates = [
+            getattr(user, "user_image", None),      # ← your column
+            getattr(user, "avatar", None),
+            getattr(user, "photo", None),
+            getattr(user, "image", None),
+            getattr(user, "image_url", None),
+            getattr(prof, "user_image", None) if prof else None,
+            getattr(prof, "avatar", None) if prof else None,
+            getattr(prof, "photo", None) if prof else None,
+            getattr(prof, "image", None) if prof else None,
+            getattr(prof, "image_url", None) if prof else None,
+        ]
+        for c in candidates:
+            if c:
+                return c
+        return None
+
+    # ---- field resolvers -------------------------------------------------
+    def get_actor_avatar(self, obj):
+        """
+        Build absolute avatar URL for the actor of this feed item.
+        Frontend reads this as `item.actor_avatar`.
+        """
+        user = getattr(obj, "actor", None)  # FeedItem.actor -> User FK
+        if not user:
+            return ""
+        raw = self._pick_user_photo(user)
+        return self._abs_url(raw)
         
     def get_community_name(self, obj):
         cid = getattr(obj, "community_id", None)

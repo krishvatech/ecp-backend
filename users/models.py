@@ -10,7 +10,19 @@ from django.conf import settings
 from django.db import models
 from django.db.models import Q, F
 from django.contrib.auth.models import User
+from django.utils.text import slugify
 from django.contrib.postgres.fields import ArrayField
+import os, uuid
+
+def user_profile_image(instance, filename):
+    """
+    Save preview images directly under:
+      media_previews/event/<file>
+    (No tmp/, no <id>/, no preview/ subfolder)
+    """
+    name, ext = os.path.splitext(filename or "")
+    base = slugify(name) or "avatar"
+    return f"avatars/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
 
 class UserProfile(models.Model):
     """Extension of Django's built-in User model."""
@@ -31,6 +43,11 @@ class UserProfile(models.Model):
         help_text="List of user skills",
     )
     links = models.JSONField(default=dict, blank=True, help_text="External profile links")
+    user_image = models.ImageField(
+        upload_to=user_profile_image,
+        blank=True,
+        null=True,
+    )
 
     def __str__(self) -> str:
         return f"Profile<{self.user.username}>"

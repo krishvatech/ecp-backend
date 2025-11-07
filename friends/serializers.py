@@ -1,26 +1,15 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from .models import Friendship, FriendRequest,Notification
+from users.serializers import UserMiniSerializer 
 
 User = get_user_model()
 
 
-class UserTinySerializer(serializers.ModelSerializer):
-    """Tiny projection of a user suitable for friend lists."""
-    display_name = serializers.SerializerMethodField()
-
-    class Meta:
-        model = User
-        fields = ("id", "username", "email", "display_name")
-        read_only_fields = fields
-
-    def get_display_name(self, obj):
-        for attr in ("name", "full_name", "get_full_name"):
-            if hasattr(obj, attr):
-                v = getattr(obj, attr)
-                return v() if callable(v) else v
-        return obj.username or obj.email
-
+class UserTinySerializer(UserMiniSerializer):
+    """Inherit the same fields (id, username, email, display_name, avatar_url)."""
+    class Meta(UserMiniSerializer.Meta):
+        fields = UserMiniSerializer.Meta.fields
 
 class friendserializer(serializers.ModelSerializer):
     friend = serializers.SerializerMethodField()
@@ -78,8 +67,7 @@ class NotificationActorSerializer(serializers.ModelSerializer):
         return obj.username or obj.email
 
 class NotificationSerializer(serializers.ModelSerializer):
-    actor = NotificationActorSerializer(read_only=True)
-
+    actor = UserMiniSerializer(read_only=True)
     class Meta:
         model = Notification
         fields = (
