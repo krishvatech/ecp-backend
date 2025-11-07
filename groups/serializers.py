@@ -3,7 +3,7 @@ from rest_framework import serializers
 from django.db.models import Count
 from community.models import Community
 from django.contrib.auth import get_user_model
-from .models import Group, GroupMembership, PromotionRequest, GroupPinnedMessage, GroupPoll, GroupPollOption, GroupPollVote
+from .models import Group, GroupMembership, PromotionRequest, GroupPinnedMessage
 User = get_user_model()
 
 
@@ -215,66 +215,6 @@ class GroupPinnedMessageOutSerializer(serializers.ModelSerializer):
         }
 
 
-
-# ---- Polls ----
-class GroupPollOptionOutSerializer(serializers.ModelSerializer):
-    vote_count = serializers.IntegerField(read_only=True)
-
-    class Meta:
-        model = GroupPollOption
-        fields = ["id", "text", "index", "vote_count"]
-
-
-class GroupPollOutSerializer(serializers.ModelSerializer):
-    options = GroupPollOptionOutSerializer(many=True, read_only=True)
-    total_votes = serializers.IntegerField(read_only=True)
-    user_votes = serializers.SerializerMethodField()
-
-    class Meta:
-        model = GroupPoll
-        fields = [
-            "id", "question", "allows_multiple", "is_anonymous", "is_closed",
-            "ends_at", "created_by", "created_at", "updated_at",
-            "options", "total_votes", "user_votes",
-        ]
-        read_only_fields = ["created_by", "created_at", "updated_at", "total_votes", "user_votes"]
-
-    def get_user_votes(self, obj):
-        request = self.context.get("request")
-        uid = getattr(getattr(request, "user", None), "id", None)
-        if not uid:
-            return []
-        return list(GroupPollVote.objects.filter(poll=obj, user_id=uid).values_list("option_id", flat=True))
-
-
-class GroupPollCreateSerializer(serializers.Serializer):
-    question = serializers.CharField(max_length=500)
-    options = serializers.ListField(
-        child=serializers.CharField(max_length=300), allow_empty=False, min_length=2
-    )
-    allows_multiple = serializers.BooleanField(required=False, default=False)
-    is_anonymous = serializers.BooleanField(required=False, default=False)
-    ends_at = serializers.DateTimeField(required=False, allow_null=True)
-
-
-class GroupPollVoteInSerializer(serializers.Serializer):
-    option_ids = serializers.ListField(child=serializers.IntegerField(), allow_empty=False, min_length=1)
-
-class CreatePollSerializer(serializers.Serializer):
-    question = serializers.CharField(max_length=500)
-    options  = serializers.ListField(
-        child=serializers.CharField(max_length=200),
-        min_length=2, max_length=20
-    )
-    multi_select = serializers.BooleanField(required=False, default=False)
-    closes_at = serializers.DateTimeField(required=False, allow_null=True)
-    
-class VotePollSerializer(serializers.Serializer):
-    id = serializers.IntegerField(help_text="FeedItem id of the poll")
-    choices = serializers.ListField(
-        child=serializers.IntegerField(min_value=0),
-        min_length=1
-    )
 
 # ===== Feed Posts stored as activity_feed.FeedItem =====
 class CreateFeedPostSerializer(serializers.Serializer):

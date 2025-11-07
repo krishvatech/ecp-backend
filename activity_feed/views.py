@@ -5,13 +5,18 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from itertools import chain
+from rest_framework import status
 from django.utils.dateparse import parse_datetime
+from django.utils import timezone
+from rest_framework.parsers import JSONParser
+from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 import datetime as dt
 
 from .models import FeedItem
 from .serializers import FeedItemSerializer
 from .pagination import FeedPagination
+from .models import Poll, PollOption, PollVote
 from groups.models import GroupMembership, Group
 from events.models import Event,EventRegistration
 from content.models import Resource
@@ -66,21 +71,37 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     status=GroupMembership.STATUS_ACTIVE
                 ).values_list("group_id", flat=True)
             )
+            member_group_ids_str = [str(gid) for gid in member_group_ids]
             qs = qs.filter(
                 Q(group_id__in=member_group_ids) |
-                Q(metadata__group_id__in=[str(gid) for gid in member_group_ids])
+                Q(metadata__group_id__in=member_group_ids) |            # numeric JSON
+                Q(metadata__group_id__in=member_group_ids_str) |        # string JSON
+                Q(metadata__groupId__in=member_group_ids) |             # camelCase numeric
+                Q(metadata__groupId__in=member_group_ids_str) |         # camelCase string
+                Q(metadata__group__id__in=member_group_ids) |           # nested numeric
+                Q(metadata__group__id__in=member_group_ids_str)         # nested string
             )
             gid_param = req.query_params.get("group_id")
             if gid_param:
                 try:
                     gid_num = int(gid_param)
                 except ValueError:
-                    qs = qs.filter(Q(metadata__group_id=gid_param))
+                    qs = qs.filter(
+                        Q(metadata__group_id=gid_param) |
+                        Q(metadata__groupId=gid_param) |
+                        Q(metadata__group__id=gid_param)
+                    )
+
                 else:
                     qs = qs.filter(
                         Q(group_id=gid_num) |
                         Q(metadata__group_id=gid_num) |
-                        Q(metadata__group_id=str(gid_num))
+                        Q(metadata__group_id=str(gid_num)) |
+                        Q(metadata__groupId=gid_num) |
+                        Q(metadata__groupId=str(gid_num)) |
+                        Q(metadata__group__id=gid_num) |
+                        Q(metadata__group__id=str(gid_num))
+                        
                     )
             return qs.select_related("actor").order_by("-created_at")
 
@@ -137,10 +158,17 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                         status=GroupMembership.STATUS_ACTIVE
                     ).values_list("group_id", flat=True)
                 )
+                member_group_ids_str = [str(gid) for gid in member_group_ids]
                 group_feed = FeedItem.objects.filter(
                     Q(group_id__in=member_group_ids) |
-                    Q(metadata__group_id__in=[str(gid) for gid in member_group_ids])
+                    Q(metadata__group_id__in=member_group_ids) |
+                    Q(metadata__group_id__in=member_group_ids_str) |
+                    Q(metadata__groupId__in=member_group_ids) |
+                    Q(metadata__groupId__in=member_group_ids_str) |
+                    Q(metadata__group__id__in=member_group_ids) |
+                    Q(metadata__group__id__in=member_group_ids_str)
                 )
+
                 # Return union of both
                 return (group_feed | comm_posts).select_related("actor").order_by("-created_at")
 
@@ -458,6 +486,209 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         # ---- paginate the merged list (single pagination pass) ----
         page = self.paginator.paginate_queryset(combined, request, view=self)
         return self.paginator.get_paginated_response(page)
+    
+    def _can_create_poll_for_group(self, request, group: Group) -> bool:
+        uid = getattr(request.user, "id", None)
+        if not uid or not request.user.is_authenticated:
+            return False
+        if group.created_by_id == uid or getattr(group, "owner_id", None) == uid or getattr(request.user, "is_staff", False):
+            return True
+        return GroupMembership.objects.filter(group=group, user_id=uid, role__in=["admin","moderator"]).exists()
+
+    def _active_member(self, user_id: int, group: Group) -> bool:
+        return GroupMembership.objects.filter(group=group, user_id=user_id, status=getattr(GroupMembership, "STATUS_ACTIVE", "active")).exists()
+
+    def _serialize_poll(self, poll: Poll, request):
+        opts = list(poll.options.all().order_by("index"))
+        option_rows = [{"id": o.id, "text": o.text, "index": o.index, "vote_count": o.votes.count()} for o in opts]
+        total_votes = sum(x["vote_count"] for x in option_rows)
+        uid = getattr(request.user, "id", None)
+        user_votes = []
+        if uid:
+            user_votes = list(poll.votes.filter(user_id=uid).values_list("option_id", flat=True))
+        return {
+            "id": poll.id,
+            "question": poll.question,
+            "allows_multiple": bool(poll.allows_multiple),
+            "is_anonymous": bool(poll.is_anonymous),
+            "is_closed": bool(poll.is_closed),
+            "ends_at": poll.ends_at,
+            "options": option_rows,
+            "total_votes": total_votes,
+            "user_votes": user_votes,
+        }
+
+    @action(detail=False, methods=["post"], url_path="polls/create", parser_classes=[JSONParser])
+    def polls_create(self, request, *args, **kwargs):
+        if not request.user or not request.user.is_authenticated:
+            return Response({"detail": "Authentication required."}, status=401)
+
+        data = request.data or {}
+        question = (data.get("question") or "").strip()
+        options  = data.get("options") or []
+        multi    = bool(data.get("multi_select", False))
+        anon     = bool(data.get("anonymous", False))
+        ends_at  = data.get("closes_at")
+        gid      = data.get("group_id")
+        cid      = data.get("community_id")
+
+        if not question:
+            return Response({"detail": "question is required"}, status=400)
+        if not isinstance(options, list) or len([str(o).strip() for o in options if str(o).strip()]) < 2:
+            return Response({"detail": "options must include at least two non-empty items"}, status=400)
+
+        group = None
+        community = None
+
+        if gid:
+            try:
+                group = Group.objects.get(pk=int(gid))
+            except Exception:
+                return Response({"detail": "Invalid group_id"}, status=400)
+            if not self._can_create_poll_for_group(request, group):
+                return Response({"detail": "Forbidden"}, status=403)
+            community = getattr(group, "community", None)
+        elif cid:
+            try:
+                community = Community.objects.get(pk=int(cid))
+            except Exception:
+                return Response({"detail": "Invalid community_id"}, status=400)
+
+        # 1) create poll + options
+        poll = Poll.objects.create(
+            group=group,
+            community=community,
+            question=question,
+            allows_multiple=multi,
+            is_anonymous=anon,
+            ends_at=ends_at,
+            created_by=request.user,
+        )
+        for idx, txt in enumerate(options):
+            t = (str(txt) or "").strip()
+            if t:
+                PollOption.objects.create(poll=poll, text=t, index=idx)
+
+        # 2) ensure the FeedItem has options in its metadata
+        ct = ContentType.objects.get_for_model(Poll)
+        item = (FeedItem.objects
+                .filter(target_content_type=ct, target_object_id=poll.id)
+                .order_by("-id")
+                .first())
+
+        opts_meta = [
+            {"id": o.id, "text": o.text, "index": o.index, "vote_count": 0}
+            for o in poll.options.order_by("index")
+        ]
+        meta = {
+            "type": "poll",
+            "poll_id": poll.id,
+            "question": poll.question,
+            "options": opts_meta,                     # 👈 now filled
+            "is_closed": bool(poll.is_closed),
+            "group_id": poll.group_id,
+            "community_id": poll.community_id,
+            "allows_multiple": bool(poll.allows_multiple),
+            "is_anonymous": bool(poll.is_anonymous),
+            "ends_at": poll.ends_at,
+        }
+
+        if item:
+            m = item.metadata or {}
+            m.update(meta)
+            item.metadata = m
+            item.save(update_fields=["metadata"])
+        else:
+            FeedItem.objects.create(
+                community=community or (group.community if group else None),
+                group=group,
+                actor_id=getattr(request.user, "id", None),
+                verb="created_poll",
+                target_content_type=ct,
+                target_object_id=poll.id,
+                metadata=meta,
+            )
+
+        # 3) return a fully serialized poll so the UI can render immediately
+        return Response({
+            "ok": True,
+            "feed_item_id": item.id if item else None,
+            "poll": self._serialize_poll(poll, request),
+        }, status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"poll/vote", parser_classes=[JSONParser])
+    def poll_vote(self, request, pk=None, *args, **kwargs):
+        item = self.get_object()
+        # get underlying Poll
+        PollModel = Poll
+        ct_poll = ContentType.objects.get_for_model(PollModel)
+        poll = None
+        if item.target_content_type_id == ct_poll.id:
+            poll = PollModel.objects.filter(pk=item.target_object_id).first()
+        if not poll:
+            pid = (item.metadata or {}).get("poll_id")
+            if pid:
+                poll = PollModel.objects.filter(pk=pid).first()
+        if not poll:
+            return Response({"detail": "Poll not found"}, status=404)
+
+        if poll.is_closed or (poll.ends_at and timezone.now() > poll.ends_at):
+            return Response({"detail": "Poll is closed."}, status=400)
+
+        uid = getattr(request.user, "id", None)
+        if not uid:
+            return Response({"detail": "Authentication required."}, status=401)
+
+        if poll.group_id:
+            elevated = self._can_create_poll_for_group(request, poll.group)
+            member_ok = elevated or self._active_member(uid, poll.group)
+            if not member_ok:
+                return Response({"detail": "Only active members can vote in this group poll."}, status=403)
+
+        option_ids = request.data.get("option_ids") or request.data.get("choices")
+        if not isinstance(option_ids, list) or not option_ids:
+            return Response({"detail": "option_ids is required"}, status=400)
+
+        # validate options
+        option_ids = [int(x) for x in option_ids]
+        valid_ids  = set(poll.options.values_list("id", flat=True))
+        if not set(option_ids).issubset(valid_ids):
+            return Response({"detail": "Invalid option id(s)"}, status=400)
+
+        if not poll.allows_multiple:
+            PollVote.objects.filter(poll=poll, user_id=uid).delete()
+            PollVote.objects.get_or_create(poll=poll, option_id=option_ids[0], user_id=uid)
+        else:
+            for oid in option_ids:
+                PollVote.objects.get_or_create(poll=poll, option_id=oid, user_id=uid)
+            PollVote.objects.filter(poll=poll, user_id=uid).exclude(option_id__in=option_ids).delete()
+
+        return Response({"ok": True, "poll": self._serialize_poll(poll, request)})
+
+    @action(detail=True, methods=["post"], url_path=r"poll/close")
+    def poll_close(self, request, pk=None, *args, **kwargs):
+        item = self.get_object()
+        ct_poll = ContentType.objects.get_for_model(Poll)
+        poll = None
+        if item.target_content_type_id == ct_poll.id:
+            poll = Poll.objects.filter(pk=item.target_object_id).first()
+        if not poll:
+            pid = (item.metadata or {}).get("poll_id")
+            if pid:
+                poll = Poll.objects.filter(pk=pid).first()
+        if not poll:
+            return Response({"detail": "Poll not found"}, status=404)
+
+        if poll.group_id:
+            if not self._can_create_poll_for_group(request, poll.group):
+                return Response({"detail": "Forbidden"}, status=403)
+        else:
+            if not getattr(request.user, "is_staff", False):
+                return Response({"detail": "Forbidden"}, status=403)
+
+        poll.is_closed = True
+        poll.save(update_fields=["is_closed"])
+        return Response({"ok": True, "poll": self._serialize_poll(poll, request)})
     
     @action(detail=False, methods=["get"], url_path=r"posts/me")
     def actor_me(self, request, *args, **kwargs):

@@ -24,7 +24,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter, OpenApiExample
 
 from community.models import Community
-from .models import Group, GroupMembership, PromotionRequest, GroupPinnedMessage, GroupPoll, GroupPollOption, GroupPollVote
+from .models import Group, GroupMembership, PromotionRequest, GroupPinnedMessage
 from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content
 from .serializers import (
     GroupSerializer,
@@ -33,10 +33,6 @@ from .serializers import (
     FeedItemIdSerializer,
     GroupSettingsSerializer,
     GroupPinnedMessageOutSerializer,
-    GroupPollCreateSerializer,
-    GroupPollOutSerializer,
-    GroupPollVoteInSerializer,
-    CreatePollSerializer,
     PromotionRequestCreateSerializer,
     PromotionRequestOutSerializer,
 )
@@ -346,12 +342,10 @@ class GroupViewSet(viewsets.ModelViewSet):
             meta["text"] = (request.data.get("text") or "").strip()
 
         elif t == "poll":
-            question = (request.data.get("question") or "").strip()
-            options = request.data.get("options") or []
-            if not question or not isinstance(options, list) or len([o for o in options if str(o).strip()]) < 2:
-                return Response({"detail": "poll requires question and at least two options"}, status=400)
-            meta["question"] = question
-            meta["options"]  = [str(o).strip() for o in options if str(o).strip()]
+            return Response(
+                {"detail": "Create poll via /api/activity/feed/polls/create/ (not under groups)."},
+                status=400
+            )
 
         elif t == "event":
             title = (request.data.get("title") or "").strip()
@@ -974,236 +968,23 @@ class GroupViewSet(viewsets.ModelViewSet):
     def _load_group_item(self, group, identifier):
         """
         Return a FeedItem that belongs to this group.
-        Accepts:
-        - FeedItem.id (preferred), OR
-        - poll_id (fallback). If no FeedItem exists for that poll, create one.
-
-        Also: if the given id matches an existing FeedItem **in another group**,
-        we try treating it as a poll_id for this group before erroring.
+        identifier is a FeedItem id (int/str).
         """
-        FeedItem = self._get_feeditem_model()
-        if not FeedItem:
-            return None, "activity_feed.FeedItem not installed"
-
         try:
-            ident = int(identifier)
-        except Exception:
-            return None, "Invalid id"
+            fid = int(identifier)
+        except (TypeError, ValueError):
+            return None, "Invalid feed item id"
 
-        GroupPoll = apps.get_model("groups", "GroupPoll")
-        Message = self._get_message_model()
-
-        # -------- 1) Treat identifier as a FeedItem id --------
-        item = FeedItem.objects.filter(pk=ident).first()
-        if item: 
-            if getattr(item, "group_id", None) == group.id:
-                return item, None
-            ct_group = self._ct_id(Group)
-            if item.target_content_type_id == ct_group:
-                # feed item targets a Group
-                if int(item.target_object_id) == int(group.id):
-                    return item, None
-                # ⬇️ MISMATCH: try treating ident as a poll_id for this same group
-                try:
-                    poll = (
-                        GroupPoll.objects.select_related("group").prefetch_related("options")
-                        .get(pk=ident, group=group)
-                    )
-                except GroupPoll.DoesNotExist:
-                    return None, "Item does not belong to this group"
-                # resolve/create feed item for this poll
-                ct_poll = self._ct_id(GroupPoll)
-                linked = FeedItem.objects.filter(
-                    target_content_type_id=ct_poll, target_object_id=poll.id
-                ).first()
-                if linked:
-                    return linked, None
-                # build options with vote counts
-                counts = dict(
-                    GroupPollOption.objects.filter(poll=poll)
-                    .annotate(c=Count("votes"))
-                    .values_list("id", "c")
-                )
-                options = [{"id": o.id, "text": o.text, "votes": counts.get(o.id, 0)}
-                        for o in poll.options.all()]
-                metadata = {
-                    "type": "poll",
-                    "options": options,
-                    "poll_id": poll.id,
-                    "group_id": group.id,
-                    "question": poll.question,
-                    "is_closed": bool(getattr(poll, "is_closed", False)),
-                }
-                linked = FeedItem.objects.create(
-                    community=self._resolve_group_community(group),
-                    group=group,  
-                    event=None,
-                    actor=getattr(self.request, "user", None),
-                    verb="created_poll",
-                    target_content_type_id=ct_group,
-                    target_object_id=group.id,
-                    metadata=metadata,
-                )
-                return linked, None
-
-            # legacy: FeedItem targeted at GroupPoll
-            ct_poll = self._ct_id(GroupPoll)
-            if ct_poll and item.target_content_type_id == ct_poll:
-                poll = GroupPoll.objects.filter(pk=item.target_object_id).only("group_id").first()
-                if poll and int(poll.group_id) == int(group.id):
-                    return item, None
-                return None, "Item does not belong to this group"
-
-            # legacy: FeedItem targeted at Message
-            if Message:
-                ct_msg = self._ct_id(Message)
-                if ct_msg and item.target_content_type_id == ct_msg:
-                    msg = (
-                        Message.objects.filter(pk=item.target_object_id)
-                        .select_related("conversation").first()
-                    )
-                    if msg and self._ensure_message_in_group(msg, group):
-                        return item, None
-                    return None, "Item does not belong to this group"
-
-            # metadata group_id fallback
-            meta_gid = (item.metadata or {}).get("group_id")
-            if meta_gid is not None and int(meta_gid) == int(group.id):
-                return item, None
-
-            # Final try: treat ident as poll_id before giving up
-            try:
-                poll = (
-                    GroupPoll.objects.select_related("group").prefetch_related("options")
-                    .get(pk=ident, group=group)
-                )
-            except GroupPoll.DoesNotExist:
-                return None, "Item does not belong to this group"
-            # resolve/create feed item for this poll
-            ct_poll = self._ct_id(GroupPoll)
-            linked = FeedItem.objects.filter(
-                target_content_type_id=ct_poll, target_object_id=poll.id
-            ).first()
-            if linked:
-                return linked, None
-            counts = dict(
-                GroupPollOption.objects.filter(poll=poll)
-                .annotate(c=Count("votes"))
-                .values_list("id", "c")
-            )
-            options = [{"id": o.id, "text": o.text, "votes": counts.get(o.id, 0)}
-                    for o in poll.options.all()]
-            metadata = {
-                "type": "poll",
-                "options": options,
-                "poll_id": poll.id,
-                "group_id": group.id,
-                "question": poll.question,
-                "is_closed": bool(getattr(poll, "is_closed", False)),
-            }
-            linked = FeedItem.objects.create(
-                community=self._resolve_group_community(group),
-                group=group,  
-                event=None,
-                actor=getattr(self.request, "user", None),
-                verb="created_poll",
-                target_content_type_id=self._ct_id(Group),
-                target_object_id=group.id,
-                metadata=metadata,
-            )
-            return linked, None
-
-        # -------- 2) Fallback: identifier is a poll_id (new or existing) --------
-        try:
-            poll = (
-                GroupPoll.objects.select_related("group").prefetch_related("options")
-                .get(pk=ident, group=group)
-            )
-        except GroupPoll.DoesNotExist:
-            return None, "FeedItem not found"
-
-        # feed item already linked to this poll?
-        ct_poll = self._ct_id(GroupPoll)
-        linked = FeedItem.objects.filter(
-            target_content_type_id=ct_poll, target_object_id=poll.id
-        ).first()
-        if linked:
-            return linked, None
-
-        # create a new feed item for this poll with your exact metadata shape
-        counts = dict(
-            GroupPollOption.objects.filter(poll=poll)
-            .annotate(c=Count("votes"))
-            .values_list("id", "c")
-        )
-        options = [{"id": o.id, "text": o.text, "votes": counts.get(o.id, 0)}
-                for o in poll.options.all()]
-        metadata = {
-            "type": "poll",
-            "options": options,
-            "poll_id": poll.id,
-            "group_id": group.id,
-            "question": poll.question,
-            "is_closed": bool(getattr(poll, "is_closed", False)),
-        }
-        linked = FeedItem.objects.create(
-            community=self._resolve_group_community(group),
-            group=group,
-            event=None,
-            actor=getattr(self.request, "user", None),
-            verb="created_poll",
-            target_content_type_id=self._ct_id(Group),
-            target_object_id=group.id,
-            metadata=metadata,
-        )
-        return linked, None
-
-
-
-    # Use: Load a FeedItem for post or poll ensuring group ownership.
-    # Ordering: Not applicable (single item).
-    def _load_group_post(self, group, feed_item_id):
-        """
-        Load a FeedItem for post or poll. Accepts:
-        A) legacy posts:   target = Group(<group.id>), metadata.type == 'post'
-        B) polls:          target = GroupPoll(<poll.id>) whose group_id == group.id
-        Returns: (FeedItem | None, error_message | None)
-        """
-        FeedItem = self._get_feeditem_model()
-        if not FeedItem:
-            return None, "activity_feed.FeedItem not installed"
-
-        try:
-            item = FeedItem.objects.get(pk=feed_item_id)
-        except FeedItem.DoesNotExist:
-            return None, "FeedItem not found"
-
-        # A) legacy post shape (target is the Group)
-        ct_group = ContentType.objects.get_for_model(Group).id
-        if item.target_content_type_id == ct_group:
-            if item.target_object_id != group.id:
-                return None, "Item does not belong to this group"
-            meta = item.metadata if isinstance(item.metadata, dict) else {}
-            # tolerate missing type; accept 'post' or 'poll' (future-proof)
-            t = meta.get("type")
-            if t not in (None, "post", "poll"):
-                return None, "Item is not a post"
-            return item, None
-
-        # B) poll shape (target is GroupPoll)
-        GroupPoll = apps.get_model("groups", "GroupPoll")
-        if GroupPoll:
-            ct_poll = ContentType.objects.get_for_model(GroupPoll).id
-            if item.target_content_type_id == ct_poll:
-                try:
-                    poll = GroupPoll.objects.only("group_id").get(pk=item.target_object_id)
-                except GroupPoll.DoesNotExist:
-                    return None, "Target poll not found"
-                if poll.group_id != group.id:
-                    return None, "Item does not belong to this group"
-                return item, None
-
-        return None, "Item is not a post"
+        from activity_feed.models import FeedItem  # local import to avoid cycles
+        item = (FeedItem.objects
+                .select_related("group", "community", "actor")
+                .filter(id=fid)
+                .first())
+        if not item:
+            return None, "Feed item not found"
+        if item.group_id != group.id:
+            return None, "Item does not belong to this group"
+        return item, None
 
     # Use (Endpoint): GET /api/groups/explore-groups
     # - Public, top-level groups for discovery.
@@ -2037,215 +1818,6 @@ class GroupViewSet(viewsets.ModelViewSet):
             return Response(data)
         return Response(GroupPinnedMessageOutSerializer(qs.order_by("-pinned_at"), many=True).data)
     
-    # Use (Endpoint): GET/POST /api/groups/{id}/polls
-    # - GET: List polls with vote counts (Ordering: .order_by("-created_at") newest first)
-    # - POST: Create a poll; elevated roles only.
-    @action(detail=True, methods=["get", "post"], url_path="polls", parser_classes=[JSONParser])
-    def polls(self, request, pk=None):
-        group = self.get_object()
-
-        if group.parent_id:
-            uid = getattr(request.user, "id", None)
-            if not (
-                self._can_moderate_any(request, group) or
-                (uid and self._is_active_member(uid, group))
-            ):
-                return Response({"detail": "Only sub-group members can view its polls."}, status=403)
-            
-        if request.method.lower() == "get":
-            qs = (
-                GroupPoll.objects
-                .filter(group=group)
-                .annotate(total_votes=Count("votes"))
-                .order_by("-created_at")  # Ordering: newest polls first
-                .prefetch_related("options")
-            )
-            # vote counts per option
-            opt_counts = dict(
-                GroupPollOption.objects.filter(poll__group=group)
-                .annotate(c=Count("votes"))
-                .values_list("id", "c")
-            )
-            for poll in qs:
-                for opt in poll.options.all():
-                    setattr(opt, "vote_count", opt_counts.get(opt.id, 0))
-            return Response(GroupPollOutSerializer(qs, many=True, context={"request": request}).data)
-
-        # POST = create poll → owner/admin/mod/staff
-        if not self._can_moderate_any(request, group):
-            return Response({"detail": "Forbidden"}, status=403)
-
-        ser = GroupPollCreateSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        data = ser.validated_data
-
-        poll = GroupPoll.objects.create(
-            group=group,
-            question=data["question"].strip(),
-            allows_multiple=data.get("allows_multiple", False),
-            is_anonymous=data.get("is_anonymous", False),
-            ends_at=data.get("ends_at"),
-            created_by=request.user,
-        )
-        for idx, text in enumerate(data["options"]):
-            GroupPollOption.objects.create(poll=poll, text=text.strip(), index=idx)
-
-        # zero counts for fresh poll
-        poll.total_votes = 0
-        for opt in poll.options.all():
-            setattr(opt, "vote_count", 0)
-        return Response(GroupPollOutSerializer(poll, context={"request": request}).data, status=201)
-    
-    # Use (Endpoint): POST /api/groups/{id}/polls/{poll_id}/vote
-    # - Vote in a poll (active members or elevated roles).
-    # Ordering: Not applicable (single poll update).
-    @action(detail=True, methods=["post"], url_path=r"polls/(?P<poll_id>\d+)/vote", parser_classes=[JSONParser])
-    def poll_vote(self, request, pk=None, poll_id=None):
-        group = self.get_object()
-        try:
-            poll = GroupPoll.objects.get(pk=int(poll_id), group=group)
-        except (ValueError, GroupPoll.DoesNotExist):
-            return Response({"detail": "Poll not found"}, status=404)
-
-        # closed / expired?
-        if poll.is_closed or (poll.ends_at and timezone.now() > poll.ends_at):
-            return Response({"detail": "Poll is closed."}, status=400)
-
-        uid = getattr(request.user, "id", None)
-        if not uid:
-            return Response({"detail": "Authentication required."}, status=401)
-
-        # only ACTIVE members (or elevated roles) can vote
-        if not (
-            self._is_active_member(uid, group)
-            or self._is_admin(uid, group)
-            or self._is_moderator(uid, group)
-            or getattr(request.user, "is_staff", False)
-            or group.created_by_id == uid
-        ):
-            return Response({"detail": "Not allowed to vote."}, status=403)
-
-        vin = GroupPollVoteInSerializer(data=request.data)
-        vin.is_valid(raise_exception=True)
-        option_ids = set(vin.validated_data["option_ids"])
-
-        # ensure options belong to this poll
-        valid_ids = set(
-            GroupPollOption.objects.filter(poll=poll, id__in=option_ids).values_list("id", flat=True)
-        )
-        if not valid_ids:
-            return Response({"detail": "No valid options selected."}, status=400)
-
-        with transaction.atomic():
-            if not poll.allows_multiple:
-                GroupPollVote.objects.filter(poll=poll, user_id=uid).delete()
-                one = next(iter(valid_ids))
-                GroupPollVote.objects.create(poll=poll, option_id=one, user_id=uid)
-            else:
-                existing = set(
-                    GroupPollVote.objects.filter(poll=poll, user_id=uid, option_id__in=valid_ids)
-                    .values_list("option_id", flat=True)
-                )
-                to_add = valid_ids - existing
-                GroupPollVote.objects.bulk_create(
-                    [GroupPollVote(poll=poll, option_id=oid, user_id=uid) for oid in to_add]
-                )
-
-        # refreshed stats
-        poll = (
-            GroupPoll.objects.filter(pk=poll.id)
-            .annotate(total_votes=Count("votes"))
-            .prefetch_related("options")
-            .first()
-        )
-        counts = dict(
-            GroupPollOption.objects.filter(poll=poll).annotate(c=Count("votes")).values_list("id", "c")
-        )
-        for opt in poll.options.all():
-            setattr(opt, "vote_count", counts.get(opt.id, 0))
-        return Response(GroupPollOutSerializer(poll, context={"request": request}).data, status=200)
-
-    # Use (Endpoint): POST /api/groups/{id}/polls/{poll_id}/close
-    # - Close a poll (elevated roles).
-    # Ordering: Not applicable.
-    @action(detail=True, methods=["post"], url_path=r"polls/(?P<poll_id>\d+)/close")
-    def poll_close(self, request, pk=None, poll_id=None):
-        group = self.get_object()
-        if not self._can_moderate_any(request, group):
-            return Response({"detail": "Forbidden"}, status=403)
-        try:
-            poll = GroupPoll.objects.get(pk=int(poll_id), group=group)
-        except (ValueError, GroupPoll.DoesNotExist):
-            return Response({"detail": "Poll not found"}, status=404)
-        if poll.is_closed:
-            return Response({"ok": True, "closed": True})
-        poll.is_closed = True
-        poll.save(update_fields=["is_closed"])
-        return Response({"ok": True, "closed": True})
-
-    # Use (Endpoint): DELETE /api/groups/{id}/polls/{poll_id}
-    # - Delete a poll (elevated roles).
-    # Ordering: Not applicable.
-    @action(detail=True, methods=["delete"], url_path=r"polls/(?P<poll_id>\d+)")
-    def poll_delete(self, request, pk=None, poll_id=None):
-        group = self.get_object()
-        if not self._can_moderate_any(request, group):
-            return Response({"detail": "Forbidden"}, status=403)
-        try:
-            poll = GroupPoll.objects.get(pk=int(poll_id), group=group)
-        except (ValueError, GroupPoll.DoesNotExist):
-            return Response({"detail": "Poll not found"}, status=404)
-        poll.delete()
-        return Response(status=204)
-
-    # Use: Internal—create a poll FeedItem for this group (used by moderation_create_post).
-    # Ordering: Not applicable (single create).
-    def _create_poll_internal(self, request, group):
-        """
-        Create a poll FeedItem linked to this group and return poll payload.
-        Caller (e.g., moderation_create_post) already enforces permissions.
-        """
-        FeedItem = self._get_feeditem_model()
-        if not FeedItem:
-            return Response({"detail": "activity_feed.FeedItem not installed"}, status=409)
-
-        # Build & validate from incoming body (same keys the frontend sends to /posts/)
-        payload = {
-            "question": request.data.get("question"),
-            "options": request.data.get("options", []),
-            "multi_select": bool(request.data.get("multi_select", False)),
-            "closes_at": request.data.get("closes_at"),
-        }
-        ser = CreatePollSerializer(data=payload)
-        ser.is_valid(raise_exception=True)
-        data = ser.validated_data
-
-        ct = ContentType.objects.get_for_model(Group)
-        metadata = {
-            "type": "poll",
-            "question": data["question"].strip(),
-            "options": [
-                {"id": i, "text": opt.strip(), "votes": 0}
-                for i, opt in enumerate(data["options"])
-            ],
-            "multi_select": data.get("multi_select", False),
-            "closes_at": data["closes_at"].isoformat() if data.get("closes_at") else None,
-            "is_closed": False,
-            "group_id": group.id,
-        }
-
-        item = FeedItem.objects.create(
-            community=self._resolve_group_community(group),
-            group=group,
-            event=None,
-            actor=request.user,                       # matches your FeedItem usage
-            verb="created_poll",
-            target_content_type=ct,                   # link feed item to this group
-            target_object_id=group.id,
-            metadata=metadata,
-        )
-        # return a poll-shaped response
-        return Response({"ok": True, "feed_item_id": item.id, "poll": metadata}, status=201)
 
 
 class UsersLookupView(APIView):
@@ -2285,3 +1857,5 @@ class UsersLookupView(APIView):
                 avatar = avatar.url
             out.append({"id": u.pk, "name": name or None, "email": getattr(u, "email", None), "avatar": avatar})
         return Response(out)
+
+

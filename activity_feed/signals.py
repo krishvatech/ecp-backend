@@ -1,20 +1,24 @@
 # activity_feed/signals.py
+
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
 from django.db.models.signals import pre_save, post_save
 from django.dispatch import receiver
 
-from .models import FeedItem
+from .models import FeedItem, Poll
+
 
 @receiver(pre_save, sender=FeedItem)
 def feeditem_set_community_from_group(sender, instance: FeedItem, **kwargs):
-    # If already set, skip
+    """
+    If a FeedItem only has group info in metadata, infer and set community_id
+    before save. (Still useful for non-poll feed items.)
+    """
     if instance.community_id:
         return
 
     meta = instance.metadata or {}
-    # support either {"group_id": 5} or {"group": {"id": 5}}
     gid = meta.get("group_id") or (meta.get("group") or {}).get("id")
     if not gid:
         return
@@ -27,56 +31,60 @@ def feeditem_set_community_from_group(sender, instance: FeedItem, **kwargs):
         instance.community_id = community_id
 
 
-# ----- NEW: create a FeedItem when a GroupPoll is created -----
+def _create_feed_item_for_poll(poll: Poll):
+    """
+    Create a FeedItem when a new activity_feed.Poll is created.
+    Ensures options (and their vote counts) are present by running after commit.
+    """
+    ct = ContentType.objects.get_for_model(Poll)
 
-def _safe_poll_options_list(poll) -> list[str]:
-    """Return a list of option labels for the poll, best-effort without hard field assumptions."""
-    labels: list[str] = []
-    try:
-        opts_rel = getattr(poll, "options", None)
-        if not opts_rel:
-            return labels
-        qs = getattr(opts_rel, "all", lambda: [])()
-        # Preserve ordering if an 'index' field exists; otherwise just iterate.
-        try:
-            qs = qs.order_by("index")
-        except Exception:
-            pass
-        for o in qs:
-            label = getattr(o, "text", None) or getattr(o, "label", None) or str(o)
-            labels.append(label)
-    except Exception:
-        pass
-    return labels
-
-
-def _create_feed_item_for_poll(poll):
-    GroupPoll = poll.__class__
-    ct = ContentType.objects.get_for_model(GroupPoll)
-
-    # Prefer typical creator fields; fall back gracefully
+    # Resolve actor
     actor_id = (
         getattr(poll, "created_by_id", None)
         or getattr(poll, "owner_id", None)
         or getattr(poll, "author_id", None)
     )
 
+    # Resolve community (prefer explicit poll.community; else inherit from group)
+    community = getattr(poll, "community", None)
+    if not community and getattr(poll, "group_id", None):
+        try:
+            community = poll.group.community
+        except Exception:
+            community = None
+
+    # Options (ordered if index exists) with vote counts
+    try:
+        opts_qs = poll.options.order_by("index")
+    except Exception:
+        opts_qs = poll.options.all()
+
+    options = [
+        {
+            "id": o.id,
+            "text": getattr(o, "text", None) or getattr(o, "label", None) or str(o),
+            "vote_count": getattr(o, "votes", None).count() if hasattr(o, "votes") else 0,
+            "index": getattr(o, "index", None),
+        }
+        for o in opts_qs
+    ]
+
     metadata = {
         "type": "poll",
-        "group_id": getattr(poll, "group_id", None),
         "poll_id": poll.id,
         "question": getattr(poll, "question", None),
-        "options": [
-            {
-                "id": o.id,
-                "text": getattr(o, "text", None) or getattr(o, "label", None) or str(o),
-                "vote_count": getattr(o, "votes", None).count() if hasattr(o, "votes") else 0,
-            }
-            for o in getattr(poll, "options").order_by("index")
-        ],
+        "options": options,
         "is_closed": bool(getattr(poll, "is_closed", False)),
+        "group_id": getattr(poll, "group_id", None),
+        "community_id": getattr(poll, "community_id", None) or (getattr(community, "id", None)),
+        "allows_multiple": bool(getattr(poll, "allows_multiple", False)),
+        "is_anonymous": bool(getattr(poll, "is_anonymous", False)),
+        "ends_at": getattr(poll, "ends_at", None),
     }
+
     FeedItem.objects.create(
+        community_id=getattr(community, "id", None),
+        group_id=getattr(poll, "group_id", None),
         actor_id=actor_id,
         verb="created_poll",
         target_content_type=ct,
@@ -85,25 +93,12 @@ def _create_feed_item_for_poll(poll):
     )
 
 
-def _group_poll_post_save(sender, instance, created, **kwargs):
+@receiver(post_save, sender=Poll)
+def poll_post_save(sender, instance: Poll, created, **kwargs):
+    """
+    When a new activity_feed.Poll is created, drop a FeedItem after the DB
+    transaction commits so options exist by the time we serialize.
+    """
     if not created:
         return
-    # Run after the transaction commits (so related options are in DB)
     transaction.on_commit(lambda: _create_feed_item_for_poll(instance))
-
-
-def _connect_group_poll_signal():
-    # Attach the post_save handler dynamically so we don’t need a direct import
-    try:
-        GroupPoll = apps.get_model("groups", "GroupPoll")
-    except Exception:
-        return
-    post_save.connect(
-        _group_poll_post_save,
-        sender=GroupPoll,
-        dispatch_uid="activity_feed.group_poll_post_save",
-    )
-
-
-# Connect on import (apps are ready because ActivityFeedConfig.ready() imports this module)
-_connect_group_poll_signal()

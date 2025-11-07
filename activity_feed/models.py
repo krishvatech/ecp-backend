@@ -69,3 +69,60 @@ class FeedItem(models.Model):
 
     def __str__(self) -> str:
         return f"{self.verb} by {self.actor_id} on {self.created_at.isoformat()}"
+    
+class Poll(models.Model):
+    community = models.ForeignKey(
+        Community, on_delete=models.CASCADE, related_name="polls", null=True, blank=True
+    )
+    group = models.ForeignKey(
+        Group, on_delete=models.CASCADE, related_name="polls", null=True, blank=True
+    )
+    question = models.CharField(max_length=500)
+    allows_multiple = models.BooleanField(default=False)
+    is_anonymous = models.BooleanField(default=False)
+    is_closed = models.BooleanField(default=False)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="polls_created"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["community", "is_closed", "created_at"]),
+            models.Index(fields=["group", "is_closed", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"Poll[{self.id}] {self.question[:40]}"
+
+
+class PollOption(models.Model):
+    poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name="options")
+    text = models.CharField(max_length=300)
+    index = models.IntegerField(default=0)
+
+    class Meta:
+        unique_together = ("poll", "index")
+        indexes = [models.Index(fields=["poll", "index"])]
+
+    def __str__(self):
+        return f"PollOption[{self.poll_id}#{self.index}] {self.text[:30]}"
+
+
+class PollVote(models.Model):
+    poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name="votes")
+    option = models.ForeignKey(PollOption, on_delete=models.CASCADE, related_name="votes")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="poll_votes")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("poll", "user", "option")
+        indexes = [
+            models.Index(fields=["poll", "user"]),
+            models.Index(fields=["option"]),
+        ]
+
+    def __str__(self):
+        return f"Vote[poll={self.poll_id}, user={self.user_id}, option={self.option_id}]"

@@ -97,20 +97,21 @@ class FeedItemSerializer(serializers.ModelSerializer):
         # ---- ensure polls include ids + counts (and poll_id/group_id) ----
         try:
             if (m.get("type") or "").lower() == "poll":
-                GroupPoll = apps.get_model("groups", "GroupPoll")
-                GroupPollOption = apps.get_model("groups", "GroupPollOption")
-                ct_poll = ContentType.objects.get_for_model(GroupPoll)
+                Poll = apps.get_model("activity_feed", "Poll")
+                PollOption = apps.get_model("activity_feed", "PollOption")
+                ct_poll = ContentType.objects.get_for_model(Poll)
 
                 poll = None
                 if instance.target_content_type_id == ct_poll.id:
-                    poll = GroupPoll.objects.get(pk=instance.target_object_id)
+                    poll = Poll.objects.get(pk=instance.target_object_id)
                 elif m.get("poll_id"):
-                    poll = GroupPoll.objects.get(pk=m["poll_id"])
+                    poll = Poll.objects.get(pk=m["poll_id"])
 
                 if poll:
-                    m.setdefault("poll_id",  poll.id)
+                    m.setdefault("poll_id", poll.id)
                     m.setdefault("group_id", getattr(poll, "group_id", None))
-                    # options as objects with ids + vote counts
+                    m.setdefault("community_id", getattr(poll, "community_id", None))
+
                     try:
                         opts_qs = poll.options.order_by("index")
                     except Exception:
@@ -123,15 +124,14 @@ class FeedItemSerializer(serializers.ModelSerializer):
                         }
                         for o in opts_qs
                     ]
-                    # is_closed if you have such a field
                     m["is_closed"] = bool(getattr(poll, "is_closed", False))
 
-                    # which options THIS user has voted for (nice UX for disabling buttons)
                     req = self.context.get("request") if self.context else None
                     if req and getattr(req, "user", None) and req.user.is_authenticated:
                         m["user_votes"] = list(
                             poll.votes.filter(user_id=req.user.id).values_list("option_id", flat=True)
                         )
+
         except Exception:
             # never break the feed on metadata enrichment
             pass
