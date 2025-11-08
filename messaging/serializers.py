@@ -90,7 +90,12 @@ class ConversationSerializer(serializers.ModelSerializer):
             url = str(v) if v else ""
         # build absolute URL when possible
         req = self.context.get("request")
-        if req and url and url.startswith("/"):
+        if not url:
+            return ""
+        # normalize common relative paths coming from File/ImageFields
+        if url.startswith("media/") or url.startswith("static/") or url.startswith("uploads/"):
+            url = "/" + url
+        if req and url.startswith("/"):
             return req.build_absolute_uri(url)
         return url
 
@@ -120,7 +125,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         if not e:
             return ""
         # Try common field names safely
-        for name in ("banner_url", "cover_image", "poster", "thumbnail", "banner", "cover", "header_image", "hero_image"):
+        for name in ("banner_url", "cover_image", "poster", "thumbnail", "banner", "cover", "header_image", "hero_image", "preview_image"):
             if hasattr(e, name):
                 val = getattr(e, name)
                 if isinstance(val, str):
@@ -152,6 +157,11 @@ class ConversationSerializer(serializers.ModelSerializer):
                         url = self._urlish(val)
                         if url:
                             return url
+                # no logo — fall back to cover
+                cover = self.get_group_cover(obj)
+                if cover:
+                    return cover
+                
         if obj.is_event_group:
             e = getattr(obj, "event", None)
             if e:
@@ -163,6 +173,10 @@ class ConversationSerializer(serializers.ModelSerializer):
                         url = self._urlish(val)
                         if url:
                             return url
+                # no logo — fall back to cover (supports preview_image)
+                cover = self.get_event_cover(obj)
+                if cover:
+                    return cover
         return ""
 
 
