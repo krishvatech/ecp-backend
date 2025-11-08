@@ -52,6 +52,7 @@ def _ct_from_param(value: str) -> ContentType:
     app_label, model = value.split(".", 1)
     return ContentType.objects.get(app_label=app_label.lower(), model=model.lower())
 
+
 class EngagementMetricsView(APIView):
     """
     GET /api/engagements/metrics/?ids=1,2,3[&target_type=app.Model|comment|<ct_id>]
@@ -60,15 +61,10 @@ class EngagementMetricsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        ids_raw = request.query_params.get("ids", "")
-        if not ids_raw:
-            return Response({"detail": "Provide comma separated ids param"}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            ids = [int(x) for x in ids_raw.split(",") if x.strip()]
-        except ValueError:
-            return Response({"detail": "ids must be integers"}, status=status.HTTP_400_BAD_REQUEST)
-
+        ids_raw = request.query_params.get("ids", "") or ""
+        ids = [int(x) for x in ids_raw.split(",") if x.strip().isdigit()]
+        if not ids:
+            return Response({}, status=status.HTTP_200_OK)
         # default content type = FeedItem, but allow overriding
         ct = _ct_from_param_or_feeditem_default(request.query_params.get("target_type"))
 
@@ -171,13 +167,17 @@ class CommentViewSet(viewsets.ModelViewSet):
             else:
                 app_label, model = ttype.split(".", 1)
                 ct = ContentType.objects.get(app_label=app_label.lower(), model=model.lower())
-            return qs.filter(content_type=ct, object_id=tid, parent__isnull=True)
+            if not str(tid).isdigit():
+                return qs.none()
+            return qs.filter(content_type=ct, object_id=int(tid), parent__isnull=True)
 
         # Default to FeedItem when only an id is supplied
         if tid or feed_item:
             ct = ContentType.objects.get_for_model(FeedItem)
             oid = tid or feed_item
-            return qs.filter(content_type=ct, object_id=oid, parent__isnull=True)
+            if not str(oid).isdigit(): 
+                return qs.none()
+            return qs.filter(content_type=ct, object_id=int(oid), parent__isnull=True)
 
         # For plain list without filters, you can choose:
         # return qs            # (show all)
@@ -240,7 +240,7 @@ class ReactionViewSet(viewsets.GenericViewSet):
             return Response({"status": "unliked"}, status=status.HTTP_200_OK)
         return Response({"status": "liked"}, status=status.HTTP_201_CREATED)
     
-    @action(detail=False, methods=['get'], url_path='reactions/counts')
+    @action(detail=False, methods=['get'], url_path='counts', permission_classes=[IsAuthenticated])
     def counts(self, request):
         target_type = (request.query_params.get("target_type") or "post").lower()
         raw_ids = (request.query_params.get("ids") or "").replace(" ", "")
@@ -260,10 +260,11 @@ class ReactionViewSet(viewsets.GenericViewSet):
 
         ct = ContentType.objects.get_for_model(Model)
 
+        # ✅ use your real field name + constant
         base = Reaction.objects.filter(
             content_type=ct,
             object_id__in=ids,
-            kind="like",
+            reaction=Reaction.LIKE,
         )
 
         # aggregate like counts
@@ -271,14 +272,11 @@ class ReactionViewSet(viewsets.GenericViewSet):
         out = {str(r["object_id"]): {"like_count": r["n"], "user_has_liked": False} for r in rows}
 
         # mark which of these the current user has liked
-        if request.user.is_authenticated:
-            mine = set(
-                base.filter(user=request.user).values_list("object_id", flat=True)
-            )
-            for oid in mine:
-                key = str(oid)
-                out.setdefault(key, {"like_count": 0, "user_has_liked": False})
-                out[key]["user_has_liked"] = True
+        mine = set(base.filter(user=request.user).values_list("object_id", flat=True))
+        for oid in mine:
+            key = str(oid)
+            out.setdefault(key, {"like_count": 0, "user_has_liked": False})
+            out[key]["user_has_liked"] = True
 
         return Response({"results": out}, status=200)
 
