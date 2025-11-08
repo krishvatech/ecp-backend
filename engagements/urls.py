@@ -1,12 +1,13 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import CommentViewSet, ReactionViewSet, ShareViewSet
+from .views import CommentViewSet, ReactionViewSet, ShareViewSet, EngagementMetricsView
 
 router = DefaultRouter()
-router.register(r"comments", CommentViewSet, basename="engagement-comments")
-router.register(r"reactions", ReactionViewSet, basename="engagement-reactions")
-router.register(r"shares", ShareViewSet, basename="engagement-shares")
+router.register(r'comments', CommentViewSet, basename='comment')
+router.register(r'reactions', ReactionViewSet, basename='reaction')
+router.register(r'shares', ShareViewSet, basename='share')
 
 urlpatterns = [
-    path("", include(router.urls)),
+    path('metrics/', EngagementMetricsView.as_view(), name='engagements-metrics'),
+    path('', include(router.urls)),
 ]

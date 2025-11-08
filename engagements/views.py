@@ -5,6 +5,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from typing import Optional
 from rest_framework.exceptions import ValidationError
+from django.db.models import Count
+from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 
 
@@ -49,6 +51,90 @@ def _ct_from_param(value: str) -> ContentType:
         return ContentType.objects.get(id=int(value))
     app_label, model = value.split(".", 1)
     return ContentType.objects.get(app_label=app_label.lower(), model=model.lower())
+
+class EngagementMetricsView(APIView):
+    """
+    GET /api/engagements/metrics/?ids=1,2,3[&target_type=app.Model|comment|<ct_id>]
+    Returns per-target like/comment/share counts and whether the current user liked.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        ids_raw = request.query_params.get("ids", "")
+        if not ids_raw:
+            return Response({"detail": "Provide comma separated ids param"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            ids = [int(x) for x in ids_raw.split(",") if x.strip()]
+        except ValueError:
+            return Response({"detail": "ids must be integers"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # default content type = FeedItem, but allow overriding
+        ct = _ct_from_param_or_feeditem_default(request.query_params.get("target_type"))
+
+        # Likes (only 'like' reaction)
+        like_qs = (
+            Reaction.objects
+            .filter(content_type=ct, object_id__in=ids, reaction=Reaction.LIKE)
+            .values("object_id")
+            .annotate(n=Count("id"))
+        )
+
+        # Root-level comments (replies are counted inside the dialog)
+        comment_qs = (
+            Comment.objects
+            .filter(content_type=ct, object_id__in=ids, parent__isnull=True)
+            .values("object_id")
+            .annotate(n=Count("id"))
+        )
+
+        # Shares
+        share_qs = (
+            Share.objects
+            .filter(content_type=ct, object_id__in=ids)
+            .values("object_id")
+            .annotate(n=Count("id"))
+        )
+
+        # Has the current user liked?
+        liked_by_me = set(
+            Reaction.objects
+            .filter(content_type=ct, object_id__in=ids, user=request.user, reaction=Reaction.LIKE)
+            .values_list("object_id", flat=True)
+        )
+
+        # Build result for every requested id
+        out = {}
+        for i in ids:
+            out[i] = {
+                # keys your FE already reads
+                "likes": 0,
+                "comments": 0,
+                "shares": 0,
+                "me_liked": (i in liked_by_me),
+                # duplicate keys for compatibility with other code paths
+                "like_count": 0,
+                "comment_count": 0,
+                "share_count": 0,
+                "user_has_liked": (i in liked_by_me),
+            }
+
+        for row in like_qs:
+            o = out.get(row["object_id"])
+            if o:
+                o["likes"] = o["like_count"] = row["n"]
+
+        for row in comment_qs:
+            o = out.get(row["object_id"])
+            if o:
+                o["comments"] = o["comment_count"] = row["n"]
+
+        for row in share_qs:
+            o = out.get(row["object_id"])
+            if o:
+                o["shares"] = o["share_count"] = row["n"]
+
+        return Response(out, status=status.HTTP_200_OK)
 
 # ---------- Comments ----------
 class CommentViewSet(viewsets.ModelViewSet):
@@ -153,6 +239,48 @@ class ReactionViewSet(viewsets.GenericViewSet):
             obj.delete()
             return Response({"status": "unliked"}, status=status.HTTP_200_OK)
         return Response({"status": "liked"}, status=status.HTTP_201_CREATED)
+    
+    @action(detail=False, methods=['get'], url_path='reactions/counts')
+    def counts(self, request):
+        target_type = (request.query_params.get("target_type") or "post").lower()
+        raw_ids = (request.query_params.get("ids") or "").replace(" ", "")
+        ids = [int(x) for x in raw_ids.split(",") if x.isdigit()]
+        if not ids:
+            return Response({"results": {}}, status=200)
+
+        model_map = {
+            "comment": Comment,
+            "post": FeedItem,
+            "feed": FeedItem,
+            "feeditem": FeedItem,
+        }
+        Model = model_map.get(target_type)
+        if not Model:
+            return Response({"detail": "unsupported target_type"}, status=400)
+
+        ct = ContentType.objects.get_for_model(Model)
+
+        base = Reaction.objects.filter(
+            content_type=ct,
+            object_id__in=ids,
+            kind="like",
+        )
+
+        # aggregate like counts
+        rows = base.values("object_id").annotate(n=Count("id"))
+        out = {str(r["object_id"]): {"like_count": r["n"], "user_has_liked": False} for r in rows}
+
+        # mark which of these the current user has liked
+        if request.user.is_authenticated:
+            mine = set(
+                base.filter(user=request.user).values_list("object_id", flat=True)
+            )
+            for oid in mine:
+                key = str(oid)
+                out.setdefault(key, {"like_count": 0, "user_has_liked": False})
+                out[key]["user_has_liked"] = True
+
+        return Response({"results": out}, status=200)
 
     @extend_schema(
         parameters=[

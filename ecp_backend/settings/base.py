@@ -123,7 +123,8 @@ ROOT_URLCONF = "ecp_backend.urls"
 ASGI_APPLICATION = "ecp_backend.asgi.application"
 WSGI_APPLICATION = None  # Channels-based; no WSGI application needed
 
-# Database configuration: default to PostgreSQL
+_DB_CONN_MAX_AGE = 0 if DEBUG else int(os.getenv("DB_CONN_MAX_AGE", "300"))
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -132,7 +133,9 @@ DATABASES = {
         "PASSWORD": os.getenv("POSTGRES_PASSWORD", "ecp_password"),
         "HOST": os.getenv("POSTGRES_HOST", "localhost"),
         "PORT": os.getenv("POSTGRES_PORT", "5432"),
-        "CONN_MAX_AGE": 60,
+        "CONN_MAX_AGE": _DB_CONN_MAX_AGE,
+        "CONN_HEALTH_CHECKS": True,           # validates stale pooled conns
+        "OPTIONS": {"connect_timeout": 5},    # fail fast instead of hanging
     }
 }
 
