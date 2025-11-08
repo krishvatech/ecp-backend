@@ -1,0 +1,246 @@
+from django.contrib.contenttypes.models import ContentType
+from rest_framework import viewsets, status, mixins
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from typing import Optional
+from rest_framework.exceptions import ValidationError
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
+
+
+from activity_feed.models import FeedItem
+
+from .models import Comment, Reaction, Share
+from .serializers import (
+    CommentSerializer,
+    ReactionToggleSerializer,
+    ReactionUserSerializer,
+    ShareReadSerializer,
+    ShareWriteSerializer
+)
+
+def _ct_for_feed_item() -> ContentType:
+    # hard-wired to your real model without using settings
+    return ContentType.objects.get_for_model(FeedItem)
+
+def _ct_from_param_or_feeditem_default(value: Optional[str]) -> ContentType:
+    """
+    If value provided -> parse ('comment', numeric CT id, or 'app.Model').
+    Otherwise -> default to FeedItem.
+    """
+    if value:
+        v = value.strip()
+        if v.lower() == "comment":
+            return ContentType.objects.get_for_model(Comment)
+        if v.isdigit():
+            return ContentType.objects.get(id=int(v))
+        if "." in v:
+            app_label, model = v.split(".", 1)
+            return ContentType.objects.get(app_label=app_label.lower(), model=model.lower())
+        raise ValidationError({"target_type": ["Invalid format. Use 'comment', numeric id, or 'app.Model'."]})
+    # no value => default to FeedItem
+    return _ct_for_feed_item()
+
+def _ct_from_param(value: str) -> ContentType:
+    # accept 'comment' or 'app_label.ModelName' or numeric CT id
+    if value.lower() == "comment":
+        return ContentType.objects.get_for_model(Comment)
+    if value.isdigit():
+        return ContentType.objects.get(id=int(value))
+    app_label, model = value.split(".", 1)
+    return ContentType.objects.get(app_label=app_label.lower(), model=model.lower())
+
+# ---------- Comments ----------
+class CommentViewSet(viewsets.ModelViewSet):
+    """
+    List top-level comments for a target:
+      GET /api/engagements/comments/?target_type=app.Model&target_id=123
+    List replies for a parent:
+      GET /api/engagements/comments/?parent=<comment_id>
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = CommentSerializer
+    queryset = Comment.objects.select_related("user").all()
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+
+        # For detail routes, do NOT narrow the queryset
+        if getattr(self, "action", None) in ("retrieve", "update", "partial_update", "destroy"):
+            return qs
+
+        parent = self.request.query_params.get("parent")
+        ttype = self.request.query_params.get("target_type")
+        tid = self.request.query_params.get("target_id")
+        feed_item = self.request.query_params.get("feed_item")
+
+        if parent:
+            return qs.filter(parent_id=parent)
+
+        if ttype and tid:
+            if ttype.lower() == "comment":
+                ct = ContentType.objects.get_for_model(Comment)
+            elif ttype.isdigit():
+                ct = ContentType.objects.get(id=int(ttype))
+            else:
+                app_label, model = ttype.split(".", 1)
+                ct = ContentType.objects.get(app_label=app_label.lower(), model=model.lower())
+            return qs.filter(content_type=ct, object_id=tid, parent__isnull=True)
+
+        # Default to FeedItem when only an id is supplied
+        if tid or feed_item:
+            ct = ContentType.objects.get_for_model(FeedItem)
+            oid = tid or feed_item
+            return qs.filter(content_type=ct, object_id=oid, parent__isnull=True)
+
+        # For plain list without filters, you can choose:
+        # return qs            # (show all)
+        return qs.none()        # (keep strict; list requires a filter)
+
+    def perform_create(self, serializer):
+        serializer.save()
+
+    @action(methods=["get"], detail=True, url_path="replies")
+    def replies(self, request, pk=None):
+        qs = Comment.objects.select_related("user").filter(parent_id=pk)
+        page = self.paginate_queryset(qs)
+        ser = self.get_serializer(page or qs, many=True)
+        if page is not None:
+            return self.get_paginated_response(ser.data)
+        return Response(ser.data)
+
+# ---------- Reactions ----------
+class ReactionViewSet(viewsets.GenericViewSet):
+    """
+    Toggle like on any target:
+      POST /api/engagements/reactions/toggle/
+      { "target_type": "app.Model" | "comment", "target_id": 123, "reaction": "like" }
+
+    Who liked a target:
+      GET /api/engagements/reactions/who-liked/?target_type=app.Model&target_id=123
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = ReactionToggleSerializer
+    queryset = Reaction.objects.none()
+
+    @action(methods=["post"], detail=False, url_path="toggle")
+    def toggle(self, request):
+        data = request.data.copy()
+
+        # Allow aliases so you never need target_type:
+        # { "feed_item": 144 } -> defaults to FeedItem
+        if "feed_item" in data and "target_id" not in data:
+            data["target_id"] = data["feed_item"]
+
+        # { "comment_id": 45 } -> force comment type
+        if "comment_id" in data and "target_id" not in data:
+            data["target_id"] = data["comment_id"]
+            data["target_type"] = "comment"
+
+        ser = self.get_serializer(data=data)
+        ser.is_valid(raise_exception=True)
+
+        target_type = ser.validated_data.get("target_type")  # can be None/blank
+        target_id = ser.validated_data["target_id"]
+        reaction = ser.validated_data["reaction"]
+
+        ct = _ct_from_param_or_feeditem_default(target_type)
+
+        obj, created = Reaction.objects.get_or_create(
+            user=request.user, reaction=reaction, content_type=ct, object_id=target_id
+        )
+        if not created:
+            obj.delete()
+            return Response({"status": "unliked"}, status=status.HTTP_200_OK)
+        return Response({"status": "liked"}, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(name="target_id", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY,
+                             required=False, description="FeedItem id (default type)"),
+            OpenApiParameter(name="feed_item", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY,
+                             required=False, description="Alias for target_id (FeedItem)"),
+            OpenApiParameter(name="comment_id", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY,
+                             required=False, description="Comment id (forces comment type)"),
+            OpenApiParameter(name="target_type", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY,
+                             required=False, description="Optional explicit type: 'comment', numeric CT id, or 'app.Model'"),
+        ]
+    )
+    @action(methods=["get"], detail=False, url_path="who-liked")
+    def who_liked(self, request):
+        target_type = request.query_params.get("target_type")
+        target_id = request.query_params.get("target_id")
+        feed_item = request.query_params.get("feed_item")
+        comment_id = request.query_params.get("comment_id")
+
+        # Aliases
+        if comment_id and not target_type:
+            target_type = "comment"
+            target_id = comment_id
+        if feed_item and not target_id:
+            target_id = feed_item
+
+        if not target_id:
+            return Response(
+                {"detail": "Provide target_id or feed_item or comment_id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Use your existing helper that defaults to FeedItem when target_type missing
+        ct = _ct_from_param_or_feeditem_default(target_type)
+
+        qs = Reaction.objects.select_related("user").filter(content_type=ct, object_id=target_id)
+        page = self.paginate_queryset(qs)
+        ser = ReactionUserSerializer(page or qs, many=True)
+        if page is not None:
+            return self.get_paginated_response(ser.data)
+        return Response(ser.data)
+
+# ---------- Shares ----------
+class ShareViewSet(mixins.CreateModelMixin,
+                   mixins.DestroyModelMixin,
+                   mixins.ListModelMixin,
+                   viewsets.GenericViewSet):
+    queryset = Share.objects.select_related("user").all()
+
+    # --- CREATE (bulk) ---
+    def get_serializer_class(self):
+        if self.action == "create":
+            return ShareWriteSerializer
+        return ShareReadSerializer
+
+    def create(self, request, *args, **kwargs):
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        rows = ser.save()  # returns List[Share]
+        out = ShareReadSerializer(rows, many=True, context={"request": request})
+        return Response(out.data, status=status.HTTP_201_CREATED)
+
+    # --- LIST filters ---
+    def get_queryset(self):
+        qs = super().get_queryset()
+
+        # which object is shared
+        ttype = self.request.query_params.get("target_type")
+        tid = self.request.query_params.get("target_id")
+        feed_item = self.request.query_params.get("feed_item")
+        if ttype or tid or feed_item:
+            ct = _ct_from_param_or_feeditem_default(ttype)
+            oid = tid or feed_item
+            if oid:
+                qs = qs.filter(content_type=ct, object_id=oid)
+
+        # recipients filter (optional)
+        user_id = self.request.query_params.get("user_id")  # recipient user
+        if user_id:
+            qs = qs.filter(to_user_id=user_id)
+        group_id = self.request.query_params.get("group_id")  # recipient group
+        if group_id:
+            qs = qs.filter(to_group_id=group_id)
+
+        # "mine" filter (shares I created)
+        mine = self.request.query_params.get("mine")
+        if mine is not None and str(mine).lower() in ("1", "true", "yes"):
+            qs = qs.filter(user=self.request.user)
+
+        return qs

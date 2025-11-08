@@ -63,6 +63,7 @@ urlpatterns = [
     
     path("api/content/", include("content.urls")),
     path("api/activity/", include("activity_feed.urls")),
+    path("api/engagements/", include("engagements.urls")),
     
     path("api/auth/linkedin/url/", LinkedInAuthURL.as_view(), name="linkedin_auth_url"),
     path("api/auth/linkedin/callback/", LinkedInCallback.as_view(), name="linkedin_callback"),
