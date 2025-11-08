@@ -10,17 +10,20 @@ This version supports:
 from __future__ import annotations
 from django.db import models
 from django.contrib.auth import get_user_model
-from django.db.models import Q
+from django.db.models import Q, Prefetch
 from rest_framework import viewsets, mixins, status, permissions
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError, PermissionDenied
 from rest_framework.generics import GenericAPIView
 
-from .models import Conversation, Message
+from .models import Conversation, Message, MessageReadReceipt
 from .serializers import ConversationSerializer, MessageSerializer
 from .permissions import IsConversationParticipant
 from django.shortcuts import get_object_or_404
+from rest_framework.permissions import IsAuthenticated
+from django.utils import timezone 
+from events.models import Event, EventRegistration
 
 User = get_user_model()
 
@@ -469,8 +472,73 @@ class ConversationViewSet(viewsets.ViewSet):
                     if m: members.insert(0, m)
 
         return Response(members, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=["post"], url_path="mark-all-read")
+    def mark_all_read(self, request, pk=None):
+        try:
+            conv = Conversation.objects.get(pk=pk)
+        except Conversation.DoesNotExist:
+            raise NotFound("Conversation not found.")
 
+        user = request.user
+        if not conv.user_can_view(user):
+            raise PermissionDenied("You are not a participant of this conversation.")
 
+        # unread = messages not mine and without my receipt
+        qs = (
+            Message.objects
+            .filter(conversation=conv, is_hidden=False, is_deleted=False)
+            .exclude(sender_id=user.id)
+            .exclude(read_receipts__user_id=user.id)
+            .only("id")
+        )
+
+        to_create = [
+            MessageReadReceipt(message_id=m.id, user_id=user.id, read_at=timezone.now())
+            for m in qs
+        ]
+        MessageReadReceipt.objects.bulk_create(to_create, ignore_conflicts=True)
+
+        return Response({"ok": True, "marked": len(to_create)}, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=["get"], url_path="chat-events")
+    def chat_events(self, request):
+        """
+        Return events the current user is associated with (created or registered).
+        Kept simple to match MessagesPage.jsx.normalizeEvents().
+        """
+        user = request.user
+        out = []
+
+        # registrations (cap to 200)
+        regs = (EventRegistration.objects
+                .select_related("event")
+                .filter(user_id=user.id)
+                .order_by("-registered_at")[:200])
+        for r in regs:
+            ev = r.event
+            out.append({
+                "id": ev.id,
+                "title": getattr(ev, "title", "") or getattr(ev, "name", "") or f"Event #{ev.id}",
+                "cover_image": getattr(ev, "cover_image", "") or getattr(ev, "banner", "") or "",
+                "event": {"id": ev.id, "title": getattr(ev, "title", "") or getattr(ev, "name", "")},
+            })
+
+        # events created by me (if not already present)
+        mine = Event.objects.filter(created_by_id=user.id)[:200]
+        seen = {x["id"] for x in out}
+        for ev in mine:
+            if ev.id in seen:
+                continue
+            out.append({
+                "id": ev.id,
+                "title": getattr(ev, "title", "") or getattr(ev, "name", "") or f"Event #{ev.id}",
+                "cover_image": getattr(ev, "cover_image", "") or getattr(ev, "banner", "") or "",
+                "event": {"id": ev.id, "title": getattr(ev, "title", "") or getattr(ev, "name", "")},
+            })
+
+        return Response(out, status=status.HTTP_200_OK)
+    
 # messaging/views.py
 
 class MessageViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.GenericViewSet):
@@ -492,14 +560,20 @@ class MessageViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.Ge
             raise ValidationError({"conversation": "Invalid conversation id."})
 
     def get_queryset(self):
-        conv_id = self._get_conversation_id()
+        conv_id = self._get_conversation_id()  # robust across routers
+        my_receipts = Prefetch(
+            "read_receipts",
+            queryset=MessageReadReceipt.objects.filter(user_id=self.request.user.id),
+            to_attr="my_receipts",   # <- avoid name clash
+        )
         return (
             Message.objects
             .filter(conversation_id=conv_id, is_hidden=False, is_deleted=False)
             .select_related("sender__profile")
+            .prefetch_related(my_receipts)
             .order_by("created_at")
         )
-
+    
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset()
         ser = MessageSerializer(qs, many=True, context={"request": request})
@@ -520,31 +594,27 @@ class MessageViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.Ge
 
 
 class MarkMessageReadView(GenericAPIView):
-    """
-    Endpoint to mark a message as read. Only the recipient can mark a
-    message as read for DMs; for group rooms, any authenticated user
-    can mark (global flag).
-    """
-
+    permission_classes = [IsAuthenticated, IsConversationParticipant]
     serializer_class = MessageSerializer
-    permission_classes = [permissions.IsAuthenticated, IsConversationParticipant]
 
     def post(self, request, pk):
         try:
             msg = Message.objects.select_related("conversation").get(pk=pk)
         except Message.DoesNotExist:
             raise NotFound("Message not found.")
-        user = request.user
-        conv = msg.conversation
-        # DM restriction
-        if (conv.group_id is None and conv.event_id is None) and user.id not in (conv.user1_id, conv.user2_id):
-            raise PermissionDenied("You are not a participant of this conversation.")
-        # cannot mark your own message
-        if msg.sender_id == user.id:
-            raise PermissionDenied("You cannot mark your own message as read.")
 
-        if not msg.is_read:
-            msg.is_read = True
-            msg.save(update_fields=["is_read"])
-        serializer = MessageSerializer(msg)
-        return Response(serializer.data)
+        conv = msg.conversation
+        user = request.user
+
+        # restrict to conversation's participants
+        if not conv.user_can_view(user):
+            raise PermissionDenied("You are not a participant of this conversation.")
+
+        # don't read your own outbound message
+        if msg.sender_id == user.id:
+            return Response({"ok": True, "skipped": "own-message"}, status=status.HTTP_200_OK)
+
+        MessageReadReceipt.objects.get_or_create(
+            message=msg, user=user, defaults={"read_at": timezone.now()}
+        )
+        return Response({"ok": True}, status=status.HTTP_200_OK)

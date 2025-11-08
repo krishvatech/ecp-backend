@@ -1,7 +1,7 @@
 from __future__ import annotations
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
-from .models import Conversation, Message
+from .models import Conversation, Message, MessageReadReceipt
 
 User = get_user_model()
 
@@ -193,18 +193,18 @@ class ConversationSerializer(serializers.ModelSerializer):
         )
         return msg.body[:80] if msg else ""
 
-    def get_unread_count(self, obj: Conversation) -> int:
-        user = self.context.get("request").user if self.context.get("request") else None
-        if not user or not user.is_authenticated:
+    def get_unread_count(self, obj):
+        req = self.context.get("request")
+        u = getattr(req, "user", None)
+        if not (u and u.is_authenticated):
             return 0
         return (
-            obj.messages.filter(is_hidden=False, is_deleted=False, is_read=False)
-            .exclude(sender_id=user.id)
+            obj.messages.filter(is_hidden=False, is_deleted=False)
+            .exclude(sender_id=u.id)
+            .exclude(read_receipts__user_id=u.id)
             .count()
         )
 
-
-# serializers.py
 class MessageSerializer(serializers.ModelSerializer):
     sender_id = serializers.IntegerField(read_only=True)
     conversation_id = serializers.IntegerField(read_only=True)
@@ -212,30 +212,45 @@ class MessageSerializer(serializers.ModelSerializer):
     sender_display = serializers.SerializerMethodField()
     sender_avatar = serializers.SerializerMethodField()
     mine = serializers.SerializerMethodField()
+    read_by_me = serializers.SerializerMethodField()
+    # keep old clients happy
+    is_read = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
-        fields = [
+        fields = (
             "id",
-            "conversation_id",
-            "sender_id",
-            "sender_name",
-            "sender_display",
-            "sender_avatar",         
+            "conversation", "conversation_id",
+            "sender", "sender_id",
+            "sender_name", "sender_display", "sender_avatar",
             "mine",
-            "body",
-            "attachments",
-            "is_read",
-            "is_hidden",
-            "is_deleted",
-            "deleted_at",
+            "body", "attachments",
             "created_at",
-        ]
-        read_only_fields = [
-            "id", "conversation_id", "sender_id",
-            "is_read", "is_hidden", "is_deleted",
-            "deleted_at", "created_at",
-        ]
+            "read_by_me", "is_read",
+        )
+        read_only_fields = (
+            "id",
+            "conversation", "conversation_id",
+            "sender", "sender_id",
+            "sender_name", "sender_display", "sender_avatar",
+            "mine",
+            "created_at",
+            "read_by_me", "is_read",
+            "is_hidden", "is_deleted", "deleted_at",
+        )
+
+    # ----- computed fields -----
+    def get_read_by_me(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        if hasattr(obj, "my_receipts"):
+            return bool(obj.my_receipts)
+        return MessageReadReceipt.objects.filter(message_id=obj.id, user_id=user.id).exists()
+
+    def get_is_read(self, obj):
+        return self.get_read_by_me(obj)
 
     def get_sender_name(self, obj):
         u = getattr(obj, "sender", None)
@@ -253,7 +268,6 @@ class MessageSerializer(serializers.ModelSerializer):
         if not u:
             return ""
         prof = getattr(u, "profile", None)
-        # prefer user_image / avatar from profile
         if prof:
             img = getattr(prof, "user_image", None) or getattr(prof, "avatar", None)
             if img:
@@ -261,14 +275,12 @@ class MessageSerializer(serializers.ModelSerializer):
                     url = getattr(img, "url", "") or str(img)
                 except Exception:
                     url = str(img)
-                # make absolute
                 req = self.context.get("request")
                 if req and url and url.startswith("/"):
                     return req.build_absolute_uri(url)
                 return url
         li = getattr(u, "linkedin", None)
         return getattr(li, "picture_url", "") or ""
-
 
     def get_mine(self, obj):
         req = self.context.get("request")

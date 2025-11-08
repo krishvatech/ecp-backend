@@ -43,6 +43,15 @@ class Conversation(models.Model):
     def is_event_group(self) -> bool:
         return self.event_id is not None and self.group_id is None
 
+    def user_can_view(self, user) -> bool:
+        """Mirror permission logic so views can call it quickly."""
+        if not user or not getattr(user, "is_authenticated", False):
+            return False
+        # Group/Event rooms -> open to any authenticated user
+        if self.group_id or self.event_id:
+            return True
+        # DM -> only the two participants
+        return user.id in (self.user1_id, self.user2_id)
     
     # ---------- validation ----------
     def clean(self):
@@ -118,15 +127,43 @@ class Conversation(models.Model):
             ),
         ]
 
-
 class Message(models.Model):
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="messages")
     sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sent_messages")
     body = models.TextField()
     attachments = ArrayField(models.JSONField(), default=list, blank=True)
-    is_read = models.BooleanField(default=False)
 
     is_hidden = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+# --- NEW ---
+class MessageReadReceipt(models.Model):
+    """
+    One row per (message, user) indicating the user has read the message.
+    - In DMs: the recipient marks read
+    - In Group/Event chats: each member marks read independently
+    """
+    message = models.ForeignKey(
+        Message, on_delete=models.CASCADE, related_name="read_receipts"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="message_reads"
+    )
+    read_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "messaging_message_read_receipt"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["message", "user"], name="uniq_message_read_by_user"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["user", "message"], name="idx_read_user_msg"),
+            models.Index(fields=["message"], name="idx_read_msg"),
+        ]
+
+    def __str__(self):
+        return f"read: msg={self.message_id} by user={self.user_id} @ {self.read_at}"

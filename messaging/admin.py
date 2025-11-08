@@ -33,7 +33,7 @@ class ConversationAdmin(admin.ModelAdmin):
 
 @admin.register(Message)
 class MessageAdmin(admin.ModelAdmin):
-    list_display = ("id", "conversation", "sender", "is_read", "is_hidden", "is_deleted", "created_at")
-    list_filter  = ("is_read", "is_hidden", "is_deleted", "created_at")
+    list_display = ("id", "conversation", "sender",  "is_hidden", "is_deleted", "created_at")
+    list_filter  = ( "is_hidden", "is_deleted", "created_at")
     search_fields = ("sender__username", "body")
     ordering = ("-created_at",)

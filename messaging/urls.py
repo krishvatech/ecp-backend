@@ -30,9 +30,10 @@ urlpatterns = [
 
     # mark a single message as read
     path(
-        "messages/<int:pk>/read/",
-        MarkMessageReadView.as_view(),
-        name="message-read",
+        "conversations/<int:conversation_id>/messages/<int:pk>/",
+        MessageViewSet.as_view({"get": "retrieve", "delete": "destroy"}),
+        name="conversation-message-detail",
     ),
+    path("messages/<int:pk>/read/", MarkMessageReadView.as_view(), name="message-read"),
 ]
 

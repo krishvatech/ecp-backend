@@ -1,10 +1,11 @@
 """
 Custom permission classes for the messaging app.
 
-These permissions enforce that only participants of a conversation may
-access DM resources. Group and Event rooms (derived from group_id / event_id)
-are open to any authenticated user by default.
+Rules:
+- DM conversations: only the two participants can access.
+- Group/Event conversations: any authenticated user can access.
 """
+from typing import Optional
 from rest_framework.permissions import BasePermission
 from django.core.exceptions import ObjectDoesNotExist
 
@@ -39,42 +40,33 @@ def _get_conversation_from_kwargs(view) -> Optional[Conversation]:
         return Conversation.objects.get(pk=conv_id)
     except Conversation.DoesNotExist:
         return None
-    
+
+
 class IsConversationParticipant(BasePermission):
     """
     Allow access only to participants of a DM conversation.
     Allow access to any authenticated user for Group/Event conversations.
     """
 
-    def _get_conversation_from_kwargs(self, view) -> Optional[Conversation]:
-        conv_id = None
-        for k in KWARG_KEYS:
-            v = view.kwargs.get(k)
-            if v is not None:
-                conv_id = v
-                break
-        if not conv_id:
-            return None
-        try:
-            return Conversation.objects.get(pk=conv_id)  # <-- remove .only(...)
-        except Conversation.DoesNotExist:
-            return None
-        
+    def _conv_from_view(self, view) -> Optional[Conversation]:
+        return _get_conversation_from_kwargs(view)
+
     def has_permission(self, request, view):
         user = request.user
         if not user or not user.is_authenticated:
             return False
 
-        conv = self._get_conversation_from_kwargs(view) if hasattr(self, "_get_conversation_from_kwargs") else _get_conversation_from_kwargs(view)
+        conv = self._conv_from_view(view)
         if conv is None:
-            # No specific conversation in the URL; let object-level perms decide later or the view will 404.
+            # Endpoints without a specific conversation id in URL can pass here
+            # and will be handled by object-level checks or the view itself.
             return True
 
         # Group/Event rooms → any authenticated user may access
         if _is_group_conv(conv) or _is_event_conv(conv):
             return True
 
-        # DM → only the two participants
+        # DM
         if _is_dm_conv(conv):
             return user.id in (conv.user1_id, conv.user2_id)
 
@@ -88,18 +80,18 @@ class IsConversationParticipant(BasePermission):
         conv = obj if isinstance(obj, Conversation) else getattr(obj, "conversation", None)
 
         if conv is None:
-            # “Loose” objects: infer shape from fields if present
+            # Infer shape from loose fields (rare)
             uid1 = getattr(obj, "user1_id", None)
             uid2 = getattr(obj, "user2_id", None)
-            gid  = getattr(obj, "group_id", None)
-            eid  = getattr(obj, "event_id", None)
+            gid = getattr(obj, "group_id", None)
+            eid = getattr(obj, "event_id", None)
 
             if gid is not None and eid is None:
-                return True   # group chat
+                return True
             if eid is not None and gid is None:
-                return True   # event chat
+                return True
             if gid is None and eid is None and (uid1 is not None or uid2 is not None):
-                return user.id in (uid1, uid2)  # DM shape
+                return user.id in (uid1, uid2)
             return False
 
         if _is_group_conv(conv) or _is_event_conv(conv):
