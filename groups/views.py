@@ -142,9 +142,12 @@ class GroupViewSet(viewsets.ModelViewSet):
         if not msg:
             return None, "Message not found"
         conv = getattr(msg, "conversation", None)
-        if not conv or not getattr(conv, "is_group", False) or getattr(conv, "group_id", None) != group.id:
-            return None, "Message does not belong to this group"
-        return msg, None
+        if not conv:
+            return None, "Message not found in a conversation"
+        # Group chat: group_id set, event_id null, and matches this group
+        if (getattr(conv, "group_id", None) is not None) and (getattr(conv, "event_id", None) is None) and (conv.group_id == group.id):
+            return msg, None
+        return None, "Message does not belong to this group"
     
     # Use: Decide if current user can send a message to a group (admins/mods vs message_mode=all).
     # Ordering: Not applicable.
@@ -1134,15 +1137,16 @@ class GroupViewSet(viewsets.ModelViewSet):
         if not conv:
             return False
 
-        # Common group chat
-        if getattr(conv, "is_group", False) and getattr(conv, "group_id", None) == group.id:
+        # Common group chat: group_id present, event_id null, matches this group
+        if (getattr(conv, "group_id", None) is not None) and (getattr(conv, "event_id", None) is None) and (conv.group_id == group.id):
             return True
 
-        # Event live chat → count it if the event belongs to this group (only if Event has group_id)
-        if getattr(conv, "is_event_group", False) and getattr(conv, "event", None):
+        # Event live chat: event_id present, group_id null → count it if Event belongs to this group
+        if (getattr(conv, "event_id", None) is not None) and (getattr(conv, "group_id", None) is None) and getattr(conv, "event", None):
             ev = conv.event
             if hasattr(ev, "group_id") and ev.group_id == group.id:
                 return True
+
 
         # Legacy fallback by room_key
         rk = (getattr(conv, "room_key", "") or "")

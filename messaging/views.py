@@ -34,7 +34,7 @@ class ConversationViewSet(viewsets.ViewSet):
         user = request.user
         # Include DMs I’m in + all group/event rooms
         qs = Conversation.objects.filter(
-            Q(user1=user) | Q(user2=user) | Q(is_group=True) | Q(is_event_group=True)
+            Q(user1=user) | Q(user2=user) | Q(group__isnull=False) | Q(event__isnull=False)
         )
         qs = qs.select_related("user1__profile", "user2__profile", "group", "event").prefetch_related(
             models.Prefetch("messages", queryset=Message.objects.filter(is_hidden=False, is_deleted=False))
@@ -46,40 +46,42 @@ class ConversationViewSet(viewsets.ViewSet):
             q = q.strip()
             other_user1 = (
                 (Q(user1__first_name__icontains=q)
-                 | Q(user1__last_name__icontains=q)
-                 | Q(user1__profile__full_name__icontains=q)
-                 | Q(user1__profile__company__icontains=q))
+                | Q(user1__last_name__icontains=q)
+                | Q(user1__profile__full_name__icontains=q)
+                | Q(user1__profile__company__icontains=q))
                 & ~Q(user1=user)
             )
             other_user2 = (
                 (Q(user2__first_name__icontains=q)
-                 | Q(user2__last_name__icontains=q)
-                 | Q(user2__profile__full_name__icontains=q)
-                 | Q(user2__profile__company__icontains=q))
+                | Q(user2__last_name__icontains=q)
+                | Q(user2__profile__full_name__icontains=q)
+                | Q(user2__profile__company__icontains=q))
                 & ~Q(user2=user)
             )
             qs = qs.filter(
                 other_user1
                 | other_user2
-                | Q(is_group=True, title__icontains=q)
-                | Q(is_event_group=True, title__icontains=q)
+                | Q(group__isnull=False, title__icontains=q)
+                | Q(event__isnull=False, title__icontains=q)
+                # bonus: match actual related names too
+                | Q(group__name__icontains=q)
+                | Q(event__title__icontains=q)
             )
         return qs
 
-    def list(self, request):
-        qs = self.get_queryset(request)
+
+    def list(self, request, *args, **kwargs):
+        qs = (Conversation.objects
+            .select_related("group", "event", "user1__profile", "user2__profile")
+            .order_by("-updated_at"))
         serializer = ConversationSerializer(qs, many=True, context={"request": request})
         return Response(serializer.data)
 
-    def retrieve(self, request, pk=None):
-        user = request.user
-        try:
-            conv = Conversation.objects.select_related("user1", "user2").get(pk=pk)
-        except Conversation.DoesNotExist:
-            raise NotFound("Conversation not found.")
-        if not conv.is_group and user.id not in (conv.user1_id, conv.user2_id):
-            raise PermissionDenied("You are not a participant of this conversation.")
-        serializer = ConversationSerializer(conv, context={"request": request})
+    def retrieve(self, request, *args, **kwargs):
+        obj = (Conversation.objects
+            .select_related("group", "event", "user1__profile", "user2__profile")
+            .get(pk=kwargs["pk"]))
+        serializer = ConversationSerializer(obj, context={"request": request})
         return Response(serializer.data)
 
     def create(self, request):
@@ -106,19 +108,15 @@ class ConversationViewSet(viewsets.ViewSet):
 
             # One row per event chat
             conv, created = Conversation.objects.get_or_create(
-                is_event_group=True,
                 event=event,
                 defaults={
                     "created_by": user,
-                    "title": event.title,  # stored, but UI should show event.title
+                    "title": event.title,
                 },
             )
 
-            # Backfills if an older row existed without proper flags/links
+            # Backfill/normalize (legacy rows)
             changed = False
-            if not conv.is_event_group:
-                conv.is_event_group = True
-                changed = True
             if conv.event_id != event.id:
                 conv.event = event
                 changed = True
@@ -126,12 +124,12 @@ class ConversationViewSet(viewsets.ViewSet):
                 conv.title = event.title
                 changed = True
             if changed:
-                conv.save()
+                conv.save(update_fields=["event", "title"])
 
             ser = ConversationSerializer(conv, context={"request": request})
             return Response(ser.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
-        # --- Group chat (shortcut; you also have ensure_group) ---
+        # --- Group chat ---
         if group_id is not None:
             from groups.models import Group
             try:
@@ -141,19 +139,21 @@ class ConversationViewSet(viewsets.ViewSet):
             group = get_object_or_404(Group, pk=group_id)
 
             conv, created = Conversation.objects.get_or_create(
-                is_group=True,
                 group=group,
                 defaults={
                     "created_by": user,
                     "title": group.name,
                 },
             )
-            if not conv.is_group or conv.group_id != group.id or not conv.title:
-                conv.is_group = True
+            changed = False
+            if conv.group_id != group.id:
                 conv.group = group
-                if not conv.title:
-                    conv.title = group.name
-                conv.save()
+                changed = True
+            if not conv.title:
+                conv.title = group.name
+                changed = True
+            if changed:
+                conv.save(update_fields=["group", "title"])
 
             ser = ConversationSerializer(conv, context={"request": request})
             return Response(ser.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
@@ -175,11 +175,12 @@ class ConversationViewSet(viewsets.ViewSet):
 
         user_ids = sorted([user.id, recipient_id])
         conv, created = Conversation.objects.get_or_create(
-            user1_id=user_ids[0], user2_id=user_ids[1], is_group=False
+            user1_id=user_ids[0], user2_id=user_ids[1]
         )
         serializer = ConversationSerializer(conv, context={"request": request})
         status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return Response(serializer.data, status=status_code)
+
 
     # --- NEW: ensure or return a per-event group room by room_key ---
     @action(detail=False, methods=["post"], url_path="ensure-group")
@@ -205,12 +206,11 @@ class ConversationViewSet(viewsets.ViewSet):
 
         group = None
         if group_id:
-            group = get_object_or_404(Group, pk=group_id)
+            group = get_object_or_404(Group, pk=int(group_id))
 
         # Prefer to identify a conversation by the Group FK when available.
         if group:
             conv, created = Conversation.objects.get_or_create(
-                is_group=True,
                 group=group,
                 defaults={
                     "created_by": request.user,
@@ -224,7 +224,6 @@ class ConversationViewSet(viewsets.ViewSet):
             conv, created = Conversation.objects.get_or_create(
                 room_key=room_key,
                 defaults={
-                    "is_group": True,
                     "created_by": request.user,
                     "title": title,
                 },
@@ -235,17 +234,15 @@ class ConversationViewSet(viewsets.ViewSet):
         if group and conv.group_id != group.id:
             conv.group = group
             changed = True
-        if not conv.is_group:
-            conv.is_group = True
-            changed = True
-        if not conv.title and group:
-            conv.title = group.name
+        if not conv.title:
+            conv.title = title or (group.name if group else "")
             changed = True
         if changed:
-            conv.save()
+            conv.save(update_fields=["group", "title"])
 
         ser = ConversationSerializer(conv, context={"request": request})
         return Response(ser.data, status=status.HTTP_200_OK)
+
     
     # views.py  (inside ConversationViewSet)
     @action(detail=False, methods=["get"], url_path="chat-groups")
@@ -279,7 +276,7 @@ class ConversationViewSet(viewsets.ViewSet):
         { "event": <event_id>, "title": "..." }
         or legacy:
         { "room_key": "event:<id>", "title": "..." }
-        Guarantees Conversation.event_id is set and is_event_group=True.
+        Guarantees Conversation.event_id is set.
         """
         from events.models import Event
 
@@ -306,7 +303,6 @@ class ConversationViewSet(viewsets.ViewSet):
 
         # One conversation per event
         conv, created = Conversation.objects.get_or_create(
-            is_event_group=True,
             event=event,
             defaults={
                 "created_by": request.user if request.user.is_authenticated else None,
@@ -316,22 +312,18 @@ class ConversationViewSet(viewsets.ViewSet):
 
         # Backfill/normalize
         changed = False
-        if not conv.is_event_group:
-            conv.is_event_group = True
-            changed = True
         if conv.event_id != event.id:
             conv.event = event
             changed = True
         if not conv.title:
             conv.title = title or event.title
             changed = True
-        # optionally persist a canonical room_key
         if room_key and not conv.room_key:
             conv.room_key = room_key
             changed = True
 
         if changed:
-            conv.save()
+            conv.save(update_fields=["event", "title", "room_key"])
 
         serializer = ConversationSerializer(conv, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -348,25 +340,35 @@ class ConversationViewSet(viewsets.ViewSet):
         - Group/Event: try group membership; fallback to message senders + creator
         """
         try:
-            conv = Conversation.objects.get(pk=pk)
+            conv = (Conversation.objects
+                    .select_related("user1__profile", "user2__profile")
+                    .get(pk=pk))
         except Conversation.DoesNotExist:
             raise NotFound("Conversation not found.")
-
-        # Permissions: you must be in the DM; groups are visible to any auth user
-        if not conv.is_group and not conv.is_event_group:
-            if request.user.id not in (conv.user1_id, conv.user2_id):
-                raise PermissionDenied("You are not a participant of this conversation.")
 
         def as_member(u, role=""):
             if not u:
                 return None
             prof = getattr(u, "profile", None)
             name = (getattr(prof, "full_name", "") or u.get_full_name() or u.username).strip()
+
+            # --- avatar resolution ---
             avatar = ""
-            # try a few common avatar fields if you have them
-            if prof and getattr(prof, "avatar", None):
-                av = getattr(prof, "avatar")
-                avatar = getattr(av, "url", av) or ""
+            # primary: your profile image field
+            if prof:
+                img = getattr(prof, "user_image", None) or getattr(prof, "avatar", None)
+                if img:
+                    try:
+                        avatar = getattr(img, "url", "") or str(img)
+                    except Exception:
+                        avatar = str(img) if img else ""
+
+            # fallback: LinkedIn picture if present
+            if not avatar:
+                li = getattr(u, "linkedin", None)
+                if li:
+                    avatar = getattr(li, "picture_url", "") or ""
+
             return {
                 "id": u.id,
                 "name": name or f"User {u.id}",
@@ -377,19 +379,16 @@ class ConversationViewSet(viewsets.ViewSet):
 
         members = []
 
-        if not conv.is_group and not conv.is_event_group:
+        if conv.group_id is None and conv.event_id is None:
             # Direct message
             for u in (conv.user1, conv.user2):
                 m = as_member(u)
                 if m:
                     members.append(m)
         else:
-            # Group / Event members
             added = False
             try:
-                # if your project has GroupMembership with roles
                 from groups.models import GroupMembership
-
                 group_id = conv.group_id
                 if not group_id and conv.room_key and conv.room_key.startswith("group:"):
                     try:
@@ -398,7 +397,6 @@ class ConversationViewSet(viewsets.ViewSet):
                         group_id = None
 
                 if group_id:
-                    # tweak filter field names to your schema if needed
                     qs = (GroupMembership.objects
                         .select_related("user__profile")
                         .filter(group_id=group_id)
@@ -406,27 +404,71 @@ class ConversationViewSet(viewsets.ViewSet):
                     role_title = {"owner": "Owner", "admin": "Admin", "moderator": "Moderator", "member": "Member"}
                     for gm in qs:
                         m = as_member(gm.user, role_title.get(getattr(gm, "role", ""), ""))
+                        if m: members.append(m)
+                    added = bool(members)
+            except Exception:
+                pass
+
+            # ✅ NEW: Event attendees/hosts
+            if not added and getattr(conv, "is_event_group", False) and conv.event_id:
+                try:
+                    from events.models import Event, EventRegistration
+                    # Pull everyone who registered for this event, newest first (cap 200)
+                    regs = (
+                        EventRegistration.objects
+                        .select_related("user__profile")
+                        .filter(event_id=conv.event_id)
+                        .order_by("-registered_at")[:200]   # <-- use registered_at (your field)
+                    )
+
+                    for r in regs:
+                        m = as_member(r.user, "Attendee")
                         if m:
                             members.append(m)
                     added = bool(members)
-            except Exception:
-                # safe fallback below
-                pass
 
+                    # Always include the host/organizers at the top (no duplicates)
+                    ev = Event.objects.select_related("created_by__profile").get(pk=conv.event_id)
+                    if hasattr(ev, "organizers"):
+                        for u in ev.organizers.all():
+                            mm = as_member(u, "Organizer")
+                            if mm and all(x["id"] != mm["id"] for x in members):
+                                members.insert(0, mm)
+                    if getattr(ev, "created_by_id", None):
+                        host = as_member(ev.created_by, "Host")
+                        if host and all(x["id"] != host["id"] for x in members):
+                            members.insert(0, host)
+
+                except Exception:
+                    # Fallback: at least show host/organizers if registrations query fails
+                    try:
+                        from events.models import Event
+                        ev = Event.objects.select_related("created_by__profile").get(pk=conv.event_id)
+                        if hasattr(ev, "organizers"):
+                            for u in ev.organizers.all():
+                                mm = as_member(u, "Organizer")
+                                if mm:
+                                    members.append(mm)
+                        if getattr(ev, "created_by_id", None):
+                            host = as_member(ev.created_by, "Host")
+                            if host and all(x["id"] != host["id"] for x in members):
+                                members.insert(0, host)
+                        added = bool(members)
+                    except Exception:
+                        pass
+
+            # Fallback: distinct message senders + creator (existing code continues)
             if not added:
-                # Fallback: distinct message senders + creator
                 sender_ids = (Message.objects
                             .filter(conversation=conv, is_hidden=False, is_deleted=False)
                             .values_list("sender_id", flat=True)
                             .distinct())[:200]
                 for u in User.objects.filter(id__in=list(sender_ids)).select_related("profile"):
                     m = as_member(u)
-                    if m:
-                        members.append(m)
+                    if m: members.append(m)
                 if conv.created_by_id and all(x["id"] != conv.created_by_id for x in members):
                     m = as_member(conv.created_by, role="Owner")
-                    if m:
-                        members.insert(0, m)
+                    if m: members.insert(0, m)
 
         return Response(members, status=status.HTTP_200_OK)
 
@@ -438,21 +480,17 @@ class MessageViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.Ge
     permission_classes = [permissions.IsAuthenticated, IsConversationParticipant]
 
     def get_queryset(self):
-        conv_id = self.kwargs.get("conversation_id")
-        user = self.request.user
-        try:
-            conv = Conversation.objects.get(pk=conv_id)
-        except Conversation.DoesNotExist:
-            raise NotFound("Conversation not found.")
-        if not conv.is_group and user.id not in (conv.user1_id, conv.user2_id):
-            raise PermissionDenied("You are not a participant of this conversation.")
-        # return oldest-first for chat scrolling in FE (FE can reverse if desired)
-        return (
-            Message.objects
-            .filter(conversation=conv, is_hidden=False, is_deleted=False)
-            .select_related("sender")
-            .order_by("created_at")
-        )
+        conv_id = self.kwargs["conversation_pk"]
+        return (Message.objects
+                .filter(conversation_id=conv_id, is_hidden=False, is_deleted=False)
+                .select_related("sender__profile")
+                .order_by("created_at"))
+    
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        ser = MessageSerializer(qs, many=True, context={"request": request})
+        return Response(ser.data)
+    
     def perform_create(self, serializer):
         conv_id = self.kwargs.get("conversation_id")
         try:
@@ -460,7 +498,8 @@ class MessageViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.Ge
         except Conversation.DoesNotExist:
             raise NotFound("Conversation not found.")
         user = self.request.user
-        if not conv.is_group and user.id not in (conv.user1_id, conv.user2_id):
+        # DM restriction
+        if (conv.group_id is None and conv.event_id is None) and user.id not in (conv.user1_id, conv.user2_id):
             raise PermissionDenied("You are not a participant of this conversation.")
         serializer.save(conversation=conv, sender=user)
 
@@ -482,10 +521,13 @@ class MarkMessageReadView(GenericAPIView):
             raise NotFound("Message not found.")
         user = request.user
         conv = msg.conversation
-        if not conv.is_group and user.id not in (conv.user1_id, conv.user2_id):
+        # DM restriction
+        if (conv.group_id is None and conv.event_id is None) and user.id not in (conv.user1_id, conv.user2_id):
             raise PermissionDenied("You are not a participant of this conversation.")
+        # cannot mark your own message
         if msg.sender_id == user.id:
             raise PermissionDenied("You cannot mark your own message as read.")
+
         if not msg.is_read:
             msg.is_read = True
             msg.save(update_fields=["is_read"])
