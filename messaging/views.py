@@ -71,9 +71,7 @@ class ConversationViewSet(viewsets.ViewSet):
 
 
     def list(self, request, *args, **kwargs):
-        qs = (Conversation.objects
-            .select_related("group", "event", "user1__profile", "user2__profile")
-            .order_by("-updated_at"))
+        qs = self.get_queryset(request)  # <-- use filtered queryset
         serializer = ConversationSerializer(qs, many=True, context={"request": request})
         return Response(serializer.data)
 
@@ -473,35 +471,52 @@ class ConversationViewSet(viewsets.ViewSet):
         return Response(members, status=status.HTTP_200_OK)
 
 
-class MessageViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.GenericViewSet):
-    """ViewSet for listing and creating messages within a conversation."""
+# messaging/views.py
 
+class MessageViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.GenericViewSet):
     serializer_class = MessageSerializer
     permission_classes = [permissions.IsAuthenticated, IsConversationParticipant]
 
+    def _get_conversation_id(self):
+        # Accept common kwarg names from DRF-Nested or custom routers
+        conv_id = (
+            self.kwargs.get("conversation_pk")
+            or self.kwargs.get("conversation_id")
+            or self.request.query_params.get("conversation")
+        )
+        if not conv_id:
+            raise ValidationError({"conversation": "Missing conversation id in URL."})
+        try:
+            return int(conv_id)
+        except (TypeError, ValueError):
+            raise ValidationError({"conversation": "Invalid conversation id."})
+
     def get_queryset(self):
-        conv_id = self.kwargs["conversation_pk"]
-        return (Message.objects
-                .filter(conversation_id=conv_id, is_hidden=False, is_deleted=False)
-                .select_related("sender__profile")
-                .order_by("created_at"))
-    
+        conv_id = self._get_conversation_id()
+        return (
+            Message.objects
+            .filter(conversation_id=conv_id, is_hidden=False, is_deleted=False)
+            .select_related("sender__profile")
+            .order_by("created_at")
+        )
+
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset()
         ser = MessageSerializer(qs, many=True, context={"request": request})
         return Response(ser.data)
-    
+
     def perform_create(self, serializer):
-        conv_id = self.kwargs.get("conversation_id")
+        conv_id = self._get_conversation_id()
         try:
             conv = Conversation.objects.get(pk=conv_id)
         except Conversation.DoesNotExist:
             raise NotFound("Conversation not found.")
         user = self.request.user
-        # DM restriction
+        # DM access check (groups/events are open to any authed user by your current logic)
         if (conv.group_id is None and conv.event_id is None) and user.id not in (conv.user1_id, conv.user2_id):
             raise PermissionDenied("You are not a participant of this conversation.")
         serializer.save(conversation=conv, sender=user)
+
 
 
 class MarkMessageReadView(GenericAPIView):
