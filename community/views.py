@@ -155,38 +155,30 @@ class CommunityViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="posts")
     def list_posts(self, request, pk=None):
         community = self.get_object()
-        user = request.user
 
-        is_owner = getattr(community, "owner_id", None) == getattr(user, "id", None)
-        is_member = community.members.filter(pk=user.id).exists()
-        if not (is_owner or is_member or user.is_staff):
+        # 🔒 Access: only superusers can view
+        if not request.user.is_superuser:
             return Response({"detail": "Forbidden"}, status=403)
 
         FeedItem = apps.get_model("activity_feed", "FeedItem")
-        qs = FeedItem.objects.filter(community_id=community.id, group__isnull=True, verb="posted").order_by("-created_at")
 
-        # === audience gating (owner/staff see all) ===
-        if not (is_owner or user.is_staff):
-            # accepted friends (either direction)
-            pairs = Friendship.objects.filter(
-                Q(sender=user) | Q(receiver=user),
-            ).values_list("sender_id", "receiver_id")
-            friend_ids = set()
-            for a, b in pairs:
-                friend_ids.add(b if a == user.id else a)
-
-            qs = qs.filter(
-                Q(metadata__visibility="public")
-                | Q(metadata__visibility="community")             # ← new: visible to all members
-                | Q(actor_id=user.id)                             # always see own
-                | Q(metadata__visibility="friends", actor_id__in=friend_ids)
-                | ~Q(metadata__has_key="visibility")              # treat missing as public (optional)
+        # ONLY admin (community.owner) posts at community level with visibility="community"
+        qs = (
+            FeedItem.objects.filter(
+                community_id=community.id,
+                verb="posted",
+                group__isnull=True,                 # community-level (not inside a group)
+                event__isnull=True,                 # not tied to an event
+                actor_id=community.owner_id,        # posted by admin/owner
+                metadata__visibility="community",   # community-level visibility
             )
+            .order_by("-created_at")
+        )
 
-
+        # optional simple search on text
         q = (request.query_params.get("search") or "").strip()
         if q:
-            qs = qs.filter(metadata__text__icontains=q)  # simple search on text
+            qs = qs.filter(metadata__text__icontains=q)
 
         results = []
         for fi in qs:
@@ -215,6 +207,7 @@ class CommunityViewSet(viewsets.ModelViewSet):
             results.append(row)
 
         return Response({"results": results}, status=200)
+
     
     # PATCH/PUT /api/communities/{community_id}/posts/{post_id}/edit/
     @action(
