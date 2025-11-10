@@ -257,7 +257,10 @@ class GroupViewSet(viewsets.ModelViewSet):
                         # keep legacy targeting (old rows)
                         | models.Q(target_content_type=ct, target_object_id=group.id)
                     )
-                    .order_by("-created_at"))  # ORDER: newest first
+                    .filter(community_id=getattr(group, "community_id", None))
+                    .exclude(metadata__is_deleted=True) 
+                    .order_by("-created_at")
+                )
 
             out = []
             for it in items:
@@ -679,7 +682,9 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="members")
     def members(self, request, pk=None):
         group = self.get_object()
-        memberships = GroupMembership.objects.filter(group=group, status="active").select_related("user")
+        memberships = GroupMembership.objects.filter(
+            group=group, status=GroupMembership.STATUS_ACTIVE
+        ).select_related("user")
         return Response(GroupMemberOutSerializer(memberships, many=True).data)
 
     # Use (Endpoint): POST /api/groups/{id}/members/add-member
