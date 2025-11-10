@@ -24,6 +24,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter, OpenApiExample
 
 from community.models import Community
+from activity_feed.models import FeedItem
 from .models import Group, GroupMembership, PromotionRequest, GroupPinnedMessage
 from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content
 from .serializers import (
@@ -1826,6 +1827,101 @@ class GroupViewSet(viewsets.ModelViewSet):
             data.sort(key=lambda x: (0 if x["scope"] == "global" else 1, x["pinned_at"]), reverse=True)
             return Response(data)
         return Response(GroupPinnedMessageOutSerializer(qs.order_by("-pinned_at"), many=True).data)
+    
+    # PATCH /api/groups/{id}/posts/{item_id}/edit
+    @action(detail=True, methods=["patch"], url_path=r"posts/(?P<item_id>\d+)/edit",
+            parser_classes=[JSONParser, FormParser, MultiPartParser])
+    def posts_edit(self, request, pk=None, item_id=None):
+        group = self.get_object()
+
+        # Only owner/admin/moderator may edit (same rule you use to create) :contentReference[oaicite:9]{index=9}
+        if not self._can_moderate_any(request, group):
+            return Response({"detail": "Forbidden"}, status=403)
+
+        try:
+            item_id = int(item_id)
+        except Exception:
+            return Response({"detail": "Invalid post id"}, status=400)
+
+        it = FeedItem.objects.filter(pk=item_id).first()
+        if not it:
+            return Response({"detail": "Post not found"}, status=404)
+
+        # Validate that the item belongs to this group
+        meta = dict(it.metadata or {})
+        if getattr(it, "group_id", None) != group.id and meta.get("group_id") != group.id:
+            return Response({"detail": "Post does not belong to this group"}, status=409)
+
+        t = (meta.get("type") or "post").lower()
+        if t == "post" and "content" in meta:
+            t = "text"   # back-compat with older records :contentReference[oaicite:10]{index=10}
+
+        # Apply updates based on type
+        if t == "text":
+            if "text" in request.data:
+                meta["text"] = (request.data.get("text") or "").strip()
+
+        elif t == "image":
+            if "text" in request.data:
+                meta["text"] = (request.data.get("text") or "").strip()
+            # Optional image replacement via multipart
+            f = request.FILES.get("image")
+            if f:
+                name = slugify(Path(f.name).stem) or "image"
+                ext = (Path(f.name).suffix or ".jpg").lower()
+                key = f"previews/feed/{name}-{uuid4().hex[:8]}{ext}"
+                storage = S3Boto3Storage()
+                path = storage.save(key, f)
+                url = storage.url(path)  # same pattern as create :contentReference[oaicite:11]{index=11}
+                meta["image"] = url
+
+        elif t == "link":
+            if "text" in request.data:
+                meta["text"] = (request.data.get("text") or "").strip()
+            if "url" in request.data:
+                meta["url"] = (request.data.get("url") or "").strip()
+
+        elif t == "event":
+            # Simple, targeted merge
+            for fld in ("title", "starts_at", "ends_at", "text"):
+                if fld in request.data:
+                    val = request.data.get(fld)
+                    meta[fld] = (val or "").strip() if isinstance(val, str) else val
+
+        elif t == "poll":
+            return Response({"detail": "Edit polls via /api/activity/feed/polls/update/"}, status=400)
+
+        else:
+            # unknown type: shallow merge of primitives
+            for k, v in request.data.items():
+                if k != "image":
+                    meta[k] = v
+
+        meta["edited_at"] = timezone.now().isoformat()
+        it.metadata = meta
+        it.save(update_fields=["metadata"])
+        return Response({"ok": True, "id": it.id})
+
+    # Optional alias: POST/DELETE /api/groups/{id}/posts/{item_id}/delete
+    @action(detail=True, methods=["post", "delete"], url_path=r"posts/(?P<item_id>\d+)/delete")
+    def posts_delete_by_path(self, request, pk=None, item_id=None):
+        group = self.get_object()
+        if not self._can_moderate_any(request, group):
+            return Response({"detail": "Forbidden"}, status=403)
+
+        it = FeedItem.objects.filter(pk=item_id).first()
+        if not it:
+            return Response({"detail": "Post not found"}, status=404)
+        if getattr(it, "group_id", None) != group.id and (it.metadata or {}).get("group_id") != group.id:
+            return Response({"detail": "Post does not belong to this group"}, status=409)
+
+        m = it.metadata or {}
+        m["is_deleted"] = True
+        m["deleted_at"] = timezone.now().isoformat()
+        it.metadata = m
+        it.save(update_fields=["metadata"])
+        return Response({"ok": True})
+
     
 
 

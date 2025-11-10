@@ -7,8 +7,8 @@ from rest_framework.decorators import action
 from itertools import chain
 from rest_framework import status
 from django.utils.dateparse import parse_datetime
+from django.db import transaction
 from django.utils import timezone
-from rest_framework.parsers import JSONParser
 from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 import datetime as dt
@@ -23,6 +23,8 @@ from content.models import Resource
 from django.contrib.auth import get_user_model
 from friends.models import Friendship           
 from community.models import Community
+from django.db import models  # for models.Max in option indexing
+from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
 
 User = get_user_model()
 
@@ -736,3 +738,273 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             return self.get_paginated_response(data)
         data = self.get_serializer(qs, many=True).data
         return Response(data)
+
+    @action(detail=False, methods=["delete"], url_path=r"polls/(?P<poll_id>\d+)/delete")
+    def polls_delete(self, request, poll_id=None, *args, **kwargs):
+        """
+        DELETE by Poll ID (matches: /api/activity/feed/polls/<poll_id>/delete/)
+        """
+        if not request.user.is_authenticated:
+            return Response({"detail": "Authentication required."}, status=401)
+
+        try:
+            pid = int(poll_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid poll_id"}, status=400)
+
+        poll = Poll.objects.filter(pk=pid).select_related("group").first()
+        if not poll:
+            return Response({"detail": "Not found"}, status=404)
+
+        uid = request.user.id
+        if poll.group_id:
+            allowed = (poll.created_by_id == uid) or self._can_create_poll_for_group(request, poll.group)
+        else:
+            allowed = (poll.created_by_id == uid) or getattr(request.user, "is_staff", False)
+        if not allowed:
+            return Response({"detail": "Forbidden"}, status=403)
+
+        ct = ContentType.objects.get_for_model(Poll)
+        with transaction.atomic():
+            FeedItem.objects.filter(target_content_type=ct, target_object_id=poll.id).delete()
+            poll.delete()
+        return Response(status=204)
+
+    @action(detail=True, methods=["delete"], url_path=r"poll/delete")
+    def poll_delete_on_item(self, request, pk=None, *args, **kwargs):
+        """
+        DELETE by FeedItem ID (matches: /api/activity/feed/<feed_item_id>/poll/delete/)
+        """
+        if not request.user.is_authenticated:
+            return Response({"detail": "Authentication required."}, status=401)
+
+        item = self.get_object()
+        ct_poll = ContentType.objects.get_for_model(Poll)
+        poll = None
+        if item.target_content_type_id == ct_poll.id:
+            poll = Poll.objects.filter(pk=item.target_object_id).select_related("group").first()
+        if not poll:
+            pid = (item.metadata or {}).get("poll_id")
+            if pid:
+                poll = Poll.objects.filter(pk=pid).select_related("group").first()
+        if not poll:
+            return Response({"detail": "Poll not found"}, status=404)
+
+        uid = request.user.id
+        if poll.group_id:
+            allowed = (poll.created_by_id == uid) or self._can_create_poll_for_group(request, poll.group)
+        else:
+            allowed = (poll.created_by_id == uid) or getattr(request.user, "is_staff", False)
+        if not allowed:
+            return Response({"detail": "Forbidden"}, status=403)
+
+        with transaction.atomic():
+            item.delete()   # remove the feed row
+            poll.delete()   # cascade options/votes
+        return Response(status=204)
+    
+    # ---- add below your existing helpers/actions inside FeedItemViewSet ----
+
+    def _to_bool(self, v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.strip().lower() in ("1", "true", "yes", "y", "on")
+        return bool(v)
+
+    def _can_edit_poll(self, request, poll: Poll) -> bool:
+            """Author, staff, group owner/admin/moderator can edit."""
+            uid = getattr(request.user, "id", None)
+            if not uid or not request.user.is_authenticated:
+                return False
+            if getattr(request.user, "is_superuser", False):
+                return True
+            if poll.created_by_id == uid:
+                return True
+            g = getattr(poll, "group", None)
+            if g:
+                if getattr(g, "created_by_id", None) == uid or getattr(g, "owner_id", None) == uid:
+                    return True
+                return GroupMembership.objects.filter(
+                    group=g, user_id=uid, role__in=["admin", "moderator"],
+                    status=getattr(GroupMembership, "STATUS_ACTIVE", "active")
+                ).exists()
+            # community polls → allow author or staff only (adjust if you have community roles)
+            return False
+    
+    def _rebuild_poll_meta(self, poll: Poll, request):
+        """Return metadata block (kept in FeedItem.metadata) with fresh options + vote counts."""
+        opts = list(poll.options.order_by("index"))
+        meta = {
+            "type": "poll",
+            "poll_id": poll.id,
+            "question": poll.question,
+            "options": [
+                {"id": o.id, "text": o.text, "index": o.index, "vote_count": o.votes.count()}
+                for o in opts
+            ],
+            "is_closed": bool(poll.is_closed),
+            "group_id": poll.group_id,
+            "community_id": poll.community_id,
+            "allows_multiple": bool(poll.allows_multiple),
+            "is_anonymous": bool(poll.is_anonymous),
+            "ends_at": poll.ends_at,
+        }
+        return meta
+
+    def _update_poll_from_payload(self, request, poll: Poll, data: dict):
+        """
+        Update question + options. Preserve votes for unchanged options (by case-insensitive text match).
+        Enforce >=2 options and cap at 10. Reindex 0..n-1.
+        """
+        if not self._can_edit_poll(request, poll):
+            return Response({"detail": "Forbidden"}, status=403)
+
+        question = (data.get("question") or "").strip()
+        raw_opts = data.get("options") or []
+
+        # sanitize options
+        clean = []
+        seen = set()
+        for x in raw_opts:
+            s = str(x or "").strip()
+            if not s:
+                continue
+            key = s.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            clean.append(s)
+            if len(clean) >= 10:
+                break
+
+        if question:
+            poll.question = question
+
+        if len(clean) < 2:
+            return Response({"detail": "Poll must have at least 2 unique options."}, status=400)
+
+        # map current options by lowercased text (will re-use the same rows to preserve votes)
+        cur_opts = list(poll.options.order_by("index"))
+        cur_by_text = {o.text.lower(): o for o in cur_opts}
+
+        with transaction.atomic():
+            # lock and bump indices so we don't violate (poll_id, index) uniqueness while reordering
+            cur_opts_locked = list(
+                poll.options.select_for_update().order_by("index")
+            )
+            bump = 1000
+            for o in cur_opts_locked:
+                o.index = o.index + bump
+                o.save(update_fields=["index"])
+
+            # recompute mapping after bump (same objects, but safe)
+            cur_by_text = {o.text.lower(): o for o in cur_opts_locked}
+            keep_ids = set()
+
+            # write final state 0..n-1
+            from .models import PollOption
+            for idx, text in enumerate(clean):
+                key = text.lower()
+                if key in cur_by_text:
+                    o = cur_by_text[key]
+                    changed = False
+                    if o.text != text:
+                        o.text = text
+                        changed = True
+                    if o.index != idx:
+                        o.index = idx
+                        changed = True
+                    if changed:
+                        o.save(update_fields=["text", "index"])
+                    keep_ids.add(o.id)
+                else:
+                    # brand new option at its final index
+                    o = PollOption.objects.create(poll=poll, text=text, index=idx)
+                    keep_ids.add(o.id)
+
+            # delete removed options (still sitting at bumped indices)
+            for o in cur_opts_locked:
+                if o.id not in keep_ids:
+                    o.delete()
+         # save question if changed
+        poll.save(update_fields=["question"])
+
+        # refresh FeedItem metadata snapshot
+        from django.contrib.contenttypes.models import ContentType
+        ct = ContentType.objects.get_for_model(Poll)
+        item = (FeedItem.objects
+                .filter(target_content_type=ct, target_object_id=poll.id)
+                .order_by("-id")
+                .first())
+        if item:
+            m = item.metadata or {}
+            m.update(self._rebuild_poll_meta(poll, request))
+            item.metadata = m
+            item.save(update_fields=["metadata"])
+
+        # ✅ must return a Response, not None
+        return Response(self._serialize_poll(poll, request), status=200)
+    
+    @action(detail=False, methods=["patch"], url_path=r"polls/(?P<poll_id>\d+)", parser_classes=[JSONParser])
+    def polls_update(self, request, poll_id=None, *args, **kwargs):
+        if not request.user or not request.user.is_authenticated:
+            return Response({"detail": "Authentication required."}, status=401)
+        try:
+            poll = Poll.objects.get(pk=int(poll_id))
+        except (ValueError, Poll.DoesNotExist):
+            return Response({"detail": "Poll not found."}, status=404)
+        data = request.data or {}
+        return self._update_poll_from_payload(request, poll, data)
+
+    @action(detail=False, methods=["post"], url_path=r"polls/update",
+            parser_classes=[JSONParser, FormParser, MultiPartParser])
+    def polls_update_alias(self, request, *args, **kwargs):
+        """
+        POST /api/activity/feed/polls/update/
+        Body: { poll_id, question?, ends_at?/closes_at?, is_closed?, is_anonymous?,
+                allows_multiple?, add_options?, update_options?, remove_option_ids?, reorder_option_ids? }
+        """
+        if not request.user.is_authenticated:
+            return Response({"detail": "Authentication required."}, status=401)
+
+        data = request.data or {}
+        try:
+            pid = int(data.get("poll_id"))
+        except Exception:
+            return Response({"detail": "poll_id is required"}, status=400)
+
+        poll = Poll.objects.filter(pk=pid).select_related("group").first()
+        if not poll:
+            return Response({"detail": "Not found"}, status=404)
+        if not self._can_edit_poll(request, poll):
+            return Response({"detail": "Forbidden"}, status=403)
+
+        with transaction.atomic():
+            updated = self._update_poll_from_payload(request, poll, data)
+        return Response({"ok": True, "poll": updated})
+    
+    @action(detail=True, methods=["patch"], url_path="poll", parser_classes=[JSONParser])
+    def update_poll_for_feed_item(self, request, pk=None, *args, **kwargs):
+        if not request.user or not request.user.is_authenticated:
+            return Response({"detail": "Authentication required."}, status=401)
+        try:
+            item = FeedItem.objects.get(pk=int(pk))
+        except (ValueError, FeedItem.DoesNotExist):
+            return Response({"detail": "Feed item not found."}, status=404)
+
+        # ensure this feed item is a poll
+        if not (item.target_content_type and item.target_object_id):
+            return Response({"detail": "This feed item is not a poll."}, status=400)
+        model = item.target_content_type.model_class()
+        if model is not Poll:
+            return Response({"detail": "This feed item is not a poll."}, status=400)
+
+        try:
+            poll = model.objects.get(pk=item.target_object_id)
+        except model.DoesNotExist:
+            return Response({"detail": "Poll not found."}, status=404)
+
+        data = request.data or {}
+        return self._update_poll_from_payload(request, poll, data)
+

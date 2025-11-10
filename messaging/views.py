@@ -541,7 +541,13 @@ class ConversationViewSet(viewsets.ViewSet):
     
 # messaging/views.py
 
-class MessageViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.GenericViewSet):
+class MessageViewSet(
+    mixins.ListModelMixin,
+    mixins.CreateModelMixin,
+    mixins.RetrieveModelMixin,   # <-- add
+    mixins.DestroyModelMixin,    # <-- add
+    viewsets.GenericViewSet,
+):
     serializer_class = MessageSerializer
     permission_classes = [permissions.IsAuthenticated, IsConversationParticipant]
 
@@ -564,7 +570,7 @@ class MessageViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.Ge
         my_receipts = Prefetch(
             "read_receipts",
             queryset=MessageReadReceipt.objects.filter(user_id=self.request.user.id),
-            to_attr="my_receipts",   # <- avoid name clash
+            to_attr="my_receipts",
         )
         return (
             Message.objects
@@ -591,7 +597,17 @@ class MessageViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.Ge
             raise PermissionDenied("You are not a participant of this conversation.")
         serializer.save(conversation=conv, sender=user)
 
-
+    def get_object(self):
+        conv_id = self._get_conversation_id()
+        obj = get_object_or_404(
+            Message.objects.select_related("conversation", "sender__profile"),
+            pk=self.kwargs.get(self.lookup_field),
+            conversation_id=conv_id,
+            is_hidden=False,
+            is_deleted=False,
+        )
+        self.check_object_permissions(self.request, obj)
+        return obj
 
 class MarkMessageReadView(GenericAPIView):
     permission_classes = [IsAuthenticated, IsConversationParticipant]
