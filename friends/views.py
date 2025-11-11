@@ -5,7 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
-
+from django.db.models import Count, F
 from .models import Friendship, FriendRequest,Notification
 from .serializers import (
     friendserializer,
@@ -97,6 +97,88 @@ class FriendshipViewSet(
             qs, many=True, context={"request": request, "perspective_id": target_id}
         )
         return Response(ser.data)
+    
+    @action(detail=False, methods=["get"], url_path="suggested")
+    def suggested(self, request):
+        """
+        Friends-of-friends suggestions for the logged-in user.
+        Excludes: self, already-friends. Sorted by mutual friend count (desc).
+        Query params:
+          - limit: int (default 12, max 50)
+          - q: optional search on username/first/last/email
+        Output items are shaped for your UI: {id, name, avatar, mutuals}
+        """
+        me = request.user
+
+        # 1) my friend ids
+        my_pairs = Friendship.objects.filter(Q(user1=me) | Q(user2=me))
+        my_ids = set(
+            (p.user1_id if p.user1_id != me.id else p.user2_id) for p in my_pairs
+        )
+
+        if not my_ids:
+            return Response([])
+
+        # 2) users who are connected to any of my friends (FoF)
+        qs = User.objects.filter(
+            Q(friends_as_user1__user2_id__in=my_ids) |
+            Q(friends_as_user2__user1_id__in=my_ids)
+        ).exclude(
+            id=me.id
+        ).exclude(
+            id__in=my_ids
+        ).distinct()
+
+        # 3) annotate mutual friend count (how many of *my* friends also friend this candidate)
+        qs = qs.annotate(
+            mutuals_via_u1=Count(
+                "friends_as_user1",
+                filter=Q(friends_as_user1__user2_id__in=my_ids),
+                distinct=True,
+            ),
+            mutuals_via_u2=Count(
+                "friends_as_user2",
+                filter=Q(friends_as_user2__user1_id__in=my_ids),
+                distinct=True,
+            ),
+        ).annotate(
+            mutuals=F("mutuals_via_u1") + F("mutuals_via_u2")
+        ).order_by("-mutuals", "-id")
+
+        # 4) optional search
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(
+                Q(username__icontains=q) |
+                Q(first_name__icontains=q) |
+                Q(last_name__icontains=q) |
+                Q(email__icontains=q)
+            )
+
+        # 5) cap results
+        try:
+            limit = int(request.query_params.get("limit", 12))
+        except ValueError:
+            limit = 12
+        limit = max(1, min(limit, 50))
+        qs = qs[:limit]
+
+        # 6) shape for your front-end slider
+        def _name(u):
+            # Try common display fields without assuming a specific custom field exists
+            full = f"{getattr(u, 'first_name', '')} {getattr(u, 'last_name', '')}".strip()
+            return getattr(u, "display_name", None) or full or getattr(u, "username", None) or getattr(u, "email", "") or f"User #{u.id}"
+
+        def _avatar(u):
+            # Prefer common custom accessors if present; else empty string
+            return getattr(u, "avatar_url", "") or getattr(getattr(u, "profile", None), "avatar", "") or ""
+
+        data = [
+            {"id": u.id, "name": _name(u), "avatar": _avatar(u), "mutuals": int(getattr(u, "mutuals", 0))}
+            for u in qs
+        ]
+        return Response(data)
+
 
     @action(detail=False, methods=["get"], url_path="mutual")
     def mutual(self, request):
