@@ -117,7 +117,58 @@ class FriendshipViewSet(
         )
 
         if not my_ids:
-            return Response([])
+            # Fallback for brand-new users:
+            # Show all non-staff users, excluding me and anyone already related (friends or pending requests).
+            base = User.objects.filter(is_active=True, is_staff=False).exclude(id=me.id)
+
+            # Exclude already-friends (should be none if not my_ids, but safe to keep)
+            fr_pairs = Friendship.objects.filter(Q(user1=me) | Q(user2=me))
+            related_ids = set(fr_pairs.values_list("user1_id", flat=True)) | set(
+                fr_pairs.values_list("user2_id", flat=True)
+            )
+
+            # Exclude users who have a pending friend-request with me (either direction)
+            pending_pairs = FriendRequest.objects.filter(
+                Q(from_user=me) | Q(to_user=me),
+                status=FriendRequest.PENDING,
+            ).values_list("from_user_id", "to_user_id")
+            for a, b in pending_pairs:
+                related_ids.add(a)
+                related_ids.add(b)
+
+            related_ids.add(me.id)
+            base = base.exclude(id__in=related_ids)
+
+            # Respect ?limit= (default 12, max 50)
+            try:
+                limit = int(request.query_params.get("limit", 12))
+            except ValueError:
+                limit = 12
+            limit = max(1, min(limit, 50))
+
+            # Newest-ish first (fallback to id)
+            base = base.order_by("-id")[:limit]
+
+            # Local helpers (duplicated here so we don't touch the rest of your code)
+            def _name(u):
+                full = f"{getattr(u, 'first_name', '')} {getattr(u, 'last_name', '')}".strip()
+                return (
+                    getattr(u, "display_name", None)
+                    or full
+                    or getattr(u, "username", None)
+                    or getattr(u, "email", "")
+                    or f"User #{u.id}"
+                )
+
+            def _avatar(u):
+                return getattr(u, "avatar_url", "") or getattr(getattr(u, "profile", None), "avatar", "") or ""
+
+            data = [
+                {"id": u.id, "name": _name(u), "avatar": _avatar(u), "mutuals": 0}
+                for u in base
+            ]
+            return Response(data)
+
 
         # 2) users who are connected to any of my friends (FoF)
         qs = User.objects.filter(
