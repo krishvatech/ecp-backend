@@ -180,9 +180,23 @@ class ShareReadSerializer(serializers.ModelSerializer):
         model = Share
         fields = ["id", "user", "recipient", "note", "target", "created_at"]
 
+    def _mini_user_payload(self, user):
+        """
+        Same shape as comments/reactions:
+        { id, name, avatar_url }
+        using UserMiniSerializer for avatar.
+        """
+        mini = UserMiniSerializer(user, context=self.context)
+        mini_data = mini.data
+        name = (user.first_name or user.username or "").strip() or str(user)
+        return {
+            "id": user.id,
+            "name": name,
+            "avatar_url": mini_data.get("avatar_url") or "",
+        }
+
     def get_user(self, obj):
-        u = obj.user
-        return {"id": u.id, "name": str(u)}
+        return self._mini_user_payload(obj.user)
 
     def get_recipient(self, obj):
         if obj.to_user_id:
@@ -243,26 +257,40 @@ class ShareWriteSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         request = self.context["request"]
-        note = validated_data.get("note", "")
-        to_users = list(dict.fromkeys(validated_data.get("to_users") or []))   # de-dup
-        to_groups = list(dict.fromkeys(validated_data.get("to_groups") or [])) # de-dup
+        # normalize note
+        note = (validated_data.get("note") or "").strip()
+
+        # de-dup recipients
+        to_users = list(dict.fromkeys(validated_data.get("to_users") or []))
+        to_groups = list(dict.fromkeys(validated_data.get("to_groups") or []))
 
         ttype = validated_data.get("target_type")
         tid = validated_data.get("target_id")
         feed_item = validated_data.get("feed_item")
         ct, oid = self._resolve_target(ttype, tid, feed_item)
 
+        # --- create Share rows (existing behaviour) ---
         rows = []
         for uid in to_users:
-            rows.append(Share(
-                content_type=ct, object_id=oid, user=request.user,
-                to_user_id=uid, note=note
-            ))
+            rows.append(
+                Share(
+                    content_type=ct,
+                    object_id=oid,
+                    user=request.user,
+                    to_user_id=uid,
+                    note=note,
+                )
+            )
         for gid in to_groups:
-            rows.append(Share(
-                content_type=ct, object_id=oid, user=request.user,
-                to_group_id=gid, note=note
-            ))
+            rows.append(
+                Share(
+                    content_type=ct,
+                    object_id=oid,
+                    user=request.user,
+                    to_group_id=gid,
+                    note=note,
+                )
+            )
 
         # Use bulk_create with ignore_conflicts=True to skip duplicates silently
         Share.objects.bulk_create(rows, ignore_conflicts=True)
@@ -272,11 +300,82 @@ class ShareWriteSerializer(serializers.Serializer):
         if to_users:
             q = q.filter(to_user_id__in=to_users) | q
         if to_groups:
-            q = Share.objects.filter(
-                user=request.user,
-                content_type=ct,
-                object_id=oid,
-                to_group_id__in=to_groups,
-            ) | q
+            q = (
+                Share.objects.filter(
+                    user=request.user,
+                    content_type=ct,
+                    object_id=oid,
+                    to_group_id__in=to_groups,
+                )
+                | q
+            )
 
-        return list(q.distinct())
+        shares = list(q.distinct())
+
+        # ---------- NEW: also create DM messages for each user recipient (LinkedIn-style) ----------
+        try:
+            # local import to avoid circular imports
+            from messaging.models import Conversation, Message
+        except Exception:
+            # messaging app not available → keep old behaviour only
+            return shares
+
+        sharer = request.user
+
+        # Map user_id -> one Share row (for attachments)
+        shares_by_user = {}
+        for s in shares:
+            if s.to_user_id:
+                # keep the first one we see for that user
+                shares_by_user.setdefault(s.to_user_id, s)
+
+        # helper: safe user lookup
+        def get_user_safe(uid: int):
+            try:
+                return User.objects.get(pk=uid)
+            except User.DoesNotExist:
+                return None
+
+        for uid in to_users:
+            # don't send a DM to yourself
+            if not uid or uid == sharer.id:
+                continue
+
+            recipient = get_user_safe(uid)
+            if recipient is None:
+                continue
+
+            # 1:1 DM conversation between sharer and recipient
+            # use canonical ordering of user ids
+            pair = sorted([sharer.id, recipient.id])
+            conv, _ = Conversation.objects.get_or_create(
+                user1_id=pair[0],
+                user2_id=pair[1],
+            )
+
+            share_row = shares_by_user.get(uid)
+
+            # default message body
+            body = note or f"{sharer} shared a post with you"
+
+            # Build kwargs in a safe way so we don't break if `attachments` field doesn't exist
+            msg_kwargs = {
+                "conversation": conv,
+                "sender": sharer,
+                "body": body,
+            }
+
+            # Optional attachment payload describing the shared post
+            if hasattr(Message, "attachments") and share_row is not None:
+                msg_kwargs["attachments"] = [
+                    {
+                        "type": "share",  # will show up as "other" in attachments summary
+                        "share_id": share_row.id,
+                        "content_type_id": share_row.content_type_id,
+                        "object_id": share_row.object_id,
+                    }
+                ]
+
+            Message.objects.create(**msg_kwargs)
+
+        return shares
