@@ -1,11 +1,14 @@
-from django.contrib.contenttypes.models import ContentType
+from django.contrib.contenttypes.models import ContentType 
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
+
 from .models import Comment, Reaction, Share
 from activity_feed.models import FeedItem
 from groups.models import Group
+from users.serializers import UserMiniSerializer  # ← use mini user with avatar_url
 
 User = get_user_model()
+
 
 def get_ct(value: str) -> ContentType:
     """
@@ -21,7 +24,8 @@ def get_ct(value: str) -> ContentType:
     except Exception:
         raise serializers.ValidationError("Invalid target_type. Use CT id or 'app_label.ModelName'.")
 
-# Small user projection
+
+# Small user projection (kept in case used elsewhere)
 class MiniUserSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     name = serializers.CharField()
@@ -33,6 +37,7 @@ class MiniUserSerializer(serializers.Serializer):
             if val:
                 return str(val)
         return ""
+
 
 # ---------- Comments ----------
 class CommentSerializer(serializers.ModelSerializer):
@@ -63,9 +68,22 @@ class CommentSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["user", "likes_count", "has_liked", "created_at", "updated_at"]
 
+    def _mini_user_payload(self, user):
+        """
+        Build: {id, name, avatar_url} using central avatar logic from UserMiniSerializer.
+        """
+        mini = UserMiniSerializer(user, context=self.context)
+        mini_data = mini.data
+        # Prefer first_name, else username, else string representation
+        name = (user.first_name or user.username or "").strip() or str(user)
+        return {
+            "id": user.id,
+            "name": name,
+            "avatar_url": mini_data.get("avatar_url") or "",
+        }
+
     def get_user(self, obj):
-        u = obj.user
-        return MiniUserSerializer({"id": u.id, "name": str(u)}).data
+        return self._mini_user_payload(obj.user)
 
     def get_likes_count(self, obj):
         ct = ContentType.objects.get_for_model(Comment)
@@ -117,6 +135,7 @@ class CommentSerializer(serializers.ModelSerializer):
             **validated_data,
         )
 
+
 # ---------- Reactions ----------
 class ReactionToggleSerializer(serializers.Serializer):
     # Accept "comment" OR a generic 'app_label.ModelName' for non-comment targets
@@ -124,16 +143,31 @@ class ReactionToggleSerializer(serializers.Serializer):
     target_id = serializers.IntegerField()
     reaction = serializers.ChoiceField(choices=["like"], default="like")
 
+
 class ReactionUserSerializer(serializers.ModelSerializer):
+    """
+    Used for the "liked by X and N others" list.
+    Returns: {id, name, avatar_url} for user.
+    """
     user = serializers.SerializerMethodField()
 
     class Meta:
         model = Reaction
         fields = ["id", "user", "reaction", "created_at"]
 
+    def _mini_user_payload(self, user):
+        mini = UserMiniSerializer(user, context=self.context)
+        mini_data = mini.data
+        name = (user.first_name or user.username or "").strip() or str(user)
+        return {
+            "id": user.id,
+            "name": name,
+            "avatar_url": mini_data.get("avatar_url") or "",
+        }
+
     def get_user(self, obj):
-        u = obj.user
-        return MiniUserSerializer({"id": u.id, "name": str(u)}).data
+        return self._mini_user_payload(obj.user)
+
 
 # ---------- Shares ----------
 # ---------- Share (READ) ----------
@@ -161,6 +195,7 @@ class ShareReadSerializer(serializers.ModelSerializer):
             "content_type_id": obj.content_type_id,
             "object_id": obj.object_id,
         }
+
 
 # ---------- Share (WRITE) ----------
 class ShareWriteSerializer(serializers.Serializer):
@@ -230,13 +265,18 @@ class ShareWriteSerializer(serializers.Serializer):
             ))
 
         # Use bulk_create with ignore_conflicts=True to skip duplicates silently
-        created = Share.objects.bulk_create(rows, ignore_conflicts=True)
+        Share.objects.bulk_create(rows, ignore_conflicts=True)
 
         # Load whatever actually exists now (created or previously existing) for response
         q = Share.objects.filter(user=request.user, content_type=ct, object_id=oid)
         if to_users:
             q = q.filter(to_user_id__in=to_users) | q
         if to_groups:
-            q = Share.objects.filter(user=request.user, content_type=ct, object_id=oid, to_group_id__in=to_groups) | q
+            q = Share.objects.filter(
+                user=request.user,
+                content_type=ct,
+                object_id=oid,
+                to_group_id__in=to_groups,
+            ) | q
 
         return list(q.distinct())
