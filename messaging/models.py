@@ -47,11 +47,28 @@ class Conversation(models.Model):
         """Mirror permission logic so views can call it quickly."""
         if not user or not getattr(user, "is_authenticated", False):
             return False
-        # Group/Event rooms -> open to any authenticated user
-        if self.group_id or self.event_id:
+
+        # Group rooms → only members (active or pending)
+        if self.group_id:
+            from groups.models import GroupMembership
+
+            member_statuses = [
+                GroupMembership.STATUS_ACTIVE,
+                GroupMembership.STATUS_PENDING,
+            ]
+            return GroupMembership.objects.filter(
+                group_id=self.group_id,
+                user_id=user.id,
+                status__in=member_statuses,
+            ).exists()
+
+        # Event rooms → keep open for now (you can later restrict via event registrations)
+        if self.event_id:
             return True
-        # DM -> only the two participants
+
+        # DM → only the two participants
         return user.id in (self.user1_id, self.user2_id)
+
     
     # ---------- validation ----------
     def clean(self):

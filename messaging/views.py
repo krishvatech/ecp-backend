@@ -35,13 +35,41 @@ class ConversationViewSet(viewsets.ViewSet):
 
     def get_queryset(self, request):
         user = request.user
-        # Include DMs I’m in + all group/event rooms
+        from groups.models import GroupMembership
+
+        # Groups where this user is a member (same logic as /groups/joined-groups/)
+        member_statuses = [
+            GroupMembership.STATUS_ACTIVE,
+            GroupMembership.STATUS_PENDING,
+        ]
+        member_group_ids = GroupMembership.objects.filter(
+            user=user,
+            status__in=member_statuses,
+        ).values_list("group_id", flat=True)
+
+        # Include:
+        # - DMs I'm in
+        # - Group rooms ONLY where I'm a member
+        # - Event rooms (kept open as before)
         qs = Conversation.objects.filter(
-            Q(user1=user) | Q(user2=user) | Q(group__isnull=False) | Q(event__isnull=False)
+            Q(user1=user)
+            | Q(user2=user)
+            | Q(group_id__in=member_group_ids)
+            | Q(event__isnull=False)
         )
-        qs = qs.select_related("user1__profile", "user2__profile", "group", "event").prefetch_related(
-            models.Prefetch("messages", queryset=Message.objects.filter(is_hidden=False, is_deleted=False))
+
+        qs = qs.select_related(
+            "user1__profile",
+            "user2__profile",
+            "group",
+            "event",
+        ).prefetch_related(
+            models.Prefetch(
+                "messages",
+                queryset=Message.objects.filter(is_hidden=False, is_deleted=False),
+            )
         )
+
         qs = qs.order_by("-updated_at")
 
         q = request.query_params.get("q")
@@ -49,16 +77,16 @@ class ConversationViewSet(viewsets.ViewSet):
             q = q.strip()
             other_user1 = (
                 (Q(user1__first_name__icontains=q)
-                | Q(user1__last_name__icontains=q)
-                | Q(user1__profile__full_name__icontains=q)
-                | Q(user1__profile__company__icontains=q))
+                 | Q(user1__last_name__icontains=q)
+                 | Q(user1__profile__full_name__icontains=q)
+                 | Q(user1__profile__company__icontains=q))
                 & ~Q(user1=user)
             )
             other_user2 = (
                 (Q(user2__first_name__icontains=q)
-                | Q(user2__last_name__icontains=q)
-                | Q(user2__profile__full_name__icontains=q)
-                | Q(user2__profile__company__icontains=q))
+                 | Q(user2__last_name__icontains=q)
+                 | Q(user2__profile__full_name__icontains=q)
+                 | Q(user2__profile__company__icontains=q))
                 & ~Q(user2=user)
             )
             qs = qs.filter(
@@ -66,7 +94,6 @@ class ConversationViewSet(viewsets.ViewSet):
                 | other_user2
                 | Q(group__isnull=False, title__icontains=q)
                 | Q(event__isnull=False, title__icontains=q)
-                # bonus: match actual related names too
                 | Q(group__name__icontains=q)
                 | Q(event__title__icontains=q)
             )
