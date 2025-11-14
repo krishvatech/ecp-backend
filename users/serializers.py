@@ -69,7 +69,23 @@ class ExperienceSerializer(serializers.ModelSerializer):
             "id", "community_name", "position",
             "start_date", "end_date", "currently_work_here",
             "location", "description",
+            # NEW fields:
+            "employment_type",
+            "work_schedule",
+            "relationship_to_org",
+            "career_stage",
+            "compensation_type",
+            "work_arrangement",
         )
+        # Let optional selects accept blank ("") from the UI
+        extra_kwargs = {
+            "employment_type": {"required": True},
+            "work_schedule": {"required": False, "allow_blank": True},
+            "relationship_to_org": {"required": False, "allow_blank": True},
+            "career_stage": {"required": False, "allow_blank": True},
+            "compensation_type": {"required": False, "allow_blank": True},
+            "work_arrangement": {"required": False, "allow_blank": True},
+        }
 
 class UserProfileMiniSerializer(serializers.ModelSerializer):
     class Meta:

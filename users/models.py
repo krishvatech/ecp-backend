@@ -117,18 +117,85 @@ class Experience(models.Model):
     location = models.CharField(max_length=255, blank=True, default="")
     description = models.TextField(blank=True, default="")
 
+    # ---------- NEW LINKEDIN-STYLE META FIELDS ----------
+    EMPLOYMENT_TYPE_CHOICES = [
+        ("full_time", "Full-time"),
+        ("part_time", "Part-time"),
+        ("self_employed", "Self-employment"),
+        ("freelance", "Freelance"),
+    ]
+    WORK_SCHEDULE_CHOICES = [
+        ("", "—"),
+        ("full_time", "Full-time"),
+        ("part_time", "Part-time"),
+        ("internship", "Internship"),
+    ]
+    REL_TO_ORG_CHOICES = [
+        ("", "—"),
+        ("employee", "Employee (on payroll)"),
+        ("independent", "Independent (self-employed / contractor / freelance)"),
+        ("third_party", "Third-party (Agency/Consultancy/Temp)"),
+    ]
+    CAREER_STAGE_CHOICES = [
+        ("", "—"),
+        ("internship", "Internship"),
+        ("apprenticeship", "Apprenticeship"),
+        ("trainee", "Trainee / Entry program"),
+        ("entry", "Entry level"),
+        ("mid", "Mid level"),
+        ("senior", "Senior level"),
+    ]
+    COMPENSATION_TYPE_CHOICES = [
+        ("", "—"),
+        ("paid", "Paid"),
+        ("stipend", "Stipend"),
+        ("volunteer", "Volunteer / Unpaid"),
+    ]
+    WORK_ARRANGEMENT_CHOICES = [
+        ("", "—"),
+        ("onsite", "On-site"),
+        ("hybrid", "Hybrid"),
+        ("remote", "Remote"),
+    ]
+
+    # One compulsory with a safe default:
+    employment_type = models.CharField(
+        max_length=32, choices=EMPLOYMENT_TYPE_CHOICES, default="full_time"
+    )
+    # All others optional (store "" when not chosen):
+    work_schedule = models.CharField(
+        max_length=32, choices=WORK_SCHEDULE_CHOICES, blank=True, default=""
+    )
+    relationship_to_org = models.CharField(
+        max_length=32, choices=REL_TO_ORG_CHOICES, blank=True, default=""
+    )
+    career_stage = models.CharField(
+        max_length=32, choices=CAREER_STAGE_CHOICES, blank=True, default=""
+    )
+    compensation_type = models.CharField(
+        max_length=32, choices=COMPENSATION_TYPE_CHOICES, blank=True, default=""
+    )
+    work_arrangement = models.CharField(
+        max_length=32, choices=WORK_ARRANGEMENT_CHOICES, blank=True, default=""
+    )
+    # ----------------------------------------------------
+
     class Meta:
         ordering = ["-currently_work_here", "-end_date", "-start_date", "-id"]
         indexes = [
             models.Index(fields=["community_name"]),
             models.Index(fields=["position"]),
             models.Index(fields=["currently_work_here"]),
+            # helpful when filtering by type:
+            models.Index(fields=["employment_type"]),
         ]
         constraints = [
             # If not current, allow null or >= start; if current, end_date must be null
             models.CheckConstraint(
-                check=Q(currently_work_here=True, end_date__isnull=True) |
-                      Q(currently_work_here=False) & (Q(end_date__isnull=True) | Q(end_date__gte=F("start_date"))),
+                check=(
+                    Q(currently_work_here=True, end_date__isnull=True)
+                    | (Q(currently_work_here=False) & (Q(end_date__isnull=True) | Q(end_date__gte=F("start_date"))))
+                ),
                 name="exp_dates_valid",
             ),
         ]
