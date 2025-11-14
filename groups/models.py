@@ -210,3 +210,54 @@ class GroupPinnedMessage(models.Model):
         scope = "GLOBAL" if self.is_global else f"PERSONAL:{self.user_id}"
         return f"Pin[{scope}] g={self.group_id} msg={self.message_id}"
 
+class GroupNotification(models.Model):
+    KIND_JOIN_REQUEST = "join_request"
+    KIND_MEMBER_JOINED = "member_joined"
+    KIND_MEMBER_ADDED = "member_added"
+    KIND_GROUP_CREATED = "group_created"
+
+    KIND_CHOICES = [
+        (KIND_JOIN_REQUEST, "Join Request"),
+        (KIND_MEMBER_JOINED, "Member Joined"),
+        (KIND_MEMBER_ADDED, "Member Added"),
+        (KIND_GROUP_CREATED, "Group Created"),
+    ]
+
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="group_notifications",
+        on_delete=models.CASCADE,
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="group_notifications_as_actor",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+    group = models.ForeignKey(
+        Group,
+        related_name="notifications",
+        on_delete=models.CASCADE,
+    )
+    kind = models.CharField(max_length=32, choices=KIND_CHOICES)
+    title = models.CharField(max_length=200, blank=True)
+    description = models.TextField(blank=True, default="")
+    # for join requests etc: "pending", "approved", "rejected"…
+    state = models.CharField(max_length=16, blank=True)
+    data = models.JSONField(default=dict, blank=True)
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["recipient", "is_read", "created_at"]),
+            models.Index(fields=["group", "kind"]),
+        ]
+
+    def __str__(self):
+        return (
+            f"GroupNotification(group={self.group_id}, "
+            f"to={self.recipient_id}, kind={self.kind}, state={self.state})"
+        )

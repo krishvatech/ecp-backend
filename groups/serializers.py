@@ -3,8 +3,11 @@ from rest_framework import serializers
 from django.db.models import Count
 from community.models import Community
 from django.contrib.auth import get_user_model
-from .models import Group, GroupMembership, PromotionRequest, GroupPinnedMessage
+from users.serializers import UserMiniSerializer
+from .models import Group, GroupMembership, PromotionRequest, GroupPinnedMessage, GroupNotification
+
 User = get_user_model()
+
 
 
 class GroupSerializer(serializers.ModelSerializer):
@@ -278,3 +281,23 @@ class GroupCreateUpdateSerializer(serializers.ModelSerializer):
                 instance.cover_image.delete(save=False)
             instance.cover_image = None
         return super().update(instance, validated)
+    
+
+class GroupNotificationSerializer(serializers.ModelSerializer):
+    actor = UserMiniSerializer(read_only=True)
+
+    class Meta:
+        model = GroupNotification
+        fields = (
+            "id",
+            "group",
+            "kind",
+            "title",
+            "description",
+            "state",
+            "is_read",
+            "created_at",
+            "actor",
+            "data",
+        )
+        read_only_fields = fields

@@ -8,7 +8,7 @@ from django.utils import timezone
 from urllib.parse import urljoin
 from django.db import transaction
 from django.core import signing
-from rest_framework import status, viewsets, serializers
+from rest_framework import status, viewsets, serializers, mixins
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
@@ -25,7 +25,7 @@ from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParam
 
 from community.models import Community
 from activity_feed.models import FeedItem
-from .models import Group, GroupMembership, PromotionRequest, GroupPinnedMessage
+from .models import Group, GroupMembership, PromotionRequest, GroupPinnedMessage, GroupNotification
 from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content
 from .serializers import (
     GroupSerializer,
@@ -36,7 +36,9 @@ from .serializers import (
     GroupPinnedMessageOutSerializer,
     PromotionRequestCreateSerializer,
     PromotionRequestOutSerializer,
+    GroupNotificationSerializer,
 )
+
 
 
 class GroupViewSet(viewsets.ModelViewSet):
@@ -1964,3 +1966,36 @@ class UsersLookupView(APIView):
         return Response(out)
 
 
+class GroupNotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    """
+    List group-related notifications for the current user.
+    Example: /api/groups/group-notifications/?unread=1&kind=join_request
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = GroupNotificationSerializer
+
+    def get_queryset(self):
+        me = self.request.user
+        qs = GroupNotification.objects.filter(recipient=me).order_by("-created_at")
+
+        kind = self.request.query_params.get("kind")
+        unread = self.request.query_params.get("unread")
+        group_id = self.request.query_params.get("group_id")
+
+        if kind:
+            qs = qs.filter(kind=kind)
+        if unread in {"1", "true", "True"}:
+            qs = qs.filter(is_read=False)
+        if group_id:
+            qs = qs.filter(group_id=group_id)
+
+        return qs
+
+    @action(detail=False, methods=["post"], url_path="mark-read")
+    def mark_read(self, request):
+        ids = request.data.get("ids", [])
+        GroupNotification.objects.filter(
+            recipient=request.user,
+            id__in=ids,
+        ).update(is_read=True)
+        return Response({"ok": True})

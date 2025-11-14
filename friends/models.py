@@ -195,7 +195,6 @@ class Notification(models.Model):
         ("comment", "Comment"),
         ("reaction", "Reaction"),
         ("event", "Event"),
-        ("system", "System"),
     ]
 
     recipient = models.ForeignKey(
