@@ -210,7 +210,7 @@ class Notification(models.Model):
     )
     kind = models.CharField(max_length=32, choices=KIND_CHOICES)
     title = models.CharField(max_length=200, blank=True)
-    description = models.TextField(blank=True)
+    description = models.TextField(blank=True, default="")
     # For friend requests: "pending" | "accepted" | "declined" | "canceled"
     state = models.CharField(max_length=16, blank=True)
     data = models.JSONField(default=dict, blank=True)
