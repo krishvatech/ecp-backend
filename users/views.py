@@ -7,7 +7,7 @@ authenticated user via a custom `me` action, and register new users.
 from django.contrib.auth.models import User
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from rest_framework import mixins, permissions, status, viewsets
+from rest_framework import mixins, permissions, status, viewsets, filters
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -35,7 +35,7 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.utils.decorators import method_decorator
 from django.contrib.auth import login as django_login, logout as django_logout
 from django.contrib.auth import get_user_model
-from .serializers import UserRosterSerializer
+from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
 from .models import Education, Experience
 from .serializers import EducationSerializer, ExperienceSerializer
@@ -528,3 +528,69 @@ class MeProfileView(APIView):
             "experiences": exps,
             # add more sections later if needed (skills, links, etc.)
         })
+    
+class StaffUserViewSet(viewsets.ModelViewSet):
+    """
+    /api/admin/users/                 GET list (search/order/paginate)
+    /api/admin/users/{id}/            GET retrieve
+    /api/admin/users/{id}/            PATCH { "is_staff": true|false }
+    /api/admin/users/bulk-set-staff/  POST { "ids":[...], "is_staff": true|false }
+    """
+    queryset = User.objects.all().order_by("-date_joined")
+    serializer_class = StaffUserSerializer
+    permission_classes = [permissions.IsAdminUser]
+    http_method_names = ["get", "patch", "post"]
+
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["username", "first_name", "last_name", "email"]
+    ordering_fields = ["date_joined", "last_login", "username", "email"]
+    
+   # users/views.py  -> inside class StaffUserViewSet
+    def get_queryset(self):
+        qs = super().get_queryset()
+        cid  = self.request.query_params.get("community_id")
+        slug = self.request.query_params.get("community_slug")
+
+        if cid or slug:
+            filt = Q()
+            if cid:
+                filt |= Q(community__id=cid)            # 👈 use community__, not memberships__
+            if slug:
+                filt |= Q(community__slug=slug)         # 👈 use community__, not memberships__
+            qs = qs.filter(filt).distinct()
+
+        return qs
+
+    def partial_update(self, request, *args, **kwargs):
+        user = self.get_object()
+
+        # Non-superusers cannot modify a superuser
+        if user.is_superuser and not request.user.is_superuser:
+            return Response({"detail": "You cannot modify a superuser."},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        # Only allow toggling is_staff
+        if "is_staff" not in request.data:
+            return Response({"detail": "Only 'is_staff' can be updated."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        ser = self.get_serializer(user, data={"is_staff": request.data["is_staff"]}, partial=True)
+        ser.is_valid(raise_exception=True)
+        self.perform_update(ser)
+        return Response(ser.data)
+
+    @action(detail=False, methods=["post"], url_path="bulk-set-staff")
+    def bulk_set_staff(self, request):
+        ids = request.data.get("ids", [])
+        is_staff = request.data.get("is_staff", None)
+        if not isinstance(ids, list) or is_staff is None:
+            return Response({"detail": "Provide 'ids' (list) and 'is_staff' (bool)."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        qs = User.objects.filter(id__in=ids)
+        # Block superusers unless caller is superuser
+        if not request.user.is_superuser:
+            qs = qs.filter(is_superuser=False)
+
+        updated = qs.update(is_staff=bool(is_staff))
+        return Response({"updated": updated})

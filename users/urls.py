@@ -17,12 +17,14 @@ from .views import (
     SessionLoginView, SessionLogoutView, SessionMeView, CSRFCookieView,
     # NEW:
     MeEducationViewSet, MeExperienceViewSet, MeProfileView,
+    StaffUserViewSet
 )
 
 # ---- NEW: Router for logged-in user's Education & Experience ----
 router = DefaultRouter()
 router.register(r"me/educations", MeEducationViewSet, basename="me-educations")
 router.register(r"me/experiences", MeExperienceViewSet, basename="me-experiences")
+router.register(r"admin/users", StaffUserViewSet, basename="admin-users")
 
 urlpatterns = [
     # Email + password login (returns refresh + access)

@@ -503,6 +503,23 @@ class UserMiniSerializer(serializers.ModelSerializer):
             return req.build_absolute_uri(url)
         return url
 
+class StaffUserSerializer(serializers.ModelSerializer):
+    # we only allow editing this single field
+    is_staff = serializers.BooleanField(required=True)
+
+    class Meta:
+        model = User
+        fields = (
+            "id", "username", "first_name", "last_name",
+            "email", "is_active", "is_superuser",
+            "is_staff", "date_joined", "last_login",
+        )
+        read_only_fields = (
+            "id", "username", "first_name", "last_name",
+            "email", "is_active", "is_superuser",
+            "date_joined", "last_login",
+        )
+
 class PublicProfileSerializer(serializers.Serializer):
     user = UserMiniSerializer()
     profile = UserProfileMiniSerializer(allow_null=True)
