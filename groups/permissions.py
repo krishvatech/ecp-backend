@@ -12,25 +12,42 @@ class GroupCreateByAdminOnly(BasePermission):
     def has_permission(self, request, view):
         if request.method in SAFE_METHODS:
             return True
-        if request.method == 'POST':  # create group
-            return bool(request.user and request.user.is_authenticated and request.user.is_staff)
+
+        user = request.user
+        if not (user and user.is_authenticated):
+            return False
+
+        # Only owners (superusers) can create new top-level groups
+        if request.method == "POST":
+            return bool(user.is_superuser)
+
+        # For other non-safe methods, defer to object-level checks
         return True
 
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:
             return True
-        if request.user and request.user.is_authenticated:
-            return request.user.is_staff or obj.created_by_id == request.user.id
-        return False
+
+        user = request.user
+        if not (user and user.is_authenticated):
+            return False
+
+        # Owners (superusers) can always edit/delete
+        if user.is_superuser:
+            return True
+
+        # Otherwise only the creator of the group can update/delete
+        return obj.created_by_id == user.id
 
 
-# -------- Moderator helpers --------
 def is_moderator(user, group) -> bool:
     if not user or not getattr(user, "is_authenticated", False) or not group:
         return False
     try:
         mem = GroupMembership.objects.get(
-            group=group, user=user, status=GroupMembership.STATUS_ACTIVE
+            group=group,
+            user=user,
+            status=GroupMembership.STATUS_ACTIVE,
         )
     except GroupMembership.DoesNotExist:
         return False

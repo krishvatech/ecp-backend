@@ -58,6 +58,15 @@ OIDC_USERINFO = "https://api.linkedin.com/v2/userinfo"  # if using OIDC product
 
 UserModel = get_user_model()
 
+class IsSuperuser(permissions.BasePermission):
+    """
+    Restrict access to owner-level operations.
+    Only Django superusers (is_superuser=True) are allowed.
+    """
+    def has_permission(self, request, view):
+        user = getattr(request, "user", None)
+        return bool(user and user.is_authenticated and user.is_superuser)
+
 
 def _state_cookie():
     return get_random_string(32)
@@ -538,7 +547,7 @@ class StaffUserViewSet(viewsets.ModelViewSet):
     """
     queryset = User.objects.all().order_by("-date_joined")
     serializer_class = StaffUserSerializer
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsSuperuser]
     http_method_names = ["get", "patch", "post"]
 
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]

@@ -174,8 +174,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "username", "email", "profile", "first_name", "is_active","is_staff", "date_joined","educations", "experiences"]
-        read_only_fields = ["id", "is_active","is_staff",  "date_joined"]
+        fields = ["id", "username", "email", "profile", "first_name", "is_active", "is_superuser", "is_staff", "date_joined","educations", "experiences"]
+        read_only_fields = ["id", "is_active","is_superuser", "is_staff",  "date_joined"]
 
     # username must not be numeric-only
     def validate_username(self, value: str) -> str:
