@@ -8,5 +8,5 @@ router.register(r"event-registrations", EventRegistrationViewSet, basename="even
 router.register(r"event-recordings", EventRecordingViewSet, basename="eventrecording")  # NEW
 
 urlpatterns = router.urls + [
-    path("events/recording/webhook/", RecordingWebhookView.as_view(), name="recording-webhook"),  # NEW
+    path("events/recording/webhook/", RecordingWebhookView.as_view(), name="dyte-recording-webhook"),  # NEW
 ]

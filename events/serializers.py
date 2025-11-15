@@ -51,7 +51,7 @@ class EventSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "community_id",
-            'community', 
+            "community",
             "title",
             "slug",
             "description",
@@ -67,6 +67,8 @@ class EventSerializer(serializers.ModelSerializer):
             "preview_image",
             "active_speaker",
             "recording_url",
+            "dyte_meeting_id",    
+            "dyte_meeting_title",  
             "created_by_id",
             "created_at",
             "updated_at",
@@ -77,8 +79,7 @@ class EventSerializer(serializers.ModelSerializer):
             "resource_videos",
             "resources",
         ]
-
-        # Mark auto‑managed fields and new live metadata fields as read only.
+        
         read_only_fields = [
             "id",
             "slug",
@@ -89,7 +90,10 @@ class EventSerializer(serializers.ModelSerializer):
             "attending_count",
             "live_started_at",
             "live_ended_at",
+            "dyte_meeting_id",     
+            "dyte_meeting_title",
         ]
+
 
     # Browsable API uses these formats for rendering/parsing
     start_time = serializers.DateTimeField(

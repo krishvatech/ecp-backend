@@ -71,8 +71,13 @@ class Event(models.Model):
         related_name="active_events",
     )
     recording_url = models.URLField(blank=True)
+    # --- NEW: Dyte live meeting fields ---
+    dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
+    dyte_meeting_title = models.CharField(max_length=255, blank=True, null=True)
+    # Legacy Agora recording fields (no longer used)
     agora_resource_id = models.CharField(max_length=255, blank=True, null=True)
     agora_sid = models.CharField(max_length=255, blank=True, null=True)
+
     agora_channel = models.CharField(max_length=255, blank=True, null=True)
     agora_recorder_uid = models.CharField(max_length=64, blank=True, null=True)
     # Meta

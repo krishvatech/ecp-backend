@@ -82,6 +82,63 @@ BASE        = os.getenv("AGORA_CLOUD_RECORDING_BASE", "https://api.sd-rtn.com")
 
 logger = logging.getLogger("events")
 
+# --- Dyte configuration ---
+DYTE_API_BASE = os.getenv("DYTE_API_BASE", "https://api.dyte.io/v2")
+DYTE_AUTH_HEADER = os.getenv("DYTE_AUTH_HEADER", "")
+DYTE_PRESET_HOST = os.getenv("DYTE_PRESET_NAME_HOST", os.getenv("DYTE_PRESET_NAME", "group_call_host"))
+DYTE_PRESET_PARTICIPANT = os.getenv("DYTE_PRESET_NAME_MEMBER", "group_call_participant")
+
+logger = logging.getLogger(__name__)
+
+
+def _dyte_headers():
+    """HTTP headers for Dyte REST API."""
+    if not DYTE_AUTH_HEADER:
+        raise RuntimeError("DYTE_AUTH_HEADER is not configured")
+    return {
+        "Authorization": DYTE_AUTH_HEADER,
+        "Content-Type": "application/json",
+    }
+
+
+def _ensure_dyte_meeting_for_event(event: Event) -> str:
+    """
+    Ensure this Event has a Dyte meeting.
+    If not, create one via Dyte API and persist dyte_meeting_id.
+    """
+    if event.dyte_meeting_id:
+        return event.dyte_meeting_id
+
+    payload = {
+        "title": event.title or f"Event {event.id}",
+        "record_on_start": True,
+    }
+    try:
+        resp = requests.post(
+            f"{DYTE_API_BASE}/meetings",
+            headers=_dyte_headers(),
+            json=payload,
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        logger.exception("❌ Dyte meeting create exception: %s", e)
+        raise RuntimeError(str(e))
+
+    if resp.status_code not in (200, 201):
+        logger.error("❌ Dyte meeting create failed: %s", resp.text[:500])
+        raise RuntimeError(f"Dyte meeting create failed ({resp.status_code})")
+
+    data = (resp.json() or {}).get("data") or {}
+    meeting_id = data.get("id")
+    if not meeting_id:
+        raise RuntimeError("Dyte response missing meeting id")
+
+    event.dyte_meeting_id = meeting_id
+    event.dyte_meeting_title = data.get("title", event.title)
+    event.save(update_fields=["dyte_meeting_id", "dyte_meeting_title", "updated_at"])
+    return meeting_id
+
+
 
 # ============================================================
 # ================= Pagination / Permissions =================
@@ -593,6 +650,101 @@ class EventViewSet(viewsets.ModelViewSet):
         page = self.paginate_queryset(qs)
         ser = EventLiteSerializer(page or qs, many=True)
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+    
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="dyte/join")
+    def dyte_join(self, request, pk=None):
+        """
+        Join this event's Dyte meeting.
+
+        - Creates a Dyte meeting if one doesn't exist yet.
+        - Adds the current user as participant (host or normal member).
+        - Returns authToken for the frontend Dyte SDK.
+        """
+        event = self.get_object()
+        user = request.user
+
+        # Basic guard – adjust if you want stricter checks
+        if event.status not in ("live", "published"):
+            return Response(
+                {"error": "event_not_live", "detail": "Event is not live yet."},
+                status=400,
+            )
+
+        # 1) Ensure meeting exists
+        try:
+            meeting_id = _ensure_dyte_meeting_for_event(event)
+        except RuntimeError as e:
+            return Response(
+                {"error": "dyte_meeting_error", "detail": str(e)},
+                status=500,
+            )
+
+        # 2) Decide host vs participant preset
+        community_owner_id = getattr(event.community, "owner_id", None)
+        is_host = (
+            event.created_by_id == user.id
+            or user.is_staff
+            or community_owner_id == user.id
+        )
+        preset_name = DYTE_PRESET_HOST if is_host else DYTE_PRESET_PARTICIPANT
+
+        # 3) Prepare participant payload
+        name = (getattr(user, "full_name", "") or getattr(user, "get_full_name", lambda: "")()) or user.username
+        picture = ""
+        try:
+            profile = getattr(user, "profile", None)
+            if profile and getattr(profile, "user_image", None):
+                picture = profile.user_image.url
+        except Exception:
+            picture = ""
+
+        body = {
+            "name": name or f"User {user.id}",
+            "preset_name": preset_name,
+            "client_specific_id": str(user.id),
+        }
+        if picture:
+            body["picture"] = picture
+
+        # 4) Call Dyte Add Participant API
+        try:
+            resp = requests.post(
+                f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
+                headers=_dyte_headers(),
+                json=body,
+                timeout=10,
+            )
+        except requests.RequestException as e:
+            logger.exception("❌ Dyte add participant exception: %s", e)
+            return Response(
+                {"error": "dyte_network_error", "detail": str(e)},
+                status=500,
+            )
+
+        if resp.status_code not in (200, 201):
+            logger.error("❌ Dyte add participant failed: %s", resp.text[:500])
+            return Response(
+                {"error": "dyte_participant_error", "detail": resp.text[:500]},
+                status=500,
+            )
+
+        data = (resp.json() or {}).get("data") or {}
+        auth_token = data.get("token")
+        if not auth_token:
+            return Response(
+                {"error": "dyte_token_missing", "detail": "Dyte did not return auth token."},
+                status=500,
+            )
+
+        return Response(
+            {
+                "authToken": auth_token,
+                "meetingId": meeting_id,
+                "presetName": preset_name,
+            }
+        )
+
 
 
 # ============================================================
@@ -978,18 +1130,77 @@ class EventRecordingViewSet(viewsets.GenericViewSet):
 
 class RecordingWebhookView(views.APIView):
     """
-    Agora recording webhook.
-    Agora sends resourceId, sid, and fileList after a recording finishes.
-    We map it back to the Event and store the recording URL.
+    Dyte recording webhook.
+    We receive `recording.statusUpdate`, fetch recording details from Dyte,
+    then store the S3 key in Event.recording_url.
     """
     permission_classes = [permissions.AllowAny]
+
     def post(self, request, *args, **kwargs):
         payload = request.data
-        file_list = payload.get("fileList", [])
-        if not file_list:
-            return Response({"error": "No fileList in Agora payload"}, status=400)
-        recording_url = file_list[0].get("fileUrl")
-        event_id = payload.get("event_id")
-        if not event_id:
-            return Response({"error": "Missing event_id"}, status=400)
-        return Response({"message": "Recording saved"}, status=202)
+        event_type = payload.get("event")
+
+        if event_type != "recording.statusUpdate":
+            # Ignore other webhooks for now
+            return Response({"ignored": True}, status=200)
+
+        meeting = payload.get("meeting") or {}
+        recording = payload.get("recording") or {}
+
+        meeting_id = meeting.get("id")
+        recording_id = recording.get("recordingId")
+        status_str = recording.get("status")
+
+        if not (meeting_id and recording_id and status_str):
+            return Response({"error": "missing_fields"}, status=400)
+
+        # We only care when recording is fully uploaded
+        if status_str != "UPLOADED":
+            logger.info(f"🎥 Dyte recording status={status_str} | meeting={meeting_id}")
+            return Response({"ok": True, "status": status_str}, status=200)
+
+        # 1) Fetch recording details from Dyte
+        DYTE_API_BASE = os.getenv("DYTE_API_BASE", "https://api.dyte.io/v2")
+        DYTE_AUTH_HEADER = os.getenv("DYTE_AUTH_HEADER", "")
+
+        headers = {
+            "Content-Type": "application/json",
+            # If you're using DYTE_AUTH_HEADER from env as suggested:
+            "Authorization": DYTE_AUTH_HEADER,
+        }
+
+        url = f"{DYTE_API_BASE}/recordings/{recording_id}"
+        try:
+            r = requests.get(url, headers=headers, timeout=20)
+            r.raise_for_status()
+        except Exception as e:
+            logger.exception("❌ Failed to fetch Dyte recording details")
+            return Response({"error": "dyte_fetch_failed", "detail": str(e)}, status=500)
+
+        data = r.json().get("data", {})
+
+        # If using Dyte → S3 direct storage, build the S3 key:
+        output_file_name = data.get("output_file_name")
+        storage_cfg = data.get("storage_config") or {}
+        path_prefix = (storage_cfg.get("path") or "").strip("/")
+
+        # e.g. "recordings/dyte/room_timestamp.mp4"
+        if path_prefix:
+            s3_key = f"{path_prefix}/{output_file_name}"
+        else:
+            s3_key = output_file_name
+
+        # 2) Map Dyte meeting → Event
+        try:
+            event = Event.objects.get(dyte_meeting_id=meeting_id)
+        except Event.DoesNotExist:
+            logger.error(f"❌ Event not found for Dyte meeting_id={meeting_id}")
+            return Response({"error": "event_not_found"}, status=404)
+
+        event.recording_url = s3_key
+        event.save(update_fields=["recording_url", "updated_at"])
+
+        logger.info(
+            f"✅ Saved Dyte recording for event={event.id}, meeting={meeting_id}, s3_key={s3_key}"
+        )
+        return Response({"message": "Recording saved", "event_id": event.id}, status=202)
