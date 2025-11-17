@@ -385,7 +385,7 @@ class GroupViewSet(viewsets.ModelViewSet):
     # Use: Base queryset for groups list (optionally filtered by creator or search).
     # Ordering: No explicit order_by here (natural DB order). Add order_by(...) at call sites if needed.
     def get_queryset(self):
-        qs = Group.objects.all().annotate(member_count=Count("memberships"))
+        qs = Group.objects.all().annotate(member_count=Count("memberships")).order_by("-created_at")
         created_by = self.request.query_params.get("created_by")
         search = self.request.query_params.get("search")
 

@@ -21,7 +21,7 @@ class CommunityViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        return Community.objects.filter(Q(owner=user) | Q(members=user)).distinct()
+        return Community.objects.filter(Q(owner=user) | Q(members=user)).distinct().order_by("-id")
 
     def perform_create(self, serializer):
         serializer.save()
