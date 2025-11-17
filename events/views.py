@@ -69,17 +69,6 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-# ⚙️ Agora credentials (ensure these exist in your environment)
-# - APP_ID: Agora Project App ID
-# - CUSTOMER_ID: optional (not used in token build flow below)
-# - CUSTOMER_SECRET: should be your Agora App Certificate
-APP_ID      = os.getenv("AGORA_APP_ID")                 # Project App ID
-REST_ID     = os.getenv("AGORA_CUSTOMER_ID")            # REST Customer ID
-REST_SECRET = os.getenv("AGORA_CUSTOMER_SECRET")        # REST Customer Secret (NOT the app cert)
-APP_CERT    = os.getenv("AGORA_APP_CERTIFICATE")        # Project App Certificate (for RTC tokens)
-BASE        = os.getenv("AGORA_CLOUD_RECORDING_BASE", "https://api.sd-rtn.com")
-
-
 logger = logging.getLogger("events")
 
 # --- Dyte configuration ---
@@ -183,10 +172,10 @@ class EventViewSet(viewsets.ModelViewSet):
     """
     Full CRUD over events with:
     - Search & ordering
-    - Filter helpers (?event_format, ?category, date ranges, price bounds, etc.)
+    - Filter helpers (format, category, date range, price)
     - Utility endpoints (categories, formats, locations, max-price, mine)
     - Registration helpers (register, register-bulk)
-    - Agora RTC token issuance (/token)
+    - Dyte meeting join (/dyte/join) and live status (/live-status)
     """
     parser_classes = (MultiPartParser, FormParser, JSONParser)
     serializer_class = EventSerializer
@@ -435,73 +424,6 @@ class EventViewSet(viewsets.ModelViewSet):
         mx = qs.aggregate(mx=Max("price"))["mx"] or 0
         return Response({"max_price": float(mx)})
 
-    # ------------------ Agora Token Issuance -----------------
-    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="token")
-    def token(self, request, pk=None):
-        """
-        Return an Agora RTC token.
-
-        Authorization logic:
-          - Only the event owner or staff can obtain a PUBLISHER token.
-          - Everyone else receives an AUDIENCE token.
-        Role is read from JSON body or querystring (?role=publisher|audience).
-
-        Environment:
-          - AGORA_APP_ID must be set.
-          - AGORA_CUSTOMER_SECRET should hold the App Certificate.
-        """
-        event = self.get_object()
-
-        # 1) read/normalize desired role
-        raw = (request.data.get("role") or request.query_params.get("role") or "audience").lower()
-        want_publisher = raw in {"publisher", "host", "broadcaster", "speaker"}
-
-        # 2) authorization: only creator or staff can publish (no EventRegistration.role/status in your schema)
-        is_owner_or_staff = (event.created_by_id == request.user.id) or request.user.is_staff
-        as_publisher = want_publisher and is_owner_or_staff
-
-        # 3) build Agora token
-        app_id = APP_ID
-        app_cert = APP_CERT
-        if not app_id or not app_cert:
-            # NOTE: Text mentions 'AGORA_APP_CERTIFICATE' for clarity; your env var is AGORA_CUSTOMER_SECRET.
-            return Response(
-                {"detail": "AGORA_APP_ID / AGORA_APP_CERTIFICATE not configured"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        channel = f"event-{event.id}"
-        ttl_seconds = int(os.getenv("AGORA_TOKEN_TTL", "3600"))
-        expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
-
-        # Role: 1 = Publisher, 2 = Subscriber/Audience   (per agora-token-builder)
-        role_int = 1 if as_publisher else 2
-        uid = 0  # recommended for Web (Agora SDK assigns a UID)
-
-        try:
-            from agora_token_builder import RtcTokenBuilder
-            token = RtcTokenBuilder.buildTokenWithUid(app_id, app_cert, channel, uid, role_int, ttl_seconds)
-        except Exception as e:
-            # Keep the error visible for debugging token failures
-            return Response({"detail": f"Failed to build Agora token: {e}"}, status=500)
-
-        return Response({
-            "token": token,
-            "app_id": app_id,
-            "channel": channel,
-            "role": "publisher" if as_publisher else "audience",
-            "expires_at": expires_at.isoformat(),
-        })
-
-    # Helper (alternative way to build a token using named roles)
-    def _build_agora_rtc_token(self, app_id, app_cert, channel, as_publisher: bool, ttl_seconds: int) -> str:
-        """
-        Thin wrapper around agora-token-builder in case you prefer Role_Publisher/Role_Subscriber.
-        """
-        from agora_token_builder import RtcTokenBuilder, Role_Publisher, Role_Subscriber
-        role = Role_Publisher if as_publisher else Role_Subscriber
-        uid = 0  # recommended for web
-        return RtcTokenBuilder.buildTokenWithUid(app_id, app_cert, channel, uid, role, ttl_seconds)
     
     @action(detail=False, methods=["post"], url_path="download-recording")
     def download_recording(self, request):
@@ -682,12 +604,40 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # 2) Decide host vs participant preset
         community_owner_id = getattr(event.community, "owner_id", None)
-        is_host = (
+        # Who is *allowed* to be host?
+        is_creator_or_staff = (
             event.created_by_id == user.id
             or user.is_staff
             or community_owner_id == user.id
         )
+
+        # Read requested role from body or query (?role=publisher / audience)
+        requested_role = (
+            (request.data.get("role") if hasattr(request, "data") else None)
+            or request.query_params.get("role")
+            or ""
+        ).lower()
+
+        # Map role string to boolean flag
+        if requested_role in ("host", "publisher"):
+            requested_is_host = True
+        elif requested_role in ("audience", "participant"):
+            requested_is_host = False
+        else:
+            requested_is_host = None  # no explicit role sent
+
+        if requested_is_host is True and not is_creator_or_staff:
+            # User asked for host but is not allowed → downgrade to audience
+            is_host = False
+        elif requested_is_host is None:
+            # No explicit role → fall back to automatic rule
+            is_host = is_creator_or_staff
+        else:
+            # Explicit role and allowed
+            is_host = requested_is_host
+
         preset_name = DYTE_PRESET_HOST if is_host else DYTE_PRESET_PARTICIPANT
+        role_string = "publisher" if is_host else "audience"
 
         # 3) Prepare participant payload
         name = (getattr(user, "full_name", "") or getattr(user, "get_full_name", lambda: "")()) or user.username
@@ -742,6 +692,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "authToken": auth_token,
                 "meetingId": meeting_id,
                 "presetName": preset_name,
+                "role": role_string,
             }
         )
 
@@ -784,348 +735,6 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         ser = self.get_serializer(page or qs, many=True)
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
     
-
-            
-class EventRecordingViewSet(viewsets.GenericViewSet):
-    queryset = Event.objects.all()
-    serializer_class = EventSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    @action(detail=True, methods=["post"], url_path="start")
-    def start(self, request, pk=None):
-        event = self.get_object()
-        user = request.user
-
-        # --- state & permission checks ---
-        if event.status in ("live", "ended"):
-            return Response(
-                {"error": "invalid_state", "detail": "Event is already live or has ended."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        org_owner_id = getattr(event.community, "owner_id", None)
-        if not (event.created_by_id == user.id or user.is_staff or org_owner_id == user.id):
-            raise PermissionDenied("You do not have permission to start this event.")
-
-        # --- mark event live ---
-        event.status = "live"
-        event.is_live = True
-        event.live_started_at = timezone.now()
-        event.active_speaker = user
-
-        channel_name = f"event-{event.id}"
-        event.agora_channel = channel_name
-        recorder_uid = str(random.randint(900000000, 999999999))
-        event.agora_recorder_uid = recorder_uid
-        rec_token = None
-        if APP_CERT:
-            from agora_token_builder import RtcTokenBuilder
-            RolePublisher = 1
-            ttl_seconds = int(os.getenv("AGORA_TOKEN_TTL", "3600"))
-            expire_ts = int(time.time()) + ttl_seconds  # ✅ absolute UNIX timestamp
-            rec_token = RtcTokenBuilder.buildTokenWithUid(
-                APP_ID, APP_CERT, channel_name, int(recorder_uid), RolePublisher, expire_ts
-            )
-            logger.info("Recorder token included: %s", bool(rec_token))
-
-        # persist basic live fields
-        event.save(update_fields=[
-            "status", "is_live", "live_started_at", "active_speaker",
-            "agora_channel","agora_recorder_uid","updated_at"
-        ])
-
-        # --- Agora REST auth header ---
-        if not all([APP_ID, REST_ID, REST_SECRET]):
-            logger.error("❌ Missing Agora credentials (APP_ID/REST_ID/REST_SECRET)")
-            return Response({"error": "Agora credentials not configured"}, status=500)
-
-        auth = base64.b64encode(f"{REST_ID}:{REST_SECRET}".encode()).decode()
-        headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
-
-        # --- context logs ---
-        region_code = os.getenv("AGORA_S3_REGION_CODE", "8")  # Agora numeric region code
-        bucket = os.getenv("AWS_BUCKET_NAME", "events-agora-recordings")
-        channel_type = int(os.getenv("AGORA_CHANNEL_TYPE", "0"))  # 1=live, 0=communication
-        logger.info(
-            "🎬 Start record attempt | event=%s channel=%s uid=%s base=%s region_code=%s bucket=%s token_included=%s channelType=%s",
-            event.id, channel_name, recorder_uid, BASE, region_code, bucket, bool(rec_token), channel_type
-        )
-
-        # ---------------- Acquire ----------------
-        acquire_url = f"{BASE}/v1/apps/{APP_ID}/cloud_recording/acquire"
-        acquire_payload = {
-            "cname": channel_name,
-            "uid": recorder_uid,
-            "clientRequest": {"resourceExpiredHour": 24}
-        }
-
-        try:
-            acquire_resp = requests.post(acquire_url, headers=headers, json=acquire_payload, timeout=15)
-        except requests.RequestException as e:
-            logger.exception("❌ Acquire exception: %s", e)
-            return Response({"error": "acquire_exception", "detail": str(e)}, status=500)
-
-        logger.info("📥 Acquire rsp | code=%s len=%s", acquire_resp.status_code, len(acquire_resp.text))
-        if acquire_resp.status_code != 200:
-            logger.error("❌ Acquire failed | detail=%s", acquire_resp.text[:500])
-            return Response({"error": "Failed to acquire Agora recording", "detail": acquire_resp.text}, status=500)
-
-        resource_id = acquire_resp.json().get("resourceId")
-        logger.info("💾 resourceId parsed | resourceId=%s len=%s", resource_id, len(resource_id or ""))
-
-        # Save resourceId immediately so it appears in DB even if Start fails
-        if resource_id:
-            event.agora_resource_id = resource_id
-            event.save(update_fields=["agora_resource_id", "updated_at"])
-
-        # ---------------- Start ----------------
-        try:
-            rc_int = int(region_code)
-        except ValueError:
-            rc_int = 8  # safe default
-
-        start_url = f"{BASE}/v1/apps/{APP_ID}/cloud_recording/resourceid/{resource_id}/mode/mix/start"
-        start_client_req = {
-            "recordingConfig": {
-                "maxIdleTime": 30,
-                "channelType": channel_type,  # ✅ match client mode
-                "streamTypes": 2,
-                "transcodingConfig": {"width": 1280, "height": 720, "fps": 15, "bitrate": 1000},
-            },
-            "storageConfig": {
-                "vendor": 1,               # AWS S3
-                "region": rc_int,          # ✅ Agora numeric region code
-                "bucket": bucket,
-                "accessKey": os.getenv("AWS_ACCESS_KEY_ID"),
-                "secretKey": os.getenv("AWS_SECRET_ACCESS_KEY"),
-                "fileNamePrefix": ["recordings", f"event{event.id}"],
-            },
-            "recordingFileConfig": {"avFileType": ["hls", "mp4"]},
-        }
-        if rec_token:
-            start_client_req["token"] = rec_token  # only include if present
-
-        start_payload = {"cname": channel_name, "uid": recorder_uid, "clientRequest": start_client_req}
-
-        try:
-            start_resp = requests.post(start_url, headers=headers, json=start_payload, timeout=25)
-        except requests.RequestException as e:
-            logger.exception("❌ Start exception: %s", e)
-            return Response({"error": "start_exception", "detail": str(e), "resourceId": resource_id}, status=500)
-
-        logger.info("🎥 Start rsp | code=%s len=%s", start_resp.status_code, len(start_resp.text))
-
-        if start_resp.status_code != 200:
-            aws_key = os.getenv("AWS_ACCESS_KEY_ID")
-            aws_secret = os.getenv("AWS_SECRET_ACCESS_KEY")
-            aws_bucket = os.getenv("AWS_BUCKET_NAME")
-            region_code = os.getenv("AGORA_S3_REGION_CODE", "8")
-
-            logger.error(f"🔑 AWS Credentials Check:")
-            logger.error(f"  - AWS_ACCESS_KEY_ID: {'✅ SET' if aws_key else '❌ MISSING'}")
-            logger.error(f"  - AWS_SECRET_ACCESS_KEY: {'✅ SET' if aws_secret else '❌ MISSING'}")
-            logger.error(f"  - AWS_BUCKET_NAME: {aws_bucket}")
-            logger.error(f"  - AGORA_S3_REGION_CODE: {region_code}")
-
-            if not all([aws_key, aws_secret, aws_bucket]):
-                logger.error("❌ Missing required AWS storage credentials")
-                return Response({"error": "AWS credentials not configured"}, status=500)
-            logger.error(
-                "❌ Start failed | resourceId=%s channel=%s http=%s detail=%s",
-                resource_id, channel_name, start_resp.status_code, start_resp.text[:800]
-            )
-            # optional: revert flags if recording didn't actually start
-            from .models import Event  # ensure import available, or move to top of file
-            Event.objects.filter(pk=event.pk).update(status="published", is_live=False)
-            return Response(
-                {"error": "agora_start_failed", "detail": start_resp.text, "resourceId": resource_id},
-                status=502,
-            )
-
-        data = start_resp.json()
-        sid = data.get("sid")
-        if not sid:
-            logger.error("❌ Start success without sid?! payload=%s", data)
-            return Response({"error": "agora_start_no_sid", "detail": data}, status=502)
-
-        # ✅ persist sid on success
-        event.agora_sid = sid
-        event.save(update_fields=["agora_sid", "updated_at"])
-        logger.info("💿 Saved to DB | event=%s resourceId=%s sid=%s", event.id, resource_id, sid)
-
-        # ✅ MODIFIED: Return event data WITH recording credentials
-        event_data = EventSerializer(event, context=self.get_serializer_context()).data
-        event_data.update({
-            'resourceId': resource_id,
-            'sid': sid,
-            'channel': channel_name,
-            'uid': recorder_uid
-        })
-        
-        return Response(event_data)
-
-    @action(detail=True, methods=["post"], url_path="stop")
-    def stop(self, request, pk=None):
-        event = self.get_object()
-        user = request.user
-        
-        if event.status != "live":
-            return Response(
-                {"error": "invalid_state", "detail": "Event is not currently live."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        
-        org_owner_id = getattr(event.community, "owner_id", None)
-        if not (event.created_by_id == user.id or user.is_staff or org_owner_id == user.id):
-            raise PermissionDenied("You do not have permission to stop this event.")
-        
-        # Mark ended
-        event.status = "ended"
-        event.is_live = False
-        event.live_ended_at = timezone.now()
-        event.save(update_fields=["status", "is_live", "live_ended_at", "updated_at"])
-        
-        if event.agora_resource_id and event.agora_sid and APP_ID and REST_ID and REST_SECRET:
-            import base64, json
-            
-            auth = base64.b64encode(f"{REST_ID}:{REST_SECRET}".encode()).decode()
-            headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
-            
-            stop_url = (
-                f"{BASE}/v1/apps/{APP_ID}/cloud_recording/resourceid/{event.agora_resource_id}"
-                f"/sid/{event.agora_sid}/mode/mix/stop"
-            )
-            
-            payload = {"cname": event.agora_channel or f"event-{event.id}", "uid": event.agora_recorder_uid, "clientRequest": {}}
-            
-            try:
-                stop_resp = requests.post(stop_url, headers=headers, json=payload, timeout=15)
-                logger.info(f"🛑 Stop API | status={stop_resp.status_code} len={len(stop_resp.text)}")
-                
-                if stop_resp.status_code == 200:
-                    resp_json = stop_resp.json()
-                    server_resp = resp_json.get("serverResponse", {})
-                    file_list = server_resp.get("fileList", [])
-                    
-                    # Some responses embed fileList as JSON string
-                    if isinstance(file_list, str):
-                        try:
-                            file_list = json.loads(file_list)
-                        except Exception:
-                            file_list = []
-                    
-                    # Save S3 file path to recording_url field
-                    if file_list:
-                        for file_info in file_list:
-                            raw_name = (file_info.get("fileName") or "").strip()
-                            if not raw_name or not raw_name.endswith(".mp4"):
-                                continue
-
-                            # ✅ Normalize: use Agora’s full key if it already contains our prefix;
-                            # otherwise, join the basename under the single event folder.
-                            from pathlib import PurePosixPath
-                            expected_prefix = f"recordings/event{event.id}/"
-
-                            if raw_name.startswith(expected_prefix):
-                                key = raw_name.lstrip("/")  # already a full S3 key under the correct folder
-                            else:
-                                key = f"{expected_prefix}{PurePosixPath(raw_name).name}"
-
-                            event.recording_url = key
-                            event.save(update_fields=["recording_url", "updated_at"])
-                            logger.info(f"✅ Saved recording S3 key: {key}")
-                            break
-                    else:
-                        logger.warning(f"⚠️ No fileList in stop response for event {event.id}")
-                    
-                    logger.info(
-                        f"✅ Stop OK | event={event.id} resourceId={event.agora_resource_id} sid={event.agora_sid}"
-                    )
-                else:
-                    logger.error(f"Stop failed event={event.id} status={stopresp.status_code} detail={stopresp.text[:500]}")
-            except requests.RequestException as e:
-                logger.exception(f"Stop request exception for event {event.id}: {e}")
-            
-            # Schedule recording check after 2 minutes (Agora needs time to process)
-            from .tasks import check_recording_task
-            check_recording_task.apply_async((event.id,), countdown=120)
-            logger.info(f"Scheduled recording check for event {event.id} in 2 minutes")
-        else:
-            logger.warning(f"Missing Agora recording IDs for event {event.id}, skipping stop API call")
-
-        return Response(EventSerializer(event, context=self.get_serializer_context()).data)
-    
-    @action(detail=True, methods=["post"], url_path="sync-recording")
-    def sync_recording(self, request, pk=None):
-        """
-        Manually sync recording URL from S3 after recording is complete.
-        Use this if stop API fails but files are uploaded to S3.
-        """
-        event = self.get_object()
-        
-        if not event.agora_sid:
-            return Response(
-                {"error": "No recording session for this event"},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        try:
-            import boto3
-            from botocore.config import Config
-            
-            # Initialize S3 client
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-                region_name='eu-central-1',
-                config=Config(signature_version='s3v4')
-            )
-            
-            bucket = os.getenv('AWS_BUCKET_NAME', 'events-agora-recordings')
-            prefix = f"recordings/event{event.id}/"
-            
-            # Search S3 for MP4 file
-            response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
-            
-            if 'Contents' not in response:
-                return Response(
-                    {"error": "No recording files found in S3 yet. Wait a few minutes after stopping."},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-            
-            # Find the .mp4 file
-            mp4_file = None
-            for obj in response['Contents']:
-                if obj['Key'].endswith('.mp4'):
-                    mp4_file = obj['Key']
-                    break
-            
-            if not mp4_file:
-                return Response(
-                    {"error": "MP4 file not found. Recording may still be processing."},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-            
-            # Save to database
-            event.recording_url = mp4_file
-            event.save(update_fields=['recording_url', 'updated_at'])
-            
-            logger.info(f"✅ Synced recording URL from S3: {mp4_file}")
-            
-            return Response({
-                "success": True,
-                "message": "Recording URL synced successfully",
-                "recording_url": mp4_file,
-                "event_id": event.id
-            })
-            
-        except Exception as e:
-            logger.exception(f"❌ Error syncing recording from S3: {e}")
-            return Response(
-                {"error": "Failed to sync recording", "detail": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
     
 
 class RecordingWebhookView(views.APIView):
