@@ -47,12 +47,14 @@ def notify_on_like(sender, instance: Reaction, created, **kwargs):
     is_comment = instance.content_type == ContentType.objects.get_for_model(Comment)
     title = "liked your comment" if is_comment else "liked your post"
 
+    description = f"Post #{feed_id}" if feed_id is not None else ""  # ✅ never None
+
     Notification.objects.create(
         recipient=recipient,
         actor=instance.user,
         kind="reaction",
         title=title,
-        description=(f"Post #{feed_id}" if feed_id else None),
+        description=description,
         data={
             "reaction": "like",
             "content_type_id": instance.content_type_id,
@@ -96,13 +98,14 @@ def notify_on_comment(sender, instance: Comment, created, **kwargs):
         return
 
     title = "replied to your comment" if is_reply else "commented on your post"
+    description = f"Post #{feed_id}" if feed_id is not None else ""  # ✅ never None
 
     Notification.objects.create(
         recipient=recipient,
         actor=instance.user,
         kind="comment",
         title=title,
-        description=(f"Post #{feed_id}" if feed_id else None),
+        description=description,
         data={
             "comment_id": instance.id,
             "content_type_id": instance.content_type_id,
