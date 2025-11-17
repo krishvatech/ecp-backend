@@ -75,11 +75,6 @@ class Event(models.Model):
     dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     dyte_meeting_title = models.CharField(max_length=255, blank=True, null=True)
     # Legacy Agora recording fields (no longer used)
-    agora_resource_id = models.CharField(max_length=255, blank=True, null=True)
-    agora_sid = models.CharField(max_length=255, blank=True, null=True)
-
-    agora_channel = models.CharField(max_length=255, blank=True, null=True)
-    agora_recorder_uid = models.CharField(max_length=64, blank=True, null=True)
     # Meta
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_events")
     created_at = models.DateTimeField(auto_now_add=True)
