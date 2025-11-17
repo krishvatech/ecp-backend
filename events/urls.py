@@ -1,6 +1,6 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import EventViewSet, EventRegistrationViewSet,RecordingWebhookView
+from .views import EventViewSet, EventRegistrationViewSet, RecordingWebhookView
 
 router = DefaultRouter()
 router.register(r"events", EventViewSet, basename="event")

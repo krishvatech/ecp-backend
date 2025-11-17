@@ -423,7 +423,32 @@ class EventViewSet(viewsets.ModelViewSet):
         qs = self.get_queryset()  # respects all current filters & visibility
         mx = qs.aggregate(mx=Max("price"))["mx"] or 0
         return Response({"max_price": float(mx)})
+    
+    
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[IsAuthenticated],
+        url_path="end-meeting",
+    )
+    def end_meeting(self, request, pk=None):
+        """
+        Mark this event's live meeting as ended.
 
+        We trust Dyte's own permissions: only the host can click
+        "End meeting for all" in the UI. Here we just persist that state.
+        Any authenticated participant may hit this; repeated calls are harmless.
+        """
+        event = self.get_object()
+
+        event.status = "ended"
+        event.is_live = False
+        event.live_ended_at = timezone.now()
+        event.save(update_fields=["status", "is_live", "live_ended_at", "updated_at"])
+
+        return Response(
+            {"message": "Meeting ended", "status": event.status, "event_id": event.id}
+        )
     
     @action(detail=False, methods=["post"], url_path="download-recording")
     def download_recording(self, request):
@@ -741,7 +766,10 @@ class RecordingWebhookView(views.APIView):
     """
     Dyte recording webhook.
     We receive `recording.statusUpdate`, fetch recording details from Dyte,
-    then store the S3 key in Event.recording_url.
+    then either:
+      - use Dyte→S3 path (if configured), OR
+      - download from Dyte and upload to our S3 bucket.
+    Finally we store the S3 key in Event.recording_url.
     """
     permission_classes = [permissions.AllowAny]
 
@@ -761,9 +789,10 @@ class RecordingWebhookView(views.APIView):
         status_str = recording.get("status")
 
         if not (meeting_id and recording_id and status_str):
+            logger.error("❌ recording webhook missing_fields")
             return Response({"error": "missing_fields"}, status=400)
 
-        # We only care when recording is fully uploaded
+        # We only care when recording is fully uploaded on Dyte side
         if status_str != "UPLOADED":
             logger.info(f"🎥 Dyte recording status={status_str} | meeting={meeting_id}")
             return Response({"ok": True, "status": status_str}, status=200)
@@ -774,7 +803,6 @@ class RecordingWebhookView(views.APIView):
 
         headers = {
             "Content-Type": "application/json",
-            # If you're using DYTE_AUTH_HEADER from env as suggested:
             "Authorization": DYTE_AUTH_HEADER,
         }
 
@@ -786,27 +814,73 @@ class RecordingWebhookView(views.APIView):
             logger.exception("❌ Failed to fetch Dyte recording details")
             return Response({"error": "dyte_fetch_failed", "detail": str(e)}, status=500)
 
-        data = r.json().get("data", {})
+        data = r.json().get("data", {}) or {}
 
-        # If using Dyte → S3 direct storage, build the S3 key:
-        output_file_name = data.get("output_file_name")
+        output_file_name = data.get("output_file_name") or f"{recording_id}.mp4"
         storage_cfg = data.get("storage_config") or {}
         path_prefix = (storage_cfg.get("path") or "").strip("/")
 
-        # e.g. "recordings/dyte/room_timestamp.mp4"
+        s3_key = None
+
+        # 2A) If Dyte is already configured to push to *your* S3
         if path_prefix:
             s3_key = f"{path_prefix}/{output_file_name}"
+            logger.info(f"🎥 Using Dyte→S3 path for recording: {s3_key}")
         else:
-            s3_key = output_file_name
+            # 2B) Dyte is storing internally → we copy to our S3
+            logger.info("🎥 Dyte recording has no S3 storage_config; copying to our S3")
 
-        # 2) Map Dyte meeting → Event
+            # Try to find a downloadable URL from Dyte response
+            asset_links = data.get("asset_links") or {}
+            download_url = (
+                asset_links.get("download")
+                or data.get("download_url")
+                or data.get("url")
+            )
+
+            if not download_url:
+                logger.error(f"❌ No download URL in Dyte recording data for {recording_id}")
+                return Response({"error": "no_download_url"}, status=500)
+
+            import boto3
+            from botocore.config import Config
+
+            bucket = os.getenv("AWS_BUCKET_NAME", "events-agora-recordings")
+            region = os.getenv("AWS_REGION", "eu-central-1")
+
+            s3_client = boto3.client(
+                "s3",
+                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+                region_name=region,
+                config=Config(signature_version="s3v4"),
+            )
+
+            # Decide where to store in your bucket
+            s3_key = f"dyte-recordings/{meeting_id}/{output_file_name}"
+
+            try:
+                file_resp = requests.get(download_url, stream=True, timeout=120)
+                file_resp.raise_for_status()
+                s3_client.upload_fileobj(
+                    file_resp.raw,
+                    bucket,
+                    s3_key,
+                    ExtraArgs={"ContentType": "video/mp4"},
+                )
+                logger.info(f"✅ Uploaded Dyte recording to S3: bucket={bucket}, key={s3_key}")
+            except Exception as e:
+                logger.exception("❌ Failed to upload recording to S3")
+                return Response({"error": "s3_upload_failed", "detail": str(e)}, status=500)
+
+        # 3) Map Dyte meeting → Event and save key
         try:
             event = Event.objects.get(dyte_meeting_id=meeting_id)
         except Event.DoesNotExist:
             logger.error(f"❌ Event not found for Dyte meeting_id={meeting_id}")
             return Response({"error": "event_not_found"}, status=404)
 
-        event.recording_url = s3_key
+        event.recording_url = s3_key or ""
         event.save(update_fields=["recording_url", "updated_at"])
 
         logger.info(
