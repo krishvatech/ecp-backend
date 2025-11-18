@@ -4,7 +4,6 @@ from django.dispatch import receiver
 from .models import GroupMembership, Group, GroupNotification
 
 
-
 def _admin_and_owner_ids(group: Group):
     """
     Owner/creator + active admins/moderators of the group (user IDs).
@@ -22,6 +21,7 @@ def _admin_and_owner_ids(group: Group):
     return ids
 
 
+# -------- GroupMembership: remember previous status (existing code) --------
 @receiver(pre_save, sender=GroupMembership)
 def _store_prev_status(sender, instance: GroupMembership, **kwargs):
     # remember previous status so we can detect PENDING->ACTIVE
@@ -35,6 +35,26 @@ def _store_prev_status(sender, instance: GroupMembership, **kwargs):
         instance._prev_status = None
 
 
+# -------- Group: remember previous visibility/join_policy (NEW) --------
+@receiver(pre_save, sender=Group)
+def _store_prev_group_state(sender, instance: Group, **kwargs):
+    """
+    Remember old visibility / join_policy so we can detect changes in post_save.
+    """
+    if instance.pk:
+        try:
+            prev = Group.objects.only("visibility", "join_policy").get(pk=instance.pk)
+            instance._prev_visibility = prev.visibility
+            instance._prev_join_policy = prev.join_policy
+        except Group.DoesNotExist:
+            instance._prev_visibility = None
+            instance._prev_join_policy = None
+    else:
+        instance._prev_visibility = None
+        instance._prev_join_policy = None
+
+
+# -------- GroupMembership: create notifications when membership changes (existing code) --------
 @receiver(post_save, sender=GroupMembership)
 def _notify_on_membership_change(sender, instance: GroupMembership, created, **kwargs):
     """
@@ -120,6 +140,47 @@ def _notify_on_membership_change(sender, instance: GroupMembership, created, **k
                 data=payload,
             )
 
+
+# -------- GroupMembership: propagate ADMIN role to sub-groups (NEW) --------
+@receiver(post_save, sender=GroupMembership)
+def _propagate_admin_to_subgroups(sender, instance: GroupMembership, created, **kwargs):
+    """
+    If a user is ADMIN in a group (and ACTIVE), ensure they are ADMIN in all of that
+    group's sub-groups (and their children via cascading saves).
+    """
+    # Only for ACTIVE admins
+    if instance.role != GroupMembership.ROLE_ADMIN or instance.status != GroupMembership.STATUS_ACTIVE:
+        return
+
+    group = getattr(instance, "group", None)
+    if not group or not getattr(group, "id", None):
+        return
+
+    subgroups = Group.objects.filter(parent=group)
+    if not subgroups.exists():
+        return
+
+    for sg in subgroups:
+        m, created_child = GroupMembership.objects.get_or_create(
+            group=sg,
+            user_id=instance.user_id,
+            defaults={
+                "role": GroupMembership.ROLE_ADMIN,
+                "status": GroupMembership.STATUS_ACTIVE,
+                "invited_by_id": getattr(instance, "invited_by_id", None),
+            },
+        )
+        # If membership already exists, upgrade it to ADMIN + ACTIVE if needed
+        updates = {}
+        if m.role != GroupMembership.ROLE_ADMIN:
+            updates["role"] = GroupMembership.ROLE_ADMIN
+        if m.status != GroupMembership.STATUS_ACTIVE:
+            updates["status"] = GroupMembership.STATUS_ACTIVE
+        if updates:
+            GroupMembership.objects.filter(pk=m.pk).update(**updates)
+
+
+# -------- Group: notifications when a group is created (existing code) --------
 @receiver(post_save, sender=Group)
 def _notify_on_group_created(sender, instance: Group, created, **kwargs):
     """
@@ -169,3 +230,84 @@ def _notify_on_group_created(sender, instance: Group, created, **kwargs):
             description=f"{actor or 'Someone'} created the group {getattr(group, 'name', '')}",
             data=payload,
         )
+
+
+# -------- Group: keep sub-groups in sync with parent (visibility/join_policy + admins) (NEW) --------
+@receiver(post_save, sender=Group)
+def _sync_subgroups_on_group_change(sender, instance: Group, created, **kwargs):
+    """
+    1) When a group's visibility or join_policy changes, push the new values
+       down to all its sub-groups (recursively via child.save()).
+    2) When a new sub-group is created, copy ACTIVE admins of the parent
+       into the new sub-group.
+    """
+    group = instance
+
+    # --- (A) If this is a NEW sub-group, copy parent admins into it ---
+    if created and group.parent_id:
+        parent_id = group.parent_id
+
+        # Ensure new sub-group has the same visibility/join_policy as its parent
+        try:
+            parent = Group.objects.only("visibility", "join_policy").get(pk=parent_id)
+        except Group.DoesNotExist:
+            parent = None
+
+        if parent:
+            updates = {}
+            if group.visibility != parent.visibility:
+                updates["visibility"] = parent.visibility
+            if group.join_policy != parent.join_policy:
+                updates["join_policy"] = parent.join_policy
+            if updates:
+                Group.objects.filter(pk=group.pk).update(**updates)
+                # keep in-memory instance consistent
+                for k, v in updates.items():
+                    setattr(group, k, v)
+
+        # Copy ACTIVE admins from parent to this new sub-group
+        admin_qs = GroupMembership.objects.filter(
+            group_id=parent_id,
+            role=GroupMembership.ROLE_ADMIN,
+            status=GroupMembership.STATUS_ACTIVE,
+        ).values_list("user_id", flat=True)
+
+        for uid in admin_qs:
+            GroupMembership.objects.get_or_create(
+                group=group,
+                user_id=uid,
+                defaults={
+                    "role": GroupMembership.ROLE_ADMIN,
+                    "status": GroupMembership.STATUS_ACTIVE,
+                },
+            )
+
+    # --- (B) Propagate visibility/join_policy changes down to sub-groups ---
+    prev_vis = getattr(group, "_prev_visibility", None)
+    prev_jp = getattr(group, "_prev_join_policy", None)
+
+    # For updates: only do work if visibility/join_policy actually changed
+    if not created and (prev_vis is not None or prev_jp is not None):
+        if prev_vis == group.visibility and prev_jp == group.join_policy:
+            return
+
+    # For brand new top-level groups (no parent) nothing to sync down yet, but
+    # their future changes will propagate to children once they exist.
+    # We still allow created+parent_id (handled above), so only skip root here.
+    if created and not group.parent_id:
+        return
+
+    # Sync direct sub-groups; each child.save() will in turn sync its own children.
+    subgroups = Group.objects.filter(parent=group)
+    for child in subgroups:
+        changed = False
+        if child.visibility != group.visibility:
+            child.visibility = group.visibility
+            changed = True
+        if child.join_policy != group.join_policy:
+            child.join_policy = group.join_policy
+            changed = True
+        if changed:
+            # child save ⇒ pre_save/_store_prev_group_state + this same handler
+            # will run for the child, so it will propagate to its own sub-groups.
+            child.save(update_fields=["visibility", "join_policy"])
