@@ -213,42 +213,68 @@ class RegisterSerializer(serializers.ModelSerializer):
         min_length=3,
         max_length=150,
         validators=[
-            UnicodeUsernameValidator(),                     # letters, digits, @/./+/-/_
-            UniqueValidator(queryset=User.objects.all()),   # unique
+            UnicodeUsernameValidator(),
+            UniqueValidator(queryset=User.objects.all()),
         ],
     )
+
+    first_name = serializers.CharField(
+        label="First name",
+        min_length=2,
+        max_length=150,
+    )
+    last_name = serializers.CharField(
+        label="Last name",
+        min_length=2,
+        max_length=150,
+    )
+
     email = serializers.EmailField(
         label="Email",
         validators=[
             UniqueValidator(queryset=User.objects.all()),
-            validate_email_smart,                           # base syntax/DNS (also done in strict)
+            validate_email_smart,
         ],
     )
+
     password = serializers.CharField(
         label="Password",
         write_only=True,
         style={"input_type": "password"},
+        trim_whitespace=False,
     )
     password2 = serializers.CharField(
         label="Confirm password",
         write_only=True,
         style={"input_type": "password"},
+        trim_whitespace=False,
     )
+
+    # optional nested profile payload
     profile = UserProfileSerializer(required=False)
 
     class Meta:
         model = User
-        fields = ["username", "email", "password", "password2", "profile"]
+        fields = [
+            "username",
+            "email",
+            "password",
+            "password2",
+            "first_name",
+            "last_name",
+            "profile",
+        ]
 
-    # username rules: not all digits, and must NOT look like an email
+    # username rules
     def validate_username(self, value: str) -> str:
-        if value.isdigit():
+        v = (value or "").strip()
+        if v.isdigit():
             raise serializers.ValidationError("Username cannot be only numbers.")
-        if _looks_like_email(value):
+        if _looks_like_email(v):
             raise serializers.ValidationError("Username cannot be an email address.")
-        return value
+        return v
 
-    # use the same strict email validator as updates
+    # strict email validator
     def validate_email(self, value: str) -> str:
         return validate_email_strict(value)
 
@@ -257,28 +283,58 @@ class RegisterSerializer(serializers.ModelSerializer):
         if attrs["password"] != attrs["password2"]:
             raise serializers.ValidationError({"password": "Passwords do not match."})
 
-        # Run Django's password validators with user context so similarity checks work
-        pseudo_user = User(username=attrs.get("username"), email=attrs.get("email"))
+        # Run Django's password validators with a pseudo user
+        pseudo_user = User(
+            username=attrs.get("username"),
+            email=attrs.get("email"),
+        )
         validate_password(attrs["password"], user=pseudo_user)
-
         return attrs
 
     def create(self, validated_data):
-        profile_data = validated_data.pop("profile", {})
-        validated_data.pop("password2")
-        password = validated_data.pop("password")
+        # pull out profile + names BEFORE we construct User
+        profile_data = validated_data.pop("profile", {}) or {}
 
-        # email already normalized by validate_email_strict
+        first_name = (validated_data.pop("first_name", "") or "").strip()
+        last_name  = (validated_data.pop("last_name", "") or "").strip()
+
+        # handle password fields
+        validated_data.pop("password2", None)
+        raw_password = validated_data.pop("password")
+
+        # create the user
         user = User(**validated_data)
-        user.set_password(password)
+        user.first_name = first_name
+        user.last_name = last_name
+        user.set_password(raw_password)
         user.save()
 
-        if profile_data:
-            for k, v in profile_data.items():
-                setattr(user.profile, k, v)
-            user.profile.save()
-        return user
+        # create/update profile directly (do not rely on signals)
+        profile_obj, _ = UserProfile.objects.get_or_create(user=user)
 
+        # full_name priority:
+        #   1) profile.full_name from payload
+        #   2) "<first_name> <last_name>"
+        #   3) username
+        submitted_full_name = (profile_data.get("full_name") or "").strip()
+        computed_full_name = f"{first_name} {last_name}".strip()
+
+        if submitted_full_name:
+            profile_obj.full_name = submitted_full_name
+        elif computed_full_name:
+            profile_obj.full_name = computed_full_name
+        else:
+            profile_obj.full_name = user.username
+
+        # copy over any other profile fields (bio, headline, etc.)
+        for key, value in profile_data.items():
+            if key == "full_name":
+                continue
+            if hasattr(profile_obj, key):
+                setattr(profile_obj, key, value)
+
+        profile_obj.save()
+        return user
 
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
