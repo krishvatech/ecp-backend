@@ -20,7 +20,7 @@ from .models import Resource
 from django.utils import timezone
 from .tasks import publish_resource_task
 from .serializers import ResourceSerializer
-
+from events.models import EventRegistration 
 
 class ResourceFilter(FilterSet):
     """Filter set for Resource queries."""
@@ -74,7 +74,11 @@ class ResourceViewSet(viewsets.ModelViewSet):
         #         .values_list("event_id", flat=True)
         # )
 
-        return set()  # TODO: replace with your real query
+        return set(
+            EventRegistration.objects
+            .filter(user_id=user.id)          # optionally add filters like is_paid=True or status__in=[...]
+            .values_list("event_id", flat=True)
+        )
 
     def get_queryset(self):
         user = self.request.user
