@@ -79,9 +79,29 @@ DYTE_API_BASE = os.getenv("DYTE_API_BASE", "https://api.dyte.io/v2")
 DYTE_AUTH_HEADER = os.getenv("DYTE_AUTH_HEADER", "")
 DYTE_PRESET_HOST = os.getenv("DYTE_PRESET_NAME_HOST", os.getenv("DYTE_PRESET_NAME", "group_call_host"))
 DYTE_PRESET_PARTICIPANT = os.getenv("DYTE_PRESET_NAME_MEMBER", "group_call_participant")
-
+AWS_S3_BUCKET = os.getenv("AWS_BUCKET_NAME", "events-agora-recordings")
+AWS_S3_REGION = os.getenv("AWS_S3_REGION", "eu-central-1") 
 logger = logging.getLogger(__name__)
 
+# --- Cloudflare RealtimeKit recording config ---
+RTK_API_BASE = os.getenv("RTK_API_BASE", "https://api.realtime.cloudflare.com/v2")
+RTK_ORG_ID = os.getenv("RTK_ORG_ID", "")
+RTK_API_KEY = os.getenv("RTK_API_KEY", "")
+
+
+def _rtk_headers():
+    """
+    HTTP headers for Cloudflare RealtimeKit REST API.
+    Uses Basic auth with base64("<ORG_ID>:<API_KEY>").
+    """
+    if not (RTK_ORG_ID and RTK_API_KEY):
+        raise RuntimeError("RTK_ORG_ID / RTK_API_KEY are not configured")
+    token_bytes = f"{RTK_ORG_ID}:{RTK_API_KEY}".encode("utf-8")
+    basic_token = base64.b64encode(token_bytes).decode("ascii")
+    return {
+        "Authorization": f"Basic {basic_token}",
+        "Content-Type": "application/json",
+    }
 
 def _dyte_headers():
     """HTTP headers for Dyte REST API."""
@@ -130,7 +150,66 @@ def _ensure_dyte_meeting_for_event(event: Event) -> str:
     event.save(update_fields=["dyte_meeting_id", "dyte_meeting_title", "updated_at"])
     return meeting_id
 
+def _start_rtk_recording_for_event(event: Event) -> None:
+    """
+    Ask Cloudflare RealtimeKit to start a recording for this event's meeting.
 
+    We do NOT raise errors to the caller; we just log, because
+    live-status should still succeed even if recording fails.
+    """
+    # Meeting id is the Dyte meeting id stored on the Event
+    meeting_id = event.dyte_meeting_id
+    if not meeting_id:
+        try:
+            meeting_id = _ensure_dyte_meeting_for_event(event)
+        except Exception as exc:
+            logger.exception(
+                "❌ Cannot start recording; failed to ensure meeting for event=%s: %s",
+                event.id,
+                exc,
+            )
+            return
+
+    try:
+        headers = _rtk_headers()
+    except RuntimeError as exc:
+        logger.error("❌ RealtimeKit credentials missing: %s", exc)
+        return
+
+    payload = {"meeting_id": meeting_id}
+
+    try:
+        resp = requests.post(
+            f"{RTK_API_BASE}/recordings",
+            headers=headers,
+            json=payload,
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.exception(
+            "❌ RealtimeKit start recording exception for event=%s: %s",
+            event.id,
+            exc,
+        )
+        return
+
+    if resp.status_code not in (200, 201):
+        logger.error(
+            "❌ RealtimeKit start recording failed for event=%s meeting=%s: %s",
+            event.id,
+            meeting_id,
+            resp.text[:500],
+        )
+        return
+
+    data = (resp.json() or {}).get("data") or {}
+    rec_id = data.get("id")
+    logger.info(
+        "🎥 RealtimeKit recording started for event=%s meeting=%s recording_id=%s",
+        event.id,
+        meeting_id,
+        rec_id,
+    )
 
 # ============================================================
 # ================= Pagination / Permissions =================
@@ -435,7 +514,46 @@ class EventViewSet(viewsets.ModelViewSet):
         Body: {"action":"start"} or {"action":"end"}
         Also sets Event.active_speaker_id on start, clears on end.
         """
-        ...
+        action_type = (request.data.get("action") or "").strip().lower()
+        if action_type not in {"start", "end"}:
+            return Response({"ok": False, "error": "Invalid action"}, status=400)
+
+        # Prefer authenticated user as host; fall back to event.creator if anonymous
+        host_user_id = request.user.id if getattr(request, "user", None) and request.user.is_authenticated else None
+
+        with transaction.atomic():
+            event = get_object_or_404(self.get_queryset().model.objects.select_for_update(), pk=pk)
+
+            if action_type == "start":
+                event.status = "live"
+                event.is_live = True
+                event.live_started_at = timezone.now()
+                event.live_ended_at = None
+                event.active_speaker_id = host_user_id or event.created_by_id
+                event.attending_count = 0
+            else:  # end
+                event.status = "ended"
+                event.is_live = False
+                event.live_ended_at = timezone.now()
+
+            event.save(update_fields=[
+                "status",
+                "is_live",
+                "live_started_at",
+                "live_ended_at",
+                "active_speaker_id",
+                "attending_count",
+                "updated_at",
+            ])
+
+        # 🔴 NEW: start Cloudflare recording when meeting goes live
+        if action_type == "start":
+            try:
+                _start_rtk_recording_for_event(event)
+            except Exception:
+                # Already logged inside helper; do not break the API
+                pass
+
         return Response({
             "ok": True,
             "status": event.status,
@@ -534,11 +652,11 @@ class EventViewSet(viewsets.ModelViewSet):
                 's3',
                 aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
                 aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-                region_name='eu-central-1',
-                config=Config(signature_version='s3v4')
+                region_name=AWS_S3_REGION,          # ✅ fixed
+                config=Config(signature_version='s3v4'),
             )
             
-            bucket = os.getenv('AWS_BUCKET_NAME', 'events-agora-recordings')
+            bucket = AWS_S3_BUCKET                 # ✅ fixed
             
             # Generate pre-signed URL that forces download
             download_url = s3_client.generate_presigned_url(
@@ -546,23 +664,23 @@ class EventViewSet(viewsets.ModelViewSet):
                 Params={
                     'Bucket': bucket,
                     'Key': recording_url,
-                    'ResponseContentDisposition': 'attachment; filename="recording.mp4"'
+                    'ResponseContentDisposition': 'attachment; filename="recording.mp4"',
                 },
-                ExpiresIn=3600  # Valid for 1 hour
+                ExpiresIn=3600,
             )
             
             logger.info(f"✅ Generated download URL for: {recording_url}")
             
             return Response({
                 "download_url": download_url,
-                "expires_in": 3600
+                "expires_in": 3600,
             })
             
         except Exception as e:
             logger.exception(f"❌ Failed to generate download URL: {e}")
             return Response(
                 {"error": "Failed to generate download URL", "detail": str(e)},
-                status=500
+                status=500,
             )
     
     
@@ -797,7 +915,6 @@ class EventViewSet(viewsets.ModelViewSet):
         )
 
 
-
 # ============================================================
 # ================= Event Registration ViewSet ===============
 # ============================================================
@@ -839,12 +956,16 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
 
 class RecordingWebhookView(views.APIView):
     """
-    Dyte recording webhook.
-    We receive `recording.statusUpdate`, fetch recording details from Dyte,
-    then either:
-      - use Dyte→S3 path (if configured), OR
-      - download from Dyte and upload to our S3 bucket.
-    Finally we store the S3 key in Event.recording_url.
+    Cloudflare RealtimeKit recording webhook.
+
+    We receive `recording.statusUpdate`, fetch recording details from
+    RealtimeKit, download the .mp4 from RealtimeKit's temporary URL and
+    upload it into *our* S3 bucket.
+
+    Final S3 key format:
+        recordings/<event-slug>/recording/<output_file_name>
+
+    That key is stored in Event.recording_url.
     """
     permission_classes = [permissions.AllowAny]
 
@@ -853,112 +974,116 @@ class RecordingWebhookView(views.APIView):
         event_type = payload.get("event")
 
         if event_type != "recording.statusUpdate":
-            # Ignore other webhooks for now
             return Response({"ignored": True}, status=200)
 
         meeting = payload.get("meeting") or {}
         recording = payload.get("recording") or {}
 
         meeting_id = meeting.get("id")
-        recording_id = recording.get("recordingId")
+        # RealtimeKit may send recordingId or id – handle both
+        recording_id = recording.get("recordingId") or recording.get("id")
         status_str = recording.get("status")
 
         if not (meeting_id and recording_id and status_str):
             logger.error("❌ recording webhook missing_fields")
             return Response({"error": "missing_fields"}, status=400)
 
-        # We only care when recording is fully uploaded on Dyte side
+        # Only act when RealtimeKit says the recording is fully uploaded on their side
         if status_str != "UPLOADED":
-            logger.info(f"🎥 Dyte recording status={status_str} | meeting={meeting_id}")
+            logger.info(
+                "🎥 RealtimeKit recording status=%s | meeting=%s | recording=%s",
+                status_str,
+                meeting_id,
+                recording_id,
+            )
             return Response({"ok": True, "status": status_str}, status=200)
 
-        # 1) Fetch recording details from Dyte
-        DYTE_API_BASE = os.getenv("DYTE_API_BASE", "https://api.dyte.io/v2")
-        DYTE_AUTH_HEADER = os.getenv("DYTE_AUTH_HEADER", "")
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": DYTE_AUTH_HEADER,
-        }
-
-        url = f"{DYTE_API_BASE}/recordings/{recording_id}"
-        try:
-            r = requests.get(url, headers=headers, timeout=20)
-            r.raise_for_status()
-        except Exception as e:
-            logger.exception("❌ Failed to fetch Dyte recording details")
-            return Response({"error": "dyte_fetch_failed", "detail": str(e)}, status=500)
-
-        data = r.json().get("data", {}) or {}
-
-        output_file_name = data.get("output_file_name") or f"{recording_id}.mp4"
-        storage_cfg = data.get("storage_config") or {}
-        path_prefix = (storage_cfg.get("path") or "").strip("/")
-
-        s3_key = None
-
-        # 2A) If Dyte is already configured to push to *your* S3
-        if path_prefix:
-            s3_key = f"{path_prefix}/{output_file_name}"
-            logger.info(f"🎥 Using Dyte→S3 path for recording: {s3_key}")
-        else:
-            # 2B) Dyte is storing internally → we copy to our S3
-            logger.info("🎥 Dyte recording has no S3 storage_config; copying to our S3")
-
-            # Try to find a downloadable URL from Dyte response
-            asset_links = data.get("asset_links") or {}
-            download_url = (
-                asset_links.get("download")
-                or data.get("download_url")
-                or data.get("url")
-            )
-
-            if not download_url:
-                logger.error(f"❌ No download URL in Dyte recording data for {recording_id}")
-                return Response({"error": "no_download_url"}, status=500)
-
-            import boto3
-            from botocore.config import Config
-
-            bucket = os.getenv("AWS_BUCKET_NAME", "events-agora-recordings")
-            region = os.getenv("AWS_REGION", "eu-central-1")
-
-            s3_client = boto3.client(
-                "s3",
-                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-                region_name=region,
-                config=Config(signature_version="s3v4"),
-            )
-
-            # Decide where to store in your bucket
-            s3_key = f"dyte-recordings/{meeting_id}/{output_file_name}"
-
-            try:
-                file_resp = requests.get(download_url, stream=True, timeout=120)
-                file_resp.raise_for_status()
-                s3_client.upload_fileobj(
-                    file_resp.raw,
-                    bucket,
-                    s3_key,
-                    ExtraArgs={"ContentType": "video/mp4"},
-                )
-                logger.info(f"✅ Uploaded Dyte recording to S3: bucket={bucket}, key={s3_key}")
-            except Exception as e:
-                logger.exception("❌ Failed to upload recording to S3")
-                return Response({"error": "s3_upload_failed", "detail": str(e)}, status=500)
-
-        # 3) Map Dyte meeting → Event and save key
+        # 1) Find our Event that corresponds to this meeting
         try:
             event = Event.objects.get(dyte_meeting_id=meeting_id)
         except Event.DoesNotExist:
-            logger.error(f"❌ Event not found for Dyte meeting_id={meeting_id}")
+            logger.error("❌ Event not found for meeting_id=%s", meeting_id)
             return Response({"error": "event_not_found"}, status=404)
 
-        event.recording_url = s3_key or ""
+        # 2) Fetch full recording details from RealtimeKit
+        try:
+            headers = _rtk_headers()
+        except RuntimeError as exc:
+            logger.error("❌ RealtimeKit credentials missing: %s", exc)
+            return Response({"error": "rtk_config"}, status=500)
+
+        try:
+            r = requests.get(
+                f"{RTK_API_BASE}/recordings/{recording_id}",
+                headers=headers,
+                timeout=20,
+            )
+            r.raise_for_status()
+        except Exception as exc:
+            logger.exception("❌ Failed to fetch RealtimeKit recording details")
+            return Response({"error": "rtk_fetch_failed", "detail": str(exc)}, status=500)
+
+        data = (r.json() or {}).get("data") or {}
+
+        output_file_name = data.get("output_file_name") or f"{recording_id}.mp4"
+
+        asset_links = data.get("asset_links") or {}
+        download_url = (
+            asset_links.get("download")
+            or data.get("download_url")
+            or data.get("url")
+        )
+
+        if not download_url:
+            logger.error("❌ No download URL in RealtimeKit recording data for %s", recording_id)
+            return Response({"error": "no_download_url"}, status=500)
+
+        # 3) Copy from RealtimeKit bucket → our S3 bucket
+        import boto3
+        from botocore.config import Config
+
+        bucket = AWS_S3_BUCKET
+        region = AWS_S3_REGION
+
+        s3_client = boto3.client(
+            "s3",
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            region_name=region,
+            config=Config(signature_version="s3v4"),
+        )
+
+        safe_slug = event.slug or f"event-{event.id}"
+        # 👇 Final S3 key as requested: recordings/eventname/recording/<file>
+        s3_key = f"recordings/{safe_slug}/recording/{output_file_name}"
+
+        try:
+            file_resp = requests.get(download_url, stream=True, timeout=120)
+            file_resp.raise_for_status()
+
+            s3_client.upload_fileobj(
+                file_resp.raw,
+                bucket,
+                s3_key,
+                ExtraArgs={"ContentType": "video/mp4"},
+            )
+            logger.info(
+                "✅ Uploaded RealtimeKit recording to S3: bucket=%s key=%s",
+                bucket,
+                s3_key,
+            )
+        except Exception as exc:
+            logger.exception("❌ Failed to upload recording to S3")
+            return Response({"error": "s3_upload_failed", "detail": str(exc)}, status=500)
+
+        # 4) Store the S3 key on the Event
+        event.recording_url = s3_key
         event.save(update_fields=["recording_url", "updated_at"])
 
         logger.info(
-            f"✅ Saved Dyte recording for event={event.id}, meeting={meeting_id}, s3_key={s3_key}"
+            "✅ Saved recording for event=%s meeting=%s s3_key=%s",
+            event.id,
+            meeting_id,
+            s3_key,
         )
         return Response({"message": "Recording saved", "event_id": event.id}, status=202)
