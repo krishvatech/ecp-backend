@@ -215,40 +215,109 @@ class ConversationViewSet(viewsets.ViewSet):
     def ensure_group(self, request):
         """
         Ensure a group conversation exists and is linked to the actual Group row.
-        Accepts either:
-        - {"group": <group_id>}
-        - or legacy {"room_key": "group:<id>"} (kept for backward compatibility)
+
+        Accepts ANY of (in body OR query params):
+        - group: <group_id>          # numeric id
+        - group: "<slug>"            # slug
+        - group_slug: "<slug>"
+        - slug: "<slug>"
+        - room_key: "group:<id|slug>"
+
+        If a real Group cannot be found but room_key is present,
+        we fall back to a room_key-only conversation instead of 400.
         """
         from groups.models import Group
 
-        group_id = request.data.get("group")
-        room_key = request.data.get("room_key") or ""
-        title = (request.data.get("title") or "").strip()
+        # ---- read from body and query string ----
+        data = request.data
+        params = request.query_params
 
-        # If only room_key is provided, parse group id from it.
-        if not group_id and room_key.startswith("group:"):
+        group_ident = (
+            data.get("group")
+            or data.get("group_slug")
+            or data.get("slug")
+            or params.get("group")
+            or params.get("group_slug")
+            or params.get("slug")
+        )
+
+        room_key = (data.get("room_key") or params.get("room_key") or "").strip()
+        title = (data.get("title") or params.get("title") or "").strip()
+
+        # If only room_key is provided, try to parse "group:<something>"
+        if not group_ident and room_key.startswith("group:"):
             try:
-                group_id = int(room_key.split(":", 1)[1])
+                group_ident = room_key.split(":", 1)[1]
             except Exception:
-                group_id = None
+                group_ident = None
 
         group = None
-        if group_id:
-            group = get_object_or_404(Group, pk=int(group_id))
 
-        # Prefer to identify a conversation by the Group FK when available.
+        # ---- resolve group by id or slug (if we have something) ----
+        if group_ident:
+            # 1) try numeric id
+            try:
+                group_id = int(group_ident)
+            except (TypeError, ValueError):
+                group_id = None
+
+            if group_id is not None:
+                try:
+                    group = Group.objects.get(pk=group_id)
+                except Group.DoesNotExist:
+                    group = None  # fail gracefully
+
+            # 2) if still not found, try slug
+            if group is None:
+                try:
+                    group = Group.objects.get(slug=str(group_ident))
+                except Group.DoesNotExist:
+                    group = None  # still gracefully ignore
+
+        # ---- if no group and no room_key at all, *then* complain ----
+        if not group and not room_key:
+            raise ValidationError(
+                {"group": "Provide group (id/slug) or room_key like 'group:<id>'."}
+            )
+
+        # ---- if we have a real Group, bind conversation to it ----
         if group:
+            # canonical room_key for group
+            if not room_key:
+                room_key = f"group:{group.id}"
+
             conv, created = Conversation.objects.get_or_create(
                 group=group,
                 defaults={
                     "created_by": request.user,
                     "title": title or group.name,
+                    "room_key": room_key,
                 },
             )
+
+            changed = False
+            update_fields = []
+
+            if conv.group_id != group.id:
+                conv.group = group
+                changed = True
+                update_fields.append("group")
+
+            if not conv.title:
+                conv.title = title or group.name
+                changed = True
+                update_fields.append("title")
+
+            if room_key and conv.room_key != room_key:
+                conv.room_key = room_key
+                changed = True
+                update_fields.append("room_key")
+
+            if changed:
+                conv.save(update_fields=update_fields)
+
         else:
-            # Fallback: legacy room_key flow
-            if not room_key:
-                raise ValidationError({"group": "group id (or room_key) is required."})
+            # ---- no Group found, but we *do* have room_key → legacy behavior ----
             conv, created = Conversation.objects.get_or_create(
                 room_key=room_key,
                 defaults={
@@ -257,19 +326,60 @@ class ConversationViewSet(viewsets.ViewSet):
                 },
             )
 
-        # Backfill: if conv was created earlier via room_key, attach the FK now.
-        changed = False
-        if group and conv.group_id != group.id:
-            conv.group = group
-            changed = True
-        if not conv.title:
-            conv.title = title or (group.name if group else "")
-            changed = True
-        if changed:
-            conv.save(update_fields=["group", "title"])
+        serializer = ConversationSerializer(conv, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
-        ser = ConversationSerializer(conv, context={"request": request})
-        return Response(ser.data, status=status.HTTP_200_OK)
+    @action(detail=False, methods=["post"], url_path="ensure-direct")
+    def ensure_direct(self, request):
+        """
+        Ensure a direct (1:1) conversation exists between the current user
+        and the recipient.
+
+        Accepts any of:
+        - {"recipient_id": <user_id>}   # preferred
+        - {"user_id": <user_id>}
+        - {"user": <user_id>}
+        - {"id": <user_id>}
+        """
+        from rest_framework.exceptions import ValidationError
+
+        user = request.user
+
+        recipient_id = (
+            request.data.get("recipient_id")
+            or request.data.get("user_id")
+            or request.data.get("user")
+            or request.data.get("id")
+        )
+
+        if not recipient_id:
+            raise ValidationError({"recipient_id": "This field is required."})
+
+        try:
+            recipient_id = int(recipient_id)
+        except (TypeError, ValueError):
+            raise ValidationError({"recipient_id": "Invalid recipient ID."})
+
+        if recipient_id == user.id:
+            raise ValidationError(
+                {"recipient_id": "Cannot start a conversation with yourself."}
+            )
+
+        try:
+            recipient = User.objects.get(pk=recipient_id)
+        except User.DoesNotExist:
+            raise ValidationError({"recipient_id": "Recipient not found."})
+
+        user_ids = sorted([user.id, recipient_id])
+
+        conv, created = Conversation.objects.get_or_create(
+            user1_id=user_ids[0],
+            user2_id=user_ids[1],
+        )
+
+        serializer = ConversationSerializer(conv, context={"request": request})
+        status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        return Response(serializer.data, status=status_code)
 
     
     # views.py  (inside ConversationViewSet)
