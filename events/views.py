@@ -26,6 +26,7 @@ from django.db.models.functions import Lower
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.shortcuts import get_object_or_404
+from django.contrib.auth import get_user_model
 
 # ============================================================
 # ================= DRF (Django REST Framework) ==============
@@ -68,6 +69,8 @@ from dotenv import load_dotenv
 # Resolve project root and load .env so AGORA_* variables work locally as well
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+User = get_user_model()
 
 logger = logging.getLogger("events")
 
@@ -403,6 +406,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return Response({"ok": True, "created": created, "count": len(created)})
 
+
     # POST /api/events/{id}/register/
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="register")
     def register(self, request, pk=None):
@@ -424,7 +428,71 @@ class EventViewSet(viewsets.ModelViewSet):
         mx = qs.aggregate(mx=Max("price"))["mx"] or 0
         return Response({"max_price": float(mx)})
     
-    
+    @action(detail=True, methods=["post"], permission_classes=[AllowAny], url_path="live-status")
+    def live_status(self, request, pk=None):
+        """
+        Start/end a live meeting.
+        Body: {"action":"start"} or {"action":"end"}
+        Also sets Event.active_speaker_id on start, clears on end.
+        """
+        ...
+        return Response({
+            "ok": True,
+            "status": event.status,
+            "is_live": event.is_live,
+            "active_speaker": event.active_speaker_id,
+            "live_started_at": event.live_started_at,
+            "live_ended_at": event.live_ended_at,
+        })
+        
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[AllowAny],
+        url_path="active-speaker",
+    )
+    def active_speaker(self, request, pk=None):
+        """
+        Update the `active_speaker` field on the Event whenever Dyte reports
+        a new active speaker.
+
+        Expected body:
+            {"user_id": <int>}   # this is the Django User.id you send as client_specific_id
+        """
+        event = self.get_object()
+
+        raw_id = request.data.get("user_id")
+
+        # If client sends null / empty → clear current active speaker
+        if raw_id in (None, ""):
+            event.active_speaker = None
+            event.save(update_fields=["active_speaker", "updated_at"])
+            return Response({"ok": True, "active_speaker": None})
+
+        try:
+            user_id = int(raw_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"ok": False, "error": "invalid_user_id"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return Response(
+                {"ok": False, "error": "user_not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Only update the pointer; /live-status and /end-meeting control is_live/status.
+        event.active_speaker = user
+        event.save(update_fields=["active_speaker", "updated_at"])
+
+        return Response(
+            {"ok": True, "active_speaker": event.active_speaker_id}
+        )
+        
     @action(
         detail=True,
         methods=["post"],
@@ -449,6 +517,7 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response(
             {"message": "Meeting ended", "status": event.status, "event_id": event.id}
         )
+    
     
     @action(detail=False, methods=["post"], url_path="download-recording")
     def download_recording(self, request):
@@ -568,7 +637,13 @@ class EventViewSet(viewsets.ModelViewSet):
 
             # If your model doesn't have `updated_at`, remove it from update_fields
             event.save(update_fields=[
-                "status", "is_live", "live_started_at", "live_ended_at", "active_speaker","attending_count", "updated_at"
+                "status",
+                "is_live",
+                "live_started_at",
+                "live_ended_at",
+                "active_speaker_id",
+                "attending_count",
+                "updated_at",
             ])
 
         return Response({
