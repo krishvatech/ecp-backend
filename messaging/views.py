@@ -676,6 +676,62 @@ class ConversationViewSet(viewsets.ViewSet):
 
         return Response(out, status=status.HTTP_200_OK)
     
+    @action(detail=False, methods=["get"], url_path="staff-list")
+    def staff_list(self, request):
+            """
+            Internal staff-messaging helper:
+            Return all active staff + owners (superusers).
+            Only staff/owners can access this endpoint.
+            """
+            user = request.user
+            if not (user.is_staff or user.is_superuser):
+                raise PermissionDenied("Staff messaging is only available to staff users.")
+
+            User = get_user_model()
+
+            qs = (
+                User.objects.filter(is_active=True)
+                .filter(models.Q(is_staff=True) | models.Q(is_superuser=True))
+                .select_related("profile")
+                .order_by("first_name", "last_name", "id")
+            )
+
+            out = []
+            for u in qs:
+                prof = getattr(u, "profile", None)
+                full_name = (getattr(prof, "full_name", "") or u.get_full_name() or u.username or u.email).strip()
+
+                # Avatar resolution
+                avatar = ""
+                if prof:
+                    img = getattr(prof, "user_image", None) or getattr(prof, "avatar", None)
+                    if img:
+                        try:
+                            avatar = getattr(img, "url", "") or str(img)
+                        except Exception:
+                            avatar = str(img) if img else ""
+                if not avatar:
+                    li = getattr(u, "linkedin", None)
+                    if li:
+                        avatar = getattr(li, "picture_url", "") or ""
+
+                out.append(
+                    {
+                        "id": u.id,
+                        "first_name": u.first_name,
+                        "last_name": u.last_name,
+                        "username": u.username,
+                        "email": u.email,
+                        "display_name": full_name,
+                        "avatar_url": avatar,
+                        "is_staff": u.is_staff,
+                        "is_superuser": u.is_superuser,
+                    }
+                )
+
+            return Response(out, status=status.HTTP_200_OK)
+
+
 # messaging/views.py
 
 class MessageViewSet(
