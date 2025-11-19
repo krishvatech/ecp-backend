@@ -730,8 +730,7 @@ class ConversationViewSet(viewsets.ViewSet):
                 )
 
             return Response(out, status=status.HTTP_200_OK)
-
-
+    
 # messaging/views.py
 
 class MessageViewSet(

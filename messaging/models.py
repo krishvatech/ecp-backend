@@ -149,6 +149,19 @@ class Message(models.Model):
     sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sent_messages")
     body = models.TextField()
     attachments = ArrayField(models.JSONField(), default=list, blank=True)
+    
+    meeting_id = models.CharField(
+        max_length=128,
+        null=True,
+        blank=True,
+        help_text="RealtimeKit meetingId for imported chat messages",
+    )
+    external_id = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="RealtimeKit chat message id (id column from CSV)",
+    )
 
     is_hidden = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)
