@@ -23,14 +23,14 @@ def realtime_webhook(request):
     try:
         payload = json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
-        return HttpResponse(status=400)
+        return JsonResponse({"ok": False, "reason": "invalid_json"}, status=400)
 
-    event_type = payload.get("event")
+    event_type = payload.get("event") or payload.get("type")
 
     if event_type == "meeting.chatSynced":
-        # ⚠️ Check exact keys in their docs; commonly "meetingId" & "chatDownloadUrl"
-        meeting_id = payload.get("meetingId")
-        chat_url = payload.get("chatDownloadUrl")
+        # Support both camelCase and snake_case from RealtimeKit
+        meeting_id = payload.get("meetingId") or payload.get("meeting_id")
+        chat_url = payload.get("chatDownloadUrl") or payload.get("chat_download_url")
 
         if not meeting_id or not chat_url:
             logger.warning("chatSynced without meetingId/chatDownloadUrl: %s", payload)
@@ -39,5 +39,4 @@ def realtime_webhook(request):
         imported = import_chat_csv_from_url(chat_url, meeting_id)
         return JsonResponse({"ok": True, "imported": imported})
 
-    # Ignore other events or handle them if you want.
     return JsonResponse({"ok": True})

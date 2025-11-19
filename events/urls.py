@@ -11,4 +11,9 @@ router.register(r"event-registrations", EventRegistrationViewSet, basename="even
 urlpatterns = router.urls + [
     path("events/recording/webhook/", RecordingWebhookView.as_view(), name="dyte-recording-webhook"),  # NEW
     path("realtime/webhook/", realtime_webhook, name="realtime-webhook"),
+    path(
+        "realtimekit/webhooks/chat-synced/",
+        realtime_webhook,
+        name="realtimekit-chat-webhook",
+    ),
 ]

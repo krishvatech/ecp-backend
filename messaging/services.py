@@ -5,6 +5,7 @@ import csv
 import io
 from typing import Optional
 
+import logging
 import requests
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -13,6 +14,8 @@ from django.utils import timezone
 
 from .models import Conversation, Message
 from events.models import Event  # you already reference Event in views
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -112,8 +115,13 @@ def import_chat_csv_from_url(
     conv = _get_or_create_event_conversation(event)
 
     # 3) Download CSV into memory (no local file on disk)
-    resp = requests.get(chat_download_url, timeout=60)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(chat_download_url, timeout=60)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        logger.warning("Chat CSV download failed for meeting %s: %s", meeting_id, e)
+        return 0
+
     csv_text = resp.content.decode("utf-8", errors="ignore")
 
     reader = csv.DictReader(io.StringIO(csv_text))

@@ -826,3 +826,4 @@ class MarkMessageReadView(GenericAPIView):
             message=msg, user=user, defaults={"read_at": timezone.now()}
         )
         return Response({"ok": True}, status=status.HTTP_200_OK)
+   
