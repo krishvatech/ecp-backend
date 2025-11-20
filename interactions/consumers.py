@@ -242,7 +242,10 @@ class QnAConsumer(BaseEventConsumer):
                 "upvoted": upvoted,
                 "user_id": self.user.id,
             }
-            await self.channel_layer.group_send(self.group_name, {"type": "qna.upvote", "payload": payload})
+            await self.channel_layer.group_send(
+                self.group_name,
+                {"type": "qna.upvote", "payload": payload},
+            )
             return
 
         # ---------- ASK QUESTION ----------
@@ -263,29 +266,21 @@ class QnAConsumer(BaseEventConsumer):
             "upvote_count": 0,
             "created_at": q.created_at.isoformat(),
         }
-        await self.channel_layer.group_send(self.group_name, {"type": "qna.question", "payload": payload})
+        await self.channel_layer.group_send(
+            self.group_name,
+            {"type": "qna.question", "payload": payload},
+        )
 
     async def qna_question(self, event: Dict[str, Any]) -> None:
+        """
+        Called when group_send(type='qna.question', payload=...) is triggered.
+        Forward payload to all connected clients.
+        """
         await self.send_json(event.get("payload", {}))
 
-    async def qna_upvote(self, event):
-        payload = event["payload"]
-        question_id = payload.get("question_id")
-        
-        # Fetch upvoters
-        from .models import Question
-        question = await database_sync_to_async(Question.objects.get)(id=question_id)
-        upvoters = await database_sync_to_async(list)(
-            question.upvoters.all().values('id', 'username', 'first_name', 'last_name')
-        )
-        upvoters_list = [
-            {
-                'id': u['id'],
-                'name': f"{u.get('first_name', '')} {u.get('last_name', '')}".strip() or u.get('username', f"User {u['id']}"),
-            }
-            for u in upvoters
-        ]
-        
-        payload["upvoters"] = upvoters_list
-        
-        await self.send(text_data=json.dumps(payload))
+    async def qna_upvote(self, event: Dict[str, Any]) -> None:
+        """
+        Called when group_send(type='qna.upvote', payload=...) is triggered.
+        Forward payload to all connected clients.
+        """
+        await self.send_json(event.get("payload", {}))

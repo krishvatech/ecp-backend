@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 
 from .models import Question, QuestionUpvote
+from .serializers import QuestionSerializer
 
 User = get_user_model()
 
@@ -19,6 +20,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
     - POST /questions/{id}/upvote/
     """
     permission_classes = [IsAuthenticated]
+    serializer_class = QuestionSerializer          # ✅ ADD THIS
     queryset = Question.objects.all()  # required by DRF, but we override get_queryset()
 
     def get_queryset(self):
@@ -38,6 +40,46 @@ class QuestionViewSet(viewsets.ModelViewSet):
         if event_id:
             qs = qs.filter(event_id=event_id)
         return qs.order_by("-upvotes_count", "-created_at")
+
+    def perform_create(self, serializer):
+        """
+        Attach the current user when creating a question
+        AND broadcast it to all connected QnA WebSocket clients.
+        """
+        question = serializer.save(user=self.request.user)
+
+        # Broadcast to the same Channels group used by QnAConsumer
+        from channels.layers import get_channel_layer
+        from asgiref.sync import async_to_sync
+
+        channel_layer = get_channel_layer()
+        group = f"event_qna_{question.event_id}_qnaconsumer"
+
+        # Build payload shape consistent with QnAConsumer.receive_json
+        user = self.request.user
+        display_name = (
+            (getattr(user, "get_full_name", lambda: "")() or "").strip()
+            or user.first_name
+            or user.username
+            or (user.email.split("@")[0] if user.email else f"User {user.id}")
+        )
+
+        payload = {
+            "type": "qna.question",
+            "event_id": question.event_id,
+            "question_id": question.id,
+            "user_id": question.user_id,
+            "uid": question.user_id,
+            "user": display_name,
+            "content": question.content,
+            "upvote_count": 0,
+            "created_at": question.created_at.isoformat(),
+        }
+
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.question", "payload": payload},
+        )
 
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
@@ -98,7 +140,9 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "upvoted": upvoted,
             "user_id": user.id,
         }
-        async_to_sync(channel_layer.group_send)(group, {"type": "qna.upvote", "payload": payload})
+        async_to_sync(channel_layer.group_send)(
+            group, {"type": "qna.upvote", "payload": payload}
+        )
 
         return Response(
             {
