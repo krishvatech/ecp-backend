@@ -717,62 +717,41 @@ class EventViewSet(viewsets.ModelViewSet):
                     event.attending_count = 0
 
         return Response({"ok": True, "attending_count": int(event.attending_count or 0)})
-    
-    
-    
-    # --------------------------------------------------------
-    # 🔴 Live Status Update Endpoint
-    # --------------------------------------------------------
-    @action(detail=True, methods=["post"], permission_classes=[AllowAny], url_path="live-status")
-    def live_status(self, request, pk=None):
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="registrations",
+        permission_classes=[IsAuthenticated],
+    )
+    def registrations(self, request, pk=None):
         """
-        Start/end a live meeting.
-        Body: {"action":"start"} or {"action":"end"}
-        Also sets Event.active_speaker_id on start, clears on end.
+        Owner-only view: list all members who purchased/registered this event.
         """
-        action_type = (request.data.get("action") or "").strip().lower()
-        if action_type not in {"start", "end"}:
-            return Response({"ok": False, "error": "Invalid action"}, status=400)
+        event = self.get_object()
+        user = request.user
 
-        # Prefer authenticated user as host; fall back to event.creator if anonymous
-        host_user_id = request.user.id if getattr(request, "user", None) and request.user.is_authenticated else None
+        # allow only event creator, staff or superuser
+        if not (
+            user.is_staff
+            or getattr(user, "is_superuser", False)
+            or event.created_by_id == user.id
+        ):
+            return Response(
+                {"detail": "You do not have permission to view registrations."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-        with transaction.atomic():
-            # <-- IMPORTANT: lock the row *inside* the transaction
-            event = get_object_or_404(self.get_queryset().model.objects.select_for_update(), pk=pk)
-
-            if action_type == "start":
-                event.status = "live"
-                event.is_live = True
-                event.live_started_at = timezone.now()
-                event.live_ended_at = None
-                event.active_speaker_id = host_user_id or event.created_by_id
-                event.attending_count = 0
-            else:  # end
-                event.status = "ended"
-                event.is_live = False
-                event.live_ended_at = timezone.now()
-
-            # If your model doesn't have `updated_at`, remove it from update_fields
-            event.save(update_fields=[
-                "status",
-                "is_live",
-                "live_started_at",
-                "live_ended_at",
-                "active_speaker_id",
-                "attending_count",
-                "updated_at",
-            ])
-
-        return Response({
-            "ok": True,
-            "status": event.status,
-            "is_live": event.is_live,
-            "active_speaker": event.active_speaker_id,
-            "live_started_at": event.live_started_at,
-            "live_ended_at": event.live_ended_at,
-        })
-
+        qs = (
+            EventRegistration.objects
+            .filter(event=event)
+            .select_related("user")
+            .order_by("-registered_at")
+        )
+        serializer = EventRegistrationSerializer(
+            qs, many=True, context={"request": request}
+        )
+        return Response(serializer.data)
 
     # ------------------------ My Events ----------------------
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="mine")

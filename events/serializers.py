@@ -432,16 +432,45 @@ class EventLiteSerializer(serializers.ModelSerializer):
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):
-    event = EventLiteSerializer(read_only=True)          # nested event for reads
-    event_id = serializers.PrimaryKeyRelatedField(       # simple write by id
-        source="event",
+    event = EventLiteSerializer(read_only=True)
+    event_id = serializers.PrimaryKeyRelatedField(
         queryset=Event.objects.all(),
+        source="event",
         write_only=True,
         required=True,
     )
+    # used when creating – still hidden
     user = serializers.HiddenField(default=serializers.CurrentUserDefault())
+
+    # extra read-only fields so owner can see who bought
+    user_id = serializers.IntegerField(source="user.id", read_only=True)
+    user_name = serializers.SerializerMethodField()
+    user_email = serializers.EmailField(source="user.email", read_only=True)
 
     class Meta:
         model = EventRegistration
-        fields = ("id", "event", "event_id","user", "registered_at")
-        read_only_fields = ("id", "registered_at")
+        fields = (
+            "id",
+            "event",
+            "event_id",
+            "user",
+            "user_id",
+            "user_name",
+            "user_email",
+            "registered_at",
+        )
+        read_only_fields = (
+            "id",
+            "registered_at",
+            "user_id",
+            "user_name",
+            "user_email",
+        )
+
+    def get_user_name(self, obj):
+        first = (getattr(obj.user, "first_name", "") or "").strip()
+        last = (getattr(obj.user, "last_name", "") or "").strip()
+        full = (first + " " + last).strip()
+        if full:
+            return full
+        return getattr(obj.user, "username", "") or ""
