@@ -13,7 +13,8 @@ from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 
 from .models import Conversation, Message
-from events.models import Event  # you already reference Event in views
+from events.models import Event,EventRegistration     # you already reference Event in views
+from django.db.models import Q
 
 logger = logging.getLogger(__name__)
 
@@ -67,28 +68,52 @@ def _resolve_sender(
     event: Optional[Event],
 ) -> User:
     """
-    Best-effort mapping from RealtimeKit participant -> Django User.
+    Map Dyte participant -> Django User using displayName.
 
-    🔧 Customize this according to how you store participants.
+    Priority:
+      1) EventRegistration for this event (best match).
+      2) Global user lookup.
+      3) Event creator / superuser / first user fallback.
     """
     name = (display_name or "").strip()
 
-    # Example: if you have a MeetingParticipant model, you could look up here.
-    # For now, try matching by full name on profile:
+    # 1) Try to match among users registered for THIS event
+    if event and name:
+        reg = (
+            EventRegistration.objects
+            .select_related("user__profile")
+            .filter(event=event)
+            .filter(
+                Q(user__profile__full_name__iexact=name)
+                | Q(user__first_name__iexact=name)
+                | Q(user__last_name__iexact=name)
+                | Q(user__username__iexact=name)
+            )
+            .first()
+        )
+        if reg:
+            return reg.user
+
+    # 2) Global user lookup (in case the user wasn't in registrations)
     if name:
         u = (
-            User.objects.filter(profile__full_name__iexact=name)
+            User.objects
             .select_related("profile")
+            .filter(
+                Q(profile__full_name__iexact=name)
+                | Q(first_name__iexact=name)
+                | Q(last_name__iexact=name)
+                | Q(username__iexact=name)
+            )
             .first()
         )
         if u:
             return u
 
-    # Fallback: event creator
+    # 3) Fallbacks
     if event and getattr(event, "created_by_id", None):
         return event.created_by
 
-    # Last fallback: any superuser or the first user
     return (
         User.objects.filter(is_superuser=True).first()
         or User.objects.first()
