@@ -24,6 +24,10 @@ from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone 
 from events.models import Event, EventRegistration
+from rest_framework.exceptions import PermissionDenied
+import logging
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -678,58 +682,88 @@ class ConversationViewSet(viewsets.ViewSet):
     
     @action(detail=False, methods=["get"], url_path="staff-list")
     def staff_list(self, request):
-            """
-            Internal staff-messaging helper:
-            Return all active staff + owners (superusers).
-            Only staff/owners can access this endpoint.
-            """
-            user = request.user
-            if not (user.is_staff or user.is_superuser):
-                raise PermissionDenied("Staff messaging is only available to staff users.")
+        """
+        Internal staff-messaging helper:
+        Return all active staff + owners (superusers) with
+        presence info from UserProfile (is_online, last_activity_at).
+        Only staff/owners can access this endpoint.
+        """
+        user = request.user
+        if not (user.is_staff or user.is_superuser):
+            logger.warning(
+                "staff-list forbidden for user=%s (id=%s, is_staff=%s, is_superuser=%s)",
+                getattr(user, "username", "anon"),
+                getattr(user, "id", None),
+                getattr(user, "is_staff", None),
+                getattr(user, "is_superuser", None),
+            )
+            raise PermissionDenied("Staff messaging is only available to staff users.")
 
-            User = get_user_model()
+        User = get_user_model()
 
-            qs = (
-                User.objects.filter(is_active=True)
-                .filter(models.Q(is_staff=True) | models.Q(is_superuser=True))
-                .select_related("profile")
-                .order_by("first_name", "last_name", "id")
+        qs = (
+            User.objects.filter(is_active=True)
+            .filter(models.Q(is_staff=True) | models.Q(is_superuser=True))
+            .select_related("profile")
+            .order_by("first_name", "last_name", "id")
+        )
+
+        out = []
+        for u in qs:
+            prof = getattr(u, "profile", None)
+
+            # fallback full name
+            full_name = (
+                (getattr(prof, "full_name", "") or "").strip()
+                or u.get_full_name()
+                or u.username
+                or u.email
+            ).strip()
+
+            # Avatar resolution (same logic as before)
+            avatar = ""
+            if prof:
+                img = getattr(prof, "user_image", None) or getattr(prof, "avatar", None)
+                if img:
+                    try:
+                        avatar = getattr(img, "url", "") or str(img)
+                    except Exception:
+                        avatar = str(img) if img else ""
+            if not avatar:
+                li = getattr(u, "linkedin", None)
+                if li:
+                    avatar = getattr(li, "picture_url", "") or ""
+
+            # ✅ NEW: embed mini profile with presence info
+            profile_payload = None
+            if prof is not None:
+                profile_payload = {
+                    "full_name": prof.full_name or full_name,
+                    "job_title": prof.job_title or "",
+                    "headline": prof.headline or "",
+                    "company": prof.company or "",
+                    "location": prof.location or "",
+                    "last_activity_at": prof.last_activity_at,
+                    "is_online": getattr(prof, "is_online", False),
+                }
+
+            out.append(
+                {
+                    "id": u.id,
+                    "first_name": u.first_name,
+                    "last_name": u.last_name,
+                    "username": u.username,
+                    "email": u.email,
+                    "display_name": full_name,
+                    "avatar_url": avatar,
+                    "is_staff": u.is_staff,
+                    "is_superuser": u.is_superuser,
+                    "profile": profile_payload,   # ✅ IMPORTANT
+                }
             )
 
-            out = []
-            for u in qs:
-                prof = getattr(u, "profile", None)
-                full_name = (getattr(prof, "full_name", "") or u.get_full_name() or u.username or u.email).strip()
+        return Response(out, status=status.HTTP_200_OK)
 
-                # Avatar resolution
-                avatar = ""
-                if prof:
-                    img = getattr(prof, "user_image", None) or getattr(prof, "avatar", None)
-                    if img:
-                        try:
-                            avatar = getattr(img, "url", "") or str(img)
-                        except Exception:
-                            avatar = str(img) if img else ""
-                if not avatar:
-                    li = getattr(u, "linkedin", None)
-                    if li:
-                        avatar = getattr(li, "picture_url", "") or ""
-
-                out.append(
-                    {
-                        "id": u.id,
-                        "first_name": u.first_name,
-                        "last_name": u.last_name,
-                        "username": u.username,
-                        "email": u.email,
-                        "display_name": full_name,
-                        "avatar_url": avatar,
-                        "is_staff": u.is_staff,
-                        "is_superuser": u.is_superuser,
-                    }
-                )
-
-            return Response(out, status=status.HTTP_200_OK)
     
 # messaging/views.py
 

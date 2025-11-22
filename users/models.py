@@ -12,6 +12,8 @@ from django.db.models import Q, F
 from django.contrib.auth.models import User
 from django.utils.text import slugify
 from django.contrib.postgres.fields import ArrayField
+from django.utils import timezone
+from datetime import timedelta
 import os, uuid
 
 def user_profile_image(instance, filename):
@@ -48,6 +50,18 @@ class UserProfile(models.Model):
         blank=True,
         null=True,
     )
+    last_activity_at = models.DateTimeField(null=True, blank=True)
+    # Online if active within last N minutes (tweak as you like)
+    ONLINE_THRESHOLD = timedelta(minutes=2)
+
+    @property
+    def is_online(self):
+        """
+        True if user was active within the last ONLINE_THRESHOLD.
+        """
+        if not self.last_activity_at:
+            return False
+        return timezone.now() - self.last_activity_at <= self.ONLINE_THRESHOLD
 
     def __str__(self) -> str:
         return f"Profile<{self.user.username}>"
@@ -56,6 +70,7 @@ class UserProfile(models.Model):
         indexes = [
             models.Index(fields=["company"]),
             models.Index(fields=["location"]),
+            models.Index(fields=["last_activity_at"]),
         ]
     
     

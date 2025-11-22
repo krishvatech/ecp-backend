@@ -8,7 +8,8 @@ from django.contrib.auth import get_user_model
 from django.db.models.signals import post_save
 from django.db import transaction
 from django.dispatch import receiver
-from django.apps import apps  # <-- NEW
+from django.apps import apps  
+from django.utils import timezone
 from .models import UserProfile
 
 User = get_user_model()
@@ -25,7 +26,12 @@ def ensure_profile(sender, instance, created, **kwargs):
 
     def _create():
         # 1) Ensure profile exists
-        UserProfile.objects.get_or_create(user=instance)
+        profile, created_profile = UserProfile.objects.get_or_create(user=instance)
+
+        # Initialize last_activity_at for brand-new profiles
+        if created_profile and not profile.last_activity_at:
+            profile.last_activity_at = timezone.now()
+            profile.save(update_fields=["last_activity_at"])
 
         # 2) Only on brand-new users, add to default community
         if was_created:

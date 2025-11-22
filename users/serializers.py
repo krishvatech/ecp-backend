@@ -88,26 +88,40 @@ class ExperienceSerializer(serializers.ModelSerializer):
         }
 
 class UserProfileMiniSerializer(serializers.ModelSerializer):
+    is_online = serializers.ReadOnlyField()
+    
     class Meta:
         model = UserProfile
-        fields = ("full_name", "job_title", "headline", "company", "location")
-        
-class UserRosterSerializer(serializers.ModelSerializer):
-    profile = UserProfileMiniSerializer(read_only=True)
+        fields = (
+            "full_name",
+            "job_title",
+            "headline",
+            "company",
+            "location",
+            "last_activity_at",   # read-only field
+            "is_online",          # computed
+        )
+        read_only_fields = ("last_activity_at", "is_online")
 
-    class Meta:
-        model = User
-        fields = ("id", "first_name", "last_name", "email", "profile")
+    def get_is_online(self, obj):
+        # Uses the @property is_online from UserProfile
+        return getattr(obj, "is_online", False)
+        
+
 
 class UserProfileSerializer(serializers.ModelSerializer):
     user_image_url = serializers.SerializerMethodField(read_only=True)
+    is_online = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = UserProfile
         fields = [
-            "full_name","timezone","bio","headline","job_title","company",
-            "location","links","user_image","user_image_url","skills",
+            "full_name", "timezone", "bio", "headline", "job_title", "company",
+            "location", "links", "user_image", "user_image_url", "skills",
+            "last_activity_at",  # NEW
+            "is_online",         # NEW
         ]
+        read_only_fields = ("last_activity_at", "is_online")
 
     def get_user_image_url(self, obj):
         request = self.context.get("request")
@@ -142,6 +156,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
                     except Exception:
                         pass
         return None
+    
+    def get_is_online(self, obj):
+        return getattr(obj, "is_online", False)
 
 
     def validate_timezone(self, value: str) -> str:
