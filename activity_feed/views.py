@@ -705,6 +705,130 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         poll.save(update_fields=["is_closed"])
         return Response({"ok": True, "poll": self._serialize_poll(poll, request)})
     
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path=r"polls/options/(?P<option_id>\d+)/votes"
+    )
+    def poll_option_votes(self, request, option_id=None, *args, **kwargs):
+        """
+        GET /api/activity/feed/polls/options/<option_id>/votes/
+        → returns list of users who voted for this option.
+        """
+        # 1) find the option + poll
+        try:
+            option = PollOption.objects.select_related("poll").get(pk=int(option_id))
+        except (ValueError, PollOption.DoesNotExist):
+            return Response({"detail": "Option not found."}, status=404)
+
+        poll = option.poll
+        uid = getattr(request.user, "id", None)
+        if not uid or not request.user.is_authenticated:
+            return Response({"detail": "Authentication required."}, status=401)
+
+        # same membership rule as voting
+        if poll.group_id:
+            member_ok = (
+                self._can_create_poll_for_group(request, poll.group)
+                or self._active_member(uid, poll.group)
+            )
+            if not member_ok:
+                return Response(
+                    {"detail": "Only active group members can view poll votes."},
+                    status=403,
+                )
+
+        # anonymous polls → do NOT expose voter identities
+        if getattr(poll, "is_anonymous", False):
+            count = PollVote.objects.filter(option=option).count()
+            return Response(
+                {
+                    "count": count,
+                    "results": [],
+                    "anonymous": True,
+                },
+                status=200,
+            )
+
+        # non-anonymous → return full voter list
+        votes_qs = (
+            PollVote.objects
+            .filter(option=option)
+            .select_related("user")
+            .order_by("-created_at")
+        )
+
+        def _safe_avatar_url(profile):
+            """
+            Avoid returning raw bytes / File objects.
+            Always return a plain string URL or None.
+            """
+            if not profile:
+                return None
+
+            # try a few common field names from your project
+            candidates = [
+                getattr(profile, "user_image_url", None),
+                getattr(profile, "avatar_url", None),
+                getattr(profile, "avatar", None),
+                getattr(profile, "user_image", None),
+                getattr(profile, "image", None),
+            ]
+
+            for val in candidates:
+                if not val:
+                    continue
+                # If it's a File/ImageField: use .url if present
+                if hasattr(val, "url"):
+                    return str(val.url)
+                # If it's already str-like
+                if isinstance(val, str):
+                    return val
+                # If it's bytes or something else, just cast to str
+                try:
+                    return str(val)
+                except Exception:
+                    continue
+
+            return None
+
+        rows = []
+        for v in votes_qs:
+            u = v.user
+
+            profile = (
+                getattr(u, "profile", None)
+                or getattr(u, "userprofile", None)
+                or getattr(u, "user_profile", None)
+            )
+            avatar_url = _safe_avatar_url(profile)
+
+            rows.append(
+                {
+                    "id": v.id,
+                    "user": {
+                        "id": u.id,
+                        "first_name": u.first_name,
+                        "last_name": u.last_name,
+                        "username": u.username,
+                        "user_image_url": avatar_url,
+                        "user_image": avatar_url,
+                    },
+                    # make sure datetime → string, not any weird type
+                    "voted_at": v.created_at.isoformat() if v.created_at else None,
+                }
+            )
+
+        return Response(
+            {
+                "count": len(rows),
+                "results": rows,
+                "anonymous": False,
+            },
+            status=200,
+        )
+
+    
     @action(detail=False, methods=["get"], url_path=r"posts/me")
     def actor_me(self, request, *args, **kwargs):
         # build from the base manager to avoid default scope filtering
