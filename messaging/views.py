@@ -969,6 +969,13 @@ class MessageViewSet(
         self.check_object_permissions(self.request, obj)
         return obj
 
+    def perform_destroy(self, instance):
+        instance.is_deleted = True
+        from django.utils import timezone
+        instance.deleted_at = timezone.now()
+        instance.save() 
+        # The record remains in DB, but get_queryset() filters it out for users
+        
 class MarkMessageReadView(GenericAPIView):
     permission_classes = [IsAuthenticated, IsConversationParticipant]
     serializer_class = MessageSerializer
