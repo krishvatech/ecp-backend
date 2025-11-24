@@ -42,6 +42,12 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 AWS_S3_REGION_NAME = os.getenv("AWS_REGION_NAME")
 
+AWS_S3_FILE_OVERWRITE = False
+AWS_DEFAULT_ACL = None  # let bucket policy handle permissions
+AWS_S3_OBJECT_PARAMETERS = {
+    "CacheControl": "max-age=86400",
+}
+
 # Google Cloud Storage Configuration
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 

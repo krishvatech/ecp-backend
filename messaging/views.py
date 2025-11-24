@@ -16,6 +16,12 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError, PermissionDenied
 from rest_framework.generics import GenericAPIView
+from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
+from django.core.files.storage import default_storage
+from django.http import FileResponse, Http404
+from django.http import FileResponse
+from urllib.parse import urlparse
+
 
 from .models import Conversation, Message, MessageReadReceipt,ConversationPinnedMessage,ConversationPin
 from .serializers import ConversationSerializer, MessageSerializer,ConversationPinnedMessageOutSerializer
@@ -938,6 +944,8 @@ class MessageViewSet(
 ):
     serializer_class = MessageSerializer
     permission_classes = [permissions.IsAuthenticated, IsConversationParticipant]
+    
+    parser_classes = (JSONParser, FormParser, MultiPartParser)
 
     def _get_conversation_id(self):
         # Accept common kwarg names from DRF-Nested or custom routers
@@ -978,17 +986,64 @@ class MessageViewSet(
         ser = MessageSerializer(qs, many=True, context={"request": request})
         return Response(ser.data)
 
-    def perform_create(self, serializer):
+    def create(self, request, *args, **kwargs):
+        # 1. Resolve Conversation & Permissions
         conv_id = self._get_conversation_id()
         try:
             conv = Conversation.objects.get(pk=conv_id)
         except Conversation.DoesNotExist:
             raise NotFound("Conversation not found.")
-        user = self.request.user
-        # DM access check (groups/events are open to any authed user by your current logic)
+        
+        user = request.user
+        # DM Access Check
         if (conv.group_id is None and conv.event_id is None) and user.id not in (conv.user1_id, conv.user2_id):
             raise PermissionDenied("You are not a participant of this conversation.")
-        serializer.save(conversation=conv, sender=user)
+
+        # 2. Extract Data
+        body_text = request.data.get("body", "")
+        # Get raw files from FormData (React sends 'attachments')
+        files = request.FILES.getlist('attachments') 
+
+        if not body_text and not files:
+             return Response({"detail": "Empty message"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 3. Upload Files to S3 Manually
+        import uuid
+        uploaded_attachments = []
+        
+        for file_obj in files:
+            # Generate unique filename: uuid-filename.ext
+            ext = file_obj.name.split('.')[-1] if '.' in file_obj.name else 'bin'
+            filename = f"{uuid.uuid4()}.{ext}"
+            file_path = f"chat-attachments/{conv_id}/{filename}"
+            
+            # Save to S3 (uses default_storage from settings)
+            saved_path = default_storage.save(file_path, file_obj)
+            file_url = default_storage.url(saved_path)
+            
+            # Create the JSON object for your ArrayField
+            uploaded_attachments.append({
+                "url": file_url,
+                "path": saved_path,  
+                "name": file_obj.name,
+                "type": file_obj.content_type,
+                "size": file_obj.size
+            })
+
+        # 4. Create Message Object
+        # We manually create the object to bypass Serializer validation 
+        # (Serializer expects JSON for attachments, but we received Files)
+        message = Message.objects.create(
+            conversation=conv,
+            sender=user,
+            body=body_text,
+            attachments=uploaded_attachments 
+        )
+
+        # 5. Return Response
+        serializer = self.get_serializer(message)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     def get_object(self):
         conv_id = self._get_conversation_id()
@@ -1008,7 +1063,57 @@ class MessageViewSet(
         instance.deleted_at = timezone.now()
         instance.save() 
         # The record remains in DB, but get_queryset() filters it out for users
+    
+    @action(detail=True, methods=["get"], url_path="download-attachment")
+    def download_attachment(self, request, *args, **kwargs):
+        """
+        Download one of this message's attachments as a file.
+
+        Expects query param ?index=0,1,...
+        URL (nested): /api/messaging/conversations/<cid>/messages/<mid>/download-attachment/?index=0
+        """
+        # Uses nested router conversation_pk + pk
+        message = self.get_object()
+
+        # Which attachment index?
+        try:
+            idx = int(request.query_params.get("index", 0))
+        except (TypeError, ValueError):
+            raise NotFound("Invalid attachment index.")
+
+        attachments = message.attachments or []
+        if idx < 0 or idx >= len(attachments):
+            raise NotFound("Attachment not found.")
+
+        att = attachments[idx]
+        url = att.get("url")
+        if not url:
+            raise NotFound("Attachment URL missing.")
+
+        # Convert S3 URL → storage path: /chat-attachments/... → chat-attachments/...
+        parsed = urlparse(url)
+        storage_path = parsed.path.lstrip("/")
+
+        # Make sure file exists in storage
+        if not default_storage.exists(storage_path):
+            raise NotFound("File not found.")
+
+        # Open & stream as attachment
+        file_obj = default_storage.open(storage_path, "rb")
+        filename = att.get("name") or storage_path.rsplit("/", 1)[-1]
+        content_type = att.get("type") or "application/octet-stream"
+
+        response = FileResponse(file_obj, as_attachment=True, filename=filename)
+        response["Content-Type"] = content_type
+
+        size = att.get("size")
+        if size:
+            response["Content-Length"] = str(size)
+
+        return response
+
         
+    
 class MarkMessageReadView(GenericAPIView):
     permission_classes = [IsAuthenticated, IsConversationParticipant]
     serializer_class = MessageSerializer
