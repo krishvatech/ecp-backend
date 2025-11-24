@@ -10,15 +10,15 @@ This version supports:
 from __future__ import annotations
 from django.db import models
 from django.contrib.auth import get_user_model
-from django.db.models import Q, Prefetch
+from django.db.models import Q, Prefetch,Exists, OuterRef
 from rest_framework import viewsets, mixins, status, permissions
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError, PermissionDenied
 from rest_framework.generics import GenericAPIView
 
-from .models import Conversation, Message, MessageReadReceipt
-from .serializers import ConversationSerializer, MessageSerializer
+from .models import Conversation, Message, MessageReadReceipt,ConversationPinnedMessage
+from .serializers import ConversationSerializer, MessageSerializer,ConversationPinnedMessageOutSerializer
 from .permissions import IsConversationParticipant
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
@@ -332,6 +332,135 @@ class ConversationViewSet(viewsets.ViewSet):
 
         serializer = ConversationSerializer(conv, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=["post"], url_path="pin-message")
+    def pin_message(self, request, pk=None):
+        """
+        POST /api/messaging/conversations/{id}/pin-message
+        Body: { "message_id": <pk>, "scope": "global" | "private" }
+        """
+        try:
+            conv = Conversation.objects.get(pk=pk)
+        except Conversation.DoesNotExist:
+            raise NotFound("Conversation not found.")
+
+        user = request.user
+        if not conv.user_can_view(user):
+            raise PermissionDenied("You are not a participant of this conversation.")
+
+        mid = request.data.get("message_id")
+        requested_scope = request.data.get("scope", "global") 
+
+        if not mid:
+            return Response({"detail": "message_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Determine Final Scope
+        final_scope = requested_scope
+
+        # 1. GROUP Chat Logic
+        if conv.group_id:
+            if requested_scope == 'global':
+                from groups.models import GroupMembership
+                # Check if user is admin/moderator/owner
+                is_group_staff = GroupMembership.objects.filter(
+                    group_id=conv.group_id,
+                    user=user,
+                    status=GroupMembership.STATUS_ACTIVE,
+                    role__in=["admin", "moderator", "owner"] 
+                ).exists()
+                
+                if not is_group_staff:
+                    final_scope = 'private'
+
+        # 2. EVENT Chat Logic
+        elif conv.event_id:
+            if requested_scope == 'global':
+                from events.models import Event
+                # Check if user is the Creator
+                is_creator = Event.objects.filter(pk=conv.event_id, created_by=user).exists()
+                
+                if not is_creator:
+                    final_scope = 'private'
+
+        # 3. DM (Direct Message) Logic - 👇 NEW ADDITION
+        else:
+            # If it's not a Group and not an Event, it's a DM.
+            # DMs are ALWAYS private.
+            final_scope = 'private'
+
+        try:
+            msg = Message.objects.get(
+                pk=mid,
+                conversation=conv,
+                is_hidden=False,
+                is_deleted=False,
+            )
+        except Message.DoesNotExist:
+            return Response({"detail": "Message not found in this conversation."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # Save using update_or_create with the calculated scope
+        pin, created = ConversationPinnedMessage.objects.update_or_create(
+            conversation=conv,
+            message=msg,
+            pinned_by=user, 
+            defaults={
+                "scope": final_scope,
+                "pinned_at": timezone.now()
+            },
+        )
+
+        data = ConversationPinnedMessageOutSerializer(pin, context={"request": request}).data
+        return Response({"ok": True, "pin": data}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="unpin-message")
+    def unpin_message(self, request, pk=None):
+        try:
+            conv = Conversation.objects.get(pk=pk)
+        except Conversation.DoesNotExist:
+            raise NotFound("Conversation not found.")
+
+        user = request.user
+        if not conv.user_can_view(user):
+            raise PermissionDenied("You are not a participant.")
+
+        mid = request.data.get("message_id")
+        if not mid:
+            return Response({"detail": "message_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 🗑️ Logic: Only delete pins created by THIS user.
+        # (If an admin wants to unpin a global message someone else made, 
+        # you would need extra logic here, but this is the safest baseline).
+        deleted, _ = ConversationPinnedMessage.objects.filter(
+            conversation=conv,
+            message_id=mid,
+            pinned_by=user 
+        ).delete()
+
+        return Response({"ok": True, "deleted": bool(deleted)}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"], url_path="pinned-messages")
+    def pinned_messages(self, request, pk=None):
+        try:
+            conv = Conversation.objects.get(pk=pk)
+        except Conversation.DoesNotExist:
+            raise NotFound("Conversation not found.")
+
+        user = request.user
+        if not conv.user_can_view(user):
+            raise PermissionDenied("You are not a participant.")
+
+        # 🔍 Logic: Show if Scope is Global OR if I pinned it myself
+        qs = (
+            ConversationPinnedMessage.objects
+            .filter(conversation=conv)
+            .filter(Q(scope='global') | Q(pinned_by=user)) 
+            .select_related("message__sender__profile", "pinned_by")
+            .order_by("-pinned_at")
+        )
+
+        data = ConversationPinnedMessageOutSerializer(qs, many=True, context={"request": request}).data
+        return Response(data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="ensure-direct")
     def ensure_direct(self, request):
@@ -798,13 +927,18 @@ class MessageViewSet(
             queryset=MessageReadReceipt.objects.filter(user_id=self.request.user.id),
             to_attr="my_receipts",
         )
+
+        pinned_subq = ConversationPinnedMessage.objects.filter(message_id=OuterRef("id"))
+
         return (
             Message.objects
             .filter(conversation_id=conv_id, is_hidden=False, is_deleted=False)
+            .annotate(is_pinned=Exists(pinned_subq))   # 👈 add this
             .select_related("sender__profile")
             .prefetch_related(my_receipts)
             .order_by("created_at")
         )
+
     
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset()

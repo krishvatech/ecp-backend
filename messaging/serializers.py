@@ -1,7 +1,7 @@
 from __future__ import annotations
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
-from .models import Conversation, Message, MessageReadReceipt
+from .models import Conversation, Message, MessageReadReceipt, ConversationPinnedMessage
 
 User = get_user_model()
 
@@ -215,6 +215,7 @@ class MessageSerializer(serializers.ModelSerializer):
     read_by_me = serializers.SerializerMethodField()
     # keep old clients happy
     is_read = serializers.SerializerMethodField()
+    is_pinned = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
@@ -227,6 +228,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "body", "attachments",
             "created_at",
             "read_by_me", "is_read",
+            "is_pinned",   
         )
         read_only_fields = (
             "id",
@@ -237,7 +239,30 @@ class MessageSerializer(serializers.ModelSerializer):
             "created_at",
             "read_by_me", "is_read",
             "is_hidden", "is_deleted", "deleted_at",
+            "is_pinned",   
         )
+        
+    def get_is_pinned(self, obj):
+        # If annotated in the queryset, reuse that flag
+        flag = getattr(obj, "is_pinned", None)
+        if flag is not None:
+            return bool(flag)
+        
+        # Fallback: Check global OR pinned by me
+        user = self.context.get("request").user
+        if not user or not user.is_authenticated:
+             # If we can't identify the user, we can only safely show global pins
+             return ConversationPinnedMessage.objects.filter(
+                message_id=obj.id, 
+                scope='global'
+            ).exists()
+             
+        from django.db.models import Q
+        return ConversationPinnedMessage.objects.filter(
+            message_id=obj.id
+        ).filter(
+            Q(scope='global') | Q(pinned_by=user)
+        ).exists()
 
     # ----- computed fields -----
     def get_read_by_me(self, obj):
@@ -299,3 +324,28 @@ class MessageSerializer(serializers.ModelSerializer):
             if url is not None and not isinstance(url, str):
                 raise serializers.ValidationError("Attachment 'url' must be a string.")
         return value
+
+
+class ConversationPinnedMessageOutSerializer(serializers.ModelSerializer):
+    message = MessageSerializer(read_only=True)
+    pinned_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ConversationPinnedMessage
+        fields = [
+            "id",
+            "conversation",
+            "message",
+            "pinned_by",
+            "pinned_by_name",
+            "pinned_at",
+            "scope",  # 👈 ADD THIS LINE
+        ]
+
+    def get_pinned_by_name(self, obj):
+        u = getattr(obj, "pinned_by", None)
+        if not u:
+            return ""
+        prof = getattr(u, "profile", None)
+        full = (getattr(prof, "full_name", "") or u.get_full_name() or u.username or "").strip()
+        return full

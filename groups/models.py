@@ -177,38 +177,7 @@ class PromotionRequest(models.Model):
     def __str__(self):
         return f"{self.user} → {self.group} ({self.role_requested}, {self.status})"
 
-# ---- Pin a messaging.Message inside a group ----
-class GroupPinnedMessage(models.Model):
-    group = models.ForeignKey("groups.Group", on_delete=models.CASCADE, related_name="pinned_messages")
-    message = models.ForeignKey("messaging.Message", on_delete=models.CASCADE, related_name="group_pins")
-    pinned_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="pinned_group_messages"
-    )
-    pinned_at = models.DateTimeField(auto_now_add=True)
-    is_global = models.BooleanField(default=False, db_index=True)
-    user = models.ForeignKey(  # only used for personal pins
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True, related_name="personal_group_pins"
-    )
-    class Meta:
-        constraints = [
-            # Only one global pin per (group, message)
-            models.UniqueConstraint(
-                fields=["group", "message"],
-                condition=Q(is_global=True),
-                name="uniq_global_pin_per_group_message",
-            ),
-            # Only one personal pin per (group, message, user)
-            models.UniqueConstraint(
-                fields=["group", "message", "user"],
-                condition=Q(is_global=False),
-                name="uniq_personal_pin_per_user",
-            ),
-        ]
-        indexes = [models.Index(fields=["group", "pinned_at"])]
 
-    def __str__(self):
-        scope = "GLOBAL" if self.is_global else f"PERSONAL:{self.user_id}"
-        return f"Pin[{scope}] g={self.group_id} msg={self.message_id}"
 
 class GroupNotification(models.Model):
     KIND_JOIN_REQUEST = "join_request"

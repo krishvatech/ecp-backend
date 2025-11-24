@@ -197,3 +197,45 @@ class MessageReadReceipt(models.Model):
 
     def __str__(self):
         return f"read: msg={self.message_id} by user={self.user_id} @ {self.read_at}"
+    
+    
+class ConversationPinnedMessage(models.Model):
+    """
+    Generic pin record for any chat (DM / group / event).
+    One row per pinned message in a conversation.
+    """
+    conversation = models.ForeignKey(
+        Conversation,
+        on_delete=models.CASCADE,
+        related_name="pinned_messages",
+    )
+    message = models.OneToOneField(
+        Message,
+        on_delete=models.CASCADE,
+        related_name="pinned_state",
+        help_text="Pinned message inside this conversation",
+    )
+    pinned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="conversation_pins",
+    )
+    pinned_at = models.DateTimeField(auto_now_add=True)
+    scope = models.CharField(max_length=20, default='global', choices=[('global', 'Global'), ('private', 'Private')])
+
+    class Meta:
+        db_table = "messaging_conversation_pinned_message"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["conversation", "message"],
+                name="uniq_pin_per_conversation_message",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["conversation", "pinned_at"]),
+        ]
+
+    def __str__(self):
+        return f"Pin(conv={self.conversation_id}, msg={self.message_id})"

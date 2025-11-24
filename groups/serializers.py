@@ -4,7 +4,7 @@ from django.db.models import Count
 from community.models import Community
 from django.contrib.auth import get_user_model
 from users.serializers import UserMiniSerializer
-from .models import Group, GroupMembership, PromotionRequest, GroupPinnedMessage, GroupNotification
+from .models import Group, GroupMembership, PromotionRequest, GroupNotification
 
 User = get_user_model()
 
@@ -185,39 +185,6 @@ class GroupMemberOutSerializer(serializers.ModelSerializer):
         if hasattr(avatar, "url"):
             avatar = avatar.url
         return {"id": u.pk, "name": name or None, "email": getattr(u, "email", None), "avatar": avatar}
-
-# ---- Pinned messages ----
-class GroupPinnedMessageOutSerializer(serializers.ModelSerializer):
-    message = serializers.SerializerMethodField()
-    pinned_by = serializers.SerializerMethodField()
-    scope = serializers.SerializerMethodField()  # NEW
-
-    class Meta:
-        model = GroupPinnedMessage
-        fields = ["id", "pinned_at", "pinned_by", "scope", "message"]
-
-    def get_scope(self, obj):
-        return "global" if obj.is_global else "personal"
-
-    def get_pinned_by(self, obj):
-        u = obj.pinned_by
-        if not u:
-            return None
-        name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", "")
-        return {"id": u.id, "name": name, "email": getattr(u, "email", None)}
-
-    def get_message(self, obj):
-        m = obj.message
-        return {
-            "id": getattr(m, "id", None),
-            "body": (getattr(m, "body", "") or "")[:500],
-            "created_at": getattr(m, "created_at", None),
-            "sender_id": getattr(m, "sender_id", None),
-            "is_hidden": getattr(m, "is_hidden", False),
-            "is_deleted": getattr(m, "is_deleted", False),
-        }
-
-
 
 # ===== Feed Posts stored as activity_feed.FeedItem =====
 class CreateFeedPostSerializer(serializers.Serializer):

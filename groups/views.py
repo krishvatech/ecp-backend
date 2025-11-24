@@ -25,7 +25,7 @@ from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParam
 
 from community.models import Community
 from activity_feed.models import FeedItem
-from .models import Group, GroupMembership, PromotionRequest, GroupPinnedMessage, GroupNotification
+from .models import Group, GroupMembership, PromotionRequest, GroupNotification
 from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content
 from .serializers import (
     GroupSerializer,
@@ -33,7 +33,6 @@ from .serializers import (
     CreateFeedPostSerializer,
     FeedItemIdSerializer,
     GroupSettingsSerializer,
-    GroupPinnedMessageOutSerializer,
     PromotionRequestCreateSerializer,
     PromotionRequestOutSerializer,
     GroupNotificationSerializer,
@@ -1740,95 +1739,6 @@ class GroupViewSet(viewsets.ModelViewSet):
         ok, reason = self._can_send_message_to_group(request, group)
         return Response({"ok": ok, "reason": reason, "message_mode": group.message_mode})
 
-    # Use (Endpoint): POST /api/groups/{id}/message/pin-message
-    # - Pin a message (global for elevated; personal for members).
-    # Ordering: Not applicable.
-    @action(detail=True, methods=["post"], url_path="message/pin-message", parser_classes=[JSONParser])
-    def pin_message(self, request, pk=None):
-        group = self.get_object()
-        uid = getattr(request.user, "id", None)
-        if not uid:
-            return Response({"detail": "Authentication required."}, status=401)
-
-        mid = request.data.get("message_id")
-        if not mid:
-            return Response({"detail": "message_id is required"}, status=400)
-
-        msg, err = self._get_message_for_group(group, mid)
-        if err:
-            return Response({"detail": err}, status=400)
-
-        # Elevated roles create GLOBAL pin; members create PERSONAL pin
-        if self._can_moderate_any(request, group):
-            pin, _ = GroupPinnedMessage.objects.get_or_create(
-                group=group, message=msg, is_global=True, defaults={"pinned_by_id": uid}
-            )
-        else:
-            pin, _ = GroupPinnedMessage.objects.get_or_create(
-                group=group, message=msg, is_global=False, user_id=uid, defaults={"pinned_by_id": uid}
-            )
-        return Response({"ok": True, "pin": GroupPinnedMessageOutSerializer(pin).data}, status=200)
-
-
-    # Use (Endpoint): POST /api/groups/{id}/message/unpin-message
-    # - Unpin message; elevated can remove global & personal; members remove only their personal.
-    # Ordering: Not applicable.
-    @action(detail=True, methods=["post"], url_path="message/unpin-message", parser_classes=[JSONParser])
-    def unpin_message(self, request, pk=None):
-        group = self.get_object()
-        uid = getattr(request.user, "id", None)
-        if not uid:
-            return Response({"detail": "Authentication required."}, status=401)
-
-        mid = request.data.get("message_id")
-        scope = request.data.get("scope")  # "global" or "personal" (optional hint)
-        if not mid:
-            return Response({"detail": "message_id is required"}, status=400)
-
-        msg, err = self._get_message_for_group(group, mid)
-        if err:
-            return Response({"detail": err}, status=400)
-
-        deleted = 0
-        if self._can_moderate_any(request, group):
-            # elevated can remove global pins; if scope not provided, try both
-            if scope == "global" or scope is None:
-                d, _ = GroupPinnedMessage.objects.filter(group=group, message=msg, is_global=True).delete()
-                deleted += d
-            if scope == "personal" or scope is None:
-                # can also clean their own personal pin if they made one
-                d, _ = GroupPinnedMessage.objects.filter(group=group, message=msg, is_global=False, user_id=uid).delete()
-                deleted += d
-        else:
-            # member can only unpin their personal pin
-            d, _ = GroupPinnedMessage.objects.filter(group=group, message=msg, is_global=False, user_id=uid).delete()
-            deleted += d
-
-        return Response({"ok": True, "deleted": bool(deleted)}, status=200)
-
-    # Use (Endpoint): GET /api/groups/{id}/message/pinned-messages
-    # - Returns global pins + personal pins for current user (if logged in).
-    # Ordering: When merging lists, sorted to keep globals first then personal by pinned_at desc.
-    @action(detail=True, methods=["get"], url_path="message/pinned-messages")
-    def pinned_messages(self, request, pk=None):
-        """
-        Returns:
-        - all GLOBAL pins
-        - plus PERSONAL pins for the requesting user only
-        """
-        group = self.get_object()
-        uid = getattr(request.user, "id", None)
-
-        qs = GroupPinnedMessage.objects.filter(group=group, is_global=True).select_related("message", "pinned_by")
-        if uid:
-            personal = GroupPinnedMessage.objects.filter(group=group, is_global=False, user_id=uid)\
-                        .select_related("message", "pinned_by")
-            qs = list(qs) + list(personal)
-            data = GroupPinnedMessageOutSerializer(qs, many=True).data
-            # keep globals first, then personal
-            data.sort(key=lambda x: (0 if x["scope"] == "global" else 1, x["pinned_at"]), reverse=True)
-            return Response(data)
-        return Response(GroupPinnedMessageOutSerializer(qs.order_by("-pinned_at"), many=True).data)
     
     # PATCH /api/groups/{id}/posts/{item_id}/edit
     @action(detail=True, methods=["patch"], url_path=r"posts/(?P<item_id>\d+)/edit",
