@@ -239,3 +239,26 @@ class ConversationPinnedMessage(models.Model):
 
     def __str__(self):
         return f"Pin(conv={self.conversation_id}, msg={self.message_id})"
+    
+class ConversationPin(models.Model):
+    """Records that a specific user has pinned a conversation."""
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="pinned_conversations"
+    )
+    conversation = models.ForeignKey(
+        Conversation,
+        on_delete=models.CASCADE,
+        related_name="pins"
+    )
+    pinned_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'conversation'], name='unique_conversation_pin')
+        ]
+        ordering = ['-pinned_at']
+
+    def __str__(self):
+        return f"{self.user} pinned {self.conversation}"

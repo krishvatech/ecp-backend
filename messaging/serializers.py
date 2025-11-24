@@ -19,6 +19,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     context_logo  = serializers.SerializerMethodField()
     chat_type = serializers.SerializerMethodField(method_name="compute_chat_type")
     display_title = serializers.SerializerMethodField(method_name="compute_display_title")
+    is_pinned = serializers.BooleanField(read_only=True)
 
     event_title = serializers.CharField(source="event.title", read_only=True, default=None)
     group_name  = serializers.CharField(source="group.name", read_only=True, default=None)
@@ -37,7 +38,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             "participant_ids",
             "last_message",
             "unread_count",
-            "updated_at", "created_at", "created_by",
+            "updated_at", "created_at", "created_by","is_pinned",
         ]
         read_only_fields = fields
 

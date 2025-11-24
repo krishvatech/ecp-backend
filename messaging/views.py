@@ -17,7 +17,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError, PermissionDenied
 from rest_framework.generics import GenericAPIView
 
-from .models import Conversation, Message, MessageReadReceipt,ConversationPinnedMessage
+from .models import Conversation, Message, MessageReadReceipt,ConversationPinnedMessage,ConversationPin
 from .serializers import ConversationSerializer, MessageSerializer,ConversationPinnedMessageOutSerializer
 from .permissions import IsConversationParticipant
 from django.shortcuts import get_object_or_404
@@ -74,7 +74,14 @@ class ConversationViewSet(viewsets.ViewSet):
             )
         )
 
-        qs = qs.order_by("-updated_at")
+        is_pinned_subquery = ConversationPin.objects.filter(
+            conversation=OuterRef('pk'), 
+            user=user
+        )
+        qs = qs.annotate(is_pinned=Exists(is_pinned_subquery))
+        
+        # Ordering: Pinned first (True > False), then by updated_at
+        qs = qs.order_by("-is_pinned", "-updated_at")
 
         q = request.query_params.get("q")
         if q:
@@ -213,6 +220,32 @@ class ConversationViewSet(viewsets.ViewSet):
         status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return Response(serializer.data, status=status_code)
 
+    @action(detail=True, methods=["post"], url_path="toggle-pin")
+    def toggle_pin(self, request, pk=None):
+        """Toggle the pinned status of a conversation for the current user."""
+        try:
+            conv = Conversation.objects.get(pk=pk)
+        except Conversation.DoesNotExist:
+            raise NotFound("Conversation not found.")
+
+        # Ensure participation
+        if not conv.user_can_view(request.user):
+            raise PermissionDenied("You are not a participant.")
+            
+        # ---------------------------------------------------------------
+
+        pin_obj, created = ConversationPin.objects.get_or_create(
+            conversation=conv, user=request.user
+        )
+
+        if not created:
+            # If it existed, delete it (Unpin)
+            pin_obj.delete()
+            pinned = False
+        else:
+            pinned = True
+
+        return Response({"is_pinned": pinned, "conversation_id": conv.id})
 
     # --- NEW: ensure or return a per-event group room by room_key ---
     @action(detail=False, methods=["post"], url_path="ensure-group")
