@@ -131,6 +131,7 @@ class Experience(models.Model):
     currently_work_here = models.BooleanField(default=False)
     location = models.CharField(max_length=255, blank=True, default="")
     description = models.TextField(blank=True, default="")
+    exit_reason = models.TextField(blank=True, default="")
 
     # ---------- NEW LINKEDIN-STYLE META FIELDS ----------
     EMPLOYMENT_TYPE_CHOICES = [
@@ -160,12 +161,6 @@ class Experience(models.Model):
         ("mid", "Mid level"),
         ("senior", "Senior level"),
     ]
-    COMPENSATION_TYPE_CHOICES = [
-        ("", "—"),
-        ("paid", "Paid"),
-        ("stipend", "Stipend"),
-        ("volunteer", "Volunteer / Unpaid"),
-    ]
     WORK_ARRANGEMENT_CHOICES = [
         ("", "—"),
         ("onsite", "On-site"),
@@ -186,9 +181,6 @@ class Experience(models.Model):
     )
     career_stage = models.CharField(
         max_length=32, choices=CAREER_STAGE_CHOICES, blank=True, default=""
-    )
-    compensation_type = models.CharField(
-        max_length=32, choices=COMPENSATION_TYPE_CHOICES, blank=True, default=""
     )
     work_arrangement = models.CharField(
         max_length=32, choices=WORK_ARRANGEMENT_CHOICES, blank=True, default=""

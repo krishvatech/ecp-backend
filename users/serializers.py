@@ -74,8 +74,8 @@ class ExperienceSerializer(serializers.ModelSerializer):
             "work_schedule",
             "relationship_to_org",
             "career_stage",
-            "compensation_type",
             "work_arrangement",
+            "exit_reason",
         )
         # Let optional selects accept blank ("") from the UI
         extra_kwargs = {
@@ -83,8 +83,8 @@ class ExperienceSerializer(serializers.ModelSerializer):
             "work_schedule": {"required": False, "allow_blank": True},
             "relationship_to_org": {"required": False, "allow_blank": True},
             "career_stage": {"required": False, "allow_blank": True},
-            "compensation_type": {"required": False, "allow_blank": True},
             "work_arrangement": {"required": False, "allow_blank": True},
+            "exit_reason": {"required": False, "allow_blank": True},
         }
 
 class UserProfileMiniSerializer(serializers.ModelSerializer):
