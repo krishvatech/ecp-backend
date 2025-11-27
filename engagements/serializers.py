@@ -141,7 +141,10 @@ class ReactionToggleSerializer(serializers.Serializer):
     # Accept "comment" OR a generic 'app_label.ModelName' for non-comment targets
     target_type = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     target_id = serializers.IntegerField()
-    reaction = serializers.ChoiceField(choices=["like"], default="like")
+    reaction = serializers.ChoiceField(
+        choices=[c[0] for c in Reaction.REACTION_CHOICES],
+        default=Reaction.LIKE,
+    )
 
 
 class ReactionUserSerializer(serializers.ModelSerializer):

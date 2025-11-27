@@ -56,7 +56,7 @@ def _ct_from_param(value: str) -> ContentType:
 class EngagementMetricsView(APIView):
     """
     GET /api/engagements/metrics/?ids=1,2,3[&target_type=app.Model|comment|<ct_id>]
-    Returns per-target like/comment/share counts and whether the current user liked.
+    Returns per-target reaction/comment/share counts and whether the current user reacted.
     """
     permission_classes = [IsAuthenticated]
 
@@ -65,18 +65,21 @@ class EngagementMetricsView(APIView):
         ids = [int(x) for x in ids_raw.split(",") if x.strip().isdigit()]
         if not ids:
             return Response({}, status=status.HTTP_200_OK)
-        # default content type = FeedItem, but allow overriding
-        ct = _ct_from_param_or_feeditem_default(request.query_params.get("target_type"))
 
-        # Likes (only 'like' reaction)
-        like_qs = (
+        # default content type = FeedItem, but allow overriding
+        ct = _ct_from_param_or_feeditem_default(
+            request.query_params.get("target_type")
+        )
+
+        # ✅ Reactions (all types, not only "like")
+        reaction_qs = (
             Reaction.objects
-            .filter(content_type=ct, object_id__in=ids, reaction=Reaction.LIKE)
+            .filter(content_type=ct, object_id__in=ids)
             .values("object_id")
             .annotate(n=Count("id"))
         )
 
-        # Root-level comments (replies are counted inside the dialog)
+        # Root-level comments
         comment_qs = (
             Comment.objects
             .filter(content_type=ct, object_id__in=ids, parent__isnull=True)
@@ -92,18 +95,17 @@ class EngagementMetricsView(APIView):
             .annotate(n=Count("id"))
         )
 
-        # Has the current user liked?
+        # ✅ Has the current user reacted in ANY way?
         liked_by_me = set(
             Reaction.objects
-            .filter(content_type=ct, object_id__in=ids, user=request.user, reaction=Reaction.LIKE)
+            .filter(content_type=ct, object_id__in=ids, user=request.user)
             .values_list("object_id", flat=True)
         )
 
-        # Build result for every requested id
+        # Build output skeleton
         out = {}
         for i in ids:
             out[i] = {
-                # keys your FE already reads
                 "likes": 0,
                 "comments": 0,
                 "shares": 0,
@@ -115,7 +117,7 @@ class EngagementMetricsView(APIView):
                 "user_has_liked": (i in liked_by_me),
             }
 
-        for row in like_qs:
+        for row in reaction_qs:
             o = out.get(row["object_id"])
             if o:
                 o["likes"] = o["like_count"] = row["n"]
@@ -232,13 +234,33 @@ class ReactionViewSet(viewsets.GenericViewSet):
 
         ct = _ct_from_param_or_feeditem_default(target_type)
 
-        obj, created = Reaction.objects.get_or_create(
-            user=request.user, reaction=reaction, content_type=ct, object_id=target_id
-        )
-        if not created:
-            obj.delete()
+        # ✅ one reaction per user+target
+        existing = Reaction.objects.filter(
+            user=request.user,
+            content_type=ct,
+            object_id=target_id,
+        ).first()
+
+        # Same reaction again -> remove (toggle off)
+        if existing and existing.reaction == reaction:
+            existing.delete()
             return Response({"status": "unliked"}, status=status.HTTP_200_OK)
-        return Response({"status": "liked"}, status=status.HTTP_201_CREATED)
+
+        # Different reaction exists -> switch type
+        if existing:
+            existing.reaction = reaction
+            existing.save(update_fields=["reaction"])
+            return Response({"status": "liked", "reaction": reaction}, status=status.HTTP_200_OK)
+
+        # No reaction yet -> create
+        Reaction.objects.create(
+            user=request.user,
+            content_type=ct,
+            object_id=target_id,
+            reaction=reaction,
+        )
+        return Response({"status": "liked", "reaction": reaction}, status=status.HTTP_201_CREATED)
+
     
     @action(detail=False, methods=['get'], url_path='counts', permission_classes=[IsAuthenticated])
     def counts(self, request):
@@ -260,25 +282,33 @@ class ReactionViewSet(viewsets.GenericViewSet):
 
         ct = ContentType.objects.get_for_model(Model)
 
-        # ✅ use your real field name + constant
+        # ✅ count ALL reactions, not just "like"
         base = Reaction.objects.filter(
             content_type=ct,
             object_id__in=ids,
-            reaction=Reaction.LIKE,
         )
 
-        # aggregate like counts
+        # aggregate counts
         rows = base.values("object_id").annotate(n=Count("id"))
-        out = {str(r["object_id"]): {"like_count": r["n"], "user_has_liked": False} for r in rows}
+        out = {
+            str(r["object_id"]): {
+                "like_count": r["n"],     # kept key name for compatibility
+                "user_has_liked": False,  # actually: "user_has_reacted"
+            }
+            for r in rows
+        }
 
-        # mark which of these the current user has liked
-        mine = set(base.filter(user=request.user).values_list("object_id", flat=True))
+        # mark which of these the current user has reacted to
+        mine = set(
+            base.filter(user=request.user).values_list("object_id", flat=True)
+        )
         for oid in mine:
             key = str(oid)
             out.setdefault(key, {"like_count": 0, "user_has_liked": False})
             out[key]["user_has_liked"] = True
 
         return Response({"results": out}, status=200)
+
 
     @extend_schema(
         parameters=[

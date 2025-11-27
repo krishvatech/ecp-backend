@@ -31,8 +31,20 @@ class Comment(models.Model):
 
 # ---------- REACTIONS (likes; already generic) ----------
 class Reaction(models.Model):
+    # ✅ Supported reaction types
     LIKE = "like"
-    REACTION_CHOICES = [(LIKE, "Like")]
+    INTRIGUING = "intriguing"
+    SPOT_ON = "spot_on"
+    VALIDATED = "validated"
+    DEBATABLE = "debatable"
+
+    REACTION_CHOICES = [
+        (LIKE, "Like"),
+        (INTRIGUING, "Intriguing"),
+        (SPOT_ON, "Spot On"),
+        (VALIDATED, "Validated"),
+        (DEBATABLE, "Debatable"),
+    ]
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     reaction = models.CharField(max_length=24, choices=REACTION_CHOICES, default=LIKE)
@@ -44,9 +56,10 @@ class Reaction(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        # ✅ only ONE reaction per user per target (can change type)
         constraints = [
             models.UniqueConstraint(
-                fields=["user", "reaction", "content_type", "object_id"],
+                fields=["user", "content_type", "object_id"],
                 name="unique_user_reaction_per_target",
             )
         ]
@@ -58,6 +71,8 @@ class Reaction(models.Model):
 
     def __str__(self):
         return f"{self.user} {self.reaction} {self.content_type_id}:{self.object_id}"
+
+
 
 # ---------- SHARES (generic target) ----------
 class Share(models.Model):
