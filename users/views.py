@@ -37,7 +37,7 @@ from django.contrib.auth import login as django_login, logout as django_logout
 from django.contrib.auth import get_user_model
 from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
-from .models import Education, Experience
+from .models import Education, Experience,UserProfile
 from .serializers import EducationSerializer, ExperienceSerializer
 
 from .serializers import (
@@ -189,6 +189,45 @@ class UserViewSet(
         }
         data = PublicProfileSerializer(payload, context={"request": request}).data
         return Response(data)
+    
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="filters")
+    def filters(self, request):
+        """
+        Return distinct values for filters from the entire database.
+        """
+        # Helper to get distinct, non-empty values from a model field
+        def get_distinct(model, field):
+            return (
+                model.objects
+                .exclude(**{f"{field}__exact": ""})   # Exclude empty strings
+                .exclude(**{f"{field}__isnull": True}) # Exclude NULLs
+                .values_list(field, flat=True)
+                .distinct()
+                .order_by(field)
+            )
+
+        # 1. Company from Experience model (community_name)
+        companies = get_distinct(Experience, "community_name")
+
+        # 2. Job Title from Experience model (position)
+        titles = get_distinct(Experience, "position")
+
+        # 3. Industry from Experience model
+        industries = get_distinct(Experience, "industry")
+
+        # 4. Company Size from Experience model
+        sizes = get_distinct(Experience, "number_of_employees")
+        
+        # 5. Location from UserProfile model
+        locations = get_distinct(UserProfile, "location")
+
+        return Response({
+            "companies": list(companies),
+            "titles": list(titles),
+            "industries": list(industries),
+            "sizes": list(sizes),
+            "locations": list(locations),
+        })
 
 
    # users/views.py  (inside UserViewSet)

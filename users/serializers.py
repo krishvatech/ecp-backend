@@ -449,13 +449,15 @@ class UserRosterSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
     company_from_experience = serializers.SerializerMethodField()
     position_from_experience = serializers.SerializerMethodField()
+    industry_from_experience = serializers.SerializerMethodField()
+    number_of_employees_from_experience = serializers.SerializerMethodField()
     
 
     class Meta:
         model = User
         fields = (
             "id", "first_name", "last_name", "email", "profile",
-            "company_from_experience", "position_from_experience", "avatar_url",
+            "company_from_experience", "position_from_experience", "avatar_url","industry_from_experience","number_of_employees_from_experience",
         )
 
     def get_avatar_url(self, obj):
@@ -518,6 +520,14 @@ class UserRosterSerializer(serializers.ModelSerializer):
     def get_position_from_experience(self, obj):
         ex = self._best_experience(obj)
         return ex.position if ex else ""
+    
+    def get_industry_from_experience(self, obj):
+        ex = self._best_experience(obj)
+        return ex.industry if ex else ""
+
+    def get_number_of_employees_from_experience(self, obj):
+        ex = self._best_experience(obj)
+        return ex.number_of_employees if ex else ""
 
 class ExperiencePublicSerializer(serializers.ModelSerializer):
     class Meta:
