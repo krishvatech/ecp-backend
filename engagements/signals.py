@@ -33,21 +33,43 @@ def _recipient_for_reaction(obj: Reaction):
 
 @receiver(post_save, sender=Reaction)
 def notify_on_like(sender, instance: Reaction, created, **kwargs):
-    # Only when a new "like" is created (toggle off does nothing)
+    # Only when a new reaction is created (toggle off does nothing)
     if not created:
         return
-    if str(getattr(instance, "reaction", "")).lower() != "like":
+
+    # current reaction key from DB, e.g. "like", "intriguing", "spot_on", ...
+    reaction_key = (getattr(instance, "reaction", "") or "").lower()
+
+    # Map reaction → label with emoji for notifications
+    # (keys here should match the values stored in Reaction.reaction field)
+    reaction_labels = {
+        "like": "👍 Like",
+        "intriguing": "🤔 Intriguing",
+        "spot_on": "🎯 Spot On",
+        "validated": "🧠 Validated",
+        "debatable": "🤷 Debatable",
+    }
+
+    # If reaction is something unexpected, skip
+    if reaction_key not in reaction_labels:
         return
 
     recipient, feed_id = _recipient_for_reaction(instance)
     if not recipient or recipient_id_eq(recipient, instance.user_id):
         return
 
-    # Title appears as: "<B> liked your post" or "<B> liked your comment"
+    # ---------- HERE IS THE PART YOU WERE ASKING "WHERE" ----------
+    # Title appears as: "reacted 👍 Like to your post" or "reacted 🤔 Intriguing to your comment"
     is_comment = instance.content_type == ContentType.objects.get_for_model(Comment)
-    title = "liked your comment" if is_comment else "liked your post"
+    label = reaction_labels[reaction_key]
 
-    description = f"Post #{feed_id}" if feed_id is not None else ""  # ✅ never None
+    if is_comment:
+        title = f"reacted {label} to your comment"
+    else:
+        title = f"reacted {label} to your post"
+
+    # You can later swap this to post title if needed
+    description = f"Post #{feed_id}" if feed_id is not None else ""
 
     Notification.objects.create(
         recipient=recipient,
@@ -56,12 +78,14 @@ def notify_on_like(sender, instance: Reaction, created, **kwargs):
         title=title,
         description=description,
         data={
-            "reaction": "like",
+            # IMPORTANT: store actual reaction type, not hard-coded "like"
+            "reaction": reaction_key,
             "content_type_id": instance.content_type_id,
             "object_id": instance.object_id,
             **({"feed_item_id": feed_id} if feed_id else {}),
         },
     )
+
 
 
 def _recipient_for_comment(obj: Comment):
