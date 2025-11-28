@@ -1034,16 +1034,36 @@ class GroupViewSet(viewsets.ModelViewSet):
         """
         My Groups = active + pending (invited/requested).
         """
+        user = request.user
         statuses = [GroupMembership.STATUS_ACTIVE, GroupMembership.STATUS_PENDING]
+
+        # Subquery: does the current user have ACTIVE or PENDING membership in this group?
+        user_memberships = GroupMembership.objects.filter(
+            group_id=OuterRef("pk"),
+            user_id=user.id,
+            status__in=statuses,
+        )
+
         qs = (
-            Group.objects.filter(memberships__user=request.user, memberships__status__in=statuses)
-            .annotate(member_count=Count("memberships"))
-            .order_by("-created_at")  # Ordering: newest first
+            Group.objects
+            # keep only groups where the above subquery EXISTS
+            .annotate(_am_member=Exists(user_memberships))
+            .filter(_am_member=True)
+            # count ALL ACTIVE members of the group
+            .annotate(
+                member_count=Count(
+                    "memberships",
+                    filter=Q(memberships__status=GroupMembership.STATUS_ACTIVE),
+                )
+            )
+            .order_by("-created_at")
             .distinct()
         )
+
         page = self.paginate_queryset(qs)
         ser = self.get_serializer(page or qs, many=True, context={"request": request})
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+
 
 
     # Use (Endpoint): POST /api/groups/{id}/posts/delete-post
