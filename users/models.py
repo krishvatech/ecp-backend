@@ -132,6 +132,9 @@ class Experience(models.Model):
     location = models.CharField(max_length=255, blank=True, default="")
     description = models.TextField(blank=True, default="")
     exit_reason = models.TextField(blank=True, default="")
+    sector = models.CharField(max_length=128, blank=True, default="")
+    industry = models.CharField(max_length=128, blank=True, default="")
+    number_of_employees = models.CharField(max_length=64, blank=True, default="")
 
     # ---------- NEW LINKEDIN-STYLE META FIELDS ----------
     EMPLOYMENT_TYPE_CHOICES = [

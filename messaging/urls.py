@@ -34,6 +34,12 @@ urlpatterns = [
         MessageViewSet.as_view({"get": "retrieve", "delete": "destroy"}),
         name="conversation-message-detail",
     ),
+    
+    path(
+        "conversations/<int:conversation_id>/messages/<int:pk>/download-attachment/",
+        MessageViewSet.as_view({"get": "download_attachment"}),
+        name="conversation-message-download-attachment",
+    ),
     path("messages/<int:pk>/read/", MarkMessageReadView.as_view(), name="message-read"),
 ]
 

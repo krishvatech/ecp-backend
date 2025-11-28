@@ -219,9 +219,26 @@ class ConversationViewSet(viewsets.ViewSet):
             raise ValidationError({"recipient_id": "Recipient not found."})
 
         user_ids = sorted([user.id, recipient_id])
+
+        # Generate a nice title like "Alice ↔ Bob"
+        me_name = user.get_full_name() or user.username or f"User {user.id}"
+        other_name = recipient.get_full_name() or recipient.username or f"User {recipient.id}"
+        dm_title = f"{me_name} ↔ {other_name}"
+
         conv, created = Conversation.objects.get_or_create(
-            user1_id=user_ids[0], user2_id=user_ids[1]
+            user1_id=user_ids[0],
+            user2_id=user_ids[1],
+            defaults={
+                "created_by": user,
+                "title": dm_title,
+            },
         )
+
+        # Backfill title for old rows that might have NULL / empty title
+        if not conv.title:
+            conv.title = dm_title
+            conv.save(update_fields=["title"])
+
         serializer = ConversationSerializer(conv, context={"request": request})
         status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return Response(serializer.data, status=status_code)
@@ -544,10 +561,22 @@ class ConversationViewSet(viewsets.ViewSet):
 
         user_ids = sorted([user.id, recipient_id])
 
+        me_name = user.get_full_name() or user.username or f"User {user.id}"
+        other_name = recipient.get_full_name() or recipient.username or f"User {recipient.id}"
+        dm_title = f"{me_name} ↔ {other_name}"
+
         conv, created = Conversation.objects.get_or_create(
             user1_id=user_ids[0],
             user2_id=user_ids[1],
+            defaults={
+                "created_by": user,
+                "title": dm_title,
+            },
         )
+
+        if not conv.title:
+            conv.title = dm_title
+            conv.save(update_fields=["title"])
 
         serializer = ConversationSerializer(conv, context={"request": request})
         status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK

@@ -68,7 +68,9 @@ class ExperienceSerializer(serializers.ModelSerializer):
         fields = (
             "id", "community_name", "position",
             "start_date", "end_date", "currently_work_here",
-            "location", "description",
+            "location", "description","sector",
+            "industry",
+            "number_of_employees",
             # NEW fields:
             "employment_type",
             "work_schedule",
@@ -85,6 +87,9 @@ class ExperienceSerializer(serializers.ModelSerializer):
             "career_stage": {"required": False, "allow_blank": True},
             "work_arrangement": {"required": False, "allow_blank": True},
             "exit_reason": {"required": False, "allow_blank": True},
+            "sector": {"required": False, "allow_blank": True},
+            "industry": {"required": False, "allow_blank": True},
+            "number_of_employees": {"required": False, "allow_blank": True},
         }
 
 class UserProfileMiniSerializer(serializers.ModelSerializer):
@@ -444,6 +449,7 @@ class UserRosterSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
     company_from_experience = serializers.SerializerMethodField()
     position_from_experience = serializers.SerializerMethodField()
+    
 
     class Meta:
         model = User
