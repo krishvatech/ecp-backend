@@ -457,8 +457,9 @@ class UserRosterSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             "id", "first_name", "last_name", "email", "profile",
-            "company_from_experience", "position_from_experience", "avatar_url","industry_from_experience","number_of_employees_from_experience",
+            "company_from_experience", "position_from_experience", "avatar_url","industry_from_experience","number_of_employees_from_experience","is_superuser",
         )
+        read_only_fields = ("is_superuser",)
 
     def get_avatar_url(self, obj):
         prof = getattr(obj, "profile", None)

@@ -235,6 +235,7 @@ class UserViewSet(
     def roster(self, request):
         qs = (
             UserModel.objects
+            .filter(is_superuser=False)
             .all()
             .exclude(id=request.user.id)
             .select_related("profile") 
