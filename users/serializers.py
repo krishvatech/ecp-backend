@@ -17,7 +17,7 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
-from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest
+from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest, EducationDocument
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email as django_validate_email
 
@@ -694,3 +694,22 @@ class NameChangeRequestSerializer(serializers.ModelSerializer):
                 validated_data[key] = val.strip()
 
         return super().create(validated_data)
+    
+
+class EducationDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EducationDocument
+        fields = ["id", "file", "filename", "uploaded_at"]
+
+
+class EducationSerializer(serializers.ModelSerializer):
+    # Add this nested field (read-only) so we can see files in the list
+    documents = EducationDocumentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Education
+        fields = (
+            "id", "school", "degree", "field_of_study",
+            "start_date", "end_date", "grade", "description",
+            "documents", # Add "documents" to fields
+        )

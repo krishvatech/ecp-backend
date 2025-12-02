@@ -17,13 +17,15 @@ from .views import (
     SessionLoginView, SessionLogoutView, SessionMeView, CSRFCookieView,
     # NEW:
     MeEducationViewSet, MeExperienceViewSet, MeProfileView,
-    StaffUserViewSet,AdminNameChangeRequestViewSet
+    StaffUserViewSet,AdminNameChangeRequestViewSet,
+    MeEducationDocumentViewSet
 )
 
 # ---- NEW: Router for logged-in user's Education & Experience ----
 router = DefaultRouter()
 router.register(r"me/educations", MeEducationViewSet, basename="me-educations")
 router.register(r"me/experiences", MeExperienceViewSet, basename="me-experiences")
+router.register(r"me/education-documents", MeEducationDocumentViewSet, basename="me-education-documents")
 router.register(r"admin/users", StaffUserViewSet, basename="admin-users")
 router.register(r"admin/name-requests", AdminNameChangeRequestViewSet, basename="admin-name-requests")
 

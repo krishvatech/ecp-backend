@@ -268,3 +268,26 @@ class NameChangeRequest(models.Model):
 
     def __str__(self) -> str:
         return f"NameChangeRequest<{self.user_id} {self.old_first_name} → {self.new_first_name}>"
+
+
+def education_document_path(instance, filename):
+    name, ext = os.path.splitext(filename)
+    # Upload to: education_docs/user_<id>/<random_id>.<ext>
+    return f"education_docs/user_{instance.education.user.id}/{uuid.uuid4().hex[:8]}{ext}"
+
+class EducationDocument(models.Model):
+    education = models.ForeignKey(
+        Education, on_delete=models.CASCADE, related_name="documents"
+    )
+    file = models.FileField(upload_to=education_document_path)
+    filename = models.CharField(max_length=255, blank=True) # To store original filename
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        # Auto-save original filename if not set
+        if self.file and not self.filename:
+            self.filename = os.path.basename(self.file.name)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Doc for {self.education}: {self.filename}"

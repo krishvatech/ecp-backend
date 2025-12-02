@@ -40,6 +40,8 @@ from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
 from .models import Education, Experience,UserProfile,NameChangeRequest
 from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer
+from .models import EducationDocument
+from .serializers import EducationDocumentSerializer
 
 from .serializers import (
     UserSerializer,
@@ -746,3 +748,25 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
         name_req.save()
 
         return Response(NameChangeRequestSerializer(name_req).data)
+
+
+class MeEducationDocumentViewSet(viewsets.ModelViewSet):
+    """
+    Manage documents for the authenticated user's education entries.
+    Endpoints:
+      POST /api/users/me/education-documents/ (Requires 'education' ID and 'file')
+      DELETE /api/users/me/education-documents/<id>/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EducationDocumentSerializer
+    parser_classes = [MultiPartParser, FormParser] # Required for file uploads
+
+    def get_queryset(self):
+        # Only show documents belonging to the user's education entries
+        return EducationDocument.objects.filter(education__user=self.request.user)
+
+    def perform_create(self, serializer):
+        # Security check: Ensure the education ID belongs to the current user
+        education_id = self.request.data.get('education')
+        education = generics.get_object_or_404(Education, id=education_id, user=self.request.user)
+        serializer.save(education=education)
