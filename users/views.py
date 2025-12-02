@@ -23,6 +23,7 @@ from rest_framework import generics, status, permissions
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 import os, time, json, base64, secrets, requests
 from datetime import datetime, timezone, timedelta
+from django.utils import timezone as django_timezone
 from urllib.parse import urlencode
 from django.conf import settings
 from django.shortcuts import redirect
@@ -37,8 +38,8 @@ from django.contrib.auth import login as django_login, logout as django_logout
 from django.contrib.auth import get_user_model
 from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
-from .models import Education, Experience,UserProfile
-from .serializers import EducationSerializer, ExperienceSerializer
+from .models import Education, Experience,UserProfile,NameChangeRequest
+from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer
 
 from .serializers import (
     UserSerializer,
@@ -126,6 +127,9 @@ class UserViewSet(
         data = request.data.copy()
         profile = {}
 
+        data.pop("first_name", None)
+        data.pop("last_name", None)
+
         if isinstance(data.get("profile"), dict):
             profile.update(data["profile"])
 
@@ -137,7 +141,12 @@ class UserViewSet(
         if profile:
             data["profile"] = profile
 
-        serializer = UserSerializer(user, data=data, partial=(request.method == "PATCH"), context={"request": request})
+        serializer = UserSerializer(
+            user,
+            data=data,
+            partial=(request.method == "PATCH"),
+            context={"request": request},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -245,6 +254,31 @@ class UserViewSet(
         data = UserRosterSerializer(qs, many=True, context={"request": request}).data
         return Response(data)
 
+    @action(detail=False, methods=["post"], url_path="me/name-change-request")
+    def create_name_change_request(self, request):
+        """
+        Create a legal name change request (First / Middle / Last) with a reason
+        (e.g. Marriage / Divorce / Legal change).
+        """
+        serializer = NameChangeRequestSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        obj = serializer.save()
+        return Response(
+            NameChangeRequestSerializer(obj).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["get"], url_path="me/name-change-requests")
+    def list_name_change_requests(self, request):
+        """
+        List all name change requests by the current user.
+        """
+        qs = NameChangeRequest.objects.filter(user=request.user).order_by("-created_at")
+        serializer = NameChangeRequestSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 class RegisterView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -643,3 +677,72 @@ class StaffUserViewSet(viewsets.ModelViewSet):
 
         updated = qs.update(is_staff=bool(is_staff))
         return Response({"updated": updated})
+    
+    
+class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
+    """
+    Admin endpoint to list all requests and approve/reject them.
+    GET /api/users/admin/name-requests/?status=pending
+    POST /api/users/admin/name-requests/{id}/decide/
+    """
+    
+    queryset = NameChangeRequest.objects.all().order_by("-created_at")
+    serializer_class = NameChangeRequestSerializer
+    permission_classes = [IsSuperuser] # Limit to admins
+    http_method_names = ['get', 'post', 'head', 'options']
+    
+    # Enable filtering by status
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter] 
+    filterset_fields = ['status']
+    
+    search_fields = [
+        'user__username', 
+        'user__email', 
+        'new_first_name', 
+        'new_last_name', 
+        'old_first_name', 
+        'old_last_name'
+    ]
+    ordering_fields = ['created_at', 'status']
+
+    @action(detail=True, methods=["post"])
+    def decide(self, request, pk=None):
+        name_req = self.get_object()
+        new_status = request.data.get("status")
+        admin_note = request.data.get("admin_note", "")
+
+        if new_status not in ["approved", "rejected"]:
+            return Response({"detail": "Invalid status. Must be 'approved' or 'rejected'."}, status=400)
+
+        if name_req.status != "pending":
+            return Response({"detail": "Request has already been processed."}, status=400)
+
+        # Apply changes if approved
+        if new_status == "approved":
+            user = name_req.user
+            profile = user.profile
+
+            # 1. Update Auth User (First/Last)
+            if name_req.new_first_name:
+                user.first_name = name_req.new_first_name
+            if name_req.new_last_name:
+                user.last_name = name_req.new_last_name
+            user.save()
+
+            # 2. Update Profile (Middle)
+            if name_req.new_middle_name is not None:
+                profile.middle_name = name_req.new_middle_name
+            
+            # 3. Recalculate Full Name
+            parts = [user.first_name, profile.middle_name, user.last_name]
+            profile.full_name = " ".join([p for p in parts if p]).strip()
+            profile.save()
+
+        # Update Request Record
+        name_req.status = new_status
+        name_req.admin_note = admin_note
+        name_req.decided_at = django_timezone.now()
+        name_req.decided_by = request.user
+        name_req.save()
+
+        return Response(NameChangeRequestSerializer(name_req).data)

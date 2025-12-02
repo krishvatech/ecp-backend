@@ -31,6 +31,7 @@ class UserProfile(models.Model):
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
     full_name = models.CharField(max_length=255, blank=True)
+    middle_name = models.CharField(max_length=150, blank=True, default="")
     timezone = models.CharField(max_length=64, default="Asia/Kolkata")
     bio = models.TextField(blank=True)
     # new networking fields
@@ -212,3 +213,58 @@ class Experience(models.Model):
 
     def __str__(self):
         return f"{self.community_name} — {self.position}"
+    
+class NameChangeRequest(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="name_change_requests",
+    )
+
+    # current legal names (snapshot at time of request)
+    old_first_name = models.CharField(max_length=150, blank=True, default="")
+    old_middle_name = models.CharField(max_length=150, blank=True, default="")
+    old_last_name = models.CharField(max_length=150, blank=True, default="")
+
+    # requested new legal names
+    new_first_name = models.CharField(max_length=150)
+    new_middle_name = models.CharField(max_length=150, blank=True, default="")  # optional
+    new_last_name = models.CharField(max_length=150)
+
+    # reason: Marriage / Divorce / etc.
+    reason = models.TextField()
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="processed_name_change_requests",
+    )
+    admin_note = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "status"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"NameChangeRequest<{self.user_id} {self.old_first_name} → {self.new_first_name}>"

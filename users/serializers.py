@@ -17,7 +17,7 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
-from .models import User as UserModel, UserProfile, Experience, Education
+from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email as django_validate_email
 
@@ -196,8 +196,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "username", "email", "profile", "first_name", "is_active", "is_superuser", "is_staff", "date_joined","educations", "experiences"]
-        read_only_fields = ["id", "is_active","is_superuser", "is_staff",  "date_joined"]
+        fields = ["id", "username", "email", "profile", "first_name", "last_name","is_active", "is_superuser", "is_staff", "date_joined","educations", "experiences"]
+        read_only_fields = ["id", "is_active","is_superuser", "is_staff",  "date_joined","first_name", "last_name",]
 
     # username must not be numeric-only
     def validate_username(self, value: str) -> str:
@@ -615,3 +615,82 @@ class PublicProfileSerializer(serializers.Serializer):
     profile = UserProfileMiniSerializer(allow_null=True)
     experiences = ExperiencePublicSerializer(many=True)
     educations = EducationPublicSerializer(many=True)
+    
+    
+class NameChangeRequestSerializer(serializers.ModelSerializer):
+    # ✅ 1. Add these lines to expose user details
+    username = serializers.CharField(source='user.username', read_only=True)
+    email = serializers.EmailField(source='user.email', read_only=True)
+    
+    first_name = serializers.CharField(source='user.first_name', read_only=True)
+    last_name = serializers.CharField(source='user.last_name', read_only=True)
+
+    class Meta:
+        model = NameChangeRequest
+        fields = (
+            "id",
+            "user",       # ✅ 2. Add 'user' here
+            "username",   # ✅ 3. Add 'username' here
+            "email",      # ✅ 4. Add 'email' here
+            "first_name", # ✅ Add to fields
+            "last_name",  # ✅ Add to fields
+            "old_first_name",
+            "old_middle_name",
+            "old_last_name",
+            "new_first_name",
+            "new_middle_name",
+            "new_last_name",
+            "reason",
+            "status",
+            "created_at",
+            "decided_at",
+            "admin_note",
+        )
+        read_only_fields = (
+            "id",
+            "user",       # ✅ 5. Add 'user' to read_only
+            "old_first_name",
+            "old_middle_name",
+            "old_last_name",
+            "status",
+            "created_at",
+            "decided_at",
+            "admin_note",
+        )
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError("Authentication required.")
+
+        # Only one pending request at a time
+        if NameChangeRequest.objects.filter(
+            user=user,
+            status="pending", # Ensure string matches model choice
+        ).exists():
+            raise serializers.ValidationError(
+                "You already have a pending name change request."
+            )
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        user = request.user
+
+        validated_data["user"] = user
+        validated_data["old_first_name"] = user.first_name or ""
+        validated_data["old_last_name"] = user.last_name or ""
+
+        # ✅ 6. Improved: Try to fetch the real middle name from profile if it exists
+        profile = getattr(user, 'profile', None)
+        # Use getattr to safely get middle_name, defaulting to empty string if it doesn't exist
+        validated_data["old_middle_name"] = getattr(profile, "middle_name", "") if profile else ""
+
+        # strip spaces
+        for key in ("new_first_name", "new_middle_name", "new_last_name"):
+            val = validated_data.get(key)
+            if isinstance(val, str):
+                validated_data[key] = val.strip()
+
+        return super().create(validated_data)
