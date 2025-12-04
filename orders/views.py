@@ -88,3 +88,46 @@ class CartItemDetail(APIView):
             return Response(status=status.HTTP_404_NOT_FOUND)
         item.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+class OrderList(APIView):
+    """
+    GET /api/orders/  -> list user's previous orders (excluding current cart)
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        qs = (
+            Order.objects
+            .filter(user=request.user, status="paid")  # only paid orders
+            .order_by("-created_at")                  # newest first
+        )
+        serializer = OrderSerializer(qs, many=True, context={"request": request})
+        return Response(serializer.data)
+
+
+class CheckoutView(APIView):
+    """
+    POST /api/orders/checkout/ -> turn current cart into a paid order.
+    - DOES NOT delete items
+    - Just changes status from 'cart' -> 'paid'
+    - Next time /cart/ is called, a fresh empty cart order is created.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        cart = get_open_cart(request.user)  # current cart for this user
+        if not cart.items.exists():
+            return Response(
+                {"detail": "Cart is empty."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Make sure totals are up-to-date
+        cart.recalc()
+
+        cart.status = "paid"
+        cart.save(update_fields=["status", "subtotal", "total", "updated_at"])
+
+        # Return this finalized order (includes items)
+        data = OrderSerializer(cart, context={"request": request}).data
+        return Response(data, status=status.HTTP_201_CREATED)
