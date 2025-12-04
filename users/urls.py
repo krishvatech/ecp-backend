@@ -18,7 +18,8 @@ from .views import (
     # NEW:
     MeEducationViewSet, MeExperienceViewSet, MeProfileView,
     StaffUserViewSet,AdminNameChangeRequestViewSet,
-    MeEducationDocumentViewSet
+    MeEducationDocumentViewSet,
+    DiditWebhookView,
 )
 
 # ---- NEW: Router for logged-in user's Education & Experience ----
@@ -52,7 +53,7 @@ urlpatterns = [
 
     # ---- NEW: compact profile view (returns both lists) ----
     path("me/profile/", MeProfileView.as_view(), name="me-profile"),
-
+    path("didit/webhook/", DiditWebhookView.as_view(), name="didit-webhook"),
     # ---- NEW: include router endpoints ----
     # /api/users/me/educations/  (GET, POST)
     # /api/users/me/educations/<id>/  (GET, PUT, PATCH, DELETE)

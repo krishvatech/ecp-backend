@@ -42,7 +42,12 @@ from .models import Education, Experience,UserProfile,NameChangeRequest
 from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer
 from .models import EducationDocument
 from .serializers import EducationDocumentSerializer
-
+from .didit_client import (
+    create_initial_kyc_session, 
+    create_name_change_kyc_session, 
+    verify_webhook_signature,
+    get_session_details
+)
 from .serializers import (
     UserSerializer,
     EmailTokenObtainPairSerializer,
@@ -51,7 +56,9 @@ from .serializers import (
     ForgotPasswordSerializer,
     ResetPasswordSerializer,
 )
+import logging
 
+logger = logging.getLogger(__name__)
 LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 API_ME = "https://api.linkedin.com/v2/me"
@@ -281,6 +288,68 @@ class UserViewSet(
         qs = NameChangeRequest.objects.filter(user=request.user).order_by("-created_at")
         serializer = NameChangeRequestSerializer(qs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=["post"], url_path="me/start-kyc")
+    def start_kyc(self, request):
+        """
+        Initiates the first-time KYC process.
+        Returns: { "session_id": "...", "url": "..." }
+        """
+        user = request.user
+        profile = user.profile
+
+        # Optional: Check if already verified
+        if profile.kyc_status == UserProfile.KYC_STATUS_APPROVED:
+             return Response({"detail": "KYC already verified."}, status=400)
+
+        try:
+            session_id, url = create_initial_kyc_session(user, request=request)
+            
+            # Store session ID
+            profile.kyc_last_session_id = session_id
+            profile.kyc_status = UserProfile.KYC_STATUS_PENDING
+            profile.save()
+            
+            return Response({"session_id": session_id, "url": url}, status=200)
+        except Exception as e:
+            logger.error(f"Failed to start KYC: {e}")
+            return Response({"detail": "Failed to create verification session."}, status=503)
+
+    @action(detail=False, methods=["post"], url_path="me/name-change-request")
+    def create_name_change_request(self, request):
+        """
+        Create a name change request AND immediately start a Didit session for it.
+        """
+        serializer = NameChangeRequestSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        name_req = serializer.save()
+
+        # --- Start Didit Session for this request ---
+        try:
+            session_id, url = create_name_change_kyc_session(name_req, request=request)
+            
+            name_req.didit_session_id = session_id
+            name_req.didit_status = NameChangeRequest.DIDIT_STATUS_PENDING
+            name_req.save()
+            
+            # Return normal data + KYC URL
+            data = NameChangeRequestSerializer(name_req).data
+            data["kyc_url"] = url 
+            
+            return Response(data, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            # If Didit fails, we might want to delete the request or return partial success
+            logger.error(f"Failed to start Name Change KYC: {e}")
+            # Optional: name_req.delete() if you want atomic behavior
+            return Response(
+                {"detail": "Request created but failed to start verification session."}, 
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
 
 class RegisterView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -770,3 +839,123 @@ class MeEducationDocumentViewSet(viewsets.ModelViewSet):
         education_id = self.request.data.get('education')
         education = generics.get_object_or_404(Education, id=education_id, user=self.request.user)
         serializer.save(education=education)
+
+class DiditWebhookView(APIView):
+    """
+    Receives callbacks from Didit.
+    Verifies signature and updates UserProfile or NameChangeRequest.
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = [] # Disable auth for webhooks
+
+    def post(self, request):
+        # 1. Verify Signature
+        if not verify_webhook_signature(request):
+            logger.warning("Didit Webhook: Invalid signature")
+            return Response({"detail": "Invalid signature"}, status=403)
+
+        payload = request.data
+        session_id = payload.get("session_id")
+        status_text = payload.get("status") # e.g. "Approved", "Declined"
+        decision = payload.get("decision", {}) # Can contain "risk", "details", etc.
+        vendor_data = payload.get("vendor_data", "")
+
+        logger.info(f"Didit Webhook received: {session_id} - {status_text} - {vendor_data}")
+
+        # 2. Determine Request Type (Initial KYC vs Name Change)
+        if vendor_data.startswith("kyc_initial:"):
+            return self.handle_initial_kyc(payload, session_id, status_text, vendor_data)
+        
+        elif vendor_data.startswith("kyc_namechange:"):
+            return self.handle_name_change(payload, session_id, status_text, vendor_data)
+
+        # Fallback: Try to find by session_id lookup if vendor_data is missing/mangled
+        return self.handle_fallback_lookup(payload, session_id, status_text)
+
+    def handle_initial_kyc(self, payload, session_id, status_text, vendor_data):
+        user_id = vendor_data.split(":")[1]
+        try:
+            profile = UserProfile.objects.get(user__id=user_id)
+        except UserProfile.DoesNotExist:
+            return Response({"detail": "User not found"}, status=404)
+
+        # Map Didit status to Model status
+        # Didit: Approved, Declined, Review, Pending
+        status_map = {
+            "Approved": UserProfile.KYC_STATUS_APPROVED,
+            "Declined": UserProfile.KYC_STATUS_DECLINED,
+            "Review": UserProfile.KYC_STATUS_REVIEW,
+            "Pending": UserProfile.KYC_STATUS_PENDING,
+        }
+        
+        # Update Profile
+        profile.kyc_status = status_map.get(status_text, UserProfile.KYC_STATUS_PENDING)
+        profile.kyc_last_session_id = session_id
+
+        if status_text == "Approved":
+            profile.legal_name_locked = True
+            profile.legal_name_verified_at = django_timezone.now()
+            
+            # Extract Names from payload or fetch from API if missing
+            # Note: The structure of 'decision' payload depends on Didit configuration.
+            # We look for extracted data.
+            extracted = payload.get("extracted_data", {})
+            if not extracted:
+                # Fetch full details if missing in webhook
+                full_details = get_session_details(session_id)
+                extracted = full_details.get("extracted_data", {})
+
+            # Attempt to map common ID fields (adjust keys based on actual Didit response)
+            first_name = extracted.get("first_name") or extracted.get("forenames") or extracted.get("given_names")
+            last_name = extracted.get("last_name") or extracted.get("surname") or extracted.get("family_name")
+            
+            if first_name and last_name:
+                user = profile.user
+                user.first_name = first_name
+                user.last_name = last_name
+                user.save()
+                
+                # Update full name
+                profile.full_name = f"{first_name} {last_name}".strip()
+
+        profile.save()
+        return Response({"status": "processed_initial_kyc"})
+
+    def handle_name_change(self, payload, session_id, status_text, vendor_data):
+        request_id = vendor_data.split(":")[1]
+        try:
+            ncr = NameChangeRequest.objects.get(id=request_id)
+        except NameChangeRequest.DoesNotExist:
+            return Response({"detail": "Request not found"}, status=404)
+
+        status_map = {
+            "Approved": NameChangeRequest.DIDIT_STATUS_APPROVED,
+            "Declined": NameChangeRequest.DIDIT_STATUS_DECLINED,
+            "Review": NameChangeRequest.DIDIT_STATUS_REVIEW,
+            "Pending": NameChangeRequest.DIDIT_STATUS_PENDING,
+        }
+
+        ncr.didit_status = status_map.get(status_text, NameChangeRequest.DIDIT_STATUS_PENDING)
+        ncr.didit_raw_payload = payload
+        
+        # If Didit Approves, we move Admin Status to PENDING (Ready for Admin Review)
+        # If Didit Declines, we might auto-reject or keep as PENDING for manual override.
+        # Flow guide says: "At this point, the request is marked as Pending Admin Review"
+        
+        ncr.save()
+        return Response({"status": "processed_name_change"})
+
+    def handle_fallback_lookup(self, payload, session_id, status_text):
+        # Try finding a NameChangeRequest first
+        ncr = NameChangeRequest.objects.filter(didit_session_id=session_id).first()
+        if ncr:
+            vendor_data = f"kyc_namechange:{ncr.id}"
+            return self.handle_name_change(payload, session_id, status_text, vendor_data)
+        
+        # Try finding a UserProfile
+        profile = UserProfile.objects.filter(kyc_last_session_id=session_id).first()
+        if profile:
+            vendor_data = f"kyc_initial:{profile.user.id}"
+            return self.handle_initial_kyc(payload, session_id, status_text, vendor_data)
+            
+        return Response({"detail": "Session not matched"}, status=200) # 200 to ack Didit

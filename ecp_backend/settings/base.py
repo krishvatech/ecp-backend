@@ -48,6 +48,13 @@ AWS_S3_OBJECT_PARAMETERS = {
     "CacheControl": "max-age=86400",
 }
 
+# Didit For Identity Verifications
+DIDIT_API_KEY = os.getenv("DIDIT_API_KEY", "")
+DIDIT_WORKFLOW_ID_KYC = os.getenv("DIDIT_WORKFLOW_ID_KYC", "")
+DIDIT_WORKFLOW_ID_NAME_CHANGE = os.getenv("DIDIT_WORKFLOW_ID_NAME_CHANGE", "")
+DIDIT_WEBHOOK_SECRET = os.getenv("DIDIT_WEBHOOK_SECRET", "")
+
+
 # Google Cloud Storage Configuration
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 

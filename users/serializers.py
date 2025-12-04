@@ -123,10 +123,12 @@ class UserProfileSerializer(serializers.ModelSerializer):
         fields = [
             "full_name", "timezone", "bio", "headline", "job_title", "company",
             "location", "links", "user_image", "user_image_url", "skills",
-            "last_activity_at",  # NEW
-            "is_online",         # NEW
+            "last_activity_at", "is_online",
+            "kyc_status", "legal_name_locked", "legal_name_verified_at",
         ]
-        read_only_fields = ("last_activity_at", "is_online")
+        read_only_fields = ("last_activity_at", "is_online", "kyc_status",
+                            "legal_name_locked", "legal_name_verified_at")
+
 
     def get_user_image_url(self, obj):
         request = self.context.get("request")
@@ -628,35 +630,21 @@ class NameChangeRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = NameChangeRequest
         fields = (
-            "id",
-            "user",       # ✅ 2. Add 'user' here
-            "username",   # ✅ 3. Add 'username' here
-            "email",      # ✅ 4. Add 'email' here
-            "first_name", # ✅ Add to fields
-            "last_name",  # ✅ Add to fields
-            "old_first_name",
-            "old_middle_name",
-            "old_last_name",
-            "new_first_name",
-            "new_middle_name",
-            "new_last_name",
+            "id", "user", "username", "email",
+            "first_name", "last_name",
+            "old_first_name", "old_middle_name", "old_last_name",
+            "new_first_name", "new_middle_name", "new_last_name",
             "reason",
             "status",
-            "created_at",
-            "decided_at",
-            "admin_note",
+            "didit_status",     # NEW
+            "created_at", "decided_at", "admin_note",
         )
         read_only_fields = (
-            "id",
-            "user",       # ✅ 5. Add 'user' to read_only
-            "old_first_name",
-            "old_middle_name",
-            "old_last_name",
-            "status",
-            "created_at",
-            "decided_at",
-            "admin_note",
+            "id", "user", "old_first_name", "old_middle_name", "old_last_name",
+            "status", "didit_status",      # NEW
+            "created_at", "decided_at", "admin_note",
         )
+
 
     def validate(self, attrs):
         request = self.context.get("request")

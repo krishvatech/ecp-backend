@@ -55,6 +55,30 @@ class UserProfile(models.Model):
     # Online if active within last N minutes (tweak as you like)
     ONLINE_THRESHOLD = timedelta(minutes=2)
 
+    KYC_STATUS_NOT_STARTED = "not_started"
+    KYC_STATUS_PENDING = "pending"
+    KYC_STATUS_APPROVED = "approved"
+    KYC_STATUS_DECLINED = "declined"
+    KYC_STATUS_REVIEW = "review"
+
+    KYC_STATUS_CHOICES = [
+        (KYC_STATUS_NOT_STARTED, "Not started"),
+        (KYC_STATUS_PENDING, "Pending"),
+        (KYC_STATUS_APPROVED, "Approved"),
+        (KYC_STATUS_DECLINED, "Declined"),
+        (KYC_STATUS_REVIEW, "In review"),
+    ]
+
+    kyc_status = models.CharField(
+        max_length=20,
+        choices=KYC_STATUS_CHOICES,
+        default=KYC_STATUS_NOT_STARTED,
+    )
+    kyc_last_session_id = models.CharField(max_length=128, blank=True, default="")
+    legal_name_locked = models.BooleanField(default=False)
+    legal_name_verified_at = models.DateTimeField(null=True, blank=True)
+
+
     @property
     def is_online(self):
         """
@@ -230,6 +254,29 @@ class NameChangeRequest(models.Model):
         on_delete=models.CASCADE,
         related_name="name_change_requests",
     )
+
+    DIDIT_STATUS_NOT_STARTED = "not_started"
+    DIDIT_STATUS_PENDING = "pending"
+    DIDIT_STATUS_APPROVED = "approved"
+    DIDIT_STATUS_DECLINED = "declined"
+    DIDIT_STATUS_REVIEW = "review"
+
+    DIDIT_STATUS_CHOICES = [
+        (DIDIT_STATUS_NOT_STARTED, "Not started"),
+        (DIDIT_STATUS_PENDING, "Pending"),
+        (DIDIT_STATUS_APPROVED, "Approved"),
+        (DIDIT_STATUS_DECLINED, "Declined"),
+        (DIDIT_STATUS_REVIEW, "In review"),
+    ]
+
+    didit_session_id = models.CharField(max_length=128, blank=True, default="")
+    didit_status = models.CharField(
+        max_length=20,
+        choices=DIDIT_STATUS_CHOICES,
+        default=DIDIT_STATUS_NOT_STARTED,
+    )
+    didit_raw_payload = models.JSONField(default=dict, blank=True)
+
 
     # current legal names (snapshot at time of request)
     old_first_name = models.CharField(max_length=150, blank=True, default="")
