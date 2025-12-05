@@ -13,6 +13,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.contrib.auth import update_session_auth_hash
+from django.http import HttpResponse
 from django.conf import settings
 from django.core.mail import send_mail
 from django.utils.http import urlsafe_base64_encode
@@ -848,6 +849,20 @@ class DiditWebhookView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = [] # Disable auth for webhooks
 
+    def get(self, request, *args, **kwargs):
+        # This is the browser callback, not a signed webhook.
+        verification_session_id = request.query_params.get("verificationSessionId")
+        status_text = request.query_params.get("status")
+
+        # Optional: you could call get_session_details(verification_session_id)
+        # here and update the profile as a fallback, but webhooks are preferred.
+
+        return HttpResponse(
+            "Verification complete. You can close this tab and return to the app.",
+            content_type="text/plain",
+            status=200,
+        )
+    
     def post(self, request):
         # 1. Verify Signature
         if not verify_webhook_signature(request):

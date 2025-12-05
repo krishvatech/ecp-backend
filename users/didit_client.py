@@ -4,9 +4,19 @@ import json
 import requests
 from django.conf import settings
 from django.urls import reverse
+from urllib.parse import urljoin
 
 # Didit API Constants
 DIDIT_BASE_URL = "https://verification.didit.me/v2"
+
+def _get_callback_url() -> str | None:
+    # Prefer explicit env var
+    if getattr(settings, "DIDIT_CALLBACK_URL", ""):
+        return settings.DIDIT_CALLBACK_URL
+
+    # Fallback: build from FRONTEND_URL
+    base = getattr(settings, "FRONTEND_URL", "http://localhost:5173/").rstrip("/") + "/"
+    return urljoin(base, "kyc/callback/")
 
 def _get_headers():
     return {
@@ -51,52 +61,28 @@ def create_session(user_id: str, workflow_id: str, vendor_data: str, callback_ur
         raise e
 
 def create_initial_kyc_session(user, request=None) -> tuple[str, str]:
-    """
-    Creates a Didit session for first-time KYC.
-    Vendor data format: "kyc_initial:<user_id>"
-    """
-    # Construct absolute callback URL if request is available
-    callback_url = None
-    if request:
-        # Assumes you have a named URL 'didit-webhook'
-        try:
-            path = reverse("didit-webhook")
-            callback_url = request.build_absolute_uri(path)
-        except Exception:
-            pass
-
     vendor_data = f"kyc_initial:{user.id}"
+    callback_url = _get_callback_url()
+
     return create_session(
         user_id=str(user.id),
         workflow_id=settings.DIDIT_WORKFLOW_ID_KYC,
         vendor_data=vendor_data,
-        callback_url=callback_url
+        callback_url=callback_url,
     )
+
 
 def create_name_change_kyc_session(name_change_request, request=None) -> tuple[str, str]:
-    """
-    Creates a Didit session for a NameChangeRequest.
-    Vendor data format: "kyc_namechange:<request_id>"
-    """
-    # Construct absolute callback URL
-    callback_url = None
-    if request:
-        try:
-            path = reverse("didit-webhook")
-            callback_url = request.build_absolute_uri(path)
-        except Exception:
-            pass
-
     vendor_data = f"kyc_namechange:{name_change_request.id}"
-    # Use specific workflow ID if set, otherwise fallback to standard KYC workflow
-    workflow_id = settings.DIDIT_WORKFLOW_ID_NAME_CHANGE or settings.DIDIT_WORKFLOW_ID_KYC
-    
+    callback_url = _get_callback_url()
+
     return create_session(
         user_id=str(name_change_request.user.id),
-        workflow_id=workflow_id,
+        workflow_id=settings.DIDIT_WORKFLOW_ID_NAME_CHANGE or settings.DIDIT_WORKFLOW_ID_KYC,
         vendor_data=vendor_data,
-        callback_url=callback_url
+        callback_url=callback_url,
     )
+
 
 def verify_webhook_signature(request) -> bool:
     """
