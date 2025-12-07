@@ -69,10 +69,24 @@ class UserProfile(models.Model):
         (KYC_STATUS_REVIEW, "In review"),
     ]
 
+    KYC_DECLINE_REASON_NAME_MISMATCH = "name_mismatch"
+    KYC_DECLINE_REASON_OTHER = "other"
+
+    KYC_DECLINE_REASON_CHOICES = [
+        (KYC_DECLINE_REASON_NAME_MISMATCH, "Name on document does not match sign-up name"),
+        (KYC_DECLINE_REASON_OTHER, "Other"),
+    ]
+
     kyc_status = models.CharField(
         max_length=20,
         choices=KYC_STATUS_CHOICES,
         default=KYC_STATUS_NOT_STARTED,
+    )
+    kyc_decline_reason = models.CharField(
+        max_length=32,
+        choices=KYC_DECLINE_REASON_CHOICES,
+        blank=True,
+        null=True,
     )
     kyc_last_session_id = models.CharField(max_length=128, blank=True, default="")
     legal_name_locked = models.BooleanField(default=False)
