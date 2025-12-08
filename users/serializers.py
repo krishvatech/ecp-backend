@@ -17,7 +17,7 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
-from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest, EducationDocument
+from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest, EducationDocument, UserSkill, EscoSkill, LanguageCertificate, IsoLanguage, UserLanguage
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email as django_validate_email
 
@@ -701,3 +701,160 @@ class EducationSerializer(serializers.ModelSerializer):
             "start_date", "end_date", "grade", "description",
             "documents", # Add "documents" to fields
         )
+
+class EscoSkillSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EscoSkill
+        fields = [
+            "uri",
+            "preferred_label",
+            "alt_labels",
+            "description",
+            "skill_type",
+            "esco_version",
+        ]
+        read_only_fields = fields
+
+class UserSkillSerializer(serializers.ModelSerializer):
+    skill = EscoSkillSerializer(read_only=True)
+    skill_uri = serializers.CharField(write_only=True)
+    preferred_label = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    class Meta:
+        model = UserSkill
+        fields = [
+            "id",
+            "skill",            # nested read-only ESCO data
+            "skill_uri",        # for create/update
+            "preferred_label",  # for initial ESCO insert
+            "proficiency_level",
+            "assessment_type",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "skill", "created_at", "updated_at"]
+
+    def validate_proficiency_level(self, value):
+        if not 1 <= value <= 5:
+            raise serializers.ValidationError("proficiency_level must be between 1 and 5.")
+        return value
+
+    def create(self, validated_data):
+        """
+        When user posts:
+        {
+          "skill_uri": "...",
+          "preferred_label": "Python programming",
+          "proficiency_level": 4
+        }
+        we either get/create EscoSkill and then create UserSkill.
+        """
+        user = self.context["request"].user
+        skill_uri = validated_data.pop("skill_uri")
+        preferred_label = validated_data.pop("preferred_label", "").strip() or skill_uri
+
+        esco_skill, _ = EscoSkill.objects.get_or_create(
+            uri=skill_uri,
+            defaults={"preferred_label": preferred_label},
+        )
+
+        user_skill, _ = UserSkill.objects.update_or_create(
+            user=user,
+            skill=esco_skill,
+            defaults=validated_data,
+        )
+        return user_skill
+
+
+class IsoLanguageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IsoLanguage
+        fields = ["iso_639_1", "iso_639_3", "english_name", "native_name"]
+        read_only_fields = fields
+
+
+class LanguageCertificateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LanguageCertificate
+        fields = ["id", "user_language", "file", "filename", "test_name", "score", "verified", "uploaded_at"]
+        read_only_fields = ["id", "filename", "verified", "uploaded_at"]
+
+
+class UserLanguageSerializer(serializers.ModelSerializer):
+    language = IsoLanguageSerializer(read_only=True)
+
+    # write-only inputs for master creation
+    iso_639_1 = serializers.CharField(write_only=True)
+    iso_639_3 = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    english_name = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    native_name = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    certificates = LanguageCertificateSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = UserLanguage
+        fields = [
+            "id",
+            "language",
+            "iso_639_1",
+            "iso_639_3",
+            "english_name",
+            "native_name",
+            "primary_dialect",
+            "proficiency_cefr",
+            "acquisition_context",
+            "assessment_type",
+            "notes",
+            "certificates",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "language", "certificates", "created_at", "updated_at"]
+
+    def validate_iso_639_1(self, value):
+        value = (value or "").strip()
+        if len(value) != 2:
+            raise serializers.ValidationError("iso_639_1 must be a 2-letter code.")
+        return value.lower()
+
+    def create(self, validated_data):
+        user = self.context["request"].user
+
+        iso_639_1 = validated_data.pop("iso_639_1")
+        iso_639_3 = validated_data.pop("iso_639_3", "").strip()
+        english_name = validated_data.pop("english_name", "").strip() or iso_639_1.upper()
+        native_name = validated_data.pop("native_name", "").strip()
+
+        lang, _ = IsoLanguage.objects.get_or_create(
+            iso_639_1=iso_639_1,
+            defaults={
+                "iso_639_3": iso_639_3,
+                "english_name": english_name,
+                "native_name": native_name,
+            },
+        )
+
+        # keep master up-to-date if new data arrives later
+        dirty = False
+        if iso_639_3 and not lang.iso_639_3:
+            lang.iso_639_3 = iso_639_3
+            dirty = True
+        if english_name and (not lang.english_name or lang.english_name == iso_639_1.upper()):
+            lang.english_name = english_name
+            dirty = True
+        if native_name and not lang.native_name:
+            lang.native_name = native_name
+            dirty = True
+        if dirty:
+            lang.save()
+
+        primary_dialect = validated_data.get("primary_dialect", "")
+
+        obj, _ = UserLanguage.objects.update_or_create(
+            user=user,
+            language=lang,
+            primary_dialect=primary_dialect,
+            defaults=validated_data,
+        )
+        return obj

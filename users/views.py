@@ -27,7 +27,7 @@ from datetime import datetime, timezone, timedelta
 from django.utils import timezone as django_timezone
 from urllib.parse import urlencode
 from django.conf import settings
-from django.shortcuts import redirect
+from django.shortcuts import get_object_or_404, redirect
 from django.utils.crypto import get_random_string
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import LinkedInAccount
@@ -39,10 +39,11 @@ from django.contrib.auth import login as django_login, logout as django_logout
 from django.contrib.auth import get_user_model
 from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
-from .models import Education, Experience,UserProfile,NameChangeRequest
+from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate
 from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer
 from .models import EducationDocument
 from .serializers import EducationDocumentSerializer
+from .esco_client import search_skills
 from .didit_client import (
     create_initial_kyc_session, 
     create_name_change_kyc_session, 
@@ -56,6 +57,10 @@ from .serializers import (
     ChangePasswordSerializer,
     ForgotPasswordSerializer,
     ResetPasswordSerializer,
+    UserSkillSerializer,
+    LanguageCertificateSerializer,
+    UserLanguageSerializer
+    
 )
 import logging
 
@@ -974,3 +979,131 @@ class DiditWebhookView(APIView):
             return self.handle_initial_kyc(payload, session_id, status_text, vendor_data)
             
         return Response({"detail": "Session not matched"}, status=200) # 200 to ack Didit
+    
+
+class EscoSkillSearchView(APIView):
+    """
+    GET /api/users/skills/search/?q=python
+    Returns top ESCO skills for autocomplete.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        q = request.query_params.get("q", "").strip()
+        if not q:
+            return Response({"results": []})
+
+        language = request.query_params.get("lang", "en")
+        raw_results = search_skills(q, language=language, limit=10)
+
+        # Map into a frontend-friendly minimal structure
+        # You can adjust based on actual ESCO response.
+        results = []
+        for item in raw_results:
+            uri = item.get("uri") or item.get("id")  # depends on ESCO JSON
+            label = item.get("preferredLabel") or item.get("title")
+            if not uri or not label:
+                continue
+            results.append({
+                "uri": uri,
+                "label": label,
+            })
+
+        return Response({"results": results})
+    
+class MeSkillViewSet(viewsets.ModelViewSet):
+    """
+    /api/users/me/skills/  (GET list, POST)
+    /api/users/me/skills/<id>/  (GET, PUT, PATCH, DELETE)
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = UserSkillSerializer
+
+    def get_queryset(self):
+        return (
+            UserSkill.objects
+            .select_related("skill")
+            .filter(user=self.request.user)
+            .order_by("-proficiency_level", "-updated_at")
+        )
+
+    def perform_create(self, serializer):
+        serializer.save()
+
+
+class IsoLanguageSearchView(APIView):
+    """
+    GET /api/users/languages/search/?q=english
+    Local autocomplete (DB-backed).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        q = request.query_params.get("q", "").strip()
+        if not q:
+            return Response({"results": []})
+
+        qs = IsoLanguage.objects.filter(
+            Q(english_name__icontains=q) |
+            Q(native_name__icontains=q) |
+            Q(iso_639_1__icontains=q) |
+            Q(iso_639_3__icontains=q)
+        ).order_by("english_name")[:20]
+
+        results = [
+            {
+                "iso_639_1": l.iso_639_1,
+                "iso_639_3": l.iso_639_3,
+                "label": l.english_name,
+                "native_name": l.native_name,
+            }
+            for l in qs
+        ]
+        return Response({"results": results})
+
+
+class MeLanguageViewSet(viewsets.ModelViewSet):
+    """
+    /api/users/me/languages/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = UserLanguageSerializer
+
+    def get_queryset(self):
+        return (
+            UserLanguage.objects
+            .select_related("language")
+            .prefetch_related("certificates")
+            .filter(user=self.request.user)
+            .order_by("-proficiency_cefr", "-updated_at")
+        )
+
+    def perform_create(self, serializer):
+        serializer.save()
+
+
+class MeLanguageCertificateViewSet(viewsets.ModelViewSet):
+    """
+    /api/users/me/language-certificates/
+    Upload files for language proof.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = LanguageCertificateSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        return (
+            LanguageCertificate.objects
+            .select_related("user_language", "user_language__language")
+            .filter(user_language__user=self.request.user)
+            .order_by("-uploaded_at")
+        )
+
+    def perform_create(self, serializer):
+        ul_id = self.request.data.get("user_language")
+        ul = get_object_or_404(UserLanguage, id=ul_id, user=self.request.user)
+
+        f = self.request.FILES.get("file")
+        filename = f.name if f else ""
+
+        serializer.save(user_language=ul, filename=filename)

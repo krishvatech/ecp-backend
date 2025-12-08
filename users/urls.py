@@ -20,13 +20,22 @@ from .views import (
     StaffUserViewSet,AdminNameChangeRequestViewSet,
     MeEducationDocumentViewSet,
     DiditWebhookView,
+    MeSkillViewSet,
+    EscoSkillSearchView,
+    MeLanguageViewSet,
+    MeLanguageCertificateViewSet,
+    IsoLanguageSearchView,
+
 )
 
 # ---- NEW: Router for logged-in user's Education & Experience ----
 router = DefaultRouter()
 router.register(r"me/educations", MeEducationViewSet, basename="me-educations")
 router.register(r"me/experiences", MeExperienceViewSet, basename="me-experiences")
+router.register(r"me/skills", MeSkillViewSet, basename="me-skills")
 router.register(r"me/education-documents", MeEducationDocumentViewSet, basename="me-education-documents")
+router.register(r"me/languages", MeLanguageViewSet, basename="me-languages")
+router.register(r"me/language-certificates", MeLanguageCertificateViewSet, basename="me-language-certificates")
 router.register(r"admin/users", StaffUserViewSet, basename="admin-users")
 router.register(r"admin/name-requests", AdminNameChangeRequestViewSet, basename="admin-name-requests")
 
@@ -54,9 +63,7 @@ urlpatterns = [
     # ---- NEW: compact profile view (returns both lists) ----
     path("me/profile/", MeProfileView.as_view(), name="me-profile"),
     path("didit/webhook/", DiditWebhookView.as_view(), name="didit-webhook"),
-    # ---- NEW: include router endpoints ----
-    # /api/users/me/educations/  (GET, POST)
-    # /api/users/me/educations/<id>/  (GET, PUT, PATCH, DELETE)
-    # /api/users/me/experiences/ ... same
+    path("skills/search/", EscoSkillSearchView.as_view(), name="esco-skill-search"),
+    path("languages/search/", IsoLanguageSearchView.as_view(), name="iso-language-search"),
     path("", include(router.urls)),
 ]
