@@ -35,6 +35,9 @@ from .validators import (
 from .models import UserProfile
 
 User = get_user_model()
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------
@@ -754,17 +757,47 @@ class UserSkillSerializer(serializers.ModelSerializer):
         skill_uri = validated_data.pop("skill_uri")
         preferred_label = validated_data.pop("preferred_label", "").strip() or skill_uri
 
-        esco_skill, _ = EscoSkill.objects.get_or_create(
+        logger.info(
+            "[UserSkillSerializer.create] Incoming payload for user=%s "
+            "skill_uri=%s preferred_label=%r validated=%r",
+            getattr(user, "id", None),
+            skill_uri,
+            preferred_label,
+            validated_data,
+        )
+
+        esco_skill, created_esco = EscoSkill.objects.get_or_create(
             uri=skill_uri,
             defaults={"preferred_label": preferred_label},
         )
 
-        user_skill, _ = UserSkill.objects.update_or_create(
+        logger.info(
+            "[UserSkillSerializer.create] EscoSkill %s (uri=%s, label=%r)",
+            "CREATED" if created_esco else "REUSED",
+            esco_skill.uri,
+            esco_skill.preferred_label,
+        )
+
+        user_skill, created_user_skill = UserSkill.objects.update_or_create(
             user=user,
             skill=esco_skill,
             defaults=validated_data,
         )
+
+        logger.info(
+            "[UserSkillSerializer.create] UserSkill %s id=%s user=%s "
+            "skill_uri=%s proficiency_level=%s assessment_type=%s notes=%r",
+            "CREATED" if created_user_skill else "UPDATED",
+            user_skill.id,
+            user_skill.user_id,
+            esco_skill.uri,
+            user_skill.proficiency_level,
+            user_skill.assessment_type,
+            user_skill.notes,
+        )
+
         return user_skill
+
 
 
 class IsoLanguageSerializer(serializers.ModelSerializer):

@@ -11,6 +11,52 @@ from .base import *  # noqa
 from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
+import logging
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "simple": {
+            "format": "%(levelname)s %(name)s: %(message)s"
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+    },
+    "loggers": {
+        # Root logger: everything falls back here
+        "": {
+            "handlers": ["console"],
+            "level": "INFO",  # or "DEBUG" if you want extra detail
+        },
+
+        # Users app logs -> console
+        "users": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
+        "users.esco_client": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
+        "users.serializers": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
+        "users.views": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
+    },
+}
 
 # Root of the project directory
 BASE_DIR = Path(__file__).resolve().parent.parent.parent

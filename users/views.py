@@ -30,7 +30,7 @@ from django.conf import settings
 from django.shortcuts import get_object_or_404, redirect
 from django.utils.crypto import get_random_string
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import LinkedInAccount
+from .models import LinkedInAccount,EscoSkill
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -984,23 +984,49 @@ class DiditWebhookView(APIView):
 class EscoSkillSearchView(APIView):
     """
     GET /api/users/skills/search/?q=python
-    Returns top ESCO skills for autocomplete.
+    If 'q' is provided: Search ESCO API.
+    If 'q' is empty: Return suggestions from local DB.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         q = request.query_params.get("q", "").strip()
-        if not q:
-            return Response({"results": []})
 
+        # ---------------------------------------------------------
+        # CASE 1: Empty Query -> Return Local DB Skills
+        # ---------------------------------------------------------
+        if not q:
+            # Fetch, for example, the first 50 skills from your DB.
+            # You can order by usage count or alphabetical if preferred.
+            local_skills = EscoSkill.objects.all().order_by("preferred_label")[:50]
+            
+            results = [
+                {
+                    "uri": skill.uri, 
+                    "label": skill.preferred_label
+                }
+                for skill in local_skills
+            ]
+            return Response({"results": results})
+
+        # ---------------------------------------------------------
+        # CASE 2: Query Present -> Search External ESCO API
+        # ---------------------------------------------------------
         language = request.query_params.get("lang", "en")
+        
+        # ... (Keep existing logging and external API call logic) ...
+        logger.info(
+            "[ESCO] Frontend skill search: user=%s q=%r lang=%s",
+            getattr(request.user, "id", None),
+            q,
+            language,
+        )
+
         raw_results = search_skills(q, language=language, limit=10)
 
-        # Map into a frontend-friendly minimal structure
-        # You can adjust based on actual ESCO response.
         results = []
         for item in raw_results:
-            uri = item.get("uri") or item.get("id")  # depends on ESCO JSON
+            uri = item.get("uri") or item.get("id")
             label = item.get("preferredLabel") or item.get("title")
             if not uri or not label:
                 continue
@@ -1010,6 +1036,7 @@ class EscoSkillSearchView(APIView):
             })
 
         return Response({"results": results})
+
     
 class MeSkillViewSet(viewsets.ModelViewSet):
     """
@@ -1027,8 +1054,18 @@ class MeSkillViewSet(viewsets.ModelViewSet):
             .order_by("-proficiency_level", "-updated_at")
         )
 
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        logger.info(
+            "[MeSkillViewSet.list] Returning %d skills for user=%s",
+            qs.count(),
+            getattr(request.user, "id", None),
+        )
+        return super().list(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         serializer.save()
+
 
 
 class IsoLanguageSearchView(APIView):
