@@ -26,7 +26,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import Education, Experience
-
+from .esco_client import fetch_skill_details
 from .validators import (
     validate_email_smart,      # kept for direct use if needed
     validate_email_strict,     # new shared validator used below
@@ -744,56 +744,44 @@ class UserSkillSerializer(serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
-        """
-        When user posts:
-        {
-          "skill_uri": "...",
-          "preferred_label": "Python programming",
-          "proficiency_level": 4
-        }
-        we either get/create EscoSkill and then create UserSkill.
-        """
         user = self.context["request"].user
         skill_uri = validated_data.pop("skill_uri")
         preferred_label = validated_data.pop("preferred_label", "").strip() or skill_uri
 
         logger.info(
-            "[UserSkillSerializer.create] Incoming payload for user=%s "
-            "skill_uri=%s preferred_label=%r validated=%r",
-            getattr(user, "id", None),
-            skill_uri,
-            preferred_label,
-            validated_data,
+            "[UserSkillSerializer.create] Incoming payload for user=%s skill_uri=%s",
+            getattr(user, "id", None), skill_uri
         )
 
+        # 1. Get or Create the EscoSkill locally
         esco_skill, created_esco = EscoSkill.objects.get_or_create(
             uri=skill_uri,
             defaults={"preferred_label": preferred_label},
         )
 
-        logger.info(
-            "[UserSkillSerializer.create] EscoSkill %s (uri=%s, label=%r)",
-            "CREATED" if created_esco else "REUSED",
-            esco_skill.uri,
-            esco_skill.preferred_label,
-        )
+        # 2. FETCH DETAILS IF MISSING
+        # If we just created it, OR if it exists but has no description/type, try to fetch info.
+        if created_esco or not esco_skill.description:
+            logger.info("[UserSkillSerializer] Fetching rich details for skill %s", skill_uri)
+            details = fetch_skill_details(skill_uri)
+            
+            if details:
+                esco_skill.description = details.get('description', '')
+                esco_skill.skill_type = details.get('skill_type', '')
+                
+                # Ensure we strictly save a list for ArrayField
+                alt_labels = details.get('alternative_labels', [])
+                if isinstance(alt_labels, list):
+                    esco_skill.alt_labels = alt_labels
+                
+                esco_skill.save()
+                logger.info("[UserSkillSerializer] Updated EscoSkill details successfully.")
 
+        # 3. Link to User
         user_skill, created_user_skill = UserSkill.objects.update_or_create(
             user=user,
             skill=esco_skill,
             defaults=validated_data,
-        )
-
-        logger.info(
-            "[UserSkillSerializer.create] UserSkill %s id=%s user=%s "
-            "skill_uri=%s proficiency_level=%s assessment_type=%s notes=%r",
-            "CREATED" if created_user_skill else "UPDATED",
-            user_skill.id,
-            user_skill.user_id,
-            esco_skill.uri,
-            user_skill.proficiency_level,
-            user_skill.assessment_type,
-            user_skill.notes,
         )
 
         return user_skill
