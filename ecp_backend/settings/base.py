@@ -114,6 +114,14 @@ LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID", "")
 LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET", "")
 LINKEDIN_REDIRECT_URI = os.getenv("LINKEDIN_REDIRECT_URI", "")
 LINKEDIN_SCOPES = os.getenv("LINKEDIN_SCOPES", "openid profile email").split()
+# Google OAuth settings
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "")
+GOOGLE_SCOPES = os.getenv(
+    "GOOGLE_SCOPES",
+    "openid email profile"
+).split()
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",

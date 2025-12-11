@@ -71,6 +71,10 @@ API_ME = "https://api.linkedin.com/v2/me"
 API_EMAIL = "https://api.linkedin.com/v2/emailAddress?q=members&projection=(elements*(handle~))"
 OIDC_USERINFO = "https://api.linkedin.com/v2/userinfo"  # if using OIDC product
 
+# Google OAuth2 endpoints
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 
 UserModel = get_user_model()
 
@@ -624,6 +628,127 @@ class LinkedInCallback(APIView):
         qs = urlencode(tokens)
         return redirect(f"{settings.FRONTEND_URL}/oauth/callback?{qs}")
     
+class GoogleAuthURL(APIView):
+    """
+    Returns the Google authorization URL so the frontend can redirect.
+    GET /api/auth/google/url/
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        state = _state_cookie()
+        request.session["google_oauth_state"] = state
+
+        params = {
+            "response_type": "code",
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+            "scope": " ".join(settings.GOOGLE_SCOPES),
+            "access_type": "offline",
+            "include_granted_scopes": "true",
+            "state": state,
+            "prompt": "select_account",
+        }
+
+        return Response(
+            {"authorization_url": f"{GOOGLE_AUTH_URL}?{urlencode(params)}"}
+        )
+
+
+class GoogleCallback(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        # If Google returned an error from consent screen
+        if "error" in request.query_params:
+            return Response(
+                {
+                    "error": request.query_params.get("error"),
+                    "detail": request.query_params.get("error_description", ""),
+                },
+                status=400,
+            )
+
+        code = request.query_params.get("code")
+        if not code:
+            return Response({"error": "missing_code"}, status=400)
+
+        # --- Exchange code -> tokens ---
+        data = {
+            "code": code,
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+            "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+            "grant_type": "authorization_code",
+        }
+
+        tok = requests.post(GOOGLE_TOKEN_URL, data=data, timeout=15)
+        if tok.status_code != 200:
+            return Response(
+                {"error": "token_exchange_failed", "detail": tok.text},
+                status=400,
+            )
+
+        t = tok.json()
+        access_token = t.get("access_token")
+        if not access_token:
+            return Response({"error": "no_access_token"}, status=400)
+
+        # --- Get user info from Google ---
+        headers = {"Authorization": f"Bearer {access_token}"}
+        resp = requests.get(GOOGLE_USERINFO_URL, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return Response(
+                {"error": "userinfo_fetch_failed", "detail": resp.text},
+                status=400,
+            )
+
+        info = resp.json()
+        email = info.get("email")
+        if not email:
+            return Response({"error": "no_email"}, status=400)
+
+        first_name = info.get("given_name") or ""
+        last_name = info.get("family_name") or ""
+        picture_url = info.get("picture")  # Google's picture URL
+
+        from django.contrib.auth.models import User
+        user, created = User.objects.get_or_create(
+            email=email,
+            defaults={
+                "username": email,
+                "first_name": first_name,
+                "last_name": last_name,
+            },
+        )
+
+        # --- NEW: Download and save Google Profile Picture ---
+        # We check if the user is new (created) OR if they don't have an image yet.
+        # We assume 'profile' exists via signals, but use getattr to be safe.
+        profile = getattr(user, "profile", None)
+        
+        if profile and picture_url and (created or not profile.user_image):
+            try:
+                # Download the image
+                img_resp = requests.get(picture_url, timeout=10)
+                if img_resp.status_code == 200:
+                    from django.core.files.base import ContentFile
+                    
+                    # Create a filename (e.g., google_avatar_15.jpg)
+                    filename = f"google_avatar_{user.id}.jpg"
+                    
+                    # Save content directly to the ImageField
+                    profile.user_image.save(filename, ContentFile(img_resp.content), save=True)
+                    logger.info(f"Saved Google profile picture for user {email}")
+            except Exception as e:
+                logger.error(f"Failed to download Google profile picture for {email}: {e}")
+
+        # Issue JWT and redirect to frontend
+        refresh = RefreshToken.for_user(user)
+        tokens = {"access": str(refresh.access_token), "refresh": str(refresh)}
+        qs = urlencode(tokens)
+
+        return redirect(f"{settings.FRONTEND_URL}/oauth/callback?{qs}")
 
 
 class MeEducationViewSet(viewsets.ModelViewSet):

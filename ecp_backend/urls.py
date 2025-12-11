@@ -15,7 +15,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 
 from realtime.urls import urlpatterns as realtime_urls
-from users.views import UserViewSet, RegisterView, LinkedInAuthURL, LinkedInCallback
+from users.views import UserViewSet, RegisterView, LinkedInAuthURL, LinkedInCallback, GoogleAuthURL, GoogleCallback
 from community.views import CommunityViewSet
 from events.views import EventViewSet
 from ecp_backend.views import index
@@ -64,9 +64,14 @@ urlpatterns = [
     path("api/content/", include("content.urls")),
     path("api/activity/", include("activity_feed.urls")),
     path("api/engagements/", include("engagements.urls")),
-    
+
+    # LinkedIn OAuth
     path("api/auth/linkedin/url/", LinkedInAuthURL.as_view(), name="linkedin_auth_url"),
     path("api/auth/linkedin/callback/", LinkedInCallback.as_view(), name="linkedin_callback"),
+
+    # Google OAuth
+    path("api/auth/google/url/", GoogleAuthURL.as_view(), name="google_auth_url"),
+    path("api/auth/google/callback/", GoogleCallback.as_view(), name="google_callback"),
     
 ]
 
