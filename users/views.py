@@ -544,14 +544,26 @@ class LinkedInAuthURL(APIView):
 
 class LinkedInCallback(APIView):
     permission_classes = [permissions.AllowAny]
+
     def get(self, request):
+        # If user cancelled or LinkedIn returned an error
         if "error" in request.query_params:
-            return Response({"error": request.query_params.get("error_description", "denied")}, status=400)
+            return Response(
+                {
+                    "error": request.query_params.get("error"),
+                    "detail": request.query_params.get(
+                        "error_description", "denied"
+                    ),
+                },
+                status=400,
+            )
+
         code = request.query_params.get("code")
         state = request.query_params.get("state")
         if not code or state != request.session.get("li_oauth_state"):
             return Response({"error": "invalid_state_or_code"}, status=400)
 
+        # ---- Exchange code -> access token ----
         data = {
             "grant_type": "authorization_code",
             "code": code,
@@ -559,72 +571,157 @@ class LinkedInCallback(APIView):
             "client_id": settings.LINKEDIN_CLIENT_ID,
             "client_secret": settings.LINKEDIN_CLIENT_SECRET,
         }
+
         tok = requests.post(LINKEDIN_TOKEN_URL, data=data, timeout=15)
         if tok.status_code != 200:
-            return Response({"error": "token_exchange_failed", "detail": tok.text}, status=400)
+            return Response(
+                {"error": "token_exchange_failed", "detail": tok.text},
+                status=400,
+            )
+
         t = tok.json()  # {access_token, expires_in, ...}
-        access_token = t["access_token"]
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(t.get("expires_in", 0)))
+        access_token = t.get("access_token")
+        if not access_token:
+            return Response({"error": "no_access_token"}, status=400)
 
-        # Fetch profile (lite)
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=int(t.get("expires_in", 0) or 0)
+        )
+
         headers = {"Authorization": f"Bearer {access_token}"}
-        if "openid" in settings.LINKEDIN_SCOPES or "profile" in settings.LINKEDIN_SCOPES:
-            # ✅ OIDC path (works with: openid profile email)
-            resp = requests.get(OIDC_USERINFO, headers=headers, timeout=15)
-            if resp.status_code != 200:
-                return Response({"error": "userinfo_fetch_failed", "detail": resp.text}, status=400)
 
-            uj = resp.json()
-            linkedin_id = uj.get("sub")
-            email = uj.get("email") or ""
+        mej = {}
+        email = ""
+        picture_url = ""
 
-            # Build a lite 'me' dict so downstream code keeps working
-            mej = {
-                "id": linkedin_id,
-                "localizedFirstName": uj.get("given_name", ""),
-                "localizedLastName": uj.get("family_name", ""),
-                "localizedHeadline": "",
-                "profilePicture": {"displayImage": uj.get("picture", "")},
-            }
+        # ---- Fetch profile via OIDC or classic REST ----
+        try:
+            if "openid" in settings.LINKEDIN_SCOPES or "profile" in settings.LINKEDIN_SCOPES:
+                # ✅ OIDC (recommended): openid profile email
+                resp = requests.get(OIDC_USERINFO, headers=headers, timeout=15)
+                if resp.status_code != 200:
+                    return Response(
+                        {
+                            "error": "userinfo_fetch_failed",
+                            "detail": resp.text,
+                        },
+                        status=400,
+                    )
 
-        else:
-            # Classic fallback (requires r_liteprofile + r_emailaddress)
-            me = requests.get(API_ME, headers=headers, timeout=15)
-            if me.status_code != 200:
-                return Response({"error": "profile_fetch_failed", "detail": me.text}, status=400)
-            mej = me.json()
-            email = ""
-            er = requests.get(API_EMAIL, headers=headers, timeout=15)
-            if er.status_code == 200:
-                try:
-                    email = er.json()["elements"][0]["handle~"]["emailAddress"]
-                except Exception:
-                    email = ""
+                uj = resp.json()
+                linkedin_id = uj.get("sub")
+                email = uj.get("email") or ""
 
+                # "picture" claim can be a URL or an object
+                pic_claim = uj.get("picture")
+                if isinstance(pic_claim, str):
+                    picture_url = pic_claim
+                elif isinstance(pic_claim, dict):
+                    picture_url = pic_claim.get("value") or pic_claim.get("url") or ""
 
-        # Resolve or create a local user by email (or create a placeholder)
+                mej = {
+                    "id": linkedin_id,
+                    "localizedFirstName": uj.get("given_name", ""),
+                    "localizedLastName": uj.get("family_name", ""),
+                    "localizedHeadline": "",
+                    "profilePicture": {"displayImage": picture_url},
+                }
+
+            else:
+                # Classic REST fallback (needs r_liteprofile + r_emailaddress)
+                me = requests.get(API_ME, headers=headers, timeout=15)
+                if me.status_code != 200:
+                    return Response(
+                        {"error": "profile_fetch_failed", "detail": me.text},
+                        status=400,
+                    )
+                mej = me.json()
+
+                er = requests.get(API_EMAIL, headers=headers, timeout=15)
+                if er.status_code == 200:
+                    try:
+                        email = er.json()["elements"][0]["handle~"]["emailAddress"]
+                    except Exception:
+                        email = ""
+
+                profile_picture = mej.get("profilePicture") or {}
+                if isinstance(profile_picture, dict):
+                    display_image = profile_picture.get("displayImage")
+                    # Only treat as picture URL if it looks like HTTP
+                    if isinstance(display_image, str) and display_image.startswith("http"):
+                        picture_url = display_image
+        except Exception as exc:
+            logger.error(f"LinkedIn profile fetch failed: {exc}")
+
+        # ---- Resolve or create local User ----
         from django.contrib.auth.models import User
-        if email:
-            user, _ = User.objects.get_or_create(username=email, defaults={"email": email})
-        else:
-            # fallback: use linkedin id for username
-            lid = mej.get("id")
-            user, _ = User.objects.get_or_create(username=f"li_{lid}")
 
-        # Upsert LinkedIn account link
-        acc, _ = LinkedInAccount.objects.get_or_create(user=user, defaults={"linkedin_id": mej.get("id")})
+        if email:
+            user, created = User.objects.get_or_create(
+                username=email,
+                defaults={"email": email},
+            )
+        else:
+            lid = mej.get("id")
+            user, created = User.objects.get_or_create(username=f"li_{lid}")
+
+        # ---- Update first_name / last_name from LinkedIn ----
+        first_name_li = mej.get("localizedFirstName") or ""
+        last_name_li = mej.get("localizedLastName") or ""
+
+        fields_to_update = []
+        if first_name_li and user.first_name != first_name_li:
+            user.first_name = first_name_li
+            fields_to_update.append("first_name")
+        if last_name_li and user.last_name != last_name_li:
+            user.last_name = last_name_li
+            fields_to_update.append("last_name")
+
+        if fields_to_update:
+            user.save(update_fields=fields_to_update)
+
+        # ---- Download LinkedIn profile picture into UserProfile.user_image ----
+        profile = getattr(user, "profile", None)
+        if profile and picture_url and (created or not profile.user_image):
+            try:
+                img_resp = requests.get(picture_url, timeout=10)
+                if img_resp.status_code == 200:
+                    from django.core.files.base import ContentFile
+
+                    filename = f"linkedin_avatar_{user.id}.jpg"
+                    profile.user_image.save(
+                        filename,
+                        ContentFile(img_resp.content),
+                        save=True,
+                    )
+                    logger.info(
+                        f"Saved LinkedIn profile picture for user {email or user.username}"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Failed to download LinkedIn profile picture for "
+                    f"{email or user.username}: {e}"
+                )
+
+        # ---- Upsert LinkedInAccount link ----
+        acc, _ = LinkedInAccount.objects.get_or_create(
+            user=user, defaults={"linkedin_id": mej.get("id")}
+        )
         acc.linkedin_id = mej.get("id", acc.linkedin_id)
         acc.access_token = access_token
         acc.expires_at = expires_at
-        # map a few lite fields
         acc.email = email or acc.email
-        # headline & picture may require projections/products; keep best-effort
         acc.raw_profile_json = mej
+        if picture_url:
+            acc.picture_url = picture_url
         acc.save()
 
-        # Issue your own JWT for the user so frontend can proceed
+        # ---- Issue JWT and redirect to frontend OAuth callback ----
         refresh = RefreshToken.for_user(user)
-        tokens = {"access": str(refresh.access_token), "refresh": str(refresh)}
+        tokens = {
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+        }
         qs = urlencode(tokens)
         return redirect(f"{settings.FRONTEND_URL}/oauth/callback?{qs}")
     
