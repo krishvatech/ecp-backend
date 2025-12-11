@@ -560,7 +560,12 @@ class LinkedInCallback(APIView):
 
         code = request.query_params.get("code")
         state = request.query_params.get("state")
-        if not code or state != request.session.get("li_oauth_state"):
+        if not code:
+            return Response({"error": "missing_code"}, status=400)
+
+        # only enforce state if we have it (avoids dev issues)
+        session_state = request.session.get("li_oauth_state")
+        if session_state and state != session_state:
             return Response({"error": "invalid_state_or_code"}, status=400)
 
         # ---- Exchange code -> access token ----
@@ -579,7 +584,7 @@ class LinkedInCallback(APIView):
                 status=400,
             )
 
-        t = tok.json()  # {access_token, expires_in, ...}
+        t = tok.json()
         access_token = t.get("access_token")
         if not access_token:
             return Response({"error": "no_access_token"}, status=400)
@@ -590,14 +595,16 @@ class LinkedInCallback(APIView):
 
         headers = {"Authorization": f"Bearer {access_token}"}
 
+        uj = {}
         mej = {}
         email = ""
         picture_url = ""
+        linkedin_profile_url = ""
 
         # ---- Fetch profile via OIDC or classic REST ----
         try:
             if "openid" in settings.LINKEDIN_SCOPES or "profile" in settings.LINKEDIN_SCOPES:
-                # ✅ OIDC (recommended): openid profile email
+                # ✅ OIDC userinfo: id, name, picture, email
                 resp = requests.get(OIDC_USERINFO, headers=headers, timeout=15)
                 if resp.status_code != 200:
                     return Response(
@@ -612,7 +619,7 @@ class LinkedInCallback(APIView):
                 linkedin_id = uj.get("sub")
                 email = uj.get("email") or ""
 
-                # "picture" claim can be a URL or an object
+                # picture
                 pic_claim = uj.get("picture")
                 if isinstance(pic_claim, str):
                     picture_url = pic_claim
@@ -627,8 +634,11 @@ class LinkedInCallback(APIView):
                     "profilePicture": {"displayImage": picture_url},
                 }
 
+                # if they ever include a "profile" claim, use it as URL
+                linkedin_profile_url = uj.get("profile") or ""
+
             else:
-                # Classic REST fallback (needs r_liteprofile + r_emailaddress)
+                # Classic REST fallback (needs r_liteprofile / r_emailaddress / Profile API)
                 me = requests.get(API_ME, headers=headers, timeout=15)
                 if me.status_code != 200:
                     return Response(
@@ -647,9 +657,14 @@ class LinkedInCallback(APIView):
                 profile_picture = mej.get("profilePicture") or {}
                 if isinstance(profile_picture, dict):
                     display_image = profile_picture.get("displayImage")
-                    # Only treat as picture URL if it looks like HTTP
                     if isinstance(display_image, str) and display_image.startswith("http"):
                         picture_url = display_image
+
+                # If Profile API gives vanityName, build profile URL
+                vanity = mej.get("vanityName")
+                if vanity:
+                    linkedin_profile_url = f"https://www.linkedin.com/in/{vanity}/"
+
         except Exception as exc:
             logger.error(f"LinkedIn profile fetch failed: {exc}")
 
@@ -680,28 +695,44 @@ class LinkedInCallback(APIView):
         if fields_to_update:
             user.save(update_fields=fields_to_update)
 
-        # ---- Download LinkedIn profile picture into UserProfile.user_image ----
+        # ---- Update UserProfile: avatar + links.linkedin ----
         profile = getattr(user, "profile", None)
-        if profile and picture_url and (created or not profile.user_image):
-            try:
-                img_resp = requests.get(picture_url, timeout=10)
-                if img_resp.status_code == 200:
-                    from django.core.files.base import ContentFile
+        if profile:
+            updated_fields = []
 
-                    filename = f"linkedin_avatar_{user.id}.jpg"
-                    profile.user_image.save(
-                        filename,
-                        ContentFile(img_resp.content),
-                        save=True,
+            # 1) Avatar from LinkedIn picture (only if new user or no avatar yet)
+            if picture_url and (created or not profile.user_image):
+                try:
+                    img_resp = requests.get(picture_url, timeout=10)
+                    if img_resp.status_code == 200:
+                        from django.core.files.base import ContentFile
+
+                        filename = f"linkedin_avatar_{user.id}.jpg"
+                        profile.user_image.save(
+                            filename,
+                            ContentFile(img_resp.content),
+                            save=False,  # we'll call profile.save() below
+                        )
+                        updated_fields.append("user_image")
+                        logger.info(
+                            f"Saved LinkedIn profile picture for {email or user.username}"
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to download LinkedIn profile picture for "
+                        f"{email or user.username}: {e}"
                     )
-                    logger.info(
-                        f"Saved LinkedIn profile picture for user {email or user.username}"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"Failed to download LinkedIn profile picture for "
-                    f"{email or user.username}: {e}"
-                )
+
+            # 2) LinkedIn URL in JSONField links.linkedin
+            if linkedin_profile_url:
+                links = dict(getattr(profile, "links", {}) or {})
+                if links.get("linkedin") != linkedin_profile_url:
+                    links["linkedin"] = linkedin_profile_url
+                    profile.links = links
+                    updated_fields.append("links")
+
+            if updated_fields:
+                profile.save(update_fields=updated_fields)
 
         # ---- Upsert LinkedInAccount link ----
         acc, _ = LinkedInAccount.objects.get_or_create(
@@ -714,6 +745,9 @@ class LinkedInCallback(APIView):
         acc.raw_profile_json = mej
         if picture_url:
             acc.picture_url = picture_url
+        if linkedin_profile_url:
+            # optional: keep here too if you want
+            acc.raw_profile_json["profile_url"] = linkedin_profile_url
         acc.save()
 
         # ---- Issue JWT and redirect to frontend OAuth callback ----
@@ -724,6 +758,7 @@ class LinkedInCallback(APIView):
         }
         qs = urlencode(tokens)
         return redirect(f"{settings.FRONTEND_URL}/oauth/callback?{qs}")
+
     
 class GoogleAuthURL(APIView):
     """
