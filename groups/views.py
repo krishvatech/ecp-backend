@@ -36,8 +36,10 @@ from .serializers import (
     PromotionRequestCreateSerializer,
     PromotionRequestOutSerializer,
     GroupNotificationSerializer,
+    SuggestedGroupSerializer
 )
-
+from friends.models import Friendship
+from users.serializers import UserMiniSerializer
 
 
 class GroupViewSet(viewsets.ModelViewSet):
@@ -97,6 +99,9 @@ class GroupViewSet(viewsets.ModelViewSet):
             # join/link endpoints
             "join", "join_link", "rotate_join_link",
             "settings_message_mode", "can_send",
+            "suggested",
+            "mutual_members",
+
         }
 
         if self.action == "create":
@@ -995,6 +1000,144 @@ class GroupViewSet(viewsets.ModelViewSet):
         if item.group_id != group.id:
             return None, "Item does not belong to this group"
         return item, None
+    
+    def _my_friend_ids(self, me_id: int) -> set[int]:
+        if not me_id:
+            return set()
+        pairs = Friendship.objects.filter(
+            Q(user1_id=me_id) | Q(user2_id=me_id)
+        ).values_list("user1_id", "user2_id")
+
+        out = set()
+        for u1, u2 in pairs:
+            out.add(u2 if u1 == me_id else u1)
+        return out
+
+    @action(detail=False, methods=["get"], url_path="suggested")
+    def suggested(self, request):
+        """
+        Mutual group suggestions:
+        - public + top-level groups
+        - user is NOT a member (any status)
+        - at least 1 of my friends is an ACTIVE member
+        """
+        me = request.user
+        if not (me and me.is_authenticated):
+            return Response({"detail": "Authentication required."}, status=401)
+
+        # limit
+        try:
+            limit = int(request.query_params.get("limit", 12))
+        except ValueError:
+            limit = 12
+        limit = max(1, min(limit, 50))
+
+        # optional community scope
+        community_id = request.query_params.get("community_id")
+        try:
+            community_id = int(community_id) if community_id else None
+        except ValueError:
+            community_id = None
+
+        friend_ids = self._my_friend_ids(me.id)
+        if not friend_ids:
+            return Response([])
+
+        # exclude any groups where I already have membership (active/pending/etc)
+        my_group_ids = GroupMembership.objects.filter(user_id=me.id).values_list("group_id", flat=True)
+
+        qs = Group.objects.filter(
+            visibility=Group.VISIBILITY_PUBLIC,
+            parent__isnull=True,
+        )
+
+        if community_id:
+            qs = qs.filter(community_id=community_id)
+
+        qs = qs.exclude(id__in=my_group_ids)
+
+        # counts
+        qs = qs.annotate(
+            member_count=Count(
+                "memberships",
+                filter=Q(memberships__status=GroupMembership.STATUS_ACTIVE),
+                distinct=True,
+            ),
+            mutuals=Count(
+                "memberships",
+                filter=Q(
+                    memberships__status=GroupMembership.STATUS_ACTIVE,
+                    memberships__user_id__in=friend_ids,
+                ),
+                distinct=True,
+            ),
+        ).filter(mutuals__gt=0).order_by("-mutuals", "-member_count", "-created_at")[:limit]
+
+        groups = list(qs)
+        if not groups:
+            return Response([])
+
+        group_ids = [g.id for g in groups]
+
+        # mutual preview (3 users per group)
+        mutual_memberships = (
+            GroupMembership.objects.filter(
+                group_id__in=group_ids,
+                status=GroupMembership.STATUS_ACTIVE,
+                user_id__in=friend_ids,
+            )
+            .select_related("user")
+            .order_by("group_id", "-joined_at")
+        )
+
+        mutual_map = {}
+        for m in mutual_memberships:
+            arr = mutual_map.setdefault(m.group_id, [])
+            if len(arr) < 3:
+                arr.append(m.user)
+
+        ser = SuggestedGroupSerializer(
+            groups,
+            many=True,
+            context={"request": request, "mutual_members_map": mutual_map},
+        )
+        return Response(ser.data)
+
+    @action(detail=True, methods=["get"], url_path="mutual-members")
+    def mutual_members(self, request, pk=None):
+        group = self.get_object()
+
+        me = request.user
+        if not (me and me.is_authenticated):
+            return Response({"detail": "Authentication required."}, status=401)
+
+        # Only expose mutuals for public groups
+        if group.visibility != Group.VISIBILITY_PUBLIC:
+            raise NotFound("Group not found.")
+
+        try:
+            limit = int(request.query_params.get("limit", 20))
+        except ValueError:
+            limit = 20
+        limit = max(1, min(limit, 50))
+
+        friend_ids = self._my_friend_ids(me.id)
+        if not friend_ids:
+            return Response([])
+
+        memberships = (
+            GroupMembership.objects.filter(
+                group=group,
+                status=GroupMembership.STATUS_ACTIVE,
+                user_id__in=friend_ids,
+            )
+            .select_related("user")
+            .order_by("-joined_at")[:limit]
+        )
+
+        users = [m.user for m in memberships]
+        return Response(UserMiniSerializer(users, many=True, context={"request": request}).data)
+
 
     # Use (Endpoint): GET /api/groups/explore-groups
     # - Public, top-level groups for discovery.

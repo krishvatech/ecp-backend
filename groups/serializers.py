@@ -268,3 +268,35 @@ class GroupNotificationSerializer(serializers.ModelSerializer):
             "data",
         )
         read_only_fields = fields
+
+class SuggestedGroupSerializer(serializers.ModelSerializer):
+    member_count = serializers.IntegerField(read_only=True)
+    mutuals = serializers.IntegerField(read_only=True)
+    mutual_members = serializers.SerializerMethodField()
+
+    # keep ids simple (frontend can filter)
+    community_id = serializers.IntegerField(read_only=True)
+    parent_id = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Group
+        fields = (
+            "id",
+            "name",
+            "slug",
+            "description",
+            "visibility",
+            "join_policy",
+            "cover_image",
+            "member_count",
+            "mutuals",
+            "mutual_members",
+            "community_id",
+            "parent_id",
+        )
+
+    def get_mutual_members(self, obj):
+        # map provided by the view: { group_id: [User, User, ...] }
+        m = (self.context.get("mutual_members_map") or {})
+        users = m.get(obj.id, [])
+        return UserMiniSerializer(users, many=True, context=self.context).data
