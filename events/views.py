@@ -313,6 +313,15 @@ class EventViewSet(viewsets.ModelViewSet):
                 except (TypeError, ValueError):
                     pass
 
+        exclude_ended = (params.get("exclude_ended") or "").strip().lower()
+        if exclude_ended in {"1", "true", "yes", "on"}:
+            now = timezone.now()
+            qs = qs.exclude(status="ended")
+            qs = qs.exclude(Q(end_time__isnull=False, end_time__lt=now) & ~Q(status="live"))
+            qs = qs.exclude(
+                Q(end_time__isnull=True, start_time__isnull=False, start_time__lt=now) & ~Q(status="live")
+            )
+
         # Event format (use 'event_format' if that's your field name)
         fmts = params.getlist("event_format")
         if not fmts:
