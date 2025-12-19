@@ -12,6 +12,7 @@ from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
 import logging
+from celery.schedules import crontab
 
 LOGGING = {
     "version": 1,
@@ -380,6 +381,13 @@ CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULE = {}
+
+CELERY_BEAT_SCHEDULE.update({
+    "send_suggestion_digest_daily_9am": {
+        "task": "friends.tasks.send_suggestion_digest_daily",
+        "schedule": crontab(hour=9, minute=0),  # 9:00 AM (Asia/Kolkata because TIME_ZONE is Asia/Kolkata)
+    }
+})
 
 # Security headers and cookie defaults
 SECURE_CONTENT_TYPE_NOSNIFF = True
