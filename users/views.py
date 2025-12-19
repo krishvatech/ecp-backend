@@ -39,8 +39,8 @@ from django.contrib.auth import login as django_login, logout as django_logout
 from django.contrib.auth import get_user_model
 from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
-from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate
-from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer
+from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileMembership
+from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileMembershipSerializer
 from .models import EducationDocument
 from .serializers import EducationDocumentSerializer
 from .esco_client import search_skills
@@ -208,13 +208,20 @@ class UserViewSet(
         edus = (Education.objects
                 .filter(user=target)
                 .order_by("-end_date", "-start_date", "-id"))
+        trainings = ProfileTraining.objects.filter(user=target).order_by("-currently_ongoing", "-end_date", "-start_date", "-id")
+        certs = ProfileCertification.objects.filter(user=target).order_by("-issue_date", "-id")
+        mems = ProfileMembership.objects.filter(user=target).order_by("-ongoing", "-end_date", "-start_date", "-id")
 
         payload = {
             "user": target,
             "profile": getattr(target, "profile", None),
             "experiences": list(exps),
             "educations": list(edus),
+            "trainings": list(trainings),
+            "certifications": list(certs),
+            "memberships": list(mems),
         }
+
         data = PublicProfileSerializer(payload, context={"request": request}).data
         return Response(data)
     
@@ -902,6 +909,42 @@ class MeEducationViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
+class MeTrainingViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProfileTrainingSerializer
+
+    def get_queryset(self):
+        return ProfileTraining.objects.filter(user=self.request.user).order_by(
+            "-currently_ongoing", "-end_date", "-start_date", "-id"
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class MeCertificationViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProfileCertificationSerializer
+
+    def get_queryset(self):
+        return ProfileCertification.objects.filter(user=self.request.user).order_by("-issue_date", "-id")
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class MeMembershipViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProfileMembershipSerializer
+
+    def get_queryset(self):
+        return ProfileMembership.objects.filter(user=self.request.user).order_by(
+            "-ongoing", "-end_date", "-start_date", "-id"
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
 
 class MeExperienceViewSet(viewsets.ModelViewSet):
     """
@@ -940,11 +983,30 @@ class MeProfileView(APIView):
             many=True,
         ).data
 
+        trainings = ProfileTrainingSerializer(
+            ProfileTraining.objects.filter(user=request.user).order_by("-currently_ongoing", "-end_date", "-start_date", "-id"),
+            many=True
+        ).data
+
+        certifications = ProfileCertificationSerializer(
+            ProfileCertification.objects.filter(user=request.user).order_by("-issue_date", "-id"),
+            many=True
+        ).data
+
+        memberships = ProfileMembershipSerializer(
+            ProfileMembership.objects.filter(user=request.user).order_by("-ongoing", "-end_date", "-start_date", "-id"),
+            many=True
+        ).data
+
+
         return Response({
-            "educations": edus,
-            "experiences": exps,
-            # add more sections later if needed (skills, links, etc.)
-        })
+        "educations": edus,
+        "experiences": exps,
+        "trainings": trainings,
+        "certifications": certifications,
+        "memberships": memberships,
+    })
+
     
 class StaffUserViewSet(viewsets.ModelViewSet):
     """

@@ -599,3 +599,116 @@ class EducationDocument(models.Model):
 
     def __str__(self):
         return f"Doc for {self.education}: {self.filename}"
+    
+
+# --- NEW: Profile Sections (Trainings, Certifications, Memberships) ---
+
+class ProfileTraining(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="trainings"
+    )
+
+    program_title = models.CharField(max_length=255)
+    provider = models.CharField(max_length=255)
+
+    start_date = models.DateField(null=True, blank=True)  # store as YYYY-MM-01
+    end_date = models.DateField(null=True, blank=True)    # store as YYYY-MM-01
+    currently_ongoing = models.BooleanField(default=False)
+
+    description = models.TextField(blank=True, default="")
+    credential_url = models.URLField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-currently_ongoing", "-end_date", "-start_date", "-id"]
+        indexes = [
+            models.Index(fields=["provider"]),
+            models.Index(fields=["program_title"]),
+            models.Index(fields=["start_date"]),
+            models.Index(fields=["end_date"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(end_date__isnull=True) | Q(start_date__isnull=True) | Q(end_date__gte=F("start_date")),
+                name="training_end_after_start",
+            ),
+            models.CheckConstraint(
+                check=Q(currently_ongoing=False) | Q(end_date__isnull=True),
+                name="training_end_null_when_ongoing",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.program_title} — {self.provider}"
+
+
+class ProfileCertification(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="certifications"
+    )
+
+    certification_name = models.CharField(max_length=255)
+    issuing_organization = models.CharField(max_length=255)
+
+    issue_date = models.DateField(null=True, blank=True)         # YYYY-MM-01
+    expiration_date = models.DateField(null=True, blank=True)    # YYYY-MM-01
+    no_expiration = models.BooleanField(default=False)
+
+    credential_id = models.CharField(max_length=128, blank=True, default="")
+    credential_url = models.URLField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-issue_date", "-id"]
+        indexes = [
+            models.Index(fields=["issuing_organization"]),
+            models.Index(fields=["certification_name"]),
+            models.Index(fields=["issue_date"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(no_expiration=False) | Q(expiration_date__isnull=True),
+                name="cert_exp_null_when_no_expiration",
+            ),
+            models.CheckConstraint(
+                check=Q(expiration_date__isnull=True) | Q(issue_date__isnull=True) | Q(expiration_date__gte=F("issue_date")),
+                name="cert_exp_after_issue",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.certification_name} — {self.issuing_organization}"
+
+
+class ProfileMembership(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="memberships"
+    )
+
+    organization_name = models.CharField(max_length=255)
+    role_type = models.CharField(max_length=100, blank=True, default="")  # Member/Admin/Volunteer/Fellow
+
+    start_date = models.DateField(null=True, blank=True)  # YYYY-MM-01
+    end_date = models.DateField(null=True, blank=True)    # YYYY-MM-01
+    ongoing = models.BooleanField(default=False)
+
+    membership_url = models.URLField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-ongoing", "-end_date", "-start_date", "-id"]
+        indexes = [
+            models.Index(fields=["organization_name"]),
+            models.Index(fields=["start_date"]),
+            models.Index(fields=["end_date"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(end_date__isnull=True) | Q(start_date__isnull=True) | Q(end_date__gte=F("start_date")),
+                name="membership_end_after_start",
+            ),
+            models.CheckConstraint(
+                check=Q(ongoing=False) | Q(end_date__isnull=True),
+                name="membership_end_null_when_ongoing",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.organization_name} ({self.role_type})"

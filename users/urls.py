@@ -25,6 +25,7 @@ from .views import (
     MeLanguageViewSet,
     MeLanguageCertificateViewSet,
     IsoLanguageSearchView,
+    MeTrainingViewSet, MeCertificationViewSet, MeMembershipViewSet
 
 )
 
@@ -36,6 +37,9 @@ router.register(r"me/skills", MeSkillViewSet, basename="me-skills")
 router.register(r"me/education-documents", MeEducationDocumentViewSet, basename="me-education-documents")
 router.register(r"me/languages", MeLanguageViewSet, basename="me-languages")
 router.register(r"me/language-certificates", MeLanguageCertificateViewSet, basename="me-language-certificates")
+router.register(r"me/trainings", MeTrainingViewSet, basename="me-trainings")
+router.register(r"me/certifications", MeCertificationViewSet, basename="me-certifications")
+router.register(r"me/memberships", MeMembershipViewSet, basename="me-memberships")
 router.register(r"admin/users", StaffUserViewSet, basename="admin-users")
 router.register(r"admin/name-requests", AdminNameChangeRequestViewSet, basename="admin-name-requests")
 

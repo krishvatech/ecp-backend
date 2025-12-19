@@ -8,7 +8,7 @@ status, and join date.
 """
 from django.contrib import admin
 from django.contrib.auth.models import User
-from .models import UserProfile
+from .models import UserProfile, ProfileTraining, ProfileCertification, ProfileMembership
 from .models import Education, Experience
 
 
@@ -39,6 +39,24 @@ class ExperienceAdmin(admin.ModelAdmin):
     list_display = ("user", "community_name", "position", "currently_work_here", "start_date", "end_date")
     list_filter = ("community_name", "position", "currently_work_here")
     search_fields = ("community_name", "position", "user__username", "user__email")
+
+@admin.register(ProfileTraining)
+class ProfileTrainingAdmin(admin.ModelAdmin):
+    list_display = ("user", "program_title", "provider", "start_date", "end_date", "currently_ongoing")
+    search_fields = ("program_title", "provider", "user__username", "user__email")
+
+
+@admin.register(ProfileCertification)
+class ProfileCertificationAdmin(admin.ModelAdmin):
+    list_display = ("user", "certification_name", "issuing_organization", "issue_date", "expiration_date", "no_expiration")
+    search_fields = ("certification_name", "issuing_organization", "user__username", "user__email")
+
+
+@admin.register(ProfileMembership)
+class ProfileMembershipAdmin(admin.ModelAdmin):
+    list_display = ("user", "organization_name", "role_type", "start_date", "end_date", "ongoing")
+    search_fields = ("organization_name", "role_type", "user__username", "user__email")
+
 
 # Unregister the default User admin and register the customized one
 admin.site.unregister(User)

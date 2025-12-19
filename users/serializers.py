@@ -17,7 +17,7 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
-from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest, EducationDocument, UserSkill, EscoSkill, LanguageCertificate, IsoLanguage, UserLanguage
+from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest, EducationDocument, UserSkill, EscoSkill, LanguageCertificate, IsoLanguage, UserLanguage, ProfileTraining, ProfileCertification, ProfileMembership
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email as django_validate_email
 
@@ -615,11 +615,94 @@ class StaffUserSerializer(serializers.ModelSerializer):
             "date_joined", "last_login",
         )
 
+class MonthYearField(serializers.DateField):
+    """
+    Accepts 'YYYY-MM' or 'YYYY-MM-DD' and stores as date (YYYY-MM-01).
+    Returns 'YYYY-MM' in API responses.
+    """
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("format", "%Y-%m")
+        kwargs.setdefault("input_formats", ["%Y-%m", "%Y-%m-%d"])
+        super().__init__(*args, **kwargs)
+
+
+class ProfileTrainingSerializer(serializers.ModelSerializer):
+    start_date = MonthYearField(required=False, allow_null=True)
+    end_date = MonthYearField(required=False, allow_null=True)
+
+    class Meta:
+        model = ProfileTraining
+        fields = (
+            "id",
+            "program_title",
+            "provider",
+            "start_date",
+            "end_date",
+            "currently_ongoing",
+            "description",
+            "credential_url",
+        )
+
+    def validate(self, attrs):
+        ongoing = attrs.get("currently_ongoing")
+        if ongoing is True:
+            attrs["end_date"] = None
+        return attrs
+
+
+class ProfileCertificationSerializer(serializers.ModelSerializer):
+    issue_date = MonthYearField(required=False, allow_null=True)
+    expiration_date = MonthYearField(required=False, allow_null=True)
+
+    class Meta:
+        model = ProfileCertification
+        fields = (
+            "id",
+            "certification_name",
+            "issuing_organization",
+            "issue_date",
+            "expiration_date",
+            "no_expiration",
+            "credential_id",
+            "credential_url",
+        )
+
+    def validate(self, attrs):
+        if attrs.get("no_expiration") is True:
+            attrs["expiration_date"] = None
+        return attrs
+
+
+class ProfileMembershipSerializer(serializers.ModelSerializer):
+    start_date = MonthYearField(required=False, allow_null=True)
+    end_date = MonthYearField(required=False, allow_null=True)
+
+    class Meta:
+        model = ProfileMembership
+        fields = (
+            "id",
+            "organization_name",
+            "role_type",
+            "start_date",
+            "end_date",
+            "ongoing",
+            "membership_url",
+        )
+
+    def validate(self, attrs):
+        if attrs.get("ongoing") is True:
+            attrs["end_date"] = None
+        return attrs
+
+
 class PublicProfileSerializer(serializers.Serializer):
     user = UserMiniSerializer()
     profile = UserProfileMiniSerializer(allow_null=True)
     experiences = ExperiencePublicSerializer(many=True)
     educations = EducationPublicSerializer(many=True)
+    trainings = ProfileTrainingSerializer(many=True)
+    certifications = ProfileCertificationSerializer(many=True)
+    memberships = ProfileMembershipSerializer(many=True)
     
     
 class NameChangeRequestSerializer(serializers.ModelSerializer):
@@ -879,3 +962,4 @@ class UserLanguageSerializer(serializers.ModelSerializer):
             defaults=validated_data,
         )
         return obj
+    
