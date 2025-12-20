@@ -126,7 +126,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         fields = [
             "full_name", "timezone", "bio", "headline", "job_title", "company",
             "location", "links", "user_image", "user_image_url", "skills",
-            "last_activity_at", "is_online",
+            "last_activity_at", "is_online","kyc_decline_reason",
             "kyc_status", "legal_name_locked", "legal_name_verified_at",
         ]
         read_only_fields = ("last_activity_at", "is_online", "kyc_status",

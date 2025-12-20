@@ -1165,6 +1165,105 @@ class MeEducationDocumentViewSet(viewsets.ModelViewSet):
         education = generics.get_object_or_404(Education, id=education_id, user=self.request.user)
         serializer.save(education=education)
 
+import re
+import unicodedata
+
+_STOP_TOKENS = {
+    "mr", "mrs", "ms", "dr", "prof",
+    "jr", "sr", "ii", "iii", "iv",
+}
+
+def _name_tokens(name: str) -> list[str]:
+    if not name:
+        return []
+    name = name.replace(",", " ")
+    name = unicodedata.normalize("NFKD", name)
+    name = "".join(ch for ch in name if not unicodedata.combining(ch))
+    name = name.lower()
+    name = re.sub(r"[^a-z\s]", " ", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    toks = [t for t in name.split(" ") if t and t not in _STOP_TOKENS]
+    return toks
+
+def _token_matches(pt: str, id_tokens: list[str]) -> bool:
+    """Match token with exact / initial / prefix rules."""
+    if not pt:
+        return False
+
+    # exact
+    if pt in id_tokens:
+        return True
+
+    # initial: "r" matches "rahul"
+    if len(pt) == 1:
+        return any(t.startswith(pt) for t in id_tokens)
+
+    # allow prefix match for short-form vs full-form (alex vs alexander)
+    # keep it conservative: only if token length >= 3
+    if len(pt) >= 3:
+        return any(t.startswith(pt) or pt.startswith(t) for t in id_tokens if len(t) >= 3)
+
+    return False
+
+def linkedin_style_name_match(profile_display_name: str, id_full_name: str) -> tuple[bool, dict]:
+    """
+    LinkedIn-like: require PROFILE FIRST token + PROFILE LAST token to match ID tokens.
+    Order doesn't matter. Middle names can be extra/missing.
+    """
+    p = _name_tokens(profile_display_name)
+    d = _name_tokens(id_full_name)
+
+    debug = {
+        "profile_tokens": p,
+        "id_tokens": d,
+        "matched_profile_tokens": [],
+        "missing_profile_tokens": [],
+        "reason": "",
+    }
+
+    if len(p) < 2 or len(d) < 2:
+        debug["reason"] = "insufficient_tokens"
+        return False, debug
+
+    p_first = p[0]
+    p_last = p[-1]
+
+    first_ok = _token_matches(p_first, d)
+    last_ok = _token_matches(p_last, d)
+
+    for tok in p:
+        if _token_matches(tok, d):
+            debug["matched_profile_tokens"].append(tok)
+        else:
+            debug["missing_profile_tokens"].append(tok)
+
+    if first_ok and last_ok:
+        debug["reason"] = "pass"
+        return True, debug
+
+    # If you want STRICT LinkedIn-like behavior: mismatch => fail
+    debug["reason"] = "name_mismatch"
+    return False, debug
+
+
+def best_linkedin_match(profile_candidates: list[str], id_candidates: list[str]) -> tuple[bool, dict]:
+    """
+    Try multiple variants (normal + swapped), return best pass or best debug.
+    """
+    best_debug = None
+    for p in profile_candidates:
+        for i in id_candidates:
+            ok, dbg = linkedin_style_name_match(p, i)
+            dbg["profile_candidate"] = p
+            dbg["id_candidate"] = i
+            if ok:
+                return True, dbg
+            # keep last debug (or you can keep the one with most matched tokens)
+            if not best_debug or len(dbg.get("matched_profile_tokens", [])) > len(best_debug.get("matched_profile_tokens", [])):
+                best_debug = dbg
+    return False, best_debug or {"reason": "no_candidates"}
+
+
 class DiditWebhookView(APIView):
     """
     Receives callbacks from Didit.
@@ -1218,47 +1317,86 @@ class DiditWebhookView(APIView):
         except UserProfile.DoesNotExist:
             return Response({"detail": "User not found"}, status=404)
 
-        # Map Didit status to Model status
-        # Didit: Approved, Declined, Review, Pending
+        # store payload always
+        profile.kyc_didit_raw_payload = payload
+        profile.kyc_didit_last_webhook_at = django_timezone.now()
+        profile.kyc_last_session_id = session_id
+
+        # If Didit says NOT approved, just map and exit (no name check)
         status_map = {
             "Approved": UserProfile.KYC_STATUS_APPROVED,
             "Declined": UserProfile.KYC_STATUS_DECLINED,
             "Review": UserProfile.KYC_STATUS_REVIEW,
             "Pending": UserProfile.KYC_STATUS_PENDING,
         }
-        
-        # Update Profile
-        profile.kyc_status = status_map.get(status_text, UserProfile.KYC_STATUS_PENDING)
-        profile.kyc_last_session_id = session_id
 
-        if status_text == "Approved":
+        if status_text != "Approved":
+            profile.kyc_status = status_map.get(status_text, UserProfile.KYC_STATUS_PENDING)
+            if status_text == "Declined":
+                profile.kyc_decline_reason = UserProfile.KYC_DECLINE_REASON_OTHER
+                profile.legal_name_locked = False
+                profile.legal_name_verified_at = None
+            profile.save()
+            return Response({"status": "processed_initial_kyc"})
+
+        # --------------------------
+        # Didit Approved => now do LinkedIn-style name match
+        # --------------------------
+        user = profile.user
+
+        # Profile display candidates (normal + swapped)
+        profile_candidates = []
+        if profile.full_name:
+            profile_candidates.append(profile.full_name.strip())
+
+        display_from_user = f"{user.first_name} {user.last_name}".strip()
+        if display_from_user:
+            profile_candidates.append(display_from_user)
+
+        swapped_from_user = f"{user.last_name} {user.first_name}".strip()
+        if swapped_from_user and swapped_from_user != display_from_user:
+            profile_candidates.append(swapped_from_user)
+
+        # ID name candidates
+        decision = payload.get("decision") or {}
+        idv = decision.get("id_verification") or {}
+
+        id_full = (idv.get("full_name") or "").strip()
+        id_first = (idv.get("first_name") or "").strip()
+        id_last = (idv.get("last_name") or "").strip()
+
+        id_candidates = []
+        if id_full:
+            id_candidates.append(id_full)
+
+        combined = f"{id_first} {id_last}".strip()
+        if combined:
+            id_candidates.append(combined)
+
+        swapped = f"{id_last} {id_first}".strip()
+        if swapped and swapped != combined:
+            id_candidates.append(swapped)
+
+        ok, debug = best_linkedin_match(profile_candidates, id_candidates)
+
+        if ok:
+            profile.kyc_status = UserProfile.KYC_STATUS_APPROVED
+            profile.kyc_decline_reason = None
             profile.legal_name_locked = True
             profile.legal_name_verified_at = django_timezone.now()
-            
-            # Extract Names from payload or fetch from API if missing
-            # Note: The structure of 'decision' payload depends on Didit configuration.
-            # We look for extracted data.
-            extracted = payload.get("extracted_data", {})
-            if not extracted:
-                # Fetch full details if missing in webhook
-                full_details = get_session_details(session_id)
-                extracted = full_details.get("extracted_data", {})
+        else:
+            # LinkedIn-style: no badge if mismatch
+            profile.kyc_status = UserProfile.KYC_STATUS_DECLINED  # or REVIEW if you prefer manual admin review
+            profile.kyc_decline_reason = UserProfile.KYC_DECLINE_REASON_NAME_MISMATCH
+            profile.legal_name_locked = False
+            profile.legal_name_verified_at = None
 
-            # Attempt to map common ID fields (adjust keys based on actual Didit response)
-            first_name = extracted.get("first_name") or extracted.get("forenames") or extracted.get("given_names")
-            last_name = extracted.get("last_name") or extracted.get("surname") or extracted.get("family_name")
-            
-            if first_name and last_name:
-                user = profile.user
-                user.first_name = first_name
-                user.last_name = last_name
-                user.save()
-                
-                # Update full name
-                profile.full_name = f"{first_name} {last_name}".strip()
+            # Optional: log debug to server logs
+            logger.info("[KYC NAME MATCH FAIL] user=%s debug=%s", user_id, debug)
 
         profile.save()
         return Response({"status": "processed_initial_kyc"})
+
 
     def handle_name_change(self, payload, session_id, status_text, vendor_data):
         request_id = vendor_data.split(":")[1]
@@ -1298,7 +1436,7 @@ class DiditWebhookView(APIView):
             return self.handle_initial_kyc(payload, session_id, status_text, vendor_data)
             
         return Response({"detail": "Session not matched"}, status=200) # 200 to ack Didit
-    
+   
 
 class EscoSkillSearchView(APIView):
     """

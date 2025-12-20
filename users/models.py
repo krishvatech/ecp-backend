@@ -92,6 +92,10 @@ class UserProfile(models.Model):
     legal_name_locked = models.BooleanField(default=False)
     legal_name_verified_at = models.DateTimeField(null=True, blank=True)
 
+        # --- Didit payload storage (Initial KYC webhook) ---
+    kyc_didit_raw_payload = models.JSONField(default=dict, blank=True)
+    kyc_didit_last_webhook_at = models.DateTimeField(null=True, blank=True)
+
 
     @property
     def is_online(self):
