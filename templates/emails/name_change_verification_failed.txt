@@ -1,0 +1,8 @@
+Hi {{ first_name }},
+
+We couldn’t complete verification for your name change request.
+
+Status: Declined
+Next step: Please retry verification from the app.
+
+— {{ app_name }}

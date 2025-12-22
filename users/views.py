@@ -1184,6 +1184,53 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
     ]
     ordering_fields = ['created_at', 'status']
 
+    def _send_admin_name_change_email(self, name_req, template_key: str, *, requested_name="", id_name="", admin_note=""):
+        user = name_req.user
+        if not getattr(user, "email", None):
+            return
+
+        try:
+            now_str = django_timezone.localtime(django_timezone.now()).strftime("%d %b %Y, %I:%M %p %Z")
+
+            # after approval, user/profile are already updated in your code
+            new_name = " ".join([p for p in [user.first_name, getattr(user.profile, "middle_name", "") or "", user.last_name] if p]).strip()
+
+            ctx = {
+                "app_name": "IMAA Connect",
+                "first_name": (user.first_name or user.username or "there"),
+                "support_email": settings.DEFAULT_FROM_EMAIL,
+                "decided_at": now_str,
+                "updated_at": now_str,
+                "new_name": new_name,
+                "requested_name": requested_name,
+                "id_name": id_name,
+                "admin_note": admin_note,
+            }
+
+            if template_key == "approved":
+                subject = "Your name change request is approved ✅"
+                text_body = render_to_string("emails/name_change_approved.txt", ctx)
+                html_body = render_to_string("emails/name_change_approved.html", ctx)
+
+            elif template_key == "rejected":
+                subject = "Your name change request was rejected ❌"
+                text_body = render_to_string("emails/name_change_rejected.txt", ctx)
+                html_body = None
+
+            else:
+                return
+
+            send_mail(
+                subject=subject,
+                message=text_body,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                html_message=html_body,
+                fail_silently=False,
+            )
+        except Exception as e:
+            logger.warning(f"Admin name-change email failed for {getattr(user,'email',None)}: {e}")
+
     @action(detail=True, methods=["post"])
     def decide(self, request, pk=None):
         name_req = self.get_object()
@@ -1223,6 +1270,26 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
         name_req.decided_at = django_timezone.now()
         name_req.decided_by = request.user
         name_req.save()
+
+        requested_name = " ".join([p for p in [name_req.new_first_name, name_req.new_middle_name, name_req.new_last_name] if p]).strip()
+        id_name = (getattr(name_req, "doc_full_name", "") or "").strip()
+
+        if new_status == "approved":
+            self._send_admin_name_change_email(
+                name_req,
+                "approved",
+                requested_name=requested_name,
+                id_name=id_name,
+                admin_note=admin_note,
+            )
+        else:
+            self._send_admin_name_change_email(
+                name_req,
+                "rejected",
+                requested_name=requested_name,
+                id_name=id_name,
+                admin_note=admin_note,
+            )
 
         return Response(NameChangeRequestSerializer(name_req).data)
 
@@ -1369,6 +1436,116 @@ class DiditWebhookView(APIView):
             status=200,
         )
     
+    def _send_name_change_email(self, ncr, template_key: str, *, requested_name="", id_name="", admin_note=""):
+        user = ncr.user
+        if not getattr(user, "email", None):
+            return
+
+        try:
+            now_str = django_timezone.localtime(django_timezone.now()).strftime("%d %b %Y, %I:%M %p %Z")
+
+            new_name = " ".join([user.first_name, getattr(user.profile, "middle_name", "") or "", user.last_name]).strip()
+
+            ctx = {
+                "app_name": "IMAA Connect",
+                "first_name": (user.first_name or user.username or "there"),
+                "support_email": settings.DEFAULT_FROM_EMAIL,
+                "updated_at": now_str,
+                "decided_at": now_str,
+                "new_name": new_name,
+                "requested_name": requested_name,
+                "id_name": id_name,
+                "admin_note": admin_note,
+            }
+
+            if template_key == "approved":
+                subject = "Your name change request is approved ✅"
+                text_body = render_to_string("emails/name_change_approved.txt", ctx)
+                html_body = render_to_string("emails/name_change_approved.html", ctx)
+
+            elif template_key == "manual_review":
+                subject = "Your name change request is under review ⏳"
+                text_body = render_to_string("emails/name_change_manual_review.txt", ctx)
+                html_body = render_to_string("emails/name_change_manual_review.html", ctx)
+
+            elif template_key == "verification_failed":
+                subject = "Verification failed for your name change ❌"
+                text_body = render_to_string("emails/name_change_verification_failed.txt", ctx)
+                html_body = render_to_string("emails/name_change_verification_failed.html", ctx)
+
+            elif template_key == "rejected":
+                subject = "Your name change request was rejected ❌"
+                text_body = render_to_string("emails/name_change_rejected.txt", ctx)
+                html_body = None
+
+            else:
+                return
+
+            send_mail(
+                subject=subject,
+                message=text_body,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                html_message=html_body,
+                fail_silently=False,
+            )
+        except Exception as e:
+            logger.warning(f"Name-change email failed for {getattr(user,'email',None)}: {e}")
+
+
+    def _send_initial_kyc_email(self, user, profile, *, id_name: str = ""):
+        # Same sender as forgot password
+        if not getattr(user, "email", None):
+            return
+
+        try:
+            frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
+            now_str = django_timezone.localtime(django_timezone.now()).strftime("%d %b %Y, %I:%M %p %Z")
+
+            reason_code = profile.kyc_decline_reason or ""
+            reason_label = "Verification could not be confirmed"
+            if reason_code == UserProfile.KYC_DECLINE_REASON_NAME_MISMATCH:
+                reason_label = "Name mismatch (your profile name didn’t match your ID name)"
+
+            profile_name = (profile.full_name or f"{user.first_name} {user.last_name}").strip()
+
+            ctx = {
+                "app_name": "IMAA Connect",  # TODO: change to your brand
+                "first_name": (user.first_name or user.username or "there"),
+                "email": user.email,
+                "support_email": settings.DEFAULT_FROM_EMAIL,
+                "frontend_app_url": frontend_app_url,
+                "verified_at": now_str,
+                "verified_name": (id_name or "").strip(),
+                "reason_code": reason_code,
+                "reason_label": reason_label,
+                "profile_name": profile_name,
+                "id_name": (id_name or "").strip(),
+            }
+
+            if profile.kyc_status == UserProfile.KYC_STATUS_APPROVED:
+                text_body = render_to_string("emails/kyc_approved.txt", ctx)
+                html_body = render_to_string("emails/kyc_approved.html", ctx)
+                subject = "Your identity verification is complete ✅"
+            elif profile.kyc_status == UserProfile.KYC_STATUS_DECLINED:
+                text_body = render_to_string("emails/kyc_failed.txt", ctx)
+                html_body = render_to_string("emails/kyc_failed.html", ctx)
+                subject = "Action needed: identity verification failed ❌"
+            else:
+                return  # no email for pending/review
+
+            send_mail(
+                subject=subject,
+                message=text_body,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                html_message=html_body,
+                fail_silently=False,
+            )
+        except Exception as e:
+            logger.warning(f"KYC email failed for {getattr(user,'email',None)}: {e}")
+
+    
     def post(self, request):
         # 1. Verify Signature
         if not verify_webhook_signature(request):
@@ -1394,6 +1571,7 @@ class DiditWebhookView(APIView):
         return self.handle_fallback_lookup(payload, session_id, status_text)
 
     def handle_initial_kyc(self, payload, session_id, status_text, vendor_data):
+        
         user_id = vendor_data.split(":")[1]
         try:
             profile = UserProfile.objects.get(user__id=user_id)
@@ -1401,6 +1579,7 @@ class DiditWebhookView(APIView):
             return Response({"detail": "User not found"}, status=404)
 
         # store payload always
+        prev_status = profile.kyc_status
         profile.kyc_didit_raw_payload = payload
         profile.kyc_didit_last_webhook_at = django_timezone.now()
         profile.kyc_last_session_id = session_id
@@ -1420,6 +1599,8 @@ class DiditWebhookView(APIView):
                 profile.legal_name_locked = False
                 profile.legal_name_verified_at = None
             profile.save()
+            if prev_status != profile.kyc_status and profile.kyc_status == UserProfile.KYC_STATUS_DECLINED:
+                self._send_initial_kyc_email(profile.user, profile)
             return Response({"status": "processed_initial_kyc"})
 
         # --------------------------
@@ -1478,6 +1659,11 @@ class DiditWebhookView(APIView):
             logger.info("[KYC NAME MATCH FAIL] user=%s debug=%s", user_id, debug)
 
         profile.save()
+        if prev_status != profile.kyc_status and profile.kyc_status in [
+            UserProfile.KYC_STATUS_APPROVED,
+            UserProfile.KYC_STATUS_DECLINED,
+        ]:
+            self._send_initial_kyc_email(profile.user, profile, id_name=id_full)
         return Response({"status": "processed_initial_kyc"})
 
 
@@ -1494,12 +1680,21 @@ class DiditWebhookView(APIView):
             "Review": NameChangeRequest.DIDIT_STATUS_REVIEW,
             "Pending": NameChangeRequest.DIDIT_STATUS_PENDING,
         }
-
+        prev_status = ncr.status
+        prev_didit_status = ncr.didit_status
         ncr.didit_status = status_map.get(status_text, NameChangeRequest.DIDIT_STATUS_PENDING)
         ncr.didit_raw_payload = payload
 
         # Always store session id too (safe)
         ncr.didit_session_id = session_id or ncr.didit_session_id
+
+        # If Didit Declined => notify user and stop further processing
+        if status_text == "Declined":
+            ncr.save()
+            if prev_didit_status != ncr.didit_status:
+                self._send_name_change_email(ncr, "verification_failed")
+            return Response({"status": "processed_name_change"})
+
 
         # If request already processed, just ack webhook (idempotent)
         if ncr.status != NameChangeRequest.STATUS_PENDING:
@@ -1534,7 +1729,7 @@ class DiditWebhookView(APIView):
                 id_candidates.append(swapped)
 
             # 2) Build requested-name candidates (new name)
-            req_full = " ".join([ncr.new_first_name, ncr.new_middle_name, ncr.new_last_name]).strip()
+            req_full = " ".join([p for p in [ncr.new_first_name, ncr.new_middle_name, ncr.new_last_name] if p]).strip()
             req_simple = f"{ncr.new_first_name} {ncr.new_last_name}".strip()
             req_swapped = f"{ncr.new_last_name} {ncr.new_first_name}".strip()
 
@@ -1547,6 +1742,7 @@ class DiditWebhookView(APIView):
                 req_candidates.append(req_swapped)
 
             # 3) Run your existing matcher
+            template_key = None
             ok, debug = best_linkedin_match(req_candidates, id_candidates)
 
             ncr.name_match_passed = bool(ok)
@@ -1576,9 +1772,11 @@ class DiditWebhookView(APIView):
                 ncr.decided_at = django_timezone.now()
                 ncr.decided_by = None
                 ncr.admin_note = "Auto-approved (Didit Approved + name match passed)."
+                template_key = "approved"
             else:
                 # ❌ mismatch => admin review
                 ncr.admin_note = "Didit Approved but name mismatch. Manual admin review required."
+                template_key = "manual_review"
 
         
         # If Didit Approves, we move Admin Status to PENDING (Ready for Admin Review)
@@ -1586,6 +1784,26 @@ class DiditWebhookView(APIView):
         # Flow guide says: "At this point, the request is marked as Pending Admin Review"
         
         ncr.save()
+        # Send email only once when Didit status changes (prevents duplicates)
+        if status_text == "Approved" and prev_didit_status != ncr.didit_status:
+            requested_name = " ".join([p for p in [ncr.new_first_name, ncr.new_middle_name, ncr.new_last_name] if p]).strip()
+
+            if template_key == "approved":
+                self._send_name_change_email(
+                    ncr,
+                    "approved",
+                    requested_name=requested_name,
+                    id_name=id_full,
+                    admin_note=ncr.admin_note,
+                )
+            elif template_key == "manual_review":
+                self._send_name_change_email(
+                    ncr,
+                    "manual_review",
+                    requested_name=requested_name,
+                    id_name=id_full,
+                    admin_note=ncr.admin_note,
+                )
         return Response({"status": "processed_name_change"})
 
     def handle_fallback_lookup(self, payload, session_id, status_text):

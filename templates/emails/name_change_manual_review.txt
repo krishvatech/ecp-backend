@@ -1,0 +1,10 @@
+Hi {{ first_name }},
+
+Your verification is complete, but your name change request needs manual review.
+
+Requested name: {{ requested_name }}
+ID name: {{ id_name }}
+
+We’ll notify you once a decision is made.
+
+— {{ app_name }}

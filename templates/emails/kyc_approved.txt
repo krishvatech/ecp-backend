@@ -1,0 +1,11 @@
+Hi {{ first_name }},
+
+Your identity verification is complete.
+
+Status: Approved
+{% if verified_name %}Verified name: {{ verified_name }}{% endif %}
+Verified on: {{ verified_at }}
+
+If you didn’t initiate this verification, contact us at {{ support_email }}.
+
+— {{ app_name }}

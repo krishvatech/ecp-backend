@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#f5f7fb;font-family:Arial,Helvetica,sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f7fb;padding:24px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;">
+            <tr>
+              <td style="padding:24px 24px 8px 24px;">
+                <div style="font-size:18px;font-weight:700;color:#111827;">{{ app_name }}</div>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:8px 24px 0 24px;">
+                <h1 style="margin:0;font-size:22px;line-height:1.3;color:#111827;">Action needed: verification unsuccessful ❌</h1>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:12px 24px 0 24px;color:#374151;font-size:14px;line-height:1.6;">
+                Hi {{ first_name }},<br/><br/>
+                We couldn’t complete your identity verification.
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:12px 24px 0 24px;color:#111827;font-size:14px;line-height:1.6;">
+                <b>Status:</b> Declined<br/>
+                <b>Reason:</b> {{ reason_label }}
+              </td>
+            </tr>
+
+            {% if reason_code == "name_mismatch" %}
+            <tr>
+              <td style="padding:12px 24px 0 24px;color:#374151;font-size:14px;line-height:1.6;">
+                <b>Profile name:</b> {{ profile_name }}<br/>
+                <b>ID name:</b> {{ id_name }}
+              </td>
+            </tr>
+            {% endif %}
+
+            <tr>
+              <td style="padding:12px 24px 0 24px;color:#374151;font-size:14px;line-height:1.6;">
+                <b>Next steps</b><br/>
+                • Make sure your profile name matches your government ID<br/>
+                • Retry verification in the app (Settings → Verify Identity)
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:18px 24px 24px 24px;color:#6b7280;font-size:12px;line-height:1.6;border-top:1px solid #eef2f7;">
+                Need help? Contact us at {{ support_email }}.
+              </td>
+            </tr>
+          </table>
+
+          <div style="width:600px;max-width:600px;color:#9ca3af;font-size:11px;line-height:1.6;padding:12px 0;text-align:center;">
+            © {{ app_name }}. This is an automated message.
+          </div>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

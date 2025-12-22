@@ -1,0 +1,10 @@
+Hi {{ first_name }},
+
+Your name change request has been approved.
+
+New name: {{ new_name }}
+Updated on: {{ updated_at }}
+
+If you didn’t request this change, contact us at {{ support_email }}.
+
+— {{ app_name }}

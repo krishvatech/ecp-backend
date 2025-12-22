@@ -1,0 +1,10 @@
+Hi {{ first_name }},
+
+Your name change request was rejected.
+
+Reason (admin note): {{ admin_note }}
+Decided on: {{ decided_at }}
+
+If you believe this was a mistake, contact us at {{ support_email }}.
+
+— {{ app_name }}

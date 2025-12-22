@@ -1,0 +1,19 @@
+Hi {{ first_name }},
+
+We couldn’t complete your identity verification.
+
+Status: Declined
+Reason: {{ reason_label }}
+
+{% if reason_code == "name_mismatch" %}
+Profile name: {{ profile_name }}
+ID name: {{ id_name }}
+{% endif %}
+
+Next steps:
+- Ensure your profile name matches your government ID
+- Retry verification in the app (Settings → Verify Identity)
+
+Need help? Contact us at {{ support_email }}.
+
+— {{ app_name }}
