@@ -1,0 +1,13 @@
+Hi {{ first_name }},
+
+Welcome to {{ app_name }}.
+
+Your account has been created with {{ email }}.
+
+Sign in to get started:
+{{ login_url }}
+
+If you didn’t create this account, please contact us at {{ support_email }}.
+
+Thanks,
+The {{ app_name }} Team
