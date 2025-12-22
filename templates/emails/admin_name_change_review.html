@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#f5f7fb;font-family:Arial,Helvetica,sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="padding:24px 0;background:#f5f7fb;">
+      <tr><td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;">
+          <tr>
+            <td style="padding:24px 24px 8px 24px;">
+              <div style="font-size:18px;font-weight:700;color:#111827;">{{ app_name }}</div>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:8px 24px 0 24px;">
+              <h1 style="margin:0;font-size:20px;color:#111827;">New Identity Review Required ⏳</h1>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:12px 24px 0 24px;color:#374151;font-size:14px;line-height:1.6;">
+              A user’s name change verification was approved by Didit, but the name did not match and needs admin review.
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:12px 24px 0 24px;color:#111827;font-size:14px;line-height:1.8;">
+              <b>User:</b> {{ user_email }}<br/>
+              <b>Request ID:</b> {{ request_id }}<br/>
+              <b>Requested Name:</b> {{ requested_name }}<br/>
+              <b>ID Name (Didit):</b> {{ id_name }}<br/>
+              <b>Reason:</b> {{ reason }}<br/>
+              <b>Note:</b> {{ admin_note }}<br/>
+              <b>Received At:</b> {{ received_at }}
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:16px 24px 24px 24px;">
+              <a href="{{ admin_url }}"
+                 style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 14px;border-radius:10px;font-size:14px;">
+                Open Admin Panel
+              </a>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:18px 24px 24px 24px;color:#6b7280;font-size:12px;line-height:1.6;border-top:1px solid #eef2f7;">
+              This is an automated admin notification from {{ app_name }}.
+            </td>
+          </tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>

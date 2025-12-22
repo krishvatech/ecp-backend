@@ -404,30 +404,30 @@ class RegisterView(APIView):
         user = serializer.save()
 
         # ✅ Welcome email (non-blocking)
-        try:
-            frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
+        # try:
+        #     frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
 
-            ctx = {
-                "app_name": "IMAA Connect",  # TODO: change to your brand name
-                "first_name": (user.first_name or user.username or "there"),
-                "email": user.email,
-                "login_url": f"{frontend_app_url}/signin",
-                "support_email": settings.DEFAULT_FROM_EMAIL,  # or your support email
-            }
+        #     ctx = {
+        #         "app_name": "IMAA Connect",  # TODO: change to your brand name
+        #         "first_name": (user.first_name or user.username or "there"),
+        #         "email": user.email,
+        #         "login_url": f"{frontend_app_url}/signin",
+        #         "support_email": settings.DEFAULT_FROM_EMAIL,  # or your support email
+        #     }
 
-            text_body = render_to_string("emails/welcome.txt", ctx)
-            html_body = render_to_string("emails/welcome.html", ctx)
+        #     text_body = render_to_string("emails/welcome.txt", ctx)
+        #     html_body = render_to_string("emails/welcome.html", ctx)
 
-            send_mail(
-                subject=f"Welcome to {ctx['app_name']}",
-                message=text_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,  # ✅ same sender as forgot password
-                recipient_list=[user.email],
-                html_message=html_body,
-                fail_silently=False,
-            )
-        except Exception as e:
-            logger.warning(f"Welcome email failed for {getattr(user,'email',None)}: {e}")
+        #     send_mail(
+        #         subject=f"Welcome to {ctx['app_name']}",
+        #         message=text_body,
+        #         from_email=settings.DEFAULT_FROM_EMAIL,  # ✅ same sender as forgot password
+        #         recipient_list=[user.email],
+        #         html_message=html_body,
+        #         fail_silently=False,
+        #     )
+        # except Exception as e:
+        #     logger.warning(f"Welcome email failed for {getattr(user,'email',None)}: {e}")
 
 
         # issue JWT (simplejwt)
@@ -1484,6 +1484,58 @@ class DiditWebhookView(APIView):
             status=200,
         )
     
+    def _send_admin_name_change_review_email(self, ncr, *, requested_name="", id_name=""):
+        """
+        Email all admins when a name change request needs manual admin review
+        (Didit Approved but name mismatch).
+        """
+        try:
+            # Admin users (you can keep only superuser if you want)
+            admins = UserModel.objects.filter(
+                is_active=True,
+                is_superuser=True,
+                is_staff=True,
+            ).exclude(email__isnull=True).exclude(email__exact="")
+
+            if not admins.exists():
+                return
+
+            frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
+            now_str = django_timezone.localtime(django_timezone.now()).strftime("%d %b %Y, %I:%M %p %Z")
+
+            ctx = {
+                "app_name": "IMAA Connect",
+                "user_email": (ncr.user.email or ncr.user.username or ""),
+                "request_id": ncr.id,
+                "requested_name": requested_name,
+                "id_name": id_name,
+                "reason": (ncr.reason or ""),
+                "admin_note": (ncr.admin_note or ""),
+                "received_at": now_str,
+                # Keep this generic; admin can search by Request ID in admin UI
+                "admin_url": f"{frontend_app_url}/admin",
+            }
+
+            subject = f"New Identity Review Required: Name Change Request #{ncr.id}"
+
+            text_body = render_to_string("emails/admin_name_change_review.txt", ctx)
+            html_body = render_to_string("emails/admin_name_change_review.html", ctx)
+
+            # Send individually (so admins don’t see each other’s emails)
+            for admin in admins:
+                send_mail(
+                    subject=subject,
+                    message=text_body,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[admin.email],
+                    html_message=html_body,
+                    fail_silently=False,
+                )
+
+        except Exception as e:
+            logger.warning(f"Admin name-change review email failed: {e}")
+
+    
     def _send_name_change_email(self, ncr, template_key: str, *, requested_name="", id_name="", admin_note=""):
         user = ncr.user
         if not getattr(user, "email", None):
@@ -1668,8 +1720,8 @@ class DiditWebhookView(APIView):
                         state="review",
                         unique={"type": "kyc", "kyc_session_id": session_id, "result": "review"},
                     )
-            if prev_status != profile.kyc_status and profile.kyc_status == UserProfile.KYC_STATUS_DECLINED:
-                self._send_initial_kyc_email(profile.user, profile)
+            # if prev_status != profile.kyc_status and profile.kyc_status == UserProfile.KYC_STATUS_DECLINED:
+            #     self._send_initial_kyc_email(profile.user, profile)
             return Response({"status": "processed_initial_kyc"})
 
         # --------------------------
@@ -1752,7 +1804,7 @@ class DiditWebhookView(APIView):
                     unique={"type": "kyc", "kyc_session_id": session_id, "result": "declined"},
                     data={"reason": profile.kyc_decline_reason or ""},
                 )
-            self._send_initial_kyc_email(profile.user, profile, id_name=id_full)
+            # self._send_initial_kyc_email(profile.user, profile, id_name=id_full)
         return Response({"status": "processed_initial_kyc"})
 
 
@@ -1789,8 +1841,8 @@ class DiditWebhookView(APIView):
                     state="failed",
                     unique={"type": "name_change", "name_change_request_id": ncr.id, "result": "failed"},
                 )
-            if prev_didit_status != ncr.didit_status:
-                self._send_name_change_email(ncr, "verification_failed")
+            # if prev_didit_status != ncr.didit_status:
+            #     self._send_name_change_email(ncr, "verification_failed")
             return Response({"status": "processed_name_change"})
 
 
@@ -1798,7 +1850,7 @@ class DiditWebhookView(APIView):
         if ncr.status != NameChangeRequest.STATUS_PENDING:
             ncr.save()
             return Response({"status": "name_change_already_processed"})
-
+        template_key = None
         # Only do auto-approve check when Didit is Approved
         if status_text == "Approved":
             # 1) Extract ID name candidates from payload (same style as initial KYC)
@@ -1840,7 +1892,7 @@ class DiditWebhookView(APIView):
                 req_candidates.append(req_swapped)
 
             # 3) Run your existing matcher
-            template_key = None
+            
             ok, debug = best_linkedin_match(req_candidates, id_candidates)
 
             ncr.name_match_passed = bool(ok)
@@ -1880,28 +1932,31 @@ class DiditWebhookView(APIView):
         # If Didit Approves, we move Admin Status to PENDING (Ready for Admin Review)
         # If Didit Declines, we might auto-reject or keep as PENDING for manual override.
         # Flow guide says: "At this point, the request is marked as Pending Admin Review"
-        
         ncr.save()
+        requested_name = " ".join([p for p in [ncr.new_first_name, ncr.new_middle_name, ncr.new_last_name] if p]).strip()
         # Send email only once when Didit status changes (prevents duplicates)
-        if status_text == "Approved" and prev_didit_status != ncr.didit_status:
-            requested_name = " ".join([p for p in [ncr.new_first_name, ncr.new_middle_name, ncr.new_last_name] if p]).strip()
-
-            if template_key == "approved":
-                self._send_name_change_email(
-                    ncr,
-                    "approved",
-                    requested_name=requested_name,
-                    id_name=id_full,
-                    admin_note=ncr.admin_note,
-                )
-            elif template_key == "manual_review":
-                self._send_name_change_email(
-                    ncr,
-                    "manual_review",
-                    requested_name=requested_name,
-                    id_name=id_full,
-                    admin_note=ncr.admin_note,
-                )
+        # if status_text == "Approved" and prev_didit_status != ncr.didit_status:
+        #     if template_key == "approved":
+        #         self._send_name_change_email(
+        #             ncr,
+        #             "approved",
+        #             requested_name=requested_name,
+        #             id_name=id_full,
+        #             admin_note=ncr.admin_note,
+        #         )
+        #     elif template_key == "manual_review":
+        #         self._send_name_change_email(
+        #             ncr,
+        #             "manual_review",
+        #             requested_name=requested_name,
+        #             id_name=id_full,
+        #             admin_note=ncr.admin_note,
+        #         )
+        #         self._send_admin_name_change_review_email(
+        #             ncr,
+        #             requested_name=requested_name,
+        #             id_name=(id_full or "").strip(),
+        #         )
         # ✅ In-app notifications (user + admin) on Didit Approved
         if template_key == "approved":
             create_notification_once(

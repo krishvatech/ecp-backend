@@ -1,0 +1,13 @@
+{{ app_name }} — Admin Notification
+
+A new identity/name change request requires manual review.
+
+User: {{ user_email }}
+Request ID: {{ request_id }}
+Requested Name: {{ requested_name }}
+ID Name (Didit): {{ id_name }}
+Reason: {{ reason }}
+Note: {{ admin_note }}
+Received At: {{ received_at }}
+
+Admin Panel: {{ admin_url }}
