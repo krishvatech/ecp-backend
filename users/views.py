@@ -1322,22 +1322,22 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
                 data={"admin_note": admin_note or ""},
             )
 
-        if new_status == "approved":
-            self._send_admin_name_change_email(
-                name_req,
-                "approved",
-                requested_name=requested_name,
-                id_name=id_name,
-                admin_note=admin_note,
-            )
-        else:
-            self._send_admin_name_change_email(
-                name_req,
-                "rejected",
-                requested_name=requested_name,
-                id_name=id_name,
-                admin_note=admin_note,
-            )
+        # if new_status == "approved":
+        #     self._send_admin_name_change_email(
+        #         name_req,
+        #         "approved",
+        #         requested_name=requested_name,
+        #         id_name=id_name,
+        #         admin_note=admin_note,
+        #     )
+        # else:
+        #     self._send_admin_name_change_email(
+        #         name_req,
+        #         "rejected",
+        #         requested_name=requested_name,
+        #         id_name=id_name,
+        #         admin_note=admin_note,
+        #     )
 
         return Response(NameChangeRequestSerializer(name_req).data)
 
