@@ -541,6 +541,16 @@ class NameChangeRequest(models.Model):
         default=DIDIT_STATUS_NOT_STARTED,
     )
     didit_raw_payload = models.JSONField(default=dict, blank=True)
+    # --- extracted names from Didit document (for admin review) ---
+    doc_full_name = models.CharField(max_length=255, blank=True, default="")
+    doc_first_name = models.CharField(max_length=150, blank=True, default="")
+    doc_last_name = models.CharField(max_length=150, blank=True, default="")
+
+    # --- auto-approval + debug ---
+    name_match_passed = models.BooleanField(default=False)
+    name_match_debug = models.JSONField(default=dict, blank=True)
+    auto_approved = models.BooleanField(default=False)
+
 
 
     # current legal names (snapshot at time of request)

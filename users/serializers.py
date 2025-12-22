@@ -724,11 +724,18 @@ class NameChangeRequestSerializer(serializers.ModelSerializer):
             "status",
             "didit_status",     # NEW
             "created_at", "decided_at", "admin_note",
+            "didit_session_id",
+            "doc_full_name", "doc_first_name", "doc_last_name",
+            "name_match_passed", "auto_approved", "name_match_debug",
+
         )
         read_only_fields = (
             "id", "user", "old_first_name", "old_middle_name", "old_last_name",
             "status", "didit_status",      # NEW
             "created_at", "decided_at", "admin_note",
+            "didit_session_id",
+            "doc_full_name", "doc_first_name", "doc_last_name",
+            "name_match_passed", "auto_approved", "name_match_debug",
         )
 
 

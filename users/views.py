@@ -1414,6 +1414,89 @@ class DiditWebhookView(APIView):
 
         ncr.didit_status = status_map.get(status_text, NameChangeRequest.DIDIT_STATUS_PENDING)
         ncr.didit_raw_payload = payload
+
+        # Always store session id too (safe)
+        ncr.didit_session_id = session_id or ncr.didit_session_id
+
+        # If request already processed, just ack webhook (idempotent)
+        if ncr.status != NameChangeRequest.STATUS_PENDING:
+            ncr.save()
+            return Response({"status": "name_change_already_processed"})
+
+        # Only do auto-approve check when Didit is Approved
+        if status_text == "Approved":
+            # 1) Extract ID name candidates from payload (same style as initial KYC)
+            decision = payload.get("decision") or {}
+            idv = decision.get("id_verification") or {}
+
+            id_full = (idv.get("full_name") or "").strip()
+            id_first = (idv.get("first_name") or "").strip()
+            id_last = (idv.get("last_name") or "").strip()
+
+            # Save extracted doc names for admin review
+            ncr.doc_full_name = id_full
+            ncr.doc_first_name = id_first
+            ncr.doc_last_name = id_last
+
+            id_candidates = []
+            if id_full:
+                id_candidates.append(id_full)
+
+            combined = f"{id_first} {id_last}".strip()
+            if combined:
+                id_candidates.append(combined)
+
+            swapped = f"{id_last} {id_first}".strip()
+            if swapped and swapped != combined:
+                id_candidates.append(swapped)
+
+            # 2) Build requested-name candidates (new name)
+            req_full = " ".join([ncr.new_first_name, ncr.new_middle_name, ncr.new_last_name]).strip()
+            req_simple = f"{ncr.new_first_name} {ncr.new_last_name}".strip()
+            req_swapped = f"{ncr.new_last_name} {ncr.new_first_name}".strip()
+
+            req_candidates = []
+            if req_full:
+                req_candidates.append(req_full)
+            if req_simple and req_simple != req_full:
+                req_candidates.append(req_simple)
+            if req_swapped and req_swapped not in req_candidates:
+                req_candidates.append(req_swapped)
+
+            # 3) Run your existing matcher
+            ok, debug = best_linkedin_match(req_candidates, id_candidates)
+
+            ncr.name_match_passed = bool(ok)
+            ncr.name_match_debug = debug or {}
+            ncr.auto_approved = bool(ok)
+
+            if ok:
+                # ✅ AUTO-APPROVE: apply same logic as Admin decide()
+                user = ncr.user
+                profile = user.profile
+
+                if ncr.new_first_name:
+                    user.first_name = ncr.new_first_name
+                if ncr.new_last_name:
+                    user.last_name = ncr.new_last_name
+                user.save()
+
+                if ncr.new_middle_name is not None:
+                    profile.middle_name = ncr.new_middle_name
+
+                parts = [user.first_name, profile.middle_name, user.last_name]
+                profile.full_name = " ".join([p for p in parts if p]).strip()
+                profile.save()
+
+                # Mark request approved
+                ncr.status = NameChangeRequest.STATUS_APPROVED
+                ncr.decided_at = django_timezone.now()
+                ncr.decided_by = None
+                ncr.admin_note = "Auto-approved (Didit Approved + name match passed)."
+            else:
+                # ❌ mismatch => admin review
+                ncr.admin_note = "Didit Approved but name mismatch. Manual admin review required."
+
         
         # If Didit Approves, we move Admin Status to PENDING (Ready for Admin Review)
         # If Didit Declines, we might auto-reject or keep as PENDING for manual override.
