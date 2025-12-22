@@ -12,6 +12,7 @@ from rest_framework import mixins, permissions, status, viewsets, filters
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from friends.models import Notification
 from rest_framework.views import APIView
 from django.contrib.auth import update_session_auth_hash
 from django.http import HttpResponse
@@ -91,6 +92,31 @@ class IsSuperuser(permissions.BasePermission):
 
 def _state_cookie():
     return get_random_string(32)
+
+def create_notification_once(*, recipient, kind, title, description="", state="", actor=None, data=None, unique=None):
+    """
+    Create a notification only once (prevents duplicates from repeated webhooks).
+    `unique` keys are stored inside data and also used for dedupe filtering.
+    """
+    data = data or {}
+    unique = unique or {}
+
+    filters = {"recipient_id": recipient.id, "kind": kind, "state": state}
+    for k, v in unique.items():
+        filters[f"data__{k}"] = v
+
+    if Notification.objects.filter(**filters).exists():
+        return
+
+    Notification.objects.create(
+        recipient=recipient,
+        actor=actor,
+        kind=kind,
+        title=title,
+        description=description,
+        state=state,
+        data={**data, **unique},
+    )
 
 class UserViewSet(
     mixins.ListModelMixin,
@@ -1274,6 +1300,28 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
         requested_name = " ".join([p for p in [name_req.new_first_name, name_req.new_middle_name, name_req.new_last_name] if p]).strip()
         id_name = (getattr(name_req, "doc_full_name", "") or "").strip()
 
+        # ✅ In-app notification to the user after admin decision
+        if new_status == "approved":
+            create_notification_once(
+                recipient=name_req.user,
+                kind="event",
+                title="Name change approved ✅",
+                description="Admin approved your name change request. Your profile name is updated.",
+                state="approved",
+                unique={"type": "name_change", "name_change_request_id": name_req.id, "decision": "approved"},
+                data={"admin_note": admin_note or ""},
+            )
+        else:
+            create_notification_once(
+                recipient=name_req.user,
+                kind="event",
+                title="Name change rejected ❌",
+                description=admin_note or "Admin rejected your name change request. Please submit a new request with correct documents.",
+                state="rejected",
+                unique={"type": "name_change", "name_change_request_id": name_req.id, "decision": "rejected"},
+                data={"admin_note": admin_note or ""},
+            )
+
         if new_status == "approved":
             self._send_admin_name_change_email(
                 name_req,
@@ -1599,6 +1647,27 @@ class DiditWebhookView(APIView):
                 profile.legal_name_locked = False
                 profile.legal_name_verified_at = None
             profile.save()
+            # ✅ In-app notification for KYC fail/review (only when status changes)
+            if prev_status != profile.kyc_status:
+                if profile.kyc_status == UserProfile.KYC_STATUS_DECLINED:
+                    create_notification_once(
+                        recipient=profile.user,
+                        kind="event",  # keep existing kind so frontend shows without changes
+                        title="Identity verification failed ❌",
+                        description="We couldn’t confirm your identity. Please try again from Settings → Verification.",
+                        state="declined",
+                        unique={"type": "kyc", "kyc_session_id": session_id, "result": "declined"},
+                        data={"reason": profile.kyc_decline_reason or ""},
+                    )
+                elif profile.kyc_status == UserProfile.KYC_STATUS_REVIEW:
+                    create_notification_once(
+                        recipient=profile.user,
+                        kind="event",
+                        title="Identity verification under review ⏳",
+                        description="Your verification is under review. We’ll notify you once a decision is made.",
+                        state="review",
+                        unique={"type": "kyc", "kyc_session_id": session_id, "result": "review"},
+                    )
             if prev_status != profile.kyc_status and profile.kyc_status == UserProfile.KYC_STATUS_DECLINED:
                 self._send_initial_kyc_email(profile.user, profile)
             return Response({"status": "processed_initial_kyc"})
@@ -1663,6 +1732,26 @@ class DiditWebhookView(APIView):
             UserProfile.KYC_STATUS_APPROVED,
             UserProfile.KYC_STATUS_DECLINED,
         ]:
+            if profile.kyc_status == UserProfile.KYC_STATUS_APPROVED:
+                create_notification_once(
+                    recipient=profile.user,
+                    kind="event",
+                    title="Your profile is verified ✅",
+                    description="Identity verification completed successfully. Your verified badge is now active.",
+                    state="approved",
+                    unique={"type": "kyc", "kyc_session_id": session_id, "result": "approved"},
+                    data={"verified_name": (id_full or "").strip()},
+                )
+            else:
+                create_notification_once(
+                    recipient=profile.user,
+                    kind="event",
+                    title="Identity verification failed ❌",
+                    description="Your profile name didn’t match your ID. Please update your name and retry verification.",
+                    state="declined",
+                    unique={"type": "kyc", "kyc_session_id": session_id, "result": "declined"},
+                    data={"reason": profile.kyc_decline_reason or ""},
+                )
             self._send_initial_kyc_email(profile.user, profile, id_name=id_full)
         return Response({"status": "processed_initial_kyc"})
 
@@ -1691,6 +1780,15 @@ class DiditWebhookView(APIView):
         # If Didit Declined => notify user and stop further processing
         if status_text == "Declined":
             ncr.save()
+            if prev_didit_status != ncr.didit_status:
+                create_notification_once(
+                    recipient=ncr.user,
+                    kind="event",
+                    title="Name change verification failed ❌",
+                    description="We couldn’t verify your documents for the name change request. Please retry with correct documents.",
+                    state="failed",
+                    unique={"type": "name_change", "name_change_request_id": ncr.id, "result": "failed"},
+                )
             if prev_didit_status != ncr.didit_status:
                 self._send_name_change_email(ncr, "verification_failed")
             return Response({"status": "processed_name_change"})
@@ -1804,6 +1902,48 @@ class DiditWebhookView(APIView):
                     id_name=id_full,
                     admin_note=ncr.admin_note,
                 )
+        # ✅ In-app notifications (user + admin) on Didit Approved
+        if template_key == "approved":
+            create_notification_once(
+                recipient=ncr.user,
+                kind="event",
+                title="Your name has been updated ✅",
+                description="Your name change request is approved and your profile name is updated.",
+                state="approved",
+                unique={"type": "name_change", "name_change_request_id": ncr.id, "result": "approved"},
+                data={"requested_name": requested_name, "id_name": (id_full or "").strip()},
+            )
+
+        elif template_key == "manual_review":
+            # User notification: under review
+            create_notification_once(
+                recipient=ncr.user,
+                kind="event",
+                title="Your name change is under review ⏳",
+                description="Your documents were verified, but the name didn’t match. Admin review is required.",
+                state="review",
+                unique={"type": "name_change", "name_change_request_id": ncr.id, "result": "review"},
+                data={"requested_name": requested_name, "id_name": (id_full or "").strip()},
+            )
+
+            # Admin notification(s): review required
+            admins = UserModel.objects.filter(is_superuser=True, is_active=True)
+            for admin in admins:
+                create_notification_once(
+                    recipient=admin,
+                    actor=ncr.user,
+                    kind="event",
+                    title="Name change review required",
+                    description=f"{(ncr.user.email or ncr.user.username)} requested name change: {requested_name}",
+                    state="pending",
+                    unique={"type": "admin_name_change", "name_change_request_id": ncr.id},
+                    data={
+                        "request_id": ncr.id,
+                        "requested_name": requested_name,
+                        "id_name": (id_full or "").strip(),
+                    },
+                )
+
         return Response({"status": "processed_name_change"})
 
     def handle_fallback_lookup(self, payload, session_id, status_text):
