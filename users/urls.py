@@ -25,7 +25,8 @@ from .views import (
     MeLanguageViewSet,
     MeLanguageCertificateViewSet,
     IsoLanguageSearchView,
-    MeTrainingViewSet, MeCertificationViewSet, MeMembershipViewSet
+    MeTrainingViewSet, MeCertificationViewSet, MeMembershipViewSet,
+    GeoCitySearchView,
 
 )
 
@@ -69,5 +70,6 @@ urlpatterns = [
     path("didit/webhook/", DiditWebhookView.as_view(), name="didit-webhook"),
     path("skills/search/", EscoSkillSearchView.as_view(), name="esco-skill-search"),
     path("languages/search/", IsoLanguageSearchView.as_view(), name="iso-language-search"),
+    path("cities/search/", GeoCitySearchView.as_view(), name="geonames-city-search"),
     path("", include(router.urls)),
 ]

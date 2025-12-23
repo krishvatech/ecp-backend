@@ -2103,6 +2103,80 @@ class MeSkillViewSet(viewsets.ModelViewSet):
         serializer.save()
 
 
+class GeoCitySearchView(APIView):
+    """
+    GET /api/auth/cities/search/?q=sur&country=IN&limit=20
+    Offline DB-backed city autocomplete from GeoCity.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from users.models import GeoCity, GeoCountry  # local import to avoid touching top imports
+        
+        q = request.query_params.get("q", "").strip()
+        country = request.query_params.get("country", "").strip().upper()
+        limit = min(int(request.query_params.get("limit", 20)), 50)
+
+        qs = GeoCity.objects.all()
+
+        if country:
+            qs = qs.filter(country_code=country)
+
+        if q:
+            qs = qs.filter(Q(name__icontains=q) | Q(ascii_name__icontains=q))
+        else:
+            qs = qs.order_by("-population")
+
+        qs = qs.order_by("-population", "name")[:limit]
+
+        # ✅ Fetch once (avoid N+1) — map country_code -> country_name
+        cities = list(qs)
+        country_codes = {c.country_code for c in cities if c.country_code}
+        country_map = dict(
+            GeoCountry.objects.filter(iso2__in=country_codes).values_list("iso2", "name")
+        )
+
+        results = []
+        for c in cities:
+            country_name = country_map.get(c.country_code, c.country_code)
+            results.append({
+                "geoname_id": c.geoname_id,
+                "name": c.name,
+                "country_code": c.country_code,
+                "country_name": country_name,  # ✅ extra helpful field
+                "admin1_code": c.admin1_code,
+                "population": c.population,
+                "lat": c.latitude,
+                "lng": c.longitude,
+                "label": f"{c.name}, {country_name}",  # ✅ Delhi, India
+                "is_other": False,
+            })
+
+        # ✅ If no results for a typed query, add "Other / Not listed"
+        if q and not results:
+            fallback_country_name = None
+            if country:
+                fallback_country_name = GeoCountry.objects.filter(iso2=country).values_list("name", flat=True).first()
+            fallback_country_name = fallback_country_name or country or ""
+
+            label = f'{q}, {fallback_country_name}'.strip().strip(",")
+            results.append({
+                "geoname_id": None,
+                "name": q,
+                "country_code": country or None,
+                "country_name": fallback_country_name or None,
+                "admin1_code": None,
+                "population": None,
+                "lat": None,
+                "lng": None,
+                "label": f'Other / Not listed ({label})',
+                "is_other": True,
+            })
+
+        return Response({"results": results})
+
+
+
 
 class IsoLanguageSearchView(APIView):
     """

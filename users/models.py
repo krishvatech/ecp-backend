@@ -238,6 +238,49 @@ class IsoLanguage(models.Model):
     def __str__(self):
         return f"{self.english_name} ({self.iso_639_1})"
 
+class GeoCity(models.Model):
+    """
+    Offline GeoNames city master (from cities15000.txt).
+    We keep it separate so Profile/Experience can still store location as string.
+    """
+    geoname_id = models.BigIntegerField(primary_key=True)
+    name = models.CharField(max_length=255)
+    ascii_name = models.CharField(max_length=255, blank=True, default="")
+
+    country_code = models.CharField(max_length=2, db_index=True)
+    admin1_code = models.CharField(max_length=20, blank=True, default="", db_index=True)
+    admin2_code = models.CharField(max_length=80, blank=True, default="")
+
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
+
+    feature_class = models.CharField(max_length=1, blank=True, default="")
+    feature_code = models.CharField(max_length=10, blank=True, default="")
+
+    population = models.BigIntegerField(default=0, db_index=True)
+    timezone = models.CharField(max_length=64, blank=True, default="")
+    modified_at = models.DateField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["name"]),
+            models.Index(fields=["ascii_name"]),
+            models.Index(fields=["country_code", "population"]),
+        ]
+
+    def __str__(self):
+        return f"{self.name}, {self.country_code}"
+
+class GeoCountry(models.Model):
+    iso2 = models.CharField(max_length=2, unique=True, db_index=True)  # e.g. IN
+    iso3 = models.CharField(max_length=3, blank=True, default="")      # e.g. IND
+    name = models.CharField(max_length=200)                            # e.g. India
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"{self.name} ({self.iso2})"
 
 class UserLanguage(models.Model):
     """
