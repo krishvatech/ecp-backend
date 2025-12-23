@@ -631,6 +631,55 @@ class SessionMeView(APIView):
         from .serializers import UserSerializer
         return Response(UserSerializer(request.user).data, status=status.HTTP_200_OK)
 
+class AuthUsersMeView(APIView):
+    """
+    Compatibility endpoint for clients that call /api/auth/users/me/.
+
+    Mirrors the existing /api/users/me/ behaviour (GET + update).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(
+            UserSerializer(request.user, context={"request": request}).data,
+            status=status.HTTP_200_OK
+        )
+
+    def put(self, request):
+        return self._update(request, partial=False)
+
+    def patch(self, request):
+        return self._update(request, partial=True)
+
+    def _update(self, request, partial: bool):
+        user = request.user
+        data = request.data.copy()
+        profile = {}
+
+        # keep same behavior as UserViewSet.me
+        data.pop("first_name", None)
+        data.pop("last_name", None)
+
+        if isinstance(data.get("profile"), dict):
+            profile.update(data["profile"])
+
+        for k in list(data.keys()):
+            if k.startswith("profile."):
+                subkey = k.split(".", 1)[1]
+                profile[subkey] = data.pop(k)
+
+        if profile:
+            data["profile"] = profile
+
+        serializer = UserSerializer(
+            user,
+            data=data,
+            partial=partial,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 class CSRFCookieView(APIView):
     """
@@ -2112,7 +2161,7 @@ class GeoCitySearchView(APIView):
 
     def get(self, request):
         from users.models import GeoCity, GeoCountry  # local import to avoid touching top imports
-        
+
         q = request.query_params.get("q", "").strip()
         country = request.query_params.get("country", "").strip().upper()
         limit = min(int(request.query_params.get("limit", 20)), 50)

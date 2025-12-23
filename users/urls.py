@@ -26,7 +26,7 @@ from .views import (
     MeLanguageCertificateViewSet,
     IsoLanguageSearchView,
     MeTrainingViewSet, MeCertificationViewSet, MeMembershipViewSet,
-    GeoCitySearchView,
+    GeoCitySearchView, AuthUsersMeView,
 
 )
 
@@ -64,6 +64,7 @@ urlpatterns = [
     path("session/login/", SessionLoginView.as_view(), name="session_login"),
     path("session/logout/", SessionLogoutView.as_view(), name="session_logout"),
     path("session/me/", SessionMeView.as_view(), name="session_me"),
+    path("users/me/", AuthUsersMeView.as_view(), name="auth-users-me"),
 
     # ---- NEW: compact profile view (returns both lists) ----
     path("me/profile/", MeProfileView.as_view(), name="me-profile"),
