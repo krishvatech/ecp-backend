@@ -859,7 +859,9 @@ class ConversationViewSet(viewsets.ViewSet):
                 "id": ev.id,
                 "title": getattr(ev, "title", "") or getattr(ev, "name", "") or f"Event #{ev.id}",
                 "cover_image": getattr(ev, "cover_image", "") or getattr(ev, "banner", "") or "",
-                "event": {"id": ev.id, "title": getattr(ev, "title", "") or getattr(ev, "name", "")},
+                "event": {"id": ev.id, "title": getattr(ev, "title", "") or getattr(ev, "name", ""), "end_time": ev.end_time, "status": ev.status},
+                "end_time": ev.end_time,
+                "status": ev.status,
             })
 
         # events created by me (if not already present)
@@ -872,7 +874,9 @@ class ConversationViewSet(viewsets.ViewSet):
                 "id": ev.id,
                 "title": getattr(ev, "title", "") or getattr(ev, "name", "") or f"Event #{ev.id}",
                 "cover_image": getattr(ev, "cover_image", "") or getattr(ev, "banner", "") or "",
-                "event": {"id": ev.id, "title": getattr(ev, "title", "") or getattr(ev, "name", "")},
+                "event": {"id": ev.id, "title": getattr(ev, "title", "") or getattr(ev, "name", ""), "end_time": ev.end_time, "status": ev.status},
+                "end_time": ev.end_time,
+                "status": ev.status,
             })
 
         return Response(out, status=status.HTTP_200_OK)
