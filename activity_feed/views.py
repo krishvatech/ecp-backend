@@ -287,6 +287,12 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 "title": r.title,
                 "description": r.description or "",
                 "event_id": r.event_id,
+                "event_title": getattr(getattr(r, "event", None), "title", None),
+                "event_preview_image": (
+                    request.build_absolute_uri(r.event.preview_image.url)
+                    if getattr(r, "event", None) and getattr(r.event, "preview_image", None)
+                    else None
+                ),
                 "tags": list(r.tags or []),
                 "file_url": file_url,
                 "link_url": r.link_url or None,
