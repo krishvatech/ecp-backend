@@ -89,6 +89,12 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 AWS_S3_REGION_NAME = os.getenv("AWS_REGION_NAME")
 
+# Cognito settings
+COGNITO_REGION = os.getenv("COGNITO_REGION", "")
+COGNITO_USER_POOL_ID = os.getenv("COGNITO_USER_POOL_ID", "")
+COGNITO_APP_CLIENT_ID = os.getenv("COGNITO_APP_CLIENT_ID", "")
+
+
 AWS_S3_FILE_OVERWRITE = False
 AWS_DEFAULT_ACL = None  # let bucket policy handle permissions
 AWS_S3_OBJECT_PARAMETERS = {
@@ -282,8 +288,9 @@ else:
 # Django REST Framework configuration
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "users.cognito_auth.CognitoJWTAuthentication",
         "rest_framework_simplejwt.authentication.JWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",  # optional, for browsable API login
+        "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
