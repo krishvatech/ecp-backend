@@ -110,10 +110,22 @@ class CognitoJWTAuthentication(BaseAuthentication):
             else:
                 raise AuthenticationFailed("Invalid token_use")
 
-            username = claims.get("cognito:username") or ""
+           # Access token usually has "username"
+            # ID token usually has "cognito:username"
+            username = claims.get("cognito:username") or claims.get("username") or ""
             email = (claims.get("email") or "").lower().strip()
             first_name = claims.get("given_name") or ""
             last_name = claims.get("family_name") or ""
+            # --- Global roles from Cognito groups ---
+            raw_groups = claims.get("cognito:groups") or []
+            if isinstance(raw_groups, str):
+                raw_groups = [raw_groups]
+
+            groups = {str(g).strip().lower() for g in raw_groups if g}
+
+            is_platform_admin = "platform_admin" in groups
+            is_staff_role = is_platform_admin or ("staff" in groups)
+            # ----------------------------------------
 
             if not username:
                 # fallback (still must be stable)
@@ -139,6 +151,27 @@ class CognitoJWTAuthentication(BaseAuthentication):
                 updated = True
             if updated:
                 user.save(update_fields=["email", "first_name", "last_name"])
+
+            # --- Apply global roles (upgrade-only, safe) ---
+            role_fields = []
+
+            # platform_admin => superuser + staff
+            if is_platform_admin and not user.is_superuser:
+                user.is_superuser = True
+                role_fields.append("is_superuser")
+            if is_platform_admin and not user.is_staff:
+                user.is_staff = True
+                role_fields.append("is_staff")
+
+            # staff => staff
+            if is_staff_role and not user.is_staff:
+                user.is_staff = True
+                role_fields.append("is_staff")
+
+            if role_fields:
+                user.save(update_fields=list(set(role_fields)))
+            # ----------------------------------------------
+
 
             return (user, token)
 

@@ -6,6 +6,10 @@ an inline profile form so that user profiles are editable via the Django
 admin.  Fields displayed on the list include username, email, active
 status, and join date.
 """
+import logging
+
+import boto3
+from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth.models import User
 from .models import UserProfile, ProfileTraining, ProfileCertification, ProfileMembership
@@ -21,12 +25,53 @@ class UserAdmin(admin.ModelAdmin):
     inlines = [UserProfileInline]
     list_display = ("username", "email", "is_active", "date_joined")
     def save_model(self, request, obj, form, change):
+        old_is_staff = None
+        if change and obj.pk:
+            try:
+                old_is_staff = User.objects.filter(pk=obj.pk).values_list("is_staff", flat=True).first()
+            except Exception:
+                old_is_staff = None
+
         if "password" in form.changed_data:
             raw = obj.password or ""
             # Only hash if it looks like plaintext (not already hashed)
             if not raw.startswith(("pbkdf2_", "argon2", "bcrypt", "scrypt")):
                 obj.set_password(raw)
         super().save_model(request, obj, form, change)
+
+        # Sync is_staff -> Cognito group membership.
+        if old_is_staff is None and not obj.is_staff:
+            return
+        if old_is_staff is not None and old_is_staff == obj.is_staff:
+            return
+
+        region = getattr(settings, "COGNITO_REGION", "") or ""
+        pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
+        group = getattr(settings, "COGNITO_STAFF_GROUP", "staff") or "staff"
+        if not region or not pool_id:
+            return
+
+        try:
+            client = boto3.client("cognito-idp", region_name=region)
+            if obj.is_staff:
+                client.admin_add_user_to_group(
+                    UserPoolId=pool_id,
+                    Username=obj.username,
+                    GroupName=group,
+                )
+            else:
+                client.admin_remove_user_from_group(
+                    UserPoolId=pool_id,
+                    Username=obj.username,
+                    GroupName=group,
+                )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Cognito staff sync failed for user=%s group=%s: %s",
+                obj.username,
+                group,
+                exc,
+            )
 
 @admin.register(Education)
 class EducationAdmin(admin.ModelAdmin):
