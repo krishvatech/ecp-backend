@@ -152,27 +152,6 @@ class CognitoJWTAuthentication(BaseAuthentication):
             if updated:
                 user.save(update_fields=["email", "first_name", "last_name"])
 
-            # --- Apply global roles (upgrade-only, safe) ---
-            role_fields = []
-
-            # platform_admin => superuser + staff
-            if is_platform_admin and not user.is_superuser:
-                user.is_superuser = True
-                role_fields.append("is_superuser")
-            if is_platform_admin and not user.is_staff:
-                user.is_staff = True
-                role_fields.append("is_staff")
-
-            # staff => staff
-            if is_staff_role and not user.is_staff:
-                user.is_staff = True
-                role_fields.append("is_staff")
-
-            if role_fields:
-                user.save(update_fields=list(set(role_fields)))
-            # ----------------------------------------------
-
-
             return (user, token)
 
         except AuthenticationFailed:
