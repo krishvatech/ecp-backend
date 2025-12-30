@@ -7,6 +7,7 @@ endpoint. Login is via email + password only.
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
+from .cognito_bootstrap import CognitoBootstrapView
 from .views import (
     RegisterView,
     ChangePasswordView,
@@ -55,6 +56,7 @@ urlpatterns = [
 
     # Registration & password flows
     path("register/", RegisterView.as_view(), name="register"),
+    path("cognito/bootstrap/", CognitoBootstrapView.as_view(), name="cognito-bootstrap"),
     path("password/change/", ChangePasswordView.as_view(), name="password_change"),
     path("password/forgot/", ForgotPasswordView.as_view(), name="password_forgot"),
     path("password/reset/", ResetPasswordView.as_view(), name="password_reset"),
