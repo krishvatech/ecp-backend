@@ -52,6 +52,7 @@ from .didit_client import (
     verify_webhook_signature,
     get_session_details
 )
+from .cognito_groups import sync_staff_group
 from .serializers import (
     UserSerializer,
     EmailTokenObtainPairSerializer,
@@ -1200,6 +1201,7 @@ class StaffUserViewSet(viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         user = self.get_object()
+        old_is_staff = user.is_staff
 
         # Non-superusers cannot modify a superuser
         if user.is_superuser and not request.user.is_superuser:
@@ -1214,6 +1216,9 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         ser = self.get_serializer(user, data={"is_staff": request.data["is_staff"]}, partial=True)
         ser.is_valid(raise_exception=True)
         self.perform_update(ser)
+        user.refresh_from_db(fields=["is_staff", "username"])
+        if old_is_staff != user.is_staff:
+            sync_staff_group(username=user.username, is_staff=user.is_staff)
         return Response(ser.data)
 
     @action(detail=False, methods=["post"], url_path="bulk-set-staff")
@@ -1228,8 +1233,12 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         # Block superusers unless caller is superuser
         if not request.user.is_superuser:
             qs = qs.filter(is_superuser=False)
+        target_qs = qs.exclude(is_staff=bool(is_staff))
+        usernames = list(target_qs.values_list("username", flat=True))
 
         updated = qs.update(is_staff=bool(is_staff))
+        for uname in usernames:
+            sync_staff_group(username=uname, is_staff=bool(is_staff))
         return Response({"updated": updated})
     
     
