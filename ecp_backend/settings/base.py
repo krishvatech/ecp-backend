@@ -71,6 +71,9 @@ DJANGO_ALLOWED_HOSTS = os.getenv(
     "localhost,127.0.0.1,colligatus.com,www.colligatus.com,63.180.39.182",
 )
 
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 10_000
+WAGTAIL_SITE_NAME = "Events & Community - IMAA Connect - CMS"
+WAGTAILADMIN_BASE_URL = os.getenv("WAGTAILADMIN_BASE_URL", "http://localhost:8000")
 ALLOWED_HOSTS = [h.strip() for h in DJANGO_ALLOWED_HOSTS.split(",") if h.strip()]
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")
@@ -180,7 +183,24 @@ INSTALLED_APPS = [
     'engagements',
     
     "drf_spectacular",
-    "drf_spectacular_sidecar"
+    "drf_spectacular_sidecar",
+
+    "wagtail.contrib.forms",
+    "wagtail.contrib.redirects",
+    "wagtail.embeds",
+    "wagtail.sites",
+    "wagtail.users",
+    "wagtail.snippets",
+    "wagtail.documents",
+    "wagtail.images",
+    "wagtail.search",
+    "wagtail.admin",
+    "wagtail",
+
+    "modelcluster",
+    "taggit",
+
+    "cms",
 ]
 
 MIDDLEWARE = [
@@ -193,6 +213,8 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "users.middleware.LastActivityMiddleware",
+    "wagtail.contrib.redirects.middleware.RedirectMiddleware",
+    "users.middleware.WagtailPlatformAdminOnlyMiddleware",
 ]
 
 ROOT_URLCONF = "ecp_backend.urls"
@@ -290,6 +312,7 @@ else:
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "users.cognito_auth.CognitoJWTAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",

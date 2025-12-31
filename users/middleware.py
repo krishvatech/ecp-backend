@@ -26,3 +26,19 @@ class LastActivityMiddleware:
                     profile.save(update_fields=["last_activity_at"])
 
         return response
+
+from django.http import HttpResponseForbidden
+
+PLATFORM_ADMIN_GROUP = "platform_admin"
+
+class WagtailPlatformAdminOnlyMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if request.path.startswith("/cms/"):
+            if request.user.is_authenticated:
+                in_group = request.user.groups.filter(name=PLATFORM_ADMIN_GROUP).exists()
+                if not in_group:
+                    return HttpResponseForbidden("Wagtail is restricted to platform_admin only.")
+        return self.get_response(request)

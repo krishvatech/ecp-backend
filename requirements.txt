@@ -36,3 +36,5 @@ drf_spectacular_sidecar
 
 django-filter
 agora_token_builder
+
+wagtail==7.0.3

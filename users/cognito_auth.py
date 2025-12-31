@@ -97,6 +97,7 @@ class CognitoJWTAuthentication(BaseAuthentication):
                 options={"verify_aud": False},
                 issuer=iss,
             )
+            request.cognito_claims = claims
 
             token_use = claims.get("token_use")  # "id" or "access"
             client_id = getattr(settings, "COGNITO_APP_CLIENT_ID", "") or ""

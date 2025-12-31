@@ -2312,3 +2312,40 @@ class MeLanguageCertificateViewSet(viewsets.ModelViewSet):
         filename = f.name if f else ""
 
         serializer.save(user_language=ul, filename=filename)
+
+
+from django.contrib.auth import login as django_login
+from django.contrib.auth.models import Group
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+
+PLATFORM_ADMIN_GROUP = "platform_admin"
+
+class WagtailSessionFromCognitoView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        claims = getattr(request, "cognito_claims", {}) or {}
+        raw_groups = claims.get("cognito:groups") or []
+        if isinstance(raw_groups, str):
+            raw_groups = [raw_groups]
+
+        groups = {str(g).strip().lower() for g in raw_groups if g}
+
+        if PLATFORM_ADMIN_GROUP not in groups:
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        grp, _ = Group.objects.get_or_create(name=PLATFORM_ADMIN_GROUP)
+        request.user.groups.add(grp)
+
+        # Required for Wagtail admin
+        if not request.user.is_staff:
+            request.user.is_staff = True
+            request.user.save(update_fields=["is_staff"])
+
+        django_login(request, request.user, backend="django.contrib.auth.backends.ModelBackend")
+        request.session.cycle_key()
+
+        return Response({"detail": "cms_session_created"}, status=status.HTTP_200_OK)

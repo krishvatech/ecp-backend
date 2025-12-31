@@ -13,7 +13,8 @@ from drf_spectacular.views import (
 )
 from django.conf import settings
 from django.conf.urls.static import static
-
+from wagtail.admin import urls as wagtailadmin_urls
+from wagtail.documents import urls as wagtaildocs_urls
 from realtime.urls import urlpatterns as realtime_urls
 from users.views import UserViewSet, RegisterView, LinkedInAuthURL, LinkedInCallback, GoogleAuthURL, GoogleCallback
 from community.views import CommunityViewSet
@@ -37,6 +38,10 @@ urlpatterns = [
     path("admin/", admin.site.urls),
 
     path("api/", RedirectView.as_view(pattern_name="swagger-ui", permanent=False)),
+
+    path("cms/", include(wagtailadmin_urls)),
+    path("cms/documents/", include(wagtaildocs_urls)),
+    path("api/cms/", include("cms.urls")),
 
     #  Swagger/Redoc
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
