@@ -22,6 +22,7 @@ class ResourceSerializer(serializers.ModelSerializer):
         required=False, allow_null=True
     )
     uploaded_by_id = serializers.IntegerField(read_only=True)
+    event_title = serializers.CharField(source="event.title", read_only=True)
 
     class Meta:
         model = Resource
@@ -32,6 +33,7 @@ class ResourceSerializer(serializers.ModelSerializer):
             "file", "link_url", "video_url",
             "tags", "is_published", "publish_at",
             "uploaded_by_id", "created_at", "updated_at",
+            "event_title",
         ]
         read_only_fields = ["id", "uploaded_by_id", "created_at", "updated_at"]
 
