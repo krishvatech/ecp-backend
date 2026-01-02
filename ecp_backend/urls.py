@@ -26,6 +26,9 @@ from rest_framework_simplejwt.views import (
     TokenVerifyView,
 )
 
+from django.shortcuts import redirect
+from urllib.parse import urlencode, urljoin
+
 
 
 router = DefaultRouter()
@@ -33,11 +36,25 @@ router.register(r"users", UserViewSet, basename="user")
 router.register(r"community", CommunityViewSet, basename="community")
 router.register(r"events", EventViewSet, basename="event")
 
+def cms_login_sso_redirect(request):
+    """
+    If someone hits Wagtail login, send them to React instead.
+    React will login via Cognito, then user can open CMS from Admin (or via /cms bridge if you add it).
+    """
+    frontend = settings.FRONTEND_URL.rstrip("/") + "/"
+    target = urljoin(frontend, "cms")
+
+    # optional: send user back to admin after sign-in
+    q = urlencode({"next": "/admin"})
+    return redirect(f"{target}?{q}")
+
+
 urlpatterns = [
     path("", index, name="index"),
     path("admin/", admin.site.urls),
 
     path("api/", RedirectView.as_view(pattern_name="swagger-ui", permanent=False)),
+    path("cms/login/", cms_login_sso_redirect),
 
     path("cms/", include(wagtailadmin_urls)),
     path("cms/documents/", include(wagtaildocs_urls)),

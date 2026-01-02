@@ -28,7 +28,6 @@ import os, time, json, base64, secrets, requests
 from datetime import datetime, timezone, timedelta
 from django.utils import timezone as django_timezone
 from urllib.parse import urlencode
-from django.conf import settings
 from django.shortcuts import get_object_or_404, redirect
 from django.utils.crypto import get_random_string
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -2349,3 +2348,15 @@ class WagtailSessionFromCognitoView(APIView):
         request.session.cycle_key()
 
         return Response({"detail": "cms_session_created"}, status=status.HTTP_200_OK)
+
+class WagtailLogoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # Clears Django session used by Wagtail admin
+        django_logout(request)
+
+        resp = Response({"detail": "cms_logged_out"}, status=status.HTTP_200_OK)
+        # Ensure cookie is removed (extra safety)
+        resp.delete_cookie(settings.SESSION_COOKIE_NAME, path="/")
+        return resp
