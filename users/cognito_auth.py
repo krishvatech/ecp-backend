@@ -6,6 +6,10 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from rest_framework.authentication import BaseAuthentication, get_authorization_header
 from rest_framework.exceptions import AuthenticationFailed
+from django.db import transaction
+from django.utils.crypto import get_random_string
+
+from .models import CognitoIdentity
 
 import jwt
 from jwt.algorithms import RSAAlgorithm
@@ -14,6 +18,16 @@ User = get_user_model()
 
 _JWKS_CACHE = {"keys": None, "fetched_at": 0}
 _JWKS_TTL = 60 * 60  # 1 hour
+
+def _unique_username(base: str):
+    base = (base or "user").strip().lower()
+    if not base:
+        base = "user"
+
+    username = base
+    while User.objects.filter(username__iexact=username).exists():
+        username = f"{base}{get_random_string(4).lower()}"
+    return username
 
 
 def _issuer():
@@ -55,6 +69,14 @@ def _get_public_key(kid: str):
         raise AuthenticationFailed("Invalid token (kid not found)")
     return RSAAlgorithm.from_jwk(json.dumps(jwk))
 
+def _truthy(v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return v != 0
+        if isinstance(v, str):
+            return v.strip().lower() in {"true", "1", "yes"}
+        return False
 
 class CognitoJWTAuthentication(BaseAuthentication):
     """
@@ -62,6 +84,7 @@ class CognitoJWTAuthentication(BaseAuthentication):
     Supports both id token and access token.
     Auto-creates a local Django user on first login.
     """
+
 
     def authenticate(self, request):
         auth = get_authorization_header(request).decode("utf-8")
@@ -111,12 +134,15 @@ class CognitoJWTAuthentication(BaseAuthentication):
             else:
                 raise AuthenticationFailed("Invalid token_use")
 
-           # Access token usually has "username"
+            # Access token usually has "username"
             # ID token usually has "cognito:username"
-            username = claims.get("cognito:username") or claims.get("username") or ""
+            provider_username = claims.get("cognito:username") or claims.get("username") or ""
+            sub = (claims.get("sub") or "").strip()
+
             email = (claims.get("email") or "").lower().strip()
             first_name = claims.get("given_name") or ""
             last_name = claims.get("family_name") or ""
+
             # --- Global roles from Cognito groups ---
             raw_groups = claims.get("cognito:groups") or []
             if isinstance(raw_groups, str):
@@ -128,16 +154,53 @@ class CognitoJWTAuthentication(BaseAuthentication):
             is_staff_role = is_platform_admin or ("staff" in groups)
             # ----------------------------------------
 
-            if not username:
-                # fallback (still must be stable)
-                username = email.split("@")[0] if email else ""
-            if not username:
-                raise AuthenticationFailed("Token missing username/email")
+            if not sub:
+                raise AuthenticationFailed("Token missing sub")
 
-            user, created = User.objects.get_or_create(
-                username=username,
-                defaults={"email": email, "first_name": first_name, "last_name": last_name},
-            )
+            # ✅ 1) Always try to resolve user via Cognito sub (stable)
+            identity = CognitoIdentity.objects.select_related("user").filter(cognito_sub=sub).first()
+            if identity:
+                user = identity.user
+            else:
+                user = None
+                email_verified = _truthy(claims.get("email_verified"))
+
+                # ✅ 2) If verified email exists, reuse existing DB user (best merge path)
+                if email and email_verified:
+                    user = (
+                        User.objects.filter(email__iexact=email).order_by("id").first()
+                        or User.objects.filter(username__iexact=email).order_by("id").first()  # handles old callback users
+                    )
+
+                # ✅ 3) Backward compatibility: if we previously stored provider_username as DB username
+                if not user and provider_username:
+                    user = User.objects.filter(username__iexact=provider_username).order_by("id").first()
+
+                # ✅ 4) If still not found, create a new DB user
+                if not user:
+                    base = email.split("@")[0] if email else (provider_username or "user")
+                    user = User.objects.create(
+                        username=_unique_username(base),
+                        email=email or "",
+                        first_name=first_name,
+                        last_name=last_name,
+                    )
+
+                # ✅ 5) Create mapping: sub -> user (prevents future duplicates)
+                try:
+                    with transaction.atomic():
+                        CognitoIdentity.objects.create(
+                            user=user,
+                            cognito_sub=sub,
+                            email=email or "",
+                            email_verified=email_verified,
+                            provider="cognito",
+                        )
+                except Exception:
+                    # If a concurrent request created it first, fetch it
+                    identity = CognitoIdentity.objects.select_related("user").filter(cognito_sub=sub).first()
+                    if identity:
+                        user = identity.user
 
             # keep basic fields in sync
             updated = False
@@ -154,6 +217,7 @@ class CognitoJWTAuthentication(BaseAuthentication):
                 user.save(update_fields=["email", "first_name", "last_name"])
 
             return (user, token)
+
 
         except AuthenticationFailed:
             raise

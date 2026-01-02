@@ -769,3 +769,23 @@ class ProfileMembership(models.Model):
 
     def __str__(self):
         return f"{self.organization_name} ({self.role_type})"
+
+class CognitoIdentity(models.Model):
+    """
+    Maps Cognito 'sub' -> a single Django User.
+    This prevents duplicates when Cognito username changes by provider (Google_xxx / LinkedIn_xxx).
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="cognito_identities")
+
+    cognito_sub = models.CharField(max_length=128, unique=True, db_index=True)
+
+    email = models.EmailField(blank=True, default="")
+    email_verified = models.BooleanField(default=False)
+
+    provider = models.CharField(max_length=32, blank=True, default="cognito")  # optional
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.provider}:{self.cognito_sub} -> user_id={self.user_id}"
