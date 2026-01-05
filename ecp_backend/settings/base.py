@@ -415,9 +415,9 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULE = {}
 
 CELERY_BEAT_SCHEDULE.update({
-    "send_suggestion_digest_daily_9am": {
-        "task": "friends.tasks.send_suggestion_digest_daily",
-        "schedule": crontab(hour=9, minute=0),  # 9:00 AM (Asia/Kolkata because TIME_ZONE is Asia/Kolkata)
+    "dispatch_suggestion_digest_local_9am": {
+        "task": "friends.tasks.dispatch_suggestion_digest_local_9am",
+        "schedule": crontab(minute="*/1"),
     }
 })
 
