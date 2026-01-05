@@ -1,11 +1,12 @@
 from django.utils import timezone
+import pytz
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
 from django.contrib.auth import get_user_model
-from .models import UserProfile
+from users.models import UserProfile
 
 User = get_user_model()
 
@@ -53,6 +54,12 @@ class CognitoBootstrapView(APIView):
 
         # Ensure profile exists + initialize activity time
         profile, _ = UserProfile.objects.get_or_create(user=user)
+
+        tz = (data.get("timezone") or "").strip()
+        if tz and tz in pytz.all_timezones and profile.timezone != tz:
+            profile.timezone = tz
+            profile.save(update_fields=["timezone"])
+
         if not profile.last_activity_at:
             profile.last_activity_at = timezone.now()
             profile.save(update_fields=["last_activity_at"])
