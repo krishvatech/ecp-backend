@@ -8,7 +8,10 @@ the corresponding Django user instance.  Anonymous users will see
 `scope['user']` set to an `AnonymousUser` if authentication fails.
 """
 
+import json
+import time
 import urllib.parse
+from urllib.request import urlopen
 from typing import Callable
 
 from channels.auth import AuthMiddlewareStack
@@ -16,18 +19,126 @@ from channels.middleware import BaseMiddleware
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from rest_framework_simplejwt.tokens import UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from django.db import close_old_connections
 
+import jwt
+from jwt.algorithms import RSAAlgorithm
+
 
 User = get_user_model()
+
+_JWKS_CACHE = {"keys": None, "fetched_at": 0}
+_JWKS_TTL = 60 * 60  # 1 hour
+
+
+def _issuer():
+    region = getattr(settings, "COGNITO_REGION", None) or ""
+    pool_id = getattr(settings, "COGNITO_USER_POOL_ID", None) or ""
+    if not region or not pool_id:
+        return ""
+    return f"https://cognito-idp.{region}.amazonaws.com/{pool_id}"
+
+
+def _jwks_url():
+    iss = _issuer()
+    if not iss:
+        return ""
+    return f"{iss}/.well-known/jwks.json"
+
+
+def _get_jwks():
+    now = int(time.time())
+    if _JWKS_CACHE["keys"] and (now - _JWKS_CACHE["fetched_at"] < _JWKS_TTL):
+        return _JWKS_CACHE["keys"]
+
+    url = _jwks_url()
+    if not url:
+        raise ValueError("Cognito not configured (missing region/pool id)")
+
+    with urlopen(url) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    _JWKS_CACHE["keys"] = data["keys"]
+    _JWKS_CACHE["fetched_at"] = now
+    return data["keys"]
+
+
+def _get_public_key(kid: str):
+    keys = _get_jwks()
+    jwk = next((k for k in keys if k.get("kid") == kid), None)
+    if not jwk:
+        raise ValueError("Invalid token (kid not found)")
+    return RSAAlgorithm.from_jwk(json.dumps(jwk))
+
+
+def _get_cognito_user(token):
+    issuer = _issuer()
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+        iss = unverified.get("iss", "")
+    except Exception:
+        return "not_cognito", None
+
+    if not issuer or iss != issuer:
+        return "not_cognito", None
+
+    try:
+        header = jwt.get_unverified_header(token)
+        kid = header.get("kid")
+        if not kid:
+            return "cognito_failed", None
+
+        public_key = _get_public_key(kid)
+
+        claims = jwt.decode(
+            token,
+            public_key,
+            algorithms=["RS256"],
+            options={"verify_aud": False},
+            issuer=issuer,
+        )
+
+        token_use = claims.get("token_use")  # "id" or "access"
+        client_id = getattr(settings, "COGNITO_APP_CLIENT_ID", "") or ""
+
+        if token_use == "id":
+            if client_id and claims.get("aud") != client_id:
+                return "cognito_failed", None
+        elif token_use == "access":
+            if client_id and claims.get("client_id") != client_id:
+                return "cognito_failed", None
+        else:
+            return "cognito_failed", None
+
+        sub = (claims.get("sub") or "").strip()
+        if not sub:
+            return "cognito_failed", None
+
+        from users.models import CognitoIdentity
+
+        identity = (
+            CognitoIdentity.objects.select_related("user")
+            .filter(cognito_sub=sub)
+            .first()
+        )
+        if identity:
+            return "cognito_valid", identity.user
+        return "cognito_valid", None
+    except Exception:
+        return "cognito_failed", None
 
 
 @database_sync_to_async
 def get_user_from_token(token):
     """Validate token and return user (sync function wrapped for async use)."""
     try:
+        status, cognito_user = _get_cognito_user(token)
+        if status == "cognito_valid":
+            return cognito_user
+
         # Validate token
         UntypedToken(token)
         
