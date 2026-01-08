@@ -5,11 +5,14 @@ Provides a serializer for creating and updating events. The
 `community_id` is required in the request body for creation.
 """
 from django.utils import timezone
+from datetime import timezone as dt_timezone
 import os
 from rest_framework import serializers
 from urllib.parse import urlparse
 from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.conf import settings
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.utils.dateparse import parse_datetime
 from content.tasks import publish_resource_task
@@ -57,6 +60,7 @@ class EventSerializer(serializers.ModelSerializer):
             "description",
             "start_time",
             "end_time",
+            "timezone",
             "status",
             "is_live",
             "category",
@@ -369,6 +373,20 @@ class EventSerializer(serializers.ModelSerializer):
         if value and value.isdigit():
             raise serializers.ValidationError("Description cannot be only numbers.")
         return value
+    
+    def validate_timezone(self, value):
+        tz_value = value or settings.TIME_ZONE
+        if isinstance(tz_value, str):
+            tz_value = tz_value.strip()
+        if not tz_value:
+            tz_value = settings.TIME_ZONE
+        try:
+            ZoneInfo(tz_value)
+        except ZoneInfoNotFoundError:
+            raise serializers.ValidationError(
+                "Invalid timezone. Use IANA timezone like Asia/Kolkata"
+            )
+        return tz_value
 
     # ---------- Object-level validation ----------
 
@@ -398,17 +416,36 @@ class EventSerializer(serializers.ModelSerializer):
         data["resource_links"]  = self._filter_urls(data.get("resource_links", []))
         data["resource_videos"] = self._filter_urls(data.get("resource_videos", []))
 
+        tz_value = data.get("timezone") or settings.TIME_ZONE
+        if isinstance(tz_value, str):
+            tz_value = tz_value.strip()
+        if not tz_value:
+            tz_value = settings.TIME_ZONE
+        try:
+            event_tz = ZoneInfo(tz_value)
+        except ZoneInfoNotFoundError:
+            raise serializers.ValidationError(
+                {"timezone": "Invalid timezone. Use IANA timezone like Asia/Kolkata"}
+            )
+        data["timezone"] = tz_value
+
         # ---- your existing time rules below (unchanged) ----
         start_time = data.get("start_time")
         end_time = data.get("end_time")
 
-        def _aware(dt):
+        def _to_utc(dt):
             if dt is None:
                 return None
-            return timezone.make_aware(dt, timezone.get_current_timezone()) if timezone.is_naive(dt) else dt
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(dt, event_tz)
+            return dt.astimezone(dt_timezone.utc)
 
-        start_time = _aware(start_time)
-        end_time = _aware(end_time)
+        start_time = _to_utc(start_time)
+        end_time = _to_utc(end_time)
+        if start_time is not None:
+            data["start_time"] = start_time
+        if end_time is not None:
+            data["end_time"] = end_time
 
         now = timezone.now()
 
@@ -427,7 +464,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Event
         fields = (
-            "id", "slug", "title", "start_time", "end_time","status","live_ended_at",
+            "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
             "preview_image", "location", "category", "is_live", "recording_url",
         )
 

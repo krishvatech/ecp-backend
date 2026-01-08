@@ -25,6 +25,7 @@ from rest_framework.validators import UniqueValidator
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .models import Education, Experience
 from .esco_client import fetch_skill_details
 from .validators import (
@@ -370,6 +371,7 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
     email = serializers.EmailField(write_only=True)
     password = serializers.CharField(write_only=True, trim_whitespace=False)
+    timezone = serializers.CharField(required=False, allow_blank=True)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -391,6 +393,24 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         if not user.check_password(password):
             raise AuthenticationFailed("No active account found with the given credentials")
+
+        request = self.context.get("request")
+        tz_value = attrs.get("timezone") or ""
+        if request is not None:
+            tz_value = tz_value or request.data.get("timezone") or ""
+            tz_value = tz_value or request.headers.get("X-Timezone") or ""
+            tz_value = tz_value or request.headers.get("X-User-Timezone") or ""
+        tz_value = (tz_value or "").strip()
+        if tz_value:
+            try:
+                ZoneInfo(tz_value)
+            except ZoneInfoNotFoundError:
+                tz_value = ""
+        if tz_value:
+            profile, _ = UserProfile.objects.get_or_create(user=user)
+            if profile.timezone != tz_value:
+                profile.timezone = tz_value
+                profile.save(update_fields=["timezone"])
 
         refresh = self.get_token(user)
         return {"refresh": str(refresh), "access": str(refresh.access_token)}

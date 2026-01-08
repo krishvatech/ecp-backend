@@ -607,6 +607,19 @@ class SessionLoginView(APIView):
         if not user.is_active or not user.check_password(password):
             return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
 
+        tz_value = (data.get("timezone") or "").strip()
+        if tz_value:
+            try:
+                from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+                ZoneInfo(tz_value)
+            except ZoneInfoNotFoundError:
+                tz_value = ""
+        if tz_value:
+            profile = getattr(user, "profile", None)
+            if profile is not None and profile.timezone != tz_value:
+                profile.timezone = tz_value
+                profile.save(update_fields=["timezone"])
+
         django_login(request, user)          # <- creates session
         request.session.cycle_key()          # optional: rotate session id
 

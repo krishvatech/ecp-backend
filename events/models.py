@@ -43,6 +43,7 @@ class Event(models.Model):
     description = models.TextField(blank=True)
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
+    timezone = models.CharField(max_length=64, default=settings.TIME_ZONE, blank=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="draft")
     is_live = models.BooleanField(default=False)
     # New fields
