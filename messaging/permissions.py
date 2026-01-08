@@ -63,14 +63,7 @@ class IsConversationParticipant(BasePermission):
             return True
 
         # Group/Event rooms → any authenticated user may access
-        if _is_group_conv(conv) or _is_event_conv(conv):
-            return True
-
-        # DM
-        if _is_dm_conv(conv):
-            return user.id in (conv.user1_id, conv.user2_id)
-
-        return False
+        return conv.user_can_view(user)
 
     def has_object_permission(self, request, view, obj):
         user = request.user
@@ -94,8 +87,4 @@ class IsConversationParticipant(BasePermission):
                 return user.id in (uid1, uid2)
             return False
 
-        if _is_group_conv(conv) or _is_event_conv(conv):
-            return True
-        if _is_dm_conv(conv):
-            return user.id in (conv.user1_id, conv.user2_id)
-        return False
+        return conv.user_can_view(user)

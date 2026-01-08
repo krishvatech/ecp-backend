@@ -57,15 +57,24 @@ class ConversationViewSet(viewsets.ViewSet):
             status__in=member_statuses,
         ).values_list("group_id", flat=True)
 
+        # Events where this user is registered or created the event
+        registered_event_ids = EventRegistration.objects.filter(
+            user_id=user.id
+        ).values_list("event_id", flat=True)
+        created_event_ids = Event.objects.filter(
+            created_by_id=user.id
+        ).values_list("id", flat=True)
+        allowed_event_ids = list(set(registered_event_ids) | set(created_event_ids))
+
         # Include:
         # - DMs I'm in
         # - Group rooms ONLY where I'm a member
-        # - Event rooms (kept open as before)
+        # - Event rooms ONLY where I'm registered or the creator
         qs = Conversation.objects.filter(
             Q(user1=user)
             | Q(user2=user)
             | Q(group_id__in=member_group_ids)
-            | Q(event__isnull=False)
+            | Q(event_id__in=allowed_event_ids)
         )
 
         qs = qs.select_related(
@@ -123,9 +132,7 @@ class ConversationViewSet(viewsets.ViewSet):
         return Response(serializer.data)
 
     def retrieve(self, request, *args, **kwargs):
-        obj = (Conversation.objects
-            .select_related("group", "event", "user1__profile", "user2__profile")
-            .get(pk=kwargs["pk"]))
+        obj = get_object_or_404(self.get_queryset(request), pk=kwargs["pk"])
         serializer = ConversationSerializer(obj, context={"request": request})
         return Response(serializer.data)
 
@@ -150,6 +157,12 @@ class ConversationViewSet(viewsets.ViewSet):
             except (TypeError, ValueError):
                 raise ValidationError({"event": "Invalid event id."})
             event = get_object_or_404(Event, pk=event_id)
+            can_access_event = (
+                event.created_by_id == user.id
+                or EventRegistration.objects.filter(user_id=user.id, event_id=event.id).exists()
+            )
+            if not can_access_event:
+                raise PermissionDenied("You are not registered for this event.")
 
             # One row per event chat
             conv, created = Conversation.objects.get_or_create(
@@ -177,11 +190,19 @@ class ConversationViewSet(viewsets.ViewSet):
         # --- Group chat ---
         if group_id is not None:
             from groups.models import Group
+            from groups.models import GroupMembership
             try:
                 group_id = int(group_id)
             except (TypeError, ValueError):
                 raise ValidationError({"group": "Invalid group id."})
             group = get_object_or_404(Group, pk=group_id)
+            is_group_member = GroupMembership.objects.filter(
+                group_id=group.id,
+                user_id=user.id,
+                status__in=[GroupMembership.STATUS_ACTIVE, GroupMembership.STATUS_PENDING],
+            ).exists()
+            if not is_group_member:
+                raise PermissionDenied("You are not a member of this group.")
 
             conv, created = Conversation.objects.get_or_create(
                 group=group,

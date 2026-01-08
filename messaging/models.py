@@ -64,7 +64,16 @@ class Conversation(models.Model):
 
         # Event rooms → keep open for now (you can later restrict via event registrations)
         if self.event_id:
-            return True
+            from events.models import Event, EventRegistration
+
+            if getattr(self, "event", None) and self.event.created_by_id == user.id:
+                return True
+            if Event.objects.filter(pk=self.event_id, created_by_id=user.id).exists():
+                return True
+            return EventRegistration.objects.filter(
+                event_id=self.event_id,
+                user_id=user.id,
+            ).exists()
 
         # DM → only the two participants
         return user.id in (self.user1_id, self.user2_id)
