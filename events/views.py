@@ -250,6 +250,32 @@ class IsCreatorOrReadOnly(BasePermission):
 # ============================================================
 # ======================== Event ViewSet =====================
 # ============================================================
+
+def _apply_bucket_filter(qs, bucket):
+    """
+    Applies simplified bucket filtering to a QuerySet.
+    Choices: upcoming, live, past.
+    """
+    now = timezone.now()
+    
+    if bucket == "live":
+        # Live = status is 'live' (explicit) OR (status!='ended' AND now within start..end)
+        return qs.filter(Q(status="live") | (Q(start_time__lte=now, end_time__gte=now) & ~Q(status="ended")))
+    
+    elif bucket == "upcoming":
+        # Upcoming = status!='ended' AND start_time > now
+        return qs.exclude(status="ended").filter(start_time__gt=now)
+        
+    elif bucket == "past":
+        # Past = status='ended' OR end_time < now OR (end_time is null AND start_time < now)
+        return qs.filter(
+            Q(status="ended") |
+            Q(end_time__lt=now) |
+            Q(end_time__isnull=True, start_time__lt=now)
+        )
+    
+    return qs
+
 class EventViewSet(viewsets.ModelViewSet):
     """
     Full CRUD over events with:
@@ -284,6 +310,7 @@ class EventViewSet(viewsets.ModelViewSet):
           - location (?location=ExactCity)
           - start_date/end_date (?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD)
           - price bounds (?min_price=..&max_price=..)
+          - bucket (?bucket=upcoming|live|past)
         """
         user = self.request.user
         qs = Event.objects.select_related("community")
@@ -295,11 +322,18 @@ class EventViewSet(viewsets.ModelViewSet):
             qs = qs.filter(
                 Q(status__in=["published", "live"]) |
                 Q(community__members=user) |
-                Q(created_by_id=user.id)
+                Q(created_by_id=user.id) |
+                Q(community__owner_id=user.id)  # owner can see all events in their community
             ).distinct()
 
         # ---- Filters (applied only when provided) ----
         params = self.request.query_params
+
+        # Bucket filter (upcoming / live / past) - applies to both list & mine
+        bucket = (params.get("bucket") or "").strip().lower()
+        if bucket:
+            qs = _apply_bucket_filter(qs, bucket)
+
         created_by_param = params.get("created_by")
         if created_by_param:
             if created_by_param == "me":
@@ -775,9 +809,16 @@ class EventViewSet(viewsets.ModelViewSet):
             .annotate(registrations_count=Count('registrations', distinct=True))
             .order_by("-start_time")
         )
+
+        # Apply bucket filter here too if needed
+        bucket = (request.query_params.get("bucket") or "").strip().lower()
+        if bucket:
+            qs = _apply_bucket_filter(qs, bucket)
+
         page = self.paginate_queryset(qs)
         ser = EventLiteSerializer(page or qs, many=True)
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+
     
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="dyte/join")
