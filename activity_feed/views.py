@@ -890,7 +890,10 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         if poll.group_id:
             allowed = (poll.created_by_id == uid) or self._can_create_poll_for_group(request, poll.group)
         else:
-            allowed = (poll.created_by_id == uid) or getattr(request.user, "is_staff", False)
+            # allow staff OR creator OR community owner
+            is_comm_owner = (poll.community and poll.community.owner_id == uid)
+            allowed = (poll.created_by_id == uid) or getattr(request.user, "is_staff", False) or is_comm_owner
+
         if not allowed:
             return Response({"detail": "Forbidden"}, status=403)
 
@@ -924,7 +927,10 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         if poll.group_id:
             allowed = (poll.created_by_id == uid) or self._can_create_poll_for_group(request, poll.group)
         else:
-            allowed = (poll.created_by_id == uid) or getattr(request.user, "is_staff", False)
+            # allow staff OR creator OR community owner
+            is_comm_owner = (poll.community and poll.community.owner_id == uid)
+            allowed = (poll.created_by_id == uid) or getattr(request.user, "is_staff", False) or is_comm_owner
+
         if not allowed:
             return Response({"detail": "Forbidden"}, status=403)
 
@@ -959,7 +965,9 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     group=g, user_id=uid, role__in=["admin", "moderator"],
                     status=getattr(GroupMembership, "STATUS_ACTIVE", "active")
                 ).exists()
-            # community polls → allow author or staff only (adjust if you have community roles)
+            # community polls → allow author, staff, or community owner
+            if poll.community and poll.community.owner_id == uid:
+                return True
             return False
     
     def _rebuild_poll_meta(self, poll: Poll, request):
@@ -1019,6 +1027,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         cur_by_text = {o.text.lower(): o for o in cur_opts}
 
         with transaction.atomic():
+            # RESET VOTES on any edit, as requested
+            PollVote.objects.filter(poll=poll).delete()
             # lock and bump indices so we don't violate (poll_id, index) uniqueness while reordering
             cur_opts_locked = list(
                 poll.options.select_for_update().order_by("index")
