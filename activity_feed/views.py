@@ -514,7 +514,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             return False
         if group.created_by_id == uid or getattr(group, "owner_id", None) == uid or getattr(request.user, "is_staff", False):
             return True
-        return GroupMembership.objects.filter(group=group, user_id=uid, role__in=["admin","moderator"]).exists()
+        return GroupMembership.objects.filter(group=group, user_id=uid, role__in=["admin","moderator"], status=getattr(GroupMembership, "STATUS_ACTIVE", "active")).exists()
 
     def _active_member(self, user_id: int, group: Group) -> bool:
         return GroupMembership.objects.filter(group=group, user_id=user_id, status=getattr(GroupMembership, "STATUS_ACTIVE", "active")).exists()
@@ -1022,51 +1022,16 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         if len(clean) < 2:
             return Response({"detail": "Poll must have at least 2 unique options."}, status=400)
 
-        # map current options by lowercased text (will re-use the same rows to preserve votes)
-        cur_opts = list(poll.options.order_by("index"))
-        cur_by_text = {o.text.lower(): o for o in cur_opts}
-
         with transaction.atomic():
             # RESET VOTES on any edit, as requested
             PollVote.objects.filter(poll=poll).delete()
-            # lock and bump indices so we don't violate (poll_id, index) uniqueness while reordering
-            cur_opts_locked = list(
-                poll.options.select_for_update().order_by("index")
-            )
-            bump = 1000
-            for o in cur_opts_locked:
-                o.index = o.index + bump
-                o.save(update_fields=["index"])
-
-            # recompute mapping after bump (same objects, but safe)
-            cur_by_text = {o.text.lower(): o for o in cur_opts_locked}
-            keep_ids = set()
-
-            # write final state 0..n-1
+            
+            # Replace all options (simpler & cleaner since we reset votes anyway)
+            poll.options.all().delete()
+            
             from .models import PollOption
             for idx, text in enumerate(clean):
-                key = text.lower()
-                if key in cur_by_text:
-                    o = cur_by_text[key]
-                    changed = False
-                    if o.text != text:
-                        o.text = text
-                        changed = True
-                    if o.index != idx:
-                        o.index = idx
-                        changed = True
-                    if changed:
-                        o.save(update_fields=["text", "index"])
-                    keep_ids.add(o.id)
-                else:
-                    # brand new option at its final index
-                    o = PollOption.objects.create(poll=poll, text=text, index=idx)
-                    keep_ids.add(o.id)
-
-            # delete removed options (still sitting at bumped indices)
-            for o in cur_opts_locked:
-                if o.id not in keep_ids:
-                    o.delete()
+                PollOption.objects.create(poll=poll, text=text, index=idx)
          # save question if changed
         poll.save(update_fields=["question"])
 
@@ -1121,8 +1086,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             return Response({"detail": "Forbidden"}, status=403)
 
         with transaction.atomic():
-            updated = self._update_poll_from_payload(request, poll, data)
-        return Response({"ok": True, "poll": updated})
+            # Use same return as standard update
+            return self._update_poll_from_payload(request, poll, data)
     
     @action(detail=True, methods=["patch"], url_path="poll", parser_classes=[JSONParser])
     def update_poll_for_feed_item(self, request, pk=None, *args, **kwargs):

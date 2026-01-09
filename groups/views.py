@@ -299,10 +299,8 @@ class GroupViewSet(viewsets.ModelViewSet):
                     row["question"] = meta.get("question") or ""
                     row["options"]  = meta.get("options") or []
                 elif t == "event":
-                    row["title"]     = meta.get("title") or ""
-                    row["starts_at"] = meta.get("starts_at")
-                    row["ends_at"]   = meta.get("ends_at")
-                    row["text"]      = meta.get("text") or ""
+                    # DEPRECATED: Do not show event posts (legacy)
+                    continue
                 else:
                     # unknown type: still show raw
                     row.update(meta)
@@ -361,15 +359,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             )
 
         elif t == "event":
-            title = (request.data.get("title") or "").strip()
-            if not title:
-                return Response({"detail": "title is required"}, status=400)
-            meta.update({
-                "title": title,
-                "starts_at": request.data.get("starts_at") or None,
-                "ends_at":   request.data.get("ends_at") or None,
-                "text": (request.data.get("text") or "").strip(),
-            })
+            return Response({"detail": "Events are no longer supported via posts."}, status=400)
 
         else:
             return Response({"detail": f"Unsupported type '{t}'"}, status=400)
