@@ -42,8 +42,8 @@ class MiniUserSerializer(serializers.Serializer):
 # ---------- Comments ----------
 class CommentSerializer(serializers.ModelSerializer):
     user = serializers.SerializerMethodField(read_only=True)
-    likes_count = serializers.SerializerMethodField(read_only=True)
-    has_liked = serializers.SerializerMethodField(read_only=True)
+    like_count = serializers.SerializerMethodField(read_only=True)
+    user_has_liked = serializers.SerializerMethodField(read_only=True)
 
     # write-only generic target
     target_type = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
@@ -57,8 +57,8 @@ class CommentSerializer(serializers.ModelSerializer):
             "user",
             "text",
             "parent",
-            "likes_count",
-            "has_liked",
+            "like_count",
+            "user_has_liked",
             "created_at",
             "updated_at",
             # write-only:
@@ -66,7 +66,7 @@ class CommentSerializer(serializers.ModelSerializer):
             "target_id",
             "feed_item",
         ]
-        read_only_fields = ["user", "likes_count", "has_liked", "created_at", "updated_at"]
+        read_only_fields = ["user", "like_count", "user_has_liked", "created_at", "updated_at"]
 
     def _mini_user_payload(self, user):
         """
@@ -85,11 +85,11 @@ class CommentSerializer(serializers.ModelSerializer):
     def get_user(self, obj):
         return self._mini_user_payload(obj.user)
 
-    def get_likes_count(self, obj):
+    def get_like_count(self, obj):
         ct = ContentType.objects.get_for_model(Comment)
         return Reaction.objects.filter(content_type=ct, object_id=obj.id).count()
 
-    def get_has_liked(self, obj):
+    def get_user_has_liked(self, obj):
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
             return False

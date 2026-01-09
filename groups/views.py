@@ -439,9 +439,10 @@ class GroupViewSet(viewsets.ModelViewSet):
     # Ordering: Not applicable.
     def _is_admin(self, user_id, group) -> bool:
         ADMIN = getattr(GroupMembership, "ROLE_ADMIN", "admin")
-        # STAFF-ONLY ADMIN/MOD: must be staff
+        ACTIVE = getattr(GroupMembership, "STATUS_ACTIVE", "active")
+        # STAFF-ONLY ADMIN/MOD: must be staff AND active
         return GroupMembership.objects.filter(
-            group=group, user_id=user_id, role=ADMIN, user__is_staff=True
+            group=group, user_id=user_id, role=ADMIN, status=ACTIVE, user__is_staff=True
         ).exists()
 
     # Use: True if user is ADMIN in this group (without staff requirement).
@@ -455,9 +456,10 @@ class GroupViewSet(viewsets.ModelViewSet):
     # Ordering: Not applicable.
     def _is_moderator(self, user_id, group) -> bool:
         MOD = getattr(GroupMembership, "ROLE_MODERATOR", "moderator")
-        # STAFF-ONLY ADMIN/MOD: must be staff
+        ACTIVE = getattr(GroupMembership, "STATUS_ACTIVE", "active")
+        # STAFF-ONLY ADMIN/MOD: must be staff AND active
         return GroupMembership.objects.filter(
-            group=group, user_id=user_id, role=MOD, user__is_staff=True
+            group=group, user_id=user_id, role=MOD, status=ACTIVE, user__is_staff=True
         ).exists()
 
     # Use: Can current request user manage this group (owner/creator/staff).
