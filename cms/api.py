@@ -49,6 +49,24 @@ class CmsPageBySlugView(APIView):
             data["hero_title"] = specific.hero_title or ""
             data["hero_subtitle"] = specific.hero_subtitle or ""
             data["hero_image_url"] = image_url(getattr(specific, "hero_background_image", None))
+            if hasattr(specific, "cta_primary_label"):
+                data["cta_buttons"] = [
+                    {
+                        "key": "primary",
+                        "label": specific.cta_primary_label or "",
+                        "url": specific.cta_primary_url or "",
+                    },
+                    {
+                        "key": "secondary",
+                        "label": specific.cta_secondary_label or "",
+                        "url": specific.cta_secondary_url or "",
+                    },
+                    {
+                        "key": "tertiary",
+                        "label": specific.cta_tertiary_label or "",
+                        "url": specific.cta_tertiary_url or "",
+                    },
+                ]
 
         if hasattr(specific, "intro_html"):
             data["intro_html"] = str(RichText(specific.intro_html or ""))

@@ -113,6 +113,36 @@ class EventsLandingPage(Page):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+    cta_primary_label = models.CharField(
+        max_length=80,
+        blank=True,
+        default="Explore events",
+    )
+    cta_primary_url = models.CharField(
+        max_length=200,
+        blank=True,
+        default="/events",
+    )
+    cta_secondary_label = models.CharField(
+        max_length=80,
+        blank=True,
+        default="Join Community",
+    )
+    cta_secondary_url = models.CharField(
+        max_length=200,
+        blank=True,
+        default="/signup",
+    )
+    cta_tertiary_label = models.CharField(
+        max_length=80,
+        blank=True,
+        default="Post an event",
+    )
+    cta_tertiary_url = models.CharField(
+        max_length=200,
+        blank=True,
+        default="/signup",
+    )
 
     content_panels = Page.content_panels + [
         MultiFieldPanel(
@@ -122,6 +152,17 @@ class EventsLandingPage(Page):
                 FieldPanel("hero_background_image"),
             ],
             heading="Hero Section",
+        ),
+        MultiFieldPanel(
+            [
+                FieldPanel("cta_primary_label"),
+                FieldPanel("cta_primary_url"),
+                FieldPanel("cta_secondary_label"),
+                FieldPanel("cta_secondary_url"),
+                FieldPanel("cta_tertiary_label"),
+                FieldPanel("cta_tertiary_url"),
+            ],
+            heading="CTA Buttons",
         ),
     ]
 
