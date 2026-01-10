@@ -93,3 +93,37 @@ class AboutPage(Page):
 
     parent_page_types = ["cms.HomePage"]
     subpage_types = []
+
+
+class EventsLandingPage(Page):
+    # Hero
+    hero_title = models.CharField(
+        max_length=160,
+        blank=True,
+        default="Explore M&A Events",
+    )
+    hero_subtitle = models.TextField(
+        blank=True,
+        default="The leading platform for M&A professionals to connect, learn, and grow",
+    )
+    hero_background_image = models.ForeignKey(
+        "wagtailimages.Image",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
+    content_panels = Page.content_panels + [
+        MultiFieldPanel(
+            [
+                FieldPanel("hero_title"),
+                FieldPanel("hero_subtitle"),
+                FieldPanel("hero_background_image"),
+            ],
+            heading="Hero Section",
+        ),
+    ]
+
+    parent_page_types = ["cms.HomePage"]
+    subpage_types = []
