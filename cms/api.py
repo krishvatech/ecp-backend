@@ -143,4 +143,13 @@ class CmsPageBySlugView(APIView):
         if hasattr(specific, "mission_html"):
             data["mission_html"] = str(RichText(specific.mission_html or ""))
 
+        if hasattr(specific, "left_column"):
+            data["left_column"] = [
+                block.value for block in specific.left_column if block.block_type == "section"
+            ]
+        if hasattr(specific, "right_column"):
+            data["right_column"] = [
+                block.value for block in specific.right_column if block.block_type == "section"
+            ]
+
         return Response(data, status=status.HTTP_200_OK)

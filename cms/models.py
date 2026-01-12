@@ -305,3 +305,45 @@ class EventsLandingPage(Page):
 
     parent_page_types = ["cms.HomePage"]
     subpage_types = []
+
+
+PROFILE_SECTION_CHOICES = [
+    ("about", "About"),
+    ("skills", "Skills"),
+    ("experience", "Experience"),
+    ("education", "Education"),
+    ("certifications", "Certifications & Licenses"),
+    ("memberships", "Memberships"),
+    ("contact", "Contact"),
+    ("location", "Location"),
+    ("trainings", "Trainings & Executive Education"),
+    ("languages", "Languages"),
+]
+
+
+class ProfileLayoutPage(Page):
+    left_column = StreamField(
+        [("section", blocks.ChoiceBlock(choices=PROFILE_SECTION_CHOICES))],
+        blank=True,
+        use_json_field=True,
+    )
+    right_column = StreamField(
+        [("section", blocks.ChoiceBlock(choices=PROFILE_SECTION_CHOICES))],
+        blank=True,
+        use_json_field=True,
+    )
+
+    content_panels = Page.content_panels + [
+        MultiFieldPanel(
+            [FieldPanel("left_column")],
+            heading="Left Column Sections (drag to reorder)",
+        ),
+        MultiFieldPanel(
+            [FieldPanel("right_column")],
+            heading="Right Column Sections (drag to reorder)",
+        ),
+    ]
+
+    parent_page_types = ["cms.HomePage"]
+    subpage_types = []
+    max_count = 1
