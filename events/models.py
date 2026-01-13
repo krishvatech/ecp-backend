@@ -51,6 +51,7 @@ class Event(models.Model):
     format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default="in_person")
     location = models.CharField(max_length=255, blank=True)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    is_free = models.BooleanField(default=False)
     attending_count = models.PositiveIntegerField(default=0)
     preview_image = models.ImageField(
         upload_to=event_preview_upload_to,

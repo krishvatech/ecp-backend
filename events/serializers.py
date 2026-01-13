@@ -67,6 +67,7 @@ class EventSerializer(serializers.ModelSerializer):
             "format",
             "location",
             "price",
+            "is_free",
             "attending_count",
             "preview_image",
             "active_speaker",
@@ -465,7 +466,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         model = Event
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
-            "preview_image", "location", "category", "is_live", "recording_url",
+            "preview_image", "location", "category", "is_live", "recording_url", "price", "is_free",
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):
