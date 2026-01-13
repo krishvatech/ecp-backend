@@ -153,3 +153,29 @@ class CmsPageBySlugView(APIView):
             ]
 
         return Response(data, status=status.HTTP_200_OK)
+
+
+class ProfileLayoutView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request):
+        # Find the first ProfileLayoutPage (it's a singleton)
+        from .models import ProfileLayoutPage
+        page = ProfileLayoutPage.objects.live().public().first()
+        if not page:
+            return Response({"detail": "Profile Layout not configured"}, status=status.HTTP_404_NOT_FOUND)
+
+        specific = page
+        data = {
+            "id": page.id,
+            "title": page.title,
+            "slug": page.slug,
+            "left_column": [
+                block.value for block in specific.left_column if block.block_type == "section"
+            ],
+            "right_column": [
+                block.value for block in specific.right_column if block.block_type == "section"
+            ],
+        }
+        return Response(data, status=status.HTTP_200_OK)

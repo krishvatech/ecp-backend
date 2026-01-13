@@ -308,16 +308,23 @@ class EventsLandingPage(Page):
 
 
 PROFILE_SECTION_CHOICES = [
+    ("verification", "Verification"),
     ("about", "About"),
     ("skills", "Skills"),
     ("experience", "Experience"),
     ("education", "Education"),
     ("certifications", "Certifications & Licenses"),
     ("memberships", "Memberships"),
-    ("contact", "Contact"),
+    ("email", "E-Mail"),
+    ("phone", "Phone Numbers"),
+    ("social_profiles", "Social Profiles"),
+    ("websites", "Websites"),
+    ("scheduling_link", "Scheduling Link"),
     ("location", "Location"),
     ("trainings", "Trainings & Executive Education"),
     ("languages", "Languages"),
+    # Deprecated but kept for backward compatibility
+    ("contact", "Contact (Deprecated - use granular sections)"),
 ]
 
 
