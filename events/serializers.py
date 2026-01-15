@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.utils.dateparse import parse_datetime
 from content.tasks import publish_resource_task
+from users.serializers import UserMiniSerializer
 from .models import Event,EventRegistration
 from community.models import Community
 from content.models import Resource
@@ -487,6 +488,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source="user.id", read_only=True)
     user_name = serializers.SerializerMethodField()
     user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_avatar_url = serializers.SerializerMethodField()
 
     class Meta:
         model = EventRegistration
@@ -498,6 +500,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "user_id",
             "user_name",
             "user_email",
+            "user_avatar_url",
             "registered_at",
         )
         read_only_fields = (
@@ -506,6 +509,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "user_id",
             "user_name",
             "user_email",
+            "user_avatar_url",
         )
 
     def get_user_name(self, obj):
@@ -515,3 +519,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
         if full:
             return full
         return getattr(obj.user, "username", "") or ""
+
+    def get_user_avatar_url(self, obj):
+        ser = UserMiniSerializer(obj.user, context=self.context)
+        return ser.data.get("avatar_url", "") or ""
