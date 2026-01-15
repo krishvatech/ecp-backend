@@ -991,6 +991,9 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=500,
             )
 
+        # ✅ Mark user as joined_live
+        EventRegistration.objects.filter(event=event, user=user).update(joined_live=True)
+
         return Response(
             {
                 "authToken": auth_token,
