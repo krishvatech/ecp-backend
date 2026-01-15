@@ -1009,21 +1009,33 @@ class EventViewSet(viewsets.ModelViewSet):
 # ============================================================
 class EventRegistrationViewSet(viewsets.ModelViewSet):
     """
-    CRUD for a user's event registrations.
+    CRUD for a user's event registrations + Actions for cancellation.
     """
     permission_classes = [IsAuthenticated]
     serializer_class = EventRegistrationSerializer
 
     def get_queryset(self):
         """
-        Only return the current user's registrations, newest first.
+        Admins/Staff/Event Owners -> See all relevant.
+        Normal users -> See only their own.
         """
-        return (
-            EventRegistration.objects
-            .select_related("event")
-            .filter(user=self.request.user)
-            .order_by("-registered_at")
-        )
+        user = self.request.user
+        qs = EventRegistration.objects.select_related("event").order_by("-registered_at")
+
+        # If strict permissions desired:
+        if user.is_staff or getattr(user, "is_superuser", False):
+            return qs
+        
+        # If user is event owner, they need access to registrations for that event
+        # Logic: Show if (I am the registrant) OR (I created the event)
+        qs = qs.filter(Q(user=user) | Q(event__created_by=user)).distinct()
+
+        # Manual filter support for ?event=ID
+        event_id = self.request.query_params.get("event")
+        if event_id:
+            qs = qs.filter(event_id=event_id)
+
+        return qs
 
     def perform_create(self, serializer):
         """
@@ -1035,11 +1047,69 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
     def mine(self, request):
         """
         Alias to list only my registrations with pagination support.
+        Always strict to request.user.
         """
-        qs = self.get_queryset()
+        qs = self.get_queryset().filter(user=request.user)
         page = self.paginate_queryset(qs)
         ser = self.get_serializer(page or qs, many=True)
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+
+    @action(detail=True, methods=["post"], url_path="cancel_request")
+    def cancel_request(self, request, pk=None):
+        """
+        User requests cancellation (for paid events).
+        """
+        reg = self.get_object()
+        if reg.user != request.user:
+            return Response({"error": "not_authorized"}, status=403)
+        
+        # If event is free, they should just DELETE. But if they call this:
+        if reg.event.price == 0 or reg.event.is_free:
+            # Maybe auto-delete? Or just mark? Let's just mark.
+            pass
+
+        if reg.status == "cancelled":
+             return Response({"error": "already_cancelled"}, status=400)
+
+        reg.status = "cancellation_requested"
+        reg.save(update_fields=["status"])
+        return Response({"ok": True, "status": reg.status})
+
+    @action(detail=True, methods=["post"], url_path="approve_cancellation")
+    def approve_cancellation(self, request, pk=None):
+        """
+        Admin/Owner approves cancellation -> sets status=cancelled.
+        Future: Trigger refund.
+        """
+        reg = self.get_object()
+        # Check permission: Admins or Event Owner
+        is_admin = request.user.is_staff or getattr(request.user, "is_superuser", False)
+        is_owner = (reg.event.created_by_id == request.user.id)
+        
+        if not (is_admin or is_owner):
+            return Response({"error": "permission_denied"}, status=403)
+
+        reg.status = "cancelled"
+        reg.save(update_fields=["status"])
+        # TODO: Process Refund Logic Here
+        
+        return Response({"ok": True, "status": reg.status})
+
+    @action(detail=True, methods=["post"], url_path="reject_cancellation")
+    def reject_cancellation(self, request, pk=None):
+        """
+        Admin/Owner rejects cancellation -> reverts to registered.
+        """
+        reg = self.get_object()
+        is_admin = request.user.is_staff or getattr(request.user, "is_superuser", False)
+        is_owner = (reg.event.created_by_id == request.user.id)
+        
+        if not (is_admin or is_owner):
+            return Response({"error": "permission_denied"}, status=403)
+
+        reg.status = "registered"
+        reg.save(update_fields=["status"])
+        return Response({"ok": True, "status": reg.status})
     
     
 

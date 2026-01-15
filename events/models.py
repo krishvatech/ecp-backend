@@ -101,6 +101,13 @@ class Event(models.Model):
 class EventRegistration(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='registrations')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='event_registrations')
+    
+    STATUS_CHOICES = [
+        ('registered', 'Registered'),
+        ('cancellation_requested', 'Cancellation Requested'),
+        ('cancelled', 'Cancelled'),
+    ]
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='registered')
     registered_at = models.DateTimeField(auto_now_add=True)
     joined_live = models.BooleanField(default=False)
     watched_replay = models.BooleanField(default=False)

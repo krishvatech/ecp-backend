@@ -504,6 +504,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "registered_at",
             "joined_live",
             "watched_replay",
+            "status",
         )
         read_only_fields = (
             "id",
@@ -514,6 +515,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "user_name",
             "user_email",
             "user_avatar_url",
+            "status",
         )
 
     def get_user_name(self, obj):
