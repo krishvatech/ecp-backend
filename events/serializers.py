@@ -46,6 +46,7 @@ class EventSerializer(serializers.ModelSerializer):
     resources = serializers.SerializerMethodField(read_only=True)
     created_by_id = serializers.IntegerField(read_only=True)
     attending_count = serializers.IntegerField(read_only=True)
+    registrations_count = serializers.IntegerField(read_only=True)
 
     # Let recording_url be blank or omitted; we will normalize/validate in validate()
     recording_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -69,6 +70,7 @@ class EventSerializer(serializers.ModelSerializer):
             "price",
             "is_free",
             "attending_count",
+            "registrations_count",
             "preview_image",
             "active_speaker",
             "recording_url",
@@ -93,6 +95,7 @@ class EventSerializer(serializers.ModelSerializer):
             "updated_at",
             "active_speaker",
             "attending_count",
+            "registrations_count",
             "live_started_at",
             "live_ended_at",
             "dyte_meeting_id",     
