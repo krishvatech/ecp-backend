@@ -502,10 +502,14 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "user_email",
             "user_avatar_url",
             "registered_at",
+            "joined_live",
+            "watched_replay",
         )
         read_only_fields = (
             "id",
             "registered_at",
+            "joined_live",
+            "watched_replay",
             "user_id",
             "user_name",
             "user_email",

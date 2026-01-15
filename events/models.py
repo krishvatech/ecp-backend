@@ -102,6 +102,8 @@ class EventRegistration(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='registrations')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='event_registrations')
     registered_at = models.DateTimeField(auto_now_add=True)
+    joined_live = models.BooleanField(default=False)
+    watched_replay = models.BooleanField(default=False)
     class Meta:
         db_table = 'event_registrations'
         unique_together = ('event', 'user')                 

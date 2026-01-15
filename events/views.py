@@ -11,6 +11,8 @@ belonging to the target community.
 # ============================================================
 from datetime import timedelta
 import logging
+import csv
+from django.http import HttpResponse
 import os                          # NOTE: intentionally kept even if duplicated later
 import base64                      # NOTE: currently unused; kept as requested
 import requests      
@@ -751,6 +753,8 @@ class EventViewSet(viewsets.ModelViewSet):
             elif op == "join":
                 Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
                 event.refresh_from_db(fields=["attending_count"])
+                if request.user.is_authenticated:
+                    EventRegistration.objects.filter(event=event, user=request.user).update(joined_live=True)
 
             elif op == "leave":
                 Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") - 1)
@@ -791,10 +795,63 @@ class EventViewSet(viewsets.ModelViewSet):
             .select_related("user")
             .order_by("-registered_at")
         )
+        # Filter by status if provided: ?status=joined_live or ?status=watched_replay
+        status_filter = (request.query_params.get("status") or "").strip().lower()
+        if status_filter == "joined_live":
+            qs = qs.filter(joined_live=True)
+        elif status_filter == "watched_replay":
+            qs = qs.filter(watched_replay=True)
+
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = EventRegistrationSerializer(page, many=True, context={"request": request})
+            return self.get_paginated_response(serializer.data)
+
         serializer = EventRegistrationSerializer(
             qs, many=True, context={"request": request}
         )
         return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="track-replay")
+    def track_replay(self, request, pk=None):
+        """
+        Mark the current user as having watched the replay.
+        """
+        event = self.get_object()
+        EventRegistration.objects.filter(event=event, user=request.user).update(watched_replay=True)
+        return Response({"ok": True})
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="export-registrations")
+    def export_registrations(self, request, pk=None):
+        """
+        Export registrations as CSV.
+        """
+        event = self.get_object()
+        user = request.user
+        if not (user.is_staff or getattr(user, "is_superuser", False) or event.created_by_id == user.id):
+            return Response({"detail": "Permission denied."}, status=403)
+
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="registrations-{event.id}.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow(['User ID', 'Name', 'Email', 'Registered At', 'Joined Live', 'Watched Replay'])
+
+        regs = EventRegistration.objects.filter(event=event).select_related('user').order_by('-registered_at')
+        for r in regs:
+            first = (r.user.first_name or "").strip()
+            last = (r.user.last_name or "").strip()
+            full_name = f"{first} {last}".strip() or r.user.username
+            writer.writerow([
+                r.user.id,
+                full_name,
+                r.user.email,
+                r.registered_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "Yes" if r.joined_live else "No",
+                "Yes" if r.watched_replay else "No"
+            ])
+
+        return response
 
     # ------------------------ My Events ----------------------
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="mine")
