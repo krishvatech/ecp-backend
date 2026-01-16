@@ -426,3 +426,5 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_BROWSER_XSS_FILTER = True
 SESSION_COOKIE_SECURE = False  # Should be True in production
 CSRF_COOKIE_SECURE = False     # Should be True in production
+
+SALEOR_DASHBOARD_URL = os.getenv("SALEOR_DASHBOARD_URL", "http://127.0.0.1:9001/")

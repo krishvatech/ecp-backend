@@ -2373,3 +2373,35 @@ class WagtailLogoutView(APIView):
         # Ensure cookie is removed (extra safety)
         resp.delete_cookie(settings.SESSION_COOKIE_NAME, path="/")
         return resp
+
+class SaleorDashboardAuthorizeView(APIView):
+    """
+    Checks if user is platform_admin.
+    If yes, returns { "url": settings.SALEOR_DASHBOARD_URL }.
+    If no, returns 403.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # 1. Check cognito groups
+        claims = getattr(request, "cognito_claims", {}) or {}
+        raw_groups = claims.get("cognito:groups") or []
+        if isinstance(raw_groups, str):
+            groups_set = {g.strip().lower() for g in raw_groups.split(",")}
+        else:
+            groups_set = {str(g).strip().lower() for g in raw_groups}
+
+        is_platform_admin = "platform_admin" in groups_set
+
+        # 2. Check django local platform_admin group
+        if not is_platform_admin:
+            is_platform_admin = request.user.groups.filter(name="platform_admin").exists()
+
+        # 3. Check superuser
+        if not is_platform_admin:
+            is_platform_admin = (request.user.is_staff and request.user.is_superuser)
+
+        if not is_platform_admin:
+            return Response({"detail": "Forbidden: Only platform_admin can access Saleor Dashboard."}, status=403)
+
+        return Response({"url": settings.SALEOR_DASHBOARD_URL}, status=200)
