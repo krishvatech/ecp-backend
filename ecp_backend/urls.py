@@ -94,7 +94,9 @@ urlpatterns = [
     # Google OAuth
     path("api/auth/google/url/", GoogleAuthURL.as_view(), name="google_auth_url"),
     path("api/auth/google/callback/", GoogleCallback.as_view(), name="google_callback"),
-    
+
+    # Saleor Webhooks
+    path("api/", include("orders.urls")),
 ]
 
 if settings.DEBUG:

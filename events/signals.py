@@ -48,6 +48,16 @@ def _shape_event_post(e: Event) -> dict:
 
 
 @receiver(post_save, sender=Event)
+def trigger_saleor_sync(sender, instance: Event, **kwargs):
+    """Trigger Saleor sync when an Event's status changes to 'published'."""
+    # We use a bit of a trick to detect status change: 
+    # if it's published and doesn't have a saleor_product_id, or if we want to update it.
+    if instance.status == "published":
+        from .tasks import sync_event_to_saleor
+        # Use delay() to run it as a background task
+        sync_event_to_saleor.delay(instance.id)
+
+@receiver(post_save, sender=Event)
 def push_event_to_livefeed(sender, instance: Event, created, **kwargs):
     """Broadcast a realtime LiveFeed message when a new Event is created."""
     if not created:
