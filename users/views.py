@@ -2383,25 +2383,64 @@ class SaleorDashboardAuthorizeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # 1. Check cognito groups
-        claims = getattr(request, "cognito_claims", {}) or {}
-        raw_groups = claims.get("cognito:groups") or []
-        if isinstance(raw_groups, str):
-            groups_set = {g.strip().lower() for g in raw_groups.split(",")}
-        else:
-            groups_set = {str(g).strip().lower() for g in raw_groups}
-
-        is_platform_admin = "platform_admin" in groups_set
-
-        # 2. Check django local platform_admin group
-        if not is_platform_admin:
-            is_platform_admin = request.user.groups.filter(name="platform_admin").exists()
-
-        # 3. Check superuser
-        if not is_platform_admin:
-            is_platform_admin = (request.user.is_staff and request.user.is_superuser)
+        is_platform_admin = _is_platform_admin_for_saleor(request)
 
         if not is_platform_admin:
             return Response({"detail": "Forbidden: Only platform_admin can access Saleor Dashboard."}, status=403)
 
         return Response({"url": settings.SALEOR_DASHBOARD_URL}, status=200)
+
+
+def _is_platform_admin_for_saleor(request):
+    claims = getattr(request, "cognito_claims", {}) or {}
+    raw_groups = claims.get("cognito:groups") or []
+    if isinstance(raw_groups, str):
+        groups_set = {g.strip().lower() for g in raw_groups.split(",")}
+    else:
+        groups_set = {str(g).strip().lower() for g in raw_groups}
+
+    is_platform_admin = "platform_admin" in groups_set
+    if not is_platform_admin:
+        is_platform_admin = request.user.groups.filter(name="platform_admin").exists()
+    if not is_platform_admin:
+        is_platform_admin = (request.user.is_staff and request.user.is_superuser)
+
+    return is_platform_admin
+
+
+class SaleorDashboardSsoView(APIView):
+    """
+    Returns a Cognito Hosted UI authorize URL for Saleor Dashboard.
+    Uses prompt=none for silent auth if the user already has a Cognito session.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not _is_platform_admin_for_saleor(request):
+            return Response({"detail": "Forbidden: Only platform_admin can access Saleor Dashboard."}, status=403)
+
+        domain = (settings.COGNITO_DOMAIN or "").rstrip("/")
+        client_id = settings.COGNITO_SALEOR_CLIENT_ID
+        redirect_uri = settings.COGNITO_SALEOR_REDIRECT_URI
+
+        if not domain or not client_id or not redirect_uri:
+            return Response(
+                {"detail": "Saleor SSO is not configured. Set COGNITO_DOMAIN, COGNITO_SALEOR_CLIENT_ID, COGNITO_SALEOR_REDIRECT_URI."},
+                status=503,
+            )
+
+        scopes = settings.COGNITO_SALEOR_SCOPES or ["openid", "email", "profile"]
+        params = {
+            "client_id": client_id,
+            "response_type": "code",
+            "redirect_uri": redirect_uri,
+            "scope": " ".join(scopes),
+            "prompt": settings.SALEOR_SSO_PROMPT or "none",
+        }
+
+        url = f"{domain}/oauth2/authorize?{urlencode(params)}"
+
+        if request.query_params.get("redirect") == "1":
+            return redirect(url)
+
+        return Response({"url": url}, status=200)

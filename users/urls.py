@@ -8,7 +8,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from .cognito_bootstrap import CognitoBootstrapView
-from .views import WagtailSessionFromCognitoView, WagtailLogoutView, SaleorDashboardAuthorizeView
+from .views import WagtailSessionFromCognitoView, WagtailLogoutView, SaleorDashboardAuthorizeView, SaleorDashboardSsoView
 from .views import (
     RegisterView,
     ChangePasswordView,
@@ -53,6 +53,7 @@ urlpatterns = [
     path("wagtail/session/", WagtailSessionFromCognitoView.as_view(), name="wagtail-session"),
     path("wagtail/logout/", WagtailLogoutView.as_view(), name="wagtail-logout"),
     path("saleor/dashboard/", SaleorDashboardAuthorizeView.as_view(), name="saleor-dashboard"),
+    path("saleor/sso/", SaleorDashboardSsoView.as_view(), name="saleor-sso"),
 
     # Also allow obtaining tokens at /token/
     path("token/", EmailTokenObtainPairView.as_view(), name="token_obtain_pair_email"),
