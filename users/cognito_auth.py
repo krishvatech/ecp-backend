@@ -216,6 +216,15 @@ class CognitoJWTAuthentication(BaseAuthentication):
             if updated:
                 user.save(update_fields=["email", "first_name", "last_name"])
 
+            # --- ECP <-> Saleor Sync (Synchronous) ---
+            from .saleor_sync import sync_user_to_saleor_sync
+            try:
+                sync_user_to_saleor_sync(user)
+            except Exception as e:
+                # Log but don't fail login if sync fails
+                print(f"Sync error during login: {e}")
+            # -----------------------------------------
+
             return (user, token)
 
 

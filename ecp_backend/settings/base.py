@@ -433,3 +433,5 @@ SESSION_COOKIE_SECURE = False  # Should be True in production
 CSRF_COOKIE_SECURE = False     # Should be True in production
 
 SALEOR_DASHBOARD_URL = os.getenv("SALEOR_DASHBOARD_URL", "http://127.0.0.1:9001/")
+SALEOR_API_URL = os.getenv("SALEOR_API_URL", "http://localhost:8001/graphql/")
+SALEOR_APP_TOKEN = os.getenv("SALEOR_APP_TOKEN", "")

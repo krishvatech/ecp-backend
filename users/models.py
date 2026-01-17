@@ -96,6 +96,9 @@ class UserProfile(models.Model):
     kyc_didit_raw_payload = models.JSONField(default=dict, blank=True)
     kyc_didit_last_webhook_at = models.DateTimeField(null=True, blank=True)
 
+    # --- Saleor Integration ---
+    saleor_customer_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
+
 
     @property
     def is_online(self):

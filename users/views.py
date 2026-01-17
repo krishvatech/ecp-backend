@@ -2435,8 +2435,13 @@ class SaleorDashboardSsoView(APIView):
             "response_type": "code",
             "redirect_uri": redirect_uri,
             "scope": " ".join(scopes),
-            "prompt": settings.SALEOR_SSO_PROMPT or "none",
         }
+
+        # Be precise: Only add prompt if explicitly requested (e.g. 'login', 'consent').
+        # If 'none' or missing, we OMIT it so Cognito performs standard SSO (auto-login if session exists).
+        sso_prompt = getattr(settings, "SALEOR_SSO_PROMPT", None)
+        if sso_prompt and sso_prompt not in ("none", ""):
+            params["prompt"] = sso_prompt
 
         url = f"{domain}/oauth2/authorize?{urlencode(params)}"
 
