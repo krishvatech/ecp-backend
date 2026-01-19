@@ -82,7 +82,8 @@ class QuestionViewSet(viewsets.ModelViewSet):
         )
 
     def list(self, request, *args, **kwargs):
-        queryset = self.get_queryset()
+        # Optimize query by selecting related user
+        queryset = self.get_queryset().select_related("user")
         data = []
         for q in queryset:
             # Fetch upvoters with their details
@@ -95,11 +96,23 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 }
                 for u in upvoters
             ]
+
+            # Resolve asker name
+            asker = q.user
+            asker_name = "Audience"
+            if asker:
+                asker_name = (
+                    (getattr(asker, "get_full_name", lambda: "")() or "").strip()
+                    or asker.first_name
+                    or asker.username
+                    or (asker.email.split("@")[0] if asker.email else f"User {asker.id}")
+                )
             
             data.append({
                 "id": q.id,
                 "content": q.content,
                 "user_id": q.user_id,
+                "user_name": asker_name, # ✅ Fixed: explicit name field
                 "upvote_count": q.upvotes_count,  # annotated
                 "user_upvoted": q.user_upvoted,  # annotated boolean
                 "upvoters": upvoters_list,  # NEW: list of users who upvoted
