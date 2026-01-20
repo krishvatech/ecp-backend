@@ -53,7 +53,7 @@ from rest_framework.response import Response
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant
 from .serializers import (
     EventSerializer,                 # If you use it in this file for create/update/detail
     EventLiteSerializer,             # For lighter list/mine responses
@@ -812,6 +812,114 @@ class EventViewSet(viewsets.ModelViewSet):
         )
         return Response(serializer.data)
 
+    @action(detail=True, methods=["get"], url_path="lounge-state")
+    def lounge_state(self, request, pk=None):
+        """Fetch the current state of the Social Lounge for this event."""
+        tables = LoungeTable.objects.filter(event_id=pk).prefetch_related('participants__user')
+        state = []
+        for t in tables:
+            participants = {
+                p.seat_index: {
+                    "user_id": p.user.id,
+                    "username": p.user.username,
+                    "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username
+                } for p in t.participants.all()
+            }
+            state.append({
+                "id": t.id,
+                "name": t.name,
+                "max_seats": t.max_seats,
+                "dyte_meeting_id": t.dyte_meeting_id,
+                "participants": participants
+            })
+        return Response({"tables": state})
+
+    @action(detail=True, methods=["post"], url_path="create-lounge-table")
+    def create_lounge_table(self, request, pk=None):
+        print(f"DEBUG: create_lounge_table hit for event {pk}")
+        """Admin-only: Create a new table in the Social Lounge."""
+        event = self.get_object()
+        if not (request.user.is_staff or event.created_by_id == request.user.id):
+            return Response({"detail": "Not authorized"}, status=403)
+
+        name = request.data.get("name", "New Table")
+        max_seats = int(request.data.get("max_seats", 4))
+
+        # Create table with a unique Dyte meeting
+        payload = {
+            "title": f"{event.title} - {name}",
+            "record_on_start": False,
+        }
+        try:
+            resp = requests.post(f"{DYTE_API_BASE}/meetings", headers=_dyte_headers(), json=payload, timeout=10)
+            resp.raise_for_status()
+            dyte_id = resp.json().get("data", {}).get("id")
+        except Exception as e:
+            logger.error(f"Failed to create Dyte meeting for lounge table: {e}")
+            dyte_id = None
+
+        table = LoungeTable.objects.create(
+            event=event,
+            name=name,
+            max_seats=max_seats,
+            dyte_meeting_id=dyte_id
+        )
+
+        return Response({
+            "id": table.id,
+            "name": table.name,
+            "dyte_meeting_id": table.dyte_meeting_id
+        }, status=201)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="lounge-join-table")
+    def lounge_join_table(self, request, pk=None):
+        print(f"DEBUG: lounge_join_table hit for event {pk}")
+        """
+        Get a Dyte authToken for a specific Social Lounge table.
+        """
+        table_id = request.data.get("table_id")
+        if not table_id:
+            return Response({"error": "missing_table_id"}, status=400)
+
+        table = get_object_or_404(LoungeTable, id=table_id, event_id=pk)
+        
+        # Ensure meeting exists for this table
+        meeting_id = table.dyte_meeting_id
+        if not meeting_id:
+             # Try to create one if it somehow went missing
+            payload = {"title": f"Table: {table.name}", "record_on_start": False}
+            try:
+                resp = requests.post(f"{DYTE_API_BASE}/meetings", headers=_dyte_headers(), json=payload, timeout=10)
+                resp.raise_for_status()
+                meeting_id = resp.json().get("data", {}).get("id")
+                table.dyte_meeting_id = meeting_id
+                table.save(update_fields=["dyte_meeting_id"])
+            except Exception as e:
+                return Response({"error": "dyte_creation_failed", "detail": str(e)}, status=500)
+
+        # Add participant to the table meeting
+        user = request.user
+        name = (getattr(user, "full_name", "") or getattr(user, "get_full_name", lambda: "")()) or user.username
+        
+        body = {
+            "name": name or f"User {user.id}",
+            "preset_name": DYTE_PRESET_PARTICIPANT, # Use normal participant preset for lounge
+            "client_specific_id": str(user.id),
+        }
+        
+        try:
+            resp = requests.post(
+                f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
+                headers=_dyte_headers(),
+                json=body,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            return Response({"token": data.get("token")})
+        except Exception as e:
+            return Response({"error": "dyte_join_failed", "detail": str(e)}, status=500)
+
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="track-replay")
     def track_replay(self, request, pk=None):
         """
@@ -890,17 +998,11 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         user = request.user
 
-        # Basic guard – adjust if you want stricter checks
-        if event.status not in ("live", "published"):
-            return Response(
-                {"error": "event_not_live", "detail": "Event is not live yet."},
-                status=400,
-            )
-
         # 1) Ensure meeting exists
         try:
             meeting_id = _ensure_dyte_meeting_for_event(event)
         except RuntimeError as e:
+            logger.error(f"Dyte meeting error for event {event.id}: {str(e)}")
             return Response(
                 {"error": "dyte_meeting_error", "detail": str(e)},
                 status=500,
@@ -908,12 +1010,21 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # 2) Decide host vs participant preset
         community_owner_id = getattr(event.community, "owner_id", None)
-        # Who is *allowed* to be host?
         is_creator_or_staff = (
-            event.created_by_id == user.id
-            or user.is_staff
-            or community_owner_id == user.id
+            (user and user.is_authenticated) and (
+                event.created_by_id == user.id
+                or user.is_staff
+                or community_owner_id == user.id
+            )
         )
+
+        # Basic guard – hosts can always join; others only if live/published
+        if not is_creator_or_staff and event.status not in ("live", "published"):
+            logger.warning(f"User {user.id} tried to join non-live event {event.id} (status: {event.status})")
+            return Response(
+                {"error": "event_not_live", "detail": f"Event is currently {event.status}. Only hosts can join."},
+                status=400,
+            )
 
         # Read requested role from body or query (?role=publisher / audience)
         requested_role = (

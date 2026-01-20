@@ -102,6 +102,32 @@ class Event(models.Model):
         super().save(*args, **kwargs)
     def __str__(self) -> str:
         return f"{self.title} ({self.community.name})"
+
+class LoungeTable(models.Model):
+    """Represents a virtual table in the Social Lounge."""
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="lounge_tables")
+    name = models.CharField(max_length=255)
+    max_seats = models.IntegerField(default=4)
+    dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} - {self.event.title}"
+
+class LoungeParticipant(models.Model):
+    """Tracks which user is sitting at which lounge table."""
+    table = models.ForeignKey(LoungeTable, on_delete=models.CASCADE, related_name="participants")
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    seat_index = models.IntegerField()
+    joined_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("table", "seat_index")
+        # Also ensure a user can only be at one table per event if required, 
+        # but for now we'll enforce unique seating via seat_index.
+
+    def __str__(self):
+        return f"{self.user.username} at {self.table.name}"
     
 class EventRegistration(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='registrations')
@@ -116,6 +142,8 @@ class EventRegistration(models.Model):
     registered_at = models.DateTimeField(auto_now_add=True)
     joined_live = models.BooleanField(default=False)
     watched_replay = models.BooleanField(default=False)
+    is_online = models.BooleanField(default=False)
+    online_count = models.PositiveIntegerField(default=0)
     class Meta:
         db_table = 'event_registrations'
         unique_together = ('event', 'user')                 

@@ -34,7 +34,7 @@ from urllib.parse import urlencode, urljoin
 router = DefaultRouter()
 router.register(r"users", UserViewSet, basename="user")
 router.register(r"community", CommunityViewSet, basename="community")
-router.register(r"events", EventViewSet, basename="event")
+# router.register(r"events", EventViewSet, basename="event") # Removed here, handled in events.urls
 
 def cms_login_sso_redirect(request):
     """
