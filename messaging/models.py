@@ -23,6 +23,13 @@ class Conversation(models.Model):
                               on_delete=models.CASCADE, related_name="conversations")
     event = models.ForeignKey("events.Event", null=True, blank=True,
                               on_delete=models.CASCADE, related_name="chat_conversations")
+    lounge_table = models.ForeignKey(
+        "events.LoungeTable",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="chat_conversations",
+    )
 
     room_key = models.CharField(max_length=128, unique=True, null=True, blank=True)
     title   = models.CharField(max_length=255, null=True, blank=True)
@@ -42,6 +49,10 @@ class Conversation(models.Model):
     @property
     def is_event_group(self) -> bool:
         return self.event_id is not None and self.group_id is None
+
+    @property
+    def is_lounge(self) -> bool:
+        return self.lounge_table_id is not None
 
     def user_can_view(self, user) -> bool:
         """Mirror permission logic so views can call it quickly."""
@@ -75,6 +86,15 @@ class Conversation(models.Model):
                 user_id=user.id,
             ).exists()
 
+        # Lounge room → only seated users
+        if self.lounge_table_id:
+            from events.models import LoungeParticipant
+
+            return LoungeParticipant.objects.filter(
+                table_id=self.lounge_table_id,
+                user_id=user.id,
+            ).exists()
+
         # DM → only the two participants
         return user.id in (self.user1_id, self.user2_id)
 
@@ -86,11 +106,13 @@ class Conversation(models.Model):
         # Only one “context” allowed
         if self.group_id and self.event_id:
             raise ValidationError("Conversation cannot be linked to both a Group and an Event.")
+        if self.lounge_table_id and (self.group_id or self.event_id):
+            raise ValidationError("Conversation cannot be linked to both a Lounge Table and a Group/Event.")
 
-        # DM must have both users; group/event must NOT have user1/user2
-        if self.group_id or self.event_id:
+        # DM must have both users; group/event/lounge must NOT have user1/user2
+        if self.group_id or self.event_id or self.lounge_table_id:
             if self.user1_id or self.user2_id:
-                raise ValidationError("Group/Event conversations must not have user1/user2.")
+                raise ValidationError("Group/Event/Lounge conversations must not have user1/user2.")
         else:
             # DM
             if not self.user1_id or not self.user2_id:
@@ -113,6 +135,8 @@ class Conversation(models.Model):
             return f"[Group] {self.group_id or self.room_key}"
         if self.is_event_group:
             return f"[Event] {self.event_id or self.room_key}"
+        if self.is_lounge:
+            return f"[Lounge] {self.lounge_table_id or self.room_key}"
         return f"Conversation({self.user1_id}, {self.user2_id})"
 
     class Meta:
@@ -128,26 +152,39 @@ class Conversation(models.Model):
                 fields=["event"], name="uniq_conversation_per_event",
                 condition=models.Q(event__isnull=False),
             ),
+            # One unique conversation per lounge table
+            models.UniqueConstraint(
+                fields=["lounge_table"], name="uniq_conversation_per_lounge_table",
+                condition=models.Q(lounge_table__isnull=False),
+            ),
             # One unique DM per (user1,user2)
             models.UniqueConstraint(
                 fields=["user1", "user2"], name="uniq_conversation_per_user_pair",
                 condition=models.Q(group__isnull=True, event__isnull=True,
+                                   lounge_table__isnull=True,
                                    user1__isnull=False, user2__isnull=False),
             ),
-            # Valid shapes only: exactly one of [DM, group, event]
+            # Valid shapes only: exactly one of [DM, group, event, lounge]
             models.CheckConstraint(
                 name="conversation_valid_context",
                 check=(
                     # group room
                     (models.Q(group__isnull=False, event__isnull=True,
+                              lounge_table__isnull=True,
                               user1__isnull=True, user2__isnull=True))
                     |
                     # event room
                     (models.Q(event__isnull=False, group__isnull=True,
+                              lounge_table__isnull=True,
                               user1__isnull=True, user2__isnull=True))
+                    |
+                    # lounge room
+                    (models.Q(lounge_table__isnull=False, group__isnull=True,
+                              event__isnull=True, user1__isnull=True, user2__isnull=True))
                     |
                     # DM
                     (models.Q(group__isnull=True, event__isnull=True,
+                              lounge_table__isnull=True,
                               user1__isnull=False, user2__isnull=False))
                 ),
             ),

@@ -23,9 +23,12 @@ def _is_event_conv(conv: Conversation) -> bool:
     # Treat either the flag or FK as an “event chat”.
     return bool(getattr(conv, "is_event_group", False) or getattr(conv, "event_id", None))
 
+def _is_lounge_conv(conv: Conversation) -> bool:
+    return bool(getattr(conv, "lounge_table_id", None))
+
 def _is_dm_conv(conv: Conversation) -> bool:
     # DM = not group/event. (Your schema enforces mutual exclusivity.)
-    return not (_is_group_conv(conv) or _is_event_conv(conv))
+    return not (_is_group_conv(conv) or _is_event_conv(conv) or _is_lounge_conv(conv))
 
 def _get_conversation_from_kwargs(view) -> Optional[Conversation]:
     conv_id = None

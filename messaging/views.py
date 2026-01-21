@@ -46,6 +46,7 @@ class ConversationViewSet(viewsets.ViewSet):
     def get_queryset(self, request):
         user = request.user
         from groups.models import GroupMembership
+        from events.models import LoungeParticipant
 
         # Groups where this user is a member (same logic as /groups/joined-groups/)
         member_statuses = [
@@ -66,15 +67,21 @@ class ConversationViewSet(viewsets.ViewSet):
         ).values_list("id", flat=True)
         allowed_event_ids = list(set(registered_event_ids) | set(created_event_ids))
 
+        lounge_table_ids = LoungeParticipant.objects.filter(
+            user_id=user.id
+        ).values_list("table_id", flat=True)
+
         # Include:
         # - DMs I'm in
         # - Group rooms ONLY where I'm a member
         # - Event rooms ONLY where I'm registered or the creator
+        # - Lounge rooms ONLY where I'm seated
         qs = Conversation.objects.filter(
             Q(user1=user)
             | Q(user2=user)
             | Q(group_id__in=member_group_ids)
             | Q(event_id__in=allowed_event_ids)
+            | Q(lounge_table_id__in=lounge_table_ids)
         )
 
         qs = qs.select_related(
@@ -82,6 +89,7 @@ class ConversationViewSet(viewsets.ViewSet):
             "user2__profile",
             "group",
             "event",
+            "lounge_table",
         ).prefetch_related(
             models.Prefetch(
                 "messages",
@@ -122,6 +130,7 @@ class ConversationViewSet(viewsets.ViewSet):
                 | Q(event__isnull=False, title__icontains=q)
                 | Q(group__name__icontains=q)
                 | Q(event__title__icontains=q)
+                | Q(lounge_table__name__icontains=q)
             )
         return qs
 
@@ -688,6 +697,54 @@ class ConversationViewSet(viewsets.ViewSet):
         serializer = ConversationSerializer(conv, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=["post"], url_path="ensure-lounge")
+    def ensure_lounge(self, request):
+        """
+        Upsert a lounge table chat. Accepts:
+        { "table_id": <lounge_table_id>, "title": "..." }
+        """
+        from events.models import LoungeTable, LoungeParticipant
+
+        table_id = request.data.get("table_id") or request.data.get("table")
+        title = (request.data.get("title") or "").strip()
+
+        if not table_id:
+            raise ValidationError({"table_id": "Provide a lounge table id."})
+
+        try:
+            table_id = int(table_id)
+        except (TypeError, ValueError):
+            raise ValidationError({"table_id": "Invalid lounge table id."})
+
+        table = get_object_or_404(LoungeTable, pk=table_id)
+
+        is_seated = LoungeParticipant.objects.filter(
+            table_id=table.id,
+            user_id=request.user.id,
+        ).exists()
+        if not is_seated:
+            raise PermissionDenied("You are not seated in this room.")
+
+        conv, created = Conversation.objects.get_or_create(
+            lounge_table=table,
+            defaults={
+                "created_by": request.user if request.user.is_authenticated else None,
+                "title": title or table.name,
+            },
+        )
+
+        changed = False
+        update_fields = []
+        if not conv.title:
+            conv.title = title or table.name
+            changed = True
+            update_fields.append("title")
+        if changed:
+            conv.save(update_fields=update_fields)
+
+        serializer = ConversationSerializer(conv, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
     
     # views.py  (inside ConversationViewSet)
 
@@ -739,12 +796,28 @@ class ConversationViewSet(viewsets.ViewSet):
 
         members = []
 
-        if conv.group_id is None and conv.event_id is None:
+        if conv.group_id is None and conv.event_id is None and getattr(conv, "lounge_table_id", None) is None:
             # Direct message
             for u in (conv.user1, conv.user2):
                 m = as_member(u)
                 if m:
                     members.append(m)
+        elif getattr(conv, "lounge_table_id", None):
+            try:
+                from events.models import LoungeParticipant
+
+                qs = (
+                    LoungeParticipant.objects
+                    .select_related("user__profile")
+                    .filter(table_id=conv.lounge_table_id)
+                    .order_by("joined_at", "user__id")
+                )[:200]
+                for lp in qs:
+                    m = as_member(lp.user, "Member")
+                    if m:
+                        members.append(m)
+            except Exception:
+                pass
         else:
             added = False
             try:
@@ -1050,7 +1123,7 @@ class MessageViewSet(
         
         user = request.user
         # DM Access Check
-        if (conv.group_id is None and conv.event_id is None) and user.id not in (conv.user1_id, conv.user2_id):
+        if (conv.group_id is None and conv.event_id is None and getattr(conv, "lounge_table_id", None) is None) and user.id not in (conv.user1_id, conv.user2_id):
             raise PermissionDenied("You are not a participant of this conversation.")
 
         # 2. Extract Data

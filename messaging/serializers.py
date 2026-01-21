@@ -10,6 +10,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     # computed additions
     is_group = serializers.SerializerMethodField()
     is_event_group = serializers.SerializerMethodField()
+    is_lounge = serializers.SerializerMethodField()
     participant_ids = serializers.SerializerMethodField()
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
@@ -23,17 +24,18 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     event_title = serializers.CharField(source="event.title", read_only=True, default=None)
     group_name  = serializers.CharField(source="group.name", read_only=True, default=None)
+    lounge_table_name = serializers.CharField(source="lounge_table.name", read_only=True, default=None)
 
     class Meta:
         model = Conversation
         fields = [
             "id",
-            "is_group", "is_event_group",
-            "group", "event",
+            "is_group", "is_event_group", "is_lounge",
+            "group", "event", "lounge_table",
             "room_key",
             "title",
             "display_title", "context_cover", "context_logo", "group_cover", "event_cover",
-            "event_title", "group_name",
+            "event_title", "group_name", "lounge_table_name",
             "chat_type",
             "participant_ids",
             "last_message",
@@ -49,8 +51,13 @@ class ConversationSerializer(serializers.ModelSerializer):
     def get_is_event_group(self, obj):   # noqa
         return bool(obj.event_id and not obj.group_id)
 
+    def get_is_lounge(self, obj):  # noqa
+        return bool(getattr(obj, "lounge_table_id", None))
+
     # ---------- backing methods ----------
     def compute_chat_type(self, obj):
+        if getattr(obj, "lounge_table_id", None):
+            return "room"
         if obj.is_event_group:
             return "event"
         if obj.is_group:
@@ -67,6 +74,9 @@ class ConversationSerializer(serializers.ModelSerializer):
                 getattr(obj.group, "name", "")
                 or "Group"
             )
+        # Lounge chat → LoungeTable.name
+        if getattr(obj, "lounge_table_id", None):
+            return (getattr(getattr(obj, "lounge_table", None), "name", "") or obj.title or "Room").strip()
 
         # --- DM label (other user's name) ---
         req = self.context.get("request")
@@ -182,7 +192,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 
 
     def get_participant_ids(self, obj: Conversation) -> list[int]:
-        if obj.is_group or obj.is_event_group:
+        if obj.is_group or obj.is_event_group or getattr(obj, "lounge_table_id", None):
             return []
         return [obj.user1_id, obj.user2_id]
 
