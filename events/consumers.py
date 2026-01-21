@@ -51,8 +51,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             seat_index = content.get("seat_index")
             success, error = await self.join_table(table_id, seat_index)
             if success:
+                print(f"[CONSUMER] join_table successful for {self.user.username}, broadcasting update...")
                 await self.broadcast_lounge_update()
             else:
+                print(f"[CONSUMER] join_table failed for {self.user.username}: {error}")
                 await self.send_json({"type": "error", "message": error})
 
         elif action == "leave_table":
@@ -275,6 +277,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     def get_lounge_state(self):
         tables = LoungeTable.objects.filter(event_id=self.event_id).prefetch_related('participants__user')
         state = []
+        debug_counts = []
         for t in tables:
             participants = {}
             for p in t.participants.all():
@@ -290,6 +293,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 "dyte_meeting_id": t.dyte_meeting_id,
                 "participants": participants
             })
+            if participants:
+                debug_counts.append(f"Table {t.id}: {len(participants)} users")
+        
+        if debug_counts:
+            print(f"[CONSUMER] get_lounge_state: Found participants: {', '.join(debug_counts)}")
         return state
 
     @database_sync_to_async
@@ -297,13 +305,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         try:
             with transaction.atomic():
                 # 1. Clear user from any other table in this event
-                LoungeParticipant.objects.filter(
+                del_count, _ = LoungeParticipant.objects.filter(
                     table__event_id=self.event_id, 
                     user=self.user
                 ).delete()
+                print(f"[CONSUMER] join_table: Deleted {del_count} old records for user {self.user.id}")
 
                 # 2. Check if seat is occupied
                 if LoungeParticipant.objects.filter(table_id=table_id, seat_index=seat_index).exists():
+                    print(f"[CONSUMER] join_table: Seat {seat_index} at table {table_id} already occupied")
                     return False, "Seat already occupied"
 
                 # 3. Create participant
@@ -312,8 +322,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     user=self.user,
                     seat_index=seat_index
                 )
+                print(f"[CONSUMER] join_table: Created record for user {self.user.id} at table {table_id} seat {seat_index}")
                 return True, None
         except Exception as e:
+            print(f"[CONSUMER] join_table error: {e}")
             return False, str(e)
 
     @database_sync_to_async
