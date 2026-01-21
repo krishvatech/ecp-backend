@@ -900,12 +900,21 @@ class EventViewSet(viewsets.ModelViewSet):
         # Add participant to the table meeting
         user = request.user
         name = (getattr(user, "full_name", "") or getattr(user, "get_full_name", lambda: "")()) or user.username
+        picture = ""
+        try:
+            profile = getattr(user, "profile", None)
+            if profile and getattr(profile, "user_image", None):
+                picture = profile.user_image.url
+        except Exception:
+            picture = ""
         
         body = {
             "name": name or f"User {user.id}",
             "preset_name": DYTE_PRESET_PARTICIPANT, # Use normal participant preset for lounge
             "client_specific_id": str(user.id),
         }
+        if picture:
+            body["picture"] = picture
         
         try:
             resp = requests.post(
