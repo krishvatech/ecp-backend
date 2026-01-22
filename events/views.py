@@ -213,6 +213,103 @@ def _start_rtk_recording_for_event(event: Event) -> None:
         rec_id,
     )
 
+
+def _stop_rtk_recording_for_event(event: Event) -> None:
+    """
+    Ask Cloudflare RealtimeKit to stop recording for this event's meeting.
+
+    We do NOT raise errors to the caller; we just log, because
+    end-meeting should still succeed even if stop-recording fails.
+    """
+    meeting_id = event.dyte_meeting_id
+    if not meeting_id:
+        logger.warning(
+            "⚠️ Cannot stop recording; no meeting_id for event=%s",
+            event.id,
+        )
+        return
+
+    try:
+        headers = _rtk_headers()
+    except RuntimeError as exc:
+        logger.error("❌ RealtimeKit credentials missing: %s", exc)
+        return
+
+    try:
+        # GET /recordings to find active recording for this meeting
+        resp = requests.get(
+            f"{RTK_API_BASE}/recordings",
+            headers=headers,
+            params={"meeting_id": meeting_id},
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        logger.exception(
+            "❌ RealtimeKit get recordings exception for event=%s: %s",
+            event.id,
+            exc,
+        )
+        return
+
+    recordings = (resp.json() or {}).get("data") or []
+
+    # Find the active recording (not STOPPED, not UPLOADED)
+    active_rec = next(
+        (r for r in recordings if r.get("status") not in ["STOPPED", "UPLOADED"]),
+        None,
+    )
+
+    if not active_rec:
+        logger.info(
+            "ℹ️ No active recording found for event=%s meeting=%s",
+            event.id,
+            meeting_id,
+        )
+        return
+
+    rec_id = active_rec.get("id")
+    if not rec_id:
+        logger.error(
+            "❌ Recording found but missing id for event=%s meeting=%s",
+            event.id,
+            meeting_id,
+        )
+        return
+
+    try:
+        # PATCH /recordings/{rec_id} to stop it
+        stop_resp = requests.patch(
+            f"{RTK_API_BASE}/recordings/{rec_id}",
+            headers=headers,
+            json={"status": "STOPPED"},
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.exception(
+            "❌ RealtimeKit stop recording exception for event=%s: %s",
+            event.id,
+            exc,
+        )
+        return
+
+    if stop_resp.status_code not in (200, 201, 204):
+        logger.error(
+            "❌ RealtimeKit stop recording failed for event=%s meeting=%s recording=%s: %s",
+            event.id,
+            meeting_id,
+            rec_id,
+            stop_resp.text[:500],
+        )
+        return
+
+    logger.info(
+        "🛑 RealtimeKit recording stopped for event=%s meeting=%s recording_id=%s",
+        event.id,
+        meeting_id,
+        rec_id,
+    )
+
 # ============================================================
 # ================= Pagination / Permissions =================
 # ============================================================
@@ -598,6 +695,13 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception:
                 # Already logged inside helper; do not break the API
                 pass
+        else:  # action_type == "end"
+            # 🛑 NEW: stop Cloudflare recording when meeting ends
+            try:
+                _stop_rtk_recording_for_event(event)
+            except Exception:
+                # Already logged inside helper; do not break the API
+                pass
 
         return Response({
             "ok": True,
@@ -676,6 +780,13 @@ class EventViewSet(viewsets.ModelViewSet):
         event.is_live = False
         event.live_ended_at = timezone.now()
         event.save(update_fields=["status", "is_live", "live_ended_at", "updated_at"])
+
+        # 🛑 Stop recording when meeting ends
+        try:
+            _stop_rtk_recording_for_event(event)
+        except Exception:
+            # Already logged inside helper; do not break the API
+            pass
 
         return Response(
             {"message": "Meeting ended", "status": event.status, "event_id": event.id}
