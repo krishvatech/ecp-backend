@@ -926,14 +926,39 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="lounge-state")
     def lounge_state(self, request, pk=None):
         """Fetch the current state of the Social Lounge for this event."""
+        def _avatar_url(user_obj):
+            profile = getattr(user_obj, "profile", None)
+            img = getattr(profile, "user_image", None) if profile else None
+            if not img:
+                img = getattr(user_obj, "avatar", None) or getattr(profile, "avatar", None) if profile else None
+            if not img:
+                return ""
+            try:
+                url = img.url
+            except Exception:
+                url = str(img) if img else ""
+            if not url:
+                return ""
+            try:
+                return request.build_absolute_uri(url)
+            except Exception:
+                return url
+
         tables = LoungeTable.objects.filter(event_id=pk).prefetch_related('participants__user')
         state = []
         for t in tables:
+            icon_url = ""
+            if getattr(t, "icon", None):
+                try:
+                    icon_url = request.build_absolute_uri(t.icon.url)
+                except Exception:
+                    icon_url = t.icon.url
             participants = {
                 p.seat_index: {
                     "user_id": p.user.id,
                     "username": p.user.username,
-                    "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username
+                    "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username,
+                    "avatar_url": _avatar_url(p.user),
                 } for p in t.participants.all()
             }
             state.append({
@@ -941,6 +966,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "name": t.name,
                 "max_seats": t.max_seats,
                 "dyte_meeting_id": t.dyte_meeting_id,
+                "icon_url": icon_url,
                 "participants": participants
             })
         return Response({"tables": state})
@@ -955,6 +981,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         name = request.data.get("name", "New Table")
         max_seats = int(request.data.get("max_seats", 4))
+        icon_file = request.FILES.get("icon") if hasattr(request, "FILES") else None
 
         # Create table with a unique Dyte meeting
         payload = {
@@ -973,14 +1000,48 @@ class EventViewSet(viewsets.ModelViewSet):
             event=event,
             name=name,
             max_seats=max_seats,
-            dyte_meeting_id=dyte_id
+            dyte_meeting_id=dyte_id,
+            icon=icon_file,
         )
+
+        icon_url = ""
+        if table.icon:
+            try:
+                icon_url = request.build_absolute_uri(table.icon.url)
+            except Exception:
+                icon_url = table.icon.url
 
         return Response({
             "id": table.id,
             "name": table.name,
-            "dyte_meeting_id": table.dyte_meeting_id
+            "dyte_meeting_id": table.dyte_meeting_id,
+            "icon_url": icon_url,
         }, status=201)
+
+    @action(detail=True, methods=["post"], url_path="lounge-table-icon")
+    def lounge_table_icon(self, request, pk=None):
+        """Admin-only: Update a lounge table's icon."""
+        event = self.get_object()
+        if not (request.user.is_staff or event.created_by_id == request.user.id):
+            return Response({"detail": "Not authorized"}, status=403)
+
+        table_id = request.data.get("table_id")
+        icon_file = request.FILES.get("icon") if hasattr(request, "FILES") else None
+        if not table_id or not icon_file:
+            return Response({"error": "missing_table_id_or_icon"}, status=400)
+
+        table = get_object_or_404(LoungeTable, id=table_id, event_id=pk)
+        table.icon = icon_file
+        table.save(update_fields=["icon"])
+
+        icon_url = ""
+        if table.icon:
+            try:
+                icon_url = request.build_absolute_uri(table.icon.url)
+            except Exception:
+                icon_url = table.icon.url
+
+        return Response({"id": table.id, "icon_url": icon_url})
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="lounge-join-table")
     def lounge_join_table(self, request, pk=None):

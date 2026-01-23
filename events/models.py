@@ -20,6 +20,11 @@ def event_preview_upload_to(instance, filename):
     name, ext = os.path.splitext(filename or "")
     base = slugify(name) or "preview"
     return f"previews/event/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
+
+def lounge_table_icon_upload_to(instance, filename):
+    name, ext = os.path.splitext(filename or "")
+    base = slugify(name) or "table"
+    return f"lounge/tables/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
 class Event(models.Model):
     """Represents an event within an community."""
     STATUS_CHOICES = [
@@ -109,6 +114,7 @@ class LoungeTable(models.Model):
     name = models.CharField(max_length=255)
     max_seats = models.IntegerField(default=4)
     dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
+    icon = models.ImageField(upload_to=lounge_table_icon_upload_to, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

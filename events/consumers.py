@@ -281,16 +281,34 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         for t in tables:
             participants = {}
             for p in t.participants.all():
+                profile = getattr(p.user, "profile", None)
+                img = getattr(profile, "user_image", None) if profile else None
+                if not img:
+                    img = getattr(p.user, "avatar", None) or getattr(profile, "avatar", None) if profile else None
+                avatar_url = ""
+                if img:
+                    try:
+                        avatar_url = img.url
+                    except Exception:
+                        avatar_url = str(img) if img else ""
                 participants[p.seat_index] = {
                     "user_id": p.user.id,
                     "username": p.user.username,
-                    "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username
+                    "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username,
+                    "avatar_url": avatar_url,
                 }
+            icon_url = ""
+            if getattr(t, "icon", None):
+                try:
+                    icon_url = t.icon.url
+                except Exception:
+                    icon_url = ""
             state.append({
                 "id": t.id,
                 "name": t.name,
                 "max_seats": t.max_seats,
                 "dyte_meeting_id": t.dyte_meeting_id,
+                "icon_url": icon_url,
                 "participants": participants
             })
             if participants:
