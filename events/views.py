@@ -1018,6 +1018,65 @@ class EventViewSet(viewsets.ModelViewSet):
             "icon_url": icon_url,
         }, status=201)
 
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="lounge-table-update")
+    def lounge_table_update(self, request, pk=None):
+        """Admin-only: Update a lounge table (name, seats, icon)."""
+        event = self.get_object()
+        if not (request.user.is_staff or event.created_by_id == request.user.id):
+            return Response({"detail": "Not authorized"}, status=403)
+
+        table_id = request.data.get("table_id")
+        if not table_id:
+            return Response({"error": "missing_table_id"}, status=400)
+
+        table = get_object_or_404(LoungeTable, id=table_id, event_id=pk)
+
+        name = request.data.get("name")
+        max_seats = request.data.get("max_seats")
+        icon_file = request.FILES.get("icon") if hasattr(request, "FILES") else None
+
+        if name is not None:
+            table.name = name
+        if max_seats is not None:
+            try:
+                table.max_seats = int(max_seats)
+            except (TypeError, ValueError):
+                return Response({"error": "invalid_max_seats"}, status=400)
+        if icon_file:
+            table.icon = icon_file
+
+        table.save()
+
+        icon_url = ""
+        if table.icon:
+            try:
+                icon_url = request.build_absolute_uri(table.icon.url)
+            except Exception:
+                icon_url = table.icon.url
+
+        return Response({
+            "id": table.id,
+            "name": table.name,
+            "max_seats": table.max_seats,
+            "icon_url": icon_url,
+        })
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="lounge-table-delete")
+    def lounge_table_delete(self, request, pk=None):
+        """Admin-only: Delete a lounge table."""
+        event = self.get_object()
+        if not (request.user.is_staff or event.created_by_id == request.user.id):
+            return Response({"detail": "Not authorized"}, status=403)
+
+        table_id = request.data.get("table_id")
+        if not table_id:
+            return Response({"error": "missing_table_id"}, status=400)
+
+        table = get_object_or_404(LoungeTable, id=table_id, event_id=pk)
+        LoungeParticipant.objects.filter(table=table).delete()
+        table.delete()
+        return Response({"ok": True})
+
     @action(detail=True, methods=["post"], url_path="lounge-table-icon")
     def lounge_table_icon(self, request, pk=None):
         """Admin-only: Update a lounge table's icon."""
