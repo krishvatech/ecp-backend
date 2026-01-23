@@ -231,6 +231,17 @@ def _notify_on_group_created(sender, instance: Group, created, **kwargs):
             data=payload,
         )
 
+    # NEW: Automatically add the creator as an ADMIN member if not already
+    if created and group.created_by_id:
+        GroupMembership.objects.get_or_create(
+            group=group,
+            user_id=group.created_by_id,
+            defaults={
+                "role": GroupMembership.ROLE_ADMIN,
+                "status": GroupMembership.STATUS_ACTIVE,
+            }
+        )
+
 
 # -------- Group: keep sub-groups in sync with parent (visibility/join_policy + admins) (NEW) --------
 @receiver(post_save, sender=Group)

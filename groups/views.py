@@ -901,6 +901,98 @@ class GroupViewSet(viewsets.ModelViewSet):
         membership.delete()
         return Response({"ok": True}, status=status.HTTP_200_OK)
 
+    # Use (Endpoint): POST /api/groups/{id}/leave
+    # - Authenticated user leaves the group.
+    # - Owner logic: Must have another admin to transfer ownership to.
+    # - Admin logic: Cannot leave if they are the last admin (unless owner exists).
+    # Ordering: Not applicable.
+    @action(detail=True, methods=["post"], url_path="leave")
+    def leave_group(self, request, pk=None):
+        group = self.get_object()
+        user = request.user
+        if not (user and user.is_authenticated):
+            return Response({"detail": "Authentication required"}, status=401)
+
+        try:
+            membership = GroupMembership.objects.get(group=group, user=user)
+        except GroupMembership.DoesNotExist:
+            # FIX: Owner might be missing a membership row due to legacy creation.
+            if group.owner_id == user.id:
+                membership = None
+            else:
+                return Response({"detail": "You are not a member of this group."}, status=400)
+
+        # Use transaction to ensure safe handoff
+        with transaction.atomic():
+            # refresh group to lock? (optional, but good for owner check)
+            group.refresh_from_db()
+            
+            is_owner = (group.owner_id == user.id)
+            is_admin = (membership.role == GroupMembership.ROLE_ADMIN) if membership else False
+            
+            # Find OTHER active admins
+            other_admins_qs = GroupMembership.objects.filter(
+                group=group, 
+                role=GroupMembership.ROLE_ADMIN, 
+                status=GroupMembership.STATUS_ACTIVE
+            ).exclude(user_id=user.id).order_by("joined_at") # oldest first
+
+            other_admins_count = other_admins_qs.count()
+
+            if is_owner:
+                # Owner cannot leave if no other admin exists to take over
+                if other_admins_count == 0:
+                    return Response({
+                        "detail": "As the owner, you must assign another Admin before leaving. The group requires an Admin to function."
+                    }, status=400)
+                
+                # Transfer ownership to the oldest admin
+                new_owner_membership = other_admins_qs.first()
+                new_owner = new_owner_membership.user
+                
+                group.owner = new_owner
+                group.save(update_fields=["owner"])
+                
+                # Log or notify could happen here
+                # Finally delete own membership if it exists
+                if membership:
+                    membership.delete()
+                
+                return Response({
+                    "ok": True, 
+                    "detail": f"You have left the group. Ownership was transferred to {new_owner.get_full_name() or new_owner.username}."
+                })
+
+            elif is_admin:
+                # If I am an Admin, I should not leave if I am the LAST Admin 
+                # (and the owner is not active or missing? Actually, if there is an owner, the owner is an admin/super-user usually).
+                # But typically, if constraints say "must have at least one admin", we enforce it.
+                # If there is also an Owner, the Owner counts as "privileged" but might not have "role=admin" explicitly in membership?
+                # Let's check _is_admin logic: it checks role=admin.
+                # If the Owner is distinct, we might be fine. 
+                # But request says: "if that admin leave... if there is no other admin than he make a admin..."
+                
+                # Safest check: If I am the ONLY admin, and there are no other admins.
+                if other_admins_count == 0:
+                    # Check if owner exists and is someone else?
+                    # If I am not owner, but I am the only admin... 
+                    # Does the owner count as an admin? Usually yes via _is_admin but that checks queryset.
+                    # If owner has role=member, then I am really the last admin.
+                    
+                    return Response({
+                        "detail": "You are the only Admin. Please promote another member to Admin before leaving."
+                    }, status=400)
+                
+                if membership:
+                    membership.delete()
+                return Response({"ok": True, "detail": "You have left the group."})
+            
+            else:
+                # Regular member/moderator - just leave
+                if membership:
+                    membership.delete()
+                return Response({"ok": True, "detail": "You have left the group."})
+
     # Use (Endpoint): GET /api/groups/{id}/moderator/can-i
     # - Returns capability flags for current user (owner/admin/mod/staff).
     # Ordering: Not applicable.

@@ -27,13 +27,15 @@ class GroupSerializer(serializers.ModelSerializer):
         source="parent", queryset=Group.objects.all(), required=False, allow_null=True
     )
 
+    owner = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = Group
         fields = [
             "id", "name", "slug", "description",
             "visibility", "join_policy",
             "cover_image", "remove_cover_image",
-            "member_count", "created_by",
+            "member_count", "created_by", "owner",
             "created_at", "updated_at",
             "current_user_role",
             "membership_status",  # NEW
@@ -41,7 +43,7 @@ class GroupSerializer(serializers.ModelSerializer):
             "community_id",
             "parent_id",
         ]
-    read_only_fields = ["id", "slug", "member_count", "created_by", "created_at", "updated_at"]
+    read_only_fields = ["id", "slug", "member_count", "created_by", "owner", "created_at", "updated_at"]
 
     def validate(self, attrs):
         """
@@ -70,6 +72,13 @@ class GroupSerializer(serializers.ModelSerializer):
 
     def get_created_by(self, obj):
         u = getattr(obj, "created_by", None)
+        if not u:
+            return None
+        name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", None)
+        return {"id": u.pk, "email": getattr(u, "email", None), "name": name}
+
+    def get_owner(self, obj):
+        u = getattr(obj, "owner", None)
         if not u:
             return None
         name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", None)
