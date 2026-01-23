@@ -31,8 +31,13 @@ urlpatterns = [
     # mark a single message as read
     path(
         "conversations/<int:conversation_id>/messages/<int:pk>/",
-        MessageViewSet.as_view({"get": "retrieve", "delete": "destroy"}),
+        MessageViewSet.as_view({"get": "retrieve", "delete": "destroy", "patch": "partial_update", "put": "update"}),
         name="conversation-message-detail",
+    ),
+    path(
+        "conversations/<int:conversation_id>/messages/<int:pk>/flag/",
+        MessageViewSet.as_view({"post": "flag"}),
+        name="conversation-message-flag",
     ),
     
     path(

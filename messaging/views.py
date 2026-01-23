@@ -23,7 +23,7 @@ from django.http import FileResponse
 from urllib.parse import urlparse
 
 
-from .models import Conversation, Message, MessageReadReceipt,ConversationPinnedMessage,ConversationPin
+from .models import Conversation, Message, MessageReadReceipt, ConversationPinnedMessage, ConversationPin, MessageFlag
 from .serializers import ConversationSerializer, MessageSerializer,ConversationPinnedMessageOutSerializer
 from .permissions import IsConversationParticipant
 from django.shortcuts import get_object_or_404
@@ -1065,8 +1065,9 @@ class ConversationViewSet(viewsets.ViewSet):
 class MessageViewSet(
     mixins.ListModelMixin,
     mixins.CreateModelMixin,
-    mixins.RetrieveModelMixin,   # <-- add
-    mixins.DestroyModelMixin,    # <-- add
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
     serializer_class = MessageSerializer
@@ -1184,12 +1185,59 @@ class MessageViewSet(
         self.check_object_permissions(self.request, obj)
         return obj
 
+    def _is_host_for_conversation(self, user, conv: Conversation) -> bool:
+        if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
+            return True
+        try:
+            if conv.event_id:
+                return getattr(conv.event, "created_by_id", None) == user.id
+            if conv.lounge_table_id:
+                event = getattr(conv.lounge_table, "event", None)
+                return getattr(event, "created_by_id", None) == user.id
+            if conv.group_id:
+                return getattr(conv.group, "owner_id", None) == user.id
+        except Exception:
+            return False
+        return False
+
+    def _can_moderate_message(self, user, msg: Message) -> bool:
+        if not user or not getattr(user, "is_authenticated", False):
+            return False
+        if msg.sender_id == user.id:
+            return True
+        conv = getattr(msg, "conversation", None)
+        return bool(conv and self._is_host_for_conversation(user, conv))
+
+    def update(self, request, *args, **kwargs):
+        msg = self.get_object()
+        if not self._can_moderate_message(request.user, msg):
+            raise PermissionDenied("Not allowed to edit this message.")
+        body = request.data.get("body", "")
+        if not str(body).strip():
+            return Response({"detail": "Empty message"}, status=status.HTTP_400_BAD_REQUEST)
+        msg.body = body
+        msg.save(update_fields=["body"])
+        serializer = self.get_serializer(msg)
+        return Response(serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
+
     def perform_destroy(self, instance):
+        if not self._can_moderate_message(self.request.user, instance):
+            raise PermissionDenied("Not allowed to delete this message.")
         instance.is_deleted = True
         from django.utils import timezone
         instance.deleted_at = timezone.now()
         instance.save() 
         # The record remains in DB, but get_queryset() filters it out for users
+
+    @action(detail=True, methods=["post"], url_path="flag")
+    def flag(self, request, *args, **kwargs):
+        msg = self.get_object()
+        user = request.user
+        MessageFlag.objects.get_or_create(message=msg, user=user)
+        return Response({"ok": True})
     
     @action(detail=True, methods=["get"], url_path="download-attachment")
     def download_attachment(self, request, *args, **kwargs):

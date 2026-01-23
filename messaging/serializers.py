@@ -1,7 +1,7 @@
 from __future__ import annotations
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
-from .models import Conversation, Message, MessageReadReceipt, ConversationPinnedMessage
+from .models import Conversation, Message, MessageReadReceipt, ConversationPinnedMessage, MessageFlag
 
 User = get_user_model()
 
@@ -227,6 +227,8 @@ class MessageSerializer(serializers.ModelSerializer):
     # keep old clients happy
     is_read = serializers.SerializerMethodField()
     is_pinned = serializers.SerializerMethodField()
+    is_flagged = serializers.SerializerMethodField()
+    is_flagged_by_me = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
@@ -239,7 +241,9 @@ class MessageSerializer(serializers.ModelSerializer):
             "body", "attachments",
             "created_at",
             "read_by_me", "is_read",
-            "is_pinned",   
+            "is_pinned",
+            "is_flagged",
+            "is_flagged_by_me",
         )
         read_only_fields = (
             "id",
@@ -250,7 +254,9 @@ class MessageSerializer(serializers.ModelSerializer):
             "created_at",
             "read_by_me", "is_read",
             "is_hidden", "is_deleted", "deleted_at",
-            "is_pinned",   
+            "is_pinned",
+            "is_flagged",
+            "is_flagged_by_me",
         )
         
     def get_is_pinned(self, obj):
@@ -274,6 +280,41 @@ class MessageSerializer(serializers.ModelSerializer):
         ).filter(
             Q(scope='global') | Q(pinned_by=user)
         ).exists()
+
+    def get_is_flagged(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        conv = getattr(obj, "conversation", None)
+        if not conv:
+            return False
+        # Only hosts/staff should see flagged state
+        if not self._is_host_for_conversation(user, conv):
+            return False
+        return MessageFlag.objects.filter(message_id=obj.id).exists()
+
+    def get_is_flagged_by_me(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        return MessageFlag.objects.filter(message_id=obj.id, user_id=user.id).exists()
+
+    def _is_host_for_conversation(self, user, conv: Conversation) -> bool:
+        if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
+            return True
+        try:
+            if conv.event_id:
+                return getattr(conv.event, "created_by_id", None) == user.id
+            if conv.lounge_table_id:
+                event = getattr(conv.lounge_table, "event", None)
+                return getattr(event, "created_by_id", None) == user.id
+            if conv.group_id:
+                return getattr(conv.group, "owner_id", None) == user.id
+        except Exception:
+            return False
+        return False
 
     # ----- computed fields -----
     def get_read_by_me(self, obj):

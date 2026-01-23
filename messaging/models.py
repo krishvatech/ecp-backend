@@ -243,6 +243,33 @@ class MessageReadReceipt(models.Model):
 
     def __str__(self):
         return f"read: msg={self.message_id} by user={self.user_id} @ {self.read_at}"
+
+class MessageFlag(models.Model):
+    """
+    One row per (message, user) indicating the user flagged the message.
+    """
+    message = models.ForeignKey(
+        Message, on_delete=models.CASCADE, related_name="flags"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="message_flags"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "messaging_message_flag"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["message", "user"], name="uniq_message_flag_by_user"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["message"], name="idx_flag_msg"),
+            models.Index(fields=["user"], name="idx_flag_user"),
+        ]
+
+    def __str__(self):
+        return f"flag: msg={self.message_id} by user={self.user_id}"
     
     
 class ConversationPinnedMessage(models.Model):
