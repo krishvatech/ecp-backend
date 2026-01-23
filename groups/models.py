@@ -133,6 +133,7 @@ class GroupMembership(models.Model):
         related_name='group_invitations_sent'
     )
     joined_at = models.DateTimeField(auto_now_add=True)
+    left_at = models.DateTimeField(null=True, blank=True, help_text="When the member left the group")
 
     class Meta:
         unique_together = ('user', 'group')

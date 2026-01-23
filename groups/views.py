@@ -19,6 +19,9 @@ from pathlib import Path
 from django.utils.text import slugify
 from storages.backends.s3boto3 import S3Boto3Storage
 from django.db import models
+from django.http import HttpResponse
+import csv
+from io import StringIO
 
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter, OpenApiExample
@@ -685,6 +688,63 @@ class GroupViewSet(viewsets.ModelViewSet):
             group=group, status=GroupMembership.STATUS_ACTIVE
         ).select_related("user")
         return Response(GroupMemberOutSerializer(memberships, many=True).data)
+
+    # Use (Endpoint): GET /api/groups/{id}/members/export-csv
+    # - Exports members list as CSV with join/left dates. Admin/Owner only.
+    @action(detail=True, methods=["get"], url_path="members/export-csv")
+    def export_members_csv(self, request, pk=None):
+        """Export group members as CSV (admin/owner only)."""
+        group = self.get_object()
+        
+        # Check if user is admin or owner
+        if not self._can_manage(request, group):
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
+        # Get all memberships (including active and inactive)
+        memberships = GroupMembership.objects.filter(
+            group=group
+        ).select_related("user").order_by("-joined_at")
+        
+        # Create CSV
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow([
+            "User ID",
+            "Name",
+            "Email",
+            "Role",
+            "Status",
+            "Joined Date",
+            "Left Date",
+            "Invited By"
+        ])
+        
+        # Write data rows
+        for membership in memberships:
+            user = membership.user
+            joined_date = membership.joined_at.isoformat() if membership.joined_at else ""
+            left_date = membership.left_at.isoformat() if membership.left_at else ""
+            invited_by = membership.invited_by.get_full_name() or membership.invited_by.username if membership.invited_by else ""
+            
+            writer.writerow([
+                user.id,
+                user.get_full_name() or user.username,
+                user.email,
+                membership.role,
+                membership.status,
+                joined_date,
+                left_date,
+                invited_by
+            ])
+        
+        # Create HTTP response with proper CSV content type
+        csv_content = output.getvalue()
+        response = HttpResponse(csv_content, content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="group_{group.slug}_members.csv"'
+        response["Access-Control-Allow-Origin"] = "*"
+        return response
 
     # Use (Endpoint): POST /api/groups/{id}/members/add-member
     # - Owner/admin add members directly as ACTIVE.
