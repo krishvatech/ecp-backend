@@ -1787,7 +1787,7 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def subgroups(self, request, pk=None):
         parent = self.get_object()
-        qs = Group.objects.filter(parent=parent).select_related('community', 'created_by').order_by('-created_at')  # Ordering: newest first
+        qs = Group.objects.filter(parent=parent).annotate(member_count=Count("memberships")).select_related('community', 'created_by').order_by('-created_at')  # Ordering: newest first
         page = self.paginate_queryset(qs)
         ser = GroupSerializer(page or qs, many=True, context={'request': request})
         if page is not None:
