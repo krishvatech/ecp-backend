@@ -19,6 +19,7 @@ class GroupSerializer(serializers.ModelSerializer):
     # NEW ↓
     membership_status = serializers.SerializerMethodField(read_only=True)
     invited = serializers.SerializerMethodField(read_only=True)
+    parent_group = serializers.SerializerMethodField(read_only=True)
 
     community_id = serializers.PrimaryKeyRelatedField(
         source="community", queryset=Community.objects.all(), required=False
@@ -42,8 +43,9 @@ class GroupSerializer(serializers.ModelSerializer):
             "invited",            # NEW
             "community_id",
             "parent_id",
+            "parent_group",       # NEW
         ]
-    read_only_fields = ["id", "slug", "member_count", "created_by", "owner", "created_at", "updated_at"]
+    read_only_fields = ["id", "slug", "member_count", "created_by", "owner", "created_at", "updated_at", "parent_group"]
 
     def validate(self, attrs):
         """
@@ -146,6 +148,17 @@ class GroupSerializer(serializers.ModelSerializer):
             return False
         m = GroupMembership.objects.filter(group=obj, user_id=uid).only("invited_by_id", "status").first()
         return bool(m and m.status == GroupMembership.STATUS_PENDING and getattr(m, "invited_by_id", None))
+
+    def get_parent_group(self, obj):
+        if not obj.parent_id:
+            return None
+        # obj.parent might hit DB if not select_related, but typically safe for list views if optimized
+        p = obj.parent
+        return {
+            "id": p.id,
+            "name": p.name,
+            "slug": p.slug
+        }
 
 class GroupSettingsSerializer(serializers.ModelSerializer):
     """
