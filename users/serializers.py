@@ -107,6 +107,7 @@ class UserProfileMiniSerializer(serializers.ModelSerializer):
             "headline",
             "company",
             "location",
+            "links",              # Added for contact information (emails, phones, etc.)
             "last_activity_at",   # read-only field
             "is_online",          # computed
         )
