@@ -187,3 +187,73 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "upvote_count": question.upvoters.count(),
             "upvoters": upvoters_list
         })
+
+    def perform_update(self, serializer):
+        """
+        Update a question.
+        Permission: Owner OR Host (event.created_by).
+        Broadcast: 'qna.update'
+        """
+        instance = serializer.instance
+        user = self.request.user
+        
+        # Permission check
+        is_owner = (user == instance.user)
+        is_host = (user == instance.event.created_by)
+        
+        if not (is_owner or is_host):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("You do not have permission to edit this question.")
+
+        question = serializer.save()
+
+        # Broadcast update
+        group = f"event_qna_{question.event_id}_qnaconsumer"
+        channel_layer = get_channel_layer()
+        
+        payload = {
+            "type": "qna.update",
+            "event_id": question.event_id,
+            "question_id": question.id,
+            "content": question.content,
+        }
+        
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.question", "payload": payload}, 
+        )
+
+    def perform_destroy(self, instance):
+        """
+        Delete a question.
+        Permission: Owner OR Host.
+        Broadcast: 'qna.delete'
+        """
+        user = self.request.user
+        event_id = instance.event_id
+        q_id = instance.id
+        
+        # Permission check
+        is_owner = (user == instance.user)
+        is_host = (user == instance.event.created_by)
+        
+        if not (is_owner or is_host):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("You do not have permission to delete this question.")
+
+        instance.delete()
+
+        # Broadcast delete
+        group = f"event_qna_{event_id}_qnaconsumer"
+        channel_layer = get_channel_layer()
+
+        payload = {
+            "type": "qna.delete",
+            "event_id": event_id,
+            "question_id": q_id,
+        }
+
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.question", "payload": payload}, 
+        )
