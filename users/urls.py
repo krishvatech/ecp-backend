@@ -48,7 +48,7 @@ router.register(r"admin/name-requests", AdminNameChangeRequestViewSet, basename=
 
 urlpatterns = [
     # Email + password login (returns refresh + access)
-    path("login/", EmailTokenObtainPairView.as_view(), name="login"),
+    # path("login/", EmailTokenObtainPairView.as_view(), name="login"),
     path("logout/", LogoutView.as_view(), name="logout"),
     path("wagtail/session/", WagtailSessionFromCognitoView.as_view(), name="wagtail-session"),
     path("wagtail/logout/", WagtailLogoutView.as_view(), name="wagtail-logout"),
@@ -56,8 +56,8 @@ urlpatterns = [
     path("saleor/sso/", SaleorDashboardSsoView.as_view(), name="saleor-sso"),
 
     # Also allow obtaining tokens at /token/
-    path("token/", EmailTokenObtainPairView.as_view(), name="token_obtain_pair_email"),
-    path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    # path("token/", EmailTokenObtainPairView.as_view(), name="token_obtain_pair_email"),
+    # path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 
     # Registration & password flows
     path("register/", RegisterView.as_view(), name="register"),
