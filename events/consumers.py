@@ -5,6 +5,7 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 import random
+from .utils import create_dyte_meeting
 
 class EventConsumer(AsyncJsonWebsocketConsumer):
     """Consumer to handle real-time communication within an event, including Social Lounge state."""
@@ -64,12 +65,17 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             await self.broadcast_lounge_update()
 
         elif action == "random_assign":
-            if not await self.is_host():
-                print(f"[CONSUMER] DENIED random_assign: User {self.user.username} is not a host.")
-                await self.send_json({"type": "error", "message": "Only hosts can perform random assignment."})
-                return
-            per_room = content.get("per_room", 4)
-            await self.perform_random_assignment_and_notify(per_room)
+            try:
+                per_room = int(content.get("per_room", 4))
+                if not await self.is_host():
+                    print(f"[CONSUMER] DENIED random_assign: User {self.user.username} is not a host.")
+                    await self.send_debug_to_host("Action denied: Not a host")
+                    return
+                
+                await self.perform_random_assignment_and_notify(per_room)
+            except Exception as e:
+                print(f"[CONSUMER] ERROR in random_assign: {str(e)}")
+                await self.send_debug_to_host(f"Error during random assignment: {str(e)}")
 
         elif action == "start_timer":
             if not await self.is_host(): return
@@ -231,39 +237,47 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         ).exclude(user_id=self.user.id).select_related('user')
         
         users = [reg.user for reg in list(registrations)]
-        print(f"[RANDOM_ASSIGN] Found {len(users)} online attendees: {[u.username for u in users]}")
+        print(f"[RANDOM_ASSIGN] Found {len(users)} online attendees.")
+        if not users:
+            return []
         random.shuffle(users)
 
-        # 2. Get tables
-        tables = list(LoungeTable.objects.filter(event_id=self.event_id).order_by('id'))
-        print(f"[RANDOM_ASSIGN] Found {len(tables)} tables")
-        if not tables or not users:
-            return []
+        # 2. Ensure we have enough BREAKOUT tables
+        num_rooms_needed = (len(users) + per_room - 1) // per_room if per_room > 0 else 1
+        tables = list(LoungeTable.objects.filter(event_id=self.event_id, category='BREAKOUT').order_by('id'))
+        
+        while len(tables) < num_rooms_needed:
+            room_num = len(tables) + 1
+            name = f"Breakout Room #{room_num}"
+            print(f"[RANDOM_ASSIGN] Auto-creating {name}")
+            mid = create_dyte_meeting(f"Breakout {self.event_id} - {room_num}")
+            t = LoungeTable.objects.create(
+                event_id=self.event_id,
+                name=name,
+                category='BREAKOUT',
+                max_seats=max(per_room, 10),
+                dyte_meeting_id=mid
+            )
+            tables.append(t)
 
+        # 3. Perform assignments
         with transaction.atomic():
-            # Clear old assignments
+            # Clear all current assignments in the event
             LoungeParticipant.objects.filter(table__event_id=self.event_id).delete()
             
             assignments = []
             table_idx = 0
-            # If per_room is 1, we try to put 1 person per table. 
-            # If we run out of tables, we stop OR we could overflow. 
-            # For "Airmeet" feel, usually people per room is a target.
-            
             for user in users:
-                if table_idx >= len(tables):
-                    break 
-                
+                if table_idx >= len(tables): break
                 table = tables[table_idx]
-                # Check if this table is already full based on 'per_room'
-                table_current_count = len([a for a in assignments if a[1] == table.id])
                 
-                if table_current_count >= per_room or table_current_count >= table.max_seats:
+                # Check occupancy in current assignments list
+                current_count = len([a for a in assignments if a[1] == table.id])
+                if current_count >= per_room:
                     table_idx += 1
-                    if table_idx >= len(tables):
-                        break
+                    if table_idx >= len(tables): break
                     table = tables[table_idx]
-
+                
                 LoungeParticipant.objects.create(
                     table=table,
                     user=user,
@@ -271,13 +285,19 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 )
                 assignments.append((user.id, table.id))
             
+            print(f"[RANDOM_ASSIGN] Completed: Created {len(assignments)} assignments.")
             return assignments
 
     async def perform_random_assignment_and_notify(self, per_room):
         assignments = await self.perform_random_assignment(per_room)
         
         if not assignments:
+            msg = "No assignments created. Possibly no tables or no users online."
+            print(f"[RANDOM_ASSIGN] {msg}")
+            await self.send_debug_to_host(msg)
             return
+        
+        await self.send_debug_to_host(f"Created {len(assignments)} assignments across rooms.")
             
         await self.broadcast_lounge_update()
         
@@ -325,6 +345,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             state.append({
                 "id": t.id,
                 "name": t.name,
+                "category": t.category,
                 "max_seats": t.max_seats,
                 "dyte_meeting_id": t.dyte_meeting_id,
                 "icon_url": icon_url,

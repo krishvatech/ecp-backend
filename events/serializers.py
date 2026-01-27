@@ -65,6 +65,7 @@ class EventSerializer(serializers.ModelSerializer):
             "timezone",
             "status",
             "is_live",
+            "is_on_break",
             "category",
             "format",
             "location",
@@ -86,6 +87,12 @@ class EventSerializer(serializers.ModelSerializer):
             "resource_links",
             "resource_videos",
             "resources",
+            "lounge_enabled_before",
+            "lounge_before_buffer",
+            "lounge_enabled_during",
+            "lounge_enabled_breaks",
+            "lounge_enabled_after",
+            "lounge_after_buffer",
         ]
         
         read_only_fields = [

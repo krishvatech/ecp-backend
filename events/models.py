@@ -51,6 +51,7 @@ class Event(models.Model):
     timezone = models.CharField(max_length=64, default=settings.TIME_ZONE, blank=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="draft")
     is_live = models.BooleanField(default=False)
+    is_on_break = models.BooleanField(default=False)
     # New fields
     category = models.CharField(max_length=100, blank=True)
     format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default="in_person")
@@ -95,6 +96,15 @@ class Event(models.Model):
     live_ended_at = models.DateTimeField(null=True, blank=True)
     idle_started_at = models.DateTimeField(null=True, blank=True)
     ended_by_host = models.BooleanField(default=False)
+
+    # Lounge Settings
+    lounge_enabled_before = models.BooleanField(default=False)
+    lounge_before_buffer = models.PositiveIntegerField(default=30)  # minutes
+    lounge_enabled_during = models.BooleanField(default=True)
+    lounge_enabled_breaks = models.BooleanField(default=False)
+    lounge_enabled_after = models.BooleanField(default=False)
+    lounge_after_buffer = models.PositiveIntegerField(default=30)  # minutes
+
     class Meta:
         ordering = ["-created_at"]
     def save(self, *args, **kwargs):
@@ -112,8 +122,13 @@ class Event(models.Model):
 
 class LoungeTable(models.Model):
     """Represents a virtual table in the Social Lounge."""
+    TABLE_CATEGORY_CHOICES = [
+        ("LOUNGE", "Social Lounge"),
+        ("BREAKOUT", "Breakout Room"),
+    ]
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="lounge_tables")
     name = models.CharField(max_length=255)
+    category = models.CharField(max_length=20, choices=TABLE_CATEGORY_CHOICES, default="LOUNGE")
     max_seats = models.IntegerField(default=4)
     dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     icon = models.ImageField(upload_to=lounge_table_icon_upload_to, blank=True, null=True)

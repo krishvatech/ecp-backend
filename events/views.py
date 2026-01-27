@@ -55,10 +55,11 @@ from rest_framework.response import Response
 
 from .models import Event, EventRegistration, LoungeTable, LoungeParticipant
 from .serializers import (
-    EventSerializer,                 # If you use it in this file for create/update/detail
-    EventLiteSerializer,             # For lighter list/mine responses
-    EventRegistrationSerializer,     # Used by EventRegistrationViewSet
+    EventSerializer,
+    EventLiteSerializer,
+    EventRegistrationSerializer,
 )
+from .utils import DYTE_API_BASE, DYTE_AUTH_HEADER, DYTE_PRESET_HOST, DYTE_PRESET_PARTICIPANT, _dyte_headers, create_dyte_meeting
 
 # ============================================================
 # ================== Env / Settings Bootstrap ================
@@ -76,41 +77,24 @@ User = get_user_model()
 
 logger = logging.getLogger("events")
 
-# --- Dyte configuration ---
-DYTE_API_BASE = os.getenv("DYTE_API_BASE", "https://api.dyte.io/v2")
-DYTE_AUTH_HEADER = os.getenv("DYTE_AUTH_HEADER", "")
-DYTE_PRESET_HOST = os.getenv("DYTE_PRESET_NAME_HOST", os.getenv("DYTE_PRESET_NAME", "group_call_host"))
-DYTE_PRESET_PARTICIPANT = os.getenv("DYTE_PRESET_NAME_MEMBER", "group_call_participant")
-AWS_S3_BUCKET = os.getenv("AWS_BUCKET_NAME", "events-agora-recordings")
-AWS_S3_REGION = os.getenv("AWS_S3_REGION", "eu-central-1") 
-logger = logging.getLogger(__name__)
-
 # --- Cloudflare RealtimeKit recording config ---
 RTK_API_BASE = os.getenv("RTK_API_BASE", "https://api.realtime.cloudflare.com/v2")
 RTK_ORG_ID = os.getenv("RTK_ORG_ID", "")
 RTK_API_KEY = os.getenv("RTK_API_KEY", "")
 
-
+# RTK helpers remain here as they are only used in views
 def _rtk_headers():
     """
     HTTP headers for Cloudflare RealtimeKit REST API.
     Uses Basic auth with base64("<ORG_ID>:<API_KEY>").
     """
     if not (RTK_ORG_ID and RTK_API_KEY):
-        raise RuntimeError("RTK_ORG_ID / RTK_API_KEY are not configured")
+        return {} # Fallback
+    import base64
     token_bytes = f"{RTK_ORG_ID}:{RTK_API_KEY}".encode("utf-8")
     basic_token = base64.b64encode(token_bytes).decode("ascii")
     return {
         "Authorization": f"Basic {basic_token}",
-        "Content-Type": "application/json",
-    }
-
-def _dyte_headers():
-    """HTTP headers for Dyte REST API."""
-    if not DYTE_AUTH_HEADER:
-        raise RuntimeError("DYTE_AUTH_HEADER is not configured")
-    return {
-        "Authorization": DYTE_AUTH_HEADER,
         "Content-Type": "application/json",
     }
 
@@ -945,6 +929,47 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="lounge-state")
     def lounge_state(self, request, pk=None):
         """Fetch the current state of the Social Lounge for this event."""
+        event = self.get_object()
+        
+        def _get_status(event):
+            now = timezone.now()
+            # Before
+            if event.lounge_enabled_before and event.start_time:
+                opening = event.start_time - timedelta(minutes=event.lounge_before_buffer)
+                if opening <= now < event.start_time:
+                    return "OPEN", "Pre-event networking", event.start_time
+                if now < opening:
+                    return "CLOSED", f"Lounge opens {event.lounge_before_buffer}m before event", opening
+
+            # During
+            if event.is_live:
+                if event.is_on_break:
+                    if event.lounge_enabled_breaks:
+                        return "OPEN", "Event is on break", event.end_time
+                    else:
+                        return "CLOSED", "Lounge closed during breaks", None
+                
+                if event.lounge_enabled_during:
+                    return "OPEN", "Event is live", event.live_ended_at
+                else:
+                    return "CLOSED", "Lounge closed during live sessions", None
+            
+            # After
+            if event.live_ended_at:
+                if event.lounge_enabled_after:
+                    closing = event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)
+                    if event.live_ended_at <= now < closing:
+                        return "OPEN", "Post-event networking", closing
+                    if now >= closing:
+                        return "CLOSED", "Lounge is now closed", None
+
+            if event.status == "ended":
+                return "CLOSED", "Lounge is closed (event ended)", None
+            
+            return "CLOSED", "Lounge is currently closed", event.start_time
+
+        status_code, reason, next_change = _get_status(event)
+
         def _avatar_url(user_obj):
             profile = getattr(user_obj, "profile", None)
             img = getattr(profile, "user_image", None) if profile else None
@@ -983,12 +1008,21 @@ class EventViewSet(viewsets.ModelViewSet):
             state.append({
                 "id": t.id,
                 "name": t.name,
+                "category": t.category,
                 "max_seats": t.max_seats,
                 "dyte_meeting_id": t.dyte_meeting_id,
                 "icon_url": icon_url,
                 "participants": participants
             })
-        return Response({"tables": state})
+        
+        return Response({
+            "tables": state,
+            "lounge_open_status": {
+                "status": status_code,
+                "reason": reason,
+                "next_change": next_change
+            }
+        })
 
     @action(detail=True, methods=["post"], url_path="create-lounge-table")
     def create_lounge_table(self, request, pk=None):
@@ -999,12 +1033,13 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Not authorized"}, status=403)
 
         name = request.data.get("name", "New Table")
+        category = request.data.get("category", "LOUNGE")
         max_seats = int(request.data.get("max_seats", 4))
         icon_file = request.FILES.get("icon") if hasattr(request, "FILES") else None
 
         # Create table with a unique Dyte meeting
         payload = {
-            "title": f"{event.title} - {name}",
+            "title": f"[{category}] {event.title} - {name}",
             "record_on_start": False,
         }
         try:
@@ -1018,6 +1053,7 @@ class EventViewSet(viewsets.ModelViewSet):
         table = LoungeTable.objects.create(
             event=event,
             name=name,
+            category=category,
             max_seats=max_seats,
             dyte_meeting_id=dyte_id,
             icon=icon_file,
