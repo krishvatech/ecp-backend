@@ -3,6 +3,7 @@ from channels.db import database_sync_to_async
 from .models import LoungeTable, LoungeParticipant, Event, EventRegistration
 from django.contrib.auth.models import User
 from django.db import transaction
+from django.utils import timezone
 import random
 
 class EventConsumer(AsyncJsonWebsocketConsumer):
@@ -195,6 +196,24 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 reg.is_online = (reg.online_count > 0)
                 reg.save(update_fields=['online_count', 'is_online'])
                 print(f"[CONSUMER] User {self.user.username} (ID:{self.user.id}): count={reg.online_count}, online={reg.is_online}")
+
+                online_total = EventRegistration.objects.filter(
+                    event_id=self.event_id,
+                    is_online=True,
+                ).count()
+
+                if online_total == 0:
+                    Event.objects.filter(
+                        id=self.event_id,
+                        is_live=True,
+                        idle_started_at__isnull=True,
+                    ).update(idle_started_at=timezone.now())
+                else:
+                    Event.objects.filter(
+                        id=self.event_id,
+                        is_live=True,
+                        idle_started_at__isnull=False,
+                    ).update(idle_started_at=None)
         except Exception as e:
             print(f"[CONSUMER] Error updating online status for {self.user.username}: {e}")
 

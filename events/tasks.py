@@ -1,10 +1,13 @@
 from celery import shared_task
+from datetime import timedelta
 from django.conf import settings
-from .models import Event
+from django.utils import timezone
+from .models import Event, EventRegistration
 import requests
 import logging
 
 logger = logging.getLogger('events')
+IDLE_TIMEOUT_MINUTES = 15
 
 def run_saleor_mutation(query, variables=None):
     url = settings.SALEOR_API_URL
@@ -154,3 +157,49 @@ def sync_event_to_saleor(event_id):
 def example_cleanup_task() -> str:
     """Return a string with the current timestamp to verify Celery runs."""
     return f"Cleanup ran at {timezone.now().isoformat()}"
+
+
+def _end_event_from_system(event, reason: str) -> None:
+    event.status = "ended"
+    event.is_live = False
+    event.live_ended_at = timezone.now()
+    event.ended_by_host = False
+    event.save(update_fields=["status", "is_live", "live_ended_at", "ended_by_host", "updated_at"])
+
+    try:
+        from .views import _stop_rtk_recording_for_event
+        _stop_rtk_recording_for_event(event)
+    except Exception:
+        pass
+
+    logger.info("Ended event %s (%s)", event.id, reason)
+
+
+@shared_task
+def enforce_event_end_conditions() -> dict:
+    """
+    End events when:
+      - No participants (including host) are present for 15 continuous minutes.
+      - Host is absent and official end time has been reached.
+    """
+    now = timezone.now()
+    qs = Event.objects.filter(is_live=True, status="live")
+    ended = 0
+
+    for event in qs:
+        if event.idle_started_at and now - event.idle_started_at >= timedelta(minutes=IDLE_TIMEOUT_MINUTES):
+            _end_event_from_system(event, "idle_timeout")
+            ended += 1
+            continue
+
+        if event.end_time and now >= event.end_time:
+            host_online = EventRegistration.objects.filter(
+                event_id=event.id,
+                user_id=event.created_by_id,
+                is_online=True,
+            ).exists()
+            if not host_online:
+                _end_event_from_system(event, "host_absent_end_time")
+                ended += 1
+
+    return {"checked": qs.count(), "ended": ended}

@@ -345,6 +345,13 @@ class IsCreatorOrReadOnly(BasePermission):
             and (request.user.is_staff or obj.created_by_id == request.user.id)
         )
 
+def _is_event_host(user, event) -> bool:
+    return bool(
+        user
+        and user.is_authenticated
+        and (user.is_staff or getattr(user, "is_superuser", False) or event.created_by_id == user.id)
+    )
+
 
 # ============================================================
 # ======================== Event ViewSet =====================
@@ -666,6 +673,9 @@ class EventViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             event = get_object_or_404(self.get_queryset().model.objects.select_for_update(), pk=pk)
 
+            if not _is_event_host(request.user, event):
+                return Response({"detail": "Only the host can update live status."}, status=403)
+
             if action_type == "start":
                 event.status = "live"
                 event.is_live = True
@@ -673,10 +683,13 @@ class EventViewSet(viewsets.ModelViewSet):
                 event.live_ended_at = None
                 event.active_speaker_id = host_user_id or event.created_by_id
                 event.attending_count = 0
+                event.idle_started_at = None
+                event.ended_by_host = False
             else:  # end
                 event.status = "ended"
                 event.is_live = False
                 event.live_ended_at = timezone.now()
+                event.ended_by_host = True
 
             event.save(update_fields=[
                 "status",
@@ -685,6 +698,8 @@ class EventViewSet(viewsets.ModelViewSet):
                 "live_ended_at",
                 "active_speaker_id",
                 "attending_count",
+                "idle_started_at",
+                "ended_by_host",
                 "updated_at",
             ])
 
@@ -772,14 +787,18 @@ class EventViewSet(viewsets.ModelViewSet):
 
         We trust Dyte's own permissions: only the host can click
         "End meeting for all" in the UI. Here we just persist that state.
-        Any authenticated participant may hit this; repeated calls are harmless.
+        Repeated calls from the host are harmless.
         """
         event = self.get_object()
+
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can end the meeting."}, status=403)
 
         event.status = "ended"
         event.is_live = False
         event.live_ended_at = timezone.now()
-        event.save(update_fields=["status", "is_live", "live_ended_at", "updated_at"])
+        event.ended_by_host = True
+        event.save(update_fields=["status", "is_live", "live_ended_at", "ended_by_host", "updated_at"])
 
         # 🛑 Stop recording when meeting ends
         try:

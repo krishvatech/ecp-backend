@@ -426,6 +426,13 @@ CELERY_BEAT_SCHEDULE.update({
     }
 })
 
+CELERY_BEAT_SCHEDULE.update({
+    "enforce_event_end_conditions": {
+        "task": "events.tasks.enforce_event_end_conditions",
+        "schedule": crontab(minute="*/1"),
+    }
+})
+
 # Security headers and cookie defaults
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_BROWSER_XSS_FILTER = True

@@ -93,6 +93,8 @@ class Event(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     live_started_at = models.DateTimeField(null=True, blank=True)
     live_ended_at = models.DateTimeField(null=True, blank=True)
+    idle_started_at = models.DateTimeField(null=True, blank=True)
+    ended_by_host = models.BooleanField(default=False)
     class Meta:
         ordering = ["-created_at"]
     def save(self, *args, **kwargs):
