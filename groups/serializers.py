@@ -202,8 +202,12 @@ class GroupMemberOutSerializer(serializers.ModelSerializer):
         u = obj.user
         name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", "")
         avatar = getattr(u, "avatar", None)
-        if not avatar and hasattr(u, "profile") and hasattr(u.profile, "avatar"):
-            avatar = getattr(u.profile, "avatar", None)
+        if not avatar and hasattr(u, "profile"):
+            # Check user_image (the actual field in UserProfile model)
+            avatar = getattr(u.profile, "user_image", None)
+            # Fallback to avatar if user_image doesn't exist
+            if not avatar:
+                avatar = getattr(u.profile, "avatar", None)
         if hasattr(avatar, "url"):
             avatar = avatar.url
         return {"id": u.pk, "name": name or None, "email": getattr(u, "email", None), "avatar": avatar}
