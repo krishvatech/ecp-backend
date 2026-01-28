@@ -62,9 +62,15 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         pk = self.kwargs.get(getattr(self, "lookup_field", "pk"))
         if pk is not None:
             try:
-                return qs.select_related("actor").filter(pk=int(pk))
+                qs = qs.select_related("actor").filter(pk=int(pk))
+                if not (me.is_staff or me.is_superuser):
+                    qs = qs.filter(Q(moderation_status__in=["clear", "under_review"]) | Q(actor_id=me.id))
+                return qs
             except (TypeError, ValueError):
                 return qs.none()
+
+        if not (me.is_staff or me.is_superuser):
+            qs = qs.filter(Q(moderation_status__in=["clear", "under_review"]) | Q(actor_id=me.id))
 
         scope = req.query_params.get("scope", "member_groups")  # existing default
         # Optional: allow narrowing to one community

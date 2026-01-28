@@ -186,6 +186,7 @@ INSTALLED_APPS = [
     'groups',
     'friends',
     'engagements',
+    "moderation",
     
     "drf_spectacular",
     "drf_spectacular_sidecar",
@@ -245,6 +246,9 @@ DATABASES = {
 
 # Redis configuration used for cache, channel layers, and Celery
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# Moderation settings
+MODERATION_AUTO_REVIEW_THRESHOLD = int(os.getenv("MODERATION_AUTO_REVIEW_THRESHOLD", "3"))
 
 CACHES = {
     "default": {

@@ -99,6 +99,50 @@ class UserProfile(models.Model):
     # --- Saleor Integration ---
     saleor_customer_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
 
+    # --- Profile Moderation ---
+    PROFILE_STATUS_ACTIVE = "active"
+    PROFILE_STATUS_UNDER_REVIEW = "under_review"
+    PROFILE_STATUS_SUSPENDED = "suspended"
+    PROFILE_STATUS_DECEASED = "deceased"
+    PROFILE_STATUS_FAKE = "fake"
+
+    PROFILE_STATUS_CHOICES = [
+        (PROFILE_STATUS_ACTIVE, "Active"),
+        (PROFILE_STATUS_UNDER_REVIEW, "Under review"),
+        (PROFILE_STATUS_SUSPENDED, "Suspended"),
+        (PROFILE_STATUS_DECEASED, "Deceased"),
+        (PROFILE_STATUS_FAKE, "Fake/Impersonation"),
+    ]
+
+    profile_status = models.CharField(
+        max_length=20,
+        choices=PROFILE_STATUS_CHOICES,
+        default=PROFILE_STATUS_ACTIVE,
+        db_index=True,
+    )
+    profile_status_reason = models.TextField(
+        blank=True,
+        help_text="Reason for status change"
+    )
+    profile_status_updated_at = models.DateTimeField(null=True, blank=True)
+    profile_status_updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="profile_status_changes"
+    )
+
+    # Deceased-specific fields
+    is_deceased = models.BooleanField(default=False, db_index=True)
+    deceased_date = models.DateField(null=True, blank=True)
+    memorialized_at = models.DateTimeField(null=True, blank=True)
+    legacy_contacts = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        blank=True,
+        related_name="legacy_profiles",
+        help_text="Users who can manage this deceased profile"
+    )
 
     @property
     def is_online(self):
@@ -117,6 +161,8 @@ class UserProfile(models.Model):
             models.Index(fields=["company"]),
             models.Index(fields=["location"]),
             models.Index(fields=["last_activity_at"]),
+            models.Index(fields=["profile_status"]),
+            models.Index(fields=["is_deceased"]),
         ]
     
 class EscoSkill(models.Model):

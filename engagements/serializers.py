@@ -24,6 +24,18 @@ def get_ct(value: str) -> ContentType:
     except Exception:
         raise serializers.ValidationError("Invalid target_type. Use CT id or 'app_label.ModelName'.")
 
+def _moderation_status_for_target(ct: ContentType, object_id: int):
+    if ct == ContentType.objects.get_for_model(FeedItem):
+        return FeedItem.objects.filter(pk=object_id).values_list("moderation_status", flat=True).first()
+    if ct == ContentType.objects.get_for_model(Comment):
+        return Comment.objects.filter(pk=object_id).values_list("moderation_status", flat=True).first()
+    return None
+
+def _ensure_target_engageable(ct: ContentType, object_id: int):
+    status = _moderation_status_for_target(ct, object_id)
+    if status in {"under_review", "removed"}:
+        raise serializers.ValidationError("This content is under review and cannot be engaged with.")
+
 
 # Small user projection (kept in case used elsewhere)
 class MiniUserSerializer(serializers.Serializer):
@@ -44,6 +56,11 @@ class CommentSerializer(serializers.ModelSerializer):
     user = serializers.SerializerMethodField(read_only=True)
     like_count = serializers.SerializerMethodField(read_only=True)
     user_has_liked = serializers.SerializerMethodField(read_only=True)
+    moderation_status = serializers.CharField(read_only=True)
+    is_under_review = serializers.SerializerMethodField()
+    is_removed = serializers.SerializerMethodField()
+    can_engage = serializers.SerializerMethodField()
+    is_blurred = serializers.SerializerMethodField()
 
     # write-only generic target
     target_type = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
@@ -61,12 +78,28 @@ class CommentSerializer(serializers.ModelSerializer):
             "user_has_liked",
             "created_at",
             "updated_at",
+            "moderation_status",
+            "is_under_review",
+            "is_removed",
+            "can_engage",
+            "is_blurred",
             # write-only:
             "target_type",
             "target_id",
             "feed_item",
         ]
-        read_only_fields = ["user", "like_count", "user_has_liked", "created_at", "updated_at"]
+        read_only_fields = [
+            "user",
+            "like_count",
+            "user_has_liked",
+            "created_at",
+            "updated_at",
+            "moderation_status",
+            "is_under_review",
+            "is_removed",
+            "can_engage",
+            "is_blurred",
+        ]
 
     def _mini_user_payload(self, user):
         """
@@ -95,6 +128,30 @@ class CommentSerializer(serializers.ModelSerializer):
             return False
         ct = ContentType.objects.get_for_model(Comment)
         return Reaction.objects.filter(content_type=ct, object_id=obj.id, user=request.user).exists()
+
+    def _viewer_is_staff(self):
+        req = self.context.get("request")
+        user = getattr(req, "user", None) if req else None
+        return bool(user and user.is_authenticated and (user.is_staff or user.is_superuser))
+
+    def _viewer_is_author(self, obj):
+        req = self.context.get("request")
+        user = getattr(req, "user", None) if req else None
+        return bool(user and user.is_authenticated and getattr(obj, "user_id", None) == user.id)
+
+    def get_is_under_review(self, obj):
+        return getattr(obj, "moderation_status", None) == getattr(obj, "MOD_STATUS_UNDER_REVIEW", "under_review")
+
+    def get_is_removed(self, obj):
+        return getattr(obj, "moderation_status", None) == getattr(obj, "MOD_STATUS_REMOVED", "removed")
+
+    def get_can_engage(self, obj):
+        return not self.get_is_under_review(obj) and not self.get_is_removed(obj)
+
+    def get_is_blurred(self, obj):
+        if not self.get_is_under_review(obj):
+            return False
+        return not (self._viewer_is_staff() or self._viewer_is_author(obj))
 
     def create(self, validated_data):
         # pop helpers (may be missing)
@@ -127,6 +184,11 @@ class CommentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "target_id": ["Provide target_id or feed_item, or pass parent, or include target_type+target_id."]
             })
+
+        # moderation checks
+        if parent and getattr(parent, "moderation_status", None) in {"under_review", "removed"}:
+            raise serializers.ValidationError("This comment is under review and cannot be replied to.")
+        _ensure_target_engageable(ct, oid)
 
         return Comment.objects.create(
             content_type=ct,
@@ -271,6 +333,7 @@ class ShareWriteSerializer(serializers.Serializer):
         tid = validated_data.get("target_id")
         feed_item = validated_data.get("feed_item")
         ct, oid = self._resolve_target(ttype, tid, feed_item)
+        _ensure_target_engageable(ct, oid)
 
         # --- create Share rows (existing behaviour) ---
         rows = []

@@ -19,6 +19,7 @@ from .models import Education, Experience
 class UserProfileInline(admin.StackedInline):
     model = UserProfile
     can_delete = False
+    fk_name = "user"
 
 
 class UserAdmin(admin.ModelAdmin):

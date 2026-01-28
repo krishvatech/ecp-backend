@@ -260,7 +260,8 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         # ------- LIST -------
         if request.method.lower() == "get":
-            items = (FeedItem.objects
+            # Base queryset (all posts for this group)
+            base_items = (FeedItem.objects
                     .filter(
                         # prefer FK (new rows)
                         models.Q(group_id=group.id)
@@ -268,9 +269,28 @@ class GroupViewSet(viewsets.ModelViewSet):
                         | models.Q(target_content_type=ct, target_object_id=group.id)
                     )
                     .filter(community_id=getattr(group, "community_id", None))
-                    .exclude(metadata__is_deleted=True) 
-                    .order_by("-created_at")
+                    .exclude(metadata__is_deleted=True)
                 )
+
+            # Count total posts before moderation filter
+            total_posts_count = base_items.count()
+
+            # Count removed posts (for metadata)
+            removed_count = base_items.filter(moderation_status="removed").count()
+
+            # Filter moderation status: hide removed posts unless user is staff/admin or the author
+            me = request.user
+            is_staff_or_super = getattr(me, "is_staff", False) or getattr(me, "is_superuser", False)
+
+            if not is_staff_or_super:
+                items = base_items.filter(
+                    models.Q(moderation_status__in=["clear", "under_review"])
+                    | models.Q(actor_id=me.id)
+                )
+            else:
+                items = base_items
+
+            items = items.order_by("-created_at")
 
             out = []
             for it in items:
@@ -286,7 +306,13 @@ class GroupViewSet(viewsets.ModelViewSet):
                     "created_at": getattr(it, "created_at", None),
                     "created_by": self._user_short(getattr(it, "actor", None)),
                 }
-                
+
+                # Include moderation status for frontend rendering
+                row["moderation_status"] = getattr(it, "moderation_status", "clear")
+                row["is_removed"] = (row["moderation_status"] == "removed")
+                row["is_under_review"] = (row["moderation_status"] == "under_review")
+                row["can_engage"] = (row["moderation_status"] == "clear")
+
                 row["is_hidden"]  = bool(meta.get("is_hidden"))
                 row["is_deleted"] = bool(meta.get("is_deleted"))
 
@@ -313,7 +339,16 @@ class GroupViewSet(viewsets.ModelViewSet):
                     continue
                 out.append(row)
 
-            return Response(out)
+            # Return response with metadata about moderation state
+            return Response({
+                "results": out,
+                "meta": {
+                    "total_posts": total_posts_count,
+                    "visible_posts": len(out),
+                    "removed_posts": removed_count,
+                    "has_removed_posts": removed_count > 0 and len(out) == 0,
+                }
+            })
 
         # ------- CREATE -------
         # Only owner/admin/moderator (your helper already knows this)

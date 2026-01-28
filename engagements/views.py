@@ -5,7 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from typing import Optional
 from rest_framework.exceptions import ValidationError
-from django.db.models import Count
+from django.db.models import Count, Q
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 
@@ -18,7 +18,8 @@ from .serializers import (
     ReactionToggleSerializer,
     ReactionUserSerializer,
     ShareReadSerializer,
-    ShareWriteSerializer
+    ShareWriteSerializer,
+    _ensure_target_engageable,
 )
 
 def _ct_for_feed_item() -> ContentType:
@@ -149,6 +150,10 @@ class CommentViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = super().get_queryset()
 
+        user = getattr(self.request, "user", None)
+        if user and user.is_authenticated and not (user.is_staff or user.is_superuser):
+            qs = qs.filter(Q(moderation_status__in=["clear", "under_review"]) | Q(user_id=user.id))
+
         # For detail routes, do NOT narrow the queryset
         if getattr(self, "action", None) in ("retrieve", "update", "partial_update", "destroy"):
             return qs
@@ -191,6 +196,9 @@ class CommentViewSet(viewsets.ModelViewSet):
     @action(methods=["get"], detail=True, url_path="replies")
     def replies(self, request, pk=None):
         qs = Comment.objects.select_related("user").filter(parent_id=pk)
+        user = getattr(request, "user", None)
+        if user and user.is_authenticated and not (user.is_staff or user.is_superuser):
+            qs = qs.filter(Q(moderation_status__in=["clear", "under_review"]) | Q(user_id=user.id))
         page = self.paginate_queryset(qs)
         ser = self.get_serializer(page or qs, many=True)
         if page is not None:
@@ -233,6 +241,7 @@ class ReactionViewSet(viewsets.GenericViewSet):
         reaction = ser.validated_data["reaction"]
 
         ct = _ct_from_param_or_feeditem_default(target_type)
+        _ensure_target_engageable(ct, target_id)
 
         # ✅ one reaction per user+target
         existing = Reaction.objects.filter(

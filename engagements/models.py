@@ -13,6 +13,21 @@ class Comment(models.Model):
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     text = models.TextField()
+    MOD_STATUS_CLEAR = "clear"
+    MOD_STATUS_UNDER_REVIEW = "under_review"
+    MOD_STATUS_REMOVED = "removed"
+    MODERATION_STATUS_CHOICES = [
+        (MOD_STATUS_CLEAR, "Clear"),
+        (MOD_STATUS_UNDER_REVIEW, "Under review"),
+        (MOD_STATUS_REMOVED, "Removed"),
+    ]
+    moderation_status = models.CharField(
+        max_length=20,
+        choices=MODERATION_STATUS_CHOICES,
+        default=MOD_STATUS_CLEAR,
+        db_index=True,
+    )
+    moderation_updated_at = models.DateTimeField(null=True, blank=True)
     parent = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.CASCADE, related_name="replies"
     )

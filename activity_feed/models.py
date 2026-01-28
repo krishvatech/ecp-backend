@@ -57,6 +57,21 @@ class FeedItem(models.Model):
     target_object_id = models.PositiveIntegerField()
     target = GenericForeignKey("target_content_type", "target_object_id")
     metadata = models.JSONField(default=dict)
+    MOD_STATUS_CLEAR = "clear"
+    MOD_STATUS_UNDER_REVIEW = "under_review"
+    MOD_STATUS_REMOVED = "removed"
+    MODERATION_STATUS_CHOICES = [
+        (MOD_STATUS_CLEAR, "Clear"),
+        (MOD_STATUS_UNDER_REVIEW, "Under review"),
+        (MOD_STATUS_REMOVED, "Removed"),
+    ]
+    moderation_status = models.CharField(
+        max_length=20,
+        choices=MODERATION_STATUS_CHOICES,
+        default=MOD_STATUS_CLEAR,
+        db_index=True,
+    )
+    moderation_updated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -11,6 +11,11 @@ class FeedItemSerializer(serializers.ModelSerializer):
     community_name = serializers.SerializerMethodField()
     community_cover_url = serializers.SerializerMethodField()
     actor_avatar = serializers.SerializerMethodField(read_only=True)
+    moderation_status = serializers.CharField(read_only=True)
+    is_under_review = serializers.SerializerMethodField()
+    is_removed = serializers.SerializerMethodField()
+    can_engage = serializers.SerializerMethodField()
+    is_blurred = serializers.SerializerMethodField()
 
     class Meta:
         model = FeedItem
@@ -19,6 +24,7 @@ class FeedItemSerializer(serializers.ModelSerializer):
             "actor_id", "actor_name", "actor_username","actor_avatar",
             "verb", "target_content_type_id", "target_object_id",
             "metadata", "created_at","group_id",
+            "moderation_status", "is_under_review", "is_removed", "can_engage", "is_blurred",
         ]
         
     def _abs_url(self, val):
@@ -132,6 +138,31 @@ class FeedItemSerializer(serializers.ModelSerializer):
     def get_actor_username(self, obj):
         u = getattr(obj, "actor", None)
         return getattr(u, "username", None) if u else None
+
+    def _viewer_is_staff(self):
+        req = self.context.get("request")
+        user = getattr(req, "user", None) if req else None
+        return bool(user and user.is_authenticated and (user.is_staff or user.is_superuser))
+
+    def _viewer_is_author(self, obj):
+        req = self.context.get("request")
+        user = getattr(req, "user", None) if req else None
+        return bool(user and user.is_authenticated and getattr(obj, "actor_id", None) == user.id)
+
+    def get_is_under_review(self, obj):
+        return getattr(obj, "moderation_status", None) == getattr(obj, "MOD_STATUS_UNDER_REVIEW", "under_review")
+
+    def get_is_removed(self, obj):
+        return getattr(obj, "moderation_status", None) == getattr(obj, "MOD_STATUS_REMOVED", "removed")
+
+    def get_can_engage(self, obj):
+        return not self.get_is_under_review(obj) and not self.get_is_removed(obj)
+
+    def get_is_blurred(self, obj):
+        if not self.get_is_under_review(obj):
+            return False
+        # Blur for everyone except author or staff
+        return not (self._viewer_is_staff() or self._viewer_is_author(obj))
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
