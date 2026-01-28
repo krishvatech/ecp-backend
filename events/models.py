@@ -176,3 +176,77 @@ class EventRegistration(models.Model):
         ]
     def __str__(self):
         return f'{self.user_id} -> {self.event_id}'
+
+
+# ============================================================
+# ================= Speed Networking Models ==================
+# ============================================================
+
+class SpeedNetworkingSession(models.Model):
+    """
+    Represents a Speed Networking session within an Event.
+    """
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('ACTIVE', 'Active'),
+        ('ENDED', 'Ended'),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='speed_networking_sessions')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_speed_networking_sessions')
+    
+    name = models.CharField(max_length=255, default="Speed Networking Session")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    duration_minutes = models.IntegerField(default=5, help_text="Duration of each round in minutes")
+    
+    started_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Session {self.id} for {self.event.title}"
+
+
+class SpeedNetworkingMatch(models.Model):
+    """
+    Represents a single match between two participants in a session.
+    """
+    STATUS_CHOICES = [
+        ('ACTIVE', 'Active'),
+        ('COMPLETED', 'Completed'),
+        ('SKIPPED', 'Skipped'),
+    ]
+
+    session = models.ForeignKey(SpeedNetworkingSession, on_delete=models.CASCADE, related_name='matches')
+    participant_1 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='speed_networking_matches_as_p1')
+    participant_2 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='speed_networking_matches_as_p2')
+    
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
+    dyte_room_name = models.CharField(max_length=255, blank=True, null=True, help_text="Dyte meeting ID for this match")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Match {self.id}: {self.participant_1} vs {self.participant_2}"
+
+
+class SpeedNetworkingQueue(models.Model):
+    """
+    Tracks users currently waiting in the speed networking lobby/queue.
+    """
+    session = models.ForeignKey(SpeedNetworkingSession, on_delete=models.CASCADE, related_name='queue')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='speed_networking_queue_entries')
+    
+    is_active = models.BooleanField(default=True, help_text="True if user is currently looking for a match")
+    current_match = models.ForeignKey(SpeedNetworkingMatch, on_delete=models.SET_NULL, null=True, blank=True, related_name='active_queue_entries')
+    
+    joined_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('session', 'user')
+
+    def __str__(self):
+        return f"{self.user} in Queue for Session {self.session_id}"

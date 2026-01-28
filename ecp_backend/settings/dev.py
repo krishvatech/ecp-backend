@@ -5,6 +5,7 @@ import os
 
 DEBUG = True
 ALLOWED_HOSTS = ALLOWED_HOSTS or ["*"]
+CORS_ALLOW_ALL_ORIGINS = True
 
 # ---- FORCE S3 IN DEV IF BUCKET+REGION ARE PRESENT ----
 # (Do this unconditionally to rule out any later overrides.)

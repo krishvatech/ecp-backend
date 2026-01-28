@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.utils.dateparse import parse_datetime
 from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
-from .models import Event,EventRegistration
+from .models import Event, EventRegistration, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue
 from community.models import Community
 from content.models import Resource
 
@@ -536,3 +536,41 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
     def get_user_avatar_url(self, obj):
         ser = UserMiniSerializer(obj.user, context=self.context)
         return ser.data.get("avatar_url", "") or ""
+
+
+class SpeedNetworkingMatchSerializer(serializers.ModelSerializer):
+    participant_1 = UserMiniSerializer(read_only=True)
+    participant_2 = UserMiniSerializer(read_only=True)
+    
+    class Meta:
+        model = SpeedNetworkingMatch
+        fields = [
+            'id', 'session', 'participant_1', 'participant_2',
+            'status', 'dyte_room_name', 'created_at', 'ended_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'ended_at', 'status', 'dyte_room_name']
+
+
+class SpeedNetworkingSessionSerializer(serializers.ModelSerializer):
+    matches = SpeedNetworkingMatchSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = SpeedNetworkingSession
+        fields = [
+            'id', 'event', 'name', 'status', 'duration_minutes',
+            'started_at', 'ended_at', 'matches', 'created_at'
+        ]
+        read_only_fields = ['id', 'started_at', 'ended_at', 'created_at', 'event']
+
+
+class SpeedNetworkingQueueSerializer(serializers.ModelSerializer):
+    user = UserMiniSerializer(read_only=True)
+    current_match = SpeedNetworkingMatchSerializer(read_only=True)
+    
+    class Meta:
+        model = SpeedNetworkingQueue
+        fields = [
+            'id', 'session', 'user', 'is_active',
+            'current_match', 'joined_at'
+        ]
+        read_only_fields = ['id', 'joined_at', 'session']

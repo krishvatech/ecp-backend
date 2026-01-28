@@ -19,7 +19,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         self.event_id = self.scope["url_route"]["kwargs"]["event_id"]
         self.group_name = f"event_{self.event_id}"
 
+        # Join event group
         await self.channel_layer.group_add(self.group_name, self.channel_name)
+        
+        # Join user-specific group for private messages
+        self.user_group_name = f"user_{self.user.id}"
+        await self.channel_layer.group_add(self.user_group_name, self.channel_name)
+        
         await self.accept()
 
         # Send welcome message with current lounge state
@@ -44,6 +50,9 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             await self.update_online_status(False)
             await self.broadcast_lounge_update() # Sync everyone
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
+            
+        if hasattr(self, "user_group_name"):
+            await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
 
     async def receive_json(self, content: dict, **kwargs) -> None:
         action = content.get("action")
@@ -108,6 +117,30 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 self.group_name,
                 {"type": "broadcast.message", "payload": content},
             )
+
+    # --- Speed Networking Handlers ---
+    async def speed_networking_session_started(self, event):
+        """Broadcast session started to event group."""
+        await self.send_json({
+            "type": "speed_networking_session_started",
+            "data": event["data"]
+        })
+
+    async def speed_networking_session_ended(self, event):
+        """Broadcast session ended to event group."""
+        await self.send_json({
+            "type": "speed_networking_session_ended",
+            "data": event["data"]
+        })
+
+    async def speed_networking_match_found(self, event):
+        """Send match info to specific user."""
+        # Since we are using user-specific groups now, this handler is triggered
+        # only on the consumer instances for that user.
+        await self.send_json({
+            "type": "speed_networking_match_found",
+            "data": event["data"]
+        })
 
     async def broadcast_message(self, event: dict) -> None:
         await self.send_json({"type": "message", "data": event["payload"]})
