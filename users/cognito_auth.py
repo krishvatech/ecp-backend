@@ -1,5 +1,6 @@
 import json
 import time
+import logging
 from urllib.request import urlopen
 
 from django.conf import settings
@@ -13,6 +14,8 @@ from .models import CognitoIdentity
 
 import jwt
 from jwt.algorithms import RSAAlgorithm
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -158,7 +161,7 @@ class CognitoJWTAuthentication(BaseAuthentication):
                 raise AuthenticationFailed("Token missing sub")
 
             # ✅ 1) Always try to resolve user via Cognito sub (stable)
-            identity = CognitoIdentity.objects.select_related("user").filter(cognito_sub=sub).first()
+            identity = CognitoIdentity.objects.select_related("user", "user__profile").filter(cognito_sub=sub).first()
             if identity:
                 user = identity.user
             else:
@@ -201,6 +204,38 @@ class CognitoJWTAuthentication(BaseAuthentication):
                     identity = CognitoIdentity.objects.select_related("user").filter(cognito_sub=sub).first()
                     if identity:
                         user = identity.user
+
+            # --- Check suspension status before allowing authentication ---
+            BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+            profile = getattr(user, "profile", None)
+
+            logger.info(
+                f"Cognito auth check for user_id={user.id}, username={user.username}, "
+                f"profile_exists={profile is not None}, "
+                f"profile_status={profile.profile_status if profile else 'NO_PROFILE'}"
+            )
+
+            if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
+                status = profile.profile_status
+                logger.warning(
+                    f"Rejecting authentication for user_id={user.id} with status={status}"
+                )
+                if status == "suspended":
+                    raise AuthenticationFailed(
+                        "Your account has been suspended. Please contact support for assistance.",
+                        code="account_suspended"
+                    )
+                elif status == "deceased":
+                    raise AuthenticationFailed(
+                        "This account has been memorialized.",
+                        code="account_memorialized"
+                    )
+                elif status == "fake":
+                    raise AuthenticationFailed(
+                        "This account has been disabled due to policy violations.",
+                        code="account_disabled"
+                    )
+            # ---------------------------------------------------------------
 
             # keep basic fields in sync
             updated = False

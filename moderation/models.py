@@ -54,10 +54,7 @@ class Report(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["reporter", "content_type", "object_id"],
-                name="unique_report_per_user_target",
-            )
+            # Removed unique_report_per_user_target to allow re-reporting after clearing
         ]
         indexes = [
             models.Index(fields=["content_type", "object_id", "created_at"]),

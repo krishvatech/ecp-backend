@@ -262,6 +262,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         if request.method.lower() == "get":
             # Base queryset (all posts for this group)
             base_items = (FeedItem.objects
+                    .select_related("actor", "actor__profile")
                     .filter(
                         # prefer FK (new rows)
                         models.Q(group_id=group.id)
@@ -286,6 +287,12 @@ class GroupViewSet(viewsets.ModelViewSet):
                 items = base_items.filter(
                     models.Q(moderation_status__in=["clear", "under_review"])
                     | models.Q(actor_id=me.id)
+                )
+                # Exclude posts from suspended/fake/deceased users (but allow own content)
+                BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+                items = items.filter(
+                    models.Q(actor_id=me.id) |  # Always show user's own posts
+                    ~models.Q(actor__profile__profile_status__in=BLOCKED_PROFILE_STATUSES)
                 )
             else:
                 items = base_items

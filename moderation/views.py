@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
@@ -391,18 +392,34 @@ class ProfileReportViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Check for duplicate reports
         user_ct = ContentType.objects.get_for_model(User)
-        existing = Report.objects.filter(
+
+        # Check for active/pending reports to avoid spamming the same reason immediately
+        # We allow re-reporting if the previous report was dealt with (e.g. cleared),
+        # but maybe we should still block if there's an OPEN report (under_review)?
+        # For now, per user request, we remove the strict block or check status.
+        
+        # Let's check if there is a PENDING report from this user for this reason
+        # We can unfortunately only infer pending status easily if we join on the profile/content status
+        # but 'Report' itself doesn't have a status field (it relies on the target).
+        # Given the requirement "After clearing... users should be able to submit a new report", 
+        # we will simply ALLOW duplicates or at least not block based on OLD reports.
+        
+        # NOTE: We removed the unique constraint on the model, so we can just create a new one.
+        # Use a time-based throttle if needed, but for now, just allow it.
+        
+        # (Optional) We could warn if reported recently (e.g. last 24h)
+        recent_report = Report.objects.filter(
             reporter=request.user,
             content_type=user_ct,
             object_id=target_user_id,
-            reason=reason
-        ).first()
+            reason=reason,
+            created_at__gte=timezone.now() - timedelta(hours=24) # simple spam check
+        ).exists()
 
-        if existing:
-            return Response(
-                {"detail": "You have already reported this profile for this reason."},
+        if recent_report:
+             return Response(
+                {"detail": "You have recently reported this profile for this reason. Please wait before reporting again."},
                 status=status.HTTP_409_CONFLICT
             )
 
@@ -641,12 +658,23 @@ class ProfileModerationActionView(APIView):
                 profile.profile_status_updated_at = timezone.now()
                 profile.save()
 
+                # Invalidate all active sessions and tokens for the suspended user
+                from users.suspension import invalidate_user_sessions, cognito_global_signout
+                invalidation_stats = invalidate_user_sessions(user.id)
+                # Also try to sign out from Cognito (optional, won't fail if unsuccessful)
+                cognito_global_signout(user.username)
+
             elif action == 'mark_fake':
                 profile.profile_status = 'fake'
                 profile.profile_status_reason = reason
                 profile.profile_status_updated_by = request.user
                 profile.profile_status_updated_at = timezone.now()
                 profile.save()
+
+                # Invalidate all active sessions and tokens for the fake account
+                from users.suspension import invalidate_user_sessions, cognito_global_signout
+                invalidation_stats = invalidate_user_sessions(user.id)
+                cognito_global_signout(user.username)
 
             elif action == 'clear':
                 profile.profile_status = 'active'

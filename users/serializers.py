@@ -395,6 +395,19 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         if not user.check_password(password):
             raise AuthenticationFailed("No active account found with the given credentials")
 
+        # Check suspension status before issuing tokens
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+        profile = getattr(user, "profile", None)
+        if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
+            status_messages = {
+                "suspended": "Your account has been suspended. Please contact support for assistance.",
+                "deceased": "This account has been memorialized.",
+                "fake": "This account has been disabled due to policy violations.",
+            }
+            raise AuthenticationFailed(
+                status_messages.get(profile.profile_status, "Account is not accessible.")
+            )
+
         request = self.context.get("request")
         tz_value = attrs.get("timezone") or ""
         if request is not None:

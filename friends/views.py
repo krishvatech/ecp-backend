@@ -119,7 +119,10 @@ class FriendshipViewSet(
         if not my_ids:
             # Fallback for brand-new users:
             # Show all non-staff users, excluding me and anyone already related (friends or pending requests).
-            base = User.objects.filter(is_active=True, is_staff=False).exclude(id=me.id)
+            BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+            base = User.objects.filter(is_active=True, is_staff=False).exclude(id=me.id).exclude(
+                profile__profile_status__in=BLOCKED_PROFILE_STATUSES
+            )
 
             # Exclude already-friends (should be none if not my_ids, but safe to keep)
             fr_pairs = Friendship.objects.filter(Q(user1=me) | Q(user2=me))
@@ -171,6 +174,7 @@ class FriendshipViewSet(
 
 
         # 2) users who are connected to any of my friends (FoF)
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
         qs = User.objects.filter(
             Q(friends_as_user1__user2_id__in=my_ids) |
             Q(friends_as_user2__user1_id__in=my_ids)
@@ -178,6 +182,8 @@ class FriendshipViewSet(
             id=me.id
         ).exclude(
             id__in=my_ids
+        ).exclude(
+            profile__profile_status__in=BLOCKED_PROFILE_STATUSES  # Exclude suspended users
         ).distinct()
 
         # 3) annotate mutual friend count (how many of *my* friends also friend this candidate)

@@ -10,6 +10,7 @@ from django.db import transaction
 from django.dispatch import receiver
 from django.apps import apps  
 from django.utils import timezone
+from django.conf import settings
 from .models import UserProfile
 
 User = get_user_model()
@@ -53,3 +54,45 @@ def ensure_profile(sender, instance, created, **kwargs):
 
     # Run after the transaction commits so IDs are available
     transaction.on_commit(_create)
+
+
+@receiver(post_save, sender=UserProfile)
+def sync_cognito_status(sender, instance, created, **kwargs):
+    """
+    Sync profile_status changes to Cognito (Enable/Disable user).
+    Supported statuses:
+      - 'suspended', 'fake', 'deceased' -> Disable user in Cognito
+      - 'active', 'under_review' -> Enable user in Cognito
+    """
+    # 1. Gather Cognito settings
+    region = getattr(settings, "COGNITO_REGION", "")
+    pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "")
+    if not region or not pool_id:
+        return
+
+    # 2. Determine desired Cognito state
+    #    True = Enabled, False = Disabled
+    BLOCKED_STATUSES = ("suspended", "fake", "deceased")
+    should_be_enabled = (instance.profile_status not in BLOCKED_STATUSES)
+
+    # 3. Perform sync in a separate thread or immediately (blocking)
+    #    For simplicity/reliability here we do it immediately but inside a try/except.
+    #    Ideally this would be a Celery task to avoid blocking the request.
+    import boto3
+    try:
+        client = boto3.client("cognito-idp", region_name=region)
+        username = instance.user.username  # Assuming username matches Cognito username
+
+        if should_be_enabled:
+            client.admin_enable_user(
+                UserPoolId=pool_id,
+                Username=username
+            )
+        else:
+            client.admin_disable_user(
+                UserPoolId=pool_id,
+                Username=username
+            )
+    except Exception as e:
+        # Log failure but don't crash the app
+        print(f"Failed to sync Cognito status for {instance.user.username}: {e}")

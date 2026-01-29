@@ -27,9 +27,54 @@ class LastActivityMiddleware:
 
         return response
 
-from django.http import HttpResponseForbidden
+from django.http import HttpResponseForbidden, JsonResponse
 
 PLATFORM_ADMIN_GROUP = "platform_admin"
+
+# Profile statuses that should block operations
+BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+
+
+class SuspendedUserMiddleware:
+    """
+    Block suspended/fake users from making ANY requests (Read or Write).
+
+    This middleware runs after AuthenticationMiddleware so request.user is available.
+    """
+
+    # Endpoints that should always work even for suspended users
+    ALLOWED_PATHS = (
+        "/api/users/logout/",
+        "/api/session/logout/",
+        "/api/auth/logout/",
+        "/admin/",  # Django admin (has its own auth)
+        "/cms/",    # Wagtail CMS
+    )
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        # Allow specific paths that should always work
+        if any(request.path.startswith(p) for p in self.ALLOWED_PATHS):
+            return self.get_response(request)
+
+        # Check user's profile status
+        user = getattr(request, "user", None)
+        if user and user.is_authenticated:
+            profile = getattr(user, "profile", None)
+            if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
+                return JsonResponse(
+                    {
+                        "detail": "Your account has been suspended. You cannot perform this action.",
+                        "code": "account_suspended",
+                        "profile_status": profile.profile_status,
+                    },
+                    status=403
+                )
+
+        return self.get_response(request)
+
 
 class WagtailPlatformAdminOnlyMiddleware:
     def __init__(self, get_response):

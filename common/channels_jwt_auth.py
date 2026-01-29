@@ -120,7 +120,7 @@ def _get_cognito_user(token):
         from users.models import CognitoIdentity
 
         identity = (
-            CognitoIdentity.objects.select_related("user")
+            CognitoIdentity.objects.select_related("user", "user__profile")
             .filter(cognito_sub=sub)
             .first()
         )
@@ -131,33 +131,49 @@ def _get_cognito_user(token):
         return "cognito_failed", None
 
 
+def _is_user_suspended(user):
+    """Check if user is suspended/fake/deceased."""
+    if not user:
+        return False
+    BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+    profile = getattr(user, "profile", None)
+    return profile and profile.profile_status in BLOCKED_PROFILE_STATUSES
+
+
 @database_sync_to_async
 def get_user_from_token(token):
     """Validate token and return user (sync function wrapped for async use)."""
     try:
         status, cognito_user = _get_cognito_user(token)
         if status == "cognito_valid":
+            # Check suspension status for Cognito users
+            if _is_user_suspended(cognito_user):
+                return None  # Treat suspended users as unauthenticated
             return cognito_user
 
         # Validate token
         UntypedToken(token)
-        
+
         # Decode token to get user_id
         from rest_framework_simplejwt.backends import TokenBackend
         from rest_framework_simplejwt.settings import api_settings
-        
+
         backend = TokenBackend(
             algorithm=api_settings.ALGORITHM,
             signing_key=api_settings.SIGNING_KEY
         )
         payload = backend.decode(token, verify=True)
         user_id = payload.get('user_id')
-        
+
         if user_id:
-            return User.objects.get(pk=user_id)
+            user = User.objects.select_related("profile").get(pk=user_id)
+            # Check suspension status
+            if _is_user_suspended(user):
+                return None  # Treat suspended users as unauthenticated
+            return user
     except (InvalidToken, TokenError, User.DoesNotExist, Exception):
         pass
-    
+
     return None
 
 

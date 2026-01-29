@@ -21,9 +21,12 @@ from django.core.mail import send_mail
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework import generics, status, permissions
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+from rest_framework_simplejwt.backends import TokenBackend
+from rest_framework_simplejwt.settings import api_settings as jwt_settings
+from rest_framework.exceptions import AuthenticationFailed
 import os, time, json, base64, secrets, requests
 from datetime import datetime, timezone, timedelta
 from django.utils import timezone as django_timezone
@@ -144,6 +147,8 @@ class UserViewSet(
         see themselves and other users who share an community with
         them (either as members or as owners).  This method returns a
         queryset filtered accordingly.
+
+        Suspended, fake, and deceased users are hidden from non-staff listings.
         """
         qs = super().get_queryset().select_related("profile").prefetch_related(
             "community", "owned_community"
@@ -153,6 +158,14 @@ class UserViewSet(
             return qs.none()
         if user.is_staff or user.is_superuser:
             return qs
+
+        # Exclude suspended/fake/deceased users from listings (but allow self)
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+        qs = qs.exclude(
+            ~Q(id=user.id),  # Exclude others (not self)
+            profile__profile_status__in=BLOCKED_PROFILE_STATUSES
+        )
+
         org_ids = set(user.community.values_list("id", flat=True))
         org_ids.update(user.owned_community.values_list("id", flat=True))
         if not org_ids:
@@ -166,6 +179,12 @@ class UserViewSet(
     @action(detail=False, methods=["get", "put", "patch"], url_path="me")
     def me(self, request):
         user = request.user
+        
+        # Check suspension status
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+        profile = getattr(user, "profile", None)
+        if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
+             raise AuthenticationFailed("Account is suspended or disabled.")
 
         if request.method == "GET":
             return Response(UserSerializer(user, context={"request": request}).data)
@@ -228,6 +247,31 @@ class UserViewSet(
             target = UserModel.objects.select_related("profile").get(pk=pk)
         except UserModel.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
+
+        # Check if profile is accessible (staff can view all)
+        user = request.user
+        is_staff = user.is_authenticated and (user.is_staff or user.is_superuser)
+        is_self = user.is_authenticated and user.id == target.id
+
+        profile = getattr(target, "profile", None)
+        if profile and not is_staff and not is_self:
+            if profile.profile_status == "suspended":
+                return Response(
+                    {"detail": "This profile is not available."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            elif profile.profile_status == "fake":
+                return Response(
+                    {"detail": "This profile has been disabled."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            elif profile.profile_status == "deceased":
+                return Response({
+                    "memorialized": True,
+                    "message": "This profile has been memorialized.",
+                    "user_id": target.id,
+                    "full_name": profile.full_name if profile else f"{target.first_name} {target.last_name}".strip(),
+                }, status=status.HTTP_200_OK)
 
         exps = (Experience.objects
                 .filter(user=target)
@@ -295,13 +339,15 @@ class UserViewSet(
    # users/views.py  (inside UserViewSet)
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="roster")
     def roster(self, request):
+        # Exclude suspended/fake/deceased users from roster
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
         qs = (
             UserModel.objects
             .filter(is_superuser=False)
-            .all()
             .exclude(id=request.user.id)
-            .select_related("profile") 
-            .prefetch_related("experiences")   # NEW: so serializer is fast
+            .exclude(profile__profile_status__in=BLOCKED_PROFILE_STATUSES)  # Hide suspended users
+            .select_related("profile")
+            .prefetch_related("experiences")
             .order_by("first_name", "last_name")[:500]
         )
         data = UserRosterSerializer(qs, many=True, context={"request": request}).data
@@ -445,6 +491,66 @@ class EmailTokenObtainPairView(TokenObtainPairView):
     """
     permission_classes = [permissions.AllowAny]
     serializer_class = EmailTokenObtainPairSerializer
+
+
+class CustomTokenRefreshView(TokenRefreshView):
+    """
+    Custom token refresh that checks if the user is suspended.
+
+    This prevents suspended users from obtaining new access tokens
+    using their existing refresh tokens.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        """Refresh token, but reject if user is suspended."""
+        # Get the refresh token from the request
+        refresh_token = request.data.get('refresh')
+
+        if not refresh_token:
+            return Response(
+                {'refresh': ['This field is required.']},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Decode the refresh token to get the user_id
+            backend = TokenBackend(
+                algorithm=jwt_settings.ALGORITHM,
+                signing_key=jwt_settings.SIGNING_KEY
+            )
+            payload = backend.decode(refresh_token, verify=True)
+            user_id = payload.get('user_id')
+
+            if user_id:
+                # Check if the user is suspended
+                User = get_user_model()
+                try:
+                    user = User.objects.select_related('profile').get(pk=user_id)
+
+                    # Check suspension status
+                    BLOCKED_PROFILE_STATUSES = ('suspended', 'fake', 'deceased')
+                    profile = getattr(user, 'profile', None)
+                    if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
+                        status_messages = {
+                            'suspended': 'Your account has been suspended. Please contact support for assistance.',
+                            'deceased': 'This account has been memorialized.',
+                            'fake': 'This account has been disabled due to policy violations.',
+                        }
+                        raise AuthenticationFailed(
+                            status_messages.get(profile.profile_status, 'Account is not accessible.')
+                        )
+                except User.DoesNotExist:
+                    raise AuthenticationFailed('Invalid token (user not found)')
+        except Exception as e:
+            # If we can't decode or check, let the parent class handle it
+            if isinstance(e, AuthenticationFailed):
+                raise
+            # Otherwise continue with normal refresh (parent will validate the token)
+            pass
+
+        # If we get here, user is not suspended, proceed with normal refresh
+        return super().post(request, *args, **kwargs)
 
 
 class ChangePasswordView(generics.GenericAPIView):
@@ -607,6 +713,20 @@ class SessionLoginView(APIView):
         if not user.is_active or not user.check_password(password):
             return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Check suspension status before allowing login
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+        profile = getattr(user, "profile", None)
+        if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
+            status_messages = {
+                "suspended": "Your account has been suspended. Please contact support for assistance.",
+                "deceased": "This account has been memorialized.",
+                "fake": "This account has been disabled due to policy violations.",
+            }
+            return Response(
+                {"error": status_messages.get(profile.profile_status, "Account is not accessible.")},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         tz_value = (data.get("timezone") or "").strip()
         if tz_value:
             try:
@@ -653,6 +773,13 @@ class AuthUsersMeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Check suspension
+        user = request.user
+        BLOCKED = ("suspended", "fake", "deceased")
+        profile = getattr(user, "profile", None)
+        if profile and profile.profile_status in BLOCKED:
+             raise AuthenticationFailed("Account is suspended or disabled.")
+
         return Response(
             UserSerializer(request.user, context={"request": request}).data,
             status=status.HTTP_200_OK

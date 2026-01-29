@@ -32,7 +32,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = FeedItemSerializer
     pagination_class = FeedPagination
-    queryset = FeedItem.objects.select_related("actor").order_by("-created_at")  
+    queryset = FeedItem.objects.select_related("actor", "actor__profile").order_by("-created_at")  
     
     def _friend_user_ids(self, user_id: int):
         pairs = Friendship.objects.filter(
@@ -62,15 +62,27 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         pk = self.kwargs.get(getattr(self, "lookup_field", "pk"))
         if pk is not None:
             try:
-                qs = qs.select_related("actor").filter(pk=int(pk))
+                qs = qs.select_related("actor", "actor__profile").filter(pk=int(pk))
                 if not (me.is_staff or me.is_superuser):
                     qs = qs.filter(Q(moderation_status__in=["clear", "under_review"]) | Q(actor_id=me.id))
+                    # Exclude posts from suspended/fake/deceased users
+                    BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+                    qs = qs.filter(
+                        Q(actor_id=me.id) |
+                        ~Q(actor__profile__profile_status__in=BLOCKED_PROFILE_STATUSES)
+                    )
                 return qs
             except (TypeError, ValueError):
                 return qs.none()
 
         if not (me.is_staff or me.is_superuser):
             qs = qs.filter(Q(moderation_status__in=["clear", "under_review"]) | Q(actor_id=me.id))
+            # Exclude posts from suspended/fake/deceased users (but allow own content)
+            BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+            qs = qs.filter(
+                Q(actor_id=me.id) |  # Always show user's own content
+                ~Q(actor__profile__profile_status__in=BLOCKED_PROFILE_STATUSES)
+            )
 
         scope = req.query_params.get("scope", "member_groups")  # existing default
         # Optional: allow narrowing to one community
@@ -117,9 +129,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                         Q(metadata__group__id=str(gid_num))
                         
                     )
-            return qs.select_related("actor").order_by("-created_at")
+            return qs.select_related("actor", "actor__profile").order_by("-created_at")
 
-        # --- NEW: community-level user posts with privacy ---
         if scope in ("community", "home", "friends_and_public"):
             # Communities the viewer is in (owner is always a member via your model's save())
             my_comm_ids = list(
@@ -143,6 +154,13 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 metadata__type__in=["text", "image", "link", "poll"],
             ).filter(
                 Q(verb="posted") | Q(verb="created_poll")   
+            )
+
+            # --- NEW: Filter suspended/fake/deceased users here too ---
+            # (unless it is the user's own post)
+            BLOCKED = ("suspended", "fake", "deceased")
+            comm_posts = comm_posts.filter(
+                 Q(actor_id=me.id) | ~Q(actor__profile__profile_status__in=BLOCKED)
             )
 
             # If caller asked for a specific community
@@ -169,7 +187,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             comm_posts = comm_posts.filter(vis_public | vis_missing | vis_community | vis_friends | own_posts)
 
             if scope == "community":
-                return comm_posts.select_related("actor").order_by("-created_at")
+                return comm_posts.select_related("actor", "actor__profile").order_by("-created_at")
 
             if scope in ("home", "friends_and_public"):
                 # Combine with the existing "member_groups" scope for a single home feed
@@ -190,13 +208,24 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     Q(metadata__group__id__in=member_group_ids_str)
                 )
 
-                # Return union of both
-                return (group_feed | comm_posts).select_related("actor").order_by("-created_at")
+                # --- NEW: Filter suspended users from group feed too ---
+                group_feed = group_feed.filter(
+                    Q(actor_id=me.id) | ~Q(actor__profile__profile_status__in=BLOCKED)
+                )
 
+                # Return union of both
+                return (group_feed | comm_posts).select_related("actor", "actor__profile").order_by("-created_at")
+        
         # Fallback (unchanged)
         if actor_id:  # <-- NEW
             qs = qs.filter(actor_id=actor_id)
+        
+        # Safety catch-all for default flow
+        BLOCKED = ("suspended", "fake", "deceased")
+        qs = qs.filter(Q(actor_id=me.id) | ~Q(actor__profile__profile_status__in=BLOCKED))
+        
         return qs
+
     
     def _visible_events_qs(self, request):
         """

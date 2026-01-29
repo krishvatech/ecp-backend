@@ -101,6 +101,11 @@ class ResourceViewSet(viewsets.ModelViewSet):
             Q(event__isnull=True, community_id__in=org_ids) |
             Q(event_id__in=paid_eids)
         )
+        
+        # Exclude resources from suspended/fake/deceased users
+        BLOCKED = ("suspended", "fake", "deceased")
+        qs = qs.exclude(uploaded_by__profile__profile_status__in=BLOCKED)
+
         return qs.order_by("-created_at")
 
 
