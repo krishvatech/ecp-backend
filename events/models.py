@@ -64,6 +64,18 @@ class Event(models.Model):
         blank=True,
         null=True,
     )
+    cover_image = models.ImageField(
+        upload_to=event_preview_upload_to,
+        blank=True,
+        null=True,
+        help_text="Displayed when host is disconnected or event is not live"
+    )
+    waiting_room_image = models.ImageField(
+        upload_to=event_preview_upload_to,
+        blank=True,
+        null=True,
+        help_text="Replaces the clock in waiting room if uploaded"
+    )
     attendees = models.ManyToManyField(
         User,
         through='EventRegistration',

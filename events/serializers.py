@@ -74,6 +74,8 @@ class EventSerializer(serializers.ModelSerializer):
             "attending_count",
             "registrations_count",
             "preview_image",
+            "cover_image",
+            "waiting_room_image",
             "active_speaker",
             "recording_url",
             "dyte_meeting_id",    
@@ -366,6 +368,12 @@ class EventSerializer(serializers.ModelSerializer):
         if instance.preview_image:
             url = instance.preview_image.url
             data["preview_image"] = request.build_absolute_uri(url) if request else url
+        if instance.cover_image:
+            url = instance.cover_image.url
+            data["cover_image"] = request.build_absolute_uri(url) if request else url
+        if instance.waiting_room_image:
+            url = instance.waiting_room_image.url
+            data["waiting_room_image"] = request.build_absolute_uri(url) if request else url
         return data
 
     def validate_price(self, value):
@@ -477,7 +485,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         model = Event
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
-            "preview_image", "location", "category", "is_live", "recording_url", "price", "is_free",
+            "preview_image", "cover_image", "waiting_room_image", "location", "category", "is_live", "recording_url", "price", "is_free",
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):
