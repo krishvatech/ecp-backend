@@ -23,6 +23,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         
         # Join user-specific group for private messages
+        # Check for Ban Status
+        is_banned = await self.check_is_banned()
+        if is_banned:
+            print(f"[CONSUMER] User {self.user.username} is BANNED from event {self.event_id}. Closing connection.")
+            await self.close(code=4003)
+            return
+
         self.user_group_name = f"user_{self.user.id}"
         await self.channel_layer.group_add(self.user_group_name, self.channel_name)
         
@@ -169,7 +176,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     def get_online_participants_info(self):
         regs = EventRegistration.objects.filter(
             event_id=self.event_id, 
-            is_online=True
+            is_online=True,
+            is_banned=False  # Exclude banned users even if online flag is stuck
         ).exclude(user_id=self.user.id).select_related('user')
         return [{
             "user_id": r.user.id,
@@ -255,6 +263,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     ).update(idle_started_at=None)
         except Exception as e:
             print(f"[CONSUMER] Error updating online status for {self.user.username}: {e}")
+
+    @database_sync_to_async
+    def check_is_banned(self):
+        return EventRegistration.objects.filter(
+            event_id=self.event_id, 
+            user=self.user, 
+            is_banned=True
+        ).exists()
 
     @database_sync_to_async
     def clear_all_tables(self):

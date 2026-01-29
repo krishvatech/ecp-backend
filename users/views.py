@@ -137,7 +137,9 @@ class UserViewSet(
     permission_classes = [permissions.IsAuthenticated]
 
     # enable advanced search via django-filter
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    search_fields = ["email", "username", "first_name", "last_name", "profile__full_name"]
+
 
     def get_queryset(self):
         """

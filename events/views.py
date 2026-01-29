@@ -60,6 +60,8 @@ from .serializers import (
     EventRegistrationSerializer,
 )
 from .utils import DYTE_API_BASE, DYTE_AUTH_HEADER, DYTE_PRESET_HOST, DYTE_PRESET_PARTICIPANT, _dyte_headers, create_dyte_meeting
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 
 # ============================================================
 # ================== Env / Settings Bootstrap ================
@@ -795,8 +797,107 @@ class EventViewSet(viewsets.ModelViewSet):
             {"message": "Meeting ended", "status": event.status, "event_id": event.id}
         )
     
-    
-    @action(detail=False, methods=["post"], url_path="download-recording")
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="kick")
+    def kick_participant(self, request, pk=None):
+        """
+        Kick a participant from the meeting (temporary removal).
+        Body: {"user_id": <id>}
+        """
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can kick participants."}, status=403)
+
+        target_id = request.data.get("user_id")
+        if not target_id:
+            return Response({"detail": "user_id required"}, status=400)
+
+        # Notify via WebSocket
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"user_{target_id}",
+            {
+                "type": "broadcast_message",
+                "payload": {"type": "kicked", "event_id": event.id}
+            }
+        )
+
+        return Response({"ok": True, "message": "User kicked"})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="ban")
+    def ban_participant(self, request, pk=None):
+        """
+        Ban a participant from the meeting (permanent removal).
+        Body: {"user_id": <id>}
+        """
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can ban participants."}, status=403)
+
+        target_id = request.data.get("user_id")
+        if not target_id:
+            return Response({"detail": "user_id required"}, status=400)
+
+        # 1. Update registration to banned
+        try:
+            reg = EventRegistration.objects.get(event=event, user_id=target_id)
+            reg.is_banned = True
+            reg.save(update_fields=["is_banned"])
+        except EventRegistration.DoesNotExist:
+            return Response({"detail": "User not registered for this event"}, status=404)
+
+        # 2. Notify via WebSocket
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"user_{target_id}",
+            {
+                "type": "broadcast_message",
+                "payload": {"type": "banned", "event_id": event.id}
+            }
+        )
+
+        return Response({"ok": True, "message": "User banned"})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="unban")
+    def unban_participant(self, request, pk=None):
+        """
+        Unban a participant.
+        Body: {"user_id": <id>}
+        """
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can unban participants."}, status=403)
+
+        target_id = request.data.get("user_id")
+        if not target_id:
+            return Response({"detail": "user_id required"}, status=400)
+
+        try:
+            reg = EventRegistration.objects.get(event=event, user_id=target_id)
+            reg.is_banned = False
+            reg.save(update_fields=["is_banned"])
+        except EventRegistration.DoesNotExist:
+            return Response({"detail": "User not registered"}, status=404)
+
+        return Response({"ok": True, "message": "User unbanned"})
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="banned-users")
+    def banned_users(self, request, pk=None):
+        """
+        List all banned users for this event.
+        """
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can view banned users."}, status=403)
+
+        banned_regs = EventRegistration.objects.filter(event=event, is_banned=True).select_related('user')
+        data = [{
+            "user_id": r.user.id,
+            "full_name": r.user.first_name + " " + r.user.last_name,
+            "username": r.user.username,
+            "avatar": r.user.avatar.url if hasattr(r.user, 'avatar') and r.user.avatar else None
+        } for r in banned_regs]
+
+        return Response(data)
     def download_recording(self, request):
         """Generate a pre-signed URL for downloading recording from S3"""
         import boto3
@@ -1303,6 +1404,13 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=500,
             )
 
+        # 1.5) Check if user is BANNED
+        if EventRegistration.objects.filter(event=event, user=user, is_banned=True).exists():
+            return Response(
+                {"error": "banned", "detail": "You are banned from this event."},
+                status=403
+            )
+
         # 2) Decide host vs participant preset
         community_owner_id = getattr(event.community, "owner_id", None)
         is_creator_or_staff = (
@@ -1408,6 +1516,61 @@ class EventViewSet(viewsets.ModelViewSet):
                 "role": role_string,
             }
         )
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="add-participant")
+    def add_participant(self, request, pk=None):
+        """
+        Manually add a participant to the event (bypasses payment).
+        Only for Admins/Event Owners.
+        """
+        event = self.get_object()
+        user = request.user
+
+        # Permission check
+        if not (user.is_staff or getattr(user, "is_superuser", False) or event.created_by_id == user.id):
+            return Response({"detail": "Permission denied."}, status=403)
+
+        user_id = request.data.get("user_id")
+        email = request.data.get("email", "").strip().lower()
+
+        if not user_id and not email:
+            return Response({"detail": "User ID or Email is required."}, status=400)
+
+        User = get_user_model()
+        target_user = None
+
+        # 1. Try by user_id
+        if user_id:
+            try:
+                target_user = User.objects.get(pk=user_id)
+            except User.DoesNotExist:
+                return Response({"detail": f"User with ID {user_id} not found."}, status=404)
+
+        # 2. Try by email if no user found yet
+        if not target_user and email:
+            try:
+                target_user = User.objects.get(email=email)
+            except User.DoesNotExist:
+                return Response({"detail": f"User with email '{email}' not found."}, status=404)
+        
+        if not target_user:
+             return Response({"detail": "User not found."}, status=404)
+
+        # 2. Register them
+        if EventRegistration.objects.filter(event=event, user=target_user).exists():
+            return Response({"detail": "User is already registered for this event."}, status=400)
+
+        EventRegistration.objects.create(
+            event=event,
+            user=target_user,
+            status="registered",  # Directly registered
+            # joined_live / watched_replay defaults are False
+        )
+        
+        # Optionally update attending count immediately if you want them counted strictly
+        # Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+
+        return Response({"ok": True, "detail": f"User {target_user.username} added successfully."})
 
 
 # ============================================================

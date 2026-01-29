@@ -167,6 +167,10 @@ class EventRegistration(models.Model):
     watched_replay = models.BooleanField(default=False)
     is_online = models.BooleanField(default=False)
     online_count = models.PositiveIntegerField(default=0)
+    
+    # Moderation
+    is_banned = models.BooleanField(default=False)
+
     class Meta:
         db_table = 'event_registrations'
         unique_together = ('event', 'user')                 
