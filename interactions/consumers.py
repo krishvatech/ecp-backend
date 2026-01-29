@@ -284,3 +284,11 @@ class QnAConsumer(BaseEventConsumer):
         Forward payload to all connected clients.
         """
         await self.send_json(event.get("payload", {}))
+
+    async def qna_visibility_change(self, event: Dict[str, Any]) -> None:
+        """
+        Called when group_send(type='qna.visibility_change', payload=...) is triggered.
+        Forward visibility change payload to all connected clients.
+        Triggered when a host/admin toggles question visibility.
+        """
+        await self.send_json(event.get("payload", {}))

@@ -75,6 +75,9 @@ class Question(models.Model):
         answer: The answer text (optional).
         answered_by: FK to the user who answered (optional).
         answered_at: timestamp of answering (optional).
+        is_hidden: Whether the question is hidden from attendees (hosts only).
+        hidden_by: FK to the user who hid the question (optional).
+        hidden_at: Timestamp when hidden (optional).
         created_at/updated_at: audit timestamps.
     """
 
@@ -100,6 +103,23 @@ class Question(models.Model):
         blank=True,
         help_text="Users who upvoted this question.",
     )
+    is_hidden = models.BooleanField(
+        default=False,
+        help_text="Whether this question is hidden from attendees (hosts can still see it).",
+    )
+    hidden_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hidden_questions",
+        help_text="User who hid this question (null if not hidden).",
+    )
+    hidden_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the question was hidden (null if not hidden).",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -113,7 +133,8 @@ class Question(models.Model):
         return self.upvoters.count()
 
     def __str__(self) -> str:
-        return f"[{self.event_id}] {self.content[:50]} (▲{self.upvote_count})"
+        hidden_status = " [HIDDEN]" if self.is_hidden else ""
+        return f"[{self.event_id}] {self.content[:50]} (▲{self.upvote_count}){hidden_status}"
     
 
 class QuestionUpvote(models.Model):

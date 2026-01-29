@@ -39,6 +39,18 @@ class QuestionViewSet(viewsets.ModelViewSet):
         )
         if event_id:
             qs = qs.filter(event_id=event_id)
+
+        # Filter out hidden questions for non-hosts
+        # Hosts/admins can see all questions including hidden ones
+        if event_id:
+            event = get_object_or_404(
+                __import__('events.models', fromlist=['Event']).Event,
+                id=event_id
+            )
+            is_host = self.request.user == event.created_by or self.request.user.is_staff
+            if not is_host:
+                qs = qs.filter(is_hidden=False)
+
         return qs.order_by("-upvotes_count", "-created_at")
 
     def perform_create(self, serializer):
@@ -187,6 +199,59 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "upvote_count": question.upvoters.count(),
             "upvoters": upvoters_list
         })
+
+    @action(detail=True, methods=["post"])
+    def toggle_visibility(self, request, pk=None):
+        """
+        PATCH /questions/{id}/toggle_visibility/
+        Toggle whether a question is hidden from attendees.
+        Permission: Host/Admin only (event.created_by or is_staff).
+        Broadcast: 'qna.visibility_change'
+        """
+        from django.utils import timezone
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        user = request.user
+
+        # Permission check: Only host/admin can hide/unhide
+        is_host = (user == question.event.created_by or user.is_staff)
+
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can toggle question visibility.")
+
+        # Toggle visibility
+        question.is_hidden = not question.is_hidden
+        if question.is_hidden:
+            question.hidden_by = user
+            question.hidden_at = timezone.now()
+        else:
+            question.hidden_by = None
+            question.hidden_at = None
+
+        question.save(update_fields=["is_hidden", "hidden_by", "hidden_at"])
+
+        # Broadcast visibility change to WebSocket group
+        group = f"event_qna_{question.event_id}_qnaconsumer"
+        channel_layer = get_channel_layer()
+
+        payload = {
+            "type": "qna.visibility_change",
+            "event_id": question.event_id,
+            "question_id": question.id,
+            "is_hidden": question.is_hidden,
+            "hidden_by": user.id if question.is_hidden else None,
+            "hidden_at": question.hidden_at.isoformat() if question.hidden_at else None,
+        }
+
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.visibility_change", "payload": payload},
+        )
+
+        # Return updated question
+        serializer = self.get_serializer(question)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     def perform_update(self, serializer):
         """

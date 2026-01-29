@@ -16,8 +16,11 @@ class QuestionSerializer(serializers.ModelSerializer):
             "content",
             "created_at",
             "updated_at",
+            "is_hidden",
+            "hidden_by",
+            "hidden_at",
         ]
-        read_only_fields = ["user", "created_at", "updated_at"]
+        read_only_fields = ["user", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at"]
 
     def get_user_display(self, obj):
         user = obj.user
