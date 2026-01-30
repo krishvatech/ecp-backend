@@ -225,8 +225,16 @@ class GroupViewSet(viewsets.ModelViewSet):
     def _user_short(self, u):
         if not u:
             return None
+        # Use UserMiniSerializer to get avatar_url and other standard fields
+        # Pass context so avatar_url can be built as absolute URI
+        data = UserMiniSerializer(u, context=self.get_serializer_context()).data
+        
+        # Ensure 'name' field is present for frontend compatibility (GroupDetailsPage uses .name)
+        # Priority: Full Name > Username > Email
         name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", None)
-        return {"id": getattr(u, "id", None), "email": getattr(u, "email", None), "name": name}
+        data["name"] = name
+        
+        return data
     
     # Use (Endpoint): GET/POST /api/groups/{id}/posts/
     # - GET: lists feed posts for a group (Ordering: FeedItems ordered by "-created_at")
