@@ -91,6 +91,8 @@ class Event(models.Model):
         related_name="active_events",
     )
     recording_url = models.URLField(blank=True)
+    replay_available = models.BooleanField(default=False)
+    replay_availability_duration = models.CharField(max_length=100, blank=True, null=True)
     # Dyte live meeting fields
     dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     dyte_meeting_title = models.CharField(max_length=255, blank=True, null=True)

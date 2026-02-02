@@ -66,6 +66,8 @@ class EventSerializer(serializers.ModelSerializer):
             "status",
             "is_live",
             "is_on_break",
+            "replay_available",
+            "replay_availability_duration",
             "category",
             "format",
             "location",
@@ -485,7 +487,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         model = Event
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
-            "preview_image", "cover_image", "waiting_room_image", "location", "category", "is_live", "recording_url", "price", "is_free",
+            "preview_image", "cover_image", "waiting_room_image", "location", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "price", "is_free",
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):
