@@ -399,7 +399,7 @@ class UserViewSet(
             
             # Store session ID
             profile.kyc_last_session_id = session_id
-            profile.kyc_status = UserProfile.KYC_STATUS_PENDING
+            # profile.kyc_status = UserProfile.KYC_STATUS_PENDING  <-- REMOVED: Status will be updated by webhook
             profile.save()
             
             return Response({"session_id": session_id, "url": url}, status=200)
