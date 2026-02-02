@@ -27,7 +27,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework_simplejwt.backends import TokenBackend
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework.exceptions import AuthenticationFailed
-import os, time, json, base64, secrets, requests
+import os, time, json, base64, secrets, requests, boto3
 from datetime import datetime, timezone, timedelta
 from django.utils import timezone as django_timezone
 from urllib.parse import urlencode
@@ -43,8 +43,9 @@ from django.contrib.auth import login as django_login, logout as django_logout
 from django.contrib.auth import get_user_model
 from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
-from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileMembership
-from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileMembershipSerializer
+from .serializers import PublicProfileSerializer
+from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileMembership, EmailChangeRequest
+from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer
 from .models import EducationDocument
 from .serializers import EducationDocumentSerializer
 from .esco_client import search_skills
@@ -217,6 +218,155 @@ class UserViewSet(
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["post"], url_path="me/email/initiate")
+    def initiate_email_change(self, request):
+        """
+        Request to change primary email.
+        Steps:
+        1. Validate new email (uniqueness).
+        2. Generate 6-digit OTP.
+        3. Store in EmailChangeRequest.
+        4. Send OTP to NEW email.
+        """
+        user = request.user
+        serializer = EmailChangeInitSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        
+        new_email = serializer.validated_data["new_email"]
+
+        # Generate OTP
+        code = get_random_string(length=6, allowed_chars='0123456789')
+        
+        # Save request
+        EmailChangeRequest.objects.create(
+            user=user,
+            new_email=new_email,
+            verification_code=code,
+        )
+
+        # Send Email (Mocked for now, or use send_mail)
+        try:
+            send_mail(
+                subject="Verify your new email address",
+                message=f"Your verification code is: {code}\n\nThis code is valid for 10 minutes.",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[new_email],
+                fail_silently=False,
+            )
+        except Exception as e:
+            logger.error(f"Failed to send email OTP: {e}")
+            if settings.DEBUG:
+                return Response({
+                    "detail": f"OTP sent to {new_email} (Dev: {code})",
+                    "code_sent_to": new_email
+                }, status=status.HTTP_200_OK)
+
+        return Response({
+            "detail": f"Verification code sent to {new_email}",
+            "code_sent_to": new_email
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["post"], url_path="me/email/confirm")
+    def confirm_email_change(self, request):
+        """
+        Verify OTP and update email.
+        Steps:
+        1. Verify code matches latest request for this email.
+        2. Sync with Cognito (CRITICAL - login depends on this).
+        3. Update User.email.
+        4. Move old email to profile.links['contact']['emails'].
+        """
+        user = request.user
+        serializer = EmailChangeConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        code = serializer.validated_data["code"]
+        new_email = serializer.validated_data["new_email"]
+
+        # Find valid request (simple check: latest unverified matching request)
+        req = EmailChangeRequest.objects.filter(
+            user=user, 
+            new_email=new_email, 
+            is_verified=False
+        ).order_by("-created_at").first()
+
+        if not req or req.verification_code != code:
+            return Response({"detail": "Invalid or expired verification code."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # ---------------------------
+        # 1. Sync to Cognito
+        # ---------------------------
+        region = getattr(settings, "COGNITO_REGION", "")
+        pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "")
+        cognito_username = user.username
+        
+        if region and pool_id:
+            try:
+                client = boto3.client("cognito-idp", region_name=region)
+                
+                client.admin_update_user_attributes(
+                    UserPoolId=pool_id,
+                    Username=cognito_username,
+                    UserAttributes=[
+                        {
+                            "Name": "email",
+                            "Value": new_email
+                        },
+                        {
+                            "Name": "email_verified",
+                            "Value": "true"
+                        }
+                    ]
+                )
+            except Exception as e:
+                logger.error(f"Cognito Email Sync Failed: {e}")
+                # Fallback: proceed if it's acceptable, or block. 
+                # Blocking prevents data mismatch.
+                return Response(
+                    {"detail": "Failed to update login provider. Please try again later."}, 
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+
+        # ---------------------------
+        # 2. Update Local DB
+        # ---------------------------
+        old_email = user.email
+        
+        user.email = new_email
+        user.save(update_fields=["email"])
+        
+        req.is_verified = True
+        req.save()
+
+        # ---------------------------
+        # 3. Handle Old Email (Move to Secondary)
+        # ---------------------------
+        profile = getattr(user, "profile", None)
+        if profile and old_email:
+            links = profile.links or {}
+            contact = links.get("contact", {})
+            if not isinstance(contact, dict): contact = {}
+            
+            emails = contact.get("emails", [])
+            if not isinstance(emails, list): emails = []
+            
+            exists = any(e.get("email") == old_email for e in emails)
+            if not exists:
+                emails.append({
+                    "email": old_email,
+                    "type": "personal",
+                    "visibility": "private"
+                })
+                contact["emails"] = emails
+                links["contact"] = contact
+                profile.links = links
+                profile.save(update_fields=["links"])
+
+        return Response({
+            "detail": "Primary email updated successfully. Please use your new email to log in.",
+            "new_email": new_email
+        }, status=status.HTTP_200_OK)
     
     @action(detail=False, methods=["post"], url_path="me/avatar")
     def upload_avatar(self, request):

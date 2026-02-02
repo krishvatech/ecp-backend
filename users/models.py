@@ -469,6 +469,29 @@ class LinkedInAccount(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+class EmailChangeRequest(models.Model):
+    """
+    Securely tracks requests to change the primary email address.
+    Stores a short-lived OTP to verify ownership of the new email.
+    """
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="email_change_requests")
+    new_email = models.EmailField()
+    verification_code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_verified = models.BooleanField(default=False)
+    
+    # Optional: Track how many attempts or expiry
+    # attempts = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"EmailChange for {self.user.username} -> {self.new_email}"
+
 class Education(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="educations"

@@ -96,6 +96,31 @@ class ExperienceSerializer(serializers.ModelSerializer):
             "number_of_employees": {"required": False, "allow_blank": True},
         }
 
+class EmailChangeInitSerializer(serializers.Serializer):
+    """
+    Validates a request to change the primary email checks uniqueness.
+    """
+    new_email = serializers.EmailField()
+
+    def validate_new_email(self, value):
+        value = value.lower().strip()
+        # Ensure it's not already the user's current email
+        user = self.context["request"].user
+        if user.email == value:
+            raise serializers.ValidationError("This is already your primary email.")
+
+        # Ensure unique across all users
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("This email is already in use by another account.")
+        return value
+
+class EmailChangeConfirmSerializer(serializers.Serializer):
+    """
+    Validates the OTP code for email change.
+    """
+    code = serializers.CharField(min_length=6, max_length=6)
+    new_email = serializers.EmailField()
+
 class UserProfileMiniSerializer(serializers.ModelSerializer):
     is_online = serializers.ReadOnlyField()
     
