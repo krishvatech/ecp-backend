@@ -1557,6 +1557,98 @@ class EventViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="lounge/ensure-seated")
+    def ensure_seated_in_lounge(self, request, pk=None):
+        """
+        Ensure user is seated at a lounge table for chat access.
+        If not seated, automatically seat them at the first available table.
+
+        Accepts: { "table_id": <optional_id> }
+        Returns: { "table_id": <id>, "seat_index": <index>, "status": "seated" }
+        """
+        from .models import LoungeTable, LoungeParticipant
+
+        event = self.get_object()
+        user = request.user
+
+        # Check if user is registered for this event
+        is_registered = EventRegistration.objects.filter(
+            event=event, user=user
+        ).exists() or event.created_by_id == user.id
+
+        if not is_registered:
+            return Response(
+                {"detail": "You are not registered for this event."},
+                status=403,
+            )
+
+        # Check if user already seated
+        existing = LoungeParticipant.objects.filter(
+            user=user, table__event=event
+        ).first()
+
+        if existing:
+            return Response({
+                "table_id": existing.table_id,
+                "seat_index": existing.seat_index,
+                "status": "already_seated",
+            })
+
+        # Try to seat at requested table
+        requested_table_id = request.data.get("table_id")
+        if requested_table_id:
+            try:
+                table = LoungeTable.objects.get(pk=requested_table_id, event=event)
+                # Find next available seat
+                occupied_seats = LoungeParticipant.objects.filter(
+                    table=table
+                ).values_list("seat_index", flat=True)
+
+                next_seat = 0
+                while next_seat in occupied_seats:
+                    next_seat += 1
+
+                if next_seat >= table.max_seats:
+                    # Table is full, use auto-assignment below
+                    table = None
+                else:
+                    lp = LoungeParticipant.objects.create(
+                        user=user,
+                        table=table,
+                        seat_index=next_seat,
+                    )
+                    return Response({
+                        "table_id": table.id,
+                        "seat_index": next_seat,
+                        "status": "seated",
+                    })
+            except LoungeTable.DoesNotExist:
+                # Requested table not found, use auto-assignment
+                pass
+
+        # Auto-assign: Find first available table
+        tables = LoungeTable.objects.filter(event=event).order_by("id")
+        for table in tables:
+            occupied_count = LoungeParticipant.objects.filter(table=table).count()
+            if occupied_count < table.max_seats:
+                # This table has space
+                lp = LoungeParticipant.objects.create(
+                    user=user,
+                    table=table,
+                    seat_index=occupied_count,
+                )
+                return Response({
+                    "table_id": table.id,
+                    "seat_index": occupied_count,
+                    "status": "seated",
+                })
+
+        # No available seats
+        return Response(
+            {"detail": "No available lounge seats at this time."},
+            status=400,
+        )
+
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="add-participant")
     def add_participant(self, request, pk=None):
         """
