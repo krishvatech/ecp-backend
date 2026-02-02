@@ -209,11 +209,11 @@ class CognitoJWTAuthentication(BaseAuthentication):
             BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
             profile = getattr(user, "profile", None)
 
-            logger.info(
-                f"Cognito auth check for user_id={user.id}, username={user.username}, "
-                f"profile_exists={profile is not None}, "
-                f"profile_status={profile.profile_status if profile else 'NO_PROFILE'}"
-            )
+            # logger.info(
+            #     f"Cognito auth check for user_id={user.id}, username={user.username}, "
+            #     f"profile_exists={profile is not None}, "
+            #     f"profile_status={profile.profile_status if profile else 'NO_PROFILE'}"
+            # )
 
             if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
                 status = profile.profile_status
