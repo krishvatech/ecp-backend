@@ -55,9 +55,21 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             # Auto-leave table on disconnect
             await self.leave_current_table()
             await self.update_online_status(False)
+
+            # Cleanup Dyte participants
+            try:
+                meeting_ids = await self.get_user_dyte_meetings()
+                if meeting_ids:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, self.cleanup_dyte_participants_sync, meeting_ids)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"[CLEANUP] Failed: {e}")
+
             await self.broadcast_lounge_update() # Sync everyone
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
-            
+
         if hasattr(self, "user_group_name"):
             await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
 
@@ -218,6 +230,62 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 "message": message
             }
         )
+
+    @database_sync_to_async
+    def get_user_dyte_meetings(self):
+        """Get all Dyte meeting IDs where this user might be."""
+        tables = LoungeTable.objects.filter(event_id=self.event_id).values_list('dyte_meeting_id', flat=True)
+        meeting_ids = [mid for mid in tables if mid]
+
+        try:
+            event = Event.objects.get(id=self.event_id)
+            if event.dyte_meeting_id:
+                meeting_ids.append(event.dyte_meeting_id)
+        except Event.DoesNotExist:
+            pass
+
+        return meeting_ids
+
+    def cleanup_dyte_participants_sync(self, meeting_ids):
+        """Remove user from all Dyte meetings."""
+        import requests
+        from .utils import DYTE_API_BASE, _dyte_headers
+        import logging
+        logger = logging.getLogger(__name__)
+
+        removed = 0
+        for mid in meeting_ids:
+            try:
+                logger.info(f"[CLEANUP] Checking meeting {mid} for user {self.user.id}")
+                resp = requests.get(
+                    f"{DYTE_API_BASE}/meetings/{mid}/participants",
+                    headers=_dyte_headers(),
+                    params={"limit": 100},
+                    timeout=10,
+                )
+
+                if not resp.ok:
+                    continue
+
+                participants = resp.json().get("data", [])
+                for p in participants:
+                    cid = p.get("client_specific_id") or p.get("custom_participant_id")
+                    if cid == str(self.user.id):
+                        pid = p.get("id")
+                        if pid:
+                            logger.info(f"[CLEANUP] Removing participant {pid}")
+                            del_resp = requests.delete(
+                                f"{DYTE_API_BASE}/meetings/{mid}/participants/{pid}",
+                                headers=_dyte_headers(),
+                                timeout=10,
+                            )
+                            if del_resp.ok:
+                                removed += 1
+            except Exception as e:
+                logger.error(f"[CLEANUP] Error: {e}")
+
+        logger.info(f"[CLEANUP] Removed {removed} participants for user {self.user.id}")
+        return removed
 
     @database_sync_to_async
     def is_host(self):

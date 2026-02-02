@@ -56,6 +56,27 @@ LOGGING = {
             "level": "DEBUG",
             "propagate": False,
         },
+        # Events app logging
+        "events": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "events.views": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "events.consumers": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "events.utils": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
     },
 }
 

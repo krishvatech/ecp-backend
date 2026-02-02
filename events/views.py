@@ -1286,15 +1286,38 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # Add participant to the table meeting
         user = request.user
-        name = (getattr(user, "full_name", "") or getattr(user, "get_full_name", lambda: "")()) or user.username
+
+        # Check if user already in this meeting (duplicate prevention)
+        try:
+            logger.info(f"[LOUNGE_JOIN] Checking for duplicates: user {user.id}")
+            check_resp = requests.get(
+                f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
+                headers=_dyte_headers(),
+                params={"limit": 100},
+                timeout=10,
+            )
+            if check_resp.ok:
+                existing = check_resp.json().get("data", [])
+                for p in existing:
+                    cid = p.get("client_specific_id") or p.get("custom_participant_id")
+                    if cid == str(user.id):
+                        logger.warning(f"[LOUNGE_JOIN] Duplicate detected: user {user.id}")
+                        return Response({
+                            "error": "already_in_meeting",
+                            "detail": "Already in this table. Leave first."
+                        }, status=409)
+        except Exception as e:
+            logger.warning(f"[LOUNGE_JOIN] Duplicate check failed: {e}")
+
+        profile = getattr(user, "profile", None)
+        name = (getattr(profile, "full_name", "") if profile else "") or getattr(user, "get_full_name", lambda: "")() or user.username
         picture = ""
         try:
-            profile = getattr(user, "profile", None)
             if profile and getattr(profile, "user_image", None):
                 picture = profile.user_image.url
         except Exception:
             picture = ""
-        
+
         body = {
             "name": name or f"User {user.id}",
             "preset_name": DYTE_PRESET_PARTICIPANT, # Use normal participant preset for lounge
@@ -1304,6 +1327,7 @@ class EventViewSet(viewsets.ModelViewSet):
             body["picture"] = picture
         
         try:
+            logger.info(f"[LOUNGE_JOIN] User {user.id} joining table {table_id} (meeting {meeting_id})")
             resp = requests.post(
                 f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
                 headers=_dyte_headers(),
@@ -1312,8 +1336,24 @@ class EventViewSet(viewsets.ModelViewSet):
             )
             resp.raise_for_status()
             data = resp.json().get("data", {})
-            return Response({"token": data.get("token")})
+
+            # Validate response
+            token = data.get("token")
+            participant_id = data.get("id")
+
+            if not token:
+                logger.error(f"[LOUNGE_JOIN] No token in Dyte response for user {user.id}")
+                return Response({"error": "dyte_token_missing"}, status=500)
+
+            if participant_id:
+                logger.info(f"[LOUNGE_JOIN] Success: user {user.id} -> participant {participant_id}")
+
+            return Response({"token": token, "participant_id": participant_id})
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"[LOUNGE_JOIN] Dyte API error: {e.response.status_code}")
+            return Response({"error": "dyte_api_error"}, status=500)
         except Exception as e:
+            logger.error(f"[LOUNGE_JOIN] Exception: {str(e)}")
             return Response({"error": "dyte_join_failed", "detail": str(e)}, status=500)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="track-replay")
@@ -1458,10 +1498,10 @@ class EventViewSet(viewsets.ModelViewSet):
         role_string = "publisher" if is_host else "audience"
 
         # 3) Prepare participant payload
-        name = (getattr(user, "full_name", "") or getattr(user, "get_full_name", lambda: "")()) or user.username
+        profile = getattr(user, "profile", None)
+        name = (getattr(profile, "full_name", "") if profile else "") or getattr(user, "get_full_name", lambda: "")() or user.username
         picture = ""
         try:
-            profile = getattr(user, "profile", None)
             if profile and getattr(profile, "user_image", None):
                 picture = profile.user_image.url
         except Exception:
