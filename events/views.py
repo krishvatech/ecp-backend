@@ -1598,6 +1598,43 @@ class EventViewSet(viewsets.ModelViewSet):
         preset_name = DYTE_PRESET_HOST if is_host else DYTE_PRESET_PARTICIPANT
         role_string = "publisher" if is_host else "audience"
 
+        # Waiting room gating (only for non-hosts)
+        defaults = {"status": "registered", "admission_status": "admitted"}
+        if event.waiting_room_enabled and not is_host:
+            defaults["admission_status"] = "waiting"
+        registration, _created = EventRegistration.objects.get_or_create(
+            event=event,
+            user=user,
+            defaults=defaults,
+        )
+        if event.waiting_room_enabled and not is_host:
+            # If host hasn't explicitly admitted, keep in waiting
+            if registration.admission_status == "admitted" and not registration.admitted_at:
+                registration.admission_status = "waiting"
+                registration.save(update_fields=["admission_status"])
+            if not registration.admission_status:
+                registration.admission_status = "waiting"
+                registration.save(update_fields=["admission_status"])
+            if registration.admission_status in {"rejected"}:
+                return Response(
+                    {"error": "waiting_rejected", "detail": "You were not admitted to this event."},
+                    status=403,
+                )
+            if registration.admission_status != "admitted":
+                if not registration.waiting_started_at:
+                    registration.waiting_started_at = timezone.now()
+                    registration.save(update_fields=["waiting_started_at"])
+                return Response(
+                    {
+                        "waiting": True,
+                        "waiting_room_enabled": True,
+                        "admission_status": registration.admission_status,
+                        "lounge_allowed": bool(event.lounge_enabled_waiting_room),
+                        "networking_allowed": bool(event.networking_tables_enabled_waiting_room),
+                    },
+                    status=200,
+                )
+
         # 3) Prepare participant payload
         profile = getattr(user, "profile", None)
         name = (getattr(profile, "full_name", "") if profile else "") or getattr(user, "get_full_name", lambda: "")() or user.username
@@ -1647,7 +1684,10 @@ class EventViewSet(viewsets.ModelViewSet):
             )
 
         # ✅ Mark user as joined_live
-        EventRegistration.objects.filter(event=event, user=user).update(joined_live=True)
+        EventRegistration.objects.filter(event=event, user=user).update(
+            joined_live=True,
+            joined_live_at=timezone.now(),
+        )
 
         return Response(
             {
@@ -1657,6 +1697,133 @@ class EventViewSet(viewsets.ModelViewSet):
                 "role": role_string,
             }
         )
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="waiting-room/status")
+    def waiting_room_status(self, request, pk=None):
+        event = self.get_object()
+        user = request.user
+        if not event.waiting_room_enabled:
+            return Response(
+                {"waiting_room_enabled": False, "admission_status": "admitted"},
+                status=200,
+            )
+
+        # Auto-admit if waiting time has elapsed
+        auto_seconds = int(event.auto_admit_seconds or 0)
+        if auto_seconds > 0:
+            cutoff = timezone.now() - timezone.timedelta(seconds=auto_seconds)
+            (
+                EventRegistration.objects.filter(
+                    event=event,
+                    user=user,
+                    admission_status="waiting",
+                    waiting_started_at__isnull=False,
+                    waiting_started_at__lte=cutoff,
+                ).update(admission_status="admitted", admitted_at=timezone.now())
+            )
+
+        reg = EventRegistration.objects.filter(event=event, user=user).first()
+        if not reg and event.created_by_id != user.id:
+            return Response({"detail": "not_registered"}, status=403)
+
+        admission_status = reg.admission_status if reg else "admitted"
+        return Response(
+            {
+                "waiting_room_enabled": True,
+                "admission_status": admission_status,
+                "lounge_allowed": bool(event.lounge_enabled_waiting_room),
+                "networking_allowed": bool(event.networking_tables_enabled_waiting_room),
+            }
+        )
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="waiting-room/queue")
+    def waiting_room_queue(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can view the waiting room."}, status=403)
+
+        # Auto-admit anyone whose wait time has elapsed
+        auto_seconds = int(event.auto_admit_seconds or 0)
+        if auto_seconds > 0:
+            cutoff = timezone.now() - timezone.timedelta(seconds=auto_seconds)
+            (
+                EventRegistration.objects.filter(
+                    event=event,
+                    admission_status="waiting",
+                    waiting_started_at__isnull=False,
+                    waiting_started_at__lte=cutoff,
+                ).update(admission_status="admitted", admitted_at=timezone.now())
+            )
+
+        waiting_regs = (
+            EventRegistration.objects.filter(event=event, admission_status="waiting")
+            .select_related("user")
+            .order_by("waiting_started_at", "registered_at")
+        )
+        data = [
+            {
+                "user_id": r.user_id,
+                "user_name": r.user.get_full_name() or r.user.username,
+                "user_email": r.user.email,
+                "waiting_started_at": r.waiting_started_at,
+                "registered_at": r.registered_at,
+            }
+            for r in waiting_regs
+        ]
+        return Response({"count": len(data), "results": data})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="waiting-room/admit")
+    def waiting_room_admit(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can admit participants."}, status=403)
+
+        user_ids = request.data.get("user_ids") or []
+        user_id = request.data.get("user_id")
+        admit_all = bool(request.data.get("admit_all"))
+        if user_id:
+            user_ids = [user_id]
+
+        if not user_ids and not admit_all:
+            return Response({"detail": "Provide user_id, user_ids, or admit_all."}, status=400)
+
+        qs = EventRegistration.objects.filter(event=event, admission_status="waiting")
+        if not admit_all:
+            qs = qs.filter(user_id__in=user_ids)
+
+        updated = qs.update(
+            admission_status="admitted",
+            admitted_at=timezone.now(),
+            admitted_by=request.user,
+            rejected_at=None,
+            rejected_by=None,
+            rejection_reason="",
+        )
+        return Response({"ok": True, "admitted": updated})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="waiting-room/reject")
+    def waiting_room_reject(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can reject participants."}, status=403)
+
+        user_ids = request.data.get("user_ids") or []
+        user_id = request.data.get("user_id")
+        reason = (request.data.get("reason") or "").strip()
+        if user_id:
+            user_ids = [user_id]
+
+        if not user_ids:
+            return Response({"detail": "Provide user_id or user_ids."}, status=400)
+
+        qs = EventRegistration.objects.filter(event=event, admission_status="waiting", user_id__in=user_ids)
+        updated = qs.update(
+            admission_status="rejected",
+            rejected_at=timezone.now(),
+            rejected_by=request.user,
+            rejection_reason=reason,
+        )
+        return Response({"ok": True, "rejected": updated})
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="lounge/ensure-seated")
     def ensure_seated_in_lounge(self, request, pk=None):

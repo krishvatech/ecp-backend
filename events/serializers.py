@@ -78,6 +78,10 @@ class EventSerializer(serializers.ModelSerializer):
             "preview_image",
             "cover_image",
             "waiting_room_image",
+            "waiting_room_enabled",
+            "auto_admit_seconds",
+            "lounge_enabled_waiting_room",
+            "networking_tables_enabled_waiting_room",
             "active_speaker",
             "recording_url",
             "dyte_meeting_id",    
@@ -488,6 +492,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
             "preview_image", "cover_image", "waiting_room_image", "location", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "price", "is_free",
+            "waiting_room_enabled", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):
@@ -521,6 +526,14 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "registered_at",
             "joined_live",
             "watched_replay",
+            "admission_status",
+            "admitted_at",
+            "admitted_by",
+            "rejected_at",
+            "rejected_by",
+            "rejection_reason",
+            "waiting_started_at",
+            "joined_live_at",
             "status",
         )
         read_only_fields = (
@@ -532,6 +545,14 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "user_name",
             "user_email",
             "user_avatar_url",
+            "admission_status",
+            "admitted_at",
+            "admitted_by",
+            "rejected_at",
+            "rejected_by",
+            "rejection_reason",
+            "waiting_started_at",
+            "joined_live_at",
             "status",
         )
 

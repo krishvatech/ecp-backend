@@ -76,9 +76,27 @@ class Event(models.Model):
         null=True,
         help_text="Replaces the clock in waiting room if uploaded"
     )
+    waiting_room_enabled = models.BooleanField(
+        default=False,
+        help_text="If True, participants enter waiting room until admitted by host",
+    )
+    lounge_enabled_waiting_room = models.BooleanField(
+        default=True,
+        help_text="Allow waiting room participants to access Social Lounge",
+    )
+    networking_tables_enabled_waiting_room = models.BooleanField(
+        default=True,
+        help_text="Allow waiting room participants to join networking tables",
+    )
+    auto_admit_seconds = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="If set, auto-admit participants after N seconds of waiting",
+    )
     attendees = models.ManyToManyField(
         User,
         through='EventRegistration',
+        through_fields=('event', 'user'),
         related_name='events_joined',
         blank=True,
     )
@@ -181,6 +199,37 @@ class EventRegistration(models.Model):
     watched_replay = models.BooleanField(default=False)
     is_online = models.BooleanField(default=False)
     online_count = models.PositiveIntegerField(default=0)
+    admission_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("waiting", "Waiting for host admission"),
+            ("admitted", "Admitted to live meeting"),
+            ("rejected", "Host rejected participation"),
+            ("left_waiting", "Participant left waiting room voluntarily"),
+        ],
+        default="admitted",
+        db_index=True,
+        help_text="Only used if event has waiting_room_enabled=True",
+    )
+    admitted_at = models.DateTimeField(null=True, blank=True)
+    admitted_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="admissions_reviewed",
+    )
+    rejected_at = models.DateTimeField(null=True, blank=True)
+    rejected_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="admissions_rejected",
+    )
+    rejection_reason = models.TextField(blank=True)
+    waiting_started_at = models.DateTimeField(null=True, blank=True)
+    joined_live_at = models.DateTimeField(null=True, blank=True)
     
     # Moderation
     is_banned = models.BooleanField(default=False)
@@ -194,6 +243,34 @@ class EventRegistration(models.Model):
         ]
     def __str__(self):
         return f'{self.user_id} -> {self.event_id}'
+
+
+class WaitingRoomAuditLog(models.Model):
+    ACTION_CHOICES = [
+        ("entered", "Participant entered waiting room"),
+        ("admitted", "Host admitted participant"),
+        ("rejected", "Host rejected participant"),
+        ("timed_out", "Participant timeout"),
+        ("left", "Participant left waiting room"),
+        ("bulk_admitted", "Host admitted batch of participants"),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="waiting_room_logs")
+    participant = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
+    performed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="waiting_room_actions",
+        help_text="Which host/admin performed this action",
+    )
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
 
 
 # ============================================================
