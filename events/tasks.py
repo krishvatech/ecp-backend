@@ -172,6 +172,32 @@ def _end_event_from_system(event, reason: str) -> None:
     except Exception:
         pass
 
+    # 📢 Broadcast meeting end to all participants via WebSocket (system-initiated)
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+        from django.utils import timezone as django_timezone
+        from datetime import timedelta
+
+        channel_layer = get_channel_layer()
+        lounge_available = event.lounge_enabled_after
+        lounge_closing_time = None
+        if lounge_available:
+            lounge_closing_time = (event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)).isoformat()
+
+        async_to_sync(channel_layer.group_send)(
+            f"event_{event.id}",
+            {
+                "type": "meeting_ended",
+                "event_id": event.id,
+                "ended_at": event.live_ended_at.isoformat(),
+                "lounge_available": lounge_available,
+                "lounge_closing_time": lounge_closing_time
+            }
+        )
+    except Exception as e:
+        logger.warning(f"Failed to broadcast meeting_ended to event {event.id}: {e}")
+
     logger.info("Ended event %s (%s)", event.id, reason)
 
 

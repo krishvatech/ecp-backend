@@ -79,6 +79,24 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         if action == "join_table":
             table_id = content.get("table_id")
             seat_index = content.get("seat_index")
+
+            # ✅ DEFENSIVE: Verify meeting state is not corrupted
+            # Lounge join should NOT reactivate the meeting
+            try:
+                event = await self.get_event()
+                if event.status == "ended" and event.is_live:
+                    # CRITICAL: Meeting state corrupted
+                    print(f"[CRITICAL] Event {event.id} status='ended' but is_live=True during lounge join!")
+                    await self.send_json({
+                        "type": "error",
+                        "message": "Meeting state error. Please refresh and try again.",
+                        "error_code": "meeting_state_corrupted"
+                    })
+                    return
+            except Exception as e:
+                print(f"[CONSUMER] Failed to verify meeting state: {e}")
+                # Continue anyway, don't block lounge join on verification failure
+
             success, error = await self.join_table(table_id, seat_index)
             if success:
                 print(f"[CONSUMER] join_table successful for {self.user.username}, broadcasting update...")
@@ -205,6 +223,20 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     async def breakout_end(self, event: dict) -> None:
         await self.send_json({"type": "breakout_end"})
+
+    async def meeting_ended(self, event: dict) -> None:
+        """Broadcast notification that the host has ended the meeting.
+
+        Participants should see PostEventLoungeScreen if lounge is available,
+        otherwise they should be redirected away from the live meeting page.
+        """
+        await self.send_json({
+            "type": "meeting_ended",
+            "event_id": event.get("event_id"),
+            "ended_at": event.get("ended_at"),
+            "lounge_available": event.get("lounge_available", False),
+            "lounge_closing_time": event.get("lounge_closing_time")
+        })
 
     async def breakout_force_join(self, event: dict) -> None:
         """Targeted force join for specific user"""
@@ -474,6 +506,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         if debug_counts:
             print(f"[CONSUMER] get_lounge_state: Found participants: {', '.join(debug_counts)}")
         return state
+
+    @database_sync_to_async
+    def get_event(self):
+        """Get the current event, used for state verification."""
+        return Event.objects.get(id=self.event_id)
 
     @database_sync_to_async
     def join_table(self, table_id, seat_index):

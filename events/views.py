@@ -663,6 +663,11 @@ class EventViewSet(viewsets.ModelViewSet):
                 return Response({"detail": "Only the host can update live status."}, status=403)
 
             if action_type == "start":
+                if event.status == "ended":
+                    return Response(
+                        {"detail": "Meeting already ended. Cannot restart via live-status."},
+                        status=409,
+                    )
                 event.status = "live"
                 event.is_live = True
                 event.live_started_at = timezone.now()
@@ -703,6 +708,28 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception:
                 # Already logged inside helper; do not break the API
                 pass
+
+            # 📢 Broadcast meeting end to all participants via WebSocket
+            try:
+                channel_layer = get_channel_layer()
+                lounge_available = event.lounge_enabled_after
+                lounge_closing_time = None
+                if lounge_available:
+                    lounge_closing_time = (event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)).isoformat()
+
+                async_to_sync(channel_layer.group_send)(
+                    f"event_{event.id}",
+                    {
+                        "type": "meeting_ended",
+                        "event_id": event.id,
+                        "ended_at": event.live_ended_at.isoformat(),
+                        "lounge_available": lounge_available,
+                        "lounge_closing_time": lounge_closing_time
+                    }
+                )
+            except Exception as e:
+                # Log but don't fail the API response
+                logger.warning(f"Failed to broadcast meeting_ended to event {event.id}: {e}")
 
         return Response({
             "ok": True,
@@ -792,6 +819,29 @@ class EventViewSet(viewsets.ModelViewSet):
         except Exception:
             # Already logged inside helper; do not break the API
             pass
+
+        # 📢 Broadcast meeting end to all participants via WebSocket
+        # This allows frontend to immediately show PostEventLoungeScreen or redirect as needed
+        try:
+            channel_layer = get_channel_layer()
+            lounge_available = event.lounge_enabled_after
+            lounge_closing_time = None
+            if lounge_available:
+                lounge_closing_time = (event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)).isoformat()
+
+            async_to_sync(channel_layer.group_send)(
+                f"event_{event.id}",
+                {
+                    "type": "meeting_ended",
+                    "event_id": event.id,
+                    "ended_at": event.live_ended_at.isoformat(),
+                    "lounge_available": lounge_available,
+                    "lounge_closing_time": lounge_closing_time
+                }
+            )
+        except Exception as e:
+            # Log but don't fail the API response
+            logger.warning(f"Failed to broadcast meeting_ended to event {event.id}: {e}")
 
         return Response(
             {"message": "Meeting ended", "status": event.status, "event_id": event.id}
@@ -1263,13 +1313,64 @@ class EventViewSet(viewsets.ModelViewSet):
         print(f"DEBUG: lounge_join_table hit for event {pk}")
         """
         Get a Dyte authToken for a specific Social Lounge table.
+        Validates that the lounge is currently open before allowing join.
         """
         table_id = request.data.get("table_id")
         if not table_id:
             return Response({"error": "missing_table_id"}, status=400)
 
         table = get_object_or_404(LoungeTable, id=table_id, event_id=pk)
-        
+
+        # ✅ Validate that lounge is currently open
+        event = table.event
+        now = timezone.now()
+
+        # Check if lounge is available based on event state and timing
+        lounge_available = False
+        reason = "Lounge is currently closed"
+
+        if event.status == "ended" and not event.live_ended_at:
+            # Event ended but no live_ended_at timestamp (shouldn't happen)
+            return Response({
+                "error": "lounge_closed",
+                "reason": "Event has ended but timing is invalid"
+            }, status=403)
+
+        # ✅ DURING event (is_live = True)
+        if event.is_live:
+            if event.is_on_break and event.lounge_enabled_breaks:
+                lounge_available = True
+                reason = "Lounge open during break"
+            elif not event.is_on_break and event.lounge_enabled_during:
+                lounge_available = True
+                reason = "Lounge open during event"
+
+        # ✅ AFTER event (event ended within lounge_after_buffer window)
+        elif event.live_ended_at:
+            if event.lounge_enabled_after:
+                closing_time = event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)
+                if event.live_ended_at <= now < closing_time:
+                    lounge_available = True
+                    reason = f"Post-event lounge (closes at {closing_time})"
+
+        if not lounge_available:
+            return Response({
+                "error": "lounge_closed",
+                "reason": reason
+            }, status=403)
+
+        # ✅ DEFENSIVE: Ensure meeting state is not accidentally reactivated
+        # If meeting was ended, it must stay ended (joining lounge doesn't restart meeting)
+        if event.status == "ended" and not event.is_live:
+            logger.info(f"[LOUNGE_JOIN] User {request.user.id} joining post-event lounge for event {event.id}")
+            # Verify from DB that meeting hasn't been reactivated
+            event.refresh_from_db()
+            if event.is_live:
+                # CRITICAL: Meeting state was changed somehow
+                logger.critical(f"[CRITICAL] Event {event.id} is_live was True when it should be False! Reverting.")
+                event.is_live = False
+                event.save(update_fields=["is_live"])
+
         # Ensure meeting exists for this table
         meeting_id = table.dyte_meeting_id
         if not meeting_id:
