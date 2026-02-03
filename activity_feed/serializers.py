@@ -181,8 +181,10 @@ class FeedItemSerializer(serializers.ModelSerializer):
                 gid_int = None
             names  = (self.context or {}).get("group_names")  or {}
             covers = (self.context or {}).get("group_covers") or {}
+            logos  = (self.context or {}).get("group_logos")  or {}
             m["group_name"]      = names.get(gid_int)
             m["group_cover_url"] = covers.get(gid_int)
+            m["group_logo_url"]  = logos.get(gid_int)
 
         # ---- ensure polls include ids + counts (and poll_id/group_id) ----
         try:

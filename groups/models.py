@@ -49,6 +49,7 @@ class Group(models.Model):
     visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default=VISIBILITY_PUBLIC)
     join_policy = models.CharField(max_length=10, choices=JOIN_POLICY_CHOICES, default=JOIN_OPEN)
     cover_image = models.ImageField(upload_to='group_covers/', blank=True, null=True)
+    logo = models.ImageField(upload_to='group_logos/', blank=True, null=True)
     message_mode = models.CharField(max_length=20, choices=MSG_MODE_CHOICES, default=MSG_MODE_ALL, db_index=True)
 
     # owner can exist, but owner/admin logic is out of this moderator scope
@@ -95,6 +96,10 @@ class Group(models.Model):
         if self.cover_image and hasattr(self.cover_image, "size") and self.cover_image.size > 50 * 1024 * 1024:
             from django.core.exceptions import ValidationError
             raise ValidationError("Cover image must be ≤ 50MB.")
+            
+        if self.logo and hasattr(self.logo, "size") and self.logo.size > 10 * 1024 * 1024:
+            from django.core.exceptions import ValidationError
+            raise ValidationError("Logo must be ≤ 10MB.")
         super().save(*args, **kwargs)
         
     @property

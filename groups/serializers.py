@@ -14,6 +14,7 @@ class GroupSerializer(serializers.ModelSerializer):
     member_count = serializers.IntegerField(read_only=True)
     created_by = serializers.SerializerMethodField(read_only=True)
     remove_cover_image = serializers.BooleanField(write_only=True, required=False, default=False)
+    remove_logo = serializers.BooleanField(write_only=True, required=False, default=False)
     current_user_role = serializers.SerializerMethodField(read_only=True)
 
     # NEW ↓
@@ -36,6 +37,7 @@ class GroupSerializer(serializers.ModelSerializer):
             "id", "name", "slug", "description",
             "visibility", "join_policy",
             "cover_image", "remove_cover_image",
+            "logo", "remove_logo",
             "member_count", "created_by", "owner",
             "created_at", "updated_at",
             "current_user_role",
@@ -93,10 +95,13 @@ class GroupSerializer(serializers.ModelSerializer):
             validated_data.setdefault("created_by", request.user)
 
         remove = validated_data.pop("remove_cover_image", False)
+        remove_logo = validated_data.pop("remove_logo", False)
         obj = super().create(validated_data)
 
         if remove and obj.cover_image:
             obj.cover_image.delete(save=True)
+        if remove_logo and obj.logo:
+            obj.logo.delete(save=True)
         return obj
 
     def update(self, instance, validated_data):
@@ -105,7 +110,13 @@ class GroupSerializer(serializers.ModelSerializer):
         if remove_flag is None and request is not None:
             remove_flag = str(request.data.get("remove_cover_image", "")).lower() in ("1", "true", "on")
 
+        remove_logo_flag = validated_data.pop("remove_logo", None)
+        if remove_logo_flag is None and request is not None:
+            remove_logo_flag = str(request.data.get("remove_logo", "")).lower() in ("1", "true", "on")
+
         old_file = instance.cover_image if instance.cover_image else None
+        old_logo = instance.logo if instance.logo else None
+        
         obj = super().update(instance, validated_data)
 
         if remove_flag and old_file:
@@ -115,6 +126,15 @@ class GroupSerializer(serializers.ModelSerializer):
                 pass
             obj.cover_image = None
             obj.save(update_fields=["cover_image"])
+
+        if remove_logo_flag and old_logo:
+            try:
+                old_logo.delete(save=False)
+            except Exception:
+                pass
+            obj.logo = None
+            obj.save(update_fields=["logo"])
+            
         return obj
     
     def get_current_user_role(self, obj):
@@ -242,12 +262,14 @@ class PromotionRequestOutSerializer(serializers.ModelSerializer):
 class GroupCreateUpdateSerializer(serializers.ModelSerializer):
     parent_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
     remove_cover_image = serializers.BooleanField(required=False, write_only=True)
+    remove_logo = serializers.BooleanField(required=False, write_only=True)
 
     class Meta:
         model = Group
         fields = [
             'id', 'name', 'slug', 'description', 'visibility',
-            'cover_image', 'parent_id', 'community', 'remove_cover_image'
+            'cover_image', 'logo', 'parent_id', 'community', 
+            'remove_cover_image', 'remove_logo'
         ]
         extra_kwargs = {
             'community': {'required': False, 'allow_null': True},
@@ -273,6 +295,12 @@ class GroupCreateUpdateSerializer(serializers.ModelSerializer):
             if instance.cover_image:
                 instance.cover_image.delete(save=False)
             instance.cover_image = None
+            
+        if validated.pop('remove_logo', False):
+            if instance.logo:
+                instance.logo.delete(save=False)
+            instance.logo = None
+            
         return super().update(instance, validated)
     
 
@@ -313,7 +341,9 @@ class SuggestedGroupSerializer(serializers.ModelSerializer):
             "description",
             "visibility",
             "join_policy",
+            "join_policy",
             "cover_image",
+            "logo",
             "member_count",
             "mutuals",
             "mutual_members",

@@ -428,6 +428,11 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             for g in groups_qs
         }
 
+        group_logos = {
+            g.id: (request.build_absolute_uri(g.logo.url) if getattr(g, "logo", None) else None)
+            for g in groups_qs
+        }
+
         # ---- lookup maps for communities ----
         communities_qs = Community.objects.filter(id__in=page_cids)
         community_names = {c.id: c.name for c in communities_qs}
@@ -443,6 +448,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             context={
                 "group_names": group_names,
                 "group_covers": group_covers,
+                "group_logos": group_logos,
                 "community_names": community_names,
                 "community_covers": community_covers,
                 "request": request,
