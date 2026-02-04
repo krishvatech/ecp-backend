@@ -496,7 +496,6 @@ class UserViewSet(
         qs = (
             UserModel.objects
             .filter(is_superuser=False)
-            .exclude(id=request.user.id)
             .exclude(profile__profile_status__in=BLOCKED_PROFILE_STATUSES)  # Hide suspended users
             .select_related("profile")
             .prefetch_related("experiences")
