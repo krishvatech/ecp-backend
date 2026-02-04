@@ -93,6 +93,10 @@ class Event(models.Model):
         blank=True,
         help_text="If set, auto-admit participants after N seconds of waiting",
     )
+    waiting_room_grace_period_minutes = models.PositiveIntegerField(
+        default=10,
+        help_text="Minutes after start_time where participants can join freely without waiting room approval",
+    )
     attendees = models.ManyToManyField(
         User,
         through='EventRegistration',

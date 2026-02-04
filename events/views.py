@@ -1613,17 +1613,42 @@ class EventViewSet(viewsets.ModelViewSet):
         # Waiting room gating (only for non-hosts)
         defaults = {"status": "registered", "admission_status": "admitted"}
         if event.waiting_room_enabled and not is_host:
-            defaults["admission_status"] = "waiting"
+            should_wait = True  # Default to waiting room
+
+            # Check if within grace period
+            if event.start_time:
+                now = timezone.now()
+                grace_minutes = event.waiting_room_grace_period_minutes or 10
+                grace_period = timedelta(minutes=grace_minutes)
+
+                # Admit if: start_time <= now < start_time + grace_period
+                # The end boundary is EXCLUSIVE (at exactly grace_period_end, grace period has ended)
+                if event.start_time <= now < (event.start_time + grace_period):
+                    should_wait = False  # Within grace period - admit directly
+
+            if should_wait:
+                defaults["admission_status"] = "waiting"
         registration, _created = EventRegistration.objects.get_or_create(
             event=event,
             user=user,
             defaults=defaults,
         )
         if event.waiting_room_enabled and not is_host:
-            # If host hasn't explicitly admitted, keep in waiting
-            if registration.admission_status == "admitted" and not registration.admitted_at:
-                registration.admission_status = "waiting"
-                registration.save(update_fields=["admission_status"])
+            # Only apply override logic for existing registrations, not newly created ones
+            # AND only if NOT in grace period (to preserve grace period admissions)
+            is_in_grace_period = False
+            if event.start_time and not _created:
+                now = timezone.now()
+                grace_minutes = event.waiting_room_grace_period_minutes or 10
+                grace_period = timedelta(minutes=grace_minutes)
+                # Grace period is exclusive on the end boundary
+                is_in_grace_period = event.start_time <= now < (event.start_time + grace_period)
+
+            if not _created and not is_in_grace_period:
+                # If host hasn't explicitly admitted, keep in waiting
+                if registration.admission_status == "admitted" and not registration.admitted_at:
+                    registration.admission_status = "waiting"
+                    registration.save(update_fields=["admission_status"])
             if not registration.admission_status:
                 registration.admission_status = "waiting"
                 registration.save(update_fields=["admission_status"])
@@ -1701,12 +1726,24 @@ class EventViewSet(viewsets.ModelViewSet):
             joined_live_at=timezone.now(),
         )
 
+        # ✅ Check if user is within grace period (for frontend to trigger immediate refresh)
+        is_grace_period_join = False
+        if event.waiting_room_enabled and event.start_time:
+            now = timezone.now()
+            grace_minutes = event.waiting_room_grace_period_minutes or 10
+            grace_period_end = event.start_time + timezone.timedelta(minutes=grace_minutes)
+            # Grace period is active if: start_time <= now < grace_period_end
+            # The end boundary is EXCLUSIVE (at exactly grace_period_end, grace period has ended)
+            is_grace_period_join = event.start_time <= now < grace_period_end
+
         return Response(
             {
                 "authToken": auth_token,
                 "meetingId": meeting_id,
                 "presetName": preset_name,
                 "role": role_string,
+                "gracePeriodAdmitted": is_grace_period_join,
+                "admissionStatus": "admitted",
             }
         )
 

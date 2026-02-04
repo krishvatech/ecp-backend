@@ -80,6 +80,7 @@ class EventSerializer(serializers.ModelSerializer):
             "waiting_room_image",
             "waiting_room_enabled",
             "auto_admit_seconds",
+            "waiting_room_grace_period_minutes",
             "lounge_enabled_waiting_room",
             "networking_tables_enabled_waiting_room",
             "active_speaker",
@@ -492,7 +493,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
             "preview_image", "cover_image", "waiting_room_image", "location", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "price", "is_free",
-            "waiting_room_enabled", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
+            "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):
