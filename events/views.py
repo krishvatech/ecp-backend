@@ -1312,52 +1312,64 @@ class EventViewSet(viewsets.ModelViewSet):
     def lounge_join_table(self, request, pk=None):
         print(f"DEBUG: lounge_join_table hit for event {pk}")
         """
-        Get a Dyte authToken for a specific Social Lounge table.
-        Validates that the lounge is currently open before allowing join.
+        Get a Dyte authToken for a specific Social Lounge or Breakout room table.
+        - For BREAKOUT tables: Allow join during live events regardless of lounge settings
+        - For LOUNGE tables: Validate that the lounge is currently open before allowing join
         """
         table_id = request.data.get("table_id")
         if not table_id:
             return Response({"error": "missing_table_id"}, status=400)
 
         table = get_object_or_404(LoungeTable, id=table_id, event_id=pk)
-
-        # ✅ Validate that lounge is currently open
         event = table.event
         now = timezone.now()
 
-        # Check if lounge is available based on event state and timing
-        lounge_available = False
-        reason = "Lounge is currently closed"
+        # ✅ BREAKOUT ROOMS: Allow access during live events regardless of lounge availability
+        # Breakout rooms are a separate feature from the Social Lounge and should work independently
+        if table.category == "BREAKOUT":
+            if event.is_live:
+                # Breakout rooms can be joined during live event
+                print(f"[LOUNGE_JOIN] Breakout room access allowed: table={table_id}, event_is_live=True")
+            else:
+                # Breakout rooms cannot be joined after event ends
+                return Response({
+                    "error": "breakout_not_available",
+                    "reason": "Breakout rooms are only available during the live event"
+                }, status=403)
+        else:
+            # ✅ LOUNGE TABLES: Validate lounge availability based on event state and timing
+            lounge_available = False
+            reason = "Lounge is currently closed"
 
-        if event.status == "ended" and not event.live_ended_at:
-            # Event ended but no live_ended_at timestamp (shouldn't happen)
-            return Response({
-                "error": "lounge_closed",
-                "reason": "Event has ended but timing is invalid"
-            }, status=403)
+            if event.status == "ended" and not event.live_ended_at:
+                # Event ended but no live_ended_at timestamp (shouldn't happen)
+                return Response({
+                    "error": "lounge_closed",
+                    "reason": "Event has ended but timing is invalid"
+                }, status=403)
 
-        # ✅ DURING event (is_live = True)
-        if event.is_live:
-            if event.is_on_break and event.lounge_enabled_breaks:
-                lounge_available = True
-                reason = "Lounge open during break"
-            elif not event.is_on_break and event.lounge_enabled_during:
-                lounge_available = True
-                reason = "Lounge open during event"
-
-        # ✅ AFTER event (event ended within lounge_after_buffer window)
-        elif event.live_ended_at:
-            if event.lounge_enabled_after:
-                closing_time = event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)
-                if event.live_ended_at <= now < closing_time:
+            # ✅ DURING event (is_live = True)
+            if event.is_live:
+                if event.is_on_break and event.lounge_enabled_breaks:
                     lounge_available = True
-                    reason = f"Post-event lounge (closes at {closing_time})"
+                    reason = "Lounge open during break"
+                elif not event.is_on_break and event.lounge_enabled_during:
+                    lounge_available = True
+                    reason = "Lounge open during event"
 
-        if not lounge_available:
-            return Response({
-                "error": "lounge_closed",
-                "reason": reason
-            }, status=403)
+            # ✅ AFTER event (event ended within lounge_after_buffer window)
+            elif event.live_ended_at:
+                if event.lounge_enabled_after:
+                    closing_time = event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)
+                    if event.live_ended_at <= now < closing_time:
+                        lounge_available = True
+                        reason = f"Post-event lounge (closes at {closing_time})"
+
+            if not lounge_available:
+                return Response({
+                    "error": "lounge_closed",
+                    "reason": reason
+                }, status=403)
 
         # ✅ DEFENSIVE: Ensure meeting state is not accidentally reactivated
         # If meeting was ended, it must stay ended (joining lounge doesn't restart meeting)
