@@ -479,7 +479,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         avatar_url = img.url
                     except Exception:
                         avatar_url = str(img) if img else ""
-                participants[p.seat_index] = {
+                participants[str(p.seat_index)] = {
                     "user_id": p.user.id,
                     "username": p.user.username,
                     "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username,

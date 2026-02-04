@@ -1077,49 +1077,64 @@ class EventViewSet(viewsets.ModelViewSet):
         )
         return Response(serializer.data)
 
+    def _get_lounge_availability(self, event):
+        """
+        Shared function to determine lounge availability status.
+        Used by both lounge_state (GET) and lounge_join_table (POST) endpoints.
+
+        Returns: (status_code, reason, next_change_time)
+            - status_code: "OPEN" or "CLOSED"
+            - reason: Human-readable explanation
+            - next_change_time: When status is expected to change
+
+        CRITICAL: This function checks conditions in order BEFORE → DURING → AFTER
+        to prevent race conditions where is_live flag changes between API calls.
+        """
+        now = timezone.now()
+
+        # ✅ BEFORE event (pre-event lounge window) - Check FIRST
+        # This prevents race conditions where is_live flag changes between API calls
+        if event.lounge_enabled_before and event.start_time:
+            opening = event.start_time - timedelta(minutes=event.lounge_before_buffer)
+            if opening <= now < event.start_time:
+                return "OPEN", "Pre-event networking", event.start_time
+            if now < opening:
+                return "CLOSED", f"Lounge opens {event.lounge_before_buffer}m before event", opening
+
+        # ✅ DURING event (is_live = True) - Check SECOND
+        if event.is_live:
+            if event.is_on_break:
+                if event.lounge_enabled_breaks:
+                    return "OPEN", "Event is on break", event.end_time
+                else:
+                    return "CLOSED", "Lounge closed during breaks", None
+
+            if event.lounge_enabled_during:
+                return "OPEN", "Event is live", event.live_ended_at
+            else:
+                return "CLOSED", "Lounge closed during live sessions", None
+
+        # ✅ AFTER event (event ended within lounge_after_buffer window) - Check THIRD
+        if event.live_ended_at:
+            if event.lounge_enabled_after:
+                closing = event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)
+                if event.live_ended_at <= now < closing:
+                    return "OPEN", "Post-event networking", closing
+                if now >= closing:
+                    return "CLOSED", "Lounge is now closed", None
+
+        if event.status == "ended":
+            return "CLOSED", "Lounge is closed (event ended)", None
+
+        return "CLOSED", "Lounge is currently closed", event.start_time
+
     @action(detail=True, methods=["get"], url_path="lounge-state")
     def lounge_state(self, request, pk=None):
         """Fetch the current state of the Social Lounge for this event."""
         event = self.get_object()
-        
-        def _get_status(event):
-            now = timezone.now()
-            # Before
-            if event.lounge_enabled_before and event.start_time:
-                opening = event.start_time - timedelta(minutes=event.lounge_before_buffer)
-                if opening <= now < event.start_time:
-                    return "OPEN", "Pre-event networking", event.start_time
-                if now < opening:
-                    return "CLOSED", f"Lounge opens {event.lounge_before_buffer}m before event", opening
 
-            # During
-            if event.is_live:
-                if event.is_on_break:
-                    if event.lounge_enabled_breaks:
-                        return "OPEN", "Event is on break", event.end_time
-                    else:
-                        return "CLOSED", "Lounge closed during breaks", None
-                
-                if event.lounge_enabled_during:
-                    return "OPEN", "Event is live", event.live_ended_at
-                else:
-                    return "CLOSED", "Lounge closed during live sessions", None
-            
-            # After
-            if event.live_ended_at:
-                if event.lounge_enabled_after:
-                    closing = event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)
-                    if event.live_ended_at <= now < closing:
-                        return "OPEN", "Post-event networking", closing
-                    if now >= closing:
-                        return "CLOSED", "Lounge is now closed", None
-
-            if event.status == "ended":
-                return "CLOSED", "Lounge is closed (event ended)", None
-            
-            return "CLOSED", "Lounge is currently closed", event.start_time
-
-        status_code, reason, next_change = _get_status(event)
+        # ✅ Use shared function to ensure consistency with lounge_join_table
+        status_code, reason, next_change = self._get_lounge_availability(event)
 
         def _avatar_url(user_obj):
             profile = getattr(user_obj, "profile", None)
@@ -1319,6 +1334,10 @@ class EventViewSet(viewsets.ModelViewSet):
         table_id = request.data.get("table_id")
         if not table_id:
             return Response({"error": "missing_table_id"}, status=400)
+        try:
+            table_id = int(table_id)
+        except (TypeError, ValueError):
+            return Response({"error": "invalid_table_id"}, status=400)
 
         table = get_object_or_404(LoungeTable, id=table_id, event_id=pk)
         event = table.event
@@ -1338,8 +1357,6 @@ class EventViewSet(viewsets.ModelViewSet):
                 }, status=403)
         else:
             # ✅ LOUNGE TABLES: Validate lounge availability based on event state and timing
-            lounge_available = False
-            reason = "Lounge is currently closed"
 
             if event.status == "ended" and not event.live_ended_at:
                 # Event ended but no live_ended_at timestamp (shouldn't happen)
@@ -1348,28 +1365,28 @@ class EventViewSet(viewsets.ModelViewSet):
                     "reason": "Event has ended but timing is invalid"
                 }, status=403)
 
-            # ✅ DURING event (is_live = True)
-            if event.is_live:
-                if event.is_on_break and event.lounge_enabled_breaks:
-                    lounge_available = True
-                    reason = "Lounge open during break"
-                elif not event.is_on_break and event.lounge_enabled_during:
-                    lounge_available = True
-                    reason = "Lounge open during event"
+            # ✅ REFRESH: Ensure we have the latest event state to prevent race conditions
+            # between lounge_state GET and lounge_join_table POST requests
+            event.refresh_from_db()
 
-            # ✅ AFTER event (event ended within lounge_after_buffer window)
-            elif event.live_ended_at:
-                if event.lounge_enabled_after:
-                    closing_time = event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)
-                    if event.live_ended_at <= now < closing_time:
-                        lounge_available = True
-                        reason = f"Post-event lounge (closes at {closing_time})"
+            logger.info(f"[LOUNGE_JOIN] Checking lounge availability for event {event.id}. "
+                       f"is_live={event.is_live}, is_on_break={event.is_on_break}, "
+                       f"lounge_enabled_before={event.lounge_enabled_before}, "
+                       f"lounge_enabled_during={event.lounge_enabled_during}, "
+                       f"now={now}")
 
-            if not lounge_available:
+            # ✅ Use shared function to ensure consistency with lounge_state endpoint
+            status_code, reason, next_change = self._get_lounge_availability(event)
+
+            if status_code != "OPEN":
+                logger.warning(f"[LOUNGE_JOIN] ❌ Lounge not available for user {request.user.id}. "
+                             f"Status: {status_code}, Reason: {reason}")
                 return Response({
                     "error": "lounge_closed",
                     "reason": reason
                 }, status=403)
+
+            logger.info(f"[LOUNGE_JOIN] ✅ Lounge OPEN for user {request.user.id}. Reason: {reason}")
 
         # ✅ DEFENSIVE: Ensure meeting state is not accidentally reactivated
         # If meeting was ended, it must stay ended (joining lounge doesn't restart meeting)
@@ -1661,6 +1678,20 @@ class EventViewSet(viewsets.ModelViewSet):
                 if not registration.waiting_started_at:
                     registration.waiting_started_at = timezone.now()
                     registration.save(update_fields=["waiting_started_at"])
+
+                # ✅ CRITICAL: Remove user from lounge when entering waiting room
+                # This ensures they don't appear in lounge occupants while waiting for admission
+                try:
+                    from .models import LoungeParticipant
+                    deleted_count, _ = LoungeParticipant.objects.filter(
+                        user=user,
+                        table__event=event
+                    ).delete()
+                    if deleted_count > 0:
+                        logger.info(f"[WAITING_ROOM] Removed user {user.id} from lounge ({deleted_count} table(s)) when entering waiting room")
+                except Exception as e:
+                    logger.warning(f"[WAITING_ROOM] Failed to remove user from lounge: {e}")
+
                 return Response(
                     {
                         "waiting": True,
@@ -1725,6 +1756,19 @@ class EventViewSet(viewsets.ModelViewSet):
             joined_live=True,
             joined_live_at=timezone.now(),
         )
+
+        # ✅ CRITICAL: Remove user from lounge when they join main meeting
+        # This ensures they don't appear in lounge occupants list after transitioning to main
+        try:
+            from .models import LoungeParticipant
+            deleted_count, _ = LoungeParticipant.objects.filter(
+                user=user,
+                table__event=event
+            ).delete()
+            if deleted_count > 0:
+                logger.info(f"[DYTE_JOIN] Removed user {user.id} from lounge ({deleted_count} table(s)) when joining main meeting")
+        except Exception as e:
+            logger.warning(f"[DYTE_JOIN] Failed to remove user from lounge: {e}")
 
         # ✅ Check if user is within grace period (for frontend to trigger immediate refresh)
         is_grace_period_join = False
