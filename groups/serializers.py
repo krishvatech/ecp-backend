@@ -230,7 +230,12 @@ class GroupMemberOutSerializer(serializers.ModelSerializer):
                 avatar = getattr(u.profile, "avatar", None)
         if hasattr(avatar, "url"):
             avatar = avatar.url
-        return {"id": u.pk, "name": name or None, "email": getattr(u, "email", None), "avatar": avatar}
+        
+        kyc_status = "not_started"
+        if hasattr(u, "profile"):
+            kyc_status = getattr(u.profile, "kyc_status", "not_started")
+            
+        return {"id": u.pk, "name": name or None, "email": getattr(u, "email", None), "avatar": avatar, "kyc_status": kyc_status}
 
 # ===== Feed Posts stored as activity_feed.FeedItem =====
 class CreateFeedPostSerializer(serializers.Serializer):

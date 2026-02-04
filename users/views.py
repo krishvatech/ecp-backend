@@ -45,7 +45,7 @@ from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
 from .serializers import PublicProfileSerializer
 from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileMembership, EmailChangeRequest
-from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer
+from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, AdminKYCSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer
 from .models import EducationDocument
 from .serializers import EducationDocumentSerializer
 from .esco_client import search_skills
@@ -1476,7 +1476,7 @@ class StaffUserViewSet(viewsets.ModelViewSet):
     
    # users/views.py  -> inside class StaffUserViewSet
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().select_related("profile")
         cid  = self.request.query_params.get("community_id")
         slug = self.request.query_params.get("community_slug")
 
@@ -1689,6 +1689,144 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
         #     )
 
         return Response(NameChangeRequestSerializer(name_req).data)
+
+
+class AdminKYCViewSet(viewsets.ModelViewSet):
+    """
+    Admin endpoint to manage KYC verifications.
+    GET /api/auth/admin/kyc/?kyc_status=pending
+    POST /api/auth/admin/kyc/{user_id}/override-status/
+    POST /api/auth/admin/kyc/{user_id}/reset/
+    """
+    
+    queryset = UserProfile.objects.select_related('user').all().order_by("-kyc_didit_last_webhook_at")
+    serializer_class = AdminKYCSerializer
+    permission_classes = [IsSuperuser]  # Limit to admins
+    http_method_names = ['get', 'post', 'head', 'options']
+    
+    # Enable filtering by KYC status
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['kyc_status']
+    
+    search_fields = [
+        'user__username',
+        'user__email',
+        'user__first_name',
+        'user__last_name',
+        'full_name',
+    ]
+    ordering_fields = ['kyc_didit_last_webhook_at', 'legal_name_verified_at', 'user__date_joined']
+    
+    # Use user_id as lookup instead of profile id
+    lookup_field = 'user_id'
+    lookup_url_kwarg = 'user_id'
+    
+    def get_object(self):
+        """Override to lookup by user_id instead of profile pk."""
+        user_id = self.kwargs.get(self.lookup_url_kwarg)
+        try:
+            return UserProfile.objects.select_related('user').get(user_id=user_id)
+        except UserProfile.DoesNotExist:
+            from rest_framework.exceptions import NotFound
+            raise NotFound("User profile not found")
+    
+    @action(detail=True, methods=["post"], url_path="override-status")
+    def override_status(self, request, user_id=None):
+        """
+        Override KYC status for a user.
+        POST /api/auth/admin/kyc/{user_id}/override-status/
+        Body: { "kyc_status": "approved|declined|pending|review", "admin_note": "..." }
+        """
+        profile = self.get_object()
+        user = profile.user
+        
+        new_status = request.data.get("kyc_status")
+        admin_note = request.data.get("admin_note", "")
+        
+        # Validate status
+        valid_statuses = [choice[0] for choice in UserProfile.KYC_STATUS_CHOICES]
+        if new_status not in valid_statuses:
+            return Response(
+                {"detail": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"},
+                status=400
+            )
+        
+        old_status = profile.kyc_status
+        profile.kyc_status = new_status
+        
+        # Clear decline reason if approving
+        if new_status == UserProfile.KYC_STATUS_APPROVED:
+            profile.kyc_decline_reason = None
+            profile.legal_name_locked = True
+            profile.legal_name_verified_at = django_timezone.now()
+        
+        profile.save()
+        
+        # Create notification for user
+        status_labels = {
+            UserProfile.KYC_STATUS_APPROVED: "approved",
+            UserProfile.KYC_STATUS_DECLINED: "declined",
+            UserProfile.KYC_STATUS_PENDING: "pending",
+            UserProfile.KYC_STATUS_REVIEW: "under review",
+        }
+        
+        status_label = status_labels.get(new_status, new_status)
+        
+        create_notification_once(
+            recipient=user,
+            kind="event",
+            title=f"KYC Status Updated by Admin",
+            message=f"Your identity verification status has been updated to: {status_label}. {admin_note}",
+            unique={"type": "kyc_admin_override", "user_id": user.id, "new_status": new_status},
+        )
+        
+        logger.info(
+            f"[AdminKYC] Admin {request.user.username} changed KYC status for {user.username} "
+            f"from {old_status} to {new_status}. Note: {admin_note}"
+        )
+        
+        serializer = self.get_serializer(profile)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=["post"])
+    def reset(self, request, user_id=None):
+        """
+        Reset KYC process for a user.
+        POST /api/auth/admin/kyc/{user_id}/reset/
+        Body: { "admin_note": "..." }
+        """
+        profile = self.get_object()
+        user = profile.user
+        admin_note = request.data.get("admin_note", "")
+        
+        old_status = profile.kyc_status
+        
+        # Reset KYC fields
+        profile.kyc_status = UserProfile.KYC_STATUS_NOT_STARTED
+        profile.kyc_decline_reason = None
+        profile.legal_name_locked = False
+        profile.legal_name_verified_at = None
+        # Preserve kyc_didit_raw_payload and kyc_last_session_id for audit
+        
+        profile.save()
+        
+        # Create notification
+        create_notification_once(
+            recipient=user,
+            kind="event",
+            title="KYC Process Reset by Admin",
+            message=f"Your identity verification process has been reset. You may start a new verification. {admin_note}",
+            unique={"type": "kyc_admin_reset", "user_id": user.id},
+        )
+        
+        logger.info(
+            f"[AdminKYC] Admin {request.user.username} reset KYC for {user.username}. "
+            f"Previous status: {old_status}. Note: {admin_note}"
+        )
+        
+        serializer = self.get_serializer(profile)
+        return Response(serializer.data)
+
 
 
 class MeEducationDocumentViewSet(viewsets.ModelViewSet):

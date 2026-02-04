@@ -19,7 +19,7 @@ from .views import (
     SessionLoginView, SessionLogoutView, SessionMeView, CSRFCookieView,
     # NEW:
     MeEducationViewSet, MeExperienceViewSet, MeProfileView,
-    StaffUserViewSet,AdminNameChangeRequestViewSet,
+    StaffUserViewSet,AdminNameChangeRequestViewSet, AdminKYCViewSet,
     MeEducationDocumentViewSet,
     DiditWebhookView,
     MeSkillViewSet,
@@ -45,6 +45,7 @@ router.register(r"me/certifications", MeCertificationViewSet, basename="me-certi
 router.register(r"me/memberships", MeMembershipViewSet, basename="me-memberships")
 router.register(r"admin/users", StaffUserViewSet, basename="admin-users")
 router.register(r"admin/name-requests", AdminNameChangeRequestViewSet, basename="admin-name-requests")
+router.register(r"admin/kyc", AdminKYCViewSet, basename="admin-kyc")
 
 urlpatterns = [
     # Email + password login (returns refresh + access)

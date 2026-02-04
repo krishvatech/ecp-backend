@@ -11,6 +11,7 @@ class FeedItemSerializer(serializers.ModelSerializer):
     community_name = serializers.SerializerMethodField()
     community_cover_url = serializers.SerializerMethodField()
     actor_avatar = serializers.SerializerMethodField(read_only=True)
+    actor_kyc_status = serializers.SerializerMethodField()
     moderation_status = serializers.CharField(read_only=True)
     is_under_review = serializers.SerializerMethodField()
     is_removed = serializers.SerializerMethodField()
@@ -21,7 +22,7 @@ class FeedItemSerializer(serializers.ModelSerializer):
         model = FeedItem
         fields = [
             "id", "community_id","community_name", "community_cover_url", "event_id",
-            "actor_id", "actor_name", "actor_username","actor_avatar",
+            "actor_id", "actor_name", "actor_username","actor_avatar", "actor_kyc_status",
             "verb", "target_content_type_id", "target_object_id",
             "metadata", "created_at","group_id",
             "moderation_status", "is_under_review", "is_removed", "can_engage", "is_blurred",
@@ -138,6 +139,16 @@ class FeedItemSerializer(serializers.ModelSerializer):
     def get_actor_username(self, obj):
         u = getattr(obj, "actor", None)
         return getattr(u, "username", None) if u else None
+
+    def get_actor_kyc_status(self, obj):
+        u = getattr(obj, "actor", None)
+        if not u:
+            return None
+        # Check profile
+        profile = getattr(u, "profile", None)
+        if profile:
+            return getattr(profile, "kyc_status", None)
+        return None
 
     def _viewer_is_staff(self):
         req = self.context.get("request")

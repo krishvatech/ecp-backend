@@ -135,6 +135,7 @@ class UserProfileMiniSerializer(serializers.ModelSerializer):
             "links",              # Added for contact information (emails, phones, etc.)
             "last_activity_at",   # read-only field
             "is_online",          # computed
+            "kyc_status",         # Verification status
         )
         read_only_fields = ("last_activity_at", "is_online")
 
@@ -660,6 +661,8 @@ class UserMiniSerializer(serializers.ModelSerializer):
 class StaffUserSerializer(serializers.ModelSerializer):
     # we only allow editing this single field
     is_staff = serializers.BooleanField(required=True)
+    profile = UserProfileMiniSerializer(read_only=True)
+    avatar_url = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -667,12 +670,51 @@ class StaffUserSerializer(serializers.ModelSerializer):
             "id", "username", "first_name", "last_name",
             "email", "is_active", "is_superuser",
             "is_staff", "date_joined", "last_login",
+            "profile", "avatar_url",
         )
         read_only_fields = (
             "id", "username", "first_name", "last_name",
             "email", "is_active", "is_superuser",
             "date_joined", "last_login",
         )
+
+    def get_avatar_url(self, obj):
+        prof = getattr(obj, "profile", None)
+        # prioritized list of where the image helps
+        candidates = [
+            getattr(prof, "user_image", None),
+            getattr(prof, "avatar", None),
+            getattr(prof, "image", None),
+            getattr(obj, "avatar", None),
+        ]
+        url = next((c for c in candidates if c), None)
+        
+        if hasattr(url, "url"):
+            url = url.url
+            
+        if not url:
+            return ""
+            
+        url = str(url).strip()
+        if url.startswith("http"):
+            return url
+            
+        request = self.context.get("request")
+        if request and not url.startswith("/"):
+             return request.build_absolute_uri(url) if request else url
+             
+        media = (settings.MEDIA_URL or "").strip()
+        if media.startswith("http"):
+             if url.startswith("/"):
+                 url = url[1:]
+             return media + url
+             
+        # local dev fallback
+        if request:
+            if not url.startswith("/"):
+                 url = "/" + url
+            return request.build_absolute_uri(url)
+        return url
 
 class MonthYearField(serializers.DateField):
     """
@@ -796,6 +838,47 @@ class NameChangeRequestSerializer(serializers.ModelSerializer):
             "doc_full_name", "doc_first_name", "doc_last_name",
             "name_match_passed", "auto_approved", "name_match_debug",
         )
+
+
+class AdminKYCSerializer(serializers.ModelSerializer):
+    """Serializer for admin KYC verification management."""
+    # User fields
+    user_id = serializers.IntegerField(source='user.id', read_only=True)
+    username = serializers.CharField(source='user.username', read_only=True)
+    email = serializers.EmailField(source='user.email', read_only=True)
+    first_name = serializers.CharField(source='user.first_name', read_only=True)
+    last_name = serializers.CharField(source='user.last_name', read_only=True)
+    
+    # Profile image
+    user_image_url = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = UserProfile
+        fields = (
+            "user_id", "username", "email", "first_name", "last_name",
+            "full_name", "middle_name",
+            "user_image_url",
+            "kyc_status", "kyc_decline_reason",
+            "kyc_last_session_id",
+            "kyc_didit_last_webhook_at",
+            "legal_name_locked", "legal_name_verified_at",
+        )
+        read_only_fields = (
+            "user_id", "username", "email", "first_name", "last_name",
+            "full_name", "middle_name", "user_image_url",
+            "kyc_last_session_id", "kyc_didit_last_webhook_at",
+            "legal_name_locked", "legal_name_verified_at",
+        )
+
+    def get_user_image_url(self, obj):
+        request = self.context.get("request")
+        if getattr(obj, "user_image", None):
+            try:
+                url = obj.user_image.url
+                return request.build_absolute_uri(url) if request else url
+            except Exception:
+                pass
+        return None
 
 
     def validate(self, attrs):
