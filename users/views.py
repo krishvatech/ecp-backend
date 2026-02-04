@@ -1776,7 +1776,7 @@ class AdminKYCViewSet(viewsets.ModelViewSet):
             recipient=user,
             kind="event",
             title=f"KYC Status Updated by Admin",
-            message=f"Your identity verification status has been updated to: {status_label}. {admin_note}",
+            description=f"Your identity verification status has been updated to: {status_label}. {admin_note}",
             unique={"type": "kyc_admin_override", "user_id": user.id, "new_status": new_status},
         )
         
@@ -1815,7 +1815,7 @@ class AdminKYCViewSet(viewsets.ModelViewSet):
             recipient=user,
             kind="event",
             title="KYC Process Reset by Admin",
-            message=f"Your identity verification process has been reset. You may start a new verification. {admin_note}",
+            description=f"Your identity verification process has been reset. You may start a new verification. {admin_note}",
             unique={"type": "kyc_admin_reset", "user_id": user.id},
         )
         
