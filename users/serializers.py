@@ -512,6 +512,7 @@ class ResetPasswordSerializer(serializers.Serializer):
 class UserRosterSerializer(serializers.ModelSerializer):
     profile = UserProfileMiniSerializer(read_only=True)
     avatar_url = serializers.SerializerMethodField()
+    email = serializers.SerializerMethodField()  # Override to add privacy filtering
     company_from_experience = serializers.SerializerMethodField()
     position_from_experience = serializers.SerializerMethodField()
     industry_from_experience = serializers.SerializerMethodField()
@@ -525,6 +526,47 @@ class UserRosterSerializer(serializers.ModelSerializer):
             "company_from_experience", "position_from_experience", "avatar_url","industry_from_experience","number_of_employees_from_experience","is_superuser",
         )
         read_only_fields = ("is_superuser",)
+
+    def get_email(self, obj):
+        """
+        Return email only if:
+        1. Requester is staff/admin, OR
+        2. Viewing own profile, OR
+        3. Email visibility is set to "public"
+        
+        Otherwise return empty string to hide the email.
+        """
+        request = self.context.get("request")
+        if not request or not request.user:
+            return ""
+        
+        requester = request.user
+        
+        # 1. Staff/Admin can see all emails
+        if requester.is_staff or requester.is_superuser:
+            return obj.email or ""
+        
+        # 2. Users can see their own email
+        if requester.id == obj.id:
+            return obj.email or ""
+        
+        # 3. Check privacy setting in profile.links.contact.main_email.visibility
+        profile = getattr(obj, "profile", None)
+        if not profile:
+            # No profile, hide email by default
+            return ""
+        
+        links = profile.links or {}
+        contact = links.get("contact", {})
+        main_email = contact.get("main_email", {})
+        visibility = main_email.get("visibility", "private")  # Default to private
+        
+        # Show email only if visibility is "public"
+        if visibility == "public":
+            return obj.email or ""
+        
+        # Otherwise hide the email
+        return ""
 
     def get_avatar_url(self, obj):
         prof = getattr(obj, "profile", None)
