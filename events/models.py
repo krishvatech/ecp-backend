@@ -141,6 +141,16 @@ class Event(models.Model):
     lounge_enabled_after = models.BooleanField(default=False)
     lounge_after_buffer = models.PositiveIntegerField(default=30)  # minutes
 
+    # Participant List Visibility Settings
+    show_participants_before_event = models.BooleanField(
+        default=True,
+        help_text="Allow participants to see the participant list before the event starts"
+    )
+    show_participants_after_event = models.BooleanField(
+        default=False,
+        help_text="Allow participants to see the participant list after the event ends"
+    )
+
     class Meta:
         ordering = ["-created_at"]
     def save(self, *args, **kwargs):

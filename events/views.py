@@ -1077,6 +1077,61 @@ class EventViewSet(viewsets.ModelViewSet):
         )
         return Response(serializer.data)
 
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="participants",
+        permission_classes=[IsAuthenticated],
+    )
+    def participants(self, request, pk=None):
+        """
+        Return the list of participants for an event, respecting visibility settings.
+        - Event organizers/owners/admins always see the full list
+        - Regular participants see the list only if visibility is enabled for the current event phase
+        """
+        event = self.get_object()
+        user = request.user
+
+        # Check if user is organizer/owner/admin
+        is_organizer = _is_event_host(user, event)
+
+        if not is_organizer:
+            # Check visibility based on event timing
+            now = timezone.now()
+            
+            # Determine event phase
+            event_started = event.start_time and event.start_time <= now
+            event_ended = event.end_time and event.end_time < now
+            
+            # Before event: check show_participants_before_event
+            if not event_started and not event.show_participants_before_event:
+                return Response(
+                    {"detail": "Participant list is not visible before the event."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # After event: check show_participants_after_event
+            elif event_ended and not event.show_participants_after_event:
+                return Response(
+                    {"detail": "Participant list is not visible after the event."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # During event: always visible (no restriction during live event)
+
+        # Fetch registrations (only registered status, exclude cancelled)
+        qs = (
+            EventRegistration.objects
+            .filter(event=event, status='registered')
+            .select_related("user")
+            .order_by("-registered_at")
+        )
+
+        serializer = EventRegistrationSerializer(
+            qs, many=True, context={"request": request}
+        )
+        return Response(serializer.data)
+
     def _get_lounge_availability(self, event):
         """
         Shared function to determine lounge availability status.

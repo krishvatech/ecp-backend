@@ -102,6 +102,8 @@ class EventSerializer(serializers.ModelSerializer):
             "lounge_enabled_breaks",
             "lounge_enabled_after",
             "lounge_after_buffer",
+            "show_participants_before_event",
+            "show_participants_after_event",
         ]
         
         read_only_fields = [
@@ -513,6 +515,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     user_email = serializers.EmailField(source="user.email", read_only=True)
     user_avatar_url = serializers.SerializerMethodField()
+    is_host = serializers.SerializerMethodField()
 
     class Meta:
         model = EventRegistration
@@ -535,8 +538,10 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "rejected_by",
             "rejection_reason",
             "waiting_started_at",
+            "waiting_started_at",
             "joined_live_at",
             "status",
+            "is_host",
         )
         read_only_fields = (
             "id",
@@ -556,7 +561,13 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "waiting_started_at",
             "joined_live_at",
             "status",
+            "is_host",
         )
+
+    def get_is_host(self, obj):
+        # Event might be select_related or just an ID locally; safe access
+        # If obj.event is a full object, created_by_id exists.
+        return obj.user_id == getattr(obj.event, "created_by_id", None)
 
     def get_user_name(self, obj):
         first = (getattr(obj.user, "first_name", "") or "").strip()
