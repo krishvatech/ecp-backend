@@ -1342,10 +1342,100 @@ class EventViewSet(viewsets.ModelViewSet):
         table = get_object_or_404(LoungeTable, id=table_id, event_id=pk)
         event = table.event
         now = timezone.now()
+        user = request.user
 
-        # ✅ BREAKOUT ROOMS: Allow access during live events regardless of lounge availability
-        # Breakout rooms are a separate feature from the Social Lounge and should work independently
+        # ✅ FIX #1: Check waiting room status and enforce access control
+        is_host = (
+            event.created_by_id == user.id
+            or user.is_staff
+            or getattr(user, "is_superuser", False)
+        )
+
+        # Only enforce waiting room for non-hosts
+        if not is_host and event.waiting_room_enabled:
+            try:
+                registration = EventRegistration.objects.get(event=event, user=user)
+
+                # If user is in waiting room, check if lounge is allowed
+                if registration.admission_status == "waiting":
+                    if not event.lounge_enabled_waiting_room:
+                        logger.warning(
+                            f"[LOUNGE_ENFORCE] ❌ Waiting user {user.id} denied lounge access. "
+                            f"Event {event.id} has lounge_enabled_waiting_room=False"
+                        )
+                        return Response({
+                            "error": "waiting_room_active",
+                            "reason": "You must be admitted by the host before accessing the lounge",
+                            "lounge_allowed": False
+                        }, status=403)
+                    else:
+                        logger.info(
+                            f"[LOUNGE_ENFORCE] ✅ Waiting user {user.id} allowed lounge access. "
+                            f"Event {event.id} has lounge_enabled_waiting_room=True"
+                        )
+
+                # If user is rejected, deny all lounge access
+                elif registration.admission_status == "rejected":
+                    logger.warning(
+                        f"[LOUNGE_ENFORCE] ❌ Rejected user {user.id} denied lounge access. "
+                        f"Event {event.id} has waiting room enabled"
+                    )
+                    return Response({
+                        "error": "waiting_rejected",
+                        "reason": "You have been rejected from this event",
+                        "lounge_allowed": False
+                    }, status=403)
+
+            except EventRegistration.DoesNotExist:
+                # User not registered for event while waiting room is enabled
+                # Create registration in waiting state
+                registration = EventRegistration.objects.create(
+                    event=event,
+                    user=user,
+                    admission_status="waiting",
+                    waiting_started_at=timezone.now()
+                )
+                logger.info(
+                    f"[LOUNGE_ENFORCE] ⚠️ Unregistered user {user.id} auto-registered in waiting room "
+                    f"for event {event.id}"
+                )
+
+                # Check if lounge is allowed for waiting users
+                if not event.lounge_enabled_waiting_room:
+                    logger.warning(
+                        f"[LOUNGE_ENFORCE] ❌ Auto-registered waiting user {user.id} denied lounge access"
+                    )
+                    return Response({
+                        "error": "waiting_room_active",
+                        "reason": "You must be admitted by the host before accessing the lounge",
+                        "lounge_allowed": False
+                    }, status=403)
+
+        # ✅ FIX #2B: Verify user is assigned to breakout rooms before allowing join
         if table.category == "BREAKOUT":
+            if not is_host:
+                # Regular participant must be assigned to this breakout room
+                is_assigned = LoungeParticipant.objects.filter(
+                    table=table,
+                    user=user
+                ).exists()
+
+                if not is_assigned:
+                    logger.warning(
+                        f"[LOUNGE_JOIN] ❌ User {user.id} attempted to join unassigned breakout "
+                        f"room {table_id}. Unauthorized access attempt."
+                    )
+                    return Response({
+                        "error": "not_assigned",
+                        "reason": "You are not assigned to this breakout room",
+                        "table_id": table_id
+                    }, status=403)
+
+                logger.info(
+                    f"[LOUNGE_JOIN] ✅ User {user.id} verified assigned to breakout room {table_id}"
+                )
+
+            # Breakout rooms are a separate feature from the Social Lounge and should work independently
             if event.is_live:
                 # Breakout rooms can be joined during live event
                 print(f"[LOUNGE_JOIN] Breakout room access allowed: table={table_id}, event_is_live=True")
@@ -1438,6 +1528,23 @@ class EventViewSet(viewsets.ModelViewSet):
                         }, status=409)
         except Exception as e:
             logger.warning(f"[LOUNGE_JOIN] Duplicate check failed: {e}")
+
+        # ✅ FIX #1C: Update or create LoungeParticipant record for tracking
+        # This ensures the user is properly tracked in the lounge occupants
+        try:
+            # Try to update existing record if joining same table
+            lounge_participant, created = LoungeParticipant.objects.get_or_create(
+                table=table,
+                user=user,
+                defaults={"seat_index": 0}  # Placeholder, seat assignment can be optimized later
+            )
+            if not created:
+                logger.info(f"[LOUNGE_JOIN] User {user.id} updated lounge participant record for table {table_id}")
+            else:
+                logger.info(f"[LOUNGE_JOIN] User {user.id} created new lounge participant record for table {table_id}")
+        except Exception as e:
+            logger.warning(f"[LOUNGE_JOIN] Failed to create/update lounge participant record: {e}")
+            # Don't fail the join, just log warning
 
         profile = getattr(user, "profile", None)
         name = (getattr(profile, "full_name", "") if profile else "") or getattr(user, "get_full_name", lambda: "")() or user.username
@@ -1635,7 +1742,11 @@ class EventViewSet(viewsets.ModelViewSet):
             # Check if within grace period
             if event.start_time:
                 now = timezone.now()
-                grace_minutes = event.waiting_room_grace_period_minutes or 10
+                grace_minutes = (
+                    event.waiting_room_grace_period_minutes
+                    if event.waiting_room_grace_period_minutes is not None
+                    else 10
+                )
                 grace_period = timedelta(minutes=grace_minutes)
 
                 # Admit if: start_time <= now < start_time + grace_period
@@ -1659,7 +1770,11 @@ class EventViewSet(viewsets.ModelViewSet):
             is_in_grace_period = False
             if event.start_time:
                 now = timezone.now()
-                grace_minutes = event.waiting_room_grace_period_minutes or 10
+                grace_minutes = (
+                    event.waiting_room_grace_period_minutes
+                    if event.waiting_room_grace_period_minutes is not None
+                    else 10
+                )
                 grace_period = timedelta(minutes=grace_minutes)
                 # Grace period is exclusive on the end boundary
                 is_in_grace_period = event.start_time <= now < (event.start_time + grace_period)
@@ -1803,7 +1918,11 @@ class EventViewSet(viewsets.ModelViewSet):
         is_grace_period_join = False
         if event.waiting_room_enabled and event.start_time:
             now = timezone.now()
-            grace_minutes = event.waiting_room_grace_period_minutes or 10
+            grace_minutes = (
+                event.waiting_room_grace_period_minutes
+                if event.waiting_room_grace_period_minutes is not None
+                else 10
+            )
             grace_period_end = event.start_time + timezone.timedelta(minutes=grace_minutes)
             # Grace period is active if: start_time <= now < grace_period_end
             # The end boundary is EXCLUSIVE (at exactly grace_period_end, grace period has ended)

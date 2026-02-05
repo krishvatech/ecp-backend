@@ -392,8 +392,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         print(f"[RANDOM_ASSIGN] Starting: event={self.event_id}, per_room={per_room}")
         # 1. Get all online participants (excluding host)
         registrations = EventRegistration.objects.filter(
-            event_id=self.event_id, 
-            is_online=True
+            event_id=self.event_id,
+            is_online=True,
+            admission_status="admitted",
+            joined_live=True,
         ).exclude(user_id=self.user.id).select_related('user')
         
         users = [reg.user for reg in list(registrations)]
@@ -420,33 +422,57 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             )
             tables.append(t)
 
-        # 3. Perform assignments
-        with transaction.atomic():
-            # Clear all current assignments in the event
-            LoungeParticipant.objects.filter(table__event_id=self.event_id).delete()
-            
-            assignments = []
-            table_idx = 0
-            for user in users:
-                if table_idx >= len(tables): break
-                table = tables[table_idx]
-                
-                # Check occupancy in current assignments list
-                current_count = len([a for a in assignments if a[1] == table.id])
-                if current_count >= per_room:
-                    table_idx += 1
-                    if table_idx >= len(tables): break
+        # 3. Perform assignments with proper validation
+        assignments = []
+
+        try:
+            with transaction.atomic():
+                # Clear all current assignments in the event
+                LoungeParticipant.objects.filter(table__event_id=self.event_id).delete()
+
+                # ✅ FIX #2A: Proper round-robin assignment with validation
+                for idx, user in enumerate(users):
+                    table_idx = idx % len(tables)
                     table = tables[table_idx]
-                
-                LoungeParticipant.objects.create(
-                    table=table,
-                    user=user,
-                    seat_index=len([a for a in assignments if a[1] == table.id])
-                )
-                assignments.append((user.id, table.id))
-            
-            print(f"[RANDOM_ASSIGN] Completed: Created {len(assignments)} assignments.")
-            return assignments
+                    seat_index = idx // len(tables)  # ✅ FIXED: Proper seat calculation
+
+                    # ✅ NEW: Verify user isn't already assigned
+                    existing = LoungeParticipant.objects.filter(
+                        user=user,
+                        table__event_id=self.event_id
+                    ).exists()
+                    if existing:
+                        print(f"[RANDOM_ASSIGN] ⚠️ User {user.id} already assigned, skipping duplicate")
+                        continue
+
+                    # Create assignment record
+                    lounge_participant = LoungeParticipant.objects.create(
+                        table=table,
+                        user=user,
+                        seat_index=seat_index
+                    )
+
+                    assignments.append((user.id, table.id, table.dyte_meeting_id))
+
+                    print(f"[RANDOM_ASSIGN] ✅ Assigned user {user.id} to table {table.id} "
+                          f"(meeting {table.dyte_meeting_id}), seat_index={seat_index}")
+
+                # ✅ NEW: Validate all assignments were created
+                total_assigned = LoungeParticipant.objects.filter(
+                    table__event_id=self.event_id
+                ).count()
+                print(f"[RANDOM_ASSIGN] Total assignments: {len(assignments)}, DB count: {total_assigned}")
+
+                if len(assignments) != total_assigned:
+                    print(f"[RANDOM_ASSIGN] ⚠️ Assignment count mismatch: "
+                          f"expected {len(assignments)}, got {total_assigned}")
+
+        except Exception as e:
+            print(f"[RANDOM_ASSIGN] ❌ Failed to perform random assignment: {e}")
+            return []
+
+        print(f"[RANDOM_ASSIGN] Completed: Created {len(assignments)} assignments.")
+        return assignments
 
     async def perform_random_assignment_and_notify(self, per_room):
         assignments = await self.perform_random_assignment(per_room)
@@ -460,11 +486,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.send_debug_to_host(f"Created {len(assignments)} assignments across rooms.")
             
         await self.broadcast_lounge_update()
-        
-        # Notify each assigned user via the group
-        for user_id, table_id in assignments:
+
+        # ✅ FIX: Notify each assigned user via the group
+        # Assignments now include meeting_id for better debugging
+        for assignment in assignments:
+            user_id = assignment[0]
+            table_id = assignment[1]
             await self.channel_layer.group_send(
-                self.group_name,
+                f"user_{user_id}",
                 {
                     "type": "breakout_force_join",
                     "user_id": user_id,
