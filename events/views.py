@@ -1645,35 +1645,64 @@ class EventViewSet(viewsets.ModelViewSet):
 
             if should_wait:
                 defaults["admission_status"] = "waiting"
+            else:
+                # ✅ NEW: Mark grace period admissions as was_ever_admitted so they auto-rejoin
+                defaults["was_ever_admitted"] = True
+                defaults["current_session_started_at"] = timezone.now()
         registration, _created = EventRegistration.objects.get_or_create(
             event=event,
             user=user,
             defaults=defaults,
         )
         if event.waiting_room_enabled and not is_host:
-            # Only apply override logic for existing registrations, not newly created ones
-            # AND only if NOT in grace period (to preserve grace period admissions)
+            # Check if within grace period
             is_in_grace_period = False
-            if event.start_time and not _created:
+            if event.start_time:
                 now = timezone.now()
                 grace_minutes = event.waiting_room_grace_period_minutes or 10
                 grace_period = timedelta(minutes=grace_minutes)
                 # Grace period is exclusive on the end boundary
                 is_in_grace_period = event.start_time <= now < (event.start_time + grace_period)
 
-            if not _created and not is_in_grace_period:
+            # ✅ NEW: Auto-rejoin logic for previously admitted users
+            # If user was ever admitted (either by host or grace period), auto-admit them on rejoin
+            if not _created and registration.was_ever_admitted:
+                if registration.admission_status != "admitted":
+                    registration.admission_status = "admitted"
+                    registration.last_reconnect_at = timezone.now()
+                    registration.save(update_fields=["admission_status", "last_reconnect_at"])
+
+                    # Log auto-readmission
+                    from .models import WaitingRoomAuditLog
+                    try:
+                        WaitingRoomAuditLog.objects.create(
+                            event=event,
+                            participant=user,
+                            action="auto_readmitted",
+                            notes=f"System auto-readmitted previously admitted user on rejoin"
+                        )
+                        logger.info(f"[WAITING_ROOM] Auto-readmitted user {user.id} to event {event.id}")
+                    except Exception as e:
+                        logger.warning(f"[WAITING_ROOM] Failed to log auto-readmission: {e}")
+                # Continue to Dyte token generation for previously admitted users
+
+            # Original grace period + waiting room logic
+            elif not _created and not is_in_grace_period:
                 # If host hasn't explicitly admitted, keep in waiting
                 if registration.admission_status == "admitted" and not registration.admitted_at:
                     registration.admission_status = "waiting"
                     registration.save(update_fields=["admission_status"])
+
             if not registration.admission_status:
                 registration.admission_status = "waiting"
                 registration.save(update_fields=["admission_status"])
+
             if registration.admission_status in {"rejected"}:
                 return Response(
                     {"error": "waiting_rejected", "detail": "You were not admitted to this event."},
                     status=403,
                 )
+
             if registration.admission_status != "admitted":
                 if not registration.waiting_started_at:
                     registration.waiting_started_at = timezone.now()
@@ -1884,6 +1913,7 @@ class EventViewSet(viewsets.ModelViewSet):
         if not admit_all:
             qs = qs.filter(user_id__in=user_ids)
 
+        # ✅ Mark users as was_ever_admitted so they auto-rejoin if they disconnect
         updated = qs.update(
             admission_status="admitted",
             admitted_at=timezone.now(),
@@ -1891,7 +1921,29 @@ class EventViewSet(viewsets.ModelViewSet):
             rejected_at=None,
             rejected_by=None,
             rejection_reason="",
+            was_ever_admitted=True,  # ✅ NEW: Mark for auto-rejoin
+            current_session_started_at=timezone.now(),  # Track session start
         )
+
+        # Log the admission action
+        try:
+            from .models import WaitingRoomAuditLog
+            admitted_registrations = EventRegistration.objects.filter(
+                event=event,
+                user_id__in=user_ids if user_ids else None
+            ).values_list('user_id', flat=True)
+
+            for reg in qs:
+                WaitingRoomAuditLog.objects.create(
+                    event=event,
+                    participant=reg.user,
+                    performed_by=request.user,
+                    action="admitted",
+                    notes=f"Host admitted participant"
+                )
+        except Exception as e:
+            logger.warning(f"[WAITING_ROOM] Failed to log admissions: {e}")
+
         return Response({"ok": True, "admitted": updated})
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="waiting-room/reject")
@@ -1917,6 +1969,112 @@ class EventViewSet(viewsets.ModelViewSet):
             rejection_reason=reason,
         )
         return Response({"ok": True, "rejected": updated})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="waiting-room/announce")
+    def waiting_room_announce(self, request, pk=None):
+        """
+        ✅ NEW: Host sends announcement/broadcast message to all users in waiting room.
+
+        Endpoint: POST /events/{id}/waiting-room/announce/
+        Body: { "message": "Your message here" }
+
+        Only the event host can send announcements.
+        Messages are delivered in real-time via WebSocket to waiting participants.
+        """
+        event = self.get_object()
+
+        # Only host can announce
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can send announcements."}, status=403)
+
+        message_text = (request.data.get("message") or "").strip()
+        if not message_text:
+            return Response({"detail": "Message cannot be empty."}, status=400)
+
+        if len(message_text) > 1000:
+            return Response(
+                {"detail": "Message too long (max 1000 characters)."},
+                status=400
+            )
+
+        # Get list of waiting room participants
+        waiting_users = EventRegistration.objects.filter(
+            event=event,
+            admission_status="waiting"
+        ).select_related("user")
+
+        user_ids = list(waiting_users.values_list("user_id", flat=True))
+        user_count = len(user_ids)
+
+        if user_count == 0:
+            return Response({
+                "ok": True,
+                "message": "No users in waiting room",
+                "recipients": 0
+            })
+
+        # Create a system message in event chat for record-keeping
+        try:
+            from messaging.models import Conversation, Message
+
+            # Get or create event chat conversation
+            event_chat, _ = Conversation.objects.get_or_create(
+                event=event,
+                group=None,
+                lounge_table=None,
+                defaults={
+                    "title": f"{event.title} - Event Chat",
+                    "created_by": request.user,
+                }
+            )
+
+            # Create announcement message
+            announcement = Message.objects.create(
+                conversation=event_chat,
+                sender=request.user,
+                body=message_text,
+                # You may want to add is_announcement field if available
+            )
+
+            logger.info(f"[WAITING_ROOM] Host {request.user.id} sent announcement to {user_count} waiting users in event {event.id}")
+
+        except Exception as e:
+            logger.warning(f"[WAITING_ROOM] Failed to create announcement message: {e}")
+            # Continue anyway - we'll still broadcast via WebSocket
+
+        # Broadcast announcement via WebSocket to each waiting user
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+
+            channel_layer = get_channel_layer()
+
+            for user_id in user_ids:
+                try:
+                    async_to_sync(channel_layer.group_send)(
+                        f"user_{user_id}",
+                        {
+                            "type": "waiting_room.announcement",
+                            "event_id": event.id,
+                            "message": message_text,
+                            "sender_name": request.user.get_full_name() or request.user.username,
+                            "timestamp": timezone.now().isoformat(),
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"[WAITING_ROOM] Failed to send announcement to user {user_id}: {e}")
+
+            logger.info(f"[WAITING_ROOM] Broadcasted announcement to {user_count} waiting participants")
+
+        except Exception as e:
+            logger.warning(f"[WAITING_ROOM] Failed to broadcast announcement: {e}")
+
+        return Response({
+            "ok": True,
+            "message_id": announcement.id if 'announcement' in locals() else None,
+            "recipients": user_count,
+            "message": message_text,
+        })
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="lounge/ensure-seated")
     def ensure_seated_in_lounge(self, request, pk=None):

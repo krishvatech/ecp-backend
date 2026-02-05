@@ -94,7 +94,7 @@ class Event(models.Model):
         help_text="If set, auto-admit participants after N seconds of waiting",
     )
     waiting_room_grace_period_minutes = models.PositiveIntegerField(
-        default=10,
+        default=0,
         help_text="Minutes after start_time where participants can join freely without waiting room approval",
     )
     attendees = models.ManyToManyField(
@@ -234,7 +234,32 @@ class EventRegistration(models.Model):
     rejection_reason = models.TextField(blank=True)
     waiting_started_at = models.DateTimeField(null=True, blank=True)
     joined_live_at = models.DateTimeField(null=True, blank=True)
-    
+
+    # Session tracking for auto-rejoin support
+    was_ever_admitted = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Has this user been admitted in this event session?"
+    )
+    session_token = models.CharField(
+        max_length=64,
+        unique=True,
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text="Unique token per admitted session for rejoin detection"
+    )
+    current_session_started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When user was first admitted in current session"
+    )
+    last_reconnect_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Track last rejoin attempt to detect disconnects"
+    )
+
     # Moderation
     is_banned = models.BooleanField(default=False)
 
@@ -257,6 +282,7 @@ class WaitingRoomAuditLog(models.Model):
         ("timed_out", "Participant timeout"),
         ("left", "Participant left waiting room"),
         ("bulk_admitted", "Host admitted batch of participants"),
+        ("auto_readmitted", "System auto-readmitted previously admitted participant"),
     ]
 
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="waiting_room_logs")

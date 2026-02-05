@@ -221,6 +221,17 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     async def breakout_announcement(self, event: dict) -> None:
         await self.send_json({"type": "breakout_announcement", "message": event["message"]})
 
+    # ✅ NEW: Waiting room announcement handler
+    async def waiting_room_announcement(self, event: dict) -> None:
+        """Handler for announcements sent to waiting room participants."""
+        await self.send_json({
+            "type": "waiting_room_announcement",
+            "event_id": event.get("event_id"),
+            "message": event.get("message"),
+            "sender_name": event.get("sender_name", "Host"),
+            "timestamp": event.get("timestamp"),
+        })
+
     async def breakout_end(self, event: dict) -> None:
         await self.send_json({"type": "breakout_end"})
 
