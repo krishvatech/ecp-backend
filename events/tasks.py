@@ -207,25 +207,53 @@ def enforce_event_end_conditions() -> dict:
     End events when:
       - No participants (including host) are present for 15 continuous minutes.
       - Host is absent and official end time has been reached.
+      - Official end time (+ social lounge time if enabled) has passed AND no participants
+        are in any room for 60 minutes after the close time.
     """
     now = timezone.now()
     qs = Event.objects.filter(is_live=True, status="live")
     ended = 0
 
     for event in qs:
+        # Condition 1: Idle timeout (no participants for 15 minutes)
         if event.idle_started_at and now - event.idle_started_at >= timedelta(minutes=IDLE_TIMEOUT_MINUTES):
             _end_event_from_system(event, "idle_timeout")
             ended += 1
             continue
 
+        # Condition 2: Scheduled end time reached
+        # ✅ MODIFIED: Auto-end when official end_time arrives, regardless of host status
+        # This ensures the meeting ends at the scheduled time and triggers lounge display (if enabled)
         if event.end_time and now >= event.end_time:
-            host_online = EventRegistration.objects.filter(
-                event_id=event.id,
-                user_id=event.created_by_id,
-                is_online=True,
-            ).exists()
-            if not host_online:
-                _end_event_from_system(event, "host_absent_end_time")
-                ended += 1
+            _end_event_from_system(event, "scheduled_end_time")
+            ended += 1
+            continue
+
+        # Condition 3: Post-close buffer timeout (60 minutes after close time with no participants)
+        if event.end_time:
+            # Calculate the cutoff time
+            if event.lounge_enabled_after:
+                # If lounge is enabled, cutoff is: end_time + lounge_after_buffer + 60 minutes
+                lounge_closing_time = event.end_time + timedelta(minutes=event.lounge_after_buffer)
+                cutoff_time = lounge_closing_time + timedelta(minutes=60)
+            else:
+                # If lounge is not enabled, cutoff is: end_time + 60 minutes
+                cutoff_time = event.end_time + timedelta(minutes=60)
+
+            # Check if cutoff time has been reached
+            if now >= cutoff_time:
+                # Check if there are any participants online in any room
+                participants_online = EventRegistration.objects.filter(
+                    event_id=event.id,
+                    is_online=True,
+                ).exists()
+
+                # Auto-end if no participants
+                if not participants_online:
+                    reason = "post_close_buffer_timeout"
+                    if event.lounge_enabled_after:
+                        reason = f"post_lounge_timeout_{event.lounge_after_buffer}min_lounge"
+                    _end_event_from_system(event, reason)
+                    ended += 1
 
     return {"checked": qs.count(), "ended": ended}
