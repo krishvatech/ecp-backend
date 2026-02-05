@@ -497,6 +497,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "preview_image", "cover_image", "waiting_room_image", "location", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "price", "is_free",
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer",
+            "lounge_enabled_after", "lounge_after_buffer",
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):
