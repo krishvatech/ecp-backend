@@ -904,12 +904,14 @@ class AdminKYCSerializer(serializers.ModelSerializer):
             "kyc_last_session_id",
             "kyc_didit_last_webhook_at",
             "legal_name_locked", "legal_name_verified_at",
+            "kyc_didit_raw_payload",
         )
         read_only_fields = (
             "user_id", "username", "email", "first_name", "last_name",
             "full_name", "middle_name", "user_image_url",
             "kyc_last_session_id", "kyc_didit_last_webhook_at",
             "legal_name_locked", "legal_name_verified_at",
+            "kyc_didit_raw_payload",
         )
 
     def get_user_image_url(self, obj):
