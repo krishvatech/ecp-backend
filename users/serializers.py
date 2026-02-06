@@ -156,6 +156,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "location", "links", "user_image", "user_image_url", "skills",
             "last_activity_at", "is_online","kyc_decline_reason",
             "kyc_status", "legal_name_locked", "legal_name_verified_at",
+            "directory_hidden",
         ]
         read_only_fields = ("last_activity_at", "is_online", "kyc_status",
                             "legal_name_locked", "legal_name_verified_at")

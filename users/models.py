@@ -30,6 +30,7 @@ class UserProfile(models.Model):
     """Extension of Django's built-in User model."""
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+    directory_hidden = models.BooleanField(default=False, help_text="Hide from public roster/directory")
     full_name = models.CharField(max_length=255, blank=True)
     middle_name = models.CharField(max_length=150, blank=True, default="")
     timezone = models.CharField(max_length=64, default="Asia/Kolkata")
