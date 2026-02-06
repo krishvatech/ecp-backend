@@ -190,9 +190,17 @@ class LoungeParticipant(models.Model):
     seat_index = models.IntegerField()
     joined_at = models.DateTimeField(auto_now_add=True)
 
+    # Track the Dyte participant ID for accurate removal
+    dyte_participant_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="ID of participant in Dyte meeting. Used for proper cleanup on leave."
+    )
+
     class Meta:
         unique_together = ("table", "seat_index")
-        # Also ensure a user can only be at one table per event if required, 
+        # Also ensure a user can only be at one table per event if required,
         # but for now we'll enforce unique seating via seat_index.
 
     def __str__(self):

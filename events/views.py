@@ -415,7 +415,8 @@ class EventViewSet(viewsets.ModelViewSet):
                 Q(status__in=["published", "live"]) |
                 Q(community__members=user) |
                 Q(created_by_id=user.id) |
-                Q(community__owner_id=user.id)  # owner can see all events in their community
+                Q(community__owner_id=user.id) |  # owner can see all events in their community
+                Q(registrations__user_id=user.id, registrations__status="registered")  # registered participants can see event even after it ends (for post-event lounge)
             ).distinct()
 
         # ---- Filters (applied only when provided) ----
@@ -1158,6 +1159,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # ✅ DURING event (is_live = True) - Check SECOND
         if event.is_live:
+            logger.info(f"[_get_lounge_availability] Event {event.id}: DURING check - is_live=True, lounge_enabled_during={event.lounge_enabled_during}")
             if event.is_on_break:
                 if event.lounge_enabled_breaks:
                     return "OPEN", "Event is on break", event.end_time
@@ -1167,18 +1169,26 @@ class EventViewSet(viewsets.ModelViewSet):
             if event.lounge_enabled_during:
                 return "OPEN", "Event is live", event.live_ended_at
             else:
+                logger.info(f"[_get_lounge_availability] Event {event.id}: Returning CLOSED - lounge_enabled_during=False")
                 return "CLOSED", "Lounge closed during live sessions", None
 
         # ✅ AFTER event (event ended within lounge_after_buffer window) - Check THIRD
         if event.live_ended_at:
+            logger.info(f"[_get_lounge_availability] Event {event.id}: AFTER check - live_ended_at={event.live_ended_at}, lounge_enabled_after={event.lounge_enabled_after}, lounge_after_buffer={event.lounge_after_buffer}")
             if event.lounge_enabled_after:
                 closing = event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)
+                logger.info(f"[_get_lounge_availability] Event {event.id}: Post-event window check - now={now}, closing={closing}, in_window={event.live_ended_at <= now < closing}")
                 if event.live_ended_at <= now < closing:
+                    logger.info(f"[_get_lounge_availability] Event {event.id}: ✅ Returning OPEN - in post-event window ({event.live_ended_at} <= {now} < {closing})")
                     return "OPEN", "Post-event networking", closing
                 if now >= closing:
+                    logger.info(f"[_get_lounge_availability] Event {event.id}: Lounge window expired ({now} >= {closing})")
                     return "CLOSED", "Lounge is now closed", None
+            else:
+                logger.info(f"[_get_lounge_availability] Event {event.id}: lounge_enabled_after=False, skipping post-event lounge")
 
         if event.status == "ended":
+            logger.info(f"[_get_lounge_availability] Event {event.id}: Returning CLOSED - event.status='ended'")
             return "CLOSED", "Lounge is closed (event ended)", None
 
         return "CLOSED", "Lounge is currently closed", event.start_time
@@ -1187,6 +1197,9 @@ class EventViewSet(viewsets.ModelViewSet):
     def lounge_state(self, request, pk=None):
         """Fetch the current state of the Social Lounge for this event."""
         event = self.get_object()
+
+        # DEBUG: Log event state when lounge-state is called
+        logger.info(f"[lounge_state] Event {event.id}: is_live={event.is_live}, status={event.status}, live_ended_at={event.live_ended_at}, lounge_enabled_after={event.lounge_enabled_after}, lounge_enabled_during={event.lounge_enabled_during}")
 
         # ✅ Use shared function to ensure consistency with lounge_join_table
         status_code, reason, next_change = self._get_lounge_availability(event)
@@ -1586,6 +1599,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # ✅ FIX #1C: Update or create LoungeParticipant record for tracking
         # This ensures the user is properly tracked in the lounge occupants
+        lounge_participant = None
         try:
             # Try to update existing record if joining same table
             lounge_participant, created = LoungeParticipant.objects.get_or_create(
@@ -1640,6 +1654,15 @@ class EventViewSet(viewsets.ModelViewSet):
             if participant_id:
                 logger.info(f"[LOUNGE_JOIN] Success: user {user.id} -> participant {participant_id}")
 
+                # ✅ Store the Dyte participant ID for accurate cleanup on leave
+                if lounge_participant:
+                    try:
+                        lounge_participant.dyte_participant_id = participant_id
+                        lounge_participant.save(update_fields=["dyte_participant_id"])
+                        logger.info(f"[LOUNGE_JOIN] Stored Dyte participant ID {participant_id} for cleanup")
+                    except Exception as e:
+                        logger.warning(f"[LOUNGE_JOIN] Failed to store Dyte participant ID: {e}")
+
             return Response({"token": token, "participant_id": participant_id})
         except requests.exceptions.HTTPError as e:
             logger.error(f"[LOUNGE_JOIN] Dyte API error: {e.response.status_code}")
@@ -1647,6 +1670,95 @@ class EventViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.error(f"[LOUNGE_JOIN] Exception: {str(e)}")
             return Response({"error": "dyte_join_failed", "detail": str(e)}, status=500)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="lounge-leave-table")
+    def lounge_leave_table(self, request, pk=None):
+        """
+        User leaves a lounge table.
+        Removes from both Django DB and Dyte meeting to prevent 409 conflicts on rejoin.
+        """
+        user = request.user
+        event = self.get_object()
+
+        try:
+            # 1. Find the lounge record
+            lounge_record = LoungeParticipant.objects.filter(
+                table__event_id=event.id,
+                user=user
+            ).first()
+
+            if not lounge_record:
+                logger.info(f"[LOUNGE_LEAVE] User {user.id} is not at any lounge table")
+                return Response({
+                    "error": "not_at_table",
+                    "detail": "You are not currently at any lounge table"
+                }, status=404)
+
+            table = lounge_record.table
+            meeting_id = table.dyte_meeting_id
+            dyte_participant_id = lounge_record.dyte_participant_id
+
+            # 2. Remove from Dyte meeting
+            if meeting_id:
+                try:
+                    # If we have the Dyte participant ID, use it directly for faster removal
+                    if dyte_participant_id:
+                        delete_resp = requests.delete(
+                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_participant_id}",
+                            headers=_dyte_headers(),
+                            timeout=10,
+                        )
+                        if delete_resp.ok:
+                            logger.info(f"[LOUNGE_LEAVE] Removed user {user.id} from Dyte meeting {meeting_id} "
+                                      f"(participant_id: {dyte_participant_id})")
+                        else:
+                            logger.warning(f"[LOUNGE_LEAVE] Failed to remove user from Dyte: {delete_resp.status_code}")
+                    else:
+                        # Fallback: Query Dyte to find the participant by client_specific_id
+                        resp = requests.get(
+                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
+                            headers=_dyte_headers(),
+                            params={"limit": 100},
+                            timeout=10,
+                        )
+                        if resp.ok:
+                            participants = resp.json().get("data", [])
+                            for p in participants:
+                                cid = p.get("client_specific_id") or p.get("custom_participant_id")
+                                if cid == str(user.id):
+                                    # Found the user in Dyte, now remove them
+                                    participant_id = p.get("id")
+                                    delete_resp = requests.delete(
+                                        f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{participant_id}",
+                                        headers=_dyte_headers(),
+                                        timeout=10,
+                                    )
+                                    if delete_resp.ok:
+                                        logger.info(f"[LOUNGE_LEAVE] Removed user {user.id} from Dyte meeting {meeting_id}")
+                                    else:
+                                        logger.warning(f"[LOUNGE_LEAVE] Failed to remove user from Dyte: {delete_resp.status_code}")
+                                    break
+                except Exception as e:
+                    logger.warning(f"[LOUNGE_LEAVE] Error removing from Dyte: {e}")
+                    # Don't fail the entire leave operation if Dyte removal fails
+
+            # 3. Delete from Django DB
+            lounge_record.delete()
+
+            logger.info(f"[LOUNGE_LEAVE] User {user.id} successfully left table {table.id}. "
+                       f"Removed from both Django and Dyte.")
+
+            return Response({
+                "ok": True,
+                "message": "Successfully left the table"
+            }, status=200)
+
+        except Exception as e:
+            logger.error(f"[LOUNGE_LEAVE] Exception: {str(e)}")
+            return Response({
+                "error": "leave_failed",
+                "detail": str(e)
+            }, status=500)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="track-replay")
     def track_replay(self, request, pk=None):

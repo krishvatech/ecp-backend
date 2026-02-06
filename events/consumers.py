@@ -5,7 +5,11 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 import random
-from .utils import create_dyte_meeting
+import requests
+import logging
+from .utils import create_dyte_meeting, DYTE_API_BASE, _dyte_headers
+
+logger = logging.getLogger(__name__)
 
 class EventConsumer(AsyncJsonWebsocketConsumer):
     """Consumer to handle real-time communication within an event, including Social Lounge state."""
@@ -582,9 +586,76 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def leave_current_table(self):
-        deleted_count, _ = LoungeParticipant.objects.filter(
-            table__event_id=self.event_id, 
-            user=self.user
-        ).delete()
-        print(f"[CONSUMER] User {self.user.username} (ID:{self.user.id}) left table. Deleted {deleted_count} participant record(s)")
-        return deleted_count
+        """
+        Remove user from current lounge table.
+        Deletes from both Django DB AND Dyte meeting to prevent 409 conflicts on rejoin.
+        """
+        try:
+            # 1. Find the current table participant record
+            lounge_record = LoungeParticipant.objects.filter(
+                table__event_id=self.event_id,
+                user=self.user
+            ).first()
+
+            if not lounge_record:
+                logger.info(f"[CONSUMER] No lounge record found for user {self.user.id}")
+                return 0
+
+            table = lounge_record.table
+            meeting_id = table.dyte_meeting_id
+            dyte_participant_id = lounge_record.dyte_participant_id
+
+            # 2. Remove from Dyte meeting FIRST (before deleting DB record)
+            if meeting_id:
+                try:
+                    # If we have the Dyte participant ID, use it directly for faster removal
+                    if dyte_participant_id:
+                        delete_resp = requests.delete(
+                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_participant_id}",
+                            headers=_dyte_headers(),
+                            timeout=10,
+                        )
+                        if delete_resp.ok:
+                            logger.info(f"[CONSUMER] Removed user {self.user.id} from Dyte meeting {meeting_id} "
+                                      f"(participant_id: {dyte_participant_id})")
+                        else:
+                            logger.warning(f"[CONSUMER] Failed to remove user from Dyte: {delete_resp.status_code}")
+                    else:
+                        # Fallback: Query Dyte to find the participant by client_specific_id
+                        resp = requests.get(
+                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
+                            headers=_dyte_headers(),
+                            params={"limit": 100},
+                            timeout=10,
+                        )
+                        if resp.ok:
+                            participants = resp.json().get("data", [])
+                            for p in participants:
+                                cid = p.get("client_specific_id") or p.get("custom_participant_id")
+                                if cid == str(self.user.id):
+                                    # Found the user in Dyte, now remove them
+                                    participant_id = p.get("id")
+                                    delete_resp = requests.delete(
+                                        f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{participant_id}",
+                                        headers=_dyte_headers(),
+                                        timeout=10,
+                                    )
+                                    if delete_resp.ok:
+                                        logger.info(f"[CONSUMER] Removed user {self.user.id} from Dyte meeting {meeting_id}")
+                                    else:
+                                        logger.warning(f"[CONSUMER] Failed to remove user from Dyte: {delete_resp.status_code}")
+                                    break
+                except Exception as e:
+                    logger.warning(f"[CONSUMER] Error removing from Dyte: {e}")
+                    # Don't fail the entire leave operation if Dyte removal fails
+
+            # 3. Delete from Django DB
+            lounge_record.delete()
+
+            logger.info(f"[CONSUMER] User {self.user.username} (ID:{self.user.id}) left table. "
+                       f"Removed from both Django and Dyte.")
+            return 1
+
+        except Exception as e:
+            logger.error(f"[CONSUMER] leave_current_table error: {e}")
+            return 0
