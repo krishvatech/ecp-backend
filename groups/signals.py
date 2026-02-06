@@ -243,38 +243,22 @@ def _notify_on_group_created(sender, instance: Group, created, **kwargs):
         )
 
 
-# -------- Group: keep sub-groups in sync with parent (visibility/join_policy + admins) (NEW) --------
+# -------- Group: keep sub-groups admins in sync (no visibility/join_policy sync) --------
 @receiver(post_save, sender=Group)
 def _sync_subgroups_on_group_change(sender, instance: Group, created, **kwargs):
     """
-    1) When a group's visibility or join_policy changes, push the new values
-       down to all its sub-groups (recursively via child.save()).
-    2) When a new sub-group is created, copy ACTIVE admins of the parent
-       into the new sub-group.
+    When a new sub-group is created, copy ACTIVE admins of the parent
+    into the new sub-group.
+
+    NOTE: We intentionally do NOT sync visibility/join_policy from parent
+    to sub-groups. Sub-groups are independently configurable and validated
+    by serializer rules.
     """
     group = instance
 
     # --- (A) If this is a NEW sub-group, copy parent admins into it ---
     if created and group.parent_id:
         parent_id = group.parent_id
-
-        # Ensure new sub-group has the same visibility/join_policy as its parent
-        try:
-            parent = Group.objects.only("visibility", "join_policy").get(pk=parent_id)
-        except Group.DoesNotExist:
-            parent = None
-
-        if parent:
-            updates = {}
-            if group.visibility != parent.visibility:
-                updates["visibility"] = parent.visibility
-            if group.join_policy != parent.join_policy:
-                updates["join_policy"] = parent.join_policy
-            if updates:
-                Group.objects.filter(pk=group.pk).update(**updates)
-                # keep in-memory instance consistent
-                for k, v in updates.items():
-                    setattr(group, k, v)
 
         # Copy ACTIVE admins from parent to this new sub-group
         admin_qs = GroupMembership.objects.filter(
@@ -292,33 +276,3 @@ def _sync_subgroups_on_group_change(sender, instance: Group, created, **kwargs):
                     "status": GroupMembership.STATUS_ACTIVE,
                 },
             )
-
-    # --- (B) Propagate visibility/join_policy changes down to sub-groups ---
-    prev_vis = getattr(group, "_prev_visibility", None)
-    prev_jp = getattr(group, "_prev_join_policy", None)
-
-    # For updates: only do work if visibility/join_policy actually changed
-    if not created and (prev_vis is not None or prev_jp is not None):
-        if prev_vis == group.visibility and prev_jp == group.join_policy:
-            return
-
-    # For brand new top-level groups (no parent) nothing to sync down yet, but
-    # their future changes will propagate to children once they exist.
-    # We still allow created+parent_id (handled above), so only skip root here.
-    if created and not group.parent_id:
-        return
-
-    # Sync direct sub-groups; each child.save() will in turn sync its own children.
-    subgroups = Group.objects.filter(parent=group)
-    for child in subgroups:
-        changed = False
-        if child.visibility != group.visibility:
-            child.visibility = group.visibility
-            changed = True
-        if child.join_policy != group.join_policy:
-            child.join_policy = group.join_policy
-            changed = True
-        if changed:
-            # child save ⇒ pre_save/_store_prev_group_state + this same handler
-            # will run for the child, so it will propagate to its own sub-groups.
-            child.save(update_fields=["visibility", "join_policy"])

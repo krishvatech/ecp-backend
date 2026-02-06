@@ -1913,23 +1913,9 @@ class GroupViewSet(viewsets.ModelViewSet):
             self._ensure_parent_membership_active(group, uid)
             return Response({"ok": True, "status": "pending_approval"}, status=201)
 
-        # invite + private => only admins can add
-        if vis == Group.VISIBILITY_PRIVATE and jp == Group.JOIN_INVITE:
+        # invite-only (public or private) => only admins can add
+        if jp == Group.JOIN_INVITE:
             return Response({"detail": "Only admins can add members to this group."}, status=403)
-
-        # approval + private => must present valid join_token (in body or query)
-        if vis == Group.VISIBILITY_PRIVATE and jp == Group.JOIN_APPROVAL:
-            token = (
-                request.data.get("join_token")
-                or request.query_params.get("join_token")
-                or request.query_params.get("access_token")
-            )
-            if not token or not self._validate_join_token(token, group):
-                # keep group hidden — don’t leak existence
-                raise NotFound("Group not found.")
-            GroupMembership.objects.create(group=group, user_id=uid, role=ROLE_MEMBER, status=STATUS_PENDING)
-            self._ensure_parent_membership_active(group, uid)
-            return Response({"ok": True, "status": "pending_approval"}, status=201)
 
         return Response({"detail": "Invalid group configuration."}, status=400)
 

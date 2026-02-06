@@ -52,24 +52,59 @@ class GroupSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         """
         Enforce the matrix:
-          - public  => join_policy in {open, approval}
-          - private => join_policy in {invite, approval}
+          - public  => join_policy in {open, approval, invite}
+          - private => join_policy = invite only
+          - sub-group public can be OPEN only if parent is (public + open)
         Also handle partial updates by falling back to instance values.
         """
         vis = attrs.get("visibility", getattr(self.instance, "visibility", None))
-        jp  = attrs.get("join_policy", getattr(self.instance, "join_policy", None))
-
-        if vis == Group.VISIBILITY_PUBLIC and jp not in {Group.JOIN_OPEN, Group.JOIN_APPROVAL}:
-            raise serializers.ValidationError({"join_policy": "Public groups must be 'open' or 'approval'."})
-
-        if vis == Group.VISIBILITY_PRIVATE and jp not in {Group.JOIN_INVITE, Group.JOIN_APPROVAL}:
-            raise serializers.ValidationError({"join_policy": "Private groups must be 'invite' or 'approval'."})
-
-        # ⬇️ NEW: keep sub-group in same community as parent (server will also enforce)
+        jp = attrs.get("join_policy", getattr(self.instance, "join_policy", None))
         parent = attrs.get("parent", getattr(self.instance, "parent", None))
-        community = attrs.get("community", getattr(self.instance, "community", None))
+
+        # Private groups must be invite-only
+        if vis == Group.VISIBILITY_PRIVATE and jp != Group.JOIN_INVITE:
+            raise serializers.ValidationError({"join_policy": "Private groups must be 'invite'."})
+
+        # Public groups allow open/approval/invite
+        if vis == Group.VISIBILITY_PUBLIC and jp not in {Group.JOIN_OPEN, Group.JOIN_APPROVAL, Group.JOIN_INVITE}:
+            raise serializers.ValidationError({"join_policy": "Public groups must be 'open', 'approval', or 'invite'."})
+
+        # Sub-group rules (parent-dependent)
         if parent:
-            # prefer parent's community
+            if vis == Group.VISIBILITY_PUBLIC and jp == Group.JOIN_OPEN:
+                parent_is_open = (
+                    parent.visibility == Group.VISIBILITY_PUBLIC
+                    and parent.join_policy == Group.JOIN_OPEN
+                )
+                if not parent_is_open:
+                    raise serializers.ValidationError(
+                        {"join_policy": "Subgroups under non-open parents cannot be 'open'."}
+                    )
+
+        # Parent update behavior (safer): block if it would invalidate existing sub-groups.
+        # We do NOT auto-downgrade sub-groups to avoid silent policy changes.
+        if self.instance and not getattr(self.instance, "parent_id", None):
+            parent_target_open = (
+                vis == Group.VISIBILITY_PUBLIC and jp == Group.JOIN_OPEN
+            )
+            if not parent_target_open:
+                has_open_public_subgroups = Group.objects.filter(
+                    parent=self.instance,
+                    visibility=Group.VISIBILITY_PUBLIC,
+                    join_policy=Group.JOIN_OPEN,
+                ).exists()
+                if has_open_public_subgroups:
+                    raise serializers.ValidationError(
+                        {
+                            "join_policy": (
+                                "Parent groups with public subgroups set to 'open' "
+                                "cannot be changed to non-open. Update subgroups first."
+                            )
+                        }
+                    )
+
+        # ⬇️ keep sub-group in same community as parent (server will also enforce)
+        if parent:
             attrs["community"] = parent.community
 
         return attrs
@@ -177,7 +212,9 @@ class GroupSerializer(serializers.ModelSerializer):
         return {
             "id": p.id,
             "name": p.name,
-            "slug": p.slug
+            "slug": p.slug,
+            "visibility": p.visibility,
+            "join_policy": p.join_policy,
         }
 
 class GroupSettingsSerializer(serializers.ModelSerializer):
