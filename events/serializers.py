@@ -516,6 +516,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     user_email = serializers.EmailField(source="user.email", read_only=True)
     user_avatar_url = serializers.SerializerMethodField()
+    user_kyc_status = serializers.SerializerMethodField()
     is_host = serializers.SerializerMethodField()
 
     class Meta:
@@ -529,6 +530,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "user_name",
             "user_email",
             "user_avatar_url",
+            "user_kyc_status",
             "registered_at",
             "joined_live",
             "watched_replay",
@@ -553,6 +555,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "user_name",
             "user_email",
             "user_avatar_url",
+            "user_kyc_status",
             "admission_status",
             "admitted_at",
             "admitted_by",
@@ -581,6 +584,15 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
     def get_user_avatar_url(self, obj):
         ser = UserMiniSerializer(obj.user, context=self.context)
         return ser.data.get("avatar_url", "") or ""
+
+    def get_user_kyc_status(self, obj):
+        u = getattr(obj, "user", None)
+        if not u:
+            return None
+        prof = getattr(u, "profile", None)
+        if prof and hasattr(prof, "kyc_status"):
+            return prof.kyc_status
+        return getattr(u, "kyc_status", None)
 
 
 class SpeedNetworkingMatchSerializer(serializers.ModelSerializer):
