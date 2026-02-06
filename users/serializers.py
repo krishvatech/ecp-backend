@@ -894,6 +894,9 @@ class AdminKYCSerializer(serializers.ModelSerializer):
     # Profile image
     user_image_url = serializers.SerializerMethodField(read_only=True)
 
+    kyc_manual_approved_by_username = serializers.CharField(source="kyc_manual_approved_by.username", read_only=True, allow_null=True)
+    kyc_manual_approved_by_full_name = serializers.CharField(source="kyc_manual_approved_by.profile.full_name", read_only=True, allow_null=True)
+
     class Meta:
         model = UserProfile
         fields = (
@@ -905,6 +908,10 @@ class AdminKYCSerializer(serializers.ModelSerializer):
             "kyc_didit_last_webhook_at",
             "legal_name_locked", "legal_name_verified_at",
             "kyc_didit_raw_payload",
+            # Manual KYC
+            "kyc_manual_proof", "kyc_manual_reason",
+            "kyc_manual_approved_by", "kyc_manual_approved_at",
+            "kyc_manual_approved_by_username", "kyc_manual_approved_by_full_name",
         )
         read_only_fields = (
             "user_id", "username", "email", "first_name", "last_name",
@@ -912,6 +919,9 @@ class AdminKYCSerializer(serializers.ModelSerializer):
             "kyc_last_session_id", "kyc_didit_last_webhook_at",
             "legal_name_locked", "legal_name_verified_at",
             "kyc_didit_raw_payload",
+            "kyc_manual_proof", "kyc_manual_reason",
+            "kyc_manual_approved_by", "kyc_manual_approved_at",
+            "kyc_manual_approved_by_username", "kyc_manual_approved_by_full_name",
         )
 
     def get_user_image_url(self, obj):

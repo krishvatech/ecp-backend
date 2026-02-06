@@ -96,6 +96,18 @@ class UserProfile(models.Model):
     kyc_didit_raw_payload = models.JSONField(default=dict, blank=True)
     kyc_didit_last_webhook_at = models.DateTimeField(null=True, blank=True)
 
+    # --- Manual KYC Fields (Superuser only) ---
+    kyc_manual_proof = models.FileField(upload_to="kyc_proofs/", blank=True, null=True)
+    kyc_manual_reason = models.TextField(blank=True, default="")
+    kyc_manual_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="kyc_approvals"
+    )
+    kyc_manual_approved_at = models.DateTimeField(null=True, blank=True)
+
     # --- Saleor Integration ---
     saleor_customer_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
 

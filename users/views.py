@@ -1729,6 +1729,60 @@ class AdminKYCViewSet(viewsets.ModelViewSet):
             from rest_framework.exceptions import NotFound
             raise NotFound("User profile not found")
     
+
+    @action(detail=True, methods=["post"], url_path="manual-approve")
+    def manual_approve(self, request, user_id=None):
+        """
+        Manually approve a user for KYC (Super Admin only).
+        POST /api/auth/admin/kyc/{user_id}/manual-approve/
+        Body: { "proof": <file>, "reason": "..." }
+        """
+        if not request.user.is_superuser:
+            return Response({"detail": "Permission denied."}, status=403)
+
+        profile = self.get_object()
+        user = profile.user
+        
+        proof = request.FILES.get("proof")
+        reason = request.data.get("reason", "").strip()
+
+        if not proof:
+             return Response({"detail": "Proof document is required."}, status=400)
+        if not reason:
+             return Response({"detail": "Reason is required."}, status=400)
+
+        # Update Profile
+        profile.kyc_status = UserProfile.KYC_STATUS_APPROVED
+        profile.kyc_decline_reason = None
+        profile.legal_name_locked = True
+        profile.legal_name_verified_at = django_timezone.now()
+        
+        profile.kyc_manual_proof = proof
+        profile.kyc_manual_reason = reason
+        profile.kyc_manual_approved_by = request.user
+        profile.kyc_manual_approved_at = django_timezone.now()
+        
+        profile.save()
+        
+        status_label = "approved"
+
+        # Create notification
+        create_notification_once(
+            recipient=user,
+            kind="event",
+            title="KYC Approved Manually",
+            description=f"Your identity verification has been manually approved by an admin. Reason: {reason}",
+            unique={"type": "kyc_manual_approve", "user_id": user.id},
+        )
+        
+        # Log
+        logger.info(
+            f"[AdminKYC] SuperAdmin {request.user.username} manually approved {user.username}. "
+            f"Reason: {reason}"
+        )
+
+        return Response(self.get_serializer(profile).data)
+
     @action(detail=True, methods=["post"], url_path="override-status")
     def override_status(self, request, user_id=None):
         """
