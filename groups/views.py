@@ -1,6 +1,6 @@
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
-from django.db.models import Count, Q, Exists, OuterRef
+from django.db.models import Count, Q, Exists, OuterRef, Subquery
 from django.contrib.auth import get_user_model
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import NotFound
@@ -43,6 +43,7 @@ from .serializers import (
 )
 from friends.models import Friendship
 from users.serializers import UserMiniSerializer
+from users.models import Experience
 
 
 class GroupViewSet(viewsets.ModelViewSet):
@@ -74,6 +75,59 @@ class GroupViewSet(viewsets.ModelViewSet):
     - GET  /api/groups/{id}/join-group-link      (owner/admin/staff; approval+private only)
     - POST /api/groups/{id}/join-group-link/rotate (owner/admin/staff; approval+private only)
     """
+    def _parse_multi_param(self, request, key):
+        values = request.query_params.getlist(key)
+        out = []
+        for raw in values:
+            if not raw:
+                continue
+            parts = [p.strip() for p in str(raw).split(",")]
+            out.extend([p for p in parts if p])
+        return out
+
+    def _apply_member_filters(self, qs, request):
+        companies = self._parse_multi_param(request, "company")
+        titles = self._parse_multi_param(request, "title")
+        regions = self._parse_multi_param(request, "region")
+
+        if not (companies or titles or regions):
+            return qs
+
+        User = get_user_model()
+        user_qs = User.objects.all()
+
+        if companies:
+            latest_company = Subquery(
+                Experience.objects
+                .filter(user_id=OuterRef("pk"))
+                .order_by("-currently_work_here", "-end_date", "-start_date", "-id")
+                .values("community_name")[:1]
+            )
+            user_qs = user_qs.annotate(_company=latest_company).filter(_company__in=companies)
+
+        if titles:
+            latest_title = Subquery(
+                Experience.objects
+                .filter(user_id=OuterRef("pk"))
+                .order_by("-currently_work_here", "-end_date", "-start_date", "-id")
+                .values("position")[:1]
+            )
+            user_qs = user_qs.annotate(_title=latest_title).filter(_title__in=titles)
+
+        if regions:
+            region_q = Q()
+            for r in regions:
+                region_q |= Q(profile__location__icontains=r)
+            user_qs = user_qs.filter(region_q)
+
+        return (
+            qs.filter(
+                memberships__status=GroupMembership.STATUS_ACTIVE,
+                memberships__user__in=user_qs,
+            )
+            .distinct()
+        )
+
     JOIN_LINK_MAX_AGE = 7 * 24 * 3600  # 7 days
     serializer_class = GroupSerializer
     parser_classes = [JSONParser, MultiPartParser, FormParser]
@@ -734,9 +788,13 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="members")
     def members(self, request, pk=None):
         group = self.get_object()
-        memberships = GroupMembership.objects.filter(
-            group=group, status=GroupMembership.STATUS_ACTIVE
-        ).select_related("user")
+        memberships = (
+            GroupMembership.objects.filter(
+                group=group, status=GroupMembership.STATUS_ACTIVE
+            )
+            .select_related("user", "user__profile")
+            .prefetch_related("user__experiences")
+        )
         return Response(GroupMemberOutSerializer(memberships, many=True).data)
 
     # Use (Endpoint): GET /api/groups/{id}/members/export-csv
@@ -1348,6 +1406,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             .filter(visibility=Group.VISIBILITY_PUBLIC)
             .order_by("-created_at")
         )
+        qs = self._apply_member_filters(qs, request)
 
         user = request.user
         if user and user.is_authenticated:
@@ -1396,6 +1455,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             .order_by("-created_at")
             .distinct()
         )
+        qs = self._apply_member_filters(qs, request)
 
         page = self.paginate_queryset(qs)
         ser = self.get_serializer(page or qs, many=True, context={"request": request})

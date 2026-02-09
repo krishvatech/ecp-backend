@@ -4,6 +4,7 @@ from django.db.models import Count
 from community.models import Community
 from django.contrib.auth import get_user_model
 from users.serializers import UserMiniSerializer
+from users.models import Experience
 from .models import Group, GroupMembership, PromotionRequest, GroupNotification
 
 User = get_user_model()
@@ -255,6 +256,14 @@ class GroupMemberOutSerializer(serializers.ModelSerializer):
         model = GroupMembership
         fields = ["user", "role", "joined_at", "status"]
 
+    def _best_experience(self, user):
+        qs = getattr(user, "experiences", None)
+        if hasattr(qs, "all"):
+            qs = qs.all()
+        else:
+            qs = Experience.objects.filter(user=user)
+        return qs.order_by("-currently_work_here", "-end_date", "-start_date", "-id").first()
+
     def get_user(self, obj):
         u = obj.user
         name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", "")
@@ -271,8 +280,25 @@ class GroupMemberOutSerializer(serializers.ModelSerializer):
         kyc_status = "not_started"
         if hasattr(u, "profile"):
             kyc_status = getattr(u.profile, "kyc_status", "not_started")
-            
-        return {"id": u.pk, "name": name or None, "email": getattr(u, "email", None), "avatar": avatar, "kyc_status": kyc_status}
+
+        ex = self._best_experience(u)
+        location = ""
+        if hasattr(u, "profile"):
+            location = getattr(u.profile, "location", "") or ""
+        location = location or getattr(u, "location", "") or ""
+
+        return {
+            "id": u.pk,
+            "name": name or None,
+            "email": getattr(u, "email", None),
+            "avatar": avatar,
+            "kyc_status": kyc_status,
+            "company_from_experience": ex.community_name if ex else "",
+            "position_from_experience": ex.position if ex else "",
+            "industry_from_experience": ex.industry if ex else "",
+            "number_of_employees_from_experience": ex.number_of_employees if ex else "",
+            "location": location,
+        }
 
 # ===== Feed Posts stored as activity_feed.FeedItem =====
 class CreateFeedPostSerializer(serializers.Serializer):
