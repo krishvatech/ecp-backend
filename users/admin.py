@@ -24,7 +24,10 @@ class UserProfileInline(admin.StackedInline):
 
 class UserAdmin(admin.ModelAdmin):
     inlines = [UserProfileInline]
-    list_display = ("username", "email", "is_active", "date_joined")
+    list_display = ("username", "email", "is_active", "is_staff", "date_joined")
+    list_filter = ("is_staff", "is_active", "date_joined")
+    search_fields = ("username", "email", "first_name", "last_name")
+
     def save_model(self, request, obj, form, change):
         old_is_staff = None
         if change and obj.pk:

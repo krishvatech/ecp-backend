@@ -17,9 +17,61 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.utils.dateparse import parse_datetime
 from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
-from .models import Event, EventRegistration, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue
+from .models import Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue
 from community.models import Community
 from content.models import Resource
+
+class EventParticipantSerializer(serializers.ModelSerializer):
+    """Read-only serializer for EventParticipant with computed fields supporting both staff and guest types."""
+
+    user_id = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
+    email = serializers.SerializerMethodField()
+    profile_image_url = serializers.SerializerMethodField()
+    bio_text = serializers.SerializerMethodField()
+    participant_type = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = EventParticipant
+        fields = [
+            'id',
+            'participant_type',
+            'user_id',
+            'name',
+            'email',
+            'role',
+            'bio_text',
+            'profile_image_url',
+            'display_order',
+            'created_at',
+        ]
+        read_only_fields = fields
+
+    def get_user_id(self, obj):
+        """Get user ID for staff type, None for guest."""
+        if obj.participant_type == EventParticipant.PARTICIPANT_TYPE_STAFF and obj.user:
+            return obj.user.id
+        return None
+
+    def get_name(self, obj):
+        """Get display name based on participant type."""
+        return obj.get_name()
+
+    def get_email(self, obj):
+        """Get email based on participant type."""
+        return obj.get_email()
+
+    def get_profile_image_url(self, obj):
+        """Get profile image URL with fallback logic."""
+        url = obj.get_image_url()
+        if url:
+            request = self.context.get('request')
+            return request.build_absolute_uri(url) if request else url
+        return None
+
+    def get_bio_text(self, obj):
+        """Get bio with fallback logic."""
+        return obj.get_bio()
 
 class EventSerializer(serializers.ModelSerializer):
     """Serializer for Event objects."""
@@ -51,6 +103,19 @@ class EventSerializer(serializers.ModelSerializer):
 
     # Let recording_url be blank or omitted; we will normalize/validate in validate()
     recording_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    # Write-only field for participants input
+    participants = serializers.ListField(
+        child=serializers.DictField(),
+        write_only=True,
+        required=False,
+        default=list,
+        help_text="List of participants (staff or guest). Staff: {'type': 'staff', 'user_id': 1, 'role': 'speaker'}. Guest: {'type': 'guest', 'name': 'Name', 'email': 'email@example.com', 'role': 'speaker'}"
+    )
+
+    # Read-only field for participants output
+    event_participants = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = Event
         fields = [
@@ -104,6 +169,8 @@ class EventSerializer(serializers.ModelSerializer):
             "lounge_after_buffer",
             "show_participants_before_event",
             "show_participants_after_event",
+            "participants",
+            "event_participants",
         ]
         
         read_only_fields = [
@@ -216,7 +283,146 @@ class EventSerializer(serializers.ModelSerializer):
             kept.append(s)
         return kept
 
+    def _create_participants(self, event, participants_data):
+        """
+        Create EventParticipant records from input data.
+
+        Supports both staff users and guest speakers:
+
+        Staff format:
+        {
+            "type": "staff",
+            "user_id": 1,
+            "role": "speaker",
+            "bio": "Optional event-specific bio override",
+            "display_order": 0
+        }
+
+        Guest format:
+        {
+            "type": "guest",
+            "name": "Guest Speaker Name",
+            "email": "guest@example.com",
+            "bio": "Guest speaker bio",
+            "role": "speaker",
+            "display_order": 0
+        }
+
+        For backwards compatibility, if no "type" is provided, assumes staff.
+        """
+        if not participants_data:
+            return
+
+        from django.contrib.auth.models import User
+
+        validated_participants = []
+        staff_user_ids = []
+
+        for idx, p_data in enumerate(participants_data):
+            # Determine participant type (default to 'staff' for backwards compatibility)
+            p_type = p_data.get('type', 'staff').lower()
+            role = p_data.get('role', '').lower()
+
+            # Validate role
+            if role not in ['speaker', 'moderator', 'host']:
+                raise serializers.ValidationError({
+                    'participants': f'Invalid role "{role}" at index {idx}. Must be: speaker, moderator, or host'
+                })
+
+            if p_type == 'staff':
+                # Staff participant requires user_id
+                user_id = p_data.get('user_id')
+                if not user_id:
+                    raise serializers.ValidationError({
+                        'participants': f'Missing user_id for staff participant at index {idx}'
+                    })
+                staff_user_ids.append(user_id)
+
+                validated_participants.append({
+                    'type': 'staff',
+                    'user_id': user_id,
+                    'role': role,
+                    'event_bio': (p_data.get('bio') or '').strip(),
+                    'display_order': p_data.get('display_order', idx),
+                })
+
+            elif p_type == 'guest':
+                # Guest participant requires name
+                guest_name = (p_data.get('name') or '').strip()
+                if not guest_name:
+                    raise serializers.ValidationError({
+                        'participants': f'Missing name for guest participant at index {idx}'
+                    })
+
+                validated_participants.append({
+                    'type': 'guest',
+                    'guest_name': guest_name,
+                    'guest_email': (p_data.get('email') or '').strip(),
+                    'guest_bio': (p_data.get('bio') or '').strip(),
+                    'role': role,
+                    'display_order': p_data.get('display_order', idx),
+                })
+            else:
+                raise serializers.ValidationError({
+                    'participants': f'Invalid type "{p_type}" at index {idx}. Must be: staff or guest'
+                })
+
+        # Verify all staff user IDs exist (batch query)
+        if staff_user_ids:
+            existing_users = User.objects.filter(id__in=staff_user_ids).values_list('id', flat=True)
+            existing_user_ids = set(existing_users)
+
+            missing_ids = [uid for uid in staff_user_ids if uid not in existing_user_ids]
+            if missing_ids:
+                raise serializers.ValidationError({
+                    'participants': f'User IDs not found: {missing_ids}'
+                })
+
+        # De-duplicate: for staff by (user_id, role), for guest by (name, email, role)
+        dedup_key_map = {}
+        for p in validated_participants:
+            if p['type'] == 'staff':
+                key = ('staff', p['user_id'], p['role'])
+            else:
+                key = ('guest', p['guest_name'], p['guest_email'], p['role'])
+
+            if key not in dedup_key_map:
+                dedup_key_map[key] = p
+
+        # Create EventParticipant records using bulk_create
+        rows = []
+        for p_data in dedup_key_map.values():
+            if p_data['type'] == 'staff':
+                rows.append(
+                    EventParticipant(
+                        event=event,
+                        participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+                        user_id=p_data['user_id'],
+                        role=p_data['role'],
+                        event_bio=p_data['event_bio'],
+                        display_order=p_data['display_order'],
+                    )
+                )
+            else:  # guest
+                rows.append(
+                    EventParticipant(
+                        event=event,
+                        participant_type=EventParticipant.PARTICIPANT_TYPE_GUEST,
+                        role=p_data['role'],
+                        guest_name=p_data['guest_name'],
+                        guest_email=p_data['guest_email'],
+                        guest_bio=p_data['guest_bio'],
+                        display_order=p_data['display_order'],
+                    )
+                )
+
+        # Use bulk_create with ignore_conflicts for safety
+        EventParticipant.objects.bulk_create(rows, ignore_conflicts=True)
+
     def create(self, validated_data):
+        # Extract participants data before creating Event
+        participants_data = validated_data.pop('participants', [])
+
         files  = validated_data.pop("resource_files", [])
         links  = validated_data.pop("resource_links", [])
         videos = validated_data.pop("resource_videos", [])
@@ -346,7 +552,26 @@ class EventSerializer(serializers.ModelSerializer):
                 publish_resource_task.apply_async(args=[r.id], eta=r.publish_at)
                 scheduled_ids.append(r.id)
 
+        # Create participants (add after resource creation)
+        self._create_participants(event, participants_data)
+
         return event
+
+    def update(self, instance, validated_data):
+        # Extract and handle participants separately
+        participants_data = validated_data.pop('participants', None)
+
+        # Update event fields
+        instance = super().update(instance, validated_data)
+
+        # If participants data provided, replace existing participants
+        if participants_data is not None:
+            # Delete existing participants
+            instance.participants.all().delete()
+            # Create new participants
+            self._create_participants(instance, participants_data)
+
+        return instance
 
     def get_resources(self, obj):
         # small, safe read to show what's attached (no extra queries if prefetched)
@@ -368,7 +593,40 @@ class EventSerializer(serializers.ModelSerializer):
             for r in qs.all().order_by("-created_at")
         ]
 
-      
+    def get_event_participants(self, obj):
+        """Return all participants grouped by role."""
+        qs = getattr(obj, 'participants', None)
+        if not qs:
+            return {
+                'speakers': [],
+                'moderators': [],
+                'hosts': [],
+            }
+
+        # Prefetch related user profiles for efficiency
+        participants = qs.select_related('user', 'user__profile').all()
+
+        serializer = EventParticipantSerializer(
+            participants,
+            many=True,
+            context=self.context
+        )
+
+        # Group by role for easier frontend consumption
+        grouped = {
+            'speakers': [],
+            'moderators': [],
+            'hosts': [],
+        }
+
+        for p_data in serializer.data:
+            role = p_data['role']
+            if role in grouped:
+                grouped[role].append(p_data)
+
+        return grouped
+
+
     # ---------- Field-level validations ----------
     
     def to_representation(self, instance):
@@ -486,6 +744,20 @@ class EventSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"end_time": "End time cannot be in the past."})
         if start_time and end_time and not (end_time > start_time):
             raise serializers.ValidationError({"end_time": "End time must be later than start time."})
+
+        # Validate participants structure
+        participants = data.get('participants', [])
+        if participants:
+            if not isinstance(participants, list):
+                raise serializers.ValidationError({
+                    'participants': 'Must be a list of participant objects'
+                })
+
+            for idx, p in enumerate(participants):
+                if not isinstance(p, dict):
+                    raise serializers.ValidationError({
+                        'participants': f'Item at index {idx} must be a dictionary'
+                    })
 
         return data
 

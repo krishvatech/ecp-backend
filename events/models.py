@@ -25,6 +25,13 @@ def lounge_table_icon_upload_to(instance, filename):
     name, ext = os.path.splitext(filename or "")
     base = slugify(name) or "table"
     return f"lounge/tables/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
+
+def event_participant_image_upload_to(instance, filename):
+    """Upload path for event-specific participant images."""
+    name, ext = os.path.splitext(filename or "")
+    base = slugify(name) or "participant"
+    return f"events/participants/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
+
 class Event(models.Model):
     """Represents an event within an community."""
     STATUS_CHOICES = [
@@ -393,3 +400,157 @@ class SpeedNetworkingQueue(models.Model):
 
     def __str__(self):
         return f"{self.user} in Queue for Session {self.session_id}"
+
+
+class EventParticipant(models.Model):
+    """
+    Hybrid model supporting both staff users and external guest speakers.
+
+    For staff participants: Links to User account, optionally override bio/image per event
+    For guest participants: Standalone data without User account (useful for external speakers)
+    """
+
+    PARTICIPANT_TYPE_STAFF = 'staff'
+    PARTICIPANT_TYPE_GUEST = 'guest'
+    PARTICIPANT_TYPE_CHOICES = [
+        (PARTICIPANT_TYPE_STAFF, 'Staff Member'),
+        (PARTICIPANT_TYPE_GUEST, 'Guest Speaker'),
+    ]
+
+    ROLE_SPEAKER = 'speaker'
+    ROLE_MODERATOR = 'moderator'
+    ROLE_HOST = 'host'
+
+    ROLE_CHOICES = [
+        (ROLE_SPEAKER, 'Speaker'),
+        (ROLE_MODERATOR, 'Moderator'),
+        (ROLE_HOST, 'Host'),
+    ]
+
+    # Core fields
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='participants',
+        help_text="The event this participant is associated with"
+    )
+    participant_type = models.CharField(
+        max_length=20,
+        choices=PARTICIPANT_TYPE_CHOICES,
+        default=PARTICIPANT_TYPE_STAFF,
+        help_text="Type of participant (staff user or external guest)"
+    )
+    role = models.CharField(
+        max_length=20,
+        choices=ROLE_CHOICES,
+        help_text="Role of the participant in this event"
+    )
+    display_order = models.PositiveIntegerField(
+        default=0,
+        help_text="Order in which participants are displayed (lower = earlier)"
+    )
+
+    # Staff participant field (optional)
+    user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='event_participations',
+        help_text="User account (required for staff type)"
+    )
+
+    # Staff-specific customization fields
+    event_bio = models.TextField(
+        blank=True,
+        help_text="Event-specific bio override for staff members"
+    )
+    event_image = models.ImageField(
+        upload_to=event_participant_image_upload_to,
+        blank=True,
+        null=True,
+        help_text="Event-specific image override for staff members"
+    )
+
+    # Guest participant fields (only used when participant_type='guest')
+    guest_name = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Full name of guest speaker"
+    )
+    guest_email = models.EmailField(
+        blank=True,
+        help_text="Email of guest speaker"
+    )
+    guest_bio = models.TextField(
+        blank=True,
+        help_text="Bio of guest speaker"
+    )
+    guest_image = models.ImageField(
+        upload_to=event_participant_image_upload_to,
+        blank=True,
+        null=True,
+        help_text="Profile image of guest speaker"
+    )
+
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['display_order', 'created_at']
+        indexes = [
+            models.Index(fields=['event', 'role']),
+            models.Index(fields=['participant_type']),
+            models.Index(fields=['event', 'display_order']),
+        ]
+        verbose_name = 'Event Participant'
+        verbose_name_plural = 'Event Participants'
+
+    def clean(self):
+        """Validate participant based on type"""
+        from django.core.exceptions import ValidationError
+
+        if self.participant_type == self.PARTICIPANT_TYPE_STAFF:
+            if not self.user:
+                raise ValidationError("Staff participants must have a user assigned")
+        elif self.participant_type == self.PARTICIPANT_TYPE_GUEST:
+            if not self.guest_name:
+                raise ValidationError("Guest speakers must have a name")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        name = self.get_name()
+        return f"{name} - {self.get_role_display()} at {self.event.title}"
+
+    # Helper methods for frontend/serializers
+    def get_name(self):
+        """Get participant name with fallback logic"""
+        if self.user:
+            return self.user.get_full_name() or self.user.username
+        return self.guest_name
+
+    def get_email(self):
+        """Get participant email"""
+        if self.user:
+            return self.user.email
+        return self.guest_email
+
+    def get_bio(self):
+        """Get bio with fallback logic"""
+        if self.event_bio:
+            return self.event_bio
+        if self.user and hasattr(self.user, 'profile'):
+            return self.user.profile.bio or ""
+        return self.guest_bio or ""
+
+    def get_image_url(self):
+        """Get image URL with fallback logic"""
+        if self.event_image:
+            return self.event_image.url
+        if self.user and hasattr(self.user, 'profile') and self.user.profile.user_image:
+            return self.user.profile.user_image.url
+        return self.guest_image.url if self.guest_image else None
