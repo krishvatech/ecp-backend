@@ -193,7 +193,6 @@ class EventSerializer(serializers.ModelSerializer):
     start_time = serializers.DateTimeField(
         required=False,
         allow_null=True,
-        format="%Y-%m-%dT%H:%M",
         input_formats=[
             "%Y-%m-%dT%H:%M",
             "%Y-%m-%d %H:%M",
@@ -208,7 +207,6 @@ class EventSerializer(serializers.ModelSerializer):
     end_time = serializers.DateTimeField(
         required=False,
         allow_null=True,
-        format="%Y-%m-%dT%H:%M",
         input_formats=[
             "%Y-%m-%dT%H:%M",
             "%Y-%m-%d %H:%M",
