@@ -9,6 +9,7 @@ from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils.crypto import get_random_string
 from botocore.exceptions import ClientError
+from .cognito_groups import add_user_to_speaker_group
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,10 @@ def send_speaker_credentials_email(user, frontend_url=None):
         logger.error(f"Failed to create Cognito user for {user.email}; email not sent")
         return False
 
-    # 2. Set the temporary password on the Django user account
+    # 2. Add user to 'speaker' group in Cognito
+    add_user_to_speaker_group(username=user.username)
+
+    # 3. Set the temporary password on the Django user account
     user.set_password(temp_password)
     user.save(update_fields=['password'])
     logger.info(f"Temporary password set for user {user.username}")
