@@ -173,6 +173,29 @@ class Event(models.Model):
     def __str__(self) -> str:
         return f"{self.title} ({self.community.name})"
 
+    # ===== Computed Properties for Multi-Day Sessions =====
+    @property
+    def has_sessions(self):
+        """Check if this event has sessions."""
+        return self.sessions.exists()
+
+    @property
+    def next_session(self):
+        """Get the next upcoming session."""
+        from django.utils import timezone
+        return self.sessions.filter(start_time__gte=timezone.now()).order_by('start_time').first()
+
+    @property
+    def current_live_session(self):
+        """Get the currently live session, if any."""
+        return self.sessions.filter(is_live=True).first()
+
+    @property
+    def is_any_session_live(self):
+        """Check if any session is currently live."""
+        return self.sessions.filter(is_live=True).exists()
+
+
 class LoungeTable(models.Model):
     """Represents a virtual table in the Social Lounge."""
     TABLE_CATEGORY_CHOICES = [
@@ -554,3 +577,177 @@ class EventParticipant(models.Model):
         if self.user and hasattr(self.user, 'profile') and self.user.profile.user_image:
             return self.user.profile.user_image.url
         return self.guest_image.url if self.guest_image else None
+
+
+# ============================================================
+# ================= Event Session Models ====================
+# ============================================================
+
+class EventSession(models.Model):
+    """Represents a session within a multi-day event."""
+    SESSION_TYPE_CHOICES = [
+        ("main", "Main Session"),
+        ("breakout", "Breakout Session"),
+        ("workshop", "Workshop"),
+        ("networking", "Networking"),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="sessions")
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    start_time = models.DateTimeField()
+    end_time = models.DateTimeField()
+    session_type = models.CharField(max_length=20, choices=SESSION_TYPE_CHOICES, default="main")
+    display_order = models.PositiveIntegerField(default=0, help_text="Order in which sessions appear")
+
+    # Live meeting
+    is_live = models.BooleanField(default=False)
+    live_started_at = models.DateTimeField(null=True, blank=True)
+    live_ended_at = models.DateTimeField(null=True, blank=True)
+
+    # Dyte integration
+    use_parent_meeting = models.BooleanField(
+        default=True,
+        help_text="If True, use parent event's Dyte meeting. If False, create separate meeting."
+    )
+    dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
+    recording_url = models.URLField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['display_order', 'start_time']
+        indexes = [
+            models.Index(fields=['event', 'start_time']),
+            models.Index(fields=['event', 'is_live']),
+        ]
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        self._update_parent_event_times()
+
+    def _update_parent_event_times(self):
+        """Auto-update parent event's start/end times from all sessions."""
+        from django.db.models import Min, Max
+        times = self.event.sessions.aggregate(
+            min_start=Min('start_time'),
+            max_end=Max('end_time')
+        )
+        if times['min_start'] and times['max_end']:
+            self.event.start_time = times['min_start']
+            self.event.end_time = times['max_end']
+            self.event.save(update_fields=['start_time', 'end_time'])
+
+    def __str__(self):
+        return f"{self.title} - {self.event.title}"
+
+
+class SessionParticipant(models.Model):
+    """Links speakers/moderators to specific sessions (mirrors EventParticipant)."""
+
+    PARTICIPANT_TYPE_STAFF = 'staff'
+    PARTICIPANT_TYPE_GUEST = 'guest'
+    PARTICIPANT_TYPE_CHOICES = [
+        (PARTICIPANT_TYPE_STAFF, 'Staff Member'),
+        (PARTICIPANT_TYPE_GUEST, 'Guest Speaker'),
+    ]
+
+    ROLE_SPEAKER = 'speaker'
+    ROLE_MODERATOR = 'moderator'
+    ROLE_HOST = 'host'
+    ROLE_CHOICES = [
+        (ROLE_SPEAKER, 'Speaker'),
+        (ROLE_MODERATOR, 'Moderator'),
+        (ROLE_HOST, 'Host'),
+    ]
+
+    session = models.ForeignKey(EventSession, on_delete=models.CASCADE, related_name='participants')
+    participant_type = models.CharField(max_length=20, choices=PARTICIPANT_TYPE_CHOICES, default=PARTICIPANT_TYPE_STAFF)
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    display_order = models.PositiveIntegerField(default=0)
+
+    # Staff participant
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='session_participations')
+    session_bio = models.TextField(blank=True, help_text="Session-specific bio override")
+    session_image = models.ImageField(upload_to=event_participant_image_upload_to, blank=True, null=True)
+
+    # Guest participant
+    guest_name = models.CharField(max_length=255, blank=True)
+    guest_email = models.EmailField(blank=True)
+    guest_bio = models.TextField(blank=True)
+    guest_image = models.ImageField(upload_to=event_participant_image_upload_to, blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['display_order', 'created_at']
+        indexes = [
+            models.Index(fields=['session', 'role']),
+            models.Index(fields=['participant_type']),
+        ]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.participant_type == self.PARTICIPANT_TYPE_STAFF and not self.user:
+            raise ValidationError("Staff participants must have a user assigned")
+        elif self.participant_type == self.PARTICIPANT_TYPE_GUEST and not self.guest_name:
+            raise ValidationError("Guest speakers must have a name")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.get_name()} - {self.get_role_display()} at {self.session.title}"
+
+    # Helper methods (mirror EventParticipant)
+    def get_name(self):
+        if self.user:
+            return self.user.get_full_name() or self.user.username
+        return self.guest_name
+
+    def get_email(self):
+        if self.user:
+            return self.user.email
+        return self.guest_email
+
+    def get_bio(self):
+        if self.session_bio:
+            return self.session_bio
+        if self.user and hasattr(self.user, 'profile'):
+            return self.user.profile.bio or ""
+        return self.guest_bio or ""
+
+    def get_image_url(self):
+        if self.session_image:
+            return self.session_image.url
+        if self.user and hasattr(self.user, 'profile') and self.user.profile.user_image:
+            return self.user.profile.user_image.url
+        return self.guest_image.url if self.guest_image else None
+
+
+class SessionAttendance(models.Model):
+    """Tracks which users attended which sessions."""
+
+    session = models.ForeignKey(EventSession, on_delete=models.CASCADE, related_name='attendances')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='session_attendances')
+
+    joined_at = models.DateTimeField(auto_now_add=True)
+    left_at = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.PositiveIntegerField(default=0)
+    is_online = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('session', 'user')
+        indexes = [
+            models.Index(fields=['session', 'is_online']),
+            models.Index(fields=['user']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} attended {self.session.title}"

@@ -1,6 +1,6 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import EventViewSet, EventRegistrationViewSet, RecordingWebhookView
+from .views import EventViewSet, EventRegistrationViewSet, RecordingWebhookView, EventSessionViewSet
 from .speed_networking_views import SpeedNetworkingSessionViewSet, SpeedNetworkingQueueViewSet
 from .webhooks import realtime_webhook
 
@@ -65,5 +65,37 @@ urlpatterns = router.urls + [
         "events/<int:event_id>/speed-networking/matches/<int:match_id>/next/",
         SpeedNetworkingQueueViewSet.as_view({'post': 'next_match'}),
         name='speed-networking-next-match'
+    ),
+
+    # --- Event Sessions ---
+    path(
+        "events/<int:event_id>/sessions/",
+        EventSessionViewSet.as_view({'get': 'list', 'post': 'create'}),
+        name='event-session-list'
+    ),
+    path(
+        "events/<int:event_id>/sessions/<int:pk>/",
+        EventSessionViewSet.as_view({'get': 'retrieve', 'patch': 'partial_update', 'delete': 'destroy'}),
+        name='event-session-detail'
+    ),
+    path(
+        "events/<int:event_id>/sessions/<int:pk>/start-live/",
+        EventSessionViewSet.as_view({'post': 'start_live'}),
+        name='event-session-start-live'
+    ),
+    path(
+        "events/<int:event_id>/sessions/<int:pk>/end-live/",
+        EventSessionViewSet.as_view({'post': 'end_live'}),
+        name='event-session-end-live'
+    ),
+    path(
+        "events/<int:event_id>/sessions/<int:pk>/join/",
+        EventSessionViewSet.as_view({'post': 'join_session'}),
+        name='event-session-join'
+    ),
+    path(
+        "events/<int:event_id>/sessions/<int:pk>/attendances/",
+        EventSessionViewSet.as_view({'get': 'list_attendances'}),
+        name='event-session-attendances'
     ),
 ]

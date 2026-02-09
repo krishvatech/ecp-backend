@@ -17,7 +17,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.utils.dateparse import parse_datetime
 from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
-from .models import Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue
+from .models import (
+    Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
+    EventSession, SessionParticipant, SessionAttendance
+)
 from community.models import Community
 from content.models import Resource
 
@@ -73,6 +76,193 @@ class EventParticipantSerializer(serializers.ModelSerializer):
         """Get bio with fallback logic."""
         return obj.get_bio()
 
+
+class SessionParticipantSerializer(serializers.ModelSerializer):
+    """Read-only serializer for session participants (mirrors EventParticipantSerializer)."""
+
+    user_id = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
+    email = serializers.SerializerMethodField()
+    bio_text = serializers.SerializerMethodField()
+    profile_image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SessionParticipant
+        fields = [
+            'id', 'participant_type', 'user_id', 'name', 'email', 'role',
+            'bio_text', 'profile_image_url', 'display_order', 'created_at'
+        ]
+        read_only_fields = fields
+
+    def get_user_id(self, obj):
+        return obj.user.id if obj.user else None
+
+    def get_name(self, obj):
+        return obj.get_name()
+
+    def get_email(self, obj):
+        return obj.get_email()
+
+    def get_bio_text(self, obj):
+        return obj.get_bio()
+
+    def get_profile_image_url(self, obj):
+        url = obj.get_image_url()
+        if url:
+            request = self.context.get('request')
+            return request.build_absolute_uri(url) if request else url
+        return None
+
+
+class SessionAttendanceSerializer(serializers.ModelSerializer):
+    """Serializer for session attendance tracking."""
+
+    user_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SessionAttendance
+        fields = ['id', 'session', 'user', 'user_name', 'joined_at', 'left_at', 'duration_seconds', 'is_online']
+        read_only_fields = ['joined_at', 'left_at', 'duration_seconds']
+
+    def get_user_name(self, obj):
+        return obj.user.get_full_name() or obj.user.username
+
+
+class EventSessionSerializer(serializers.ModelSerializer):
+    """Serializer for event sessions with nested participant support."""
+
+    # Write-only: accept participants during creation
+    participants = serializers.ListField(
+        child=serializers.DictField(),
+        write_only=True,
+        required=False,
+        help_text="List of participants: [{'type': 'staff'|'guest', 'user_id': int, 'role': 'speaker'|'moderator'|'host', ...}]"
+    )
+
+    # Read-only: return grouped participants
+    session_participants = serializers.SerializerMethodField()
+    attendance_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventSession
+        fields = [
+            'id', 'event', 'title', 'description', 'start_time', 'end_time',
+            'session_type', 'display_order', 'is_live', 'live_started_at', 'live_ended_at',
+            'use_parent_meeting', 'dyte_meeting_id', 'recording_url',
+            'participants', 'session_participants', 'attendance_count',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['is_live', 'live_started_at', 'live_ended_at', 'dyte_meeting_id']
+
+    def validate(self, data):
+        """Validate session times."""
+        start = data.get('start_time')
+        end = data.get('end_time')
+        if start and end and end <= start:
+            raise serializers.ValidationError("end_time must be after start_time")
+        return data
+
+    def get_session_participants(self, obj):
+        """Return participants grouped by role."""
+        from itertools import groupby
+        from operator import attrgetter
+
+        participants = obj.participants.all().order_by('role', 'display_order')
+        grouped = {}
+        for role, group in groupby(participants, key=attrgetter('role')):
+            grouped[role] = SessionParticipantSerializer(list(group), many=True, context=self.context).data
+        return grouped
+
+    def get_attendance_count(self, obj):
+        """Return count of users who attended/are attending."""
+        return obj.attendances.count()
+
+    def create(self, validated_data):
+        """Create session and associated participants."""
+        participants_data = validated_data.pop('participants', [])
+        session = EventSession.objects.create(**validated_data)
+
+        if participants_data:
+            self._create_participants(session, participants_data)
+
+        return session
+
+    def update(self, instance, validated_data):
+        """Update session and optionally replace participants."""
+        participants_data = validated_data.pop('participants', None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if participants_data is not None:
+            # Replace all participants
+            instance.participants.all().delete()
+            self._create_participants(instance, participants_data)
+
+        return instance
+
+    def _create_participants(self, session, participants_data):
+        """Create SessionParticipant records (mirrors EventSerializer._create_participants)."""
+        from django.contrib.auth.models import User
+
+        participants_to_create = []
+        seen = set()
+
+        for item in participants_data:
+            ptype = item.get('type', 'staff')
+            role = item.get('role', 'speaker')
+
+            if ptype == 'staff':
+                user_id = item.get('user_id')
+                if not user_id:
+                    continue
+
+                # De-duplicate
+                key = ('staff', user_id, role)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                try:
+                    user = User.objects.get(id=user_id)
+                except User.DoesNotExist:
+                    continue
+
+                participants_to_create.append(SessionParticipant(
+                    session=session,
+                    participant_type='staff',
+                    user=user,
+                    role=role,
+                    session_bio=item.get('bio', ''),
+                    display_order=item.get('display_order', 0)
+                ))
+
+            elif ptype == 'guest':
+                name = item.get('name', '').strip()
+                if not name:
+                    continue
+
+                # De-duplicate
+                key = ('guest', name.lower(), role)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                participants_to_create.append(SessionParticipant(
+                    session=session,
+                    participant_type='guest',
+                    guest_name=name,
+                    guest_email=item.get('email', ''),
+                    guest_bio=item.get('bio', ''),
+                    role=role,
+                    display_order=item.get('display_order', 0)
+                ))
+
+        if participants_to_create:
+            SessionParticipant.objects.bulk_create(participants_to_create)
+
+
 class EventSerializer(serializers.ModelSerializer):
     """Serializer for Event objects."""
     community_id = serializers.PrimaryKeyRelatedField(
@@ -115,6 +305,10 @@ class EventSerializer(serializers.ModelSerializer):
 
     # Read-only field for participants output
     event_participants = serializers.SerializerMethodField(read_only=True)
+
+    # Session-related fields
+    sessions = EventSessionSerializer(many=True, read_only=True)
+    has_sessions = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Event
@@ -171,6 +365,8 @@ class EventSerializer(serializers.ModelSerializer):
             "show_participants_after_event",
             "participants",
             "event_participants",
+            "sessions",
+            "has_sessions",
         ]
         
         read_only_fields = [
@@ -632,6 +828,9 @@ class EventSerializer(serializers.ModelSerializer):
 
         return grouped
 
+    def get_has_sessions(self, obj):
+        """Check if event has sessions."""
+        return obj.has_sessions
 
     # ---------- Field-level validations ----------
     

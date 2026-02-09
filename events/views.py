@@ -36,7 +36,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework import permissions, viewsets, status, views   # NOTE: permissions, views may be unused; kept
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, NotFound
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.pagination import LimitOffsetPagination
 
@@ -53,11 +53,13 @@ from rest_framework.response import Response
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance
 from .serializers import (
     EventSerializer,
     EventLiteSerializer,
     EventRegistrationSerializer,
+    EventSessionSerializer,
+    SessionAttendanceSerializer,
 )
 from .utils import DYTE_API_BASE, DYTE_AUTH_HEADER, DYTE_PRESET_HOST, DYTE_PRESET_PARTICIPANT, _dyte_headers, create_dyte_meeting
 from asgiref.sync import async_to_sync
@@ -2752,3 +2754,126 @@ class RecordingWebhookView(views.APIView):
             s3_key,
         )
         return Response({"message": "Recording saved", "event_id": event.id}, status=202)
+
+
+# ============================================================
+# ================ Event Session ViewSet ===================
+# ============================================================
+
+class EventSessionViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing event sessions."""
+
+    serializer_class = EventSessionSerializer
+    permission_classes = [IsCreatorOrReadOnly]
+
+    def get_queryset(self):
+        """Filter sessions by event_id from URL."""
+        event_id = self.kwargs.get('event_id')
+        return EventSession.objects.filter(event_id=event_id).select_related('event').prefetch_related('participants', 'attendances')
+
+    def perform_create(self, serializer):
+        """Set event from URL parameter."""
+        event_id = self.kwargs.get('event_id')
+        try:
+            event = Event.objects.get(id=event_id)
+        except Event.DoesNotExist:
+            raise NotFound("Event not found")
+
+        # Check permission: must be event creator or staff
+        if not _is_event_host(self.request.user, event):
+            raise PermissionDenied("Only event creators/staff can add sessions")
+
+        serializer.save(event=event)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    def start_live(self, request, event_id=None, pk=None):
+        """Start a session live (create/use Dyte meeting)."""
+        session = self.get_object()
+        event = session.event
+
+        if not _is_event_host(request.user, event):
+            raise PermissionDenied("Only event hosts can start sessions")
+
+        if session.is_live:
+            return Response({'error': 'Session is already live'}, status=400)
+
+        # Create or use Dyte meeting
+        if session.use_parent_meeting:
+            # Use parent event's meeting
+            if not event.dyte_meeting_id:
+                # Create meeting for event if doesn't exist
+                meeting = create_dyte_meeting(event.title)
+                event.dyte_meeting_id = meeting['id']
+                event.save(update_fields=['dyte_meeting_id'])
+            session.dyte_meeting_id = event.dyte_meeting_id
+        else:
+            # Create separate meeting for this session
+            meeting = create_dyte_meeting(session.title)
+            session.dyte_meeting_id = meeting['id']
+
+        session.is_live = True
+        session.live_started_at = timezone.now()
+        session.save(update_fields=['is_live', 'live_started_at', 'dyte_meeting_id'])
+
+        return Response(EventSessionSerializer(session, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    def end_live(self, request, event_id=None, pk=None):
+        """End a live session."""
+        session = self.get_object()
+        event = session.event
+
+        if not _is_event_host(request.user, event):
+            raise PermissionDenied("Only event hosts can end sessions")
+
+        if not session.is_live:
+            return Response({'error': 'Session is not live'}, status=400)
+
+        session.is_live = False
+        session.live_ended_at = timezone.now()
+        session.save(update_fields=['is_live', 'live_ended_at'])
+
+        return Response(EventSessionSerializer(session, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    def join_session(self, request, event_id=None, pk=None):
+        """Join a session and track attendance."""
+        session = self.get_object()
+        event = session.event
+        user = request.user
+
+        # Check if user is registered for parent event
+        try:
+            registration = EventRegistration.objects.get(event=event, user=user)
+        except EventRegistration.DoesNotExist:
+            raise PermissionDenied("You must be registered for this event to join sessions")
+
+        # Create or update attendance record
+        attendance, created = SessionAttendance.objects.get_or_create(
+            session=session,
+            user=user,
+            defaults={'is_online': True}
+        )
+
+        if not created:
+            # Update existing attendance
+            attendance.is_online = True
+            attendance.save(update_fields=['is_online'])
+
+        return Response({
+            'message': 'Joined session successfully',
+            'attendance': SessionAttendanceSerializer(attendance).data
+        })
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
+    def list_attendances(self, request, event_id=None, pk=None):
+        """List attendances for a session (host only)."""
+        session = self.get_object()
+        event = session.event
+
+        if not _is_event_host(request.user, event):
+            raise PermissionDenied("Only event hosts can view attendances")
+
+        attendances = session.attendances.select_related('user').order_by('-joined_at')
+        serializer = SessionAttendanceSerializer(attendances, many=True)
+        return Response(serializer.data)

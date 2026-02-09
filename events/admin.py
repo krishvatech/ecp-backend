@@ -1,7 +1,10 @@
 from django.contrib import admin
 from django.contrib.auth.models import User
 from django import forms
-from .models import Event, EventParticipant, LoungeTable, LoungeParticipant, EventRegistration
+from .models import (
+    Event, EventParticipant, LoungeTable, LoungeParticipant, EventRegistration,
+    EventSession, SessionParticipant, SessionAttendance
+)
 
 
 class EventParticipantForm(forms.ModelForm):
@@ -48,13 +51,23 @@ class EventParticipantInline(admin.TabularInline):
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 
+class EventSessionInline(admin.TabularInline):
+    """Inline for managing sessions within Event admin."""
+    model = EventSession
+    extra = 0
+    fields = ('title', 'session_type', 'start_time', 'end_time', 'display_order', 'is_live')
+    readonly_fields = ('is_live',)
+    ordering = ['display_order', 'start_time']
+    show_change_link = True
+
+
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
     list_display = ("title", "community", "status", "is_live", "is_on_break", "created_by", "created_at")
     list_filter = ("status", "community", "lounge_enabled_before", "lounge_enabled_during", "lounge_enabled_after")
     search_fields = ("title", "community__name")
     prepopulated_fields = {"slug": ("title",)}
-    inlines = [EventParticipantInline]
+    inlines = [EventParticipantInline, EventSessionInline]
     fieldsets = (
         (None, {"fields": ("community", "title", "slug", "description", "start_time", "end_time", "timezone", "status", "is_live", "is_on_break")}),
         ("Lounge Timing Settings", {
@@ -155,3 +168,61 @@ class EventRegistrationAdmin(admin.ModelAdmin):
             "fields": ("is_online", "online_count", "is_banned")
         }),
     )
+
+
+# ============================================================
+# ==================== Session Admin Classes ================
+# ============================================================
+
+class SessionParticipantInline(admin.TabularInline):
+    """Inline for managing session participants."""
+    model = SessionParticipant
+    extra = 1
+    fields = ('participant_type', 'user', 'guest_name', 'role', 'display_order')
+    raw_id_fields = ['user']
+    ordering = ['display_order', 'created_at']
+
+    def formfield_for_foreignkey(self, db_field, request=None, **kwargs):
+        if db_field.name == 'user':
+            kwargs['queryset'] = User.objects.filter(is_staff=True)
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+
+@admin.register(EventSession)
+class EventSessionAdmin(admin.ModelAdmin):
+    """Admin for event sessions."""
+    list_display = ('title', 'event', 'session_type', 'start_time', 'is_live', 'display_order')
+    list_filter = ('session_type', 'is_live', 'use_parent_meeting')
+    search_fields = ('title', 'event__title')
+    raw_id_fields = ('event',)
+    readonly_fields = ('is_live', 'live_started_at', 'live_ended_at', 'dyte_meeting_id', 'created_at', 'updated_at')
+    inlines = [SessionParticipantInline]
+
+    fieldsets = (
+        (None, {
+            'fields': ('event', 'title', 'description', 'session_type', 'display_order')
+        }),
+        ('Timing', {
+            'fields': ('start_time', 'end_time')
+        }),
+        ('Live Status', {
+            'fields': ('is_live', 'live_started_at', 'live_ended_at')
+        }),
+        ('Dyte Integration', {
+            'fields': ('use_parent_meeting', 'dyte_meeting_id', 'recording_url')
+        }),
+        ('Metadata', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+
+@admin.register(SessionAttendance)
+class SessionAttendanceAdmin(admin.ModelAdmin):
+    """Admin for session attendance tracking."""
+    list_display = ('user', 'session', 'joined_at', 'duration_seconds', 'is_online')
+    list_filter = ('session__event', 'is_online')
+    search_fields = ('user__username', 'session__title')
+    readonly_fields = ('joined_at', 'created_at', 'updated_at')
+    raw_id_fields = ('session', 'user')
