@@ -429,6 +429,14 @@ class EventSerializer(serializers.ModelSerializer):
         validated_data["created_by_id"] = self.context["request"].user.id
         event = super().create(validated_data)
 
+        # Automatically add event creator as attendee
+        creator = self.context["request"].user
+        EventRegistration.objects.get_or_create(
+            event=event,
+            user=creator,
+            defaults={"status": "registered", "admission_status": "admitted"}
+        )
+
         # ----- read “Attach Resources” metadata coming from the form -----
         req = self.context.get("request")
         meta_title = (req.data.get("resource_title") or "").strip() if req else ""

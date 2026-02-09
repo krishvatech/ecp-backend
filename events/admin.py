@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.models import User
 from django import forms
-from .models import Event, EventParticipant, LoungeTable, LoungeParticipant
+from .models import Event, EventParticipant, LoungeTable, LoungeParticipant, EventRegistration
 
 
 class EventParticipantForm(forms.ModelForm):
@@ -133,3 +133,25 @@ class LoungeTableAdmin(admin.ModelAdmin):
 class LoungeParticipantAdmin(admin.ModelAdmin):
     list_display = ("user", "table", "seat_index")
     list_filter = ("table__event",)
+
+@admin.register(EventRegistration)
+class EventRegistrationAdmin(admin.ModelAdmin):
+    list_display = ("user", "event", "status", "registered_at", "admission_status")
+    list_filter = ("status", "admission_status", "event", "registered_at")
+    search_fields = ("user__username", "user__email", "event__title")
+    readonly_fields = ("registered_at", "admitted_at", "rejected_at")
+    
+    fieldsets = (
+        ("Registration Info", {
+            "fields": ("event", "user", "status", "registered_at")
+        }),
+        ("Admission", {
+            "fields": ("admission_status", "admitted_at", "admitted_by", "rejected_at", "rejected_by", "rejection_reason")
+        }),
+        ("Session", {
+            "fields": ("was_ever_admitted", "joined_live", "joined_live_at", "watched_replay", "session_token")
+        }),
+        ("Other", {
+            "fields": ("is_online", "online_count", "is_banned")
+        }),
+    )
