@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Event Confirmation</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div style="background-color: #f8f9fa; border-radius: 8px; padding: 30px; margin-bottom: 20px;">
+        <h1 style="color: #28a745; margin-top: 0;">🎉 You're Confirmed!</h1>
+
+        <p>Hello {{ first_name }},</p>
+
+        <p>Great news! You're confirmed as <strong>{{ role }}</strong> for:</p>
+
+        <div style="background-color: white; border-left: 4px solid #28a745; padding: 20px; margin: 20px 0; border-radius: 5px;">
+            <h2 style="margin-top: 0; color: #2c3e50;">{{ event_title }}</h2>
+            {% if event_start %}
+            <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_start|date:"F j, Y" }}</p>
+            <p style="margin: 5px 0;"><strong>⏰ Time:</strong> {{ event_start|time:"g:i A" }} - {{ event_end|time:"g:i A" }}</p>
+            {% endif %}
+            {% if event_description %}
+            <p style="margin-top: 15px; color: #6c757d;">{{ event_description|truncatewords:30 }}</p>
+            {% endif %}
+        </div>
+
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{{ event_url }}" style="background-color: #28a745; color: white; padding: 14px 28px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">View Event Page</a>
+        </div>
+
+        <div style="background-color: #e7f3ff; border-radius: 5px; padding: 15px; margin: 20px 0;">
+            <h3 style="margin-top: 0; color: #2c3e50;">What You Can Do Now</h3>
+            <ul style="margin: 10px 0; padding-left: 20px;">
+                <li><a href="{{ profile_url }}" style="color: #007bff;">Update your bio and photo</a></li>
+                <li>View your profile on the event page</li>
+                <li>Communicate with other speakers and attendees</li>
+                <li>Access event materials and resources</li>
+            </ul>
+        </div>
+
+        <p style="text-align: center; margin: 30px 0;">
+            <a href="{{ login_url }}" style="color: #007bff; text-decoration: none; font-weight: bold;">Log In to Your Account →</a>
+        </p>
+
+        <hr style="border: none; border-top: 1px solid #dee2e6; margin: 30px 0;">
+
+        <p style="color: #6c757d; font-size: 14px;">
+            Questions? Contact us at <a href="mailto:{{ support_email }}" style="color: #007bff;">{{ support_email }}</a>
+        </p>
+    </div>
+</body>
+</html>

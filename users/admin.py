@@ -12,8 +12,12 @@ import boto3
 from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth.models import User
+from django.contrib.auth.forms import UserCreationForm
+from django.utils.crypto import get_random_string
 from .models import UserProfile, ProfileTraining, ProfileCertification, ProfileMembership
 from .models import Education, Experience
+from .task import send_speaker_credentials_task
+from .email_utils import generate_temporary_password
 
 
 class UserProfileInline(admin.StackedInline):
@@ -22,11 +26,122 @@ class UserProfileInline(admin.StackedInline):
     fk_name = "user"
 
 
+class SpeakerCreationForm(UserCreationForm):
+    """
+    Custom form for creating speaker accounts with auto-generated username.
+    Only requires email; username is auto-generated from email.
+    """
+    class Meta(UserCreationForm.Meta):
+        model = User
+        fields = ("email", "first_name", "last_name")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Hide password fields since we'll generate them
+        if "password1" in self.fields:
+            self.fields["password1"].required = False
+            self.fields["password1"].widget.attrs["style"] = "display:none;"
+        if "password2" in self.fields:
+            self.fields["password2"].required = False
+            self.fields["password2"].widget.attrs["style"] = "display:none;"
+
+    def clean_username(self):
+        # Auto-generate username from email if not provided
+        return self.cleaned_data.get("username") or self._generate_username()
+
+    def _generate_username(self):
+        """Generate unique username from email."""
+        email = self.cleaned_data.get("email", "").lower().strip()
+        if not email:
+            raise ValueError("Email is required to generate username")
+
+        base = email.split("@")[0]
+        username = base
+        counter = 1
+        while User.objects.filter(username__iexact=username).exists():
+            username = f"{base}{counter}"
+            counter += 1
+        return username
+
+    def save(self, commit=True):
+        user = super().save(commit=False)
+        # Auto-generate username from email
+        email = self.cleaned_data.get("email", "").lower().strip()
+        if email and not user.username:
+            base = email.split("@")[0]
+            user.username = base
+            counter = 1
+            while User.objects.filter(username__iexact=user.username).exists():
+                user.username = f"{base}{counter}"
+                counter += 1
+
+        # Set a random password (will be replaced when sending credentials)
+        user.set_password(generate_temporary_password())
+
+        if commit:
+            user.save()
+        return user
+
+
 class UserAdmin(admin.ModelAdmin):
     inlines = [UserProfileInline]
     list_display = ("username", "email", "is_active", "is_staff", "date_joined")
     list_filter = ("is_staff", "is_active", "date_joined")
     search_fields = ("username", "email", "first_name", "last_name")
+    actions = ["send_speaker_credentials"]
+    add_form = SpeakerCreationForm
+
+    def get_form(self, request, obj=None, **kwargs):
+        """Use custom form for adding new users to simplify speaker creation."""
+        if not obj:  # Adding new user
+            return self.add_form
+        return super().get_form(request, obj, **kwargs)
+
+    @admin.action(description="Send speaker credentials to selected users")
+    def send_speaker_credentials(self, request, queryset):
+        """
+        Admin action to send password reset links to selected users.
+        Useful for pre-registered speakers who need account access.
+        """
+        sent_count = 0
+        failed_count = 0
+
+        for user in queryset:
+            if not user.email:
+                self.message_user(
+                    request,
+                    f"Skipped {user.username}: No email address",
+                    level='warning'
+                )
+                failed_count += 1
+                continue
+
+            # Send email asynchronously via Celery
+            try:
+                send_speaker_credentials_task.delay(user.id)
+                sent_count += 1
+            except Exception as e:
+                self.message_user(
+                    request,
+                    f"Failed to queue email for {user.username}: {e}",
+                    level='error'
+                )
+                failed_count += 1
+
+        # Success message
+        if sent_count > 0:
+            self.message_user(
+                request,
+                f"Successfully queued {sent_count} credential email(s). Users will receive password reset links shortly.",
+                level='success'
+            )
+
+        if failed_count > 0:
+            self.message_user(
+                request,
+                f"{failed_count} email(s) could not be sent. Check user email addresses.",
+                level='warning'
+            )
 
     def save_model(self, request, obj, form, change):
         old_is_staff = None

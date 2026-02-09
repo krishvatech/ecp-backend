@@ -1,6 +1,6 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from .models import Event
+from .models import Event, EventParticipant
 from .saleor_sync import sync_event_to_saleor_sync
 import threading
 
@@ -33,3 +33,32 @@ def sync_event_to_saleor_signal(sender, instance, created, **kwargs):
         sync_event_to_saleor_sync(instance)
     except Exception as e:
         print(f"Error syncing event {instance.id} to Saleor: {e}")
+
+
+@receiver(post_save, sender=EventParticipant)
+def send_event_confirmation_on_create(sender, instance, created, **kwargs):
+    """
+    Send event confirmation email when a new EventParticipant is created.
+    Only sends for staff participants (users with accounts).
+    """
+    if not created:
+        return  # Only send on creation, not updates
+
+    # Only send to staff participants (users with accounts)
+    if instance.participant_type != EventParticipant.PARTICIPANT_TYPE_STAFF:
+        return
+
+    if not instance.user or not instance.user.email:
+        return
+
+    # Import here to avoid circular imports
+    from users.task import send_event_confirmation_task
+
+    # Send email asynchronously
+    try:
+        send_event_confirmation_task.delay(instance.id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(
+            f"Failed to queue event confirmation email for participant {instance.id}: {e}"
+        )

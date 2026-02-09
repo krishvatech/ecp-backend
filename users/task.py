@@ -38,3 +38,41 @@ def linkedin_sync_profile(user_id: int) -> dict:
         acc.email = data["email"]
     acc.save()
     return {"ok": True}
+
+
+@shared_task
+def send_speaker_credentials_task(user_id):
+    """
+    Celery task to send speaker credentials email asynchronously.
+
+    Args:
+        user_id: User primary key
+    """
+    from django.contrib.auth.models import User
+    from .email_utils import send_speaker_credentials_email
+
+    try:
+        user = User.objects.get(pk=user_id)
+        send_speaker_credentials_email(user)
+    except User.DoesNotExist:
+        import logging
+        logging.getLogger(__name__).error(f"User {user_id} not found for credentials email")
+
+
+@shared_task
+def send_event_confirmation_task(participant_id):
+    """
+    Celery task to send event confirmation email asynchronously.
+
+    Args:
+        participant_id: EventParticipant primary key
+    """
+    from .email_utils import send_event_confirmation_email
+
+    try:
+        from events.models import EventParticipant
+        participant = EventParticipant.objects.select_related('user', 'event').get(pk=participant_id)
+        send_event_confirmation_email(participant)
+    except EventParticipant.DoesNotExist:
+        import logging
+        logging.getLogger(__name__).error(f"EventParticipant {participant_id} not found for confirmation email")

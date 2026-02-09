@@ -1,0 +1,28 @@
+Hello {{ first_name }},
+
+Great news! You're confirmed as {{ role }} for:
+
+Event: {{ event_title }}
+{% if event_start %}Date: {{ event_start|date:"F j, Y" }}
+Time: {{ event_start|time:"g:i A" }} - {{ event_end|time:"g:i A" }}{% endif %}
+
+{% if event_description %}About the Event:
+{{ event_description }}
+{% endif %}
+
+Your profile is now visible on the event page:
+{{ event_url }}
+
+You can log in anytime to:
+✓ Update your bio and photo at {{ profile_url }}
+✓ View event details
+✓ Communicate with attendees
+
+Login: {{ login_url }}
+
+See you there!
+
+Best regards,
+The {{ app_name }} Team
+
+Questions? Contact {{ support_email }}
