@@ -683,8 +683,9 @@ class EventViewSet(viewsets.ModelViewSet):
                 # ✅ NEW: Enforce Waiting Room transition for valid participants
                 if event.waiting_room_enabled:
                     # Identify users who should be moved to waiting room
+                    # Only move users who are currently seated in the lounge.
                     # Exclude: Host, Staff, Speakers (EventParticipant)
-                    
+
                     # 1. Get IDs of exempt users (Staff/Speakers)
                     exempt_user_ids = set()
                     exempt_user_ids.add(event.created_by_id)
@@ -695,18 +696,33 @@ class EventViewSet(viewsets.ModelViewSet):
                     staff_participants = event.participants.filter(user__isnull=False).values_list('user_id', flat=True)
                     exempt_user_ids.update(staff_participants)
 
-                    # 2. Bulk update non-exempt registrations to 'waiting'
-                    updated_count = EventRegistration.objects.filter(
-                        event=event,
-                        user__isnull=False,
-                    ).exclude(
-                        user__id__in=exempt_user_ids
-                    ).exclude(
-                        user__is_staff=True
-                    ).update(
-                        admission_status="waiting",
-                        waiting_started_at=timezone.now()
+                    # 2. Only move users who are currently in the lounge
+                    lounge_user_ids = set(
+                        LoungeParticipant.objects.filter(
+                            table__event=event,
+                            user__isnull=False,
+                        ).values_list("user_id", flat=True)
                     )
+
+                    target_user_ids = lounge_user_ids - exempt_user_ids
+                    updated_count = 0
+                    if target_user_ids:
+                        updated_count = EventRegistration.objects.filter(
+                            event=event,
+                            user_id__in=target_user_ids,
+                            user__isnull=False,
+                        ).exclude(
+                            user__is_staff=True
+                        ).update(
+                            admission_status="waiting",
+                            waiting_started_at=timezone.now()
+                        )
+
+                        # Remove users from lounge seating since they're now waiting
+                        LoungeParticipant.objects.filter(
+                            table__event=event,
+                            user_id__in=target_user_ids,
+                        ).delete()
 
                     if updated_count > 0:
                         logger.info(f" moved {updated_count} participants to waiting room for event {event.id}")
