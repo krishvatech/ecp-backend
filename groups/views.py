@@ -1461,6 +1461,15 @@ class GroupViewSet(viewsets.ModelViewSet):
         )
         qs = self._apply_member_filters(qs, request)
 
+        # Filter by join_policy and visibility
+        join_policies = self._parse_multi_param(request, "join_policy")
+        if join_policies:
+            qs = qs.filter(join_policy__in=join_policies)
+
+        visibilities = self._parse_multi_param(request, "visibility")
+        if visibilities:
+            qs = qs.filter(visibility__in=visibilities)
+
         page = self.paginate_queryset(qs)
         ser = self.get_serializer(page or qs, many=True, context={"request": request})
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
