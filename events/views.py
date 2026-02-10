@@ -1578,27 +1578,83 @@ class EventViewSet(viewsets.ModelViewSet):
         # Add participant to the table meeting
         user = request.user
 
+        # ✅ CLEANUP: Remove any stale LoungeParticipant records before joining
+        # This prevents 409 conflicts when a user rejoins after leaving
+        # NOTE: We only clean up Django DB records here, Dyte cleanup happens below if needed
+        stale_records = LoungeParticipant.objects.filter(
+            table__event_id=event.id,
+            user=user
+        ).exclude(table_id=table.id)  # Exclude the current table
+
+        for stale in stale_records:
+            try:
+                # Store Dyte info before deleting the record
+                dyte_meeting_id = stale.table.dyte_meeting_id
+                dyte_participant_id = stale.dyte_participant_id
+
+                # Delete the stale DB record first (quick operation)
+                stale.delete()
+                logger.info(f"[LOUNGE_JOIN] Cleaned up stale LoungeParticipant record for user {user.id}")
+
+                # Try to remove from Dyte asynchronously (don't block if it fails)
+                if dyte_participant_id and dyte_meeting_id:
+                    try:
+                        requests.delete(
+                            f"{DYTE_API_BASE}/meetings/{dyte_meeting_id}/participants/{dyte_participant_id}",
+                            headers=_dyte_headers(),
+                            timeout=5,  # Shorter timeout for cleanup, don't block
+                        )
+                        logger.info(f"[LOUNGE_JOIN] Cleaned up stale Dyte participant {dyte_participant_id}")
+                    except Exception as e:
+                        logger.warning(f"[LOUNGE_JOIN] Failed to remove stale Dyte participant (non-blocking): {e}")
+            except Exception as e:
+                logger.warning(f"[LOUNGE_JOIN] Error cleaning stale record: {e}")
+
         # Check if user already in this meeting (duplicate prevention)
+        duplicate_found = False
         try:
             logger.info(f"[LOUNGE_JOIN] Checking for duplicates: user {user.id}")
             check_resp = requests.get(
                 f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
                 headers=_dyte_headers(),
                 params={"limit": 100},
-                timeout=10,
+                timeout=8,
             )
             if check_resp.ok:
                 existing = check_resp.json().get("data", [])
                 for p in existing:
                     cid = p.get("client_specific_id") or p.get("custom_participant_id")
                     if cid == str(user.id):
+                        duplicate_found = True
                         logger.warning(f"[LOUNGE_JOIN] Duplicate detected: user {user.id}")
-                        return Response({
-                            "error": "already_in_meeting",
-                            "detail": "Already in this table. Leave first."
-                        }, status=409)
+                        # Try to remove them from Dyte and allow rejoin
+                        try:
+                            dyte_id = p.get("id")
+                            if dyte_id:
+                                requests.delete(
+                                    f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_id}",
+                                    headers=_dyte_headers(),
+                                    timeout=5,
+                                )
+                                logger.info(f"[LOUNGE_JOIN] Removed stale participant {dyte_id} from Dyte, allowing rejoin")
+                                duplicate_found = False  # Successfully removed, proceed with join
+                                break
+                        except Exception as e:
+                            logger.warning(f"[LOUNGE_JOIN] Failed to remove stale Dyte participant: {e}")
+                            # Don't block, try to join anyway
+                            duplicate_found = False
+        except requests.exceptions.Timeout:
+            logger.warning(f"[LOUNGE_JOIN] Duplicate check timed out, proceeding with join")
+            # Don't block on timeout, proceed with join
         except Exception as e:
             logger.warning(f"[LOUNGE_JOIN] Duplicate check failed: {e}")
+            # Don't block on error, proceed with join
+
+        if duplicate_found:
+            return Response({
+                "error": "already_in_meeting",
+                "detail": "Already in this table. Leave first."
+            }, status=409)
 
         # ✅ FIX #1C: Update or create LoungeParticipant record for tracking
         # This ensures the user is properly tracked in the lounge occupants
