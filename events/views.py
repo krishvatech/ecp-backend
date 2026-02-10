@@ -1239,6 +1239,7 @@ class EventViewSet(viewsets.ModelViewSet):
                     "username": p.user.username,
                     "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username,
                     "avatar_url": _avatar_url(p.user),
+                    "joined_at": p.joined_at.isoformat() if p.joined_at else None,
                 } for p in t.participants.all()
             }
             state.append({
