@@ -53,7 +53,7 @@ from rest_framework.response import Response
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog
 from .serializers import (
     EventSerializer,
     EventLiteSerializer,
@@ -679,6 +679,45 @@ class EventViewSet(viewsets.ModelViewSet):
                 event.attending_count = 0
                 event.idle_started_at = None
                 event.ended_by_host = False
+
+                # ✅ NEW: Enforce Waiting Room transition for valid participants
+                if event.waiting_room_enabled:
+                    # Identify users who should be moved to waiting room
+                    # Exclude: Host, Staff, Speakers (EventParticipant)
+                    
+                    # 1. Get IDs of exempt users (Staff/Speakers)
+                    exempt_user_ids = set()
+                    exempt_user_ids.add(event.created_by_id)
+                    if host_user_id:
+                        exempt_user_ids.add(host_user_id)
+                    
+                    # Add EventParticipant users (staff/speakers)
+                    staff_participants = event.participants.filter(user__isnull=False).values_list('user_id', flat=True)
+                    exempt_user_ids.update(staff_participants)
+
+                    # 2. Bulk update non-exempt registrations to 'waiting'
+                    updated_count = EventRegistration.objects.filter(
+                        event=event,
+                        user__isnull=False,
+                    ).exclude(
+                        user__id__in=exempt_user_ids
+                    ).exclude(
+                        user__is_staff=True
+                    ).update(
+                        admission_status="waiting",
+                        waiting_started_at=timezone.now()
+                    )
+
+                    if updated_count > 0:
+                        logger.info(f" moved {updated_count} participants to waiting room for event {event.id}")
+                        
+                        # 3. Log audit trail for bulk action
+                        WaitingRoomAuditLog.objects.create(
+                            event=event,
+                            performed_by=request.user,
+                            action="bulk_waiting", # We might need to add this to choices or just use "entered" generically
+                            notes=f"Meeting started. Moved {updated_count} existing participants to Waiting Room."
+                        )
             else:  # end
                 event.status = "ended"
                 event.is_live = False
@@ -704,6 +743,24 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception:
                 # Already logged inside helper; do not break the API
                 pass
+            
+            # 📢 Broadcast change to enforce waiting room on frontend
+            if event.waiting_room_enabled:
+                try:
+                    channel_layer = get_channel_layer()
+                    async_to_sync(channel_layer.group_send)(
+                        f"event_{event.id}",
+                        {
+                            "type": "broadcast_message",
+                            "payload": {
+                                "type": "waiting_room_enforced",
+                                "event_id": event.id,
+                                "timestamp": timezone.now().isoformat()
+                            }
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast waiting_room_enforced: {e}")
         else:  # action_type == "end"
             # 🛑 NEW: stop Cloudflare recording when meeting ends
             try:
