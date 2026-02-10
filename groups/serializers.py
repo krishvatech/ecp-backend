@@ -47,6 +47,10 @@ class GroupSerializer(serializers.ModelSerializer):
             "community_id",
             "parent_id",
             "parent_group",       # NEW
+            "message_mode",
+            "posts_comments_enabled",
+            "posts_creation_restricted",
+            "forum_enabled",
         ]
     read_only_fields = ["id", "slug", "member_count", "created_by", "owner", "created_at", "updated_at", "parent_group"]
 
@@ -248,7 +252,32 @@ class GroupSettingsSerializer(serializers.ModelSerializer):
             instance.message_mode = validated["message_mode"]
         instance.save(update_fields=["message_mode"])
         return instance
-    
+
+
+class CommunicationSettingsSerializer(serializers.ModelSerializer):
+    """
+    Handles all communication settings for a group:
+    - posts_comments_enabled: Toggle On/Off for posts & comments
+    - posts_creation_restricted: If True, only admins/mods can create posts
+    - forum_enabled: Toggle On/Off for forum feature
+    """
+
+    class Meta:
+        model = Group
+        fields = [
+            "posts_comments_enabled",
+            "posts_creation_restricted",
+            "forum_enabled",
+            "message_mode",
+        ]
+
+    def update(self, instance, validated_data):
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        return instance
+
+
 class GroupMemberOutSerializer(serializers.ModelSerializer):
     user = serializers.SerializerMethodField()
 

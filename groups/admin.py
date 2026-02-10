@@ -5,9 +5,28 @@ from .models import Group, GroupMembership, PromotionRequest
 @admin.register(Group)
 class GroupAdmin(admin.ModelAdmin):
     list_display = ('id', 'name', 'slug', 'visibility', 'created_by', 'created_at')
-    list_filter = ('visibility', 'created_at')
+    list_filter = ('visibility', 'created_at', 'posts_comments_enabled', 'posts_creation_restricted', 'forum_enabled')
     search_fields = ('name', 'slug', 'description')
     readonly_fields = ('created_at', 'updated_at')
+
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('name', 'slug', 'description', 'visibility', 'join_policy')
+        }),
+        ('Images', {
+            'fields': ('cover_image', 'logo')
+        }),
+        ('Chat Settings', {
+            'fields': ('message_mode',)
+        }),
+        ('Communication Settings', {
+            'fields': ('posts_comments_enabled', 'posts_creation_restricted', 'forum_enabled'),
+            'description': 'Control how members interact within the group.'
+        }),
+        ('Organization', {
+            'fields': ('community', 'parent', 'owner', 'created_by', 'created_at', 'updated_at')
+        }),
+    )
 
 @admin.register(GroupMembership)
 class GroupMembershipAdmin(admin.ModelAdmin):

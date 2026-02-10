@@ -52,6 +52,11 @@ class Group(models.Model):
     logo = models.ImageField(upload_to='group_logos/', blank=True, null=True)
     message_mode = models.CharField(max_length=20, choices=MSG_MODE_CHOICES, default=MSG_MODE_ALL, db_index=True)
 
+    # Communication Settings
+    posts_comments_enabled = models.BooleanField(default=True, help_text="Allow members to post and comment")
+    posts_creation_restricted = models.BooleanField(default=False, help_text="Only admins/mods can create posts (members can only view)")
+    forum_enabled = models.BooleanField(default=False, help_text="Enable group forum feature")
+
     # owner can exist, but owner/admin logic is out of this moderator scope
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,

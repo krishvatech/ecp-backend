@@ -36,6 +36,7 @@ from .serializers import (
     CreateFeedPostSerializer,
     FeedItemIdSerializer,
     GroupSettingsSerializer,
+    CommunicationSettingsSerializer,
     PromotionRequestCreateSerializer,
     PromotionRequestOutSerializer,
     GroupNotificationSerializer,
@@ -2129,6 +2130,30 @@ class GroupViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Forbidden"}, status=403)
 
         ser = GroupSettingsSerializer(instance=group, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(ser.data, status=200)
+
+    # Use (Endpoint): GET/POST /api/groups/{id}/settings/communication/
+    # - GET: returns all communication settings
+    # - POST: update communication settings; allowed for owner/admin/mod/staff.
+    # Ordering: Not applicable.
+    @action(detail=True, methods=["get", "post"], url_path="settings/communication", parser_classes=[JSONParser])
+    def settings_communication(self, request, pk=None):
+        """
+        GET  → { "posts_comments_enabled": true, "posts_creation_restricted": false, "forum_enabled": false, "message_mode": "all" }
+        POST → { "posts_comments_enabled": true, "posts_creation_restricted": false, "forum_enabled": false }
+        POST allowed for: owner/admin/mod/staff
+        """
+        group = self.get_object()
+        if request.method.lower() == "get":
+            ser = CommunicationSettingsSerializer(group)
+            return Response(ser.data)
+
+        if not self._can_moderate_any(request, group):
+            return Response({"detail": "Forbidden"}, status=403)
+
+        ser = CommunicationSettingsSerializer(instance=group, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         ser.save()
         return Response(ser.data, status=200)
