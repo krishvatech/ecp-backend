@@ -574,8 +574,19 @@ class EventParticipant(models.Model):
         """Get image URL with fallback logic"""
         if self.event_image:
             return self.event_image.url
-        if self.user and hasattr(self.user, 'profile') and self.user.profile.user_image:
-            return self.user.profile.user_image.url
+        if self.user and hasattr(self.user, 'profile'):
+            profile = self.user.profile
+            if getattr(profile, 'user_image', None):
+                return profile.user_image.url
+            if getattr(profile, 'avatar', None):
+                avatar = profile.avatar
+                return avatar.url if hasattr(avatar, "url") else str(avatar)
+            if getattr(profile, 'image', None):
+                image = profile.image
+                return image.url if hasattr(image, "url") else str(image)
+        if self.user and getattr(self.user, 'avatar', None):
+            avatar = self.user.avatar
+            return avatar.url if hasattr(avatar, "url") else str(avatar)
         return self.guest_image.url if self.guest_image else None
 
 
@@ -723,8 +734,19 @@ class SessionParticipant(models.Model):
     def get_image_url(self):
         if self.session_image:
             return self.session_image.url
-        if self.user and hasattr(self.user, 'profile') and self.user.profile.user_image:
-            return self.user.profile.user_image.url
+        if self.user and hasattr(self.user, 'profile'):
+            profile = self.user.profile
+            if getattr(profile, 'user_image', None):
+                return profile.user_image.url
+            if getattr(profile, 'avatar', None):
+                avatar = profile.avatar
+                return avatar.url if hasattr(avatar, "url") else str(avatar)
+            if getattr(profile, 'image', None):
+                image = profile.image
+                return image.url if hasattr(image, "url") else str(image)
+        if self.user and getattr(self.user, 'avatar', None):
+            avatar = self.user.avatar
+            return avatar.url if hasattr(avatar, "url") else str(avatar)
         return self.guest_image.url if self.guest_image else None
 
 

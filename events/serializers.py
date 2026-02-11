@@ -530,9 +530,12 @@ class EventSerializer(serializers.ModelSerializer):
             return
 
         from django.contrib.auth.models import User
+        from django.core.files.base import ContentFile
 
         validated_participants = []
         staff_user_ids = []
+        request = self.context.get("request")
+        request_files = getattr(request, "FILES", None)
 
         for idx, p_data in enumerate(participants_data):
             # Determine participant type (default to 'staff' for backwards compatibility)
@@ -560,6 +563,7 @@ class EventSerializer(serializers.ModelSerializer):
                     'role': role,
                     'event_bio': (p_data.get('bio') or '').strip(),
                     'display_order': p_data.get('display_order', idx),
+                    'client_index': p_data.get('client_index', idx),
                 })
 
             elif p_type == 'guest':
@@ -577,6 +581,7 @@ class EventSerializer(serializers.ModelSerializer):
                     'guest_bio': (p_data.get('bio') or '').strip(),
                     'role': role,
                     'display_order': p_data.get('display_order', idx),
+                    'client_index': p_data.get('client_index', idx),
                 })
             else:
                 raise serializers.ValidationError({
@@ -606,23 +611,31 @@ class EventSerializer(serializers.ModelSerializer):
                 dedup_key_map[key] = p
 
         # Create EventParticipant records and handle guest account creation
-        rows = []
         registration_user_ids = set()
         guests_to_create_accounts = []  # Track guests needing account creation
 
+        def _get_participant_image_from_request(client_index):
+            if request_files is None:
+                return None
+            return request_files.get(f"participant_image_{client_index}")
+
         for p_data in dedup_key_map.values():
+            participant_image_file = _get_participant_image_from_request(
+                p_data.get("client_index", 0)
+            )
             if p_data['type'] == 'staff':
                 registration_user_ids.add(p_data['user_id'])
-                rows.append(
-                    EventParticipant(
-                        event=event,
-                        participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
-                        user_id=p_data['user_id'],
-                        role=p_data['role'],
-                        event_bio=p_data['event_bio'],
-                        display_order=p_data['display_order'],
-                    )
+                participant = EventParticipant(
+                    event=event,
+                    participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+                    user_id=p_data['user_id'],
+                    role=p_data['role'],
+                    event_bio=p_data['event_bio'],
+                    display_order=p_data['display_order'],
                 )
+                if participant_image_file:
+                    participant.event_image = participant_image_file
+                participant.save()
             else:  # guest
                 guest_email = p_data['guest_email']
                 guest_name = p_data['guest_name']
@@ -661,21 +674,31 @@ class EventSerializer(serializers.ModelSerializer):
                     guests_to_create_accounts.append(user.id)
                 if user:
                     registration_user_ids.add(user.id)
+                    if participant_image_file:
+                        from users.models import UserProfile
 
-                rows.append(
-                    EventParticipant(
-                        event=event,
-                        participant_type=EventParticipant.PARTICIPANT_TYPE_GUEST,
-                        role=p_data['role'],
-                        guest_name=p_data['guest_name'],
-                        guest_email=p_data['guest_email'],
-                        guest_bio=p_data['guest_bio'],
-                        display_order=p_data['display_order'],
-                    )
+                        profile, _ = UserProfile.objects.get_or_create(user=user)
+                        participant_image_file.seek(0)
+                        image_copy = ContentFile(
+                            participant_image_file.read(),
+                            name=participant_image_file.name,
+                        )
+                        profile.user_image = image_copy
+                        profile.save(update_fields=["user_image"])
+                        participant_image_file.seek(0)
+
+                participant = EventParticipant(
+                    event=event,
+                    participant_type=EventParticipant.PARTICIPANT_TYPE_GUEST,
+                    role=p_data['role'],
+                    guest_name=p_data['guest_name'],
+                    guest_email=p_data['guest_email'],
+                    guest_bio=p_data['guest_bio'],
+                    display_order=p_data['display_order'],
                 )
-
-        # Use bulk_create with ignore_conflicts for safety
-        EventParticipant.objects.bulk_create(rows, ignore_conflicts=True)
+                if participant_image_file:
+                    participant.guest_image = participant_image_file
+                participant.save()
 
         # Auto-register all participant users so events appear in "My Events".
         # This includes staff participants and guests with user accounts.
