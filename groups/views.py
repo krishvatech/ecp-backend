@@ -1406,7 +1406,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             self.get_queryset_all()
             .filter(
                 visibility=Group.VISIBILITY_PUBLIC,
-                join_policy__in=[Group.JOIN_OPEN, Group.JOIN_APPROVAL],
+                join_policy__in=[Group.JOIN_OPEN, Group.JOIN_APPROVAL, Group.JOIN_INVITE],
             )
             .order_by("-created_at")
         )
