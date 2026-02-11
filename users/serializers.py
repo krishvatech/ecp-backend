@@ -136,6 +136,7 @@ class UserProfileMiniSerializer(serializers.ModelSerializer):
             "last_activity_at",   # read-only field
             "is_online",          # computed
             "kyc_status",         # Verification status
+            "directory_hidden",   # NEW: privacy status
         )
         read_only_fields = ("last_activity_at", "is_online")
 

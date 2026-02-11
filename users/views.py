@@ -493,15 +493,24 @@ class UserViewSet(
     def roster(self, request):
         # Exclude suspended/fake/deceased users from roster
         BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+        
+        # Base query: active users, excluding blocked profiles
         qs = (
             UserModel.objects
             .filter(is_superuser=False)
             .exclude(profile__profile_status__in=BLOCKED_PROFILE_STATUSES)  # Hide suspended users
-            .exclude(profile__directory_hidden=True)  # Hide opted-out users
             .select_related("profile")
             .prefetch_related("experiences")
-            .order_by("first_name", "last_name")[:500]
+            .order_by("first_name", "last_name")
         )
+
+        # Only hide opted-out users if the request user is NOT staff/superuser
+        if not (request.user.is_staff or request.user.is_superuser):
+            qs = qs.exclude(profile__directory_hidden=True)
+
+        # Limit to 500
+        qs = qs[:500]
+
         data = UserRosterSerializer(qs, many=True, context={"request": request}).data
         return Response(data)
 
