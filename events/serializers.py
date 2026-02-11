@@ -15,6 +15,7 @@ from django.conf import settings
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.utils.dateparse import parse_datetime
+from django.db.models import Q
 from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
 from .models import (
@@ -23,6 +24,27 @@ from .models import (
 )
 from community.models import Community
 from content.models import Resource
+import json
+
+
+class ParticipantsField(serializers.ListField):
+    """Custom field to handle participants sent as JSON string from FormData."""
+
+    def to_internal_value(self, data):
+        # DRF multipart parsing may provide participants as a single-item list
+        # containing a JSON string, so normalize both string and list-wrapped string.
+        if isinstance(data, (list, tuple)) and len(data) == 1 and isinstance(data[0], str):
+            data = data[0]
+
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except (json.JSONDecodeError, TypeError):
+                raise serializers.ValidationError("Invalid JSON format for participants")
+
+        # Then use parent validation for list of dicts
+        return super().to_internal_value(data)
+
 
 class EventParticipantSerializer(serializers.ModelSerializer):
     """Read-only serializer for EventParticipant with computed fields supporting both staff and guest types."""
@@ -294,8 +316,8 @@ class EventSerializer(serializers.ModelSerializer):
     # Let recording_url be blank or omitted; we will normalize/validate in validate()
     recording_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
-    # Write-only field for participants input
-    participants = serializers.ListField(
+    # Write-only field for participants input (handles JSON string or list)
+    participants = ParticipantsField(
         child=serializers.DictField(),
         write_only=True,
         required=False,
@@ -583,10 +605,14 @@ class EventSerializer(serializers.ModelSerializer):
             if key not in dedup_key_map:
                 dedup_key_map[key] = p
 
-        # Create EventParticipant records using bulk_create
+        # Create EventParticipant records and handle guest account creation
         rows = []
+        registration_user_ids = set()
+        guests_to_create_accounts = []  # Track guests needing account creation
+
         for p_data in dedup_key_map.values():
             if p_data['type'] == 'staff':
+                registration_user_ids.add(p_data['user_id'])
                 rows.append(
                     EventParticipant(
                         event=event,
@@ -598,6 +624,44 @@ class EventSerializer(serializers.ModelSerializer):
                     )
                 )
             else:  # guest
+                guest_email = p_data['guest_email']
+                guest_name = p_data['guest_name']
+
+                # Check if user already exists for this guest
+                user = User.objects.filter(email=guest_email).first()
+                if not user and guest_email:
+                    # Create new user account for guest
+                    # Generate unique username from email
+                    base_username = guest_email.split('@')[0]
+                    username = base_username
+                    counter = 1
+                    while User.objects.filter(username=username).exists():
+                        username = f"{base_username}{counter}"
+                        counter += 1
+
+                    # Parse guest name into first and last name
+                    name_parts = guest_name.split(' ', 1)
+                    first_name = name_parts[0] if name_parts else ''
+                    last_name = name_parts[1] if len(name_parts) > 1 else ''
+
+                    # Create user record now; credentials are generated/sent later
+                    # by send_speaker_credentials_task -> send_speaker_credentials_email.
+                    user = User(
+                        username=username,
+                        email=guest_email,
+                        first_name=first_name,
+                        last_name=last_name,
+                        is_staff=False,
+                        is_active=True
+                    )
+                    user.set_unusable_password()
+                    user.save()
+
+                    # Queue for sending credentials email
+                    guests_to_create_accounts.append(user.id)
+                if user:
+                    registration_user_ids.add(user.id)
+
                 rows.append(
                     EventParticipant(
                         event=event,
@@ -613,9 +677,36 @@ class EventSerializer(serializers.ModelSerializer):
         # Use bulk_create with ignore_conflicts for safety
         EventParticipant.objects.bulk_create(rows, ignore_conflicts=True)
 
+        # Auto-register all participant users so events appear in "My Events".
+        # This includes staff participants and guests with user accounts.
+        for user_id in registration_user_ids:
+            EventRegistration.objects.get_or_create(
+                event=event,
+                user_id=user_id,
+                defaults={
+                    "status": "registered",
+                    "admission_status": "admitted",
+                    "was_ever_admitted": True,
+                },
+            )
+
+        # Send credentials emails to newly created guest accounts
+        if guests_to_create_accounts:
+            from users.task import send_speaker_credentials_task
+            for user_id in guests_to_create_accounts:
+                send_speaker_credentials_task.delay(user_id)
+
     def create(self, validated_data):
         # Extract participants data before creating Event
         participants_data = validated_data.pop('participants', [])
+
+        # Handle JSON string participants (from FormData)
+        if isinstance(participants_data, str):
+            import json
+            try:
+                participants_data = json.loads(participants_data)
+            except (json.JSONDecodeError, TypeError):
+                participants_data = []
 
         files  = validated_data.pop("resource_files", [])
         links  = validated_data.pop("resource_links", [])
@@ -763,6 +854,14 @@ class EventSerializer(serializers.ModelSerializer):
         # Extract and handle participants separately
         participants_data = validated_data.pop('participants', None)
 
+        # Handle JSON string participants (from FormData)
+        if isinstance(participants_data, str):
+            import json
+            try:
+                participants_data = json.loads(participants_data)
+            except (json.JSONDecodeError, TypeError):
+                participants_data = None
+
         # Update event fields
         instance = super().update(instance, validated_data)
 
@@ -822,9 +921,13 @@ class EventSerializer(serializers.ModelSerializer):
         }
 
         for p_data in serializer.data:
-            role = p_data['role']
-            if role in grouped:
-                grouped[role].append(p_data)
+            role = str(p_data.get('role', '') if isinstance(p_data, dict) else '').lower()
+            if role == 'host':
+                grouped['hosts'].append(p_data)
+            elif role == 'speaker':
+                grouped['speakers'].append(p_data)
+            elif role == 'moderator':
+                grouped['moderators'].append(p_data)
 
         return grouped
 
@@ -1046,9 +1149,23 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
         )
 
     def get_is_host(self, obj):
-        # Event might be select_related or just an ID locally; safe access
-        # If obj.event is a full object, created_by_id exists.
-        return obj.user_id == getattr(obj.event, "created_by_id", None)
+        event = obj.event
+        user_id = obj.user_id
+        if not event or not user_id:
+            return False
+
+        if (
+            user_id == getattr(event, "created_by_id", None)
+            or user_id == getattr(getattr(event, "community", None), "owner_id", None)
+        ):
+            return True
+
+        # Account for explicit Host role assignment in EventParticipant list.
+        host_match = Q(participant_type="staff", user_id=user_id)
+        user_email = (getattr(obj.user, "email", "") or "").strip()
+        if user_email:
+            host_match = host_match | Q(participant_type="guest", guest_email__iexact=user_email)
+        return event.participants.filter(role="host").filter(host_match).exists()
 
     def get_user_name(self, obj):
         first = (getattr(obj.user, "first_name", "") or "").strip()

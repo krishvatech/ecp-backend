@@ -334,11 +334,25 @@ class IsCreatorOrReadOnly(BasePermission):
         )
 
 def _is_event_host(user, event) -> bool:
-    return bool(
-        user
-        and user.is_authenticated
-        and (user.is_staff or getattr(user, "is_superuser", False) or event.created_by_id == user.id)
-    )
+    if not (user and user.is_authenticated and event):
+        return False
+
+    # Creator / platform staff / community owner are always hosts.
+    if (
+        user.is_staff
+        or getattr(user, "is_superuser", False)
+        or event.created_by_id == user.id
+        or getattr(event.community, "owner_id", None) == user.id
+    ):
+        return True
+
+    # Event participants explicitly assigned Host role should also get host access.
+    host_match = Q(participant_type="staff", user_id=user.id)
+    user_email = (getattr(user, "email", "") or "").strip()
+    if user_email:
+        host_match = host_match | Q(participant_type="guest", guest_email__iexact=user_email)
+
+    return event.participants.filter(role="host").filter(host_match).exists()
 
 
 # ============================================================
@@ -1489,11 +1503,7 @@ class EventViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # ✅ FIX #1: Check waiting room status and enforce access control
-        is_host = (
-            event.created_by_id == user.id
-            or user.is_staff
-            or getattr(user, "is_superuser", False)
-        )
+        is_host = _is_event_host(user, event)
 
         # Only enforce waiting room for non-hosts
         if not is_host and event.waiting_room_enabled:
@@ -1988,14 +1998,7 @@ class EventViewSet(viewsets.ModelViewSet):
             )
 
         # 2) Decide host vs participant preset
-        community_owner_id = getattr(event.community, "owner_id", None)
-        is_creator_or_staff = (
-            (user and user.is_authenticated) and (
-                event.created_by_id == user.id
-                or user.is_staff
-                or community_owner_id == user.id
-            )
-        )
+        is_creator_or_staff = _is_event_host(user, event)
 
         # Basic guard – hosts can always join; others only if live/published
         if not is_creator_or_staff and event.status not in ("live", "published"):
