@@ -153,6 +153,34 @@ class ReportViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.Gen
                         meta={"report_count": report_count},
                     )
 
+            # Notify all staff users about the new report
+            from django.contrib.auth import get_user_model
+            from friends.models import Notification
+
+            User = get_user_model()
+            staff_users = User.objects.filter(is_staff=True, is_active=True)
+
+            # Get content description
+            content_desc = "a post" if kind == "post" else "a comment"
+
+            for staff_user in staff_users:
+                Notification.objects.create(
+                    recipient=staff_user,
+                    actor=request.user,
+                    kind="system",
+                    title="New Content Report",
+                    description=f"reported {content_desc} for: {reason}",
+                    state="pending",
+                    data={
+                        "type": "moderation_report",
+                        "report_id": report.id,
+                        "target_type": kind,
+                        "target_id": target_id,
+                        "reason": reason,
+                        "report_count": report_count
+                    }
+                )
+
         return Response(
             {
                 "ok": True,
