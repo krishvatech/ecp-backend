@@ -101,6 +101,7 @@ def _notify_on_membership_change(sender, instance: GroupMembership, created, **k
     )
     if became_active:
         inviter = getattr(instance, "invited_by", None)
+        was_pending = getattr(instance, "_prev_status", None) == GroupMembership.STATUS_PENDING
 
         # CASE A: admin added this member directly (created + invited_by set + inviter != user)
         if created and inviter and getattr(inviter, "id", None) != getattr(actor, "id", None):
@@ -112,6 +113,26 @@ def _notify_on_membership_change(sender, instance: GroupMembership, created, **k
             inviter_name = str(inviter)
             description = f"{inviter_name} added {added_user_name} to {getattr(group, 'name', 'your group')}"
             actor_for_notif = inviter
+
+            # NEW: Notify the user that they were added to the group (for invite-only groups)
+            if actor and getattr(actor, "id", None) and group.join_policy in [Group.JOIN_INVITE]:
+                from friends.models import Notification
+                Notification.objects.create(
+                    recipient=actor,
+                    actor=inviter,
+                    kind="group",
+                    title="Added to Group",
+                    description=f"{inviter_name} added you to {getattr(group, 'name', 'the group')}",
+                    state="added",
+                    data={
+                        "type": "group_member_added",
+                        "group_id": group.id,
+                        "group_name": getattr(group, "name", None),
+                        "added_by_id": getattr(inviter, "id", None),
+                        "added_by_name": inviter_name,
+                    }
+                )
+
         # CASE B: normal join / approved request
         else:
             notif_type = "group_member_joined"
@@ -121,6 +142,25 @@ def _notify_on_membership_change(sender, instance: GroupMembership, created, **k
             member_name = str(actor) if actor else "Someone"
             description = f"{member_name} joined {getattr(group, 'name', 'your group')}"
             actor_for_notif = actor
+
+            # NEW: Notify the user that their join request was approved
+            was_pending = getattr(instance, "_prev_status", None) == GroupMembership.STATUS_PENDING
+            if was_pending and actor and getattr(actor, "id", None):
+                from friends.models import Notification
+                Notification.objects.create(
+                    recipient=actor,
+                    actor=None,  # System notification
+                    kind="group",
+                    title="Join Request Approved",
+                    description=f"Your request to join {getattr(group, 'name', 'the group')} has been approved!",
+                    state="approved",
+                    data={
+                        "type": "group_join_approved",
+                        "group_id": group.id,
+                        "group_name": getattr(group, "name", None),
+                    }
+                )
+
 
         payload = {
             "type": notif_type,

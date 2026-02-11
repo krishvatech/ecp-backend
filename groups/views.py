@@ -1040,6 +1040,31 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         uid = int(user_id)
         STATUS_PENDING = GroupMembership.STATUS_PENDING
+        
+        # Get the membership before deleting to notify the user
+        try:
+            membership = GroupMembership.objects.get(group=group, user_id=uid, status=STATUS_PENDING)
+            user = membership.user
+            
+            # Notify the user that their join request was rejected
+            if user:
+                from friends.models import Notification
+                Notification.objects.create(
+                    recipient=user,
+                    actor=None,  # System notification
+                    kind="group",
+                    title="Join Request Declined",
+                    description=f"Your request to join {getattr(group, 'name', 'the group')} was declined",
+                    state="rejected",
+                    data={
+                        "type": "group_join_rejected",
+                        "group_id": group.id,
+                        "group_name": getattr(group, "name", None),
+                    }
+                )
+        except GroupMembership.DoesNotExist:
+            pass
+        
         deleted, _ = GroupMembership.objects.filter(
             group=group, user_id=uid, status=STATUS_PENDING
         ).delete()
