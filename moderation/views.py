@@ -304,9 +304,37 @@ class ModerationActionView(APIView):
             _set_moderation_status(target, "clear")
             after["moderation_status"] = "clear"
 
+            # Notify author
+            author_id = _target_author_id(target, kind)
+            if author_id and author_id != request.user.id:
+                from friends.models import Notification
+                Notification.objects.create(
+                    recipient_id=author_id,
+                    actor=request.user,
+                    kind="system",
+                    title="Content Approved",
+                    description="Your content has been approved and is now visible.",
+                    state="approved",
+                    data={"type": "moderation", "action": "approve", "target_type": kind, "target_id": target_id}
+                )
+
         elif action == ModerationAction.ACTION_SOFT_DELETE:
             _set_moderation_status(target, "removed")
             after["moderation_status"] = "removed"
+
+            # Notify author
+            author_id = _target_author_id(target, kind)
+            if author_id and author_id != request.user.id:
+                from friends.models import Notification
+                Notification.objects.create(
+                    recipient_id=author_id,
+                    actor=request.user,
+                    kind="system",
+                    title="Content Removed",
+                    description=f"Your content was removed. Reason: {note or 'Violation of guidelines'}",
+                    state="removed",
+                    data={"type": "moderation", "action": "remove", "target_type": kind, "target_id": target_id}
+                )
 
         elif action == ModerationAction.ACTION_EDIT:
             if kind == "comment":
