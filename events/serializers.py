@@ -1215,23 +1215,25 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
 class SpeedNetworkingMatchSerializer(serializers.ModelSerializer):
     participant_1 = UserMiniSerializer(read_only=True)
     participant_2 = UserMiniSerializer(read_only=True)
-    
+
     class Meta:
         model = SpeedNetworkingMatch
         fields = [
             'id', 'session', 'participant_1', 'participant_2',
-            'status', 'dyte_room_name', 'created_at', 'ended_at'
+            'status', 'dyte_room_name', 'match_score', 'match_breakdown', 'rule_compliance',
+            'created_at', 'ended_at'
         ]
-        read_only_fields = ['id', 'created_at', 'ended_at', 'status', 'dyte_room_name']
+        read_only_fields = ['id', 'created_at', 'ended_at', 'status', 'dyte_room_name', 'match_score', 'match_breakdown', 'rule_compliance']
 
 
 class SpeedNetworkingSessionSerializer(serializers.ModelSerializer):
     matches = SpeedNetworkingMatchSerializer(many=True, read_only=True)
-    
+
     class Meta:
         model = SpeedNetworkingSession
         fields = [
             'id', 'event', 'name', 'status', 'duration_minutes',
+            'matching_strategy', 'criteria_config',
             'started_at', 'ended_at', 'matches', 'created_at'
         ]
         read_only_fields = ['id', 'started_at', 'ended_at', 'created_at', 'event']

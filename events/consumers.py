@@ -183,6 +183,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "data": event["data"]
         })
 
+    async def speed_networking_match_ended(self, event):
+        """Notify user that their match has ended and they should return to queue."""
+        await self.send_json({
+            "type": "speed_networking_match_ended",
+            "data": event["data"]
+        })
+
     async def broadcast_message(self, event: dict) -> None:
         await self.send_json({"type": "message", "data": event["payload"]})
 

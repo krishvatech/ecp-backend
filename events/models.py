@@ -365,13 +365,32 @@ class SpeedNetworkingSession(models.Model):
         ('ENDED', 'Ended'),
     ]
 
+    MATCHING_STRATEGY_CHOICES = [
+        ('rule_only', 'Rule-Based Only'),
+        ('criteria_only', 'Criteria-Based Only'),
+        ('both', 'Both Systems (Recommended)'),
+    ]
+
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='speed_networking_sessions')
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_speed_networking_sessions')
-    
+
     name = models.CharField(max_length=255, default="Speed Networking Session")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     duration_minutes = models.IntegerField(default=5, help_text="Duration of each round in minutes")
-    
+
+    # Matching Strategy (NEW)
+    matching_strategy = models.CharField(
+        max_length=50,
+        choices=MATCHING_STRATEGY_CHOICES,
+        default='both',
+        help_text="Which matching system to use"
+    )
+    criteria_config = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Criteria matching configuration (weights, thresholds, etc)"
+    )
+
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -394,10 +413,25 @@ class SpeedNetworkingMatch(models.Model):
     session = models.ForeignKey(SpeedNetworkingSession, on_delete=models.CASCADE, related_name='matches')
     participant_1 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='speed_networking_matches_as_p1')
     participant_2 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='speed_networking_matches_as_p2')
-    
+
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
     dyte_room_name = models.CharField(max_length=255, blank=True, null=True, help_text="Dyte meeting ID for this match")
-    
+
+    # Match Quality Scores (NEW)
+    match_score = models.FloatField(
+        default=0,
+        help_text="Overall match quality score (0-100) from criteria matching"
+    )
+    match_breakdown = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Score breakdown: {'skill': 75, 'experience': 85, 'location': 90, 'education': 80}"
+    )
+    rule_compliance = models.BooleanField(
+        default=True,
+        help_text="Whether this match complies with all rules"
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
 
@@ -773,3 +807,219 @@ class SessionAttendance(models.Model):
 
     def __str__(self):
         return f"{self.user.username} attended {self.session.title}"
+
+
+# ============================================================================
+# ============== RULE-BASED MATCHING MODELS (BOTH SYSTEMS) =================
+# ============================================================================
+
+class SpeedNetworkingRule(models.Model):
+    """
+    Rule-based matching rules for speed networking.
+    Supports positive (INCLUDE) and negative (EXCLUDE) rules.
+    """
+    RULE_TYPE_CHOICES = [
+        ('POSITIVE', 'Positive Matching (INCLUDE)'),
+        ('NEGATIVE', 'Negative Matching (EXCLUDE)'),
+    ]
+
+    CATEGORY_CHOICES = [
+        ('USER_TYPE', 'User Type (host/speaker/attendee)'),
+        ('TICKET_TIER', 'Ticket Tier (VIP/Premium/Gold/Basic)'),
+        ('CUSTOM_FIELD', 'Custom Registration Field'),
+    ]
+
+    session = models.ForeignKey(
+        SpeedNetworkingSession,
+        on_delete=models.CASCADE,
+        related_name='matching_rules'
+    )
+
+    name = models.CharField(max_length=255, help_text="e.g., 'VIP with Recruiters'")
+    rule_type = models.CharField(max_length=20, choices=RULE_TYPE_CHOICES)
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
+
+    # Segment A (source)
+    segment_a_type = models.CharField(max_length=100)
+    segment_a_values = models.JSONField(
+        default=list,
+        help_text="Values matching this segment (e.g., ['VIP', 'Premium'])"
+    )
+
+    # Segment B (target) - NOT used in negative rules
+    segment_b_type = models.CharField(max_length=100, blank=True, null=True)
+    segment_b_values = models.JSONField(
+        default=list,
+        blank=True,
+        null=True,
+        help_text="For positive rules only"
+    )
+
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('session', 'name')
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"{self.name} ({self.get_rule_type_display()})"
+
+
+class UserMatchingProfile(models.Model):
+    """
+    Rule-based: User attributes for rule-based matching.
+    Stores ticket tier, user type, and custom fields.
+    """
+    session = models.ForeignKey(SpeedNetworkingSession, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+
+    # Matching attributes
+    user_type = models.CharField(max_length=50, blank=True)
+    ticket_tier = models.CharField(max_length=50, blank=True)
+
+    # Custom field values (JSON)
+    custom_fields = models.JSONField(default=dict)
+
+    # Computed state
+    can_match = models.BooleanField(default=True)
+    computed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('session', 'user')
+
+    def __str__(self):
+        return f"{self.user.username} rule profile for session {self.session_id}"
+
+
+class MatchHistory(models.Model):
+    """
+    Rule-based: Complete history of all matches.
+    Prevents immediate re-matching within 24 hours.
+    """
+    session = models.ForeignKey(SpeedNetworkingSession, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='match_history')
+    matched_with = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='matched_with_history'
+    )
+
+    match_record = models.ForeignKey(
+        SpeedNetworkingMatch,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    matched_at = models.DateTimeField(auto_now_add=True)
+    duration_seconds = models.IntegerField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ('session', 'user', 'matched_with')
+        indexes = [
+            models.Index(fields=['session', 'user']),
+            models.Index(fields=['matched_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} matched with {self.matched_with.username}"
+
+
+# ============================================================================
+# ============== CRITERIA-BASED MATCHING MODELS (BOTH SYSTEMS) =============
+# ============================================================================
+
+class UserCriteriaProfile(models.Model):
+    """
+    Criteria-based: User profile with skill, experience, location, education.
+    Used for quality-based matching (similarity scoring).
+    """
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='speed_networking_criteria_profile'
+    )
+
+    # Skills (JSON)
+    skills = models.JSONField(
+        default=list,
+        help_text="[{'name': 'Python', 'level': 1-4, 'years': 5}, ...]"
+    )
+
+    # Experience
+    experience_years = models.IntegerField(default=0)
+    experience_level = models.IntegerField(
+        choices=[
+            (0, 'Student'),
+            (1, 'Junior'),
+            (2, 'Mid-level'),
+            (3, 'Senior'),
+            (4, 'Expert'),
+        ],
+        default=0
+    )
+
+    # Location
+    location_city = models.CharField(max_length=255, blank=True)
+    location_country = models.CharField(max_length=255, blank=True)
+    location_latitude = models.FloatField(null=True, blank=True)
+    location_longitude = models.FloatField(null=True, blank=True)
+    location_timezone = models.CharField(max_length=50, blank=True, default='UTC')
+
+    # Education
+    education_degree = models.CharField(max_length=255, blank=True)
+    education_field = models.CharField(max_length=255, blank=True)
+    education_level = models.IntegerField(
+        choices=[
+            (0, 'High School'),
+            (1, "Bachelor's"),
+            (2, "Master's"),
+            (3, 'PhD'),
+            (4, 'Professional Cert'),
+        ],
+        default=1
+    )
+    education_institution = models.CharField(max_length=255, blank=True)
+
+    # Matching preferences
+    preferred_match_type = models.CharField(
+        max_length=50,
+        choices=[
+            ('mentorship', 'Mentorship (learn from senior)'),
+            ('peer', 'Peer Learning (same level)'),
+            ('collaboration', 'Collaboration (build together)'),
+            ('mixed', 'Mixed (any type)'),
+        ],
+        default='mixed'
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def to_dict(self):
+        """Convert to dictionary for matching engine."""
+        return {
+            'user_id': self.user_id,
+            'skills': self.skills or [],
+            'experience_years': self.experience_years,
+            'experience_level': self.experience_level,
+            'location': {
+                'city': self.location_city,
+                'country': self.location_country,
+                'lat': self.location_latitude,
+                'lon': self.location_longitude,
+                'timezone': self.location_timezone,
+            },
+            'education': {
+                'degree': self.education_degree,
+                'field': self.education_field,
+                'level': self.education_level,
+                'institution': self.education_institution,
+            },
+            'preferred_match_type': self.preferred_match_type,
+        }
+
+    def __str__(self):
+        return f"{self.user.username}'s Speed Networking Profile"
