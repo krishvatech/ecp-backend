@@ -197,6 +197,35 @@ class CommentViewSet(viewsets.ModelViewSet):
         return qs.none()        # (keep strict; list requires a filter)
 
     def perform_create(self, serializer):
+        # Enforce group comment settings for FeedItem targets
+        try:
+            parent_id = self.request.data.get("parent")
+            ttype = self.request.data.get("target_type")
+            tid = self.request.data.get("target_id")
+            feed_item_id = self.request.data.get("feed_item")
+
+            ct = None
+            oid = None
+
+            if parent_id:
+                parent = Comment.objects.filter(pk=parent_id).first()
+                if parent:
+                    ct = parent.content_type
+                    oid = parent.object_id
+            elif (tid is not None) or (feed_item_id is not None) or ttype:
+                ct = _ct_from_param_or_feeditem_default(ttype)
+                oid = tid if tid is not None else feed_item_id
+
+            if ct and oid and ct == ContentType.objects.get_for_model(FeedItem):
+                item = FeedItem.objects.filter(pk=oid).select_related("group").first()
+                if item and item.group_id and not getattr(item.group, "posts_comments_enabled", True):
+                    raise ValidationError({"detail": "Comments are disabled for this group."})
+        except ValidationError:
+            raise
+        except Exception:
+            # Fail closed only for known validation errors; otherwise allow
+            pass
+
         serializer.save()
 
     @action(methods=["get"], detail=True, url_path="replies")
