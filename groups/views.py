@@ -2184,18 +2184,6 @@ class GroupViewSet(viewsets.ModelViewSet):
         ser.save()
         return Response(ser.data, status=200)
 
-    """
-    Backend Implementation for Forum Enable/Disable Notifications
-
-    This file contains the updated settings_communication method that should replace
-    the existing method in groups/views.py (starting at line 2191).
-
-    INSTRUCTIONS:
-    1. Open: d:\Krishvatech\ecp_backend_project\30 Jan ECP\ecp-backend\groups\views.py
-    2. Find the settings_communication method (line 2191-2209)
-    3. Replace the entire method with the code below
-    """
-
     @action(detail=True, methods=["get", "post"], url_path="settings/communication", parser_classes=[JSONParser])
     def settings_communication(self, request, pk=None):
         """
