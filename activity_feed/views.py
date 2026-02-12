@@ -555,7 +555,19 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             return False
         if group.created_by_id == uid or getattr(group, "owner_id", None) == uid or getattr(request.user, "is_staff", False):
             return True
-        return GroupMembership.objects.filter(group=group, user_id=uid, role__in=["admin","moderator"], status=getattr(GroupMembership, "STATUS_ACTIVE", "active")).exists()
+        is_elevated = GroupMembership.objects.filter(
+            group=group,
+            user_id=uid,
+            role__in=["admin", "moderator"],
+            status=getattr(GroupMembership, "STATUS_ACTIVE", "active")
+        ).exists()
+        if is_elevated:
+            return True
+        if not getattr(group, "forum_enabled", False):
+            return False
+        if getattr(group, "posts_creation_restricted", False):
+            return False
+        return self._active_member(uid, group)
 
     def _active_member(self, user_id: int, group: Group) -> bool:
         return GroupMembership.objects.filter(group=group, user_id=user_id, status=getattr(GroupMembership, "STATUS_ACTIVE", "active")).exists()
