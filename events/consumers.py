@@ -260,6 +260,18 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "lounge_closing_time": event.get("lounge_closing_time")
         })
 
+    async def meeting_started(self, event: dict) -> None:
+        """Broadcast notification that the host has started the meeting.
+
+        Participants should transition from waiting screen to live meeting view.
+        """
+        await self.send_json({
+            "type": "meeting_started",
+            "event_id": event.get("event_id"),
+            "status": event.get("status"),
+            "started_at": event.get("started_at"),
+        })
+
     async def breakout_force_join(self, event: dict) -> None:
         """Targeted force join for specific user"""
         if str(self.user.id) == str(event["user_id"]):

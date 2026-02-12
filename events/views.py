@@ -773,7 +773,23 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception:
                 # Already logged inside helper; do not break the API
                 pass
-            
+
+            # 📢 Broadcast meeting start to all participants
+            try:
+                channel_layer = get_channel_layer()
+                async_to_sync(channel_layer.group_send)(
+                    f"event_{event.id}",
+                    {
+                        "type": "meeting_started",
+                        "event_id": event.id,
+                        "status": "live",
+                        "started_at": event.live_started_at.isoformat() if event.live_started_at else timezone.now().isoformat(),
+                    }
+                )
+                logger.info(f"✅ Broadcast meeting_started for event {event.id}")
+            except Exception as e:
+                logger.warning(f"Failed to broadcast meeting_started to event {event.id}: {e}")
+
             # 📢 Broadcast change to enforce waiting room on frontend
             if event.waiting_room_enabled:
                 try:
