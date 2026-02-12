@@ -421,9 +421,20 @@ class GroupViewSet(viewsets.ModelViewSet):
             })
 
         # ------- CREATE -------
-        # Only owner/admin/moderator (your helper already knows this)
-        if not self._can_moderate_any(request, group):
-            return Response({"detail": "Forbidden"}, status=403)
+        can_moderate = self._can_moderate_any(request, group)
+        uid = getattr(request.user, "id", None)
+        is_active_member = bool(uid and self._is_active_member(uid, group))
+
+        if not group.forum_enabled:
+            if not can_moderate:
+                return Response({"detail": "Forbidden"}, status=403)
+        else:
+            if group.posts_creation_restricted:
+                if not can_moderate:
+                    return Response({"detail": "Forbidden"}, status=403)
+            else:
+                if not (can_moderate or is_active_member):
+                    return Response({"detail": "Forbidden"}, status=403)
 
         t = (request.data.get("type") or "text").strip().lower()
 
@@ -1200,9 +1211,14 @@ class GroupViewSet(viewsets.ModelViewSet):
             "is_moderator": self._is_moderator(uid, group),
         }
         can = self._can_moderate_any(request, group)
+        is_active_member = bool(uid and self._is_active_member(uid, group))
+        can_create_post = bool(
+            can
+            or (group.forum_enabled and not group.posts_creation_restricted and is_active_member)
+        )
         out.update({
             "can_moderate_content": can,
-            "can_create_post": can,
+            "can_create_post": can_create_post,
             "can_delete_post": can,
             "can_hide_post": can,
             "can_unhide_post": can,
@@ -2211,9 +2227,9 @@ class GroupViewSet(viewsets.ModelViewSet):
     def posts_edit(self, request, pk=None, item_id=None):
         group = self.get_object()
 
-        # Only owner/admin/moderator may edit (same rule you use to create) :contentReference[oaicite:9]{index=9}
-        if not self._can_moderate_any(request, group):
-            return Response({"detail": "Forbidden"}, status=403)
+        can_moderate = self._can_moderate_any(request, group)
+        uid = getattr(request.user, "id", None)
+        is_active_member = bool(uid and self._is_active_member(uid, group))
 
         try:
             item_id = int(item_id)
@@ -2228,6 +2244,17 @@ class GroupViewSet(viewsets.ModelViewSet):
         meta = dict(it.metadata or {})
         if getattr(it, "group_id", None) != group.id and meta.get("group_id") != group.id:
             return Response({"detail": "Post does not belong to this group"}, status=409)
+
+        # Allow moderators/admins, or the author (members) when forum is enabled
+        if not (
+            can_moderate
+            or (
+                group.forum_enabled
+                and is_active_member
+                and getattr(it, "actor_id", None) == uid
+            )
+        ):
+            return Response({"detail": "Forbidden"}, status=403)
 
         t = (meta.get("type") or "post").lower()
         if t == "post" and "content" in meta:
@@ -2283,14 +2310,26 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post", "delete"], url_path=r"posts/(?P<item_id>\d+)/delete")
     def posts_delete_by_path(self, request, pk=None, item_id=None):
         group = self.get_object()
-        if not self._can_moderate_any(request, group):
-            return Response({"detail": "Forbidden"}, status=403)
+        can_moderate = self._can_moderate_any(request, group)
+        uid = getattr(request.user, "id", None)
+        is_active_member = bool(uid and self._is_active_member(uid, group))
 
         it = FeedItem.objects.filter(pk=item_id).first()
         if not it:
             return Response({"detail": "Post not found"}, status=404)
         if getattr(it, "group_id", None) != group.id and (it.metadata or {}).get("group_id") != group.id:
             return Response({"detail": "Post does not belong to this group"}, status=409)
+
+        # Allow moderators/admins, or the author (members) when forum is enabled
+        if not (
+            can_moderate
+            or (
+                group.forum_enabled
+                and is_active_member
+                and getattr(it, "actor_id", None) == uid
+            )
+        ):
+            return Response({"detail": "Forbidden"}, status=403)
 
         m = it.metadata or {}
         m["is_deleted"] = True
