@@ -2184,10 +2184,18 @@ class GroupViewSet(viewsets.ModelViewSet):
         ser.save()
         return Response(ser.data, status=200)
 
-    # Use (Endpoint): GET/POST /api/groups/{id}/settings/communication/
-    # - GET: returns all communication settings
-    # - POST: update communication settings; allowed for owner/admin/mod/staff.
-    # Ordering: Not applicable.
+    """
+    Backend Implementation for Forum Enable/Disable Notifications
+
+    This file contains the updated settings_communication method that should replace
+    the existing method in groups/views.py (starting at line 2191).
+
+    INSTRUCTIONS:
+    1. Open: d:\Krishvatech\ecp_backend_project\30 Jan ECP\ecp-backend\groups\views.py
+    2. Find the settings_communication method (line 2191-2209)
+    3. Replace the entire method with the code below
+    """
+
     @action(detail=True, methods=["get", "post"], url_path="settings/communication", parser_classes=[JSONParser])
     def settings_communication(self, request, pk=None):
         """
@@ -2203,9 +2211,64 @@ class GroupViewSet(viewsets.ModelViewSet):
         if not self._can_moderate_any(request, group):
             return Response({"detail": "Forbidden"}, status=403)
 
+        # Store old forum_enabled value before update
+        old_forum_enabled = group.forum_enabled
+
         ser = CommunicationSettingsSerializer(instance=group, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         ser.save()
+
+        # Check if forum_enabled changed
+        group.refresh_from_db()
+        new_forum_enabled = group.forum_enabled
+
+        if old_forum_enabled != new_forum_enabled:
+            # Import Notification model
+            try:
+                from friends.models import Notification
+            except ImportError:
+                Notification = None
+
+            if Notification:
+                # Get all active group members except the admin who made the change
+                active_members = GroupMembership.objects.filter(
+                    group=group,
+                    status=GroupMembership.STATUS_ACTIVE
+                ).exclude(user_id=request.user.id).select_related('user')
+
+                # Determine notification details
+                if new_forum_enabled:
+                    kind = "forum_enabled"
+                    title = f"Forum enabled for {group.name}"
+                    description = "The forum has been enabled for group communication"
+                else:
+                    kind = "forum_disabled"
+                    title = f"Forum disabled for {group.name}"
+                    description = "The forum has been disabled for this group"
+
+                # Create notifications for each active member
+                notifications_to_create = []
+                for membership in active_members:
+                    notifications_to_create.append(
+                        Notification(
+                            recipient=membership.user,
+                            actor=request.user,
+                            kind=kind,
+                            title=title,
+                            description=description,
+                            data={
+                                "type": kind,
+                                "group_id": group.id,
+                                "group_name": group.name,
+                                "group_slug": group.slug or str(group.id)
+                            }
+                        )
+                    )
+
+                # Bulk create notifications for efficiency
+                if notifications_to_create:
+                    Notification.objects.bulk_create(notifications_to_create)
+
         return Response(ser.data, status=200)
 
     # Use (Endpoint): GET /api/groups/{id}/can-send
