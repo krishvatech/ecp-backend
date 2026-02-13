@@ -121,11 +121,30 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     print(f"[CONSUMER] DENIED random_assign: User {self.user.username} is not a host.")
                     await self.send_debug_to_host("Action denied: Not a host")
                     return
-                
+
                 await self.perform_random_assignment_and_notify(per_room)
             except Exception as e:
                 print(f"[CONSUMER] ERROR in random_assign: {str(e)}")
                 await self.send_debug_to_host(f"Error during random assignment: {str(e)}")
+
+        elif action == "manual_assign":
+            try:
+                if not await self.is_host():
+                    print(f"[CONSUMER] DENIED manual_assign: User {self.user.username} is not a host.")
+                    await self.send_debug_to_host("Action denied: Not a host")
+                    return
+
+                user_ids = content.get("user_ids", [])
+                table_id = content.get("table_id")
+
+                if not user_ids or not table_id:
+                    await self.send_debug_to_host("Invalid manual assignment: missing user_ids or table_id")
+                    return
+
+                await self.perform_manual_assignment_and_notify(user_ids, table_id)
+            except Exception as e:
+                print(f"[CONSUMER] ERROR in manual_assign: {str(e)}")
+                await self.send_debug_to_host(f"Error during manual assignment: {str(e)}")
 
         elif action == "start_timer":
             if not await self.is_host(): return
@@ -506,19 +525,104 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     async def perform_random_assignment_and_notify(self, per_room):
         assignments = await self.perform_random_assignment(per_room)
-        
+
         if not assignments:
             msg = "No assignments created. Possibly no tables or no users online."
             print(f"[RANDOM_ASSIGN] {msg}")
             await self.send_debug_to_host(msg)
             return
-        
+
         await self.send_debug_to_host(f"Created {len(assignments)} assignments across rooms.")
-            
+
         await self.broadcast_lounge_update()
 
         # ✅ FIX: Notify each assigned user via the group
         # Assignments now include meeting_id for better debugging
+        for assignment in assignments:
+            user_id = assignment[0]
+            table_id = assignment[1]
+            await self.channel_layer.group_send(
+                f"user_{user_id}",
+                {
+                    "type": "breakout_force_join",
+                    "user_id": user_id,
+                    "table_id": table_id
+                }
+            )
+
+    @database_sync_to_async
+    def perform_manual_assignment(self, user_ids, table_id):
+        """Assign specific users to a specific table."""
+        print(f"[MANUAL_ASSIGN] Starting: event={self.event_id}, table={table_id}, users={user_ids}")
+
+        try:
+            # Verify table exists
+            try:
+                table = LoungeTable.objects.get(id=table_id, event_id=self.event_id)
+            except LoungeTable.DoesNotExist:
+                print(f"[MANUAL_ASSIGN] ❌ Table {table_id} not found in event {self.event_id}")
+                return []
+
+            # Get valid online users (exclude self/host)
+            valid_users = EventRegistration.objects.filter(
+                event_id=self.event_id,
+                user_id__in=user_ids,
+                is_online=True,
+                admission_status="admitted",
+                joined_live=True
+            ).exclude(user_id=self.user.id).values_list('user_id', flat=True)
+
+            if not valid_users:
+                print(f"[MANUAL_ASSIGN] No valid users found in {user_ids}")
+                return []
+
+            # Clear any existing assignments for these users
+            LoungeParticipant.objects.filter(user_id__in=valid_users).delete()
+
+            # Assign each user to the table
+            assignments = []
+            for user_id in valid_users:
+                # Find an available seat
+                occupied_seats = set(
+                    LoungeParticipant.objects.filter(table_id=table_id).values_list('seat_index', flat=True)
+                )
+                available_seats = [i for i in range(table.max_seats) if i not in occupied_seats]
+
+                if not available_seats:
+                    print(f"[MANUAL_ASSIGN] ⚠️ Table {table_id} is full, skipping user {user_id}")
+                    continue
+
+                seat_index = available_seats[0]
+
+                participant = LoungeParticipant.objects.create(
+                    table=table,
+                    user_id=user_id,
+                    seat_index=seat_index
+                )
+                assignments.append((user_id, table_id))
+                print(f"[MANUAL_ASSIGN] ✅ Assigned user {user_id} to table {table_id}, seat {seat_index}")
+
+            print(f"[MANUAL_ASSIGN] Completed: Created {len(assignments)} assignments.")
+            return assignments
+
+        except Exception as e:
+            print(f"[MANUAL_ASSIGN] ❌ Failed to perform manual assignment: {e}")
+            return []
+
+    async def perform_manual_assignment_and_notify(self, user_ids, table_id):
+        """Perform manual assignment and notify assigned users."""
+        assignments = await self.perform_manual_assignment(user_ids, table_id)
+
+        if not assignments:
+            msg = "No assignments created. Check if users are valid or table is full."
+            print(f"[MANUAL_ASSIGN] {msg}")
+            await self.send_debug_to_host(msg)
+            return
+
+        await self.send_debug_to_host(f"Assigned {len(assignments)} participant(s) to room.")
+        await self.broadcast_lounge_update()
+
+        # Notify each assigned user to join the room
         for assignment in assignments:
             user_id = assignment[0]
             table_id = assignment[1]
