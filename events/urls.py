@@ -76,6 +76,11 @@ urlpatterns = router.urls + [
         SpeedNetworkingQueueViewSet.as_view({'post': 'next_match'}),
         name='speed-networking-next-match'
     ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:session_id>/user-matches/",
+        SpeedNetworkingQueueViewSet.as_view({'get': 'user_matches'}),
+        name='speed-networking-user-matches'
+    ),
 
     # --- Event Sessions ---
     path(

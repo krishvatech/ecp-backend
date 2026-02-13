@@ -33,6 +33,7 @@ from .serializers import (
     SpeedNetworkingMatchSerializer,
     SpeedNetworkingQueueSerializer
 )
+from users.serializers import UserMiniSerializer
 from .utils import (
     create_dyte_meeting,
     add_dyte_participant,
@@ -1223,3 +1224,49 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                     'match_type': 'complementary_fields'
                 }
             }
+
+    @action(detail=False, methods=['get'])
+    def user_matches(self, request, event_id=None, session_id=None):
+        """Get all completed matches for current user in a speed networking session."""
+        try:
+            session = SpeedNetworkingSession.objects.get(id=session_id, event_id=event_id)
+        except SpeedNetworkingSession.DoesNotExist:
+            return Response(
+                {'error': 'Session not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        user = request.user
+
+        # Get all completed/skipped matches where user is a participant
+        matches = SpeedNetworkingMatch.objects.filter(
+            session=session,
+            status__in=['COMPLETED', 'SKIPPED']
+        ).filter(
+            Q(participant_1=user) | Q(participant_2=user)
+        ).select_related('participant_1', 'participant_2').order_by('-ended_at')
+
+        # Build response with partner info
+        user_matches_data = []
+        for match in matches:
+            partner = match.participant_2 if match.participant_1 == user else match.participant_1
+
+            # Use UserMiniSerializer to get avatar_url with proper context
+            partner_serializer = UserMiniSerializer(partner, context={'request': request})
+
+            user_matches_data.append({
+                'match_id': match.id,
+                'partner': partner_serializer.data,
+                'status': match.status,
+                'duration_seconds': (match.ended_at - match.created_at).total_seconds() if match.ended_at and match.created_at else 0,
+                'started_at': match.created_at,
+                'ended_at': match.ended_at,
+                'match_score': match.match_score,
+            })
+
+        return Response({
+            'session_id': session.id,
+            'session_name': session.name,
+            'total_matches': len(user_matches_data),
+            'matches': user_matches_data
+        })
