@@ -654,10 +654,14 @@ class EducationPublicSerializer(serializers.ModelSerializer):
 
 class UserMiniSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
+    kyc_status = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ("id", "username", "email", "first_name", "last_name", "avatar_url")
+        fields = ("id", "username", "email", "first_name", "last_name", "avatar_url", "kyc_status")
+
+    def get_kyc_status(self, obj):
+        return getattr(obj.profile, "kyc_status", None) if hasattr(obj, "profile") else None
 
     def _pick_image_field(self, user):
         prof = getattr(user, "profile", None)
