@@ -113,6 +113,7 @@ class CommentSerializer(serializers.ModelSerializer):
             "id": user.id,
             "name": name,
             "avatar_url": mini_data.get("avatar_url") or "",
+            "kyc_status": mini_data.get("kyc_status"),
         }
 
     def get_user(self, obj):
@@ -228,6 +229,7 @@ class ReactionUserSerializer(serializers.ModelSerializer):
             "id": user.id,
             "name": name,
             "avatar_url": mini_data.get("avatar_url") or "",
+            "kyc_status": mini_data.get("kyc_status"),
         }
 
     def get_user(self, obj):
@@ -258,6 +260,7 @@ class ShareReadSerializer(serializers.ModelSerializer):
             "id": user.id,
             "name": name,
             "avatar_url": mini_data.get("avatar_url") or "",
+            "kyc_status": mini_data.get("kyc_status"),
         }
 
     def get_user(self, obj):
