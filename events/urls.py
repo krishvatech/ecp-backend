@@ -44,6 +44,16 @@ urlpatterns = router.urls + [
         SpeedNetworkingSessionViewSet.as_view({'get': 'stats'}),
         name='speed-networking-stats'
     ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/queue/",
+        SpeedNetworkingSessionViewSet.as_view({'get': 'queue'}),
+        name='speed-networking-queue'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/remove-from-queue/<int:user_id>/",
+        SpeedNetworkingSessionViewSet.as_view({'post': 'remove_from_queue'}),
+        name='speed-networking-remove-from-queue'
+    ),
 
     # --- Speed Networking Queue ---
     path(

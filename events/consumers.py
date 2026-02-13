@@ -190,6 +190,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "data": event["data"]
         })
 
+    async def speed_networking_queue_update(self, event):
+        """Broadcast queue stats update to all clients in the event (for host panel real-time refresh)."""
+        await self.send_json({
+            "type": "speed_networking_queue_update",
+            "data": event["data"]
+        })
+
     async def broadcast_message(self, event: dict) -> None:
         await self.send_json({"type": "message", "data": event["payload"]})
 

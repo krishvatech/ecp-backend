@@ -44,6 +44,23 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 
+def _broadcast_queue_update(session, event_id):
+    """Broadcast current queue state to all clients in the event group (for host panel)."""
+    # Count ALL active queue entries (both waiting and in active matches)
+    queue_count = session.queue.filter(is_active=True).count()
+    active_matches = session.matches.filter(status='ACTIVE').count()
+
+    logger.info(f"[BROADCAST_QUEUE_UPDATE] Event {event_id}, Session {session.id}: queue_count={queue_count}, active_matches={active_matches}")
+    print(f"[BROADCAST_QUEUE_UPDATE] Event {event_id}, Session {session.id}: queue_count={queue_count}, active_matches={active_matches}")
+
+    send_speed_networking_message(event_id, 'speed_networking.queue_update', {
+        'queue_count': queue_count,
+        'active_matches_count': active_matches,
+    })
+
+    logger.info(f"[BROADCAST_QUEUE_UPDATE] Message sent to event group: event_{event_id}")
+
+
 class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing Speed Networking sessions.
@@ -262,6 +279,48 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
             'completion_rate': round(completed.count() / total * 100, 2) if total > 0 else 0,
         })
 
+    @action(detail=True, methods=['get'])
+    def queue(self, request, event_id=None, pk=None):
+        """Get list of all active queue entries (host only)."""
+        session = self.get_object()
+        queue_entries = session.queue.filter(is_active=True).select_related(
+            'user', 'current_match', 'current_match__participant_1', 'current_match__participant_2'
+        ).order_by('joined_at')
+        serializer = SpeedNetworkingQueueSerializer(queue_entries, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='remove-from-queue/(?P<user_id>[^/.]+)')
+    def remove_from_queue(self, request, event_id=None, pk=None, user_id=None):
+        """Host removes a specific user from the queue."""
+        session = self.get_object()
+        try:
+            queue_entry = SpeedNetworkingQueue.objects.get(
+                session=session, user_id=user_id, is_active=True
+            )
+        except SpeedNetworkingQueue.DoesNotExist:
+            return Response({'error': 'User not in queue'}, status=status.HTTP_404_NOT_FOUND)
+
+        # End their current match if any
+        if queue_entry.current_match and queue_entry.current_match.status == 'ACTIVE':
+            match = queue_entry.current_match
+            match.status = 'COMPLETED'
+            match.ended_at = timezone.now()
+            match.save()
+            partner = match.participant_1 if match.participant_2_id == int(user_id) else match.participant_2
+            send_speed_networking_user_message(partner.id, 'speed_networking.match_ended', {
+                'message': 'Your partner was removed from the session.'
+            })
+            SpeedNetworkingQueue.objects.filter(session=session, user=partner).update(current_match=None)
+
+        queue_entry.is_active = False
+        queue_entry.current_match = None
+        queue_entry.save()
+
+        # Broadcast queue update to all hosts
+        _broadcast_queue_update(session, event_id)
+
+        return Response({'message': 'User removed from queue'})
+
 
 class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
     """
@@ -319,33 +378,36 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                 {'error': 'Session not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         if session.status != 'ACTIVE':
             return Response(
                 {'error': 'Session is not active'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         user = request.user
-        
+
         # Get or create queue entry
         queue_entry, created = SpeedNetworkingQueue.objects.get_or_create(
             session=session,
             user=user,
             defaults={'is_active': True}
         )
-        
+
         if not created and not queue_entry.is_active:
             queue_entry.is_active = True
             queue_entry.save()
-        
+
         # Try to find a match immediately
         match = self._find_and_create_match(session, user)
-        
+
+        # Broadcast queue update to all clients (for host panel)
+        _broadcast_queue_update(session, event_id)
+
         if match:
             serializer = SpeedNetworkingMatchSerializer(match)
             data = serializer.data
-            
+
             # Add Dyte token
             if match.dyte_room_name:
                 token = self._get_dyte_token_for_user(match, user)
@@ -378,6 +440,8 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        session = queue_entry.session
+
         # End current match if any
         if queue_entry.current_match and queue_entry.current_match.status == 'ACTIVE':
             match = queue_entry.current_match
@@ -407,6 +471,9 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         queue_entry.is_active = False
         queue_entry.current_match = None
         queue_entry.save()
+
+        # Broadcast queue update to all clients (for host panel)
+        _broadcast_queue_update(session, event_id)
 
         return Response({'message': 'Left queue successfully'})
     
@@ -529,6 +596,11 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             ).update(current_match=None)
             logger.info(f"[NEXT_MATCH] Released both users from queue")
 
+            # Verify the queue entries were actually cleared (defensive check)
+            p1_queue = SpeedNetworkingQueue.objects.get(session=match.session, user=match.participant_1)
+            p2_queue = SpeedNetworkingQueue.objects.get(session=match.session, user=match.participant_2)
+            logger.info(f"[NEXT_MATCH] P1 queue cleared: {p1_queue.current_match is None}, P2 queue cleared: {p2_queue.current_match is None}")
+
             # CRITICAL: Notify BOTH participants that the old match has ended IMMEDIATELY
             # This must happen BEFORE creating new matches to ensure frontend updates without delay
             logger.info(f"[NEXT_MATCH] Notifying both participants that match {match.id} has ended")
@@ -546,6 +618,16 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             # IMPORTANT: Exclude the previous match participant to prevent rematching the same users
             new_match_1 = self._find_and_create_match(session, match.participant_1, exclude_user=match.participant_2)
             new_match_2 = self._find_and_create_match(session, match.participant_2, exclude_user=match.participant_1)
+
+            logger.info(f"[NEXT_MATCH] New match creation result: P1={new_match_1.id if new_match_1 else None}, P2={new_match_2.id if new_match_2 else None}")
+
+            # Verify queue entries are properly updated with new matches
+            p1_queue = SpeedNetworkingQueue.objects.get(session=session, user=match.participant_1)
+            p2_queue = SpeedNetworkingQueue.objects.get(session=session, user=match.participant_2)
+            logger.info(f"[NEXT_MATCH] Queue entries updated: P1.current_match={p1_queue.current_match_id}, P2.current_match={p2_queue.current_match_id}")
+
+            # Broadcast queue update to all clients (for host panel)
+            _broadcast_queue_update(session, event_id)
 
             # Handle notifications for "Match Found" (for users who found new matches)
             # These are sent by _find_and_create_match automatically, so we're good there.

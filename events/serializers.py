@@ -1228,13 +1228,23 @@ class SpeedNetworkingMatchSerializer(serializers.ModelSerializer):
 
 class SpeedNetworkingSessionSerializer(serializers.ModelSerializer):
     matches = SpeedNetworkingMatchSerializer(many=True, read_only=True)
+    queue_count = serializers.SerializerMethodField()
+    active_matches_count = serializers.SerializerMethodField()
+
+    def get_queue_count(self, obj):
+        # Count ALL active queue entries (both waiting and in active matches)
+        return obj.queue.filter(is_active=True).count()
+
+    def get_active_matches_count(self, obj):
+        return obj.matches.filter(status='ACTIVE').count()
 
     class Meta:
         model = SpeedNetworkingSession
         fields = [
             'id', 'event', 'name', 'status', 'duration_minutes',
             'matching_strategy', 'criteria_config',
-            'started_at', 'ended_at', 'matches', 'created_at'
+            'started_at', 'ended_at', 'matches', 'created_at',
+            'queue_count', 'active_matches_count'
         ]
         read_only_fields = ['id', 'started_at', 'ended_at', 'created_at', 'event']
 
