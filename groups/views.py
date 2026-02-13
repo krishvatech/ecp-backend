@@ -2422,12 +2422,28 @@ class UsersLookupView(APIView):
         out = []
         for u in qs:
             name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", "")
-            avatar = getattr(u, "avatar", None)
-            if not avatar and hasattr(u, "profile") and hasattr(u.profile, "avatar"):
-                avatar = getattr(u.profile, "avatar", None)
-            if hasattr(avatar, "url"):
-                avatar = avatar.url
-            out.append({"id": u.pk, "name": name or None, "email": getattr(u, "email", None), "avatar": avatar})
+            
+            # 1. Avatar logic: check profile.user_image
+            avatar = None
+            if hasattr(u, "profile"):
+                if u.profile.user_image:
+                    avatar = u.profile.user_image.url
+                # fallback if your model has .avatar 
+                elif hasattr(u.profile, "avatar") and u.profile.avatar:
+                    avatar = u.profile.avatar.url
+            
+            # 2. KYC logic
+            is_verified = False
+            if hasattr(u, "profile"):
+                is_verified = (u.profile.kyc_status == "approved")
+
+            out.append({
+                "id": u.pk, 
+                "name": name or None, 
+                "email": getattr(u, "email", None), 
+                "avatar": avatar,
+                "is_verified": is_verified
+            })
         return Response(out)
 
 
