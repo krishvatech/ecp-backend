@@ -307,6 +307,14 @@ class EventRegistration(models.Model):
         blank=True,
         help_text="Track last rejoin attempt to detect disconnects"
     )
+    last_breakout_table = models.ForeignKey(
+        'LoungeTable',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='previous_occupants',
+        help_text="Last breakout room assigned to this user (for auto-rejoin)"
+    )
 
     # Moderation
     is_banned = models.BooleanField(default=False)

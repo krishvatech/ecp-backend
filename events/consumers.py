@@ -39,6 +39,47 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         
         await self.accept()
 
+        # Custom Logic: Auto-restore breakout room on reconnect
+        try:
+            er = await database_sync_to_async(EventRegistration.objects.select_related('last_breakout_table').get)(
+                event_id=self.event_id, user=self.user
+            )
+
+            # Check if event is live and user had a previous breakout assignment
+            event_is_live = await database_sync_to_async(lambda: Event.objects.filter(id=self.event_id, is_live=True).exists())()
+
+            if event_is_live and er.last_breakout_table:
+                table = er.last_breakout_table
+                # Ensure the table still exists and is a Breakout Room
+                if table and table.category == 'BREAKOUT':
+                    print(f"[RECONNECT] Restoring user {self.user.id} to breakout room {table.id}")
+                    ok, result = await self._restore_breakout_participant(table)
+                    if ok:
+                        print(f"[RECONNECT] ✅ Successfully restored to breakout room {table.id}, seat {result}")
+                        # Notify user to join Dyte meeting
+                        # Include main room meeting ID so frontend can re-initialize the peek view
+                        event = await database_sync_to_async(Event.objects.get)(id=self.event_id)
+                        await self.send_json({
+                            "type": "breakout_restored",
+                            "table_id": table.id,
+                            "table_name": table.name,
+                            "dyte_meeting_id": table.dyte_meeting_id,
+                            "main_room_meeting_id": event.dyte_meeting_id,
+                        })
+                        # 🔄 Broadcast lounge update so other participants see this user rejoined
+                        # This ensures Christopher (and anyone else in the room) sees Ravikumar rejoin
+                        await self.broadcast_lounge_update()
+                    else:
+                        print(f"[RECONNECT] ❌ Failed to restore breakout room: {result}")
+                        await self.send_json({
+                            "type": "breakout_restore_failed",
+                            "message": f"Could not restore you to your previous Breakout Room: {result}",
+                        })
+        except EventRegistration.DoesNotExist:
+            pass
+        except Exception as e:
+            print(f"[RECONNECT] Error auto-rejoining breakout: {e}")
+
         # Send welcome message with current lounge state
         lounge_state = await self.get_lounge_state()
         await self.update_online_status(True)
@@ -111,6 +152,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         elif action == "leave_table":
             print(f"[CONSUMER] User {self.user.username} requested to leave table")
+            
+            # Clear last_breakout_table assignment since user is manually leaving
+            await database_sync_to_async(
+                lambda: EventRegistration.objects.filter(event_id=self.event_id, user=self.user).update(last_breakout_table=None)
+            )()
+
             await self.leave_current_table()
             await self.broadcast_lounge_update()
 
@@ -434,6 +481,9 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def clear_all_tables(self):
+        # Clear assignments
+        EventRegistration.objects.filter(event_id=self.event_id).update(last_breakout_table=None)
+        # Remove participants
         LoungeParticipant.objects.filter(table__event_id=self.event_id).delete()
 
     @database_sync_to_async
@@ -500,6 +550,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         user=user,
                         seat_index=seat_index
                     )
+
+                    # Save assignment if breakout
+                    if table.category == 'BREAKOUT':
+                        EventRegistration.objects.filter(event_id=self.event_id, user=user).update(last_breakout_table=table)
 
                     assignments.append((user.id, table.id, table.dyte_meeting_id))
 
@@ -599,6 +653,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     user_id=user_id,
                     seat_index=seat_index
                 )
+                
+                # Check if it's a breakout room and save assignment
+                if table.category == 'BREAKOUT':
+                    EventRegistration.objects.filter(event_id=self.event_id, user_id=user_id).update(last_breakout_table=table)
+
                 assignments.append((user_id, table_id))
                 print(f"[MANUAL_ASSIGN] ✅ Assigned user {user_id} to table {table_id}, seat {seat_index}")
 
@@ -687,6 +746,43 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         return Event.objects.get(id=self.event_id)
 
     @database_sync_to_async
+    def _restore_breakout_participant(self, table):
+        """Re-seat user in their previous breakout room after page reload.
+        Clears stale participant records then creates a fresh entry.
+        Returns (True, seat_index) or (False, reason_string).
+        """
+        try:
+            with transaction.atomic():
+                # Clear any stale lounge records for this user
+                LoungeParticipant.objects.filter(
+                    table__event_id=self.event_id,
+                    user=self.user
+                ).delete()
+
+                # Find the first available seat
+                occupied = set(
+                    LoungeParticipant.objects.filter(table=table)
+                    .values_list('seat_index', flat=True)
+                )
+                seat = next(
+                    (i for i in range(max(table.max_seats, 1)) if i not in occupied),
+                    None
+                )
+                if seat is None:
+                    return False, "Breakout room is full"
+
+                LoungeParticipant.objects.create(
+                    table=table,
+                    user=self.user,
+                    seat_index=seat
+                )
+                # Keep last_breakout_table in EventRegistration (already set)
+                return True, seat
+        except Exception as e:
+            print(f"[RECONNECT] Error in _restore_breakout_participant: {e}")
+            return False, str(e)
+
+    @database_sync_to_async
     def join_table(self, table_id, seat_index):
         try:
             with transaction.atomic():
@@ -708,6 +804,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     user=self.user,
                     seat_index=seat_index
                 )
+                
+                # Check if it's a breakout room and save assignment
+                table = LoungeTable.objects.get(id=table_id)
+                if table.category == 'BREAKOUT':
+                    EventRegistration.objects.filter(event_id=self.event_id, user=self.user).update(last_breakout_table=table)
+                else:
+                    # If joining a non-breakout table (e.g. lounge), clear the tracked breakout room
+                    EventRegistration.objects.filter(event_id=self.event_id, user=self.user).update(last_breakout_table=None)
+
                 print(f"[CONSUMER] join_table: Created record for user {self.user.id} at table {table_id} seat {seat_index}")
                 return True, None
         except Exception as e:

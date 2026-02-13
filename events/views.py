@@ -1468,6 +1468,11 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response({"error": "missing_table_id"}, status=400)
 
         table = get_object_or_404(LoungeTable, id=table_id, event_id=pk)
+        
+        # Clear previous assignments if this was a breakout room
+        if table.category == "BREAKOUT":
+             EventRegistration.objects.filter(event=event, last_breakout_table=table).update(last_breakout_table=None)
+
         LoungeParticipant.objects.filter(table=table).delete()
         table.delete()
         return Response({"ok": True})
