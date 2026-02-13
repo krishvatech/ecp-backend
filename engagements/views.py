@@ -247,7 +247,7 @@ class CommentViewSet(viewsets.ModelViewSet):
         return Response(ser.data)
 
 # ---------- Reactions ----------
-class ReactionViewSet(viewsets.GenericViewSet):
+class ReactionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     Toggle like on any target:
       POST /api/engagements/reactions/toggle/
@@ -255,10 +255,47 @@ class ReactionViewSet(viewsets.GenericViewSet):
 
     Who liked a target:
       GET /api/engagements/reactions/who-liked/?target_type=app.Model&target_id=123
+
+    List reactions (standard):
+      GET /api/engagements/reactions/?target_type=app.Model&target_id=123
     """
     permission_classes = [IsAuthenticated]
-    serializer_class = ReactionToggleSerializer
     queryset = Reaction.objects.none()
+
+    def get_serializer_class(self):
+        if self.action in ("list", "who_liked"):
+            return ReactionUserSerializer
+        return ReactionToggleSerializer
+
+    def get_queryset(self):
+        # Only filter for list/who_liked; generic viewset might use this elsewhere
+        if self.action not in ("list", "who_liked"):
+            return Reaction.objects.none()
+
+        target_type = self.request.query_params.get("target_type")
+        target_id = self.request.query_params.get("target_id")
+        feed_item = self.request.query_params.get("feed_item")
+        comment_id = self.request.query_params.get("comment_id")
+
+        # Aliases
+        if comment_id and not target_type:
+            target_type = "comment"
+            target_id = comment_id
+        if feed_item and not target_id:
+            target_id = feed_item
+
+        if not target_id:
+            # Return empty if no target specified (or all if you prefer, but usually we list per-obj)
+            return Reaction.objects.none()
+
+        # Use helper
+        try:
+            ct = _ct_from_param_or_feeditem_default(target_type)
+        except ValidationError:
+            return Reaction.objects.none()
+
+        return Reaction.objects.select_related("user").filter(content_type=ct, object_id=target_id)
+
 
     @action(methods=["post"], detail=False, url_path="toggle")
     def toggle(self, request):
@@ -311,7 +348,7 @@ class ReactionViewSet(viewsets.GenericViewSet):
         )
         return Response({"status": "liked", "reaction": reaction}, status=status.HTTP_201_CREATED)
 
-    
+
     @action(detail=False, methods=['get'], url_path='counts', permission_classes=[IsAuthenticated])
     def counts(self, request):
         target_type = (request.query_params.get("target_type") or "post").lower()
@@ -374,33 +411,9 @@ class ReactionViewSet(viewsets.GenericViewSet):
     )
     @action(methods=["get"], detail=False, url_path="who-liked")
     def who_liked(self, request):
-        target_type = request.query_params.get("target_type")
-        target_id = request.query_params.get("target_id")
-        feed_item = request.query_params.get("feed_item")
-        comment_id = request.query_params.get("comment_id")
-
-        # Aliases
-        if comment_id and not target_type:
-            target_type = "comment"
-            target_id = comment_id
-        if feed_item and not target_id:
-            target_id = feed_item
-
-        if not target_id:
-            return Response(
-                {"detail": "Provide target_id or feed_item or comment_id."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Use your existing helper that defaults to FeedItem when target_type missing
-        ct = _ct_from_param_or_feeditem_default(target_type)
-
-        qs = Reaction.objects.select_related("user").filter(content_type=ct, object_id=target_id)
-        page = self.paginate_queryset(qs)
-        ser = ReactionUserSerializer(page or qs, many=True)
-        if page is not None:
-            return self.get_paginated_response(ser.data)
-        return Response(ser.data)
+        # Re-use the main queryset logic logic or just call list?
+        # "who-liked" is legacy alias for list
+        return self.list(request)
 
 # ---------- Shares ----------
 class ShareViewSet(mixins.CreateModelMixin,
