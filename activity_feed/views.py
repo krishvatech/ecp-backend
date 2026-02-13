@@ -872,6 +872,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                         "username": u.username,
                         "user_image_url": avatar_url,
                         "user_image": avatar_url,
+                        "kyc_status": getattr(profile, "kyc_status", None),
                     },
                     # make sure datetime → string, not any weird type
                     "voted_at": v.created_at.isoformat() if v.created_at else None,

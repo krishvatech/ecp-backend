@@ -130,12 +130,26 @@ class CommunityViewSet(viewsets.ModelViewSet):
         )
 
         # unified response
+        # Helper to get avatar
+        def get_avatar(u):
+            try:
+                if hasattr(u, "profile") and u.profile.user_image:
+                    return request.build_absolute_uri(u.profile.user_image.url)
+            except:
+                pass
+            return ""
+
         row = {
             "id": fi.id,
             "type": typ,
             "created_at": fi.created_at,
             "community": {"id": community.id, "name": community.name},
-            "actor": {"id": fi.actor_id, "name": getattr(fi.actor, "get_full_name", lambda: fi.actor.username)()},
+            "actor": {
+                "id": fi.actor_id,
+                "name": getattr(fi.actor, "get_full_name", lambda: fi.actor.username)(),
+                "avatar": get_avatar(fi.actor),
+                "kyc_status": getattr(fi.actor.profile, "kyc_status", "not_started") if hasattr(fi.actor, "profile") else "not_started"
+            },
             "visibility": visibility,
             "tags": tags,
         }
@@ -184,11 +198,31 @@ class CommunityViewSet(viewsets.ModelViewSet):
         for fi in qs:
             meta = fi.metadata or {}
             typ = (meta.get("type") or "text").lower()
+            
+            # Resolve actor avatar
+            actor = fi.actor
+            avatar_url = ""
+            kyc_status = "not_started"
+            if actor:
+                try:
+                    if hasattr(actor, "profile"):
+                        if actor.profile.user_image:
+                            avatar_url = request.build_absolute_uri(actor.profile.user_image.url)
+                        kyc_status = actor.profile.kyc_status
+                except:
+                    pass
+
             row = {
                 "id": fi.id,
                 "type": typ,
                 "created_at": fi.created_at,
                 "community": {"id": community.id, "name": community.name},
+                "actor": {
+                    "id": actor.id if actor else None,
+                    "name": getattr(actor, "get_full_name", lambda: actor.username)() if actor else "Unknown",
+                    "avatar": avatar_url,
+                    "kyc_status": kyc_status,
+                },
                 "visibility": meta.get("visibility", "public"),
                 "tags": meta.get("tags") or [],
             }
