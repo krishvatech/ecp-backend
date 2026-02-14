@@ -689,7 +689,7 @@ class EventViewSet(viewsets.ModelViewSet):
             # Fetch members of these groups
             memberships = GroupMembership.objects.filter(
                 group_id__in=group_ids,
-                status__in=["member", "admin", "moderator"]
+                status="active"
             ).select_related("user")
             for m in memberships:
                 invited_users.add(m.user)
