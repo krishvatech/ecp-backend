@@ -148,6 +148,26 @@ class Event(models.Model):
     lounge_enabled_after = models.BooleanField(default=False)
     lounge_after_buffer = models.PositiveIntegerField(default=30)  # minutes
 
+    # Breakout Late Joiner Settings
+    auto_assign_late_joiners = models.BooleanField(
+        default=False,
+        help_text="Automatically assign new participants to breakout rooms during active sessions"
+    )
+    auto_assign_strategy = models.CharField(
+        max_length=20,
+        choices=[
+            ('least', 'Least participants'),
+            ('round_robin', 'Round-robin distribution'),
+            ('sequential', 'Sequential room mapping'),
+        ],
+        default='least',
+        help_text="Strategy for automatic assignment of late joiners"
+    )
+    breakout_rooms_active = models.BooleanField(
+        default=False,
+        help_text="Flag to track if breakout rooms are currently active"
+    )
+
     # Participant List Visibility Settings
     show_participants_before_event = models.BooleanField(
         default=True,
@@ -357,6 +377,79 @@ class WaitingRoomAuditLog(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+# ============================================================
+# ================= Breakout Joiner Model ====================
+# ============================================================
+
+class BreakoutJoiner(models.Model):
+    """
+    Tracks participants who join while breakout rooms are active.
+    Manages the assignment state and notification flow for late joiners.
+    """
+    STATUS_WAITING = 'waiting'
+    STATUS_ASSIGNED = 'assigned'
+    STATUS_MAIN_ROOM = 'main_room'
+    STATUS_AUTO_ASSIGNED = 'auto_assigned'
+    STATUS_EXPIRED = 'expired'
+
+    STATUS_CHOICES = [
+        (STATUS_WAITING, 'Waiting for assignment'),
+        (STATUS_ASSIGNED, 'Assigned to breakout room'),
+        (STATUS_MAIN_ROOM, 'Remains in main room'),
+        (STATUS_AUTO_ASSIGNED, 'Automatically assigned'),
+        (STATUS_EXPIRED, 'Assignment expired - breakout ended'),
+    ]
+
+    ASSIGNMENT_METHOD_CHOICES = [
+        ('manual', 'Host assigned manually'),
+        ('auto', 'System auto-assigned'),
+        ('none', 'No assignment made'),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='late_joiners')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='breakout_joiner_registrations')
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_WAITING,
+        db_index=True
+    )
+    joined_at = models.DateTimeField(auto_now_add=True)
+    assigned_at = models.DateTimeField(null=True, blank=True)
+    notified_host_at = models.DateTimeField(null=True, blank=True)
+    assigned_room = models.ForeignKey(
+        LoungeTable,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='late_joiners'
+    )
+    assigned_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='breakout_assignments_made'
+    )
+    assignment_method = models.CharField(
+        max_length=20,
+        choices=ASSIGNMENT_METHOD_CHOICES,
+        default='none'
+    )
+    host_notified = models.BooleanField(default=False)
+    notification_sent_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = ('event', 'user')
+        indexes = [
+            models.Index(fields=['event', 'status']),
+            models.Index(fields=['event', 'joined_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} late joiner for {self.event.title}"
 
 
 # ============================================================

@@ -3,6 +3,7 @@ from channels.db import database_sync_to_async
 from .models import LoungeTable, LoungeParticipant, Event, EventRegistration
 from django.contrib.auth.models import User
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 import random
 import requests
@@ -56,6 +57,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     ok, result = await self._restore_breakout_participant(table)
                     if ok:
                         print(f"[RECONNECT] ✅ Successfully restored to breakout room {table.id}, seat {result}")
+                        
+                        # Add to breakout group
+                        await self.channel_layer.group_add(f"breakout_{table.id}", self.channel_name)
+
                         # Notify user to join Dyte meeting
                         # Include main room meeting ID so frontend can re-initialize the peek view
                         event = await database_sync_to_async(Event.objects.get)(id=self.event_id)
@@ -80,11 +85,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         except Exception as e:
             print(f"[RECONNECT] Error auto-rejoining breakout: {e}")
 
+        # Handle late joiners joining during active breakout sessions
+        await self.handle_late_joiner_join()
+
         # Send welcome message with current lounge state
         lounge_state = await self.get_lounge_state()
         await self.update_online_status(True)
         await self.broadcast_lounge_update() # Sync everyone with new online count
-        
+
         msg = {
             "type": "welcome",
             "event_id": self.event_id,
@@ -142,9 +150,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 print(f"[CONSUMER] Failed to verify meeting state: {e}")
                 # Continue anyway, don't block lounge join on verification failure
 
-            success, error = await self.join_table(table_id, seat_index)
+            success, error, table = await self.join_table(table_id, seat_index)
             if success:
                 print(f"[CONSUMER] join_table successful for {self.user.username}, broadcasting update...")
+                
+                # If breakout room, add to group
+                if table and table.category == 'BREAKOUT':
+                    await self.channel_layer.group_add(f"breakout_{table.id}", self.channel_name)
+
                 await self.broadcast_lounge_update()
             else:
                 print(f"[CONSUMER] join_table failed for {self.user.username}: {error}")
@@ -158,7 +171,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 lambda: EventRegistration.objects.filter(event_id=self.event_id, user=self.user).update(last_breakout_table=None)
             )()
 
-            await self.leave_current_table()
+            success, table = await self.leave_current_table()
+            if success and table and table.category == 'BREAKOUT':
+                await self.channel_layer.group_discard(f"breakout_{table.id}", self.channel_name)
+            
             await self.broadcast_lounge_update()
 
         elif action == "random_assign":
@@ -170,6 +186,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     return
 
                 await self.perform_random_assignment_and_notify(per_room)
+                await self._set_breakout_active_flag(True)
             except Exception as e:
                 print(f"[CONSUMER] ERROR in random_assign: {str(e)}")
                 await self.send_debug_to_host(f"Error during random assignment: {str(e)}")
@@ -189,9 +206,123 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     return
 
                 await self.perform_manual_assignment_and_notify(user_ids, table_id)
+                # If we are manually assigning to a breakout room, we should consider breakouts active
+                # We need to check if the table is a breakout room
+                table = await database_sync_to_async(LoungeTable.objects.get)(id=table_id)
+                if table.category == 'BREAKOUT':
+                    await self._set_breakout_active_flag(True)
             except Exception as e:
                 print(f"[CONSUMER] ERROR in manual_assign: {str(e)}")
                 await self.send_debug_to_host(f"Error during manual assignment: {str(e)}")
+
+        elif action == "assign_late_joiner":
+            try:
+                if not await self.is_host():
+                    print(f"[CONSUMER] DENIED assign_late_joiner: User {self.user.username} is not a host.")
+                    await self.send_debug_to_host("Action denied: Not a host")
+                    return
+
+                participant_id = content.get("participant_id")
+                room_id = content.get("room_id")
+
+                if not participant_id or not room_id:
+                    await self.send_debug_to_host("assign_late_joiner: missing participant_id or room_id")
+                    return
+
+                print(f"[ASSIGN] Host assigning late joiner {participant_id} to room {room_id}")
+                table, error = await self._assign_late_joiner_to_room_db(
+                    participant_id, room_id, self.user.id, method='manual'
+                )
+                if error:
+                    await self.send_debug_to_host(f"Failed to assign: {error}")
+                    return
+
+                print(f"[ASSIGN] ✅ Assigned user {participant_id} to room {table.id}")
+                # Notify participant to join the room
+                # We send BOTH notification (for toast) and force_join (for action)
+                # to ensure the frontend actually moves the user.
+                await self.channel_layer.group_send(
+                    f"user_{participant_id}",
+                    {
+                        "type": "late_joiner_assigned",
+                        "room_id": table.id,
+                        "room_name": table.name,
+                        "dyte_meeting_id": table.dyte_meeting_id,
+                        "method": "manual",
+                    }
+                )
+                await self.channel_layer.group_send(
+                    f"user_{participant_id}",
+                    {
+                        "type": "breakout_force_join",
+                        "user_id": participant_id,
+                        "table_id": table.id
+                    }
+                )
+
+                # NEW: Notify existing room members to refresh their list/view
+                await self.channel_layer.group_send(
+                    f"breakout_{table.id}",
+                    {
+                        "type": "refresh_breakout_participants",
+                        "room_id": table.id,
+                        "dyte_meeting_id": table.dyte_meeting_id
+                    }
+                )
+
+                await self.broadcast_lounge_update()
+            except Exception as e:
+                print(f"[CONSUMER] ERROR in assign_late_joiner: {str(e)}")
+                await self.send_debug_to_host(f"Error assigning late joiner: {str(e)}")
+
+        elif action == "dismiss_late_joiner":
+            try:
+                if not await self.is_host():
+                    print(f"[CONSUMER] DENIED dismiss_late_joiner: User {self.user.username} is not a host.")
+                    await self.send_debug_to_host("Action denied: Not a host")
+                    return
+
+                participant_id = content.get("participant_id")
+                if not participant_id:
+                    await self.send_debug_to_host("dismiss_late_joiner: missing participant_id")
+                    return
+
+                print(f"[DISMISS] Host dismissing late joiner {participant_id} - stays in main room")
+                await self._mark_late_joiner_main_room(participant_id)
+
+                # Notify participant they stay in main room
+                await self.channel_layer.group_send(
+                    f"user_{participant_id}",
+                    {"type": "late_joiner_dismissed", "message": "You will remain in the Main Room."}
+                )
+            except Exception as e:
+                print(f"[CONSUMER] ERROR in dismiss_late_joiner: {str(e)}")
+                await self.send_debug_to_host(f"Error dismissing late joiner: {str(e)}")
+
+        elif action == "auto_assign_late_joiners":
+            try:
+                if not await self.is_host():
+                    print(f"[CONSUMER] DENIED auto_assign_late_joiners: User {self.user.username} is not a host.")
+                    await self.send_debug_to_host("Action denied: Not a host")
+                    return
+
+                enabled = content.get("enabled", False)
+                strategy = content.get("strategy", "least")
+
+                print(f"[AUTO_ASSIGN] Setting auto-assign: enabled={enabled}, strategy={strategy}")
+                await database_sync_to_async(
+                    lambda: Event.objects.filter(id=self.event_id).update(
+                        auto_assign_late_joiners=enabled,
+                        auto_assign_strategy=strategy
+                    )
+                )()
+
+                await self.send_debug_to_host(
+                    f"Auto-assign {'enabled' if enabled else 'disabled'} with strategy '{strategy}'"
+                )
+            except Exception as e:
+                print(f"[CONSUMER] ERROR in auto_assign_late_joiners: {str(e)}")
+                await self.send_debug_to_host(f"Error updating auto-assign: {str(e)}")
 
         elif action == "start_timer":
             if not await self.is_host(): return
@@ -211,6 +342,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         elif action == "end_all_breakouts":
             if not await self.is_host(): return
+            await self._set_breakout_active_flag(False)
             await self.clear_all_tables()
             await self.channel_layer.group_send(
                 self.group_name, 
@@ -347,11 +479,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     async def breakout_force_join(self, event: dict) -> None:
         """Targeted force join for specific user"""
+        print(f"[HANDLER] breakout_force_join: self.user.id={self.user.id}, target={event['user_id']}")
         if str(self.user.id) == str(event["user_id"]):
+            print(f"[HANDLER] ✅ Sending force_join_breakout to user {self.user.id}")
             await self.send_json({
                 "type": "force_join_breakout",
                 "table_id": event["table_id"]
             })
+        else:
+            print(f"[HANDLER] ⚠️ breakout_force_join mismatch: {self.user.id} != {event['user_id']}")
 
     async def breakout_debug(self, event: dict) -> None:
         """Broadcast debug info to host"""
@@ -796,7 +932,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 # 2. Check if seat is occupied
                 if LoungeParticipant.objects.filter(table_id=table_id, seat_index=seat_index).exists():
                     print(f"[CONSUMER] join_table: Seat {seat_index} at table {table_id} already occupied")
-                    return False, "Seat already occupied"
+                    return False, "Seat already occupied", None
 
                 # 3. Create participant
                 LoungeParticipant.objects.create(
@@ -814,10 +950,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     EventRegistration.objects.filter(event_id=self.event_id, user=self.user).update(last_breakout_table=None)
 
                 print(f"[CONSUMER] join_table: Created record for user {self.user.id} at table {table_id} seat {seat_index}")
-                return True, None
+                return True, None, table
         except Exception as e:
             print(f"[CONSUMER] join_table error: {e}")
-            return False, str(e)
+            return False, str(e), None
 
     @database_sync_to_async
     def leave_current_table(self):
@@ -834,7 +970,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
             if not lounge_record:
                 logger.info(f"[CONSUMER] No lounge record found for user {self.user.id}")
-                return 0
+                return 0, None
 
             table = lounge_record.table
             meeting_id = table.dyte_meeting_id
@@ -889,8 +1025,347 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
             logger.info(f"[CONSUMER] User {self.user.username} (ID:{self.user.id}) left table. "
                        f"Removed from both Django and Dyte.")
-            return 1
+            return 1, table
 
         except Exception as e:
             logger.error(f"[CONSUMER] leave_current_table error: {e}")
-            return 0
+            return 0, None
+
+    # ===== Late Joiner WebSocket Message Handlers =====
+
+    async def late_joiner_notification(self, event):
+        """
+        Receive late joiner notification and send to WebSocket.
+        This is sent to the HOST/ADMIN when a new participant joins during active breakout sessions.
+        """
+        print(f"[HANDLER] late_joiner_notification called with event: {event}")
+        # Only send to hosts
+        if not await self.is_host():
+            print(f"[HANDLER] late_joiner_notification: User {self.user.id} is not a host - dropping message")
+            return
+
+        await self.send_json({
+            "type": "late_joiner_notification",
+            "notification": event.get("notification")
+        })
+        print(f"[HANDLER] ✅ Sent late_joiner_notification to host {self.user.id}")
+
+    async def late_joiner_assigned(self, event):
+        """
+        Receive assignment notification and send to WebSocket.
+        This is sent to the PARTICIPANT when host assigns them to a breakout room.
+        """
+        print(f"[HANDLER] late_joiner_assigned called with event: {event}")
+        await self.send_json({
+            "type": "late_joiner_assigned",
+            "room_id": event.get("room_id"),
+            "room_name": event.get("room_name"),
+            "dyte_meeting_id": event.get("dyte_meeting_id"),
+            "method": event.get("method", "manual")
+        })
+        print(f"[HANDLER] ✅ Sent late_joiner_assigned to participant")
+
+    async def late_joiner_dismissed(self, event):
+        """
+        Receive dismissal notification and send to WebSocket.
+        This is sent to the PARTICIPANT when host decides to keep them in main room.
+        """
+        print(f"[HANDLER] late_joiner_dismissed called with event: {event}")
+        await self.send_json({
+            "type": "late_joiner_dismissed",
+            "message": event.get("message", "You will remain in the Main Room.")
+        })
+        print(f"[HANDLER] ✅ Sent late_joiner_dismissed to participant")
+
+    async def refresh_breakout_participants(self, event):
+        """
+        Receive refresh notification and send to WebSocket.
+        This is sent to all participants in a breakout room when a new participant is assigned.
+        Tells them to refresh their participant list.
+        """
+        print(f"[HANDLER] refresh_breakout_participants called for room: {event.get('room_id')}")
+        await self.send_json({
+            "type": "refresh_breakout_participants",
+            "room_id": event.get("room_id"),
+            "dyte_meeting_id": event.get("dyte_meeting_id"),
+            "message": "A new participant has been assigned to this room. Refreshing participant list..."
+        })
+        print(f"[HANDLER] ✅ Sent refresh_breakout_participants notification")
+
+    # ===== LATE JOINER DETECTION & HANDLING =====
+
+    async def handle_late_joiner_join(self):
+        """Detect and handle late joiners during active breakout sessions."""
+        try:
+            print(f"[LATE_JOINER] Starting late joiner check for user {self.user.id}...")
+
+            # 1. Check if breakout rooms are marked as active in the Event model
+            # This is the primary source of truth.
+            event_obj = await self.get_event()
+            if not event_obj.breakout_rooms_active:
+                # Double check with participant count just in case flag is out of sync (defensive)
+                has_active = await self._check_active_breakout_rooms()
+                if not has_active:
+                    print(f"[LATE_JOINER] No active breakout rooms (flag=False, count=0) - skipping")
+                    return
+                else:
+                    print(f"[LATE_JOINER] Flag is False but participants found - treating as active")
+                    # Auto-correct the flag
+                    await self._set_breakout_active_flag(True)
+
+            # 2. Skip hosts
+            is_host = await self.is_host()
+            print(f"[LATE_JOINER] User is host: {is_host}")
+            if is_host:
+                return
+
+            # 3. Skip reconnects (user already had a breakout assignment)
+            try:
+                er = await database_sync_to_async(
+                    EventRegistration.objects.select_related('last_breakout_table').get
+                )(event_id=self.event_id, user=self.user)
+                if er.last_breakout_table:
+                    print(f"[LATE_JOINER] User has previous breakout assignment - skipping")
+                    return
+            except EventRegistration.DoesNotExist:
+                print(f"[LATE_JOINER] No EventRegistration found - skipping")
+                return
+
+            # 4. Create/get BreakoutJoiner record
+            joiner = await self._create_or_get_late_joiner()
+            if joiner is None:
+                print(f"[LATE_JOINER] Late joiner already handled - skipping")
+                return
+
+            print(f"[LATE_JOINER] Created/got late joiner record: {joiner.id}")
+
+            # 5. Get available rooms
+            available_rooms = await self._get_available_breakout_rooms()
+            print(f"[LATE_JOINER] Found {len(available_rooms)} available rooms")
+
+            # 6. Check if auto-assign is enabled
+            event = await self._get_event_with_breakout_settings()
+            if event.auto_assign_late_joiners and available_rooms:
+                print(f"[LATE_JOINER] Auto-assign enabled - assigning to room")
+                await self._auto_assign_late_joiner(joiner, event, available_rooms)
+                return
+
+            # 7. Notify participant they are waiting
+            print(f"[LATE_JOINER] Sending waiting message to participant")
+            await self.send_json({
+                "type": "waiting_for_breakout_assignment",
+                "message": "Breakout sessions are in progress. The host will assign you shortly.",
+                "joined_at": joiner.joined_at.isoformat() if joiner.joined_at else None,
+            })
+
+            # 8. Notify host
+            print(f"[LATE_JOINER] Sending notification to host")
+            participant_info = {
+                'id': self.user.id,
+                'full_name': self.user.get_full_name() or self.user.username,
+                'email': self.user.email,
+            }
+            notification_data = {
+                "late_joiner_id": joiner.id,
+                "participant_id": self.user.id,
+                "participant_name": participant_info['full_name'],
+                "participant_email": participant_info['email'],
+                "available_rooms": available_rooms,
+                "can_auto_assign": bool(available_rooms),
+            }
+            print(f"[LATE_JOINER] Broadcasting notification: {notification_data}")
+            await self.channel_layer.group_send(
+                self.group_name,
+                {"type": "late_joiner_notification", "notification": notification_data}
+            )
+            print(f"[LATE_JOINER] ✅ Notification sent to host")
+            await self._notify_late_joiner_host_db(joiner.id)
+
+        except Exception as e:
+            print(f"[LATE_JOINER] ❌ Error in handle_late_joiner_join: {e}")
+            import traceback
+            traceback.print_exc()
+
+    async def _auto_assign_late_joiner(self, joiner, event, available_rooms):
+        """Auto-assign a late joiner based on the configured strategy."""
+        try:
+            strategy = event.auto_assign_strategy or 'least'
+            target_room = None
+
+            if strategy == 'least':
+                print(f"[LATE_JOINER_AUTO] Using 'least' strategy")
+                target_room = min(available_rooms, key=lambda r: r['current_participants'])
+            elif strategy == 'round_robin':
+                print(f"[LATE_JOINER_AUTO] Using 'round_robin' strategy")
+                target_room = available_rooms[self.user.id % len(available_rooms)]
+            else:  # sequential
+                print(f"[LATE_JOINER_AUTO] Using 'sequential' strategy")
+                target_room = available_rooms[0]
+
+            if not target_room:
+                print(f"[LATE_JOINER_AUTO] No target room found")
+                return
+
+            print(f"[LATE_JOINER_AUTO] Auto-assigning to room {target_room['id']}")
+            table, error = await self._assign_late_joiner_to_room_db(
+                self.user.id, target_room['id'], None, method='auto'
+            )
+            if table:
+                print(f"[LATE_JOINER_AUTO] ✅ Auto-assigned to room {table.id}")
+                await self.channel_layer.group_send(
+                    f"user_{self.user.id}",
+                    {
+                        "type": "late_joiner_assigned",
+                        "room_id": table.id,
+                        "room_name": table.name,
+                        "dyte_meeting_id": table.dyte_meeting_id,
+                        "method": "auto",
+                    }
+                )
+                await self.channel_layer.group_send(
+                    f"user_{self.user.id}",
+                    {
+                        "type": "breakout_force_join",
+                        "user_id": self.user.id,
+                        "table_id": table.id
+                    }
+                )
+
+                # Add to breakout group since we are on the user's connection
+                await self.channel_layer.group_add(f"breakout_{table.id}", self.channel_name)
+
+                # NEW: Notify existing room members to refresh their list/view
+                await self.channel_layer.group_send(
+                    f"breakout_{table.id}",
+                    {
+                        "type": "refresh_breakout_participants",
+                        "room_id": table.id,
+                        "dyte_meeting_id": table.dyte_meeting_id
+                    }
+                )
+
+                await self.broadcast_lounge_update()
+        except Exception as e:
+            print(f"[LATE_JOINER_AUTO] ❌ Error auto-assigning: {e}")
+
+    @database_sync_to_async
+    def _check_active_breakout_rooms(self):
+        """Returns True if any BREAKOUT table has participants."""
+        from events.models import LoungeParticipant
+        return LoungeParticipant.objects.filter(
+            table__event_id=self.event_id,
+            table__category='BREAKOUT'
+        ).exists()
+
+    @database_sync_to_async
+    def _get_event_with_breakout_settings(self):
+        """Get event with breakout settings."""
+        return Event.objects.get(id=self.event_id)
+
+    @database_sync_to_async
+    def _create_or_get_late_joiner(self):
+        """Create or retrieve BreakoutJoiner record for this user."""
+        from events.models import BreakoutJoiner
+        obj, created = BreakoutJoiner.objects.get_or_create(
+            event_id=self.event_id,
+            user=self.user,
+            defaults={'status': 'waiting'}
+        )
+        if not created and obj.status in ('assigned', 'auto_assigned', 'main_room'):
+            return None  # Already handled
+        if not created:
+            # Update to waiting if status was expired
+            obj.status = 'waiting'
+            obj.save(update_fields=['status'])
+        return obj
+
+    @database_sync_to_async
+    def _get_available_breakout_rooms(self):
+        """Return list of BREAKOUT tables with available seats."""
+        from events.models import LoungeTable, LoungeParticipant
+        tables = LoungeTable.objects.filter(
+            event_id=self.event_id,
+            category='BREAKOUT'
+        ).prefetch_related('participants')
+        available = []
+        for t in tables:
+            current = t.participants.count()
+            if current < t.max_seats:
+                available.append({
+                    'id': t.id,
+                    'name': t.name,
+                    'current_participants': current,
+                    'max_seats': t.max_seats,
+                    'available_seats': t.max_seats - current,
+                    'dyte_meeting_id': t.dyte_meeting_id,
+                })
+        return available
+
+    @database_sync_to_async
+    def _notify_late_joiner_host_db(self, joiner_id):
+        """Update host_notified + notified_host_at in DB."""
+        from django.utils import timezone
+        from events.models import BreakoutJoiner
+        BreakoutJoiner.objects.filter(id=joiner_id).update(
+            host_notified=True,
+            notified_host_at=timezone.now(),
+            notification_sent_count=F('notification_sent_count') + 1
+        )
+
+    @database_sync_to_async
+    def _assign_late_joiner_to_room_db(self, participant_id, room_id, assigned_by_id, method='manual'):
+        """Assign the late joiner to a room, create LoungeParticipant record."""
+        from django.utils import timezone
+        from django.db import transaction
+        from events.models import BreakoutJoiner, LoungeTable, LoungeParticipant
+
+        with transaction.atomic():
+            joiner = BreakoutJoiner.objects.select_for_update().get(
+                event_id=self.event_id, user_id=participant_id
+            )
+            table = LoungeTable.objects.get(id=room_id, event_id=self.event_id)
+
+            # Clear any existing seat
+            LoungeParticipant.objects.filter(
+                table__event_id=self.event_id, user_id=participant_id
+            ).delete()
+
+            # Find available seat
+            occupied = set(LoungeParticipant.objects.filter(table=table).values_list('seat_index', flat=True))
+            seat = next((i for i in range(table.max_seats) if i not in occupied), None)
+            if seat is None:
+                return None, "Room is full"
+
+            LoungeParticipant.objects.create(table=table, user_id=participant_id, seat_index=seat)
+            EventRegistration.objects.filter(event_id=self.event_id, user_id=participant_id).update(
+                last_breakout_table=table
+            )
+
+            joiner.status = 'assigned' if method == 'manual' else 'auto_assigned'
+            joiner.assigned_at = timezone.now()
+            joiner.assigned_room = table
+            joiner.assigned_by_id = assigned_by_id
+            joiner.assignment_method = method
+            joiner.save()
+            return table, None
+
+    @database_sync_to_async
+    def _mark_late_joiner_main_room(self, participant_id):
+        """Mark the late joiner as staying in main room."""
+        from events.models import BreakoutJoiner
+        BreakoutJoiner.objects.filter(event_id=self.event_id, user_id=participant_id).update(
+            status='main_room', assignment_method='none'
+        )
+
+    @database_sync_to_async
+    def _expire_all_late_joiners(self):
+        """Called when breakout rooms end. Expire waiting joiners."""
+        from events.models import BreakoutJoiner
+        BreakoutJoiner.objects.filter(
+            event_id=self.event_id, status='waiting'
+        ).update(status='expired')
+
+    @database_sync_to_async
+    def _set_breakout_active_flag(self, active: bool):
+        """Set the breakout_rooms_active flag on the event."""
+        Event.objects.filter(id=self.event_id).update(breakout_rooms_active=active)
