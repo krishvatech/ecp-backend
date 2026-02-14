@@ -54,6 +54,8 @@ from rest_framework.response import Response
 # ============================================================
 
 from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog
+from friends.models import Notification
+from groups.models import Group, GroupMembership
 from .serializers import (
     EventSerializer,
     EventLiteSerializer,
@@ -636,6 +638,93 @@ class EventViewSet(viewsets.ModelViewSet):
                     created.append(ev.id)
 
         return Response({"ok": True, "created": created, "count": len(created)})
+
+
+
+    # GET /api/events/{id}/check_registration/
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="check_registration")
+    def check_registration(self, request, pk=None):
+        """
+        Check if the current user is registered for the event.
+        Returns: { "is_registered": bool, "slug": event.slug }
+        """
+        event = self.get_object()
+        is_registered = EventRegistration.objects.filter(
+            event=event, 
+            user=request.user, 
+            status="registered"
+        ).exists()
+        
+        return Response({
+            "is_registered": is_registered,
+            "slug": event.slug,
+            "id": event.id
+        })
+
+
+    # POST /api/events/{id}/invite_users/
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="invite_users")
+    def invite_users(self, request, pk=None):
+        """
+        Invite users and group members to an event.
+        Only staff users can perform this action.
+        """
+        if not request.user.is_staff:
+            return Response({"detail": "Only staff users can invite users."}, status=403)
+
+        event = self.get_object()
+        user_ids = request.data.get("user_ids", [])
+        group_ids = request.data.get("group_ids", [])
+        
+        invited_users = set()
+
+        # 1. Process individual users
+        if user_ids:
+            users = User.objects.filter(id__in=user_ids)
+            for u in users:
+                invited_users.add(u)
+
+        # 2. Process groups
+        if group_ids:
+            # Fetch members of these groups
+            memberships = GroupMembership.objects.filter(
+                group_id__in=group_ids,
+                status__in=["member", "admin", "moderator"]
+            ).select_related("user")
+            for m in memberships:
+                invited_users.add(m.user)
+
+        # 3. Send Notifications
+        # Filter out the actor themselves if they selected themselves (optional but good UX)
+        if request.user in invited_users:
+            invited_users.remove(request.user)
+
+        notifications_to_create = []
+        for recipient in invited_users:
+            # Check if already invited or registered? 
+            # For now, we utilize Notification system which usually allows duplicates unless logic prevents it.
+            # We will just send the notification.
+            
+            notifications_to_create.append(
+                Notification(
+                    recipient=recipient,
+                    actor=request.user,
+                    kind="event",
+                    title=f"Invitation: {event.title}",
+                    description=f"You have been invited to {event.title}.",
+                    data={"event_id": event.id},
+                    is_read=False
+                )
+            )
+
+        if notifications_to_create:
+            Notification.objects.bulk_create(notifications_to_create)
+
+        return Response({
+            "ok": True, 
+            "invited_count": len(invited_users),
+            "message": f"Sent invitations to {len(invited_users)} users."
+        })
 
 
     # POST /api/events/{id}/register/
