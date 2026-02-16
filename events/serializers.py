@@ -13,6 +13,7 @@ from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.conf import settings
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from django.db import transaction
 
 from django.utils.dateparse import parse_datetime
 from django.db.models import Q
@@ -376,6 +377,14 @@ class EventSerializer(serializers.ModelSerializer):
     sessions = EventSessionSerializer(many=True, read_only=True)
     has_sessions = serializers.SerializerMethodField(read_only=True)
 
+    # Write-only field for sessions input during event creation (atomic with event)
+    sessions_input = EventSessionSerializer(
+        many=True,
+        write_only=True,
+        required=False,
+        allow_empty=True,
+    )
+
     class Meta:
         model = Event
         fields = [
@@ -434,6 +443,7 @@ class EventSerializer(serializers.ModelSerializer):
             "event_participants",
             "sessions",
             "has_sessions",
+            "sessions_input",
         ]
         
         read_only_fields = [
@@ -765,6 +775,9 @@ class EventSerializer(serializers.ModelSerializer):
                 send_speaker_credentials_task.delay(user_id)
 
     def create(self, validated_data):
+        # Extract sessions_input before processing other data (must be done first for atomicity)
+        sessions_input = validated_data.pop('sessions_input', [])
+
         # Extract participants data before creating Event
         participants_data = validated_data.pop('participants', [])
 
@@ -787,145 +800,153 @@ class EventSerializer(serializers.ModelSerializer):
         print(f"  validated_data['start_time']: {validated_data.get('start_time')}")
         print(f"  validated_data['end_time']: {validated_data.get('end_time')}")
         print(f"  validated_data['timezone']: {validated_data.get('timezone')}")
+        print(f"  sessions_input count: {len(sessions_input)}")
 
-        event = super().create(validated_data)
+        # Wrap entire creation in atomic transaction
+        with transaction.atomic():
+            event = super().create(validated_data)
 
-        print(f"  Event created with ID {event.id}:")
-        print(f"    Stored start_time: {event.start_time}")
-        print(f"    Stored end_time: {event.end_time}")
-        print(f"🔴 BACKEND CREATE METHOD END\n")
+            print(f"  Event created with ID {event.id}:")
+            print(f"    Stored start_time: {event.start_time}")
+            print(f"    Stored end_time: {event.end_time}")
+            print(f"🔴 BACKEND CREATE METHOD END\n")
 
-        # Automatically add event creator as attendee
-        creator = self.context["request"].user
-        EventRegistration.objects.get_or_create(
-            event=event,
-            user=creator,
-            defaults={"status": "registered", "admission_status": "admitted"}
-        )
+            # Automatically add event creator as attendee
+            creator = self.context["request"].user
+            EventRegistration.objects.get_or_create(
+                event=event,
+                user=creator,
+                defaults={"status": "registered", "admission_status": "admitted"}
+            )
 
-        # ----- read “Attach Resources” metadata coming from the form -----
-        req = self.context.get("request")
-        meta_title = (req.data.get("resource_title") or "").strip() if req else ""
-        meta_desc  = (req.data.get("resource_description") or "").strip() if req else ""
+            # ----- read "Attach Resources" metadata coming from the form -----
+            req = self.context.get("request")
+            meta_title = (req.data.get("resource_title") or "").strip() if req else ""
+            meta_desc  = (req.data.get("resource_description") or "").strip() if req else ""
 
-        # tags can be repeated keys in multipart; prefer getlist when available
-        if req and hasattr(req.data, "getlist"):
-            meta_tags = [t.strip() for t in req.data.getlist("resource_tags") if t.strip()]
-        else:
-            raw = (req.data.get("resource_tags") if req else []) or []
-            meta_tags = [t.strip() for t in raw.split(",")] if isinstance(raw, str) else list(raw)
+            # tags can be repeated keys in multipart; prefer getlist when available
+            if req and hasattr(req.data, "getlist"):
+                meta_tags = [t.strip() for t in req.data.getlist("resource_tags") if t.strip()]
+            else:
+                raw = (req.data.get("resource_tags") if req else []) or []
+                meta_tags = [t.strip() for t in raw.split(",")] if isinstance(raw, str) else list(raw)
 
-        # publish controls
-        # UI: toggle “Publish resources immediately” + an optional datetime
-        publish_toggle = (req.data.get("publish_resources_immediately")  # boolean "true"/"false"
-                        if req else None)
-        publish_at_raw = (req.data.get("resource_publish_at") or req.data.get("publish_at")) if req else None
+            # publish controls
+            # UI: toggle "Publish resources immediately" + an optional datetime
+            publish_toggle = (req.data.get("publish_resources_immediately")  # boolean "true"/"false"
+                            if req else None)
+            publish_at_raw = (req.data.get("resource_publish_at") or req.data.get("publish_at")) if req else None
 
-        def _to_bool(val):
-            if isinstance(val, bool):
-                return val
-            if val is None:
-                return None
-            return str(val).strip().lower() in {"1","true","yes","y","on"}
+            def _to_bool(val):
+                if isinstance(val, bool):
+                    return val
+                if val is None:
+                    return None
+                return str(val).strip().lower() in {"1","true","yes","y","on"}
 
-        publish_now_flag = _to_bool(publish_toggle)
-        publish_at = parse_datetime(publish_at_raw) if publish_at_raw else None
-        if publish_at and timezone.is_naive(publish_at):
-            publish_at = timezone.make_aware(publish_at, timezone.get_current_timezone())
+            publish_now_flag = _to_bool(publish_toggle)
+            publish_at = parse_datetime(publish_at_raw) if publish_at_raw else None
+            if publish_at and timezone.is_naive(publish_at):
+                publish_at = timezone.make_aware(publish_at, timezone.get_current_timezone())
 
-        # decide final publishing state
-        if publish_now_flag is False and publish_at and publish_at > timezone.now():
-            is_published = False
-        else:
-            # publish immediately if toggle true OR no schedule OR schedule in the past
-            is_published = True
-            publish_at = None
+            # decide final publishing state
+            if publish_now_flag is False and publish_at and publish_at > timezone.now():
+                is_published = False
+            else:
+                # publish immediately if toggle true OR no schedule OR schedule in the past
+                is_published = True
+                publish_at = None
 
-        # helper: apply title/desc/tags overrides only if provided
-        def apply_meta(title, description, tags):
-            t = (meta_title or title or event.title)
-            d = (meta_desc if meta_desc != "" else description)
-            tg = (meta_tags if meta_tags else (tags or []))
-            return t, d, tg
+            # helper: apply title/desc/tags overrides only if provided
+            def apply_meta(title, description, tags):
+                t = (meta_title or title or event.title)
+                d = (meta_desc if meta_desc != "" else description)
+                tg = (meta_tags if meta_tags else (tags or []))
+                return t, d, tg
 
-        user = self.context["request"].user if self.context.get("request") else None
-        org = event.community
+            user = self.context["request"].user if self.context.get("request") else None
+            org = event.community
 
-        scheduled_ids = []
+            scheduled_ids = []
 
-        # ---------------- Files ----------------
-        import os as _os
-        for file_data in files or []:
-            if hasattr(file_data, "name"):
-                base_title = _os.path.splitext(file_data.name)[0] or event.title
-                title, description, tags = apply_meta(base_title, "", [])
+            # ---------------- Files ----------------
+            import os as _os
+            for file_data in files or []:
+                if hasattr(file_data, "name"):
+                    base_title = _os.path.splitext(file_data.name)[0] or event.title
+                    title, description, tags = apply_meta(base_title, "", [])
+                    r = Resource.objects.create(
+                        community=org, event=event, type=Resource.TYPE_FILE,
+                        title=title, description=description, tags=tags,
+                        file=file_data, uploaded_by=user,
+                        is_published=is_published, publish_at=publish_at,
+                    )
+                else:
+                    title = file_data.get("title") or _os.path.splitext(getattr(file_data.get("file"), "name", "file"))[0] or event.title
+                    description = file_data.get("description", "")
+                    tags = file_data.get("tags", [])
+                    title, description, tags = apply_meta(title, description, tags)
+                    r = Resource.objects.create(
+                        community=org, event=event, type=Resource.TYPE_FILE,
+                        title=title, description=description, tags=tags,
+                        file=file_data.get("file"), uploaded_by=user,
+                        is_published=is_published, publish_at=publish_at,
+                    )
+                if not r.is_published and r.publish_at:
+                    publish_resource_task.apply_async(args=[r.id], eta=r.publish_at)
+                    scheduled_ids.append(r.id)
+
+            # ---------------- Links ----------------
+            for link_data in links or []:
+                if isinstance(link_data, str):
+                    title, description, tags = apply_meta(link_data, "", [])
+                    url = link_data
+                else:
+                    base_title = link_data.get("title", link_data.get("url"))
+                    url = link_data.get("url")
+                    base_desc = link_data.get("description", "")
+                    base_tags = link_data.get("tags", [])
+                    title, description, tags = apply_meta(base_title, base_desc, base_tags)
+
                 r = Resource.objects.create(
-                    community=org, event=event, type=Resource.TYPE_FILE,
+                    community=org, event=event, type=Resource.TYPE_LINK,
                     title=title, description=description, tags=tags,
-                    file=file_data, uploaded_by=user,
+                    link_url=url, uploaded_by=user,
                     is_published=is_published, publish_at=publish_at,
                 )
-            else:
-                title = file_data.get("title") or _os.path.splitext(getattr(file_data.get("file"), "name", "file"))[0] or event.title
-                description = file_data.get("description", "")
-                tags = file_data.get("tags", [])
-                title, description, tags = apply_meta(title, description, tags)
+                if not r.is_published and r.publish_at:
+                    publish_resource_task.apply_async(args=[r.id], eta=r.publish_at)
+                    scheduled_ids.append(r.id)
+
+            # ---------------- Videos ----------------
+            for video_data in videos or []:
+                if isinstance(video_data, str):
+                    title, description, tags = apply_meta(video_data, "", [])
+                    url = video_data
+                else:
+                    base_title = video_data.get("title", video_data.get("url"))
+                    url = video_data.get("url")
+                    base_desc = video_data.get("description", "")
+                    base_tags = video_data.get("tags", [])
+                    title, description, tags = apply_meta(base_title, base_desc, base_tags)
+
                 r = Resource.objects.create(
-                    community=org, event=event, type=Resource.TYPE_FILE,
+                    community=org, event=event, type=Resource.TYPE_VIDEO,
                     title=title, description=description, tags=tags,
-                    file=file_data.get("file"), uploaded_by=user,
+                    video_url=url, uploaded_by=user,
                     is_published=is_published, publish_at=publish_at,
                 )
-            if not r.is_published and r.publish_at:
-                publish_resource_task.apply_async(args=[r.id], eta=r.publish_at)
-                scheduled_ids.append(r.id)
+                if not r.is_published and r.publish_at:
+                    publish_resource_task.apply_async(args=[r.id], eta=r.publish_at)
+                    scheduled_ids.append(r.id)
 
-        # ---------------- Links ----------------
-        for link_data in links or []:
-            if isinstance(link_data, str):
-                title, description, tags = apply_meta(link_data, "", [])
-                url = link_data
-            else:
-                base_title = link_data.get("title", link_data.get("url"))
-                url = link_data.get("url")
-                base_desc = link_data.get("description", "")
-                base_tags = link_data.get("tags", [])
-                title, description, tags = apply_meta(base_title, base_desc, base_tags)
+            # Create participants (add after resource creation)
+            self._create_participants(event, participants_data)
 
-            r = Resource.objects.create(
-                community=org, event=event, type=Resource.TYPE_LINK,
-                title=title, description=description, tags=tags,
-                link_url=url, uploaded_by=user,
-                is_published=is_published, publish_at=publish_at,
-            )
-            if not r.is_published and r.publish_at:
-                publish_resource_task.apply_async(args=[r.id], eta=r.publish_at)
-                scheduled_ids.append(r.id)
-
-        # ---------------- Videos ----------------
-        for video_data in videos or []:
-            if isinstance(video_data, str):
-                title, description, tags = apply_meta(video_data, "", [])
-                url = video_data
-            else:
-                base_title = video_data.get("title", video_data.get("url"))
-                url = video_data.get("url")
-                base_desc = video_data.get("description", "")
-                base_tags = video_data.get("tags", [])
-                title, description, tags = apply_meta(base_title, base_desc, base_tags)
-
-            r = Resource.objects.create(
-                community=org, event=event, type=Resource.TYPE_VIDEO,
-                title=title, description=description, tags=tags,
-                video_url=url, uploaded_by=user,
-                is_published=is_published, publish_at=publish_at,
-            )
-            if not r.is_published and r.publish_at:
-                publish_resource_task.apply_async(args=[r.id], eta=r.publish_at)
-                scheduled_ids.append(r.id)
-
-        # Create participants (add after resource creation)
-        self._create_participants(event, participants_data)
+            # Create sessions atomically with the event
+            for session_data in sessions_input:
+                session_data.pop('event', None)  # prevent stale key conflicts
+                EventSession.objects.create(event=event, **session_data)
 
         return event
 
@@ -1148,6 +1169,30 @@ class EventSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"end_time": "End time cannot be in the past."})
         if start_time and end_time and not (end_time > start_time):
             raise serializers.ValidationError({"end_time": "End time must be later than start time."})
+
+        # Validate sessions_input: all session dates must fall within event dates
+        sessions_input = data.get('sessions_input', [])
+        event_start = data.get('start_time')
+        event_end = data.get('end_time')
+
+        if sessions_input and event_start and event_end:
+            errors = []
+            for i, session in enumerate(sessions_input):
+                sess_start = session.get('start_time')
+                sess_end = session.get('end_time')
+                label = session.get('title', f'Session {i+1}')
+                if sess_start and sess_start < event_start:
+                    errors.append(
+                        f"'{label}' starts before the event "
+                        f"({sess_start.isoformat()} < {event_start.isoformat()})"
+                    )
+                if sess_end and sess_end > event_end:
+                    errors.append(
+                        f"'{label}' ends after the event "
+                        f"({sess_end.isoformat()} > {event_end.isoformat()})"
+                    )
+            if errors:
+                raise serializers.ValidationError({"sessions_input": errors})
 
         # Validate participants structure
         participants = data.get('participants', [])

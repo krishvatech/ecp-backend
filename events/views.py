@@ -564,6 +564,7 @@ class EventViewSet(viewsets.ModelViewSet):
           - request includes an 'community' (via serializer validated_data)
           - the authenticated user is a member of that community
         Then set created_by to the current user.
+        Wrap in transaction.atomic() to ensure event + sessions are created atomically.
         """
         # With the serializer fix below, validated_data has 'community' (a model instance)
         org = serializer.validated_data.get("community")
@@ -572,8 +573,9 @@ class EventViewSet(viewsets.ModelViewSet):
         # Ensure the user is a member of that org
         if not self.request.user.community.filter(id=org.id).exists():
             raise PermissionDenied("You must be a member of the community to create events.")
-        # Attach creator automatically
-        serializer.save(created_by=self.request.user, status="published")
+        # Attach creator automatically, wrapped in transaction for atomicity
+        with transaction.atomic():
+            serializer.save(created_by=self.request.user, status="published")
 
     # ------------------ Dictionary Endpoints -----------------
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="categories")
