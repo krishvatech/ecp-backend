@@ -70,6 +70,11 @@ class Event(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     is_free = models.BooleanField(default=False)
     attending_count = models.PositiveIntegerField(default=0)
+    max_participants = models.PositiveIntegerField(
+        null=True, 
+        blank=True, 
+        help_text="Maximum number of participants allowed (null for unlimited)"
+    )
     preview_image = models.ImageField(
         upload_to=event_preview_upload_to,
         blank=True,

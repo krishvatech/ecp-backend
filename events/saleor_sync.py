@@ -17,6 +17,11 @@ def sync_event_to_saleor_sync(event):
         logger.warning("Skipping Saleor event sync: Settings missing.")
         return
 
+    # Skip sync for free events (don't create products)
+    if event.is_free and not event.saleor_product_id:
+        logger.info(f"Skipping Saleor sync for FREE event {event.id}: {event.title}")
+        return
+
     headers = {
         "Authorization": f"Bearer {saleor_token}",
         "Content-Type": "application/json"

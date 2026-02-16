@@ -633,10 +633,18 @@ class EventViewSet(viewsets.ModelViewSet):
         # Use atomic to ensure all-or-nothing behavior
         with transaction.atomic():
             for ev in qs:
+                # Check capacity
+                if ev.max_participants is not None:
+                    count = ev.registrations.filter(status="registered").count()
+                    is_registered = ev.registrations.filter(user=request.user, status="registered").exists()
+                    if not is_registered and count >= ev.max_participants:
+                        # Skip this event if full
+                        continue
+
                 obj, was_created = EventRegistration.objects.get_or_create(user=request.user, event=ev)
                 if was_created:
-                    # keep a running count on Event (optional, commented out until you add the field)
-                    # Event.objects.filter(pk=ev.pk).update(attending_count=F("attending_count") + 1)
+                    # keep a running count on Event
+                    Event.objects.filter(pk=ev.pk).update(attending_count=F("attending_count") + 1)
                     created.append(ev.id)
 
         return Response({"ok": True, "created": created, "count": len(created)})
@@ -736,9 +744,23 @@ class EventViewSet(viewsets.ModelViewSet):
         Register the current user for a single event.
         """
         event = self.get_object()
+
+        # Check capactity limit
+        if event.max_participants is not None:
+            # We check if strict count >= max (note: race condition possible without lock, but acceptable for MVP)
+            # Exclude this user if they are already registered to avoid false positive on re-register?
+            # Actually get_or_create handles re-register.
+            # But if new, we must check capacity.
+            current_count = event.registrations.filter(status="registered").count()
+            
+            # If user is NOT already registered, check if full
+            is_already_registered = event.registrations.filter(user=request.user, status="registered").exists()
+            if not is_already_registered and current_count >= event.max_participants:
+                return Response({"detail": "Event is full."}, status=409)
+
         obj, was_created = EventRegistration.objects.get_or_create(user=request.user, event=event)
-        # if was_created:
-        #     Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+        if was_created:
+            Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
         return Response({"ok": True, "created": was_created, "event_id": event.id})
 
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="max-price")
@@ -2752,7 +2774,7 @@ class EventViewSet(viewsets.ModelViewSet):
         )
         
         # Optionally update attending count immediately if you want them counted strictly
-        # Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+        Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
 
         return Response({"ok": True, "detail": f"User {target_user.username} added successfully."})
 

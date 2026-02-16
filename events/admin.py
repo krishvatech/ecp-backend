@@ -77,7 +77,7 @@ class EventAdmin(admin.ModelAdmin):
                 "lounge_enabled_after", "lounge_after_buffer"
             )
         }),
-        ("Meta", {"fields": ("category", "format", "location", "price", "is_free", "preview_image")}),
+        ("Meta", {"fields": ("category", "format", "location", "price", "is_free", "max_participants", "saleor_product_id", "saleor_variant_id", "preview_image")}),
     )
 
     def save_model(self, request, obj, form, change):
