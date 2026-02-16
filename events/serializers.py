@@ -47,6 +47,36 @@ class ParticipantsField(serializers.ListField):
         return super().to_internal_value(data)
 
 
+class SessionsInputField(serializers.ListField):
+    """Custom field to handle sessions_input sent as JSON string from FormData."""
+
+    def to_internal_value(self, data):
+        # DRF multipart parsing may provide sessions as a single-item list
+        # containing a JSON string, so normalize both string and list-wrapped string.
+        print(f"\n🔍 SessionsInputField.to_internal_value called:")
+        print(f"   Input type: {type(data)}")
+        print(f"   Input value: {data}")
+
+        if isinstance(data, (list, tuple)) and len(data) == 1 and isinstance(data[0], str):
+            print(f"   Converting list-wrapped string to string")
+            data = data[0]
+
+        if isinstance(data, str):
+            print(f"   Parsing JSON string")
+            try:
+                data = json.loads(data)
+                print(f"   ✅ Parsed successfully: {data}")
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"   ❌ Failed to parse: {e}")
+                raise serializers.ValidationError(f"Invalid JSON format for sessions_input: {e}")
+
+        # Then use parent validation for list of dicts
+        print(f"   Calling parent to_internal_value")
+        result = super().to_internal_value(data)
+        print(f"   Parent returned: {result}")
+        return result
+
+
 class EventParticipantSerializer(serializers.ModelSerializer):
     """Read-only serializer for EventParticipant with computed fields supporting both staff and guest types."""
 
@@ -378,11 +408,13 @@ class EventSerializer(serializers.ModelSerializer):
     has_sessions = serializers.SerializerMethodField(read_only=True)
 
     # Write-only field for sessions input during event creation (atomic with event)
-    sessions_input = EventSessionSerializer(
-        many=True,
+    # Using custom field to handle JSON strings from FormData
+    sessions_input = SessionsInputField(
+        child=serializers.DictField(),
         write_only=True,
         required=False,
         allow_empty=True,
+        help_text="List of sessions: [{'title': 'Session 1', 'session_date': '2026-02-16', 'start_time': '2026-02-16T08:30:00Z', 'end_time': '2026-02-16T08:40:00Z', ...}]"
     )
 
     class Meta:
@@ -778,6 +810,26 @@ class EventSerializer(serializers.ModelSerializer):
         # Extract sessions_input before processing other data (must be done first for atomicity)
         sessions_input = validated_data.pop('sessions_input', [])
 
+        print(f"\n🔍 DEBUG sessions_input type: {type(sessions_input)}")
+        print(f"   sessions_input value: {sessions_input}")
+        print(f"   isinstance(sessions_input, list): {isinstance(sessions_input, list)}")
+        print(f"   isinstance(sessions_input, str): {isinstance(sessions_input, str)}")
+
+        # Handle JSON string sessions_input (from FormData) - CRITICAL FIX
+        if isinstance(sessions_input, str):
+            import json
+            try:
+                sessions_input = json.loads(sessions_input)
+                print(f"✅ Parsed sessions_input from JSON string: {len(sessions_input)} sessions")
+                print(f"   Parsed data: {sessions_input}")
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"❌ Failed to parse sessions_input JSON: {e}")
+                sessions_input = []
+        elif isinstance(sessions_input, list):
+            print(f"✅ sessions_input is already a list with {len(sessions_input)} items")
+        else:
+            print(f"⚠️ sessions_input is neither string nor list: {type(sessions_input)}")
+
         # Extract participants data before creating Event
         participants_data = validated_data.pop('participants', [])
 
@@ -945,7 +997,26 @@ class EventSerializer(serializers.ModelSerializer):
 
             # Create sessions atomically with the event
             for session_data in sessions_input:
+                from dateutil.parser import parse as parse_datetime
                 session_data.pop('event', None)  # prevent stale key conflicts
+
+                # Convert ISO string timestamps to datetime objects if needed
+                if isinstance(session_data.get('start_time'), str):
+                    try:
+                        session_data['start_time'] = parse_datetime(session_data['start_time'])
+                    except (ValueError, TypeError):
+                        print(f"⚠️ Failed to parse start_time: {session_data.get('start_time')}")
+
+                if isinstance(session_data.get('end_time'), str):
+                    try:
+                        session_data['end_time'] = parse_datetime(session_data['end_time'])
+                    except (ValueError, TypeError):
+                        print(f"⚠️ Failed to parse end_time: {session_data.get('end_time')}")
+
+                print(f"✅ Creating session: {session_data.get('title')}")
+                print(f"   start_time type: {type(session_data.get('start_time'))}")
+                print(f"   end_time type: {type(session_data.get('end_time'))}")
+
                 EventSession.objects.create(event=event, **session_data)
 
         return event
@@ -1172,15 +1243,39 @@ class EventSerializer(serializers.ModelSerializer):
 
         # Validate sessions_input: all session dates must fall within event dates
         sessions_input = data.get('sessions_input', [])
+
+        print(f"\n🔍 VALIDATE METHOD - sessions_input check:")
+        print(f"   Type: {type(sessions_input)}")
+        print(f"   Value: {sessions_input}")
+        print(f"   Is empty: {not sessions_input}")
+
         event_start = data.get('start_time')
         event_end = data.get('end_time')
 
         if sessions_input and event_start and event_end:
+            from dateutil.parser import parse as parse_datetime
             errors = []
             for i, session in enumerate(sessions_input):
                 sess_start = session.get('start_time')
                 sess_end = session.get('end_time')
                 label = session.get('title', f'Session {i+1}')
+
+                # Parse session times if they're strings (ISO format)
+                if isinstance(sess_start, str):
+                    try:
+                        sess_start = parse_datetime(sess_start)
+                    except (ValueError, TypeError):
+                        errors.append(f"'{label}' has invalid start_time format: {sess_start}")
+                        continue
+
+                if isinstance(sess_end, str):
+                    try:
+                        sess_end = parse_datetime(sess_end)
+                    except (ValueError, TypeError):
+                        errors.append(f"'{label}' has invalid end_time format: {sess_end}")
+                        continue
+
+                # Now compare with event times (both are datetime objects)
                 if sess_start and sess_start < event_start:
                     errors.append(
                         f"'{label}' starts before the event "
