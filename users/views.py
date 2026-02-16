@@ -1467,23 +1467,28 @@ class MeProfileView(APIView):
     })
 
     
+from .email_utils import send_admin_credentials_email, delete_cognito_user
+from .cognito_groups import sync_staff_group, add_user_to_group, remove_user_from_group
+
+
+
 class StaffUserViewSet(viewsets.ModelViewSet):
     """
     /api/admin/users/                 GET list (search/order/paginate)
+    /api/admin/users/                 POST create (provision new admin/staff)
     /api/admin/users/{id}/            GET retrieve
-    /api/admin/users/{id}/            PATCH { "is_staff": true|false }
-    /api/admin/users/bulk-set-staff/  POST { "ids":[...], "is_staff": true|false }
+    /api/admin/users/{id}/            PATCH update (edit details/roles)
+    /api/admin/users/{id}/            DELETE delete
     """
     queryset = User.objects.all().order_by("-date_joined")
     serializer_class = StaffUserSerializer
     permission_classes = [IsSuperuser]
-    http_method_names = ["get", "patch", "post"]
+    http_method_names = ["get", "post", "patch", "delete"]
 
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["username", "first_name", "last_name", "email"]
     ordering_fields = ["date_joined", "last_login", "username", "email"]
     
-   # users/views.py  -> inside class StaffUserViewSet
     def get_queryset(self):
         qs = super().get_queryset().select_related("profile")
         cid  = self.request.query_params.get("community_id")
@@ -1492,34 +1497,103 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         if cid or slug:
             filt = Q()
             if cid:
-                filt |= Q(community__id=cid)            # 👈 use community__, not memberships__
+                filt |= Q(community__id=cid)
             if slug:
-                filt |= Q(community__slug=slug)         # 👈 use community__, not memberships__
+                filt |= Q(community__slug=slug)
             qs = qs.filter(filt).distinct()
 
         return qs
 
-    def partial_update(self, request, *args, **kwargs):
+    def create(self, request, *args, **kwargs):
+        """
+        Provision a new user:
+        1. Validate input (email, name, roles).
+        2. Create Django user (auto-generated username if needed).
+        3. Create in Cognito + Generate Temp Password.
+        4. Send Credentials Email.
+        5. Sync to Cognito Groups.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        email = serializer.validated_data.get("email")
+        if User.objects.filter(email__iexact=email).exists():
+             return Response({"detail": "User with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Auto-generate username if missing
+        if not serializer.validated_data.get("username"):
+            base = email.split("@")[0]
+            # simple sanitization
+            base = "".join(c for c in base if c.isalnum() or c in "._-")
+            if not base: base = "user"
+            
+            candidate = base
+            idx = 1
+            while User.objects.filter(username=candidate).exists():
+                candidate = f"{base}{idx}"
+                idx += 1
+            serializer.validated_data["username"] = candidate
+
+        # Create the user object
+        user = serializer.save()
+
+        # Provisioning logic (Cognito + Email)
+        # We assume FRONTEND_APP_URL or settings.FRONTEND_URL
+        frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173") 
+        
+        # This helper creates Cognito user, sets temp password, and emails them
+        success = send_admin_credentials_email(user, frontend_url=frontend_url)
+        
+        if not success:
+            logger.error(f"Failed to send admin credentials for {user.username}. User created in DB but maybe not in Cognito.")
+            # We don't rollback DB to avoid losing data, but admin should know.
+            # But the response will be 201 Created.
+
+        # Sync permissions
+        if user.is_staff:
+            sync_staff_group(username=user.username, is_staff=True)
+        
+        if user.is_superuser:
+            # Platform admins should also be in staff group usually
+            if not user.is_staff:
+                user.is_staff = True
+                user.save(update_fields=["is_staff"])
+                sync_staff_group(username=user.username, is_staff=True)
+            
+            add_user_to_group(username=user.username, group_name="platform_admin")
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def perform_update(self, serializer):
         user = self.get_object()
         old_is_staff = user.is_staff
+        old_is_superuser = user.is_superuser
+        
+        # Prevent non-superusers from editing superusers
+        if user.is_superuser and not self.request.user.is_superuser:
+            raise PermissionDenied("You cannot modify a superuser.")
 
-        # Non-superusers cannot modify a superuser
-        if user.is_superuser and not request.user.is_superuser:
-            return Response({"detail": "You cannot modify a superuser."},
-                            status=status.HTTP_403_FORBIDDEN)
+        updated_user = serializer.save()
 
-        # Only allow toggling is_staff
-        if "is_staff" not in request.data:
-            return Response({"detail": "Only 'is_staff' can be updated."},
-                            status=status.HTTP_400_BAD_REQUEST)
+        # Sync Staff
+        if old_is_staff != updated_user.is_staff:
+            sync_staff_group(username=updated_user.username, is_staff=updated_user.is_staff)
 
-        ser = self.get_serializer(user, data={"is_staff": request.data["is_staff"]}, partial=True)
-        ser.is_valid(raise_exception=True)
-        self.perform_update(ser)
-        user.refresh_from_db(fields=["is_staff", "username"])
-        if old_is_staff != user.is_staff:
-            sync_staff_group(username=user.username, is_staff=user.is_staff)
-        return Response(ser.data)
+        # Sync Superuser -> Platform Admin
+        if updated_user.is_superuser != old_is_superuser:
+            if updated_user.is_superuser:
+                # Promoted to superuser
+                add_user_to_group(username=updated_user.username, group_name="platform_admin")
+                # Ensure staff too (required for admin access usually)
+                if not updated_user.is_staff:
+                    updated_user.is_staff = True
+                    updated_user.save(update_fields=["is_staff"])
+                    sync_staff_group(username=updated_user.username, is_staff=True)
+            else:
+                # Demoted from superuser
+                remove_user_from_group(username=updated_user.username, group_name="platform_admin")
+
 
     @action(detail=False, methods=["post"], url_path="bulk-set-staff")
     def bulk_set_staff(self, request):
@@ -1540,6 +1614,14 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         for uname in usernames:
             sync_staff_group(username=uname, is_staff=bool(is_staff))
         return Response({"updated": updated})
+
+    def perform_destroy(self, instance):
+        username = instance.username
+        # Delete from Cognito first
+        delete_cognito_user(username)
+        # Then delete from Django
+        instance.delete()
+
     
     
 class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):

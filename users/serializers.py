@@ -707,8 +707,14 @@ class UserMiniSerializer(serializers.ModelSerializer):
         return url
 
 class StaffUserSerializer(serializers.ModelSerializer):
-    # we only allow editing this single field
-    is_staff = serializers.BooleanField(required=True)
+    # Allow full editing for admin provisioning
+    is_staff = serializers.BooleanField(required=False)
+    is_active = serializers.BooleanField(required=False)
+    is_superuser = serializers.BooleanField(required=False)
+    email = serializers.EmailField(required=True)
+    first_name = serializers.CharField(required=True)
+    last_name = serializers.CharField(required=True)
+    
     profile = UserProfileMiniSerializer(read_only=True)
     avatar_url = serializers.SerializerMethodField()
 
@@ -721,10 +727,19 @@ class StaffUserSerializer(serializers.ModelSerializer):
             "profile", "avatar_url",
         )
         read_only_fields = (
-            "id", "username", "first_name", "last_name",
-            "email", "is_active", "is_superuser",
-            "date_joined", "last_login",
+            "id", "date_joined", "last_login",
+            # username is auto-generated if omitted, but can be read-only for now
+            # as we'll handle it in the view if missing.
         )
+        extra_kwargs = {
+            "username": {"required": False, "allow_blank": True},
+        }
+
+    def validate_email(self, value):
+        # Allow updating existing user, but check uniqueness for new ones?
+        # unique validator on model handles it, checking here is good too.
+        return value
+
 
     def get_avatar_url(self, obj):
         prof = getattr(obj, "profile", None)

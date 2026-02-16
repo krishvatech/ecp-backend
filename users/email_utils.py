@@ -129,6 +129,31 @@ def create_cognito_user(username, email, temp_password, first_name="", last_name
         return False
 
 
+def delete_cognito_user(username):
+    """
+    Delete a user from AWS Cognito.
+    """
+    region = getattr(settings, "COGNITO_REGION", "") or ""
+    pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
+
+    if not region or not pool_id:
+        logger.warning(f"Cognito not configured; skipping deletion for {username}")
+        return False
+
+    try:
+        client = boto3.client("cognito-idp", region_name=region)
+        client.admin_delete_user(UserPoolId=pool_id, Username=username)
+        logger.info(f"Deleted Cognito user: {username}")
+        return True
+    except client.exceptions.UserNotFoundException:
+        logger.warning(f"Cognito user {username} not found during deletion.")
+        return True # Considered success as user is gone
+    except Exception as e:
+        logger.error(f"Failed to delete Cognito user {username}: {e}")
+        return False
+
+
+
 def send_speaker_credentials_email(user, frontend_url=None):
     """
     Send email to speaker with temporary password to set up their account.
@@ -264,7 +289,85 @@ def send_event_confirmation_email(participant):
             fail_silently=False,
         )
         logger.info(f"Event confirmation email sent to {user.email} for event {event.id}")
-        return True
+        return False
     except Exception as e:
         logger.error(f"Failed to send event confirmation email to {user.email}: {e}")
         return False
+
+
+def send_admin_credentials_email(user, frontend_url=None):
+    """
+    Send email to a new admin/staff user with their temporary password.
+    Also creates/updates the user in Cognito.
+
+    Args:
+        user: User instance
+        frontend_url: Optional frontend base URL
+
+    Returns:
+        bool: True if successful
+    """
+    if not user.email:
+        logger.warning(f"Cannot send admin credentials: User {user.username} has no email")
+        return False
+
+    # Generate temporary password
+    temp_password = generate_temporary_password()
+
+    # 1. Create/update user in AWS Cognito
+    cognito_success = create_cognito_user(
+        username=user.username,
+        email=user.email,
+        temp_password=temp_password,
+        first_name=user.first_name or "",
+        last_name=user.last_name or ""
+    )
+
+    if not cognito_success:
+        logger.error(f"Failed to create Cognito user for {user.email}; email not sent")
+        return False
+
+    # 2. Update Django user password
+    user.set_password(temp_password)
+    user.save(update_fields=['password'])
+    logger.info(f"Temporary password set for admin user {user.username}")
+
+    # 3. Build login URL
+    frontend_base = frontend_url or getattr(settings, 'FRONTEND_URL', '')
+    login_url = f"{frontend_base}/login"
+
+    # 4. Prepare email context
+    ctx = {
+        "app_name": "IMAA Connect",
+        "first_name": user.first_name or user.username or "there",
+        "username": user.username,
+        "email": user.email,
+        "temporary_password": temp_password,
+        "login_url": login_url,
+        "support_email": settings.DEFAULT_FROM_EMAIL,
+    }
+
+    # 5. Render templates
+    try:
+        text_body = render_to_string("emails/admin_credentials.txt", ctx)
+        html_body = render_to_string("emails/admin_credentials.html", ctx)
+    except Exception as e:
+        logger.error(f"Failed to render admin credentials email templates: {e}")
+        return False
+
+    # 6. Send email
+    try:
+        send_mail(
+            subject=f"Welcome to {ctx['app_name']} - Your Admin Credentials",
+            message=text_body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            html_message=html_body,
+            fail_silently=False,
+        )
+        logger.info(f"Admin credentials email sent to {user.email}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send admin credentials email to {user.email}: {e}")
+        return False
+
