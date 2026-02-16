@@ -45,6 +45,191 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# Module-level helper functions for use in both ViewSets
+# ============================================================================
+
+def _get_criteria_config(session):
+    """Get criteria configuration for session with proper defaults."""
+    if session.criteria_config:
+        return session.criteria_config
+
+    # Return default config based on matching strategy
+    if session.matching_strategy == 'criteria_only':
+        return {
+            'skill': {
+                'enabled': True,
+                'required': True,
+                'weight': 0.35,
+                'threshold': 40,
+                'match_mode': 'complementary'
+            },
+            'experience': {
+                'enabled': True,
+                'required': True,
+                'weight': 0.30,
+                'threshold': 50,
+                'match_type': 'mentorship'
+            },
+            'location': {
+                'enabled': True,
+                'required': False,
+                'weight': 0.20,
+                'threshold': 30,
+                'match_strategy': 'radius'
+            },
+            'education': {
+                'enabled': True,
+                'required': False,
+                'weight': 0.15,
+                'threshold': 40,
+                'match_type': 'complementary_fields'
+            }
+        }
+    else:
+        # For 'both' strategy, use balanced config
+        return {
+            'skill': {
+                'enabled': True,
+                'required': True,
+                'weight': 0.35,
+                'threshold': 40,
+                'match_mode': 'complementary'
+            },
+            'experience': {
+                'enabled': True,
+                'required': True,
+                'weight': 0.30,
+                'threshold': 50,
+                'match_type': 'mentorship'
+            },
+            'location': {
+                'enabled': True,
+                'required': False,
+                'weight': 0.20,
+                'threshold': 30,
+                'match_strategy': 'radius'
+            },
+            'education': {
+                'enabled': True,
+                'required': False,
+                'weight': 0.15,
+                'threshold': 40,
+                'match_type': 'complementary_fields'
+            }
+        }
+
+
+def _build_user_profile_from_skills(user):
+    """
+    Build a profile dict for matching by reading from UserSkill directly.
+
+    Returns dict with keys: user_id, skills, experience_years, experience_level, etc.
+    """
+    from users.models import UserSkill, UserProfile, Experience, Education
+
+    # Get skills from UserSkill model
+    user_skills = UserSkill.objects.filter(user=user).select_related('skill')
+    skills_list = [
+        {
+            'name': skill_obj.skill.preferred_label,
+            'level': skill_obj.proficiency_level,
+            'years': 5  # Default
+        }
+        for skill_obj in user_skills
+    ]
+
+    # Get user profile for location and basic data
+    try:
+        user_profile = UserProfile.objects.get(user=user)
+    except UserProfile.DoesNotExist:
+        user_profile = None
+
+    # Get experience data
+    try:
+        user_experience = Experience.objects.filter(user=user).order_by('-start_date').first()
+        if user_experience:
+            experience_years = getattr(user_experience, 'years_of_experience', 0) or 0
+            experience_level = 2  # Default mid-level
+        else:
+            experience_years = 0
+            experience_level = 0
+    except Exception:
+        experience_years = 0
+        experience_level = 0
+
+    # Get education data
+    try:
+        user_education = Education.objects.filter(user=user).first()
+        if user_education:
+            education_degree = getattr(user_education, 'degree', '')
+            education_field = getattr(user_education, 'field_of_study', '')
+            education_institution = getattr(user_education, 'school', '')
+            # Convert degree to numeric level for matching
+            education_level = _convert_degree_to_level(education_degree)
+        else:
+            education_degree = ''
+            education_field = ''
+            education_level = 1  # Default to Bachelor's level
+            education_institution = ''
+    except Exception:
+        education_degree = ''
+        education_field = ''
+        education_level = 1  # Default to Bachelor's level
+        education_institution = ''
+
+    # Build profile dict in the format expected by matching engine
+    profile_dict = {
+        'user_id': user.id,
+        'skills': skills_list,
+        'experience_years': experience_years,
+        'experience_level': experience_level,
+        'location': {
+            'city': getattr(user_profile, 'location', '') if user_profile else '',
+            'country': '',
+            'lat': None,
+            'lon': None,
+            'timezone': getattr(user_profile, 'timezone', 'UTC') if user_profile else 'UTC',
+        },
+        'education': {
+            'degree': education_degree,
+            'field': education_field,
+            'level': education_level,
+            'institution': education_institution,
+        },
+        'preferred_match_type': 'any',
+    }
+
+    logger.debug(f"[PROFILE] Built profile for user {user.id} from UserSkill: {len(skills_list)} skills")
+    return profile_dict
+
+
+def _convert_degree_to_level(degree_str):
+    """
+    Convert education degree string to numeric level for matching.
+
+    Returns:
+        int: 0=High School, 1=Bachelor's, 2=Master's, 3=PhD, 4=Professional Cert
+    """
+    if not degree_str:
+        return 1  # Default to Bachelor's
+
+    degree_lower = degree_str.lower()
+
+    if any(x in degree_lower for x in ['phd', 'doctorate', 'doctoral']):
+        return 3
+    if any(x in degree_lower for x in ['master', 'masters', 'mba', 'ms', 'ma', 'msc']):
+        return 2
+    if any(x in degree_lower for x in ['bachelor', 'bachelors', 'b.s', 'b.a', 'bsc', 'ba', 'bs']):
+        return 1
+    if any(x in degree_lower for x in ['high school', 'secondary', 'hsc', '12th', 'diploma']):
+        return 0
+    if any(x in degree_lower for x in ['professional', 'certification', 'cert', 'certificate']):
+        return 4
+
+    return 1
+
+
 def _broadcast_queue_update(session, event_id):
     """Broadcast current queue state to all clients in the event group (for host panel)."""
     # Count ALL active queue entries (both waiting and in active matches)
@@ -260,6 +445,201 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
 
         return Response({
             'strategy': session.matching_strategy
+        })
+
+    @action(detail=True, methods=['patch'])
+    def update_criteria(self, request, event_id=None, pk=None):
+        """Update matching criteria configuration (allowed during ACTIVE sessions)."""
+        session = self.get_object()
+
+        if session.status == 'ENDED':
+            return Response(
+                {'error': 'Cannot update criteria on ended sessions'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        criteria_config = request.data.get('criteria_config', {})
+
+        # Validate structure
+        valid_criteria = ['skill', 'experience', 'location', 'education']
+        for key in criteria_config.keys():
+            if key not in valid_criteria:
+                return Response(
+                    {'error': f'Invalid criterion: {key}'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # Validate each criterion has required fields
+        for criterion, config in criteria_config.items():
+            if not isinstance(config, dict):
+                return Response(
+                    {'error': f'Criterion {criterion} config must be a dict'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Validate weights are floats 0-1
+            if 'weight' in config:
+                try:
+                    weight = float(config['weight'])
+                    if not (0 <= weight <= 1):
+                        return Response(
+                            {'error': f'Weight for {criterion} must be between 0 and 1'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                except (TypeError, ValueError):
+                    return Response(
+                        {'error': f'Weight for {criterion} must be a number'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # Validate thresholds are ints 0-100
+            if 'threshold' in config:
+                try:
+                    threshold = int(config['threshold'])
+                    if not (0 <= threshold <= 100):
+                        return Response(
+                            {'error': f'Threshold for {criterion} must be between 0 and 100'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                except (TypeError, ValueError):
+                    return Response(
+                        {'error': f'Threshold for {criterion} must be an integer'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+        # Update session
+        session.criteria_config = criteria_config
+        session.save(update_fields=['criteria_config'])
+
+        logger.info(f"[UPDATE_CRITERIA] Session {session.id} criteria updated: {criteria_config}")
+
+        return Response({
+            'criteria_config': session.criteria_config
+        })
+
+    @action(detail=True, methods=['get'])
+    def match_preview(self, request, event_id=None, pk=None):
+        """
+        Preview match quality and rates for current waiting queue.
+
+        Returns:
+        {
+            'total_waiting': int,           # Number of users waiting for matches
+            'potential_pairs': int,         # C(n, 2) combinations
+            'matchable_pairs': int,         # Pairs that pass threshold with current config
+            'match_rate': float,            # Percentage of pairs that are matchable
+            'avg_score': float,             # Average match score among all pairs
+            'score_distribution': {         # Count of pairs in each score bucket
+                '0-25': int,
+                '26-50': int,
+                '51-75': int,
+                '76-100': int
+            }
+        }
+        """
+        session = self.get_object()
+
+        if session.status != 'ACTIVE':
+            return Response(
+                {'error': 'Session is not active'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get all waiting queue entries
+        all_queue_entries = session.queue.all()
+        waiting_entries = session.queue.filter(is_active=True, current_match__isnull=True)
+        waiting_users = list(waiting_entries.values_list('user_id', flat=True))
+        total_waiting = len(waiting_users)
+
+        logger.info(
+            f"[MATCH_PREVIEW] Session {session.id}: Total queue entries: {all_queue_entries.count()}, "
+            f"Active: {session.queue.filter(is_active=True).count()}, "
+            f"Waiting (no current_match): {total_waiting}"
+        )
+
+        # If less than 2 users waiting, no pairs possible
+        if total_waiting < 2:
+            return Response({
+                'total_waiting': total_waiting,
+                'potential_pairs': 0,
+                'matchable_pairs': 0,
+                'match_rate': 0.0,
+                'avg_score': 0.0,
+                'score_distribution': {'0-25': 0, '26-50': 0, '51-75': 0, '76-100': 0}
+            })
+
+        # Cap at 50 users for performance (C(50,2) = 1225 pairs)
+        if total_waiting > 50:
+            logger.warning(f"[MATCH_PREVIEW] Capping {total_waiting} waiting users to 50 for preview")
+            waiting_users = waiting_users[:50]
+            total_waiting = 50
+
+        # Get user objects and build profiles
+        from django.contrib.auth.models import User as DjangoUser
+        user_objects = DjangoUser.objects.filter(id__in=waiting_users)
+        user_profiles = {}
+        for user in user_objects:
+            user_profiles[user.id] = _build_user_profile_from_skills(user)
+
+        # Initialize criteria engine with current config
+        criteria_config = _get_criteria_config(session)
+        criteria_engine = CriteriaBasedMatchingEngine(session, criteria_config)
+
+        # Calculate scores for all unique pairs
+        all_scores = []
+        matchable_count = 0
+        potential_pairs = len(waiting_users) * (len(waiting_users) - 1) // 2
+
+        for i in range(len(waiting_users)):
+            for j in range(i + 1, len(waiting_users)):
+                user_a_id = waiting_users[i]
+                user_b_id = waiting_users[j]
+
+                profile_a = user_profiles.get(user_a_id)
+                profile_b = user_profiles.get(user_b_id)
+
+                if profile_a and profile_b:
+                    score, breakdown, is_valid = criteria_engine.calculate_combined_score(
+                        profile_a, profile_b
+                    )
+                    all_scores.append({
+                        'score': score,
+                        'is_valid': is_valid
+                    })
+
+                    if is_valid:
+                        matchable_count += 1
+
+        # Calculate statistics
+        avg_score = sum(s['score'] for s in all_scores) / len(all_scores) if all_scores else 0
+        match_rate = (matchable_count / potential_pairs * 100) if potential_pairs > 0 else 0
+
+        # Score distribution
+        score_distribution = {'0-25': 0, '26-50': 0, '51-75': 0, '76-100': 0}
+        for score_data in all_scores:
+            score = score_data['score']
+            if score <= 25:
+                score_distribution['0-25'] += 1
+            elif score <= 50:
+                score_distribution['26-50'] += 1
+            elif score <= 75:
+                score_distribution['51-75'] += 1
+            else:
+                score_distribution['76-100'] += 1
+
+        logger.info(
+            f"[MATCH_PREVIEW] Session {session.id}: "
+            f"waiting={total_waiting}, matchable={matchable_count}/{potential_pairs}, "
+            f"rate={match_rate:.1f}%, avg_score={avg_score:.1f}"
+        )
+
+        return Response({
+            'total_waiting': total_waiting,
+            'potential_pairs': potential_pairs,
+            'matchable_pairs': matchable_count,
+            'match_rate': round(match_rate, 1),
+            'avg_score': round(avg_score, 1),
+            'score_distribution': score_distribution
         })
 
     @action(detail=True, methods=['get'])
@@ -766,7 +1146,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             logger.info("[BOTH_MATCH] Applying criteria-based scoring")
 
             # Build user profile from UserSkill (primary source of truth)
-            user_profile_dict = self._build_user_profile_from_skills(user)
+            user_profile_dict = _build_user_profile_from_skills(user)
 
             # Build candidate profiles from UserSkill
             from django.contrib.auth.models import User as DjangoUser
@@ -782,7 +1162,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
 
             candidate_users = DjangoUser.objects.filter(id__in=candidate_ids)
             candidate_profiles = [
-                self._build_user_profile_from_skills(candidate)
+                _build_user_profile_from_skills(candidate)
                 for candidate in candidate_users
             ]
 
@@ -796,7 +1176,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                 )
 
             # Initialize criteria matching engine
-            criteria_config = self._get_criteria_config(session)
+            criteria_config = _get_criteria_config(session)
             criteria_engine = CriteriaBasedMatchingEngine(session, criteria_config)
 
             # Find best matches based on criteria
@@ -1032,125 +1412,6 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             logger.error(f"[BOTH_MATCH] Error creating basic match: {e}")
             return None
 
-    def _build_user_profile_from_skills(self, user):
-        """
-        Build a profile dict for matching by reading from UserSkill directly.
-        This avoids the need for UserCriteriaProfile duplication.
-
-        Returns dict with keys: user_id, skills, experience_years, experience_level, etc.
-        """
-        from users.models import UserSkill, UserProfile, Experience, Education
-
-        # Get skills from UserSkill model
-        user_skills = UserSkill.objects.filter(user=user).select_related('skill')
-        skills_list = [
-            {
-                'name': skill_obj.skill.preferred_label,
-                'level': skill_obj.proficiency_level,
-                'years': 5  # Default
-            }
-            for skill_obj in user_skills
-        ]
-
-        # Get user profile for location and basic data
-        try:
-            user_profile = UserProfile.objects.get(user=user)
-        except UserProfile.DoesNotExist:
-            user_profile = None
-
-        # Get experience data
-        try:
-            user_experience = Experience.objects.filter(user=user).order_by('-start_date').first()
-            if user_experience:
-                experience_years = getattr(user_experience, 'years_of_experience', 0) or 0
-                experience_level = 2  # Default mid-level
-            else:
-                experience_years = 0
-                experience_level = 0
-        except Exception:
-            experience_years = 0
-            experience_level = 0
-
-        # Get education data
-        try:
-            user_education = Education.objects.filter(user=user).first()
-            if user_education:
-                education_degree = getattr(user_education, 'degree', '')
-                education_field = getattr(user_education, 'field_of_study', '')
-                education_institution = getattr(user_education, 'school', '')
-                # Convert degree to numeric level for matching
-                education_level = self._convert_degree_to_level(education_degree)
-            else:
-                education_degree = ''
-                education_field = ''
-                education_level = 1  # Default to Bachelor's level
-                education_institution = ''
-        except Exception:
-            education_degree = ''
-            education_field = ''
-            education_level = 1  # Default to Bachelor's level
-            education_institution = ''
-
-        # Build profile dict in the format expected by matching engine
-        profile_dict = {
-            'user_id': user.id,
-            'skills': skills_list,
-            'experience_years': experience_years,
-            'experience_level': experience_level,
-            'location': {
-                'city': getattr(user_profile, 'location', '') if user_profile else '',
-                'country': '',  # Not directly available in UserProfile
-                'lat': None,  # TODO: Implement geocoding to populate coordinates
-                'lon': None,  # TODO: Implement geocoding to populate coordinates
-                'timezone': getattr(user_profile, 'timezone', 'UTC') if user_profile else 'UTC',
-            },
-            'education': {
-                'degree': education_degree,
-                'field': education_field,
-                'level': education_level,
-                'institution': education_institution,
-            },
-            'preferred_match_type': 'any',
-        }
-
-        logger.debug(f"[PROFILE] Built profile for user {user.id} from UserSkill: {len(skills_list)} skills")
-        return profile_dict
-
-    def _convert_degree_to_level(self, degree_str):
-        """
-        Convert education degree string to numeric level for matching.
-
-        Returns:
-            int: 0=High School, 1=Bachelor's, 2=Master's, 3=PhD, 4=Professional Cert
-        """
-        if not degree_str:
-            return 1  # Default to Bachelor's
-
-        degree_lower = degree_str.lower()
-
-        # PhD/Doctorate check
-        if any(x in degree_lower for x in ['phd', 'doctorate', 'doctoral']):
-            return 3
-
-        # Master's check
-        if any(x in degree_lower for x in ['master', 'masters', 'mba', 'ms', 'ma', 'msc']):
-            return 2
-
-        # Bachelor's check
-        if any(x in degree_lower for x in ['bachelor', 'bachelors', 'b.s', 'b.a', 'bsc', 'ba', 'bs']):
-            return 1
-
-        # High School check
-        if any(x in degree_lower for x in ['high school', 'secondary', 'hsc', '12th', 'diploma']):
-            return 0
-
-        # Professional cert check
-        if any(x in degree_lower for x in ['professional', 'certification', 'cert', 'certificate']):
-            return 4
-
-        # Default to Bachelor's if no clear match
-        return 1
-
     def _get_previous_match_partners(self, session, user):
         """
         Get all users that this user has already been matched with in the current session.
@@ -1183,47 +1444,6 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         logger.info(f"[MATCHING] User {user.id} has {len(previous_partners)} previous partners in session {session.id}: {previous_partners}")
         return list(previous_partners)
 
-    def _get_criteria_config(self, session):
-        """Get criteria configuration for session."""
-        if session.criteria_config:
-            return session.criteria_config
-
-        # Return preset based on matching strategy
-        if session.matching_strategy == 'criteria_only':
-            # Default criteria-only config
-            return CriteriaBasedMatchingEngine()._default_config()
-        else:
-            # For 'both' strategy, use balanced config
-            return {
-                'skill': {
-                    'enabled': True,
-                    'required': True,
-                    'weight': 0.35,
-                    'threshold': 40,
-                    'match_mode': 'complementary'
-                },
-                'experience': {
-                    'enabled': True,
-                    'required': True,
-                    'weight': 0.30,
-                    'threshold': 50,
-                    'match_type': 'mentorship'
-                },
-                'location': {
-                    'enabled': True,
-                    'required': False,
-                    'weight': 0.20,
-                    'threshold': 30,
-                    'match_strategy': 'radius'
-                },
-                'education': {
-                    'enabled': True,
-                    'required': False,
-                    'weight': 0.15,
-                    'threshold': 40,
-                    'match_type': 'complementary_fields'
-                }
-            }
 
     @action(detail=False, methods=['get'])
     def user_matches(self, request, event_id=None, session_id=None):
