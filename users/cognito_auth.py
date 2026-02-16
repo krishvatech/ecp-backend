@@ -92,19 +92,26 @@ class CognitoJWTAuthentication(BaseAuthentication):
     def authenticate(self, request):
         auth = get_authorization_header(request).decode("utf-8")
         if not auth or not auth.lower().startswith("bearer "):
+            # logger.debug("CognitoAuth: No Bearer token found in header")
             return None
 
         token = auth.split(" ", 1)[1].strip()
         if not token:
+            # logger.debug("CognitoAuth: Empty token")
             return None
 
         # If token isn't Cognito, don't block SimpleJWT; just return None.
         try:
             unverified = jwt.decode(token, options={"verify_signature": False})
             iss = unverified.get("iss", "")
-            if iss and iss != _issuer():
+            
+            expected_iss = _issuer()
+            if iss and iss != expected_iss:
+                logger.error(f"CognitoAuth: Issuer mismatch. Got '{iss}', expected '{expected_iss}'")
                 return None
-        except Exception:
+
+        except Exception as e:
+            # logger.error(f"CognitoAuth: Failed to decode token headers (unverified step): {e}")
             return None
 
         try:
@@ -116,12 +123,14 @@ class CognitoJWTAuthentication(BaseAuthentication):
             if not iss:
                 raise AuthenticationFailed("Cognito not configured")
 
+            # Validate the token
             claims = jwt.decode(
                 token,
                 public_key,
                 algorithms=["RS256"],
                 options={"verify_aud": False},
                 issuer=iss,
+                leeway=60,  # Fix for "The token is not yet valid (iat)" due to clock skew
             )
             request.cognito_claims = claims
 
@@ -130,9 +139,11 @@ class CognitoJWTAuthentication(BaseAuthentication):
 
             if token_use == "id":
                 if client_id and claims.get("aud") != client_id:
+                    # logger.error(f"CognitoAuth: Invalid aud. Got {claims.get('aud')}, expected {client_id}")
                     raise AuthenticationFailed("Invalid token audience")
             elif token_use == "access":
                 if client_id and claims.get("client_id") != client_id:
+                    # logger.error(f"CognitoAuth: Invalid client_id. Got {claims.get('client_id')}, expected {client_id}")
                     raise AuthenticationFailed("Invalid token client_id")
             else:
                 raise AuthenticationFailed("Invalid token_use")
@@ -257,7 +268,7 @@ class CognitoJWTAuthentication(BaseAuthentication):
                 sync_user_to_saleor_sync(user)
             except Exception as e:
                 # Log but don't fail login if sync fails
-                print(f"Sync error during login: {e}")
+                pass
             # -----------------------------------------
 
             return (user, token)
@@ -266,4 +277,5 @@ class CognitoJWTAuthentication(BaseAuthentication):
         except AuthenticationFailed:
             raise
         except Exception as e:
+            # logger.error(f"Cognito auth failed: {e}")
             raise AuthenticationFailed(f"Cognito auth failed: {str(e)}")

@@ -61,9 +61,17 @@ class SuspendedUserMiddleware:
 
         # Check user's profile status
         user = getattr(request, "user", None)
+        # Import logger if not available (or assume it's available in the file context, adding import to fail safe)
+        import logging
+        logger = logging.getLogger(__name__)
+
         if user and user.is_authenticated:
             profile = getattr(user, "profile", None)
+            status = profile.profile_status if profile else "NO_PROFILE"
+            # logger.info(f"SuspendedUserMiddleware: Checking user {user.username} (ID: {user.id}). Status: {status}")
+            
             if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
+                logger.warning(f"SuspendedUserMiddleware: Blocking user {user.username} due to status {status}")
                 return JsonResponse(
                     {
                         "detail": "Your account has been suspended. You cannot perform this action.",
@@ -72,6 +80,9 @@ class SuspendedUserMiddleware:
                     },
                     status=403
                 )
+        else:
+            # logger.debug("SuspendedUserMiddleware: User is Anonymous or not authenticated")
+            pass
 
         return self.get_response(request)
 
