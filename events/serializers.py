@@ -1166,6 +1166,9 @@ class EventSerializer(serializers.ModelSerializer):
         return data
 
 class EventLiteSerializer(serializers.ModelSerializer):
+    # Session-related fields for multi-day events
+    sessions = EventSessionSerializer(many=True, read_only=True)
+
     class Meta:
         model = Event
         fields = (
@@ -1174,6 +1177,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer",
             "lounge_enabled_after", "lounge_after_buffer",
+            "is_multi_day", "sessions",  # ✅ Added for multi-day event support
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):
