@@ -398,6 +398,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     async def broadcast_message(self, event: dict) -> None:
         await self.send_json({"type": "message", "data": event["payload"]})
 
+    async def server_debug(self, event: dict) -> None:
+        """Handler for 'server_debug' group message."""
+        await self.send_json({
+            "type": "server_debug",
+            "message": event["message"]
+        })
+
     async def lounge_update(self, event: dict) -> None:
         """Handler for 'lounge_update' group message."""
         await self.send_json({
@@ -501,7 +508,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.channel_layer.group_send(
             self.group_name,
             {
-                "type": "breakout_debug",
+                "type": "server_debug",  # ✅ FIXED: Match frontend expectation
                 "message": message
             }
         )
@@ -740,9 +747,36 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 }
             )
 
-    @database_sync_to_async
-    def perform_manual_assignment(self, user_ids, table_id):
-        """Assign specific users to a specific table."""
+    async def perform_manual_assignment_and_notify(self, user_ids, table_id):
+        """Perform manual assignment and notify assigned users."""
+        assignments = await database_sync_to_async(self._perform_manual_assignment_sync_handler)(user_ids, table_id)
+
+        if not assignments:
+            msg = "❌ Manual assignment failed: No participants could be assigned. Possible reasons: user not found, table is full, or user doesn't meet criteria."
+            print(f"[MANUAL_ASSIGN] {msg}")
+            await self.send_debug_to_host(msg)
+            return
+
+        msg = f"✅ Successfully assigned {len(assignments)} participant(s) to the breakout room!"
+        print(f"[MANUAL_ASSIGN] {msg}")
+        await self.send_debug_to_host(msg)
+        await self.broadcast_lounge_update()
+
+        # Notify each assigned user to join the room
+        for assignment in assignments:
+            user_id = assignment[0]
+            table_id = assignment[1]
+            await self.channel_layer.group_send(
+                f"user_{user_id}",
+                {
+                    "type": "breakout_force_join",
+                    "user_id": user_id,
+                    "table_id": table_id
+                }
+            )
+
+    def _perform_manual_assignment_sync_handler(self, user_ids, table_id):
+        """Assign specific users to a specific table. (Sync version for async wrapper)"""
         print(f"[MANUAL_ASSIGN] Starting: event={self.event_id}, table={table_id}, users={user_ids}")
 
         try:
@@ -753,17 +787,34 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 print(f"[MANUAL_ASSIGN] ❌ Table {table_id} not found in event {self.event_id}")
                 return []
 
-            # Get valid online users (exclude self/host)
-            valid_users = EventRegistration.objects.filter(
+            # Get valid users for assignment
+            # Note: We use looser criteria since these are participants already in the meeting
+            print(f"[MANUAL_ASSIGN] User IDs to assign: {user_ids}, Host ID: {self.user.id}")
+
+            all_registered = EventRegistration.objects.filter(
                 event_id=self.event_id,
-                user_id__in=user_ids,
-                is_online=True,
-                admission_status="admitted",
-                joined_live=True
+                user_id__in=user_ids
+            ).exclude(user_id=self.user.id)
+
+            print(f"[MANUAL_ASSIGN] Found {all_registered.count()} registered users after filtering")
+            for reg in all_registered:
+                print(f"[MANUAL_ASSIGN]   User {reg.user.username} (ID:{reg.user_id}): online={reg.is_online}, admitted={reg.admission_status}, joined_live={reg.joined_live}")
+
+            # Prefer users who are explicitly marked as online/admitted, but accept joined users
+            valid_users = all_registered.filter(
+                admission_status__in=["admitted", "registered"]
             ).exclude(user_id=self.user.id).values_list('user_id', flat=True)
 
+            print(f"[MANUAL_ASSIGN] Valid users after admission status filter: {list(valid_users)}")
+
             if not valid_users:
-                print(f"[MANUAL_ASSIGN] No valid users found in {user_ids}")
+                # If no strictly valid users, accept anyone registered for the event
+                valid_users = all_registered.values_list('user_id', flat=True)
+                print(f"[MANUAL_ASSIGN] Using looser criteria, found {len(list(valid_users))} users: {list(valid_users)}")
+
+            if not valid_users:
+                print(f"[MANUAL_ASSIGN] ❌ No valid users found in {user_ids}")
+                print(f"[MANUAL_ASSIGN] All registered users count: {EventRegistration.objects.filter(event_id=self.event_id).count()}")
                 return []
 
             # Clear any existing assignments for these users
@@ -789,7 +840,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     user_id=user_id,
                     seat_index=seat_index
                 )
-                
+
                 # Check if it's a breakout room and save assignment
                 if table.category == 'BREAKOUT':
                     EventRegistration.objects.filter(event_id=self.event_id, user_id=user_id).update(last_breakout_table=table)
@@ -803,32 +854,6 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         except Exception as e:
             print(f"[MANUAL_ASSIGN] ❌ Failed to perform manual assignment: {e}")
             return []
-
-    async def perform_manual_assignment_and_notify(self, user_ids, table_id):
-        """Perform manual assignment and notify assigned users."""
-        assignments = await self.perform_manual_assignment(user_ids, table_id)
-
-        if not assignments:
-            msg = "No assignments created. Check if users are valid or table is full."
-            print(f"[MANUAL_ASSIGN] {msg}")
-            await self.send_debug_to_host(msg)
-            return
-
-        await self.send_debug_to_host(f"Assigned {len(assignments)} participant(s) to room.")
-        await self.broadcast_lounge_update()
-
-        # Notify each assigned user to join the room
-        for assignment in assignments:
-            user_id = assignment[0]
-            table_id = assignment[1]
-            await self.channel_layer.group_send(
-                f"user_{user_id}",
-                {
-                    "type": "breakout_force_join",
-                    "user_id": user_id,
-                    "table_id": table_id
-                }
-            )
 
     @database_sync_to_async
     def get_lounge_state(self):
