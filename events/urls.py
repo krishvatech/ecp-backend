@@ -90,7 +90,7 @@ urlpatterns = router.urls + [
     ),
     path(
         "events/<int:event_id>/sessions/<int:pk>/",
-        EventSessionViewSet.as_view({'get': 'retrieve', 'patch': 'partial_update', 'delete': 'destroy'}),
+        EventSessionViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}),
         name='event-session-detail'
     ),
     path(

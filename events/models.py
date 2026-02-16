@@ -59,6 +59,10 @@ class Event(models.Model):
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="draft")
     is_live = models.BooleanField(default=False)
     is_on_break = models.BooleanField(default=False)
+    is_multi_day = models.BooleanField(
+        default=False,
+        help_text="True if this event spans multiple calendar days"
+    )
     # New fields
     category = models.CharField(max_length=100, blank=True)
     format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default="in_person")
@@ -739,6 +743,11 @@ class EventSession(models.Model):
     ]
 
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="sessions")
+    session_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Calendar day this session belongs to (auto-populated from start_time)"
+    )
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     start_time = models.DateTimeField()
@@ -770,20 +779,13 @@ class EventSession(models.Model):
         ]
 
     def save(self, *args, **kwargs):
+        # Auto-populate session_date from start_time if not explicitly set
+        if self.start_time and not self.session_date:
+            self.session_date = self.start_time.date()
         super().save(*args, **kwargs)
-        self._update_parent_event_times()
-
-    def _update_parent_event_times(self):
-        """Auto-update parent event's start/end times from all sessions."""
-        from django.db.models import Min, Max
-        times = self.event.sessions.aggregate(
-            min_start=Min('start_time'),
-            max_end=Max('end_time')
-        )
-        if times['min_start'] and times['max_end']:
-            self.event.start_time = times['min_start']
-            self.event.end_time = times['max_end']
-            self.event.save(update_fields=['start_time', 'end_time'])
+        # NOTE: Do NOT auto-update parent Event.start_time/end_time here.
+        # Event times are owned by the Event, not by sessions.
+        # Sessions are independent and sessions should never modify parent event times.
 
     def __str__(self):
         return f"{self.title} - {self.event.title}"

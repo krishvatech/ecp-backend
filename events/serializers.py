@@ -153,6 +153,12 @@ class SessionAttendanceSerializer(serializers.ModelSerializer):
 class EventSessionSerializer(serializers.ModelSerializer):
     """Serializer for event sessions with nested participant support."""
 
+    # Event field - not required in POST (set by view), but included in response
+    event = serializers.PrimaryKeyRelatedField(
+        queryset=Event.objects.all(),
+        required=False,  # Not required in POST since it's set by perform_create()
+    )
+
     # Write-only: accept participants during creation
     participants = serializers.ListField(
         child=serializers.DictField(),
@@ -168,7 +174,7 @@ class EventSessionSerializer(serializers.ModelSerializer):
     class Meta:
         model = EventSession
         fields = [
-            'id', 'event', 'title', 'description', 'start_time', 'end_time',
+            'id', 'event', 'session_date', 'title', 'description', 'start_time', 'end_time',
             'session_type', 'display_order', 'is_live', 'live_started_at', 'live_ended_at',
             'use_parent_meeting', 'dyte_meeting_id', 'recording_url',
             'participants', 'session_participants', 'attendance_count',
@@ -177,11 +183,49 @@ class EventSessionSerializer(serializers.ModelSerializer):
         read_only_fields = ['is_live', 'live_started_at', 'live_ended_at', 'dyte_meeting_id']
 
     def validate(self, data):
-        """Validate session times."""
+        """Validate session times against event times."""
+        from django.utils import timezone
+
         start = data.get('start_time')
         end = data.get('end_time')
+        event = data.get('event')
+
+        # Validate session end is after session start
         if start and end and end <= start:
-            raise serializers.ValidationError("end_time must be after start_time")
+            raise serializers.ValidationError(
+                {"end_time": "end_time must be after start_time"}
+            )
+
+        # Get event from context if not in data (for POST requests)
+        if not event:
+            view = self.context.get('view')
+            if view:
+                event_id = view.kwargs.get('event_id')
+                if event_id:
+                    try:
+                        event = Event.objects.get(id=event_id)
+                    except Event.DoesNotExist:
+                        event = None
+
+        # Validate session times are within event times
+        if event and start and end:
+            event_start = event.start_time
+            event_end = event.end_time
+
+            # Check if event has valid start/end times
+            if event_start and event_end:
+                # Session cannot start before event starts
+                if start < event_start:
+                    raise serializers.ValidationError(
+                        {"start_time": f"Session cannot start before event starts ({event_start.isoformat()})"}
+                    )
+
+                # Session cannot end after event ends
+                if end > event_end:
+                    raise serializers.ValidationError(
+                        {"end_time": f"Session cannot end after event ends ({event_end.isoformat()})"}
+                    )
+
         return data
 
     def get_session_participants(self, obj):
@@ -347,6 +391,7 @@ class EventSerializer(serializers.ModelSerializer):
             "status",
             "is_live",
             "is_on_break",
+            "is_multi_day",
             "replay_available",
             "replay_availability_duration",
             "category",
@@ -737,7 +782,18 @@ class EventSerializer(serializers.ModelSerializer):
 
         # attach creator
         validated_data["created_by_id"] = self.context["request"].user.id
+
+        print(f"\n🔴 BACKEND CREATE METHOD:")
+        print(f"  validated_data['start_time']: {validated_data.get('start_time')}")
+        print(f"  validated_data['end_time']: {validated_data.get('end_time')}")
+        print(f"  validated_data['timezone']: {validated_data.get('timezone')}")
+
         event = super().create(validated_data)
+
+        print(f"  Event created with ID {event.id}:")
+        print(f"    Stored start_time: {event.start_time}")
+        print(f"    Stored end_time: {event.end_time}")
+        print(f"🔴 BACKEND CREATE METHOD END\n")
 
         # Automatically add event creator as attendee
         creator = self.context["request"].user
@@ -1051,19 +1107,36 @@ class EventSerializer(serializers.ModelSerializer):
         start_time = data.get("start_time")
         end_time = data.get("end_time")
 
+        print(f"\n🔴 BACKEND TIME VALIDATION START:")
+        print(f"  Received start_time: {start_time} (type: {type(start_time).__name__})")
+        print(f"  Received end_time: {end_time} (type: {type(end_time).__name__})")
+        print(f"  Event timezone: {tz_value} -> {event_tz}")
+
         def _to_utc(dt):
             if dt is None:
                 return None
             if timezone.is_naive(dt):
+                print(f"    Converting naive datetime to {event_tz}")
                 dt = timezone.make_aware(dt, event_tz)
-            return dt.astimezone(dt_timezone.utc)
+            is_naive = timezone.is_naive(dt)
+            print(f"    Input: {dt} (naive: {is_naive}, tzinfo: {dt.tzinfo if not is_naive else 'N/A'})")
+            result = dt.astimezone(dt_timezone.utc)
+            print(f"    Output (UTC): {result}")
+            return result
 
         start_time = _to_utc(start_time)
         end_time = _to_utc(end_time)
+
+        print(f"  After conversion - start_time: {start_time}")
+        print(f"  After conversion - end_time: {end_time}")
+
         if start_time is not None:
             data["start_time"] = start_time
         if end_time is not None:
             data["end_time"] = end_time
+
+        print(f"  Data before return: start_time={data.get('start_time')}, end_time={data.get('end_time')}")
+        print(f"🔴 BACKEND TIME VALIDATION END\n")
 
         now = timezone.now()
 

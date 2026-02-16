@@ -3007,7 +3007,7 @@ class EventSessionViewSet(viewsets.ModelViewSet):
     """ViewSet for managing event sessions."""
 
     serializer_class = EventSessionSerializer
-    permission_classes = [IsCreatorOrReadOnly]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         """Filter sessions by event_id from URL."""
@@ -3027,6 +3027,27 @@ class EventSessionViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("Only event creators/staff can add sessions")
 
         serializer.save(event=event)
+
+    def perform_update(self, serializer):
+        """Update session with permission check."""
+        session = self.get_object()
+        event = session.event
+
+        # Check permission: must be event creator or staff
+        if not _is_event_host(self.request.user, event):
+            raise PermissionDenied("Only event creators/staff can update sessions")
+
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        """Delete session with permission check."""
+        event = instance.event
+
+        # Check permission: must be event creator or staff
+        if not _is_event_host(self.request.user, event):
+            raise PermissionDenied("Only event creators/staff can delete sessions")
+
+        instance.delete()
 
     @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
     def start_live(self, request, event_id=None, pk=None):
