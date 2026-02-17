@@ -63,7 +63,15 @@ from .serializers import (
     EventSessionSerializer,
     SessionAttendanceSerializer,
 )
-from .utils import DYTE_API_BASE, DYTE_AUTH_HEADER, DYTE_PRESET_HOST, DYTE_PRESET_PARTICIPANT, _dyte_headers, create_dyte_meeting
+from .utils import (
+    DYTE_API_BASE,
+    DYTE_AUTH_HEADER,
+    DYTE_PRESET_HOST,
+    DYTE_PRESET_PARTICIPANT,
+    _dyte_headers,
+    create_dyte_meeting,
+    send_admission_status_changed,  # ✅ NEW: For real-time admission status updates
+)
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
@@ -641,7 +649,14 @@ class EventViewSet(viewsets.ModelViewSet):
                         # Skip this event if full
                         continue
 
-                obj, was_created = EventRegistration.objects.get_or_create(user=request.user, event=ev)
+                # ✅ NEW: Set admission_status based on event's waiting_room_enabled setting
+                initial_admission_status = "waiting" if ev.waiting_room_enabled else "admitted"
+
+                obj, was_created = EventRegistration.objects.get_or_create(
+                    user=request.user,
+                    event=ev,
+                    defaults={"admission_status": initial_admission_status}
+                )
                 if was_created:
                     # keep a running count on Event
                     Event.objects.filter(pk=ev.pk).update(attending_count=F("attending_count") + 1)
@@ -752,13 +767,31 @@ class EventViewSet(viewsets.ModelViewSet):
             # Actually get_or_create handles re-register.
             # But if new, we must check capacity.
             current_count = event.registrations.filter(status="registered").count()
-            
+
             # If user is NOT already registered, check if full
             is_already_registered = event.registrations.filter(user=request.user, status="registered").exists()
             if not is_already_registered and current_count >= event.max_participants:
                 return Response({"detail": "Event is full."}, status=409)
 
-        obj, was_created = EventRegistration.objects.get_or_create(user=request.user, event=event)
+        # ✅ NEW: Set admission_status based on event's waiting_room_enabled setting
+        # If waiting room is enabled, new users start as "waiting" for host admission
+        # If waiting room is disabled, new users are automatically "admitted"
+        #
+        # ⚠️ IMPORTANT: This REGISTERS the user, but does NOT add them to the waiting room queue yet!
+        # - admission_status="waiting" means they MIGHT need to wait (policy), but
+        # - waiting_started_at is intentionally left NULL because they haven't JOINED yet
+        #
+        # Users are only added to the waiting room list when they actually JOIN the event
+        # via the dyte/join endpoint, which sets waiting_started_at=now()
+        initial_admission_status = "waiting" if event.waiting_room_enabled else "admitted"
+
+        obj, was_created = EventRegistration.objects.get_or_create(
+            user=request.user,
+            event=event,
+            defaults={"admission_status": initial_admission_status}
+            # Note: waiting_started_at is NOT set here, only when user actively joins
+        )
+
         if was_created:
             Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
         return Response({"ok": True, "created": was_created, "event_id": event.id})
@@ -1676,16 +1709,20 @@ class EventViewSet(viewsets.ModelViewSet):
 
             except EventRegistration.DoesNotExist:
                 # User not registered for event while waiting room is enabled
-                # Create registration in waiting state
+                # Create registration in waiting state (but NOT in waiting room yet)
+                # ✅ IMPORTANT: Do NOT set waiting_started_at here!
+                # waiting_started_at should only be set when user ACTUALLY JOINS the event,
+                # not just when accessing the pre-event lounge or registering.
+                # This ensures they don't appear in host's waiting room list until they actively join.
                 registration = EventRegistration.objects.create(
                     event=event,
                     user=user,
-                    admission_status="waiting",
-                    waiting_started_at=timezone.now()
+                    admission_status="waiting"
+                    # waiting_started_at is intentionally left NULL
                 )
                 logger.info(
-                    f"[LOUNGE_ENFORCE] ⚠️ Unregistered user {user.id} auto-registered in waiting room "
-                    f"for event {event.id}"
+                    f"[LOUNGE_ENFORCE] ⚠️ Unregistered user {user.id} auto-registered for event {event.id} "
+                    f"(admission_status=waiting, but waiting_started_at NOT set until they join main event)"
                 )
 
                 # Check if lounge is allowed for waiting users
@@ -2256,6 +2293,10 @@ class EventViewSet(viewsets.ModelViewSet):
 
             if registration.admission_status != "admitted":
                 if not registration.waiting_started_at:
+                    # ✅ CRITICAL: This is where users enter the waiting room queue!
+                    # Set waiting_started_at ONLY when user actively joins (via dyte/join)
+                    # This ensures they don't appear in host's waiting room list until they actively join.
+                    # Registration alone does NOT add them to the waiting room.
                     registration.waiting_started_at = timezone.now()
                     registration.save(update_fields=["waiting_started_at"])
 
@@ -2432,8 +2473,15 @@ class EventViewSet(viewsets.ModelViewSet):
                 ).update(admission_status="admitted", admitted_at=timezone.now())
             )
 
+        # ✅ CRITICAL FIX: Only show users who have ACTIVELY JOINED the waiting room
+        # Filter by waiting_started_at__isnull=False to exclude users who just registered
+        # but haven't clicked "Join Waiting Room" yet.
         waiting_regs = (
-            EventRegistration.objects.filter(event=event, admission_status="waiting")
+            EventRegistration.objects.filter(
+                event=event,
+                admission_status="waiting",
+                waiting_started_at__isnull=False  # ✅ Only users who actually joined
+            )
             .select_related("user")
             .order_by("waiting_started_at", "registered_at")
         )
@@ -2464,9 +2512,18 @@ class EventViewSet(viewsets.ModelViewSet):
         if not user_ids and not admit_all:
             return Response({"detail": "Provide user_id, user_ids, or admit_all."}, status=400)
 
-        qs = EventRegistration.objects.filter(event=event, admission_status="waiting")
+        # ✅ Only allow admitting users who are ACTIVELY in waiting room
+        # Filter by waiting_started_at__isnull=False to exclude registered-but-not-joined users
+        qs = EventRegistration.objects.filter(
+            event=event,
+            admission_status="waiting",
+            waiting_started_at__isnull=False  # ✅ Only users actively waiting
+        )
         if not admit_all:
             qs = qs.filter(user_id__in=user_ids)
+
+        # Get list of user IDs being admitted BEFORE update (for WebSocket notification)
+        admitted_user_ids = list(qs.values_list('user_id', flat=True))
 
         # ✅ Mark users as was_ever_admitted so they auto-rejoin if they disconnect
         updated = qs.update(
@@ -2479,6 +2536,15 @@ class EventViewSet(viewsets.ModelViewSet):
             was_ever_admitted=True,  # ✅ NEW: Mark for auto-rejoin
             current_session_started_at=timezone.now(),  # Track session start
         )
+
+        # ✅ NEW: Send WebSocket notification to each admitted user in real-time
+        try:
+            for admitted_user_id in admitted_user_ids:
+                send_admission_status_changed(admitted_user_id, "admitted")
+                print(f"[WAITING_ROOM] ✅ Sent real-time notification to user {admitted_user_id}: status=admitted")
+        except Exception as e:
+            logger.warning(f"[WAITING_ROOM] Failed to send WebSocket notification: {e}")
+            print(f"[WAITING_ROOM] ⚠️ WebSocket notification failed: {e}")
 
         # Log the admission action
         try:
@@ -2516,7 +2582,14 @@ class EventViewSet(viewsets.ModelViewSet):
         if not user_ids:
             return Response({"detail": "Provide user_id or user_ids."}, status=400)
 
-        qs = EventRegistration.objects.filter(event=event, admission_status="waiting", user_id__in=user_ids)
+        # ✅ Only allow rejecting users who are ACTIVELY in waiting room
+        # Filter by waiting_started_at__isnull=False to exclude registered-but-not-joined users
+        qs = EventRegistration.objects.filter(
+            event=event,
+            admission_status="waiting",
+            waiting_started_at__isnull=False,  # ✅ Only users actively waiting
+            user_id__in=user_ids
+        )
         updated = qs.update(
             admission_status="rejected",
             rejected_at=timezone.now(),
@@ -2553,9 +2626,12 @@ class EventViewSet(viewsets.ModelViewSet):
             )
 
         # Get list of waiting room participants
+        # ✅ Only send to users ACTIVELY in waiting room
+        # Filter by waiting_started_at__isnull=False to exclude registered-but-not-joined users
         waiting_users = EventRegistration.objects.filter(
             event=event,
-            admission_status="waiting"
+            admission_status="waiting",
+            waiting_started_at__isnull=False  # ✅ Only users actively waiting
         ).select_related("user")
 
         user_ids = list(waiting_users.values_list("user_id", flat=True))
@@ -2766,10 +2842,16 @@ class EventViewSet(viewsets.ModelViewSet):
         if EventRegistration.objects.filter(event=event, user=target_user).exists():
             return Response({"detail": "User is already registered for this event."}, status=400)
 
+        # ✅ NEW: Set admission_status based on event's waiting_room_enabled setting
+        # If waiting room is enabled, new users start as "waiting" for host admission
+        # If waiting room is disabled, new users are automatically "admitted"
+        initial_admission_status = "waiting" if event.waiting_room_enabled else "admitted"
+
         EventRegistration.objects.create(
             event=event,
             user=target_user,
             status="registered",  # Directly registered
+            admission_status=initial_admission_status,
             # joined_live / watched_replay defaults are False
         )
         

@@ -288,7 +288,7 @@ class EventRegistration(models.Model):
             ("rejected", "Host rejected participation"),
             ("left_waiting", "Participant left waiting room voluntarily"),
         ],
-        default="admitted",
+        default="waiting",
         db_index=True,
         help_text="Only used if event has waiting_room_enabled=True",
     )

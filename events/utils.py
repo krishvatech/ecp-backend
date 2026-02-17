@@ -93,11 +93,26 @@ def send_speed_networking_user_message(user_id, msg_type, data):
     """
     channel_layer = get_channel_layer()
     group_name = f"user_{user_id}"
-    
+
     async_to_sync(channel_layer.group_send)(
         group_name,
         {
-            "type": msg_type, 
+            "type": msg_type,
             "data": data
         }
     )
+
+def send_admission_status_changed(user_id, admission_status):
+    """
+    ✅ NEW: Notify a user that their admission status has changed.
+
+    This is used to update the frontend in real-time when:
+    - Host admits user: "waiting" → "admitted" (button changes "Join Waiting Room" to "Join Live")
+    - Host rejects user: "waiting" → "rejected" (button disabled/hidden)
+
+    Endpoint call: send_admission_status_changed(user_id, "admitted")
+    Frontend receives: type="admission_status_changed", data={"admission_status": "admitted"}
+    """
+    send_speed_networking_user_message(user_id, "admission.status_changed", {
+        "admission_status": admission_status
+    })

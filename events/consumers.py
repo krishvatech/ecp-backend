@@ -357,6 +357,18 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 {"type": "broadcast.message", "payload": content},
             )
 
+    # --- Admission Status Handlers ---
+    async def admission_status_changed(self, event):
+        """
+        ✅ NEW: Notify user that their admission status has changed.
+        Handles: "waiting" → "admitted" or "waiting" → "rejected"
+        Frontend receives this and updates button state.
+        """
+        await self.send_json({
+            "type": "admission_status_changed",
+            "admission_status": event.get("data", {}).get("admission_status")
+        })
+
     # --- Speed Networking Handlers ---
     async def speed_networking_session_started(self, event):
         """Broadcast session started to event group."""
