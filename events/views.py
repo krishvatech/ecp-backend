@@ -1646,6 +1646,100 @@ class EventViewSet(viewsets.ModelViewSet):
             recording_id,
         )
         return Response({"ok": True, "message": "Recording permanently deleted", "is_recording": False, "is_paused": False})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="publish-recording")
+    def publish_recording(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"error": "Only event hosts can publish recordings."}, status=403)
+        if not event.recording_raw_url and not event.recording_edited_url:
+            return Response({"error": "No recording available to publish."}, status=400)
+        if event.recording_status == "published":
+            return Response({"error": "Recording is already published."}, status=400)
+
+        event.recording_status = "published"
+        event.recording_published_at = timezone.now()
+        event.save(update_fields=["recording_status", "recording_published_at", "updated_at"])
+
+        try:
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"event_{event.id}",
+                {
+                    "type": "recording_published",
+                    "event_id": event.id,
+                    "published_at": event.recording_published_at.isoformat(),
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to broadcast recording_published: {e}")
+
+        logger.info("📢 Recording published by user=%s for event=%s", request.user.id, event.id)
+        return Response({
+            "message": "Recording published successfully",
+            "status": "published",
+            "published_at": event.recording_published_at.isoformat(),
+            "recording_url": event.recording_final_url,
+        })
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="recording-status")
+    def recording_status(self, request, pk=None):
+        event = self.get_object()
+        is_host = _is_event_host(request.user, event)
+        if not is_host and event.recording_status != "published":
+            return Response({"status": "not_available", "message": "Recording not yet available"})
+
+        response_data = {
+            "status": event.recording_status,
+            "recording_url": event.recording_final_url if (is_host or event.recording_status == "published") else None,
+            "duration": event.recording_duration,
+            "published_at": event.recording_published_at.isoformat() if event.recording_published_at else None,
+        }
+        if is_host:
+            response_data.update({
+                "raw_url": event.recording_raw_url,
+                "edited_url": event.recording_edited_url,
+                "can_publish": event.recording_status in ["ready_to_edit", "editing"],
+                "can_edit": event.recording_status in ["ready_to_edit", "editing"],
+            })
+        return Response(response_data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="edit-recording")
+    def edit_recording(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"error": "Only event hosts can edit recordings."}, status=403)
+        if not event.recording_raw_url:
+            return Response({"error": "No recording available to edit."}, status=400)
+
+        trim_start = request.data.get("trim_start", 0)
+        trim_end = request.data.get("trim_end")
+        if trim_end is None:
+            return Response({"error": "trim_end is required"}, status=400)
+        try:
+            trim_start = float(trim_start)
+            trim_end = float(trim_end)
+        except (TypeError, ValueError):
+            return Response({"error": "trim_start and trim_end must be numeric seconds"}, status=400)
+        if trim_start < 0 or trim_end <= trim_start:
+            return Response({"error": "Invalid trim range"}, status=400)
+
+        event.recording_status = "editing"
+        event.save(update_fields=["recording_status", "updated_at"])
+
+        logger.info(
+            "🎬 Video editing requested by user=%s for event=%s trim_start=%s trim_end=%s",
+            request.user.id,
+            event.id,
+            trim_start,
+            trim_end,
+        )
+        return Response({
+            "message": "Video editing started. This may take a few minutes.",
+            "status": "editing",
+            "trim_start": trim_start,
+            "trim_end": trim_end,
+        }, status=202)
     
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="kick")
     def kick_participant(self, request, pk=None):
@@ -3646,7 +3740,23 @@ class RecordingWebhookView(views.APIView):
 
         # 4) Store the S3 key on the Event
         event.recording_url = s3_key
-        event.save(update_fields=["recording_url", "updated_at"])
+        event.recording_raw_url = s3_key
+        event.recording_status = "ready_to_edit"
+        event.save(update_fields=["recording_url", "recording_raw_url", "recording_status", "updated_at"])
+
+        try:
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"event_{event.id}",
+                {
+                    "type": "recording_ready",
+                    "event_id": event.id,
+                    "recording_url": s3_key,
+                    "status": "ready_to_edit",
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to broadcast recording_ready: {e}")
 
         logger.info(
             "✅ Saved recording for event=%s meeting=%s s3_key=%s",
@@ -3655,6 +3765,27 @@ class RecordingWebhookView(views.APIView):
             s3_key,
         )
         return Response({"message": "Recording saved", "event_id": event.id}, status=202)
+
+
+class RecordingViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = EventSerializer
+    pagination_class = LimitOffsetPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Event.objects.exclude(recording_raw_url__isnull=True).exclude(recording_raw_url="")
+        if user.is_staff:
+            return qs.order_by("-recording_published_at", "-updated_at")
+
+        user_event_ids = EventRegistration.objects.filter(user=user).values_list("event_id", flat=True)
+        host_event_ids = Event.objects.filter(
+            Q(created_by=user) | Q(community__owner=user) | Q(participants__role="host", participants__user=user)
+        ).values_list("id", flat=True)
+
+        return qs.filter(
+            Q(id__in=host_event_ids) | (Q(id__in=user_event_ids) & Q(recording_status="published"))
+        ).distinct().order_by("-recording_published_at", "-updated_at")
 
 
 # ============================================================

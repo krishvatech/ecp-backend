@@ -508,6 +508,21 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "timestamp": event.get("timestamp"),
         })
 
+    async def recording_ready(self, event: dict) -> None:
+        await self.send_json({
+            "type": "recording_ready",
+            "event_id": event.get("event_id"),
+            "recording_url": event.get("recording_url"),
+            "status": event.get("status", "ready_to_edit"),
+        })
+
+    async def recording_published(self, event: dict) -> None:
+        await self.send_json({
+            "type": "recording_published",
+            "event_id": event.get("event_id"),
+            "published_at": event.get("published_at"),
+        })
+
     async def breakout_force_join(self, event: dict) -> None:
         """Targeted force join for specific user"""
         print(f"[HANDLER] breakout_force_join: self.user.id={self.user.id}, target={event['user_id']}")
