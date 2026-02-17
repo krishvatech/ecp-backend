@@ -257,3 +257,96 @@ def enforce_event_end_conditions() -> dict:
                     ended += 1
 
     return {"checked": qs.count(), "ended": ended}
+
+
+# ============================================================================
+# Phase 3: Speed Networking - Live Score Recalculation
+# ============================================================================
+
+@shared_task
+def recalculate_stale_matches():
+    """
+    Periodic task (every 5 minutes) to recalculate matches with outdated configs.
+
+    When admin updates matching criteria (config_version increments), all active/pending
+    matches are marked with config_version=0. This task finds those matches and
+    recalculates their scores using the updated algorithm.
+
+    Benefits:
+    - ✅ Matches always reflect current criteria
+    - ✅ Historical records preserved (last_recalculated_at tracked)
+    - ✅ No manual intervention needed
+    - ✅ Transparent to users
+    """
+    from django.db.models import F
+    from .models import SpeedNetworkingMatch, SpeedNetworkingSession
+    from .speed_networking_views import _build_user_profiles_bulk, _calculate_match_probability, _get_criteria_config
+    from .criteria_matching_engine import CriteriaBasedMatchingEngine
+
+    try:
+        # Find stale matches: config_version < session.config_version
+        stale_matches = SpeedNetworkingMatch.objects.filter(
+            config_version__lt=F('session__config_version'),  # Config outdated
+            status__in=['ACTIVE', 'PENDING'],
+            session__status='ACTIVE'
+        )[:100]  # Process in batches of 100
+
+        if not stale_matches.exists():
+            logger.info("[RECALC] No stale matches found")
+            return {"recalculated": 0, "status": "no_stale_matches"}
+
+        recalculated_count = 0
+        error_count = 0
+
+        for match in stale_matches:
+            try:
+                # Rebuild profiles using bulk loading
+                profiles = _build_user_profiles_bulk([match.participant_1.id, match.participant_2.id])
+
+                if match.participant_1.id not in profiles or match.participant_2.id not in profiles:
+                    logger.warning(f"[RECALC] Could not build profiles for match {match.id}")
+                    error_count += 1
+                    continue
+
+                profile_a = profiles[match.participant_1.id]
+                profile_b = profiles[match.participant_2.id]
+
+                # Get current config
+                config = _get_criteria_config(match.session)
+                engine = CriteriaBasedMatchingEngine(match.session, config)
+
+                # Recalculate score
+                score, breakdown, is_valid = engine.calculate_combined_score(profile_a, profile_b)
+
+                # Update match with new values
+                match.match_score = score
+                match.match_breakdown = breakdown
+                match.match_probability = _calculate_match_probability(score)
+                match.config_version = match.session.config_version
+                match.last_recalculated_at = timezone.now()
+                match.save()
+
+                recalculated_count += 1
+                logger.info(
+                    f"[RECALC] Match {match.id}: {score:.1f} → {match.match_probability:.1f}% "
+                    f"(v{match.session.config_version})"
+                )
+
+            except Exception as e:
+                error_count += 1
+                logger.error(f"[RECALC] Failed to recalculate match {match.id}: {e}")
+                continue
+
+        logger.info(
+            f"[RECALC] Completed: {recalculated_count} recalculated, {error_count} errors"
+        )
+
+        return {
+            "recalculated": recalculated_count,
+            "errors": error_count,
+            "status": "success"
+        }
+
+    except Exception as e:
+        logger.error(f"[RECALC] Task failed: {e}")
+        return {"status": "failed", "error": str(e)}

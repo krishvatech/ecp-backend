@@ -484,6 +484,8 @@ class CriteriaBasedMatchingEngine:
         """
         Calculate combined match score across all criteria.
 
+        FIXED: Properly normalizes weights and includes probability calculation.
+
         Args:
             user_a: User profile dict
             user_b: User profile dict
@@ -495,22 +497,22 @@ class CriteriaBasedMatchingEngine:
                    f"vs user_b={user_b.get('user_id')}")
 
         scores = {}
-        required_met = True
+        weights = {}
+        required_criteria = []
+        failed_required = None
 
-        # Calculate each criterion
-        if self.criteria_config['skill']['enabled']:
+        # ===== STEP 1: Calculate all enabled criterion scores =====
+        if self.criteria_config['skill'].get('enabled', True):
             scores['skill'] = calculate_skill_match_score(
                 user_a.get('skills', []),
                 user_b.get('skills', []),
                 self.criteria_config['skill'].get('match_mode', 'complementary')
             )
-            if self.criteria_config['skill']['required']:
-                threshold = self.criteria_config['skill'].get('threshold', 50)
-                if scores['skill'] < threshold:
-                    logger.debug(f"[MATCH] Skill score {scores['skill']} < threshold {threshold}")
-                    required_met = False
+            weights['skill'] = self.criteria_config['skill'].get('weight', 0.35)
+            if self.criteria_config['skill'].get('required', True):
+                required_criteria.append('skill')
 
-        if self.criteria_config['experience']['enabled']:
+        if self.criteria_config['experience'].get('enabled', True):
             scores['experience'] = calculate_experience_match_score(
                 user_a.get('experience_years', 0),
                 user_b.get('experience_years', 0),
@@ -518,56 +520,95 @@ class CriteriaBasedMatchingEngine:
                 user_b.get('experience_level'),
                 self.criteria_config['experience'].get('match_type', 'mentorship')
             )
-            if self.criteria_config['experience']['required']:
-                threshold = self.criteria_config['experience'].get('threshold', 50)
-                if scores['experience'] < threshold:
-                    logger.debug(f"[MATCH] Experience score {scores['experience']} < threshold {threshold}")
-                    required_met = False
+            weights['experience'] = self.criteria_config['experience'].get('weight', 0.30)
+            if self.criteria_config['experience'].get('required', True):
+                required_criteria.append('experience')
 
-        if self.criteria_config['location']['enabled']:
+        if self.criteria_config['location'].get('enabled', True):
             scores['location'] = calculate_location_match_score(
                 user_a.get('location', {}),
                 user_b.get('location', {}),
                 self.criteria_config['location'].get('match_strategy', 'radius')
             )
-            if self.criteria_config['location']['required']:
-                threshold = self.criteria_config['location'].get('threshold', 30)
-                if scores['location'] < threshold:
-                    logger.debug(f"[MATCH] Location score {scores['location']} < threshold {threshold}")
-                    required_met = False
+            weights['location'] = self.criteria_config['location'].get('weight', 0.20)
+            if self.criteria_config['location'].get('required', False):
+                required_criteria.append('location')
 
-        if self.criteria_config['education']['enabled']:
+        if self.criteria_config['education'].get('enabled', True):
             scores['education'] = calculate_education_match_score(
                 user_a.get('education', {}),
                 user_b.get('education', {}),
                 self.criteria_config['education'].get('match_type', 'same_level')
             )
-            if self.criteria_config['education']['required']:
-                threshold = self.criteria_config['education'].get('threshold', 40)
-                if scores['education'] < threshold:
-                    logger.debug(f"[MATCH] Education score {scores['education']} < threshold {threshold}")
-                    required_met = False
+            weights['education'] = self.criteria_config['education'].get('weight', 0.15)
+            if self.criteria_config['education'].get('required', False):
+                required_criteria.append('education')
 
-        if not required_met:
-            logger.debug("[MATCH] Required criteria not met")
+        logger.debug(f"[MATCH] Calculated scores: {scores}, Required: {required_criteria}")
+
+        # ===== STEP 2: Validate required criteria =====
+        for criterion in required_criteria:
+            threshold = self.criteria_config[criterion].get('threshold', 50)
+            if scores.get(criterion, 0) < threshold:
+                logger.debug(f"[MATCH] Required criterion '{criterion}' score "
+                           f"{scores.get(criterion, 0):.0f} < threshold {threshold}")
+                failed_required = criterion
+                return 0, scores, False
+
+        # ===== STEP 3: Normalize weights to sum to 1.0 =====
+        total_weight = sum(weights.values())
+        if total_weight == 0:
+            logger.warning("[MATCH] No weights configured, cannot calculate score")
             return 0, scores, False
 
-        # Calculate weighted final score
+        normalized_weights = {k: v / total_weight for k, v in weights.items()}
+        logger.debug(f"[MATCH] Normalized weights: {normalized_weights}")
+
+        # ===== STEP 4: Calculate weighted final score =====
         weighted_score = 0
-        total_weight = 0
+        for criterion, weight in normalized_weights.items():
+            score = scores.get(criterion, 0)
+            weighted_score += score * weight
+            logger.debug(f"[MATCH] {criterion}: {score:.0f} * {weight:.2f} = {score * weight:.0f}")
 
-        for criterion, config in self.criteria_config.items():
-            if config.get('enabled', True):
-                weight = config.get('weight', 0)
-                criterion_score = scores.get(criterion, 0)
-                weighted_score += criterion_score * weight
-                total_weight += weight
+        final_score = min(100, max(0, weighted_score))  # Clamp to 0-100
 
-        final_score = weighted_score / total_weight if total_weight > 0 else 0
+        # ===== STEP 5: Calculate match probability =====
+        probability = self._score_to_probability(final_score, scores, required_criteria)
 
-        logger.info(f"[MATCH] Final score: {final_score:.1f} | Breakdown: {scores}")
+        logger.info(f"[MATCH] Final score: {final_score:.1f} | Probability: {probability:.0f}% | Breakdown: {scores}")
 
         return final_score, scores, True
+
+    def _score_to_probability(self, score: float, breakdown: Dict, required_criteria: List[str]) -> float:
+        """
+        Convert raw score (0-100) to match probability (0-100).
+
+        Logic:
+        - 0-50: Linear (0% to 50%)
+        - 50-75: Steep gradient (50% to 75%) - threshold crossing boost
+        - 75-100: Linear (75% to 100%)
+
+        Args:
+            score: Raw score 0-100
+            breakdown: Scores for each criterion
+            required_criteria: List of required criteria that passed
+
+        Returns:
+            Probability 0-100
+        """
+        if score < 50:
+            # Below threshold: linear probability
+            probability = score / 100
+        elif score < 75:
+            # Threshold crossing: steeper gradient
+            # 50→75 score maps to 50%→75% probability
+            probability = 0.5 + (score - 50) / 100
+        else:
+            # Above 75: linear to 100%
+            probability = 0.75 + (score - 75) / 100
+
+        return min(100, probability * 100)
 
     def find_best_matches(self, user: Dict, candidate_pool: List[Dict],
                          top_n: int = 5) -> List[Tuple[float, Dict, Dict]]:

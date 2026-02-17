@@ -500,6 +500,10 @@ class SpeedNetworkingSession(models.Model):
         blank=True,
         help_text="Criteria matching configuration (weights, thresholds, etc)"
     )
+    config_version = models.IntegerField(
+        default=1,
+        help_text="Incremented each time criteria_config changes (for tracking updates)"
+    )
 
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
@@ -542,8 +546,32 @@ class SpeedNetworkingMatch(models.Model):
         help_text="Whether this match complies with all rules"
     )
 
+    # Config version tracking (ADDED)
+    config_version = models.IntegerField(
+        default=1,
+        help_text="Version of criteria_config used to calculate this match score"
+    )
+    match_probability = models.FloatField(
+        default=0,
+        help_text="Match success probability (0-100) calculated from score"
+    )
+    last_recalculated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when match score was last recalculated with updated config"
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        # Performance indexes (ADDED)
+        indexes = [
+            models.Index(fields=['session', 'status', '-created_at']),
+            models.Index(fields=['participant_1', 'session']),
+            models.Index(fields=['participant_2', 'session']),
+            models.Index(fields=['config_version']),
+        ]
 
     def __str__(self):
         return f"Match {self.id}: {self.participant_1} vs {self.participant_2}"
@@ -564,6 +592,11 @@ class SpeedNetworkingQueue(models.Model):
 
     class Meta:
         unique_together = ('session', 'user')
+        # Performance indexes (ADDED)
+        indexes = [
+            models.Index(fields=['session', 'is_active']),
+            models.Index(fields=['session', 'current_match']),
+        ]
 
     def __str__(self):
         return f"{self.user} in Queue for Session {self.session_id}"

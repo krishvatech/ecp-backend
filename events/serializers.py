@@ -1441,9 +1441,12 @@ class SpeedNetworkingMatchSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'session', 'participant_1', 'participant_2',
             'status', 'dyte_room_name', 'match_score', 'match_breakdown', 'rule_compliance',
+            'match_probability', 'config_version', 'last_recalculated_at',
             'created_at', 'ended_at'
         ]
-        read_only_fields = ['id', 'created_at', 'ended_at', 'status', 'dyte_room_name', 'match_score', 'match_breakdown', 'rule_compliance']
+        read_only_fields = ['id', 'created_at', 'ended_at', 'status', 'dyte_room_name',
+                           'match_score', 'match_breakdown', 'rule_compliance',
+                           'match_probability', 'config_version', 'last_recalculated_at']
 
 
 class SpeedNetworkingSessionSerializer(serializers.ModelSerializer):
@@ -1462,11 +1465,11 @@ class SpeedNetworkingSessionSerializer(serializers.ModelSerializer):
         model = SpeedNetworkingSession
         fields = [
             'id', 'event', 'name', 'status', 'duration_minutes',
-            'matching_strategy', 'criteria_config',
+            'matching_strategy', 'criteria_config', 'config_version',
             'started_at', 'ended_at', 'matches', 'created_at',
             'queue_count', 'active_matches_count'
         ]
-        read_only_fields = ['id', 'started_at', 'ended_at', 'created_at', 'event']
+        read_only_fields = ['id', 'started_at', 'ended_at', 'created_at', 'event', 'config_version']
 
 
 class SpeedNetworkingQueueSerializer(serializers.ModelSerializer):

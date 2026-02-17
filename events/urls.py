@@ -54,6 +54,66 @@ urlpatterns = router.urls + [
         SpeedNetworkingSessionViewSet.as_view({'post': 'remove_from_queue'}),
         name='speed-networking-remove-from-queue'
     ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/create_rule/",
+        SpeedNetworkingSessionViewSet.as_view({'post': 'create_rule'}),
+        name='speed-networking-create-rule'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/rules/",
+        SpeedNetworkingSessionViewSet.as_view({'get': 'rules'}),
+        name='speed-networking-rules'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/set_matching_strategy/",
+        SpeedNetworkingSessionViewSet.as_view({'post': 'set_matching_strategy'}),
+        name='speed-networking-set-matching-strategy'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/update_criteria/",
+        SpeedNetworkingSessionViewSet.as_view({'patch': 'update_criteria'}),
+        name='speed-networking-update-criteria'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/test_match_score/",
+        SpeedNetworkingSessionViewSet.as_view({'post': 'test_match_score'}),
+        name='speed-networking-test-match-score'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/match_preview/",
+        SpeedNetworkingSessionViewSet.as_view({'get': 'match_preview'}),
+        name='speed-networking-match-preview'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/recalculate_matches/",
+        SpeedNetworkingSessionViewSet.as_view({'post': 'recalculate_matches'}),
+        name='speed-networking-recalculate-matches'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/suggest_weights/",
+        SpeedNetworkingSessionViewSet.as_view({'get': 'suggest_weights'}),
+        name='speed-networking-suggest-weights'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/match_quality/",
+        SpeedNetworkingSessionViewSet.as_view({'get': 'match_quality'}),
+        name='speed-networking-match-quality'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/start_config_comparison/",
+        SpeedNetworkingSessionViewSet.as_view({'post': 'start_config_comparison'}),
+        name='speed-networking-start-config-comparison'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/get_comparison_results/",
+        SpeedNetworkingSessionViewSet.as_view({'get': 'get_comparison_results'}),
+        name='speed-networking-get-comparison-results'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/finalize_comparison/",
+        SpeedNetworkingSessionViewSet.as_view({'post': 'finalize_comparison'}),
+        name='speed-networking-finalize-comparison'
+    ),
 
     # --- Speed Networking Queue ---
     path(
