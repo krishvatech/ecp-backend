@@ -431,6 +431,7 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         # Broadcast via WebSocket
         send_speed_networking_message(event_id, 'speed_networking.session_started', {
             'session_id': session.id,
+            'session_name': session.name,
             'duration_minutes': session.duration_minutes
         })
 
