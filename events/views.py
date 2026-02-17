@@ -18,6 +18,7 @@ import base64                      # NOTE: currently unused; kept as requested
 import requests      
 import time
 import random
+import threading
 
 # ============================================================
 # ======================= Django Imports =====================
@@ -607,6 +608,72 @@ def _stop_rtk_recording_for_event_manual(event: Event):
         event.rtk_recording_id,
     )
     return True, "Recording stopped."
+
+
+def _delete_rtk_recording_for_event(event: Event):
+    """
+    Permanently delete a recording from RealtimeKit and best-effort S3 cleanup.
+    """
+    if not event.rtk_recording_id:
+        return False, "No recording to delete."
+
+    recording_id = event.rtk_recording_id
+    headers = _rtk_headers()
+    if not headers:
+        return False, "RealtimeKit credentials are not configured."
+
+    logger.warning("🗑️ RealtimeKit delete requested for event=%s recording=%s", event.id, recording_id)
+    try:
+        resp = requests.delete(
+            f"{RTK_API_BASE}/recordings/{recording_id}",
+            headers=headers,
+            timeout=8,
+        )
+    except requests.RequestException as exc:
+        logger.exception("❌ RealtimeKit delete exception for event=%s recording=%s: %s", event.id, recording_id, exc)
+        return False, "Failed to delete recording from RealtimeKit."
+
+    if resp.status_code not in (200, 202, 204, 404):
+        logger.error(
+            "❌ RealtimeKit delete failed for event=%s recording=%s: %s",
+            event.id,
+            recording_id,
+            (resp.text or "")[:500],
+        )
+        return False, "RealtimeKit rejected recording deletion."
+
+    logger.warning("✅ RealtimeKit delete accepted for event=%s recording=%s", event.id, recording_id)
+
+    # Best-effort cleanup if uploaded artifact already exists in S3.
+    # Run asynchronously so API response is not delayed.
+    if event.recording_url and AWS_S3_BUCKET:
+        event_id = event.id
+        s3_key = event.recording_url
+
+        def _delete_s3_recording_bg():
+            try:
+                import boto3
+                from botocore.config import Config
+                s3_client = boto3.client(
+                    "s3",
+                    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+                    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+                    region_name=AWS_S3_REGION,
+                    config=Config(
+                        signature_version="s3v4",
+                        connect_timeout=2,
+                        read_timeout=3,
+                        retries={"max_attempts": 1},
+                    ),
+                )
+                s3_client.delete_object(Bucket=AWS_S3_BUCKET, Key=s3_key)
+                logger.warning("✅ S3 recording deleted for event=%s key=%s", event_id, s3_key)
+            except Exception as exc:
+                logger.warning("⚠️ Failed S3 cleanup for cancelled recording event=%s key=%s err=%s", event_id, s3_key, exc)
+
+        threading.Thread(target=_delete_s3_recording_bg, daemon=True).start()
+
+    return True, "Recording permanently deleted."
 
 
 def _broadcast_recording_status(event: Event, action_name: str):
@@ -1539,6 +1606,46 @@ class EventViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.warning(f"Failed to broadcast recording stop for event {event.id}: {e}")
         return Response({"ok": True})
+
+    @action(detail=True, methods=["delete"], permission_classes=[IsAuthenticated], url_path="cancel-recording")
+    def cancel_recording(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"error": "Only the host can cancel recording."}, status=403)
+        if not event.is_recording and not event.rtk_recording_id:
+            return Response({"error": "No active recording to cancel."}, status=400)
+
+        logger.warning(
+            "🎛️ Host %s requested CANCEL-recording for event=%s recording=%s",
+            request.user.id,
+            event.id,
+            event.rtk_recording_id,
+        )
+
+        recording_id = event.rtk_recording_id
+        success, msg = _delete_rtk_recording_for_event(event)
+        if not success:
+            return Response({"error": msg}, status=400)
+
+        event.is_recording = False
+        event.rtk_recording_id = ""
+        event.recording_paused_at = None
+        event.recording_url = ""
+        event.save(update_fields=["is_recording", "rtk_recording_id", "recording_paused_at", "recording_url", "updated_at"])
+        logger.warning("✅ Recording cancelled and cleared in DB for event=%s", event.id)
+
+        try:
+            _broadcast_recording_status(event, "cancelled")
+        except Exception as e:
+            logger.warning(f"Failed to broadcast recording cancellation for event {event.id}: {e}")
+
+        logger.warning(
+            "🗑️ Recording CANCELLED by user=%s for event=%s recording_id=%s",
+            request.user.id,
+            event.id,
+            recording_id,
+        )
+        return Response({"ok": True, "message": "Recording permanently deleted", "is_recording": False, "is_paused": False})
     
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="kick")
     def kick_participant(self, request, pk=None):
