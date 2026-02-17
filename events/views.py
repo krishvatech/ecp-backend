@@ -313,6 +313,317 @@ def _stop_rtk_recording_for_event(event: Event) -> None:
         rec_id,
     )
 
+
+def _start_rtk_recording_for_event_manual(event: Event):
+    """Start recording and return status tuple for API response."""
+    meeting_id = event.dyte_meeting_id
+    if not meeting_id:
+        try:
+            meeting_id = _ensure_dyte_meeting_for_event(event)
+        except Exception as exc:
+            logger.exception("❌ Cannot ensure meeting before start recording for event=%s: %s", event.id, exc)
+            return False, "", "Failed to ensure meeting before starting recording."
+
+    headers = _rtk_headers()
+    if not headers:
+        return False, "", "RealtimeKit credentials are not configured."
+    logger.info(
+        "🔴 RealtimeKit manual start requested for event=%s meeting=%s",
+        event.id,
+        meeting_id,
+    )
+
+    def _find_active_recording_id():
+        try:
+            list_resp = requests.get(
+                f"{RTK_API_BASE}/recordings",
+                headers=headers,
+                params={"meeting_id": meeting_id},
+                timeout=15,
+            )
+            if list_resp.status_code not in (200, 201):
+                logger.warning(
+                    "⚠️ RealtimeKit list recordings failed while reconciling start for event=%s: %s",
+                    event.id,
+                    list_resp.text[:500],
+                )
+                return ""
+            recordings = (list_resp.json() or {}).get("data") or []
+            active = next(
+                (r for r in recordings if r.get("status") not in ["STOPPED", "UPLOADED"]),
+                None,
+            )
+            return (active or {}).get("id") or ""
+        except requests.RequestException as exc:
+            logger.exception(
+                "❌ RealtimeKit list recordings exception while reconciling start for event=%s: %s",
+                event.id,
+                exc,
+            )
+            return ""
+
+    try:
+        resp = requests.post(
+            f"{RTK_API_BASE}/recordings",
+            headers=headers,
+            json={"meeting_id": meeting_id},
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.exception("❌ RealtimeKit manual start exception for event=%s: %s", event.id, exc)
+        return False, "", "Failed to start recording."
+
+    if resp.status_code == 409:
+        # RTK already has an active recorder for this meeting. Reconcile and adopt it.
+        existing_id = _find_active_recording_id()
+        if existing_id:
+            logger.info(
+                "ℹ️ RealtimeKit recording already running; adopting existing recording for event=%s recording_id=%s",
+                event.id,
+                existing_id,
+            )
+            return True, existing_id, "Recording already active."
+        logger.error(
+            "❌ RealtimeKit returned 409 but no active recording found for event=%s",
+            event.id,
+        )
+        return False, "", "Recording is already running but could not be reconciled."
+
+    if resp.status_code not in (200, 201):
+        logger.error("❌ RealtimeKit manual start failed for event=%s: %s", event.id, resp.text[:500])
+        return False, "", "RealtimeKit rejected recording start."
+
+    data = (resp.json() or {}).get("data") or {}
+    rec_id = data.get("id") or ""
+    logger.info(
+        "✅ RealtimeKit manual start accepted for event=%s meeting=%s recording=%s",
+        event.id,
+        meeting_id,
+        rec_id,
+    )
+    return True, rec_id, "Recording started."
+
+
+def _pause_rtk_recording_for_event(event: Event):
+    """Pause active recording by explicit recording id."""
+    if not event.rtk_recording_id:
+        return False, "No active recording found for this event."
+
+    headers = _rtk_headers()
+    if not headers:
+        return False, "RealtimeKit credentials are not configured."
+    logger.info(
+        "⏸️ RealtimeKit pause requested for event=%s recording=%s",
+        event.id,
+        event.rtk_recording_id,
+    )
+
+    try:
+        resp = requests.put(
+            f"{RTK_API_BASE}/recordings/{event.rtk_recording_id}",
+            headers=headers,
+            json={"action": "pause"},
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.exception("❌ RealtimeKit pause exception for event=%s: %s", event.id, exc)
+        return False, "Failed to pause recording."
+
+    if resp.status_code not in (200, 201, 204):
+        body_text = (resp.text or "")[:500]
+        body_lower = (resp.text or "").lower()
+        if resp.status_code == 400:
+            try:
+                status_resp = requests.get(
+                    f"{RTK_API_BASE}/recordings/{event.rtk_recording_id}",
+                    headers=headers,
+                    timeout=15,
+                )
+                status_data = (status_resp.json() or {}).get("data") or {}
+                current_status = str(status_data.get("status") or "").upper()
+                if current_status in {"PAUSED", "PAUSING"}:
+                    logger.info(
+                        "ℹ️ RealtimeKit pause reconciled as paused for event=%s recording=%s (status=%s, body=%s)",
+                        event.id,
+                        event.rtk_recording_id,
+                        current_status,
+                        body_text,
+                    )
+                    return True, "Recording already paused."
+                logger.warning(
+                    "⚠️ RealtimeKit pause rejected for event=%s recording=%s (status=%s, body=%s)",
+                    event.id,
+                    event.rtk_recording_id,
+                    current_status,
+                    body_text,
+                )
+                return False, f"Recording cannot be paused right now (status={current_status or 'unknown'})."
+            except requests.RequestException as exc:
+                logger.exception(
+                    "❌ RealtimeKit pause status reconciliation failed for event=%s recording=%s: %s",
+                    event.id,
+                    event.rtk_recording_id,
+                    exc,
+                )
+                return False, "Pause failed and current recording status could not be verified."
+        logger.error("❌ RealtimeKit pause failed for event=%s recording=%s: %s", event.id, event.rtk_recording_id, body_text)
+        return False, "RealtimeKit rejected recording pause."
+
+    logger.info(
+        "✅ RealtimeKit pause accepted for event=%s recording=%s",
+        event.id,
+        event.rtk_recording_id,
+    )
+    return True, "Recording paused."
+
+
+def _resume_rtk_recording_for_event(event: Event):
+    """Resume paused recording by explicit recording id."""
+    if not event.rtk_recording_id:
+        return False, "No active recording found for this event."
+
+    headers = _rtk_headers()
+    if not headers:
+        return False, "RealtimeKit credentials are not configured."
+    logger.info(
+        "▶️ RealtimeKit resume requested for event=%s recording=%s",
+        event.id,
+        event.rtk_recording_id,
+    )
+
+    try:
+        resp = requests.put(
+            f"{RTK_API_BASE}/recordings/{event.rtk_recording_id}",
+            headers=headers,
+            json={"action": "resume"},
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.exception("❌ RealtimeKit resume exception for event=%s: %s", event.id, exc)
+        return False, "Failed to resume recording."
+
+    if resp.status_code not in (200, 201, 204):
+        body_text = (resp.text or "")[:500]
+        body_lower = (resp.text or "").lower()
+        if resp.status_code == 400:
+            try:
+                status_resp = requests.get(
+                    f"{RTK_API_BASE}/recordings/{event.rtk_recording_id}",
+                    headers=headers,
+                    timeout=15,
+                )
+                status_data = (status_resp.json() or {}).get("data") or {}
+                current_status = str(status_data.get("status") or "").upper()
+                if current_status in {"RECORDING", "STARTED", "RUNNING"}:
+                    logger.info(
+                        "ℹ️ RealtimeKit resume reconciled as running for event=%s recording=%s (status=%s, body=%s)",
+                        event.id,
+                        event.rtk_recording_id,
+                        current_status,
+                        body_text,
+                    )
+                    return True, "Recording already running."
+                logger.warning(
+                    "⚠️ RealtimeKit resume rejected for event=%s recording=%s (status=%s, body=%s)",
+                    event.id,
+                    event.rtk_recording_id,
+                    current_status,
+                    body_text,
+                )
+                return False, f"Recording cannot be resumed right now (status={current_status or 'unknown'})."
+            except requests.RequestException as exc:
+                logger.exception(
+                    "❌ RealtimeKit resume status reconciliation failed for event=%s recording=%s: %s",
+                    event.id,
+                    event.rtk_recording_id,
+                    exc,
+                )
+                return False, "Resume failed and current recording status could not be verified."
+        logger.error("❌ RealtimeKit resume failed for event=%s recording=%s: %s", event.id, event.rtk_recording_id, body_text)
+        return False, "RealtimeKit rejected recording resume."
+
+    logger.info(
+        "✅ RealtimeKit resume accepted for event=%s recording=%s",
+        event.id,
+        event.rtk_recording_id,
+    )
+    return True, "Recording resumed."
+
+
+def _stop_rtk_recording_for_event_manual(event: Event):
+    """Stop active recording by explicit recording id."""
+    if not event.rtk_recording_id:
+        return False, "No active recording found for this event."
+    logger.info(
+        "🛑 RealtimeKit manual stop requested for event=%s recording=%s",
+        event.id,
+        event.rtk_recording_id,
+    )
+
+    headers = _rtk_headers()
+    if not headers:
+        return False, "RealtimeKit credentials are not configured."
+
+    try:
+        resp = requests.put(
+            f"{RTK_API_BASE}/recordings/{event.rtk_recording_id}",
+            headers=headers,
+            json={"action": "stop"},
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.exception("❌ RealtimeKit manual stop exception for event=%s: %s", event.id, exc)
+        return False, "Failed to stop recording."
+
+    if resp.status_code not in (200, 201, 204):
+        body_text = (resp.text or "")[:500]
+        body_lower = (resp.text or "").lower()
+        # RealtimeKit may return 400 during transitional/non-active states (e.g. INVOKED).
+        # Treat these as idempotent success for UX consistency.
+        if resp.status_code == 400 and (
+            "not in progress" in body_lower
+            or "current status is invoked" in body_lower
+            or "current status is stopped" in body_lower
+            or "current status is uploaded" in body_lower
+        ):
+            logger.info(
+                "ℹ️ RealtimeKit stop treated as idempotent success for event=%s recording=%s: %s",
+                event.id,
+                event.rtk_recording_id,
+                body_text,
+            )
+            return True, "Recording already stopping/stopped."
+        logger.error(
+            "❌ RealtimeKit manual stop failed for event=%s recording=%s: %s",
+            event.id,
+            event.rtk_recording_id,
+            body_text,
+        )
+        return False, "RealtimeKit rejected recording stop."
+
+    logger.info(
+        "✅ RealtimeKit manual stop accepted for event=%s recording=%s",
+        event.id,
+        event.rtk_recording_id,
+    )
+    return True, "Recording stopped."
+
+
+def _broadcast_recording_status(event: Event, action_name: str):
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        f"event_{event.id}",
+        {
+            "type": "recording_status_changed",
+            "event_id": event.id,
+            "is_recording": event.is_recording,
+            "recording_id": event.rtk_recording_id or "",
+            "is_paused": bool(event.recording_paused_at),
+            "action": action_name,
+            "timestamp": timezone.now().isoformat(),
+        }
+    )
+
 # ============================================================
 # ================= Pagination / Permissions =================
 # ============================================================
@@ -917,14 +1228,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "updated_at",
             ])
 
-        # 🔴 NEW: start Cloudflare recording when meeting goes live
         if action_type == "start":
-            try:
-                _start_rtk_recording_for_event(event)
-            except Exception:
-                # Already logged inside helper; do not break the API
-                pass
-
             # 📢 Broadcast meeting start to all participants
             try:
                 channel_layer = get_channel_layer()
@@ -959,12 +1263,18 @@ class EventViewSet(viewsets.ModelViewSet):
                 except Exception as e:
                     logger.warning(f"Failed to broadcast waiting_room_enforced: {e}")
         else:  # action_type == "end"
-            # 🛑 NEW: stop Cloudflare recording when meeting ends
-            try:
-                _stop_rtk_recording_for_event(event)
-            except Exception:
-                # Already logged inside helper; do not break the API
-                pass
+            # Auto-stop any active manual recording when meeting ends.
+            if event.is_recording and event.rtk_recording_id:
+                success, _msg = _stop_rtk_recording_for_event_manual(event)
+                if success:
+                    event.is_recording = False
+                    event.rtk_recording_id = ""
+                    event.recording_paused_at = None
+                    event.save(update_fields=["is_recording", "rtk_recording_id", "recording_paused_at", "updated_at"])
+                    try:
+                        _broadcast_recording_status(event, "stopped")
+                    except Exception as e:
+                        logger.warning(f"Failed to broadcast recording stop for event {event.id}: {e}")
 
             # 📢 Broadcast meeting end to all participants via WebSocket
             try:
@@ -1070,12 +1380,17 @@ class EventViewSet(viewsets.ModelViewSet):
         event.ended_by_host = True
         event.save(update_fields=["status", "is_live", "live_ended_at", "ended_by_host", "updated_at"])
 
-        # 🛑 Stop recording when meeting ends
-        try:
-            _stop_rtk_recording_for_event(event)
-        except Exception:
-            # Already logged inside helper; do not break the API
-            pass
+        if event.is_recording and event.rtk_recording_id:
+            success, _msg = _stop_rtk_recording_for_event_manual(event)
+            if success:
+                event.is_recording = False
+                event.rtk_recording_id = ""
+                event.recording_paused_at = None
+                event.save(update_fields=["is_recording", "rtk_recording_id", "recording_paused_at", "updated_at"])
+                try:
+                    _broadcast_recording_status(event, "stopped")
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast recording stop for event {event.id}: {e}")
 
         # 📢 Broadcast meeting end to all participants via WebSocket
         # This allows frontend to immediately show PostEventLoungeScreen or redirect as needed
@@ -1103,6 +1418,127 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response(
             {"message": "Meeting ended", "status": event.status, "event_id": event.id}
         )
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="start-recording")
+    def start_recording(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can control recording."}, status=403)
+        if not event.is_live:
+            return Response({"error": "Event must be live to start recording."}, status=400)
+        if event.is_recording:
+            return Response({"error": "Recording already active."}, status=400)
+        logger.info(
+            "🎛️ Host %s requested start-recording for event=%s",
+            request.user.id,
+            event.id,
+        )
+
+        success, recording_id, msg = _start_rtk_recording_for_event_manual(event)
+        if not success:
+            return Response({"error": msg}, status=400)
+
+        event.is_recording = True
+        event.rtk_recording_id = recording_id
+        event.recording_paused_at = None
+        event.save(update_fields=["is_recording", "rtk_recording_id", "recording_paused_at", "updated_at"])
+        logger.info(
+            "✅ Recording state saved in DB for event=%s recording=%s",
+            event.id,
+            event.rtk_recording_id,
+        )
+        try:
+            _broadcast_recording_status(event, "started")
+        except Exception as e:
+            logger.warning(f"Failed to broadcast recording start for event {event.id}: {e}")
+        return Response({"ok": True, "recording_id": event.rtk_recording_id})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="pause-recording")
+    def pause_recording(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can control recording."}, status=403)
+        if not event.is_recording or not event.rtk_recording_id:
+            return Response({"error": "No active recording to pause."}, status=400)
+        if event.recording_paused_at:
+            return Response({"error": "Recording is already paused."}, status=400)
+        logger.info(
+            "🎛️ Host %s requested pause-recording for event=%s recording=%s",
+            request.user.id,
+            event.id,
+            event.rtk_recording_id,
+        )
+
+        success, msg = _pause_rtk_recording_for_event(event)
+        if not success:
+            return Response({"error": msg}, status=400)
+
+        event.recording_paused_at = timezone.now()
+        event.save(update_fields=["recording_paused_at", "updated_at"])
+        logger.info("✅ Recording paused state saved in DB for event=%s", event.id)
+        try:
+            _broadcast_recording_status(event, "paused")
+        except Exception as e:
+            logger.warning(f"Failed to broadcast recording pause for event {event.id}: {e}")
+        return Response({"ok": True})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="resume-recording")
+    def resume_recording(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can control recording."}, status=403)
+        if not event.is_recording or not event.rtk_recording_id:
+            return Response({"error": "No active recording to resume."}, status=400)
+        if not event.recording_paused_at:
+            return Response({"error": "Recording is not paused."}, status=400)
+        logger.info(
+            "🎛️ Host %s requested resume-recording for event=%s recording=%s",
+            request.user.id,
+            event.id,
+            event.rtk_recording_id,
+        )
+
+        success, msg = _resume_rtk_recording_for_event(event)
+        if not success:
+            return Response({"error": msg}, status=400)
+
+        event.recording_paused_at = None
+        event.save(update_fields=["recording_paused_at", "updated_at"])
+        logger.info("✅ Recording resumed state saved in DB for event=%s", event.id)
+        try:
+            _broadcast_recording_status(event, "resumed")
+        except Exception as e:
+            logger.warning(f"Failed to broadcast recording resume for event {event.id}: {e}")
+        return Response({"ok": True})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="stop-recording")
+    def stop_recording(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can control recording."}, status=403)
+        if not event.is_recording or not event.rtk_recording_id:
+            return Response({"error": "No active recording to stop."}, status=400)
+        logger.info(
+            "🎛️ Host %s requested stop-recording for event=%s recording=%s",
+            request.user.id,
+            event.id,
+            event.rtk_recording_id,
+        )
+
+        success, msg = _stop_rtk_recording_for_event_manual(event)
+        if not success:
+            return Response({"error": msg}, status=400)
+
+        event.is_recording = False
+        event.rtk_recording_id = ""
+        event.recording_paused_at = None
+        event.save(update_fields=["is_recording", "rtk_recording_id", "recording_paused_at", "updated_at"])
+        logger.info("✅ Recording state cleared in DB for event=%s", event.id)
+        try:
+            _broadcast_recording_status(event, "stopped")
+        except Exception as e:
+            logger.warning(f"Failed to broadcast recording stop for event {event.id}: {e}")
+        return Response({"ok": True})
     
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="kick")
     def kick_participant(self, request, pk=None):

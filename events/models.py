@@ -134,6 +134,10 @@ class Event(models.Model):
     # Dyte live meeting fields
     dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     dyte_meeting_title = models.CharField(max_length=255, blank=True, null=True)
+    # Cloudflare RealtimeKit recording control fields
+    rtk_recording_id = models.CharField(max_length=255, blank=True, null=True)
+    is_recording = models.BooleanField(default=False)
+    recording_paused_at = models.DateTimeField(null=True, blank=True)
 
     # Saleor integration fields
     saleor_product_id = models.CharField(max_length=255, blank=True, null=True)
