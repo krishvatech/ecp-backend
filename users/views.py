@@ -695,6 +695,16 @@ class UserViewSet(
             # profile.legal_name_locked = False 
             profile.save()
             
+        # Notify user
+        Notification.objects.create(
+            recipient=req_obj.user,
+            actor=request.user,
+            kind="system",
+            title="Verification Renewal Update",
+            description=f"Your verification renewal request has been {decision}." + (f" Note: {note}" if note else ""),
+            data={"verification_request_id": req_obj.id, "decision": decision}
+        )
+            
         return Response(VerificationRequestSerializer(req_obj).data)
 
     @action(detail=False, methods=["get"], url_path=r"admin/verification-history/(?P<user_id>\d+)", permission_classes=[permissions.IsAuthenticated])
