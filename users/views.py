@@ -44,8 +44,8 @@ from django.contrib.auth import get_user_model
 from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
 from .serializers import PublicProfileSerializer
-from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileMembership, EmailChangeRequest
-from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, AdminKYCSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer
+from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileMembership, EmailChangeRequest, VerificationRequest, VerificationHistory
+from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, AdminKYCSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer, VerificationRequestSerializer, VerificationHistorySerializer
 from .models import EducationDocument
 from .serializers import EducationDocumentSerializer
 from .esco_client import search_skills
@@ -600,6 +600,114 @@ class UserViewSet(
                 {"detail": "Request created but failed to start verification session."}, 
                 status=status.HTTP_503_SERVICE_UNAVAILABLE
             )
+
+    @action(detail=False, methods=["post"], url_path="me/verification-request")
+    def create_verification_request(self, request):
+        """
+        Create a request for a NEW verification (justification needed).
+        """
+        # Check if pending exists
+        if VerificationRequest.objects.filter(user=request.user, status=VerificationRequest.STATUS_PENDING).exists():
+             return Response({"detail": "You already have a pending verification renewal request."}, status=400)
+        
+        serializer = VerificationRequestSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["get"], url_path="admin/verification-requests", permission_classes=[permissions.IsAuthenticated])
+    def admin_list_verification_requests(self, request):
+        """
+        Admin only: List all verification renewal requests.
+        """
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response({"detail": "Permission denied."}, status=403)
+            
+        qs = VerificationRequest.objects.all().select_related("user", "user__profile").order_by("-created_at")
+        
+        # Simple search/filter
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+            
+        search_query = request.query_params.get("search")
+        if search_query:
+            qs = qs.filter(
+                Q(user__email__icontains=search_query) |
+                Q(user__first_name__icontains=search_query) |
+                Q(user__last_name__icontains=search_query) |
+                Q(user__username__icontains=search_query)
+            )
+            
+        page = self.paginate_queryset(qs)
+        if page is not None:
+             serializer = VerificationRequestSerializer(page, many=True)
+             return self.get_paginated_response(serializer.data)
+             
+        serializer = VerificationRequestSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["post"], url_path=r"admin/verification-request/(?P<request_id>[^/.]+)/decide", permission_classes=[permissions.IsAuthenticated])
+    def admin_decide_verification_request(self, request, request_id=None):
+        """
+        Admin only: Approve or Reject a VerificationRequest.
+        POST { "status": "approved" | "rejected", "admin_note": "..." }
+        """
+        if not (request.user.is_staff or request.user.is_superuser):
+             return Response({"detail": "Permission denied."}, status=403)
+             
+        try:
+            req_obj = VerificationRequest.objects.get(pk=request_id)
+        except VerificationRequest.DoesNotExist:
+            return Response({"detail": "Request not found."}, status=404)
+            
+        decision = request.data.get("status")
+        note = request.data.get("admin_note", "")
+        
+        if decision not in ["approved", "rejected"]:
+             return Response({"detail": "Invalid status. Must be 'approved' or 'rejected'."}, status=400)
+             
+        req_obj.status = decision
+        req_obj.admin_note = note
+        req_obj.decided_by = request.user
+        req_obj.save()
+        
+        if decision == "approved":
+            # Archive current KYC state
+            user = req_obj.user
+            profile = user.profile
+            
+            VerificationHistory.objects.create(
+                user=user,
+                kyc_status=profile.kyc_status,
+                kyc_didit_raw_payload=profile.kyc_didit_raw_payload or {},
+                kyc_manual_reason=profile.kyc_decline_reason or "", # Using decline reason field as catch-all note if needed
+                archived_by=request.user
+            )
+            
+            # Reset Profile
+            profile.kyc_status = "not_started"
+            profile.kyc_last_session_id = ""
+            profile.kyc_didit_raw_payload = {}
+            profile.kyc_decline_reason = "" # Clean slate
+            profile.legal_name_verified_at = None
+            # Do we unlock legal name?
+            # profile.legal_name_locked = False 
+            profile.save()
+            
+        return Response(VerificationRequestSerializer(req_obj).data)
+
+    @action(detail=False, methods=["get"], url_path=r"admin/verification-history/(?P<user_id>\d+)", permission_classes=[permissions.IsAuthenticated])
+    def admin_list_verification_history(self, request, user_id=None):
+        """
+        Admin only: List verification history for a specific user.
+        """
+        if not (request.user.is_staff or request.user.is_superuser):
+             return Response({"detail": "Permission denied."}, status=403)
+             
+        qs = VerificationHistory.objects.filter(user_id=user_id).order_by("-archived_at")
+        serializer = VerificationHistorySerializer(qs, many=True)
+        return Response(serializer.data)
 
 
 class RegisterView(APIView):

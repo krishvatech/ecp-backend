@@ -783,6 +783,7 @@ class ProfileTraining(models.Model):
         return f"{self.program_title} — {self.provider}"
 
 
+
 class ProfileCertification(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="certifications"
@@ -818,6 +819,85 @@ class ProfileCertification(models.Model):
 
     def __str__(self):
         return f"{self.certification_name} — {self.issuing_organization}"
+
+
+class VerificationRequest(models.Model):
+    """
+    Request by a user to renew their verification (e.g. name change, expired ID).
+    Admin approves -> triggers reset of KYC status to allow fresh Didit flow.
+    """
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="verification_requests",
+    )
+    reason = models.TextField(help_text="User's justification for needing a new verification")
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+    )
+    admin_note = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="processed_verification_requests",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "status"]),
+        ]
+
+    def __str__(self):
+        return f"VerifReq<{self.user_id}: {self.status}>"
+
+
+class VerificationHistory(models.Model):
+    """
+    Archive of previous verification states before a reset.
+    """
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="verification_history",
+    )
+    
+    # Snapshot of previous state
+    kyc_status = models.CharField(max_length=20)
+    kyc_didit_raw_payload = models.JSONField(default=dict, blank=True)
+    kyc_manual_reason = models.TextField(blank=True, default="")
+    
+    # When it was archived
+    archived_at = models.DateTimeField(auto_now_add=True)
+    archived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="archived_verifications",
+    )
+
+    class Meta:
+        ordering = ["-archived_at"]
+
+    def __str__(self):
+        return f"VerifHistory<{self.user_id}: {self.kyc_status} @ {self.archived_at}>"
 
 
 class ProfileMembership(models.Model):

@@ -17,7 +17,7 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
-from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest, EducationDocument, UserSkill, EscoSkill, LanguageCertificate, IsoLanguage, UserLanguage, ProfileTraining, ProfileCertification, ProfileMembership
+from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest, EducationDocument, UserSkill, EscoSkill, LanguageCertificate, IsoLanguage, UserLanguage, ProfileTraining, ProfileCertification, VerificationRequest, VerificationHistory, ProfileMembership
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email as django_validate_email
 
@@ -149,6 +149,7 @@ class UserProfileMiniSerializer(serializers.ModelSerializer):
 class UserProfileSerializer(serializers.ModelSerializer):
     user_image_url = serializers.SerializerMethodField(read_only=True)
     is_online = serializers.SerializerMethodField(read_only=True)
+    pending_verification_request = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = UserProfile
@@ -157,10 +158,18 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "location", "links", "user_image", "user_image_url", "skills",
             "last_activity_at", "is_online","kyc_decline_reason",
             "kyc_status", "legal_name_locked", "legal_name_verified_at",
-            "directory_hidden",
+            "directory_hidden", "pending_verification_request",
         ]
         read_only_fields = ("last_activity_at", "is_online", "kyc_status",
-                            "legal_name_locked", "legal_name_verified_at")
+                            "legal_name_locked", "legal_name_verified_at", "pending_verification_request")
+
+    def get_pending_verification_request(self, obj):
+        user = getattr(obj, "user", None)
+        if not user: return False
+        # Avoid circular import if possible, or use string reference if configured, 
+        # but here we need to import model or use generic relation check
+        from .models import VerificationRequest
+        return VerificationRequest.objects.filter(user=user, status=VerificationRequest.STATUS_PENDING).exists()
 
 
     def get_user_image_url(self, obj):
@@ -1187,3 +1196,31 @@ class UserLanguageSerializer(serializers.ModelSerializer):
         )
         return obj
     
+
+class VerificationRequestSerializer(serializers.ModelSerializer):
+    user_details = UserMiniSerializer(source="user", read_only=True)
+    
+    class Meta:
+        model = VerificationRequest
+        fields = [
+            "id", "user", "user_details", "reason", 
+            "status", "admin_note", "created_at", "updated_at"
+        ]
+        read_only_fields = ["id", "user", "status", "admin_note", "created_at", "updated_at"]
+
+    def create(self, validated_data):
+        # assign user from request context
+        user = self.context["request"].user
+        validated_data["user"] = user
+        return super().create(validated_data)
+
+class VerificationHistorySerializer(serializers.ModelSerializer):
+    archived_by_details = UserMiniSerializer(source="archived_by", read_only=True)
+    
+    class Meta:
+        model = VerificationHistory
+        fields = [
+            "id", "user", "kyc_status", "kyc_didit_raw_payload", 
+            "kyc_manual_reason", "archived_at", "archived_by_details"
+        ]
+
