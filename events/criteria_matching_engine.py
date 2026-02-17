@@ -21,6 +21,7 @@ import logging
 from typing import Dict, List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
+CRITERIA_KEYS = ('skill', 'experience', 'location', 'education')
 
 
 # ============================================================================
@@ -667,8 +668,10 @@ class CriteriaBasedMatchingEngine:
         original_config = deepcopy(self.criteria_config)
 
         # Count how many criteria are enabled
-        enabled_criteria = sum(1 for criterion in self.criteria_config
-                             if self.criteria_config[criterion].get('enabled', True))
+        enabled_criteria = sum(
+            1 for criterion in CRITERIA_KEYS
+            if self.criteria_config.get(criterion, {}).get('enabled', True)
+        )
         is_single_criterion = enabled_criteria == 1
         logger.debug(f"[FALLBACK] Single criterion mode: {is_single_criterion}")
 
@@ -685,8 +688,8 @@ class CriteriaBasedMatchingEngine:
                     logger.debug("[FALLBACK] Skipping threshold relaxation for single criterion mode")
                     continue
                 logger.debug("[FALLBACK] Relaxing thresholds by 10%")
-                for criterion in self.criteria_config:
-                    if 'threshold' in self.criteria_config[criterion]:
+                for criterion in CRITERIA_KEYS:
+                    if criterion in self.criteria_config and 'threshold' in self.criteria_config[criterion]:
                         old_threshold = self.criteria_config[criterion]['threshold']
                         new_threshold = old_threshold * 0.9
                         self.criteria_config[criterion]['threshold'] = new_threshold

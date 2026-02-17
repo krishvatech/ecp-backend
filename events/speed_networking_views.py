@@ -44,6 +44,10 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+CRITERIA_KEYS = {'skill', 'experience', 'location', 'education'}
+ADVANCED_CONFIG_KEYS = {'random_factor', 'prefer_new_users'}
+ALLOWED_CRITERIA_CONFIG_KEYS = CRITERIA_KEYS | ADVANCED_CONFIG_KEYS
+
 
 # ============================================================================
 # Module-level helper functions for use in both ViewSets
@@ -84,7 +88,9 @@ def _get_criteria_config(session):
                 'weight': 0.15,
                 'threshold': 40,
                 'match_type': 'complementary_fields'
-            }
+            },
+            'random_factor': 0.1,
+            'prefer_new_users': True
         }
     else:
         # For 'both' strategy, use balanced config
@@ -116,7 +122,9 @@ def _get_criteria_config(session):
                 'weight': 0.15,
                 'threshold': 40,
                 'match_type': 'complementary_fields'
-            }
+            },
+            'random_factor': 0.1,
+            'prefer_new_users': True
         }
 
 
@@ -581,18 +589,30 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
             )
 
         criteria_config = request.data.get('criteria_config', {})
+        if not isinstance(criteria_config, dict):
+            return Response(
+                {'error': 'criteria_config must be an object'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # Validate structure
-        valid_criteria = ['skill', 'experience', 'location', 'education']
-        for key in criteria_config.keys():
-            if key not in valid_criteria:
-                return Response(
-                    {'error': f'Invalid criterion: {key}'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+        unknown_keys = sorted(set(criteria_config.keys()) - ALLOWED_CRITERIA_CONFIG_KEYS)
+        if unknown_keys:
+            allowed_keys = ', '.join(sorted(ALLOWED_CRITERIA_CONFIG_KEYS))
+            return Response(
+                {
+                    'error': (
+                        f"Invalid criteria config key(s): {', '.join(unknown_keys)}. "
+                        f"Allowed keys: {allowed_keys}"
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # Validate each criterion has required fields
         for criterion, config in criteria_config.items():
+            if criterion not in CRITERIA_KEYS:
+                continue
             if not isinstance(config, dict):
                 return Response(
                     {'error': f'Criterion {criterion} config must be a dict'},
@@ -628,6 +648,26 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
                         {'error': f'Threshold for {criterion} must be an integer'},
                         status=status.HTTP_400_BAD_REQUEST
                     )
+
+        if 'random_factor' in criteria_config:
+            try:
+                random_factor = float(criteria_config['random_factor'])
+                if not (0 <= random_factor <= 0.3):
+                    return Response(
+                        {'error': 'random_factor must be between 0 and 0.3'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            except (TypeError, ValueError):
+                return Response(
+                    {'error': 'random_factor must be a number'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        if 'prefer_new_users' in criteria_config and not isinstance(criteria_config['prefer_new_users'], bool):
+            return Response(
+                {'error': 'prefer_new_users must be a boolean'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # Update session and increment config version
         session.criteria_config = criteria_config
