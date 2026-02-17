@@ -138,23 +138,6 @@ class Event(models.Model):
     rtk_recording_id = models.CharField(max_length=255, blank=True, null=True)
     is_recording = models.BooleanField(default=False)
     recording_paused_at = models.DateTimeField(null=True, blank=True)
-    recording_status = models.CharField(
-        max_length=20,
-        choices=[
-            ("recording", "Recording"),
-            ("processing", "Processing"),
-            ("ready_to_edit", "Ready to Edit"),
-            ("editing", "Editing"),
-            ("published", "Published"),
-        ],
-        default="recording",
-        blank=True,
-        help_text="Status of recording in the publishing workflow",
-    )
-    recording_raw_url = models.URLField(blank=True, null=True)
-    recording_edited_url = models.URLField(blank=True, null=True)
-    recording_duration = models.IntegerField(null=True, blank=True)
-    recording_published_at = models.DateTimeField(null=True, blank=True)
 
     # Saleor integration fields
     saleor_product_id = models.CharField(max_length=255, blank=True, null=True)
@@ -239,11 +222,6 @@ class Event(models.Model):
     def current_live_session(self):
         """Get the currently live session, if any."""
         return self.sessions.filter(is_live=True).first()
-
-    @property
-    def recording_final_url(self):
-        """Return edited recording URL if present; otherwise raw recording URL."""
-        return self.recording_edited_url or self.recording_raw_url
 
     @property
     def is_any_session_live(self):

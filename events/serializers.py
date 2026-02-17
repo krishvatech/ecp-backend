@@ -390,7 +390,6 @@ class EventSerializer(serializers.ModelSerializer):
 
     # Let recording_url be blank or omitted; we will normalize/validate in validate()
     recording_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    recording_available = serializers.SerializerMethodField(read_only=True)
 
     # Write-only field for participants input (handles JSON string or list)
     participants = ParticipantsField(
@@ -459,12 +458,6 @@ class EventSerializer(serializers.ModelSerializer):
             "rtk_recording_id",
             "is_recording",
             "recording_paused_at",
-            "recording_status",
-            "recording_raw_url",
-            "recording_edited_url",
-            "recording_duration",
-            "recording_published_at",
-            "recording_available",
             "dyte_meeting_id",    
             "dyte_meeting_title",  
             "created_by_id",
@@ -1119,22 +1112,6 @@ class EventSerializer(serializers.ModelSerializer):
         """Check if event has sessions."""
         return obj.has_sessions
 
-    def get_recording_available(self, obj):
-        request = self.context.get("request")
-        user = getattr(request, "user", None)
-        if not (user and user.is_authenticated):
-            return False
-        is_host = (
-            user.is_staff
-            or getattr(user, "is_superuser", False)
-            or obj.created_by_id == user.id
-            or getattr(obj.community, "owner_id", None) == user.id
-            or obj.participants.filter(role="host", user_id=user.id).exists()
-        )
-        if is_host:
-            return obj.recording_status in ["ready_to_edit", "editing", "published"]
-        return obj.recording_status == "published"
-
     # ---------- Field-level validations ----------
     
     def to_representation(self, instance):
@@ -1149,21 +1126,6 @@ class EventSerializer(serializers.ModelSerializer):
         if instance.waiting_room_image:
             url = instance.waiting_room_image.url
             data["waiting_room_image"] = request.build_absolute_uri(url) if request else url
-
-        user = getattr(request, "user", None)
-        if user and user.is_authenticated:
-            is_host = (
-                user.is_staff
-                or getattr(user, "is_superuser", False)
-                or instance.created_by_id == user.id
-                or getattr(instance.community, "owner_id", None) == user.id
-                or instance.participants.filter(role="host", user_id=user.id).exists()
-            )
-            if not is_host and instance.recording_status != "published":
-                data.pop("recording_raw_url", None)
-                data.pop("recording_edited_url", None)
-                # hide direct raw/final links until published
-                data.pop("recording_url", None)
         return data
 
     def validate_price(self, value):
