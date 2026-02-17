@@ -82,12 +82,17 @@ import os  # NOTE: duplicate import retained intentionally
 
 from pathlib import Path
 from dotenv import load_dotenv
+from django.conf import settings
 
 # Resolve project root and load .env so AGORA_* variables work locally as well
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 User = get_user_model()
+
+# AWS S3 configuration
+AWS_S3_BUCKET = getattr(settings, "AWS_S3_BUCKET", os.getenv("AWS_BUCKET_NAME", ""))
+AWS_S3_REGION = getattr(settings, "AWS_S3_REGION", os.getenv("AWS_REGION_NAME", "eu-central-1"))
 
 logger = logging.getLogger("events")
 
@@ -276,11 +281,11 @@ def _stop_rtk_recording_for_event(event: Event) -> None:
         return
 
     try:
-        # PATCH /recordings/{rec_id} to stop it
-        stop_resp = requests.patch(
+        # PUT /recordings/{rec_id} to stop it
+        stop_resp = requests.put(
             f"{RTK_API_BASE}/recordings/{rec_id}",
             headers=headers,
-            json={"status": "STOPPED"},
+            json={"action": "stop"},
             timeout=15,
         )
     except requests.RequestException as exc:
@@ -3060,6 +3065,10 @@ class RecordingWebhookView(views.APIView):
 
         bucket = AWS_S3_BUCKET
         region = AWS_S3_REGION
+
+        if not bucket:
+            logger.error("❌ AWS_S3_BUCKET not configured. Set AWS_S3_BUCKET environment variable or Django setting.")
+            return Response({"error": "aws_bucket_not_configured"}, status=500)
 
         s3_client = boto3.client(
             "s3",
