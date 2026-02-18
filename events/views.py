@@ -2047,6 +2047,8 @@ class EventViewSet(viewsets.ModelViewSet):
             qs = qs.filter(joined_live=True)
         elif status_filter == "watched_replay":
             qs = qs.filter(watched_replay=True)
+        elif status_filter == "did_not_attend":
+            qs = qs.filter(joined_live=False, watched_replay=False)
 
         page = self.paginate_queryset(qs)
         if page is not None:
@@ -2821,24 +2823,40 @@ class EventViewSet(viewsets.ModelViewSet):
         if not (user.is_staff or getattr(user, "is_superuser", False) or event.created_by_id == user.id):
             return Response({"detail": "Permission denied."}, status=403)
 
+        import re
+        safe_title = re.sub(r'[^a-zA-Z0-9]', '_', event.title or "Event")
+        safe_title = re.sub(r'_+', '_', safe_title).strip('_')
+        filename = f"{safe_title}_details.csv"
+        
         response = HttpResponse(content_type='text/csv')
-        response['Content-Disposition'] = f'attachment; filename="registrations-{event.id}.csv"'
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        response['X-Filename'] = filename  # Expose filename to frontend if needed
 
         writer = csv.writer(response)
-        writer.writerow(['User ID', 'Name', 'Email', 'Registered At', 'Joined Live', 'Watched Replay'])
+        writer.writerow(['User ID', 'Name', 'Email', 'Registered At', 'Joined Live', 'Watched Replay', 'Status'])
 
         regs = EventRegistration.objects.filter(event=event).select_related('user').order_by('-registered_at')
         for r in regs:
             first = (r.user.first_name or "").strip()
             last = (r.user.last_name or "").strip()
             full_name = f"{first} {last}".strip() or r.user.username
+
+            status_label = "Did Not Attend"
+            if r.joined_live and r.watched_replay:
+                status_label = "Live & Replay"
+            elif r.joined_live:
+                status_label = "Joined Live"
+            elif r.watched_replay:
+                status_label = "Watched Replay"
+
             writer.writerow([
                 r.user.id,
                 full_name,
                 r.user.email,
                 r.registered_at.strftime("%Y-%m-%d %H:%M:%S"),
                 "Yes" if r.joined_live else "No",
-                "Yes" if r.watched_replay else "No"
+                "Yes" if r.watched_replay else "No",
+                status_label
             ])
 
         return response
