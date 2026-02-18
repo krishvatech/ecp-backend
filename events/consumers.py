@@ -1,6 +1,7 @@
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.db import database_sync_to_async
-from .models import LoungeTable, LoungeParticipant, Event, EventRegistration
+from django.core.cache import cache
+from .models import LoungeTable, LoungeParticipant, Event, EventRegistration, EventParticipant, AssistanceRequestLog
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import F
@@ -11,6 +12,8 @@ import logging
 from .utils import create_dyte_meeting, DYTE_API_BASE, _dyte_headers
 
 logger = logging.getLogger(__name__)
+
+ASSISTANCE_COOLDOWN_SECONDS = 60
 
 class EventConsumer(AsyncJsonWebsocketConsumer):
     """Consumer to handle real-time communication within an event, including Social Lounge state."""
@@ -100,8 +103,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "lounge_state": lounge_state,
             "online_users": await self.get_online_participants_info()
         }
+        main_room_support_status = await self.get_main_room_support_status()
+        msg["main_room_support_status"] = main_room_support_status
         print(f"[CONSUMER] Sending welcome to {self.user.username}: {msg.keys()}")
         await self.send_json(msg)
+        await self.broadcast_main_room_support_status()
 
     async def disconnect(self, code: int) -> None:
         if hasattr(self, "group_name"):
@@ -121,6 +127,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 logging.getLogger(__name__).error(f"[CLEANUP] Failed: {e}")
 
             await self.broadcast_lounge_update() # Sync everyone
+            await self.broadcast_main_room_support_status()
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
         if hasattr(self, "user_group_name"):
@@ -159,6 +166,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     await self.channel_layer.group_add(f"breakout_{table.id}", self.channel_name)
 
                 await self.broadcast_lounge_update()
+                await self.broadcast_main_room_support_status()
             else:
                 print(f"[CONSUMER] join_table failed for {self.user.username}: {error}")
                 await self.send_json({"type": "error", "message": error})
@@ -176,6 +184,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 await self.channel_layer.group_discard(f"breakout_{table.id}", self.channel_name)
             
             await self.broadcast_lounge_update()
+            await self.broadcast_main_room_support_status()
 
         elif action == "random_assign":
             try:
@@ -349,6 +358,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 {"type": "breakout.end"}
             )
             await self.broadcast_lounge_update()
+            await self.broadcast_main_room_support_status()
+
+        elif action == "request_assistance":
+            await self.handle_request_assistance()
 
         else:
             # Traditional broadcast for other messages
@@ -422,20 +435,133 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json({
             "type": "lounge_state",
             "lounge_state": event["state"],
-            "online_users": event.get("online_users", [])
+            "online_users": event.get("online_users", []),
+            "main_room_support_status": event.get("main_room_support_status"),
         })
 
     async def broadcast_lounge_update(self):
         state = await self.get_lounge_state()
         online_users = await self.get_online_participants_info()
+        main_room_support_status = await self.get_main_room_support_status()
         await self.channel_layer.group_send(
             self.group_name,
             {
                 "type": "lounge_update",
                 "state": state,
-                "online_users": online_users
+                "online_users": online_users,
+                "main_room_support_status": main_room_support_status,
             }
         )
+
+    async def main_room_support_status(self, event: dict) -> None:
+        """Handler for explicit main-room host/moderator presence updates."""
+        await self.send_json({
+            "type": "main_room_support_status",
+            "status": event.get("status", {}),
+        })
+
+    async def broadcast_main_room_support_status(self):
+        status = await self.get_main_room_support_status()
+        await self.channel_layer.group_send(
+            self.group_name,
+            {
+                "type": "main_room_support_status",
+                "status": status,
+            }
+        )
+
+    async def assistance_requested(self, event: dict) -> None:
+        """Private notification sent to hosts/moderators when audience requests help."""
+        await self.send_json({
+            "type": "assistance_requested",
+            "event_id": event.get("event_id"),
+            "request_id": event.get("request_id"),
+            "requester_id": event.get("requester_id"),
+            "requester_name": event.get("requester_name"),
+            "message": event.get("message"),
+            "timestamp": event.get("timestamp"),
+        })
+
+    async def handle_request_assistance(self):
+        """Audience in main room can ask hosts/moderators for help with cooldown protection."""
+        try:
+            allowed, deny_reason = await self.can_request_assistance()
+            if not allowed:
+                await self.log_assistance_attempt(
+                    status="rejected" if deny_reason not in {"cooldown_active"} else "rate_limited",
+                    message=f"Assistance request rejected: {deny_reason}",
+                    recipient_count=0,
+                )
+                await self.send_json({
+                    "type": "assistance_request_ack",
+                    "ok": False,
+                    "reason": deny_reason or "not_allowed",
+                })
+                return
+
+            # Per-user per-event cooldown guard
+            cooldown_key = f"assistance_cd:{self.event_id}:{self.user.id}"
+            if cache.get(cooldown_key):
+                ttl = cache.ttl(cooldown_key) if hasattr(cache, "ttl") else None
+                await self.log_assistance_attempt(
+                    status="rate_limited",
+                    message="Assistance request rate-limited by cooldown",
+                    recipient_count=0,
+                )
+                await self.send_json({
+                    "type": "assistance_request_ack",
+                    "ok": False,
+                    "reason": "cooldown_active",
+                    "cooldown_seconds": int(ttl) if isinstance(ttl, int) and ttl > 0 else ASSISTANCE_COOLDOWN_SECONDS,
+                })
+                return
+
+            privileged_online_ids = await self.get_online_support_recipient_user_ids()
+            target_ids = [uid for uid in privileged_online_ids if uid != self.user.id]
+            if not target_ids:
+                await self.log_assistance_attempt(
+                    status="rejected",
+                    message="Assistance request rejected: no active hosts/moderators online",
+                    recipient_count=0,
+                )
+                await self.send_json({
+                    "type": "assistance_request_ack",
+                    "ok": False,
+                    "reason": "no_active_hosts_or_moderators",
+                })
+                return
+
+            requester_name = await self.get_requester_display_name()
+            request_msg = f"User {requester_name} needs assistance in the Main Room."
+            request_log = await self.log_assistance_request(request_msg, len(target_ids))
+            request_id = request_log.id if request_log else None
+
+            payload = {
+                "type": "assistance_requested",
+                "event_id": int(self.event_id),
+                "request_id": request_id,
+                "requester_id": self.user.id,
+                "requester_name": requester_name,
+                "message": request_msg,
+                "timestamp": timezone.now().isoformat(),
+            }
+            for uid in target_ids:
+                await self.channel_layer.group_send(f"user_{uid}", payload)
+
+            cache.set(cooldown_key, True, ASSISTANCE_COOLDOWN_SECONDS)
+            await self.send_json({
+                "type": "assistance_request_ack",
+                "ok": True,
+                "request_id": request_id,
+                "cooldown_seconds": ASSISTANCE_COOLDOWN_SECONDS,
+            })
+        except Exception as e:
+            logger.exception("[ASSISTANCE] Failed request handling: %s", e)
+            await self.send_json({
+                "type": "assistance_request_ack",
+                "ok": False,
+                "reason": "server_error",
+            })
 
     @database_sync_to_async
     def get_online_participants_info(self):
@@ -449,6 +575,187 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "username": r.user.username,
             "full_name": f"{r.user.first_name} {r.user.last_name}".strip() or r.user.username
         } for r in regs]
+
+    @database_sync_to_async
+    def get_main_room_support_status(self):
+        """
+        Derive whether at least one host/moderator is currently online in the main room.
+        Main room presence = online and not occupying any lounge/breakout table.
+        """
+        try:
+            event = Event.objects.select_related("community").get(id=self.event_id)
+        except Event.DoesNotExist:
+            return {
+                "has_host_or_moderator_in_main_room": False,
+                "active_privileged_main_count": 0,
+                "timestamp": timezone.now().isoformat(),
+            }
+
+        privileged_ids = self._get_host_moderator_user_ids_sync(event)
+        if not privileged_ids:
+            return {
+                "has_host_or_moderator_in_main_room": False,
+                "active_privileged_main_count": 0,
+                "timestamp": timezone.now().isoformat(),
+            }
+
+        online_privileged = set(
+            EventRegistration.objects.filter(
+                event_id=self.event_id,
+                user_id__in=privileged_ids,
+                is_online=True,
+                is_banned=False,
+            ).values_list("user_id", flat=True)
+        )
+
+        occupying_lounge = set(
+            LoungeParticipant.objects.filter(
+                table__event_id=self.event_id,
+                user_id__in=online_privileged,
+            ).values_list("user_id", flat=True)
+        )
+
+        main_room_privileged = online_privileged - occupying_lounge
+        return {
+            "has_host_or_moderator_in_main_room": bool(main_room_privileged),
+            "active_privileged_main_count": len(main_room_privileged),
+            "timestamp": timezone.now().isoformat(),
+        }
+
+    def _get_host_moderator_user_ids_sync(self, event):
+        privileged_ids = set()
+        if event.created_by_id:
+            privileged_ids.add(event.created_by_id)
+        community_owner_id = getattr(event.community, "owner_id", None)
+        if community_owner_id:
+            privileged_ids.add(community_owner_id)
+
+        participant_ids = EventParticipant.objects.filter(
+            event_id=self.event_id,
+            participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+            role__in=[EventParticipant.ROLE_HOST, EventParticipant.ROLE_MODERATOR],
+            user__isnull=False,
+        ).values_list("user_id", flat=True)
+        privileged_ids.update(participant_ids)
+        return privileged_ids
+
+    def _get_support_recipient_user_ids_sync(self, event):
+        """
+        Users who should receive assistance requests:
+        host/moderator/speaker roles (+ creator/community owner fallback).
+        """
+        support_ids = set()
+        if event.created_by_id:
+            support_ids.add(event.created_by_id)
+        community_owner_id = getattr(event.community, "owner_id", None)
+        if community_owner_id:
+            support_ids.add(community_owner_id)
+
+        participant_ids = EventParticipant.objects.filter(
+            event_id=self.event_id,
+            participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+            role__in=[
+                EventParticipant.ROLE_HOST,
+                EventParticipant.ROLE_MODERATOR,
+                EventParticipant.ROLE_SPEAKER,
+            ],
+            user__isnull=False,
+        ).values_list("user_id", flat=True)
+        support_ids.update(participant_ids)
+        return support_ids
+
+    @database_sync_to_async
+    def get_online_support_recipient_user_ids(self):
+        try:
+            event = Event.objects.select_related("community").get(id=self.event_id)
+        except Event.DoesNotExist:
+            return []
+        privileged_ids = self._get_support_recipient_user_ids_sync(event)
+        return list(
+            EventRegistration.objects.filter(
+                event_id=self.event_id,
+                user_id__in=privileged_ids,
+                is_online=True,
+                is_banned=False,
+            ).values_list("user_id", flat=True).distinct()
+        )
+
+    @database_sync_to_async
+    def get_requester_display_name(self):
+        full_name = f"{self.user.first_name} {self.user.last_name}".strip()
+        return full_name or self.user.username or f"User {self.user.id}"
+
+    @database_sync_to_async
+    def can_request_assistance(self):
+        try:
+            event = Event.objects.get(id=self.event_id)
+        except Event.DoesNotExist:
+            return False, "event_not_found"
+
+        if event.status == "ended":
+            return False, "event_ended"
+
+        reg = EventRegistration.objects.filter(event_id=self.event_id, user=self.user).first()
+        if not reg:
+            return False, "not_registered"
+        if reg.is_banned:
+            return False, "banned"
+        if not reg.is_online:
+            return False, "not_online"
+        if reg.admission_status == "rejected":
+            return False, "rejected"
+
+        # Hosts/moderators/speakers should not request assistance.
+        privileged_ids = self._get_host_moderator_user_ids_sync(event)
+        speaker_ids = set(
+            EventParticipant.objects.filter(
+                event_id=self.event_id,
+                participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+                role=EventParticipant.ROLE_SPEAKER,
+                user__isnull=False,
+            ).values_list("user_id", flat=True)
+        )
+        privileged_ids.update(speaker_ids)
+        if self.user.id in privileged_ids:
+            return False, "privileged_user_not_allowed"
+
+        # Must be in main room: user cannot currently occupy lounge/breakout table.
+        in_lounge = LoungeParticipant.objects.filter(
+            table__event_id=self.event_id,
+            user=self.user
+        ).exists()
+        if in_lounge:
+            return False, "not_in_main_room"
+
+        return True, None
+
+    @database_sync_to_async
+    def log_assistance_request(self, message, recipient_count):
+        try:
+            return AssistanceRequestLog.objects.create(
+                event_id=self.event_id,
+                requester=self.user,
+                message=message,
+                recipient_count=recipient_count,
+                status="sent",
+            )
+        except Exception:
+            logger.exception("[ASSISTANCE] Failed to persist AssistanceRequestLog")
+            return None
+
+    @database_sync_to_async
+    def log_assistance_attempt(self, status, message, recipient_count):
+        try:
+            return AssistanceRequestLog.objects.create(
+                event_id=self.event_id,
+                requester=self.user,
+                message=message,
+                recipient_count=recipient_count,
+                status=status,
+            )
+        except Exception:
+            logger.exception("[ASSISTANCE] Failed to persist AssistanceRequestLog (attempt)")
+            return None
 
     async def breakout_timer(self, event: dict) -> None:
         await self.send_json({"type": "breakout_timer", "duration": event["duration"]})

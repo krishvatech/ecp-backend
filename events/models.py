@@ -393,6 +393,33 @@ class WaitingRoomAuditLog(models.Model):
         ordering = ["-created_at"]
 
 
+class AssistanceRequestLog(models.Model):
+    """Audit log for audience assistance requests sent to hosts/moderators."""
+    STATUS_CHOICES = [
+        ("sent", "Sent"),
+        ("rejected", "Rejected"),
+        ("rate_limited", "Rate limited"),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="assistance_requests")
+    requester = models.ForeignKey(User, on_delete=models.CASCADE, related_name="assistance_requests_sent")
+    message = models.TextField()
+    recipient_count = models.PositiveIntegerField(default=0)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="sent")
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["event", "created_at"]),
+            models.Index(fields=["requester", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"Assistance request by {self.requester_id} for event {self.event_id}"
+
+
 # ============================================================
 # ================= Breakout Joiner Model ====================
 # ============================================================
