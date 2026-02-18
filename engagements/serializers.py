@@ -447,4 +447,76 @@ class ShareWriteSerializer(serializers.Serializer):
 
             Message.objects.create(**msg_kwargs)
 
+        # ---------- NEW: also create Group messages for each group recipient ----------
+        # Iterate over unique group IDs to avoid duplicate messages
+        unique_group_ids = set(to_groups)
+        
+        # Map group_id -> one Share row (for attachments). 
+        # We can reuse any share object that points to this group, or just the first one we find.
+        shares_by_group = {}
+        for s in shares:
+            if s.to_group_id:
+                shares_by_group.setdefault(s.to_group_id, s)
+
+        for gid in unique_group_ids:
+            if not gid:
+                continue
+
+            # Find or create conversation for the group
+            # Group conversations are usually one per group.
+            conv, _ = Conversation.objects.get_or_create(group_id=gid)
+
+            share_row = shares_by_group.get(gid)
+            
+            # Message body
+            body = note or f"{sharer} shared a post with the group"
+
+            msg_kwargs = {
+                "conversation": conv,
+                "sender": sharer,
+                "body": body,
+            }
+
+            if hasattr(Message, "attachments") and share_row is not None:
+                msg_kwargs["attachments"] = [
+                    {
+                        "type": "share",
+                        "share_id": share_row.id,
+                        "content_type_id": share_row.content_type_id,
+                        "object_id": share_row.object_id,
+                    }
+                ]
+            
+            Message.objects.create(**msg_kwargs)
+
         return shares
+
+    def validate(self, attrs):
+        users = attrs.get("to_users") or []
+        groups = attrs.get("to_groups") or []
+        
+        if not users and not groups:
+            raise serializers.ValidationError("Pick at least one friend (to_users) or one group (to_groups).")
+
+        # Validate group membership for regular users
+        request = self.context.get("request")
+        if request and request.user and not request.user.is_staff and groups:
+            from groups.models import GroupMembership  # local import
+            
+            # Check if user is an ACTIVE member of ALL target groups
+            # We can do this by counting how many of the target groups the user is an active member of.
+            # If the count matches the number of unique target groups, they are good.
+            
+            unique_groups = set(groups)
+            active_count = GroupMembership.objects.filter(
+                user=request.user,
+                group_id__in=unique_groups,
+                status=GroupMembership.STATUS_ACTIVE
+            ).count()
+            
+            if active_count != len(unique_groups):
+                raise serializers.ValidationError(
+                    {"to_groups": "You can only share posts to groups where you are an active member."}
+                )
+
+        return attrs
