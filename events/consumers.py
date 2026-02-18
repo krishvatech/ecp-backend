@@ -922,7 +922,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     reg.online_count = max(0, reg.online_count - 1)
                 
                 reg.is_online = (reg.online_count > 0)
-                reg.save(update_fields=['online_count', 'is_online'])
+                if not reg.is_online and reg.current_mood:
+                    reg.current_mood = None
+                    reg.mood_updated_at = timezone.now()
+                    reg.save(update_fields=['online_count', 'is_online', 'current_mood', 'mood_updated_at'])
+                else:
+                    reg.save(update_fields=['online_count', 'is_online'])
                 print(f"[CONSUMER] User {self.user.username} (ID:{self.user.id}): count={reg.online_count}, online={reg.is_online}")
 
                 online_total = EventRegistration.objects.filter(

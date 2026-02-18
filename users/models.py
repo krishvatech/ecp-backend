@@ -47,6 +47,13 @@ class UserProfile(models.Model):
         help_text="List of user skills",
     )
     links = models.JSONField(default=dict, blank=True, help_text="External profile links")
+    last_used_moods = ArrayField(
+        models.CharField(max_length=32),
+        size=10,
+        default=list,
+        blank=True,
+        help_text="Recently used mood emojis for webinar mood picker",
+    )
     user_image = models.ImageField(
         upload_to=user_profile_image,
         blank=True,

@@ -19,6 +19,7 @@ import requests
 import time
 import random
 import threading
+import unicodedata
 
 # ============================================================
 # ======================= Django Imports =====================
@@ -49,6 +50,7 @@ from rest_framework.permissions import (
     IsAuthenticated,
 )
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
 
 # ============================================================
 # ===================== Local App Imports ====================
@@ -96,6 +98,31 @@ AWS_S3_BUCKET = getattr(settings, "AWS_S3_BUCKET", os.getenv("AWS_BUCKET_NAME", 
 AWS_S3_REGION = getattr(settings, "AWS_S3_REGION", os.getenv("AWS_REGION_NAME", "eu-central-1"))
 
 logger = logging.getLogger("events")
+
+MOOD_ALLOWED_EMOJIS = [
+    "😀", "😄", "😁", "😎", "😊", "🙂", "🤩", "😍",
+    "🤔", "😌", "😴", "😇", "🙌", "👏", "👍", "🔥",
+    "🚀", "💯", "🎉", "❤️", "💙", "💚", "🤝", "🙏",
+    "😅", "😬", "😐", "😕", "😮", "😢", "😭", "😡",
+]
+MOOD_ALLOWED_SET = set(MOOD_ALLOWED_EMOJIS)
+
+
+class MoodRateThrottle(UserRateThrottle):
+    scope = "mood"
+
+
+def _sanitize_mood(raw_value):
+    mood = (raw_value or "").strip()
+    if not mood:
+        return None
+    if len(mood) > 32:
+        return None
+    if any(ch.isspace() or unicodedata.category(ch).startswith("C") for ch in mood):
+        return None
+    if mood not in MOOD_ALLOWED_SET:
+        return None
+    return mood
 
 # --- Cloudflare RealtimeKit recording config ---
 RTK_API_BASE = os.getenv("RTK_API_BASE", "https://api.realtime.cloudflare.com/v2")
@@ -1661,6 +1688,11 @@ class EventViewSet(viewsets.ModelViewSet):
         if not target_id:
             return Response({"detail": "user_id required"}, status=400)
 
+        EventRegistration.objects.filter(event=event, user_id=target_id).update(
+            current_mood=None,
+            mood_updated_at=timezone.now(),
+        )
+
         # Notify via WebSocket
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
@@ -1691,7 +1723,9 @@ class EventViewSet(viewsets.ModelViewSet):
         try:
             reg = EventRegistration.objects.get(event=event, user_id=target_id)
             reg.is_banned = True
-            reg.save(update_fields=["is_banned"])
+            reg.current_mood = None
+            reg.mood_updated_at = timezone.now()
+            reg.save(update_fields=["is_banned", "current_mood", "mood_updated_at"])
         except EventRegistration.DoesNotExist:
             return Response({"detail": "User not registered for this event"}, status=404)
 
@@ -1748,6 +1782,107 @@ class EventViewSet(viewsets.ModelViewSet):
         } for r in banned_regs]
 
         return Response(data)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        permission_classes=[IsAuthenticated],
+        url_path="moods",
+    )
+    def moods(self, request, pk=None):
+        """
+        Return current mood state for online/admitted participants in this event.
+        """
+        event = self.get_object()
+
+        is_host = _is_event_host(request.user, event)
+        requester_reg = EventRegistration.objects.filter(event=event, user=request.user).first()
+        if not is_host and not requester_reg:
+            return Response({"detail": "Not registered for this event."}, status=403)
+        if (
+            not is_host
+            and event.waiting_room_enabled
+            and requester_reg
+            and requester_reg.admission_status != "admitted"
+        ):
+            return Response({"detail": "You are not admitted to the live meeting."}, status=403)
+
+        rows = (
+            EventRegistration.objects.filter(
+                event=event,
+                current_mood__isnull=False,
+                is_banned=False,
+                is_online=True,
+                admission_status="admitted",
+            )
+            .select_related("user")
+            .values("user_id", "current_mood", "mood_updated_at")
+        )
+
+        payload = [
+            {
+                "user_id": row["user_id"],
+                "mood": row["current_mood"],
+                "updated_at": row["mood_updated_at"],
+            }
+            for row in rows
+        ]
+        return Response({"moods": payload, "allowed_moods": MOOD_ALLOWED_EMOJIS})
+
+    @action(
+        detail=True,
+        methods=["put", "delete"],
+        permission_classes=[IsAuthenticated],
+        throttle_classes=[MoodRateThrottle],
+        url_path="mood",
+    )
+    def mood(self, request, pk=None):
+        """
+        Set or clear current user's mood for this event.
+        """
+        event = self.get_object()
+        reg = EventRegistration.objects.filter(event=event, user=request.user, is_banned=False).first()
+        is_host = _is_event_host(request.user, event)
+
+        if not reg and not is_host:
+            return Response({"detail": "Not registered for this event."}, status=403)
+
+        if not reg and is_host:
+            reg, _ = EventRegistration.objects.get_or_create(
+                event=event,
+                user=request.user,
+                defaults={"status": "registered", "admission_status": "admitted"},
+            )
+
+        if event.waiting_room_enabled and reg.admission_status != "admitted":
+            return Response({"detail": "You are not admitted to the live meeting."}, status=403)
+
+        if request.method == "DELETE":
+            reg.current_mood = None
+            reg.mood_updated_at = timezone.now()
+            reg.save(update_fields=["current_mood", "mood_updated_at"])
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        mood = _sanitize_mood(request.data.get("mood"))
+        if not mood:
+            return Response(
+                {"detail": "Invalid mood. Use one allowed emoji.", "allowed_moods": MOOD_ALLOWED_EMOJIS},
+                status=400,
+            )
+
+        reg.current_mood = mood
+        reg.mood_updated_at = timezone.now()
+        reg.save(update_fields=["current_mood", "mood_updated_at"])
+
+        profile = getattr(request.user, "profile", None)
+        if profile is not None:
+            history = list(profile.last_used_moods or [])
+            history = [m for m in history if m != mood]
+            history.insert(0, mood)
+            profile.last_used_moods = history[:10]
+            profile.save(update_fields=["last_used_moods"])
+
+        return Response({"user_id": request.user.id, "mood": mood, "allowed_moods": MOOD_ALLOWED_EMOJIS})
     def download_recording(self, request):
         """Generate a pre-signed URL for downloading recording from S3"""
         import boto3

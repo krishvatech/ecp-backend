@@ -316,6 +316,18 @@ class EventRegistration(models.Model):
     rejection_reason = models.TextField(blank=True)
     waiting_started_at = models.DateTimeField(null=True, blank=True)
     joined_live_at = models.DateTimeField(null=True, blank=True)
+    current_mood = models.CharField(
+        max_length=32,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Current mood emoji for this user in this event",
+    )
+    mood_updated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Last time current_mood was updated",
+    )
 
     # Session tracking for auto-rejoin support
     was_ever_admitted = models.BooleanField(
