@@ -64,11 +64,12 @@ def _create_chat_message(event_id: int, user_id: int, content: str) -> ChatMessa
 
 
 @database_sync_to_async
-def _create_question(event_id: int, user_id: int, content: str) -> Question:
+def _create_question(event_id: int, user_id: int, content: str, lounge_table_id: int = None) -> Question:
     return Question.objects.create(
         event_id=event_id,
         user_id=user_id,
         content=content.strip(),
+        lounge_table_id=lounge_table_id,
     )
 
 
@@ -214,9 +215,61 @@ class QnAConsumer(BaseEventConsumer):
     Q&A: ask question or upvote existing question.
     - Ask:     {"content": "What time is keynote?"}
     - Upvote:  {"action": "upvote", "question_id": 123}
+    
+    ISOLATION: 
+    - Supports lounge_table_id via query param.
+    - Subscribes to table-specific channel if present.
     """
 
     group_name_prefix = "event_qna"
+    lounge_table_id = None
+
+    async def connect(self) -> None:
+        log.debug("WS path=%s", self.scope.get("path"))
+        self.user = self.scope.get("user", None)
+        if not self.user or isinstance(self.user, AnonymousUser):
+            await self.close(code=4401)
+            return
+
+        try:
+            self.event_id = int(self.scope["url_route"]["kwargs"]["event_id"])
+        except Exception:
+            await self.close(code=4400)
+            return
+
+        event = await _get_event_and_check_membership(self.event_id, self.user.id)
+        if not event:
+            await self.close(code=4403)
+            return
+
+        self.event = event
+        
+        # Parse lounge_table_id from query params 
+        # (e.g. ws://...?lounge_table_id=123)
+        self.lounge_table_id = None
+        try:
+            from urllib.parse import parse_qs
+            query_string = self.scope.get("query_string", b"").decode("utf-8")
+            params = parse_qs(query_string)
+            if "lounge_table_id" in params:
+                 # Take the last value to be safe, assuming int
+                 val = params["lounge_table_id"][-1]
+                 if val and val.lower() != "null" and val.lower() != "undefined":
+                     self.lounge_table_id = int(val)
+        except Exception as e:
+            log.warning(f"Error parsing lounge_table_id: {e}")
+            self.lounge_table_id = None
+
+        # Determine Group Name
+        if self.lounge_table_id:
+            # Table-Specific Room
+            self.group_name = f"{self.group_name_prefix}_{self.event_id}_table_{self.lounge_table_id}"
+        else:
+            # Main Room
+            self.group_name = f"{self.group_name_prefix}_{self.event_id}_main"
+
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
 
     async def receive_json(self, content: Dict[str, Any], **kwargs: Any) -> None:
         action = content.get("action")
@@ -234,6 +287,12 @@ class QnAConsumer(BaseEventConsumer):
                 await self.send_error("Question not found.", code="not_found")
                 return
 
+            # Broadcast to the CURRENT room (group)
+            # Note: Theoretically global upvotes could be reflected everywhere if we used a global group AND local group,
+            # but to ensure isolation we only broadcast to the room where the upvoter is.
+            # However, if the question is VISIBLE in this room, it should be fine.
+            # Ideally questions physically belong to a room, so we are in the right room.
+            
             payload = {
                 "type": "qna.upvote",
                 "event_id": self.event_id,
@@ -253,11 +312,13 @@ class QnAConsumer(BaseEventConsumer):
             await self.send_error("Provide 'content' to ask a question.", code="invalid_payload")
             return
 
-        q = await _create_question(self.event_id, self.user.id, text)
+        # Use the table ID from the connection scope
+        q = await _create_question(self.event_id, self.user.id, text, self.lounge_table_id)
 
         payload = {
             "type": "qna.question",
             "event_id": self.event_id,
+            "lounge_table_id": self.lounge_table_id,
             "question_id": q.id,
             "user_id": self.user.id,
             "uid": self.user.id,

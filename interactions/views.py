@@ -25,6 +25,10 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         event_id = self.request.query_params.get("event_id")
+        # Optional: Filter by specific lounge table (or None for main room)
+        # Frontend should send ?lounge_table_id=123 (or empty/missing for main room)
+        lounge_table_id = self.request.query_params.get("lounge_table_id")
+        
         qs = (
             Question.objects
             .annotate(
@@ -39,6 +43,14 @@ class QuestionViewSet(viewsets.ModelViewSet):
         )
         if event_id:
             qs = qs.filter(event_id=event_id)
+
+        # Room Isolation Logic
+        if lounge_table_id:
+            qs = qs.filter(lounge_table_id=lounge_table_id)
+        else:
+            # If no table specified, return ONLY main room questions
+            # This ensures isolation: Main Room users see ONLY main room questions
+            qs = qs.filter(lounge_table__isnull=True)
 
         # Filter out hidden questions for non-hosts
         # Hosts/admins can see all questions including hidden ones
@@ -58,14 +70,26 @@ class QuestionViewSet(viewsets.ModelViewSet):
         Attach the current user when creating a question
         AND broadcast it to all connected QnA WebSocket clients.
         """
-        question = serializer.save(user=self.request.user)
+        # Capture optional table ID from request body
+        lounge_table_id = self.request.data.get("lounge_table")
+        
+        # Save with user and table info
+        # If lounge_table_id is None/empty, it saves as NULL (Main Room)
+        question = serializer.save(user=self.request.user, lounge_table_id=lounge_table_id or None)
 
         # Broadcast to the same Channels group used by QnAConsumer
         from channels.layers import get_channel_layer
         from asgiref.sync import async_to_sync
 
         channel_layer = get_channel_layer()
-        group = f"event_qna_{question.event_id}_qnaconsumer"
+        
+        # Determine the target group based on where the question was asked
+        if question.lounge_table_id:
+            # Broadcast ONLY to this table
+            group = f"event_qna_{question.event_id}_table_{question.lounge_table_id}"
+        else:
+            # Broadcast ONLY to main room
+            group = f"event_qna_{question.event_id}_main"
 
         # Build payload shape consistent with QnAConsumer.receive_json
         user = self.request.user
@@ -79,6 +103,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         payload = {
             "type": "qna.question",
             "event_id": question.event_id,
+            "lounge_table_id": question.lounge_table_id,  # Include table ID in payload
             "question_id": question.id,
             "user_id": question.user_id,
             "uid": question.user_id,
@@ -129,6 +154,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "user_upvoted": q.user_upvoted,  # annotated boolean
                 "upvoters": upvoters_list,  # NEW: list of users who upvoted
                 "event_id": q.event_id,
+                "lounge_table_id": q.lounge_table_id, # Return to client
                 "created_at": q.created_at.isoformat(),
             })
         return Response(data)

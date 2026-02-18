@@ -120,11 +120,20 @@ class Question(models.Model):
         blank=True,
         help_text="Timestamp when the question was hidden (null if not hidden).",
     )
+    lounge_table = models.ForeignKey(
+        "events.LoungeTable",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="questions",
+        help_text="Lounge table (if applicable). Null means Main Room.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["event", "-created_at"], name="qna_event_created_idx"),
+            models.Index(fields=["lounge_table", "-created_at"], name="qna_table_created_idx"),
         ]
         verbose_name = "Question"
         verbose_name_plural = "Questions"

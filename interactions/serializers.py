@@ -19,6 +19,7 @@ class QuestionSerializer(serializers.ModelSerializer):
             "is_hidden",
             "hidden_by",
             "hidden_at",
+            "lounge_table",
         ]
         read_only_fields = ["user", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at"]
 
