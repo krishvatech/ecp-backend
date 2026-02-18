@@ -962,7 +962,13 @@ class EventViewSet(viewsets.ModelViewSet):
         if max_price:
             qs = qs.filter(price__lte=max_price)
 
-        qs = qs.annotate(registrations_count=Count('registrations', distinct=True))
+        qs = qs.annotate(
+            registrations_count=Count(
+                'registrations',
+                filter=Q(registrations__status__in=['registered', 'cancellation_requested']),
+                distinct=True
+            )
+        )
         return qs
     
 
@@ -1133,7 +1139,7 @@ class EventViewSet(viewsets.ModelViewSet):
         is_registered = EventRegistration.objects.filter(
             event=event, 
             user=request.user, 
-            status="registered"
+            status__in=["registered", "cancellation_requested"]
         ).exists()
         
         return Response({
@@ -1248,8 +1254,16 @@ class EventViewSet(viewsets.ModelViewSet):
             # Note: waiting_started_at is NOT set here, only when user actively joins
         )
 
+        if not was_created and obj.status in ['cancelled', 'deregistered']:
+            # Reactivate the registration
+            obj.status = 'registered'
+            obj.admission_status = initial_admission_status # Reset admission status
+            obj.save(update_fields=['status', 'admission_status'])
+            was_created = True # Treat as created so we increment count below
+
         if was_created:
-            Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+             Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+             
         return Response({"ok": True, "created": was_created, "event_id": event.id})
 
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="max-price")
@@ -2869,7 +2883,7 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         qs = (
             Event.objects
-            .filter(registrations__user=request.user)
+            .filter(registrations__user=request.user, registrations__status__in=['registered', 'cancellation_requested'])
             .distinct()
             .annotate(registrations_count=Count('registrations', distinct=True))
             .order_by("-start_time")
@@ -2912,6 +2926,13 @@ class EventViewSet(viewsets.ModelViewSet):
         if EventRegistration.objects.filter(event=event, user=user, is_banned=True).exists():
             return Response(
                 {"error": "banned", "detail": "You are banned from this event."},
+                status=403
+            )
+
+        # 1.6) Check if user is cancelled/deregistered
+        if EventRegistration.objects.filter(event=event, user=user, status__in=['cancelled', 'deregistered']).exists():
+             return Response(
+                {"error": "not_registered", "detail": "You are not registered for this event."},
                 status=403
             )
 
@@ -3618,6 +3639,40 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = EventRegistrationSerializer
 
+    def destroy(self, request, *args, **kwargs):
+        """
+        Soft delete:
+        - If user -> 'cancelled'
+        - If admin/owner -> 'deregistered'
+        """
+        reg = self.get_object()
+        user = request.user
+        
+        # Determine strict permissions if not already handled by 'get_queryset' or permission_classes
+        is_owner_of_reg = (reg.user_id == user.id)
+        is_event_owner = (reg.event.created_by_id == user.id)
+        is_staff = user.is_staff or getattr(user, "is_superuser", False)
+
+        if not (is_owner_of_reg or is_event_owner or is_staff):
+            return Response({"detail": "Not authorized."}, status=403)
+
+        if is_owner_of_reg and not (is_event_owner or is_staff):
+            # User cancelling their own
+            reg.status = "cancelled"
+            reg.save(update_fields=["status"])
+            Event.objects.filter(pk=reg.event_id).update(attending_count=F("attending_count") - 1)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        
+        # Host/Admin deregistering
+        reg.status = "deregistered"
+        reg.save(update_fields=["status"])
+        Event.objects.filter(pk=reg.event_id).update(attending_count=F("attending_count") - 1)
+        
+        # Optional: Kick from live meeting if active?
+        # Use helper from EventViewSet if needed, or just rely on 'status' check in join/poll APIs.
+        
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     def get_queryset(self):
         """
         Admins/Staff/Event Owners -> See all relevant.
@@ -3641,6 +3696,29 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
 
         return qs
 
+    def create(self, request, *args, **kwargs):
+        # 1. Custom check for existing registration to handle re-registration
+        user = request.user
+        event_id = request.data.get("event_id") or request.data.get("event")
+
+        if event_id and user.is_authenticated:
+            try:
+                # Use filter().first() to avoid exceptions
+                existing_reg = EventRegistration.objects.filter(user=user, event_id=event_id).first()
+                if existing_reg:
+                    # If previously deregistered or cancelled, reactivate them
+                    if existing_reg.status in ['deregistered', 'cancelled']:
+                        existing_reg.status = 'registered'
+                        existing_reg.save(update_fields=['status'])
+                        serializer = self.get_serializer(existing_reg)
+                        return Response(serializer.data, status=status.HTTP_200_OK)
+                    
+                    # If already registered, standard validation will catch it
+            except Exception:
+                pass
+
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         """
         Force user= current request.user on create.
@@ -3653,7 +3731,10 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         Alias to list only my registrations with pagination support.
         Always strict to request.user.
         """
-        qs = self.get_queryset().filter(user=request.user)
+        qs = self.get_queryset().filter(
+            user=request.user,
+            status__in=['registered', 'cancellation_requested']
+        )
         page = self.paginate_queryset(qs)
         ser = self.get_serializer(page or qs, many=True)
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
@@ -3695,6 +3776,7 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
 
         reg.status = "cancelled"
         reg.save(update_fields=["status"])
+        Event.objects.filter(pk=reg.event_id).update(attending_count=F("attending_count") - 1)
         # TODO: Process Refund Logic Here
         
         return Response({"ok": True, "status": reg.status})
@@ -3713,6 +3795,48 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
 
         reg.status = "registered"
         reg.save(update_fields=["status"])
+        return Response({"ok": True, "status": reg.status})
+
+    @action(detail=True, methods=["post"], url_path="deregister")
+    def deregister(self, request, pk=None):
+        """
+        Admin/Owner deregisters a user -> sets status=deregistered (Soft Delete).
+        """
+        reg = self.get_object()
+        is_admin = request.user.is_staff or getattr(request.user, "is_superuser", False)
+        is_owner = (reg.event.created_by_id == request.user.id)
+
+        if not (is_admin or is_owner):
+            return Response({"error": "permission_denied"}, status=403)
+
+        reg.status = "deregistered"
+        # Reset admission status so they aren't stuck in "waiting" or "admitted" state if they rejoin later
+        reg.admission_status = "waiting" if reg.event.waiting_room_enabled else "admitted"
+        reg.joined_live = False
+        reg.is_online = False
+        reg.save(update_fields=["status", "admission_status", "joined_live", "is_online"])
+        Event.objects.filter(pk=reg.event_id).update(attending_count=F("attending_count") - 1)
+        
+        return Response({"ok": True, "status": reg.status})
+
+    @action(detail=True, methods=["post"], url_path="reinstate")
+    def reinstate(self, request, pk=None):
+        """
+        Admin/Owner reinstates a deregistered/cancelled user -> sets status=registered.
+        """
+        reg = self.get_object()
+        is_admin = request.user.is_staff or getattr(request.user, "is_superuser", False)
+        is_owner = (reg.event.created_by_id == request.user.id)
+
+        if not (is_admin or is_owner):
+            return Response({"error": "permission_denied"}, status=403)
+
+        reg.status = "registered"
+        # Re-evaluate admission status
+        reg.admission_status = "waiting" if reg.event.waiting_room_enabled else "admitted"
+        reg.save(update_fields=["status", "admission_status"])
+        Event.objects.filter(pk=reg.event_id).update(attending_count=F("attending_count") + 1)
+        
         return Response({"ok": True, "status": reg.status})
     
     

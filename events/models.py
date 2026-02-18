@@ -278,6 +278,7 @@ class EventRegistration(models.Model):
         ('registered', 'Registered'),
         ('cancellation_requested', 'Cancellation Requested'),
         ('cancelled', 'Cancelled'),
+        ('deregistered', 'Deregistered'),
     ]
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='registered')
     registered_at = models.DateTimeField(auto_now_add=True)
