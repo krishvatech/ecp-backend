@@ -655,6 +655,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def perform_random_assignment(self, per_room):
+        # Override per_room with event setting if passed as 0 or None, but strictly respects user input if provided
+        # actually, let's trust the per_room passed from frontend mostly, but default to event setting
+        event = Event.objects.get(id=self.event_id)
+        if not per_room or per_room <= 0:
+            per_room = event.lounge_table_capacity or 4
+            
         print(f"[RANDOM_ASSIGN] Starting: event={self.event_id}, per_room={per_room}")
         # 1. Get all online participants (excluding host)
         registrations = EventRegistration.objects.filter(
@@ -671,9 +677,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         random.shuffle(users)
 
         # 2. Ensure we have enough BREAKOUT tables
+        # Recalculate needed tables based on updated per_room
         num_rooms_needed = (len(users) + per_room - 1) // per_room if per_room > 0 else 1
+        
+        # Get existing breakout tables
         tables = list(LoungeTable.objects.filter(event_id=self.event_id, category='BREAKOUT').order_by('id'))
         
+        # Create more if needed
         while len(tables) < num_rooms_needed:
             room_num = len(tables) + 1
             name = f"Breakout Room #{room_num}"
@@ -683,10 +693,16 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 event_id=self.event_id,
                 name=name,
                 category='BREAKOUT',
-                max_seats=max(per_room, 10),
+                max_seats=per_room, # ✅ Use the dynamic capacity
                 dyte_meeting_id=mid
             )
             tables.append(t)
+            
+        # Update existing tables max_seats if they differ (optional, but good for consistency)
+        for t in tables:
+            if t.max_seats != per_room:
+                t.max_seats = per_room
+                t.save(update_fields=['max_seats'])
 
         # 3. Perform assignments with proper validation
         assignments = []
@@ -982,6 +998,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 if LoungeParticipant.objects.filter(table_id=table_id, seat_index=seat_index).exists():
                     print(f"[CONSUMER] join_table: Seat {seat_index} at table {table_id} already occupied")
                     return False, "Seat already occupied", None
+                
+                # 2.5 Check if table is full (Double-check against max_seats)
+                table_obj = LoungeTable.objects.get(id=table_id)
+                current_count = LoungeParticipant.objects.filter(table_id=table_id).count()
+                if current_count >= table_obj.max_seats:
+                     print(f"[CONSUMER] join_table: Table {table_id} is FULL ({current_count}/{table_obj.max_seats})")
+                     return False, "Table is full", None
 
                 # 3. Create participant
                 LoungeParticipant.objects.create(
