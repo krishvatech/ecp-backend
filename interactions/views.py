@@ -180,8 +180,12 @@ class QuestionViewSet(viewsets.ModelViewSet):
         upvote_count = question.upvoters.count()
 
         # 🔊 Broadcast to the same Channels group used by QnAConsumer
-        # QnA group name shape: f"event_qna_{event_id}_qnaconsumer"
-        group = f"event_qna_{question.event_id}_qnaconsumer"
+        # QnA group name shape: event_qna_{event_id}_table_{table_id} OR event_qna_{event_id}_main
+        if question.lounge_table_id:
+            group = f"event_qna_{question.event_id}_table_{question.lounge_table_id}"
+        else:
+            group = f"event_qna_{question.event_id}_main"
+
         channel_layer = get_channel_layer()
         payload = {
             "type": "qna.upvote",
@@ -258,7 +262,11 @@ class QuestionViewSet(viewsets.ModelViewSet):
         question.save(update_fields=["is_hidden", "hidden_by", "hidden_at"])
 
         # Broadcast visibility change to WebSocket group
-        group = f"event_qna_{question.event_id}_qnaconsumer"
+        if question.lounge_table_id:
+            group = f"event_qna_{question.event_id}_table_{question.lounge_table_id}"
+        else:
+            group = f"event_qna_{question.event_id}_main"
+
         channel_layer = get_channel_layer()
 
         payload = {
@@ -299,7 +307,11 @@ class QuestionViewSet(viewsets.ModelViewSet):
         question = serializer.save()
 
         # Broadcast update
-        group = f"event_qna_{question.event_id}_qnaconsumer"
+        if question.lounge_table_id:
+            group = f"event_qna_{question.event_id}_table_{question.lounge_table_id}"
+        else:
+            group = f"event_qna_{question.event_id}_main"
+
         channel_layer = get_channel_layer()
         
         payload = {
@@ -335,7 +347,11 @@ class QuestionViewSet(viewsets.ModelViewSet):
         instance.delete()
 
         # Broadcast delete
-        group = f"event_qna_{event_id}_qnaconsumer"
+        if instance.lounge_table_id:
+            group = f"event_qna_{event_id}_table_{instance.lounge_table_id}"
+        else:
+            group = f"event_qna_{event_id}_main"
+
         channel_layer = get_channel_layer()
 
         payload = {
