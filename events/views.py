@@ -975,7 +975,7 @@ class EventViewSet(viewsets.ModelViewSet):
             return [AllowAny()]
         return super().get_permissions()
 
-    # ---------------------- Create Hook ----------------------
+    # ---------------------- Create/Update Hooks ----------------------
     def perform_create(self, serializer):
         """
         Enforce that:
@@ -994,6 +994,52 @@ class EventViewSet(viewsets.ModelViewSet):
         # Attach creator automatically, wrapped in transaction for atomicity
         with transaction.atomic():
             serializer.save(created_by=self.request.user, status="published")
+
+    def perform_update(self, serializer):
+        """
+        Custom update to broadcast lounge settings changes.
+        """
+        instance = serializer.instance
+        
+        # Capture old values
+        old_settings = {
+            "lounge_enabled_before": instance.lounge_enabled_before,
+            "lounge_enabled_during": instance.lounge_enabled_during,
+            "lounge_enabled_breaks": instance.lounge_enabled_breaks,
+            "lounge_enabled_after": instance.lounge_enabled_after,
+            "lounge_before_buffer": instance.lounge_before_buffer,
+            "lounge_after_buffer": instance.lounge_after_buffer,
+        }
+
+        super().perform_update(serializer)
+        
+        # Check for changes
+        new_instance = serializer.instance # Refreshed instance
+        changes = {}
+        for key, old_val in old_settings.items():
+            new_val = getattr(new_instance, key)
+            if old_val != new_val:
+                changes[key] = new_val
+        
+        if changes:
+            # Broadcast update
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"event_{instance.id}",
+                {
+                    "type": "lounge_settings_update",
+                    "event_id": instance.id,
+                    "settings": {
+                        "lounge_enabled_before": new_instance.lounge_enabled_before,
+                        "lounge_enabled_during": new_instance.lounge_enabled_during,
+                        "lounge_enabled_breaks": new_instance.lounge_enabled_breaks,
+                        "lounge_enabled_after": new_instance.lounge_enabled_after,
+                        "lounge_before_buffer": new_instance.lounge_before_buffer,
+                        "lounge_after_buffer": new_instance.lounge_after_buffer,
+                    },
+                    "timestamp": timezone.now().isoformat(),
+                }
+            )
 
     # ------------------ Dictionary Endpoints -----------------
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="categories")

@@ -420,6 +420,17 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "data": event["data"]
         })
 
+    async def lounge_settings_update(self, event):
+        """
+        Handle lounge settings updates broadcasted from EventViewSet.
+        """
+        await self.send_json({
+            "type": "lounge_settings_update",
+            "event_id": event["event_id"],
+            "settings": event["settings"],
+            "timestamp": event["timestamp"],
+        })
+
     async def broadcast_message(self, event: dict) -> None:
         await self.send_json({"type": "message", "data": event["payload"]})
 
