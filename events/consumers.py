@@ -780,9 +780,26 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json({
             "type": "waiting_room_announcement",
             "event_id": event.get("event_id"),
+            "announcement_id": event.get("announcement_id"),  # ✅ Include server ID
             "message": event.get("message"),
             "sender_name": event.get("sender_name", "Host"),
             "timestamp": event.get("timestamp"),
+        })
+
+    async def waiting_room_announcement_update(self, event: dict) -> None:
+        """✅ NEW: Handler for announcement edits - broadcasts to waiting room participant."""
+        await self.send_json({
+            "type": "waiting_room_announcement_update",
+            "announcement_id": event.get("announcement_id"),
+            "message": event.get("message"),
+            "updated_at": event.get("updated_at"),
+        })
+
+    async def waiting_room_announcement_delete(self, event: dict) -> None:
+        """✅ NEW: Handler for announcement deletions - broadcasts to waiting room participant."""
+        await self.send_json({
+            "type": "waiting_room_announcement_delete",
+            "announcement_id": event.get("announcement_id"),
         })
 
     async def breakout_end(self, event: dict) -> None:

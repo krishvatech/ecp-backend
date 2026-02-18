@@ -56,7 +56,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement
 from friends.models import Notification
 from groups.models import Group, GroupMembership
 from .serializers import (
@@ -3412,34 +3412,19 @@ class EventViewSet(viewsets.ModelViewSet):
                 "recipients": 0
             })
 
-        # Create a system message in event chat for record-keeping
+        # ✅ Create announcement using new WaitingRoomAnnouncement model
         try:
-            from messaging.models import Conversation, Message
-
-            # Get or create event chat conversation
-            event_chat, _ = Conversation.objects.get_or_create(
+            announcement = WaitingRoomAnnouncement.objects.create(
                 event=event,
-                group=None,
-                lounge_table=None,
-                defaults={
-                    "title": f"{event.title} - Event Chat",
-                    "created_by": request.user,
-                }
-            )
-
-            # Create announcement message
-            announcement = Message.objects.create(
-                conversation=event_chat,
+                message=message_text,
                 sender=request.user,
-                body=message_text,
-                # You may want to add is_announcement field if available
+                sender_name=request.user.get_full_name() or request.user.username,
             )
-
-            logger.info(f"[WAITING_ROOM] Host {request.user.id} sent announcement to {user_count} waiting users in event {event.id}")
+            logger.info(f"[WAITING_ROOM] Host {request.user.id} sent announcement (id={announcement.id}) to {user_count} waiting users in event {event.id}")
 
         except Exception as e:
-            logger.warning(f"[WAITING_ROOM] Failed to create announcement message: {e}")
-            # Continue anyway - we'll still broadcast via WebSocket
+            logger.warning(f"[WAITING_ROOM] Failed to create announcement: {e}")
+            return Response({"detail": "Failed to create announcement."}, status=500)
 
         # Broadcast announcement via WebSocket to each waiting user
         try:
@@ -3455,9 +3440,10 @@ class EventViewSet(viewsets.ModelViewSet):
                         {
                             "type": "waiting_room.announcement",
                             "event_id": event.id,
+                            "announcement_id": announcement.id,  # ✅ Include server ID
                             "message": message_text,
-                            "sender_name": request.user.get_full_name() or request.user.username,
-                            "timestamp": timezone.now().isoformat(),
+                            "sender_name": announcement.sender_name,
+                            "timestamp": announcement.created_at.isoformat(),
                         }
                     )
                 except Exception as e:
@@ -3470,10 +3456,119 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return Response({
             "ok": True,
-            "message_id": announcement.id if 'announcement' in locals() else None,
+            "announcement_id": announcement.id,  # ✅ Return server ID
+            "sender_name": announcement.sender_name,
+            "created_at": announcement.created_at.isoformat(),
             "recipients": user_count,
             "message": message_text,
         })
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="waiting-room/announcements")
+    def waiting_room_announcements_list(self, request, pk=None):
+        """
+        ✅ NEW: GET /api/events/{id}/waiting-room/announcements/
+        Returns active (non-deleted) announcements for this event.
+        Available to both host (for management panel) and waiting participants (on reconnect).
+        """
+        event = self.get_object()
+        announcements = WaitingRoomAnnouncement.objects.filter(
+            event=event, is_deleted=False
+        ).order_by("-created_at")[:10]
+
+        return Response([{
+            "id": a.id,
+            "message": a.message,
+            "sender_name": a.sender_name,
+            "created_at": a.created_at.isoformat(),
+            "updated_at": a.updated_at.isoformat(),
+            "is_edited": a.updated_at > a.created_at,
+        } for a in announcements])
+
+    @action(detail=True, methods=["patch"], permission_classes=[IsAuthenticated], url_path="waiting-room/announcements/(?P<ann_id>[0-9]+)")
+    def waiting_room_announcement_edit(self, request, pk=None, ann_id=None):
+        """
+        ✅ NEW: PATCH /api/events/{id}/waiting-room/announcements/{ann_id}/
+        Body: { "message": "updated text" }
+        """
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can edit announcements."}, status=403)
+
+        announcement = get_object_or_404(WaitingRoomAnnouncement, id=ann_id, event=event, is_deleted=False)
+        new_message = (request.data.get("message") or "").strip()
+        if not new_message:
+            return Response({"detail": "Message cannot be empty."}, status=400)
+        if len(new_message) > 1000:
+            return Response({"detail": "Message too long (max 1000 characters)."}, status=400)
+
+        announcement.message = new_message
+        announcement.save()
+
+        # Broadcast update to all currently waiting users
+        waiting_user_ids = list(EventRegistration.objects.filter(
+            event=event, admission_status="waiting", waiting_started_at__isnull=False
+        ).values_list("user_id", flat=True))
+
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+
+            channel_layer = get_channel_layer()
+            for user_id in waiting_user_ids:
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{user_id}",
+                    {
+                        "type": "waiting_room.announcement_update",
+                        "announcement_id": announcement.id,
+                        "message": new_message,
+                        "updated_at": announcement.updated_at.isoformat(),
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"[WAITING_ROOM] Failed to broadcast announcement update: {e}")
+
+        return Response({
+            "ok": True,
+            "announcement_id": announcement.id,
+            "message": new_message,
+            "updated_at": announcement.updated_at.isoformat(),
+        })
+
+    @action(detail=True, methods=["delete"], permission_classes=[IsAuthenticated], url_path="waiting-room/announcements/(?P<ann_id>[0-9]+)/delete")
+    def waiting_room_announcement_delete(self, request, pk=None, ann_id=None):
+        """
+        ✅ NEW: DELETE /api/events/{id}/waiting-room/announcements/{ann_id}/delete/
+        Soft-deletes the announcement and broadcasts removal to waiting users.
+        """
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can delete announcements."}, status=403)
+
+        announcement = get_object_or_404(WaitingRoomAnnouncement, id=ann_id, event=event, is_deleted=False)
+        announcement.is_deleted = True
+        announcement.save()
+
+        waiting_user_ids = list(EventRegistration.objects.filter(
+            event=event, admission_status="waiting", waiting_started_at__isnull=False
+        ).values_list("user_id", flat=True))
+
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+
+            channel_layer = get_channel_layer()
+            for user_id in waiting_user_ids:
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{user_id}",
+                    {
+                        "type": "waiting_room.announcement_delete",
+                        "announcement_id": announcement.id,
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"[WAITING_ROOM] Failed to broadcast announcement delete: {e}")
+
+        return Response({"ok": True, "announcement_id": announcement.id})
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="lounge/ensure-seated")
     def ensure_seated_in_lounge(self, request, pk=None):

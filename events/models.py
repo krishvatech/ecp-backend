@@ -434,6 +434,44 @@ class AssistanceRequestLog(models.Model):
 
 
 # ============================================================
+# ============= Waiting Room Announcement Model ==============
+# ============================================================
+class WaitingRoomAnnouncement(models.Model):
+    """
+    ✅ NEW: Announcements sent by host to waiting room participants.
+
+    These are persistent announcements with full CRUD support:
+    - Host can edit announcement text (broadcasts update to all waiting users)
+    - Host can delete announcement (broadcasts delete to all waiting users)
+    - Soft-delete via is_deleted flag for audit trail
+    - Broadcasts via WebSocket for real-time updates
+    """
+    event = models.ForeignKey(
+        Event, on_delete=models.CASCADE, related_name="waiting_room_announcements"
+    )
+    message = models.TextField(max_length=1000)
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="sent_announcements"
+    )
+    sender_name = models.CharField(max_length=255, default="Host")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_deleted = models.BooleanField(default=False)  # soft delete
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["event", "is_deleted", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"[Event {self.event_id}] {self.sender_name}: {self.message[:50]}"
+
+
+# ============================================================
 # ================= Breakout Joiner Model ====================
 # ============================================================
 
