@@ -63,3 +63,14 @@ class IsGroupModerator(BasePermission):
     def has_object_permission(self, request, view, obj):
         group = obj if hasattr(obj, "memberships") else getattr(obj, "group", None)
         return is_moderator(request.user, group)
+
+
+class GroupSuperuserOnly(BasePermission):
+    """
+    Allows access only to superusers.
+    """
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated and request.user.is_superuser)
+
+    def has_object_permission(self, request, view, obj):
+        return bool(request.user and request.user.is_authenticated and request.user.is_superuser)

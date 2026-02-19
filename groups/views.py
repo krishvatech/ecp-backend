@@ -29,7 +29,7 @@ from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParam
 from community.models import Community
 from activity_feed.models import FeedItem
 from .models import Group, GroupMembership, PromotionRequest, GroupNotification
-from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content
+from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content, GroupSuperuserOnly
 from .serializers import (
     GroupSerializer,
     GroupMemberOutSerializer,
@@ -161,6 +161,9 @@ class GroupViewSet(viewsets.ModelViewSet):
             "mutual_members",
 
         }
+        
+        if self.action == "promote_to_main":
+            return [GroupSuperuserOnly()]
 
         if self.action == "create":
             data = getattr(self.request, "data", {}) or {}
@@ -797,6 +800,32 @@ class GroupViewSet(viewsets.ModelViewSet):
     # Use (Endpoint): GET /api/groups/{id}/members
     # - Returns ACTIVE members of a group.
     # Ordering: No explicit order_by; defaults to model ordering. Add order_by('user__id') if deterministic needed.
+
+
+    @action(detail=True, methods=["post"], url_path="promote-to-main")
+    def promote_to_main(self, request, pk=None):
+        """
+        Promote a sub-group to an independent main group.
+        Only SUPERUSERS can do this.
+        """
+        group = self.get_object()
+        
+        # Validation
+        if not group.parent_id:
+            return Response(
+                {"detail": "This group is already a main group (no parent)."}, 
+                status=400
+            )
+
+        # Action: Remove parent, keep community
+        old_parent_id = group.parent_id
+        group.parent = None
+        group.save()
+
+        # Log or notify if needed (optional)
+        print(f"User {request.user} promoted group {group.id} (was child of {old_parent_id}) to main group.")
+
+        return Response(self.get_serializer(group).data)
     @action(detail=True, methods=["get"], url_path="members")
     def members(self, request, pk=None):
         group = self.get_object()

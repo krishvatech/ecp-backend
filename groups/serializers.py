@@ -112,6 +112,18 @@ class GroupSerializer(serializers.ModelSerializer):
         if parent:
             attrs["community"] = parent.community
 
+        # STRICT SECURITY: Prevent non-superuser from detaching/changing parent
+        # If instance exists (update) AND parent is being changed (even to None)
+        if self.instance and "parent" in attrs:
+            new_parent = attrs["parent"]
+            old_parent = self.instance.parent
+            if new_parent != old_parent:
+                request = self.context.get("request")
+                if not (request and request.user and request.user.is_superuser):
+                    raise serializers.ValidationError(
+                        {"parent_id": "Only superusers can change the parent group."}
+                    )
+
         return attrs
 
     def get_created_by(self, obj):
