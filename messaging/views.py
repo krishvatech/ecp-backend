@@ -1216,7 +1216,9 @@ class MessageViewSet(
         if not str(body).strip():
             return Response({"detail": "Empty message"}, status=status.HTTP_400_BAD_REQUEST)
         msg.body = body
-        msg.save(update_fields=["body"])
+        msg.is_edited = True
+        msg.edited_at = timezone.now()
+        msg.save(update_fields=["body", "is_edited", "edited_at"])
         serializer = self.get_serializer(msg)
         return Response(serializer.data)
 
@@ -1227,10 +1229,10 @@ class MessageViewSet(
         if not self._can_moderate_message(self.request.user, instance):
             raise PermissionDenied("Not allowed to delete this message.")
         instance.is_deleted = True
-        from django.utils import timezone
         instance.deleted_at = timezone.now()
-        instance.save() 
-        # The record remains in DB, but get_queryset() filters it out for users
+        instance.body = "This message was deleted"
+        instance.save()
+        # The record remains in DB with placeholder body so conversation thread is readable
 
     @action(detail=True, methods=["post"], url_path="flag")
     def flag(self, request, *args, **kwargs):

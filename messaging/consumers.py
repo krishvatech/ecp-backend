@@ -43,6 +43,10 @@ class DirectMessageConsumer(AsyncJsonWebsocketConsumer):
         event_type = content.get("type")
         if event_type == "message.send":
             await self._handle_send(content)
+        elif event_type == "message.edit":
+            await self._handle_edit(content)
+        elif event_type == "message.delete":
+            await self._handle_delete(content)
 
     async def _handle_send(self, content: dict[str, Any]) -> None:
         user = self.scope["user"]
@@ -65,6 +69,49 @@ class DirectMessageConsumer(AsyncJsonWebsocketConsumer):
     async def message_created(self, event: dict[str, Any]) -> None:
         await self.send_json({"type": "message.created", "message": event["message"]})
 
+    async def message_edited(self, event: dict[str, Any]) -> None:
+        await self.send_json({"type": "message.edited", "message": event["message"]})
+
+    async def message_deleted(self, event: dict[str, Any]) -> None:
+        await self.send_json({"type": "message.deleted", "message": event["message"]})
+
+    async def _handle_edit(self, content: dict[str, Any]) -> None:
+        user = self.scope["user"]
+        message_id = content.get("message_id")
+        new_body = content.get("body") or ""
+        if not message_id or not new_body.strip():
+            return
+        message = await database_sync_to_async(self._update_message)(
+            user.id, message_id, self.conversation_id, new_body
+        )
+        if message:
+            serializer = MessageSerializer(message)
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    "type": "message.edited",
+                    "message": serializer.data,
+                },
+            )
+
+    async def _handle_delete(self, content: dict[str, Any]) -> None:
+        user = self.scope["user"]
+        message_id = content.get("message_id")
+        if not message_id:
+            return
+        message = await database_sync_to_async(self._delete_message)(
+            user.id, message_id, self.conversation_id
+        )
+        if message:
+            serializer = MessageSerializer(message)
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    "type": "message.deleted",
+                    "message": serializer.data,
+                },
+            )
+
     # ---------- sync helper methods ----------
     def _create_message(self, user_id: int, conv_id: int, body: str, attachments: list) -> Message:
         msg = Message.objects.create(
@@ -74,6 +121,36 @@ class DirectMessageConsumer(AsyncJsonWebsocketConsumer):
             attachments=attachments,
         )
         return msg
+
+    def _update_message(self, user_id: int, message_id: int, conv_id: int, new_body: str) -> Message | None:
+        try:
+            msg = Message.objects.get(id=message_id, conversation_id=conv_id)
+            # Only sender can edit their own message
+            if msg.sender_id != user_id:
+                return None
+            from django.utils import timezone
+            msg.body = new_body
+            msg.is_edited = True
+            msg.edited_at = timezone.now()
+            msg.save(update_fields=["body", "is_edited", "edited_at"])
+            return msg
+        except Message.DoesNotExist:
+            return None
+
+    def _delete_message(self, user_id: int, message_id: int, conv_id: int) -> Message | None:
+        try:
+            msg = Message.objects.get(id=message_id, conversation_id=conv_id)
+            # Only sender can delete their own message
+            if msg.sender_id != user_id:
+                return None
+            from django.utils import timezone
+            msg.is_deleted = True
+            msg.deleted_at = timezone.now()
+            msg.body = "This message was deleted"
+            msg.save()
+            return msg
+        except Message.DoesNotExist:
+            return None
 
     async def _is_participant(self, user_id: int, conv_id: int) -> bool:
         try:
