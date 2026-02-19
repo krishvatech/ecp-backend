@@ -196,10 +196,15 @@ class Event(models.Model):
         ordering = ["-created_at"]
     def save(self, *args, **kwargs):
         if not self.slug:
-            base_slug = slugify(f"{self.title}-{self.community_id}")
+            from django.utils import timezone
+            # Generate slug from title + year for better SEO
+            year = self.start_time.year if self.start_time else timezone.now().year
+            base_slug = slugify(f"{self.title}-{year}")
+            # Ensure slug doesn't exceed max_length minus room for suffix
+            base_slug = base_slug[:240]
             slug = base_slug
-            suffix = 1
-            while Event.objects.filter(slug=slug).exists():
+            suffix = 2
+            while Event.objects.filter(slug=slug).exclude(pk=self.pk if self.pk else None).exists():
                 slug = f"{base_slug}-{suffix}"
                 suffix += 1
             self.slug = slug

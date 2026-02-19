@@ -36,7 +36,7 @@ from django.contrib.auth import get_user_model
 # ================= DRF (Django REST Framework) ==============
 # ============================================================
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from rest_framework import permissions, viewsets, status, views   # NOTE: permissions, views may be unused; kept
+from rest_framework import permissions, viewsets, status, views, generics   # NOTE: permissions, views may be unused; kept
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, NotFound
 from rest_framework.filters import SearchFilter, OrderingFilter
@@ -61,6 +61,7 @@ from friends.models import Notification
 from groups.models import Group, GroupMembership
 from .serializers import (
     EventSerializer,
+    PublicEventSerializer,
     EventLiteSerializer,
     EventRegistrationSerializer,
     EventSessionSerializer,
@@ -981,6 +982,23 @@ class EventViewSet(viewsets.ModelViewSet):
             return [AllowAny()]
         return super().get_permissions()
 
+    # ---------------------- Object Lookup ----------------------
+    def get_object(self):
+        """
+        Accept both numeric ID and slug as the lookup value.
+        Try numeric ID first (backward compatibility), then slug.
+        """
+        lookup = self.kwargs.get(self.lookup_field)
+        queryset = self.get_queryset()
+        try:
+            # Try numeric ID first (backward compatibility)
+            obj = get_object_or_404(queryset, pk=int(lookup))
+        except (ValueError, TypeError):
+            # Fall back to slug lookup
+            obj = get_object_or_404(queryset, slug=lookup)
+        self.check_object_permissions(self.request, obj)
+        return obj
+
     # ---------------------- Create/Update Hooks ----------------------
     def perform_create(self, serializer):
         """
@@ -1062,8 +1080,23 @@ class EventViewSet(viewsets.ModelViewSet):
             .order_by(Lower("category"))
         )
         return Response({"results": list(cats)})
-    
-    
+
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="slug-availability")
+    def slug_availability(self, request):
+        """Check whether an event slug is available."""
+        slug = (request.query_params.get("slug") or "").strip().lower()
+        if not slug:
+            return Response({"detail": "slug query parameter is required"}, status=400)
+
+        qs = Event.objects.filter(slug=slug)
+        exclude_id = request.query_params.get("exclude_id")
+        if exclude_id:
+            try:
+                qs = qs.exclude(pk=int(exclude_id))
+            except (TypeError, ValueError):
+                pass
+
+        return Response({"slug": slug, "available": not qs.exists()})
 
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="formats")
     def formats(self, request, *args, **kwargs):
@@ -3722,6 +3755,25 @@ class EventViewSet(viewsets.ModelViewSet):
         Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
 
         return Response({"ok": True, "detail": f"User {target_user.username} added successfully."})
+
+
+# ============================================================
+# ================= Public Event Detail View =================
+# ============================================================
+class PublicEventDetailView(generics.RetrieveAPIView):
+    """
+    Public-facing endpoint for event landing pages.
+    - No authentication required
+    - Only returns public event data (no sensitive fields)
+    - Only available for published/live events
+    """
+    permission_classes = [AllowAny]
+    serializer_class = PublicEventSerializer
+    queryset = Event.objects.filter(
+        status__in=["published", "live"]
+    ).select_related("community").prefetch_related("sessions")
+    lookup_field = "slug"
+    lookup_url_kwarg = "slug"
 
 
 # ============================================================

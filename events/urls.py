@@ -1,6 +1,12 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import EventViewSet, EventRegistrationViewSet, RecordingWebhookView, EventSessionViewSet
+from .views import (
+    EventViewSet,
+    PublicEventDetailView,
+    EventRegistrationViewSet,
+    RecordingWebhookView,
+    EventSessionViewSet,
+)
 from .speed_networking_views import SpeedNetworkingSessionViewSet, SpeedNetworkingQueueViewSet
 from .webhooks import realtime_webhook
 
@@ -9,7 +15,10 @@ router.register(r"events", EventViewSet, basename="event")
 router.register(r"event-registrations", EventRegistrationViewSet, basename="eventregistration")
 
 
-urlpatterns = router.urls + [
+urlpatterns = [
+    # Public event landing page endpoint
+    path("events/public/<slug:slug>/", PublicEventDetailView.as_view(), name="event-public-detail"),
+] + router.urls + [
     path("events/recording/webhook/", RecordingWebhookView.as_view(), name="dyte-recording-webhook"),
     path("realtime/webhook/", realtime_webhook, name="realtime-webhook"),
     path(

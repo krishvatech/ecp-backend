@@ -486,7 +486,6 @@ class EventSerializer(serializers.ModelSerializer):
         
         read_only_fields = [
             "id",
-            "slug",
             "created_by_id",
             "created_at",
             "updated_at",
@@ -495,9 +494,13 @@ class EventSerializer(serializers.ModelSerializer):
             "registrations_count",
             "live_started_at",
             "live_ended_at",
-            "dyte_meeting_id",     
+            "dyte_meeting_id",
             "dyte_meeting_title",
         ]
+        extra_kwargs = {
+            # Let custom validate_slug() handle uniqueness so create can auto-suffix collisions.
+            "slug": {"validators": []},
+        }
 
 
     # Browsable API uses these formats for rendering/parsing
@@ -1160,6 +1163,37 @@ class EventSerializer(serializers.ModelSerializer):
             )
         return tz_value
 
+    def validate_slug(self, value):
+        """Validate slug format and uniqueness."""
+        if not value:
+            return value  # Allow blank (auto-generated in save())
+        import re
+        if not re.match(r'^[a-z0-9]+(?:-[a-z0-9]+)*$', value):
+            raise serializers.ValidationError(
+                "Slug must contain only lowercase letters, numbers, and hyphens."
+            )
+        # Check uniqueness (exclude self if updating)
+        qs = Event.objects.filter(slug=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if not qs.exists():
+            return value
+
+        # For create flow, hidden slug input can collide (same title multiple times).
+        # Auto-resolve to a unique slug instead of failing.
+        if not self.instance:
+            max_len = Event._meta.get_field("slug").max_length or 255
+            base_slug = value[:max_len]
+            candidate = base_slug
+            suffix = 2
+            while Event.objects.filter(slug=candidate).exists():
+                suffix_str = f"-{suffix}"
+                candidate = f"{base_slug[: max_len - len(suffix_str)]}{suffix_str}"
+                suffix += 1
+            return candidate
+
+        raise serializers.ValidationError("This slug is already in use.")
+
     # ---------- Object-level validation ----------
 
     def validate(self, data):
@@ -1310,6 +1344,62 @@ class EventSerializer(serializers.ModelSerializer):
                     })
 
         return data
+
+
+class PublicEventSerializer(serializers.ModelSerializer):
+    """
+    Public-facing serializer for event landing pages.
+    Only exposes non-sensitive fields safe for anonymous users.
+    """
+    speakers = serializers.SerializerMethodField()
+    preview_image = serializers.SerializerMethodField()
+    sessions = EventSessionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Event
+        fields = [
+            "id", "slug", "title", "description",
+            "start_time", "end_time", "timezone",
+            "status", "is_live", "category", "format",
+            "location", "price", "is_free",
+            "preview_image", "attending_count",
+            "created_at", "sessions", "speakers",
+            "is_multi_day",
+        ]
+        read_only_fields = fields
+
+    def get_speakers(self, obj):
+        """Fetch speaker cards from EventParticipant entries."""
+        participants = (
+            obj.participants
+            .filter(role=EventParticipant.ROLE_SPEAKER)
+            .select_related("user", "user__profile")
+            [:10]
+        )
+
+        result = []
+        for participant in participants:
+            result.append(
+                {
+                    "name": participant.get_name() or "",
+                    "bio": participant.get_bio() or "",
+                    "image": participant.get_image_url() or "",
+                }
+            )
+        return result
+
+    def get_preview_image(self, obj):
+        """Return absolute URL for preview image."""
+        if not obj.preview_image:
+            return None
+        req = self.context.get('request')
+        try:
+            if req:
+                return req.build_absolute_uri(obj.preview_image.url)
+            return str(obj.preview_image.url)
+        except Exception:
+            return str(obj.preview_image)
+
 
 class EventLiteSerializer(serializers.ModelSerializer):
     # Session-related fields for multi-day events
