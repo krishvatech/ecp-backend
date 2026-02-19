@@ -664,13 +664,26 @@ class EducationPublicSerializer(serializers.ModelSerializer):
 class UserMiniSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
     kyc_status = serializers.SerializerMethodField()
+    full_name = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ("id", "username", "email", "first_name", "last_name", "avatar_url", "kyc_status")
+        fields = ("id", "username", "email", "first_name", "last_name", "avatar_url", "kyc_status", "full_name")
 
     def get_kyc_status(self, obj):
         return getattr(obj.profile, "kyc_status", None) if hasattr(obj, "profile") else None
+
+    def get_full_name(self, obj):
+        # 1) Prefer Django User first_name + last_name
+        computed = f"{obj.first_name or ''} {obj.last_name or ''}".strip()
+        if computed:
+            return computed
+        # 2) Fall back to profile.full_name if available
+        profile = getattr(obj, "profile", None)
+        if profile and getattr(profile, "full_name", None):
+            return profile.full_name
+        # 3) Last resort: username
+        return obj.username
 
     def _pick_image_field(self, user):
         prof = getattr(user, "profile", None)
