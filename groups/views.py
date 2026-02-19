@@ -8,7 +8,7 @@ from django.utils import timezone
 from urllib.parse import urljoin
 from django.db import transaction
 from django.core import signing
-from rest_framework import status, viewsets, serializers, mixins
+from rest_framework import status, viewsets, serializers, mixins, filters
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
@@ -28,7 +28,7 @@ from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParam
 
 from community.models import Community
 from activity_feed.models import FeedItem
-from .models import Group, GroupMembership, PromotionRequest, GroupNotification
+from .models import Group, GroupMembership, PromotionRequest, GroupNotification, GroupParentAssociation
 from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content, GroupSuperuserOnly
 from .serializers import (
     GroupSerializer,
@@ -134,6 +134,8 @@ class GroupViewSet(viewsets.ModelViewSet):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
     queryset = Group.objects.all()
     lookup_field = "pk"
+    filter_backends = [filters.SearchFilter]
+    search_fields = ["name", "slug"]
 
     # Use: Computes permission classes per action (admin-only vs auth-only vs read-only).
     # Ordering: Not applicable.
@@ -1977,15 +1979,250 @@ class GroupViewSet(viewsets.ModelViewSet):
     # Use (Endpoint): GET /api/groups/{id}/subgroups
     # - List sub-groups of a parent group.
     # Ordering: Explicit order_by("-created_at") (newest sub-groups first).
+    # Use (Endpoint): GET /api/groups/{id}/subgroups
+    # - List sub-groups of a parent group.
+    # - INCLUDES: Primary children + Approved additional children.
+    # Ordering: Explicit order_by("-created_at") (newest sub-groups first).
     @action(detail=True, methods=['get'])
     def subgroups(self, request, pk=None):
         parent = self.get_object()
-        qs = Group.objects.filter(parent=parent).annotate(member_count=Count("memberships")).select_related('community', 'created_by').order_by('-created_at')  # Ordering: newest first
+        
+        # Primary children OR Linked children (approved)
+        qs = Group.objects.filter(
+            Q(parent=parent) | 
+            Q(parent_links__parent_group=parent, parent_links__status=GroupParentAssociation.STATUS_APPROVED)
+        ).distinct()
+
+        qs = qs.annotate(member_count=Count("memberships")).select_related('community', 'created_by').order_by('-created_at')
+        
         page = self.paginate_queryset(qs)
         ser = GroupSerializer(page or qs, many=True, context={'request': request})
         if page is not None:
             return self.get_paginated_response(ser.data)
         return Response(ser.data)
+
+    # Use (Endpoint): GET /api/groups/{id}/parent-links/
+    # - ADMIN/MOD-ONLY: List additional parent links (requests & approved).
+    @action(detail=True, methods=['get'], url_path='parent-links')
+    def parent_links(self, request, pk=None):
+        group = self.get_object()
+        # Permission: Only subgroup admins/staff can see the full list (including pending/rejected)
+        if not self._can_manage(request, group):
+            return Response({"detail": "Forbidden"}, status=403)
+        
+        links = GroupParentAssociation.objects.filter(child_group=group).select_related('parent_group', 'requested_by', 'reviewed_by').order_by('-created_at')
+        
+        data = []
+        for link in links:
+             data.append({
+                "id": link.id,
+                "parent_group": {
+                    "id": link.parent_group.id,
+                    "name": link.parent_group.name,
+                    "slug": link.parent_group.slug
+                },
+                "status": link.status,
+                "requested_by": self._user_short(link.requested_by),
+                "reviewed_by": self._user_short(link.reviewed_by),
+                "created_at": link.created_at,
+                "reviewed_at": link.reviewed_at
+             })
+        return Response(data)
+
+    # Use (Endpoint): POST /api/groups/{id}/parent-links/request/
+    # - SUBGROUP ADMIN: Request to link to another parent.
+    @action(detail=True, methods=['post'], url_path='parent-links/request')
+    def request_parent_link(self, request, pk=None):
+        child_group = self.get_object()
+        if not self._can_manage(request, child_group):
+             return Response({"detail": "Forbidden"}, status=403)
+             
+        parent_id = request.data.get("parent_id")
+        if not parent_id:
+             return Response({"detail": "parent_id required"}, status=400)
+             
+        try:
+             parent_group = Group.objects.get(pk=int(parent_id))
+        except (Group.DoesNotExist, ValueError):
+             return Response({"detail": "Parent group not found"}, status=404)
+             
+        # Constraints check
+        if child_group.community_id != parent_group.community_id:
+             return Response({"detail": "Groups must belong to the same community"}, status=400)
+             
+        if not child_group.parent_id:
+             return Response({"detail": "Only existing sub-groups can request additional parents."}, status=400)
+             
+        if child_group.parent_id == parent_group.id:
+             return Response({"detail": "Already the primary parent."}, status=400)
+             
+        # Check existing
+        if GroupParentAssociation.objects.filter(child_group=child_group, parent_group=parent_group).exists():
+             return Response({"detail": "Association already exists (check status)"}, status=400)
+             
+        # Always require manual approval for parent links, even if requester is admin/owner.
+        # This ensures a consistent workflow (Request -> Review -> Approve).
+        status_val = GroupParentAssociation.STATUS_PENDING
+        
+        link = GroupParentAssociation.objects.create(
+             child_group=child_group,
+             parent_group=parent_group,
+             status=status_val,
+             requested_by=request.user,
+             reviewed_by=None,
+             reviewed_at=None
+        )
+
+        # Notify all admins/owners of the PARENT group about the request
+        parent_admins = GroupMembership.objects.filter(
+            group=parent_group,
+            role__in=['admin', 'owner']
+        ).select_related('user')
+        notifs = [
+            GroupNotification(
+                recipient=m.user,
+                actor=request.user,
+                group=parent_group,
+                kind=GroupNotification.KIND_PARENT_LINK_REQUEST,
+                title=f"{child_group.name} wants to link to {parent_group.name}",
+                description=f"{request.user.get_full_name() or request.user.username} from group '{child_group.name}' has sent a parent link request.",
+                state='pending',
+                data={
+                    'link_id': link.id,
+                    'child_group_id': child_group.id,
+                    'child_group_name': child_group.name,
+                    'parent_group_id': parent_group.id,
+                    'parent_group_name': parent_group.name,
+                    'type': 'parent_link_request',
+                },
+            )
+            for m in parent_admins
+        ]
+        GroupNotification.objects.bulk_create(notifs, ignore_conflicts=True)
+
+        return Response({"ok": True, "link_id": link.id, "status": link.status})
+
+    # Use (Endpoint): POST /api/groups/{id}/parent-links/{link_id}/approve/
+    # - PARENT ADMIN: Approve a link request.
+    @action(detail=True, methods=['post'], url_path=r'parent-links/(?P<link_id>\d+)/approve')
+    def approve_parent_link(self, request, pk=None, link_id=None):
+        group = self.get_object() # Could be child or parent
+        
+        # Try to find link where group is child OR parent
+        try:
+            link = GroupParentAssociation.objects.get(
+                Q(pk=link_id) & (Q(child_group=group) | Q(parent_group=group))
+            )
+        except GroupParentAssociation.DoesNotExist:
+            return Response({"detail": "Link not found for this group"}, status=404)
+            
+        # Permission: Must manage PARENT group
+        if not self._can_manage(request, link.parent_group):
+            return Response({"detail": "You must be an admin of the PARENT group to approve."}, status=403)
+            
+        link.status = GroupParentAssociation.STATUS_APPROVED
+        link.reviewed_by = request.user
+        link.reviewed_at = timezone.now()
+        link.save()
+
+        # Notify all admins/owners of the CHILD group about the approval
+        child_admins = GroupMembership.objects.filter(
+            group=link.child_group,
+            role__in=['admin', 'owner']
+        ).select_related('user')
+        notifs = [
+            GroupNotification(
+                recipient=m.user,
+                actor=request.user,
+                group=link.child_group,
+                kind=GroupNotification.KIND_PARENT_LINK_APPROVED,
+                title=f"Link to {link.parent_group.name} approved!",
+                description=f"Your request to link '{link.child_group.name}' to '{link.parent_group.name}' has been approved.",
+                state='approved',
+                data={
+                    'link_id': link.id,
+                    'child_group_id': link.child_group.id,
+                    'child_group_name': link.child_group.name,
+                    'parent_group_id': link.parent_group.id,
+                    'parent_group_name': link.parent_group.name,
+                    'type': 'parent_link_approved',
+                },
+            )
+            for m in child_admins
+        ]
+        GroupNotification.objects.bulk_create(notifs, ignore_conflicts=True)
+
+        return Response({"ok": True, "status": "approved"})
+
+    @action(detail=True, methods=['post'], url_path=r'parent-links/(?P<link_id>\d+)/reject')
+    def reject_parent_link(self, request, pk=None, link_id=None):
+        group = self.get_object()
+        try:
+            link = GroupParentAssociation.objects.get(
+                Q(pk=link_id) & (Q(child_group=group) | Q(parent_group=group))
+            )
+        except GroupParentAssociation.DoesNotExist:
+            return Response({"detail": "Link not found for this group"}, status=404)
+            
+        # Permission: Parent admin OR Child admin can cancel/reject
+        can_child = self._can_manage(request, link.child_group)
+        can_parent = self._can_manage(request, link.parent_group)
+
+        if not (can_child or can_parent):
+             return Response({"detail": "Forbidden"}, status=403)
+             
+        link.status = GroupParentAssociation.STATUS_REJECTED
+        link.reviewed_by = request.user
+        link.reviewed_at = timezone.now()
+        link.save()
+        return Response({"ok": True, "status": "rejected"})
+
+    @action(detail=True, methods=['post', 'delete'], url_path=r'parent-links/(?P<link_id>\d+)/remove')
+    def remove_parent_link(self, request, pk=None, link_id=None):
+        group = self.get_object()
+        try:
+            link = GroupParentAssociation.objects.get(
+                Q(pk=link_id) & (Q(child_group=group) | Q(parent_group=group))
+            )
+        except GroupParentAssociation.DoesNotExist:
+            return Response({"detail": "Link not found for this group"}, status=404)
+            
+        # Permission: Parent admin OR Child admin
+        can_child = self._can_manage(request, link.child_group)
+        can_parent = self._can_manage(request, link.parent_group)
+        
+        if not (can_child or can_parent):
+            return Response({"detail": "Forbidden"}, status=403)
+            
+        link.delete()
+        return Response({"ok": True, "status": "removed"})
+
+    # Use (Endpoint): GET /api/groups/{id}/child-links/
+    # - ADMIN/MOD-ONLY: List associations where this group is the PARENT (incoming requests).
+    @action(detail=True, methods=['get'], url_path='child-links')
+    def child_links(self, request, pk=None):
+        group = self.get_object()
+        if not self._can_manage(request, group):
+            return Response({"detail": "Forbidden"}, status=403)
+            
+        links = GroupParentAssociation.objects.filter(parent_group=group).select_related('child_group', 'requested_by', 'reviewed_by').order_by('-created_at')
+        
+        data = []
+        for link in links:
+             data.append({
+                "id": link.id,
+                "child_group": {
+                    "id": link.child_group.id,
+                    "name": link.child_group.name,
+                    "slug": link.child_group.slug
+                },
+                "status": link.status,
+                "requested_by": self._user_short(link.requested_by),
+                "reviewed_by": self._user_short(link.reviewed_by),
+                "created_at": link.created_at,
+                "reviewed_at": link.reviewed_at
+             })
+        return Response(data)
 
     # Use (Endpoint): GET /api/groups/{id}/member-requests
     # - List PENDING group memberships (join requests). Owner/admin/mod/staff only.

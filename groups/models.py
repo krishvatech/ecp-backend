@@ -157,6 +157,89 @@ class GroupMembership(models.Model):
         return f"{self.user} → {self.group} ({self.role}, {self.status})"
 
 
+
+class GroupParentAssociation(models.Model):
+    """
+    Allows a subgroup (child) to be listed under an additional parent group.
+    The 'primary' parent is still stored in Group.parent.
+    These associations are 'additional' or 'secondary' parents.
+    """
+    STATUS_PENDING = 'pending'
+    STATUS_APPROVED = 'approved'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_APPROVED, 'Approved'),
+        (STATUS_REJECTED, 'Rejected'),
+    ]
+
+    child_group = models.ForeignKey(
+        Group,
+        on_delete=models.CASCADE,
+        related_name='parent_links'
+    )
+    parent_group = models.ForeignKey(
+        Group,
+        on_delete=models.CASCADE,
+        related_name='linked_subgroups'
+    )
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='group_parent_link_requests'
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='group_parent_link_reviews'
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ('child_group', 'parent_group')
+        indexes = [
+            models.Index(fields=['child_group', 'status']),
+            models.Index(fields=['parent_group', 'status']),
+        ]
+
+    def __str__(self):
+        return f"{self.child_group.slug} -> {self.parent_group.slug} ({self.status})"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        # 1. Self-reference check
+        if self.child_group_id == self.parent_group_id:
+            raise ValidationError("A group cannot be its own parent.")
+        
+        # 2. Must be a subgroup (Group.parent must be set)
+        if not self.child_group.parent_id:
+             raise ValidationError("Only existing subgroups (with a primary parent) can have additional parents.")
+
+        # 3. Community check
+        if self.child_group.community_id != self.parent_group.community_id:
+            raise ValidationError("Groups must belong to the same community.")
+            
+        # 4. Public/Open consistency
+        # If child is public+open, parent must be public+open (to avoid 'hiding' an open group inside a private one, or creating loose access issues)
+        # However, typically strict hierarchy rules apply to PRIMARY parent. For additional links, we might enforce same 'visibility' at least.
+        # User constraint: "validate “public+open” subgroup can only be linked/approved under a parent that is also public+open"
+        if (self.child_group.visibility == Group.VISIBILITY_PUBLIC and 
+            self.child_group.join_policy == Group.JOIN_OPEN):
+            if (self.parent_group.visibility != Group.VISIBILITY_PUBLIC or 
+                self.parent_group.join_policy != Group.JOIN_OPEN):
+                raise ValidationError("Public+Open subgroups can only be linked to Public+Open parents.")
+                
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+
+
 class PromotionRequest(models.Model):
     """Member/Moderator can request promotion; review is handled elsewhere."""
     ROLE_CHOICES = GroupMembership.ROLE_CHOICES
@@ -195,12 +278,16 @@ class GroupNotification(models.Model):
     KIND_MEMBER_JOINED = "member_joined"
     KIND_MEMBER_ADDED = "member_added"
     KIND_GROUP_CREATED = "group_created"
+    KIND_PARENT_LINK_REQUEST = "parent_link_request"
+    KIND_PARENT_LINK_APPROVED = "parent_link_approved"
 
     KIND_CHOICES = [
         (KIND_JOIN_REQUEST, "Join Request"),
         (KIND_MEMBER_JOINED, "Member Joined"),
         (KIND_MEMBER_ADDED, "Member Added"),
         (KIND_GROUP_CREATED, "Group Created"),
+        (KIND_PARENT_LINK_REQUEST, "Parent Link Request"),
+        (KIND_PARENT_LINK_APPROVED, "Parent Link Approved"),
     ]
 
     recipient = models.ForeignKey(

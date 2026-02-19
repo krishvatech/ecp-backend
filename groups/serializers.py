@@ -22,6 +22,8 @@ class GroupSerializer(serializers.ModelSerializer):
     membership_status = serializers.SerializerMethodField(read_only=True)
     invited = serializers.SerializerMethodField(read_only=True)
     parent_group = serializers.SerializerMethodField(read_only=True)
+    parent_groups = serializers.SerializerMethodField(read_only=True)
+    parent_links = serializers.SerializerMethodField(read_only=True)
 
     community_id = serializers.PrimaryKeyRelatedField(
         source="community", queryset=Community.objects.all(), required=False
@@ -46,13 +48,15 @@ class GroupSerializer(serializers.ModelSerializer):
             "invited",            # NEW
             "community_id",
             "parent_id",
-            "parent_group",       # NEW
+            "parent_group",       # existing
+            "parent_groups",      # NEW: list of all parents
+            "parent_links",       # NEW: manage links
             "message_mode",
             "posts_comments_enabled",
             "posts_creation_restricted",
             "forum_enabled",
         ]
-    read_only_fields = ["id", "slug", "member_count", "created_by", "owner", "created_at", "updated_at", "parent_group"]
+    read_only_fields = ["id", "slug", "member_count", "created_by", "owner", "created_at", "updated_at", "parent_group", "parent_groups", "parent_links"]
 
     def validate(self, attrs):
         """
@@ -212,6 +216,7 @@ class GroupSerializer(serializers.ModelSerializer):
         m = GroupMembership.objects.filter(group=obj, user_id=uid).only("status").first()
         return getattr(m, "status", None) if m else None
 
+    
     # NEW ↓
     def get_invited(self, obj):
         request = self.context.get("request")
@@ -232,7 +237,95 @@ class GroupSerializer(serializers.ModelSerializer):
             "slug": p.slug,
             "visibility": p.visibility,
             "join_policy": p.join_policy,
+            "is_primary": True,  # distinct
         }
+
+    # NEW: Additional Parents
+    def get_parent_groups(self, obj):
+        """
+        Returns list of ALL approved parents: [Primary] + [Additional Approved].
+        """
+        results = []
+        
+        # 1. Primary
+        if obj.parent_id:
+             results.append({
+                "id": obj.parent.id,
+                "name": obj.parent.name,
+                "slug": obj.parent.slug,
+                "visibility": obj.parent.visibility,
+                "join_policy": obj.parent.join_policy,
+                "is_primary": True,
+             })
+
+        # 2. Additional Approved
+        # If pre-fetched, use that. Otherwise query.
+        if hasattr(obj, "_prefetched_parent_links"):
+             # optimization if viewset prefetches
+             links = obj._prefetched_parent_links
+        else:
+             links = obj.parent_links.filter(status='approved').select_related('parent_group')
+             
+        for link in links:
+             p = link.parent_group
+             # avoid duplicates if primary is somehow also in links (shouldn't happen with validation)
+             if any(r['id'] == p.id for r in results):
+                 continue
+                 
+             results.append({
+                "id": p.id,
+                "name": p.name,
+                "slug": p.slug,
+                "visibility": p.visibility,
+                "join_policy": p.join_policy,
+                "is_primary": False,
+             })
+        return results
+
+    def get_parent_links(self, obj):
+        """
+        Admin-only field: returns association details (status, who requested, etc).
+        Visible if user can manage this subgroup.
+        """
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return None
+            
+        # Check permission (simple check: if user is admin/mod of THIS group)
+        # Optimized: relying on view permissions or checking membership role here
+        # For simplicity, we limit this detail to valid members with admin/mod role
+        # or global staff.
+        
+        # We can re-use current_user_role logic if available
+        role = self.get_current_user_role(obj)
+        is_staff = request.user.is_staff or request.user.is_superuser
+        
+        if role not in ['admin', 'owner'] and not is_staff:
+            return None
+            
+        from .models import GroupParentAssociation
+        links = obj.parent_links.all().select_related('parent_group', 'requested_by', 'reviewed_by')
+        data = []
+        for link in links:
+            data.append({
+                "id": link.id,
+                "parent_group": {
+                    "id": link.parent_group.id,
+                    "name": link.parent_group.name,
+                    "slug": link.parent_group.slug,
+                },
+                "status": link.status,
+                "requested_by": {
+                    "id": link.requested_by.id,
+                    "name": link.requested_by.get_full_name() if link.requested_by else "Unknown"
+                } if link.requested_by else None,
+                "reviewed_by": {
+                     "id": link.reviewed_by.id,
+                     "name": link.reviewed_by.get_full_name() if link.reviewed_by else "Unknown"
+                } if link.reviewed_by else None,
+                "created_at": link.created_at,
+            })
+        return data
 
 class GroupSettingsSerializer(serializers.ModelSerializer):
     """
