@@ -1103,7 +1103,7 @@ class MessageViewSet(
             Message.objects
             .filter(conversation_id=conv_id, is_hidden=False, is_deleted=False)
             .annotate(is_pinned=Exists(pinned_subq))   # 👈 add this
-            .select_related("sender__profile")
+            .select_related("sender__profile", "event")
             .prefetch_related(my_receipts)
             .order_by("created_at")
         )
@@ -1129,11 +1129,31 @@ class MessageViewSet(
 
         # 2. Extract Data
         body_text = request.data.get("body", "")
+        raw_event_id = request.data.get("event_id")
         # Get raw files from FormData (React sends 'attachments')
         files = request.FILES.getlist('attachments') 
 
         if not body_text and not files:
              return Response({"detail": "Empty message"}, status=status.HTTP_400_BAD_REQUEST)
+
+        message_event = None
+        if raw_event_id not in (None, "", "null"):
+            try:
+                message_event_id = int(raw_event_id)
+            except (TypeError, ValueError):
+                raise ValidationError({"event_id": "Invalid event id."})
+
+            message_event = get_object_or_404(Event, pk=message_event_id)
+            can_access_event = (
+                message_event.created_by_id == user.id
+                or EventRegistration.objects.filter(
+                    user_id=user.id, event_id=message_event.id
+                ).exists()
+                or getattr(user, "is_staff", False)
+                or getattr(user, "is_superuser", False)
+            )
+            if not can_access_event:
+                raise PermissionDenied("You are not allowed to attach this event context.")
 
         # 3. Upload Files to S3 Manually
         import uuid
@@ -1165,7 +1185,8 @@ class MessageViewSet(
             conversation=conv,
             sender=user,
             body=body_text,
-            attachments=uploaded_attachments 
+            attachments=uploaded_attachments,
+            event=message_event,
         )
 
         # 5. Return Response
@@ -1176,7 +1197,7 @@ class MessageViewSet(
     def get_object(self):
         conv_id = self._get_conversation_id()
         obj = get_object_or_404(
-            Message.objects.select_related("conversation", "sender__profile"),
+            Message.objects.select_related("conversation", "sender__profile", "event"),
             pk=self.kwargs.get(self.lookup_field),
             conversation_id=conv_id,
             is_hidden=False,

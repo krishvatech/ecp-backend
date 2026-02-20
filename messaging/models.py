@@ -193,6 +193,14 @@ class Conversation(models.Model):
 class Message(models.Model):
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="messages")
     sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sent_messages")
+    event = models.ForeignKey(
+        "events.Event",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="direct_messages",
+        help_text="Optional event context for DM messages sent during a live event.",
+    )
     body = models.TextField()
     attachments = ArrayField(models.JSONField(), default=list, blank=True)
     

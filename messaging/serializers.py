@@ -219,6 +219,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 class MessageSerializer(serializers.ModelSerializer):
     sender_id = serializers.IntegerField(read_only=True)
     conversation_id = serializers.IntegerField(read_only=True)
+    event_id = serializers.IntegerField(read_only=True)
     sender_name = serializers.SerializerMethodField()
     sender_display = serializers.SerializerMethodField()
     sender_avatar = serializers.SerializerMethodField()
@@ -235,6 +236,7 @@ class MessageSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "conversation", "conversation_id",
+            "event_id",
             "sender", "sender_id",
             "sender_name", "sender_display", "sender_avatar",
             "mine",
@@ -250,6 +252,7 @@ class MessageSerializer(serializers.ModelSerializer):
         read_only_fields = (
             "id",
             "conversation", "conversation_id",
+            "event_id",
             "sender", "sender_id",
             "sender_name", "sender_display", "sender_avatar",
             "mine",

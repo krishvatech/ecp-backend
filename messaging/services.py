@@ -191,6 +191,7 @@ def import_chat_csv_from_url(
                 conversation=conv,
                 sender=sender,
                 body=body,
+                event=event,
                 meeting_id=meeting_id,
                 external_id=ext_id,
                 created_at=created_at,
