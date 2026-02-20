@@ -5,7 +5,7 @@ Provides a serializer for creating and updating events. The
 `community_id` is required in the request body for creation.
 """
 from django.utils import timezone
-from datetime import timezone as dt_timezone
+from datetime import timezone as dt_timezone, timedelta
 import os
 from rest_framework import serializers
 from urllib.parse import urlparse
@@ -252,7 +252,14 @@ class EventSessionSerializer(serializers.ModelSerializer):
                     )
 
                 # Session cannot end after event ends
-                if end > event_end:
+                # Allow sessions on the end date if the event ends at midnight (00:00:00)
+                # This handles cases where user selects "Feb 20" as end date (saved as Feb 20 00:00)
+                # but expects the whole day of Feb 20 to be available.
+                cutoff_time = event_end
+                if event_end.hour == 0 and event_end.minute == 0 and event_end.second == 0:
+                     cutoff_time = event_end + timedelta(days=1)
+
+                if end > cutoff_time:
                     raise serializers.ValidationError(
                         {"end_time": f"Session cannot end after event ends ({event_end.isoformat()})"}
                     )
