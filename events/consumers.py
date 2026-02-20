@@ -104,6 +104,23 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             elapsed = (django_tz.now() - event.break_started_at).total_seconds()
             break_remaining = max(0, int(event.break_duration_seconds - elapsed))
 
+        # ✅ STATE PRIORITY FIX: Include user's current lounge table ID in welcome message
+        # This allows the frontend to immediately set isBreakoutRef.current = true
+        # even if breakout_restored message is delayed, preventing break screen flash.
+        user_lounge_table_id = None
+        try:
+            participant = await database_sync_to_async(
+                LoungeParticipant.objects.filter(
+                    table__event_id=self.event_id,
+                    user=self.user,
+                    table__category='LOUNGE'
+                ).select_related('table').first
+            )()
+            if participant:
+                user_lounge_table_id = participant.table_id
+        except Exception as e:
+            print(f"[CONSUMER] Error fetching user's lounge table: {e}")
+
         msg = {
             "type": "welcome",
             "event_id": self.event_id,
@@ -115,6 +132,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "break_remaining_seconds": break_remaining,
             "break_duration_seconds": event.break_duration_seconds if event.is_on_break else None,
             "lounge_enabled_breaks": event.lounge_enabled_breaks if event.is_on_break else None,
+            "user_lounge_table_id": user_lounge_table_id,
         }
         main_room_support_status = await self.get_main_room_support_status()
         msg["main_room_support_status"] = main_room_support_status

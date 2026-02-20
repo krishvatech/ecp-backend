@@ -1743,8 +1743,12 @@ class EventViewSet(viewsets.ModelViewSet):
         End an active break, returning all participants to the main stage.
         Body: {} (empty)
         Only the host may call this.
+
+        ✅ BUGFIX: When break ends, remove all users from social lounge so they return to main room.
         """
         with transaction.atomic():
+            from .models import LoungeParticipant, BreakoutJoiner
+
             event = get_object_or_404(
                 Event.objects.select_for_update(), pk=pk
             )
@@ -1769,10 +1773,33 @@ class EventViewSet(viewsets.ModelViewSet):
             event.is_on_break = False
             event.break_started_at = None
             event.break_celery_task_id = None
-            event.save(update_fields=["is_on_break", "break_started_at", "break_celery_task_id", "updated_at"])
+
+            # ✅ BUGFIX: Clear lounge when break ends
+            # Remove all participants from lounge tables so they return to main room
+            lounge_count = LoungeParticipant.objects.filter(
+                table__event_id=event.id
+            ).delete()[0]
+            logger.info(f"[END_BREAK] Removed {lounge_count} participants from lounge tables")
+
+            # ✅ Clear breakout_rooms_active flag
+            event.breakout_rooms_active = False
+
+            # ✅ Expire waiting late joiners
+            BreakoutJoiner.objects.filter(
+                event_id=event.id,
+                status='waiting'
+            ).update(status='expired')
+
+            event.save(update_fields=[
+                "is_on_break", "break_started_at", "break_celery_task_id",
+                "breakout_rooms_active", "updated_at"
+            ])
 
         # Broadcast break_ended to all participants
         try:
+            # ✅ Get updated lounge state for frontend so UI refreshes immediately
+            lounge_state = _build_lounge_state_sync(event.id)
+
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 f"event_{event.id}",
@@ -1781,6 +1808,7 @@ class EventViewSet(viewsets.ModelViewSet):
                     "event_id": event.id,
                     "lounge_enabled_during": event.lounge_enabled_during,
                     "media_lock_active": False,
+                    "lounge_state": lounge_state,  # ✅ Include updated lounge state
                 }
             )
         except Exception as e:
@@ -2948,9 +2976,16 @@ class EventViewSet(viewsets.ModelViewSet):
         except Exception:
             picture = ""
 
+        # ✅ CRITICAL FIX: Grant full media permissions in lounge for ALL users
+        # Hosts get host preset (full control)
+        # Participants get host preset in lounge to enable mic/camera toggle
+        # This allows participants to have full media capabilities in social lounge/breakout rooms
+        # while maintaining participant restrictions in the main stage meeting
+        preset = DYTE_PRESET_HOST  # Use host preset for all lounge participants for full media control
+
         body = {
             "name": name or f"User {user.id}",
-            "preset_name": DYTE_PRESET_PARTICIPANT, # Use normal participant preset for lounge
+            "preset_name": preset,
             "client_specific_id": str(user.id),
         }
         if picture:
@@ -4504,3 +4539,52 @@ class EventSessionViewSet(viewsets.ModelViewSet):
         attendances = session.attendances.select_related('user').order_by('-joined_at')
         serializer = SessionAttendanceSerializer(attendances, many=True)
         return Response(serializer.data)
+
+
+def _build_lounge_state_sync(event_id):
+    """
+    ✅ Helper function: Build current lounge state for broadcasting.
+    Used to include updated lounge state in WebSocket messages so frontend can refresh UI.
+    Returns list of table states with current participants.
+    """
+    try:
+        tables = LoungeTable.objects.filter(event_id=event_id).prefetch_related('participants__user')
+        state = []
+        for t in tables:
+            participants = {}
+            for p in t.participants.all():
+                profile = getattr(p.user, "profile", None)
+                img = getattr(profile, "user_image", None) if profile else None
+                if not img:
+                    img = getattr(p.user, "avatar", None) or getattr(profile, "avatar", None) if profile else None
+                avatar_url = ""
+                if img:
+                    try:
+                        avatar_url = img.url
+                    except Exception:
+                        avatar_url = str(img) if img else ""
+                participants[str(p.seat_index)] = {
+                    "user_id": p.user.id,
+                    "username": p.user.username,
+                    "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username,
+                    "avatar_url": avatar_url,
+                }
+            icon_url = ""
+            if getattr(t, "icon", None):
+                try:
+                    icon_url = t.icon.url
+                except Exception:
+                    icon_url = ""
+            state.append({
+                "id": t.id,
+                "name": t.name,
+                "category": t.category,
+                "max_seats": t.max_seats,
+                "dyte_meeting_id": t.dyte_meeting_id,
+                "icon_url": icon_url,
+                "participants": participants
+            })
+        return state
+    except Exception as e:
+        logger.warning(f"[LOUNGE_STATE] Failed to build lounge state for event {event_id}: {e}")
+        return []
