@@ -1279,12 +1279,28 @@ class EventSerializer(serializers.ModelSerializer):
 
         now = timezone.now()
 
+        # On edit (PATCH/PUT), allow already-past times if they are unchanged from the stored event.
+        # This lets users update metadata/sessions for events that already started.
+        existing_start = getattr(self.instance, "start_time", None)
+        existing_end = getattr(self.instance, "end_time", None)
+        if existing_start and timezone.is_naive(existing_start):
+            existing_start = timezone.make_aware(existing_start, dt_timezone.utc)
+        if existing_end and timezone.is_naive(existing_end):
+            existing_end = timezone.make_aware(existing_end, dt_timezone.utc)
+
+        def _unchanged_dt(new_value, old_value, tolerance_seconds=60):
+            if not new_value or not old_value:
+                return False
+            return abs((new_value - old_value).total_seconds()) <= tolerance_seconds
+
         if end_time and not start_time:
             raise serializers.ValidationError({"start_time": "Provide start_time when setting end_time."})
         if start_time and start_time < now:
-            raise serializers.ValidationError({"start_time": "Start time cannot be in the past."})
+            if not (self.instance and _unchanged_dt(start_time, existing_start)):
+                raise serializers.ValidationError({"start_time": "Start time cannot be in the past."})
         if end_time and end_time < now:
-            raise serializers.ValidationError({"end_time": "End time cannot be in the past."})
+            if not (self.instance and _unchanged_dt(end_time, existing_end)):
+                raise serializers.ValidationError({"end_time": "End time cannot be in the past."})
         if start_time and end_time and not (end_time > start_time):
             raise serializers.ValidationError({"end_time": "End time must be later than start time."})
 
