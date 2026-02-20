@@ -114,16 +114,31 @@ class MoodRateThrottle(UserRateThrottle):
 
 
 def _sanitize_mood(raw_value):
+    """
+    Validate and sanitize mood emoji.
+    Returns: (mood_value, error_message)
+      - If valid: (mood_str, None)
+      - If invalid: (None, error_reason)
+
+    Accepts any single emoji or emoji sequence from the emoji picker.
+    Validates length, whitespace, and control characters.
+    """
     mood = (raw_value or "").strip()
+
     if not mood:
-        return None
+        return None, "Mood value is empty or missing"
+
     if len(mood) > 32:
-        return None
-    if any(ch.isspace() or unicodedata.category(ch).startswith("C") for ch in mood):
-        return None
-    if mood not in MOOD_ALLOWED_SET:
-        return None
-    return mood
+        return None, f"Mood value exceeds max length of 32 characters (got {len(mood)})"
+
+    if any(ch.isspace() for ch in mood):
+        return None, "Mood value contains whitespace characters"
+
+    if any(unicodedata.category(ch).startswith("C") for ch in mood):
+        return None, "Mood value contains control characters"
+
+    # Accept any emoji
+    return mood, None
 
 # --- Cloudflare RealtimeKit recording config ---
 RTK_API_BASE = os.getenv("RTK_API_BASE", "https://api.realtime.cloudflare.com/v2")
@@ -1924,6 +1939,19 @@ class EventViewSet(viewsets.ModelViewSet):
 
     @action(
         detail=True,
+        methods=["get"],
+        permission_classes=[IsAuthenticated],
+        url_path="allowed-moods",
+    )
+    def allowed_moods(self, request, pk=None):
+        """
+        Get list of allowed mood emojis for this event.
+        Used by frontend to filter emoji picker.
+        """
+        return Response({"allowed_moods": MOOD_ALLOWED_EMOJIS})
+
+    @action(
+        detail=True,
         methods=["put", "delete"],
         permission_classes=[IsAuthenticated],
         throttle_classes=[MoodRateThrottle],
@@ -1932,12 +1960,25 @@ class EventViewSet(viewsets.ModelViewSet):
     def mood(self, request, pk=None):
         """
         Set or clear current user's mood for this event.
+
+        PUT /api/events/{id}/mood/
+          Request body: {"mood": "😀"}
+          Response: {"user_id": ..., "mood": "😀", "allowed_moods": [...]}
+
+        DELETE /api/events/{id}/mood/
+          Response: 204 No Content
         """
         event = self.get_object()
         reg = EventRegistration.objects.filter(event=event, user=request.user, is_banned=False).first()
         is_host = _is_event_host(request.user, event)
 
+        logger.info(
+            f"[MOOD API] User {request.user.id} {request.method} mood for event {pk}. "
+            f"Registered: {bool(reg)}, Is Host: {is_host}"
+        )
+
         if not reg and not is_host:
+            logger.warning(f"[MOOD API] User {request.user.id} not registered for event {pk}")
             return Response({"detail": "Not registered for this event."}, status=403)
 
         if not reg and is_host:
@@ -1948,18 +1989,38 @@ class EventViewSet(viewsets.ModelViewSet):
             )
 
         if event.waiting_room_enabled and reg.admission_status != "admitted":
+            logger.warning(
+                f"[MOOD API] User {request.user.id} not admitted for event {pk}. "
+                f"Admission status: {reg.admission_status}"
+            )
             return Response({"detail": "You are not admitted to the live meeting."}, status=403)
 
         if request.method == "DELETE":
             reg.current_mood = None
             reg.mood_updated_at = timezone.now()
             reg.save(update_fields=["current_mood", "mood_updated_at"])
+            logger.info(f"[MOOD API] User {request.user.id} cleared mood for event {pk}")
             return Response(status=status.HTTP_204_NO_CONTENT)
 
-        mood = _sanitize_mood(request.data.get("mood"))
+        # PUT method: set mood
+        raw_mood = request.data.get("mood")
+        logger.debug(
+            f"[MOOD API] PUT request - User {request.user.id}, Event {pk}, "
+            f"Raw mood value: {repr(raw_mood)}, Content-Type: {request.content_type}"
+        )
+
+        mood, error = _sanitize_mood(raw_mood)
         if not mood:
+            logger.warning(
+                f"[MOOD API] Mood validation failed for user {request.user.id} on event {pk}. "
+                f"Error: {error}, Raw value: {repr(raw_mood)}"
+            )
             return Response(
-                {"detail": "Invalid mood. Use one allowed emoji.", "allowed_moods": MOOD_ALLOWED_EMOJIS},
+                {
+                    "detail": f"Invalid mood: {error}",
+                    "error_reason": error,
+                    "allowed_moods": MOOD_ALLOWED_EMOJIS,
+                },
                 status=400,
             )
 
@@ -1975,7 +2036,9 @@ class EventViewSet(viewsets.ModelViewSet):
             profile.last_used_moods = history[:10]
             profile.save(update_fields=["last_used_moods"])
 
+        logger.info(f"[MOOD API] User {request.user.id} set mood to '{mood}' for event {pk}")
         return Response({"user_id": request.user.id, "mood": mood, "allowed_moods": MOOD_ALLOWED_EMOJIS})
+
     def download_recording(self, request):
         """Generate a pre-signed URL for downloading recording from S3"""
         import boto3

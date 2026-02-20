@@ -64,7 +64,7 @@ LOGGING = {
         },
         "events.views": {
             "handlers": ["console"],
-            "level": "INFO",
+            "level": "DEBUG",  # ✅ Enable DEBUG to see mood API request details
             "propagate": False,
         },
         "events.consumers": {
