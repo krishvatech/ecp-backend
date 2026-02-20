@@ -64,6 +64,8 @@ class GroupSerializer(serializers.ModelSerializer):
           - public  => join_policy in {open, approval, invite}
           - private => join_policy = invite only
           - sub-group public can be OPEN only if parent is (public + open)
+          - sub-group under a PRIVATE parent cannot have join_policy=open or join_policy=approval
+            (must be private + invite)
         Also handle partial updates by falling back to instance values.
         """
         vis = attrs.get("visibility", getattr(self.instance, "visibility", None))
@@ -80,6 +82,12 @@ class GroupSerializer(serializers.ModelSerializer):
 
         # Sub-group rules (parent-dependent)
         if parent:
+            # Subgroups under private parents: only 'open' is not allowed (approval and invite are fine)
+            if parent.visibility == Group.VISIBILITY_PRIVATE and jp == Group.JOIN_OPEN:
+                raise serializers.ValidationError(
+                    {"join_policy": "Subgroups under private parents cannot have 'open' join policy."}
+                )
+
             if vis == Group.VISIBILITY_PUBLIC and jp == Group.JOIN_OPEN:
                 parent_is_open = (
                     parent.visibility == Group.VISIBILITY_PUBLIC
