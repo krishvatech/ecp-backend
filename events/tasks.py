@@ -2,6 +2,7 @@ from celery import shared_task
 from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
+from django.db import transaction
 from .models import Event, EventRegistration
 import requests
 import logging
@@ -350,3 +351,72 @@ def recalculate_stale_matches():
     except Exception as e:
         logger.error(f"[RECALC] Task failed: {e}")
         return {"status": "failed", "error": str(e)}
+
+
+# ============================================================================
+# Break Mode - Auto-End Break Timer
+# ============================================================================
+
+@shared_task(bind=True, max_retries=3)
+def auto_end_break(self, event_id):
+    """
+    Auto-end a break when its timer expires.
+    Called via apply_async with countdown=break_duration_seconds + 30.
+
+    This task is idempotent:
+    - If break was already manually ended, it silently no-ops (break_started_at=None)
+    - If meeting was ended, it clears the break state
+    """
+    try:
+        with transaction.atomic():
+            event = Event.objects.select_for_update().get(id=event_id)
+
+            # Idempotency check: if break already ended manually, no-op
+            if not event.is_on_break:
+                logger.info(f"[AUTO_END_BREAK] Event {event_id}: break already ended manually")
+                return {"skipped": True, "reason": "break_already_ended"}
+
+            # Verify the meeting is still live
+            if not event.is_live:
+                logger.info(f"[AUTO_END_BREAK] Event {event_id}: meeting is no longer live")
+                event.is_on_break = False
+                event.break_started_at = None
+                event.break_celery_task_id = None
+                event.save(update_fields=["is_on_break", "break_started_at", "break_celery_task_id", "updated_at"])
+                return {"skipped": True, "reason": "meeting_not_live"}
+
+            # End the break
+            lounge_enabled_during = event.lounge_enabled_during
+            event.is_on_break = False
+            event.break_started_at = None
+            event.break_celery_task_id = None
+            event.save(update_fields=["is_on_break", "break_started_at", "break_celery_task_id", "updated_at"])
+
+        logger.info(f"[AUTO_END_BREAK] Event {event_id}: break auto-ended")
+
+        # Broadcast break_ended via WebSocket to all participants
+        try:
+            from asgiref.sync import async_to_sync
+            from channels.layers import get_channel_layer
+
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"event_{event_id}",
+                {
+                    "type": "break_ended",
+                    "event_id": event_id,
+                    "lounge_enabled_during": lounge_enabled_during,
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to broadcast break_ended for event {event_id}: {e}")
+
+        return {"ok": True, "event_id": event_id}
+
+    except Event.DoesNotExist:
+        logger.error(f"[AUTO_END_BREAK] Event {event_id} not found")
+        return {"error": "event_not_found"}
+
+    except Exception as exc:
+        logger.exception(f"[AUTO_END_BREAK] Task failed for event {event_id}: {exc}")
+        raise self.retry(exc=exc, countdown=60)

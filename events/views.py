@@ -15,11 +15,12 @@ import csv
 from django.http import HttpResponse
 import os                          # NOTE: intentionally kept even if duplicated later
 import base64                      # NOTE: currently unused; kept as requested
-import requests      
+import requests
 import time
 import random
 import threading
 import unicodedata
+from ecp_backend.celery import app as celery_app
 
 # ============================================================
 # ======================= Django Imports =====================
@@ -1418,6 +1419,17 @@ class EventViewSet(viewsets.ModelViewSet):
                 event.live_ended_at = timezone.now()
                 event.ended_by_host = True
 
+                # If event was on break, clear break state and revoke Celery task
+                if event.is_on_break:
+                    if event.break_celery_task_id:
+                        try:
+                            celery_app.control.revoke(event.break_celery_task_id, terminate=True)
+                        except Exception as e:
+                            logger.warning(f"Failed to revoke break Celery task {event.break_celery_task_id}: {e}")
+                    event.is_on_break = False
+                    event.break_started_at = None
+                    event.break_celery_task_id = None
+
             event.save(update_fields=[
                 "status",
                 "is_live",
@@ -1427,6 +1439,9 @@ class EventViewSet(viewsets.ModelViewSet):
                 "attending_count",
                 "idle_started_at",
                 "ended_by_host",
+                "is_on_break",
+                "break_started_at",
+                "break_celery_task_id",
                 "updated_at",
             ])
 
@@ -1620,6 +1635,161 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response(
             {"message": "Meeting ended", "status": event.status, "event_id": event.id}
         )
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="start-break")
+    def start_break(self, request, pk=None):
+        """
+        Start a break for a live event.
+        Body: {"duration_seconds": 600}
+        Only the host may call this.
+        """
+        with transaction.atomic():
+            event = get_object_or_404(
+                Event.objects.select_for_update(), pk=pk
+            )
+
+            if not _is_event_host(request.user, event):
+                return Response({"detail": "Only the host can start a break."}, status=403)
+
+            # Guard: event must be live
+            if not event.is_live or event.status != "live":
+                return Response(
+                    {"detail": "Cannot start break: meeting is not live."},
+                    status=400
+                )
+
+            # Guard: already on break
+            if event.is_on_break:
+                return Response(
+                    {"detail": "Event is already on break."},
+                    status=409
+                )
+
+            # Guard: breakout rooms are active
+            if event.breakout_rooms_active:
+                return Response(
+                    {"detail": "Cannot start break while breakout rooms are active. "
+                               "End all breakout rooms first."},
+                    status=409
+                )
+
+            # Guard: speed networking session is active
+            from .models import SpeedNetworkingSession
+            active_sn = SpeedNetworkingSession.objects.filter(
+                event=event, status='ACTIVE'
+            ).first()
+            if active_sn:
+                return Response(
+                    {"detail": "Cannot start break while Speed Networking is active. "
+                               "End the Speed Networking session first."},
+                    status=409
+                )
+
+            # Validate duration
+            duration = int(request.data.get("duration_seconds", 600))
+            if duration < 30 or duration > 7200:  # 30s min, 2hr max
+                return Response(
+                    {"detail": "duration_seconds must be between 30 and 7200."},
+                    status=400
+                )
+
+            # Set break state
+            now = timezone.now()
+            event.is_on_break = True
+            event.break_started_at = now
+            event.break_duration_seconds = duration
+            event.save(update_fields=[
+                "is_on_break", "break_started_at",
+                "break_duration_seconds", "updated_at"
+            ])
+
+        # Schedule Celery auto-end task
+        from .tasks import auto_end_break
+        task = auto_end_break.apply_async(
+            args=[event.id],
+            countdown=duration + 30  # 30s grace after timer expires
+        )
+        # Store task ID for later revocation
+        event.break_celery_task_id = task.id
+        event.save(update_fields=["break_celery_task_id"])
+
+        # Broadcast break_started to all participants via WebSocket
+        try:
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"event_{event.id}",
+                {
+                    "type": "break_started",
+                    "event_id": event.id,
+                    "break_started_at": event.break_started_at.isoformat(),
+                    "break_duration_seconds": event.break_duration_seconds,
+                    "lounge_enabled_breaks": event.lounge_enabled_breaks,
+                    "media_lock_active": True,
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to broadcast break_started for event {event.id}: {e}")
+
+        return Response({
+            "ok": True,
+            "is_on_break": True,
+            "break_started_at": event.break_started_at.isoformat(),
+            "break_duration_seconds": event.break_duration_seconds,
+        })
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="end-break")
+    def end_break(self, request, pk=None):
+        """
+        End an active break, returning all participants to the main stage.
+        Body: {} (empty)
+        Only the host may call this.
+        """
+        with transaction.atomic():
+            event = get_object_or_404(
+                Event.objects.select_for_update(), pk=pk
+            )
+
+            if not _is_event_host(request.user, event):
+                return Response({"detail": "Only the host can end a break."}, status=403)
+
+            if not event.is_on_break:
+                return Response(
+                    {"detail": "Event is not currently on break."},
+                    status=409
+                )
+
+            # Revoke Celery task if it exists
+            if event.break_celery_task_id:
+                try:
+                    celery_app.control.revoke(event.break_celery_task_id, terminate=True)
+                except Exception as e:
+                    logger.warning(f"Failed to revoke break Celery task: {e}")
+
+            # Clear break state
+            event.is_on_break = False
+            event.break_started_at = None
+            event.break_celery_task_id = None
+            event.save(update_fields=["is_on_break", "break_started_at", "break_celery_task_id", "updated_at"])
+
+        # Broadcast break_ended to all participants
+        try:
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"event_{event.id}",
+                {
+                    "type": "break_ended",
+                    "event_id": event.id,
+                    "lounge_enabled_during": event.lounge_enabled_during,
+                    "media_lock_active": False,
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to broadcast break_ended for event {event.id}: {e}")
+
+        return Response({
+            "ok": True,
+            "is_on_break": False,
+        })
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="start-recording")
     def start_recording(self, request, pk=None):
@@ -3275,6 +3445,8 @@ class EventViewSet(viewsets.ModelViewSet):
                 "meetingId": meeting_id,
                 "presetName": preset_name,
                 "role": role_string,
+                "isOnBreak": bool(event.is_on_break),
+                "mediaLockActive": bool(event.is_on_break),
                 "gracePeriodAdmitted": is_grace_period_join,
                 "admissionStatus": "admitted",
             }

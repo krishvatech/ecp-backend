@@ -182,6 +182,23 @@ class Event(models.Model):
         help_text="Flag to track if breakout rooms are currently active"
     )
 
+    # Break Mode Fields
+    break_started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the current break was started (None = not on break)"
+    )
+    break_duration_seconds = models.PositiveIntegerField(
+        default=600,
+        help_text="Planned break length in seconds (default 10 min)"
+    )
+    break_celery_task_id = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="Celery task ID for auto-end break, stored for revocation on manual end"
+    )
+
     # Participant List Visibility Settings
     show_participants_before_event = models.BooleanField(
         default=True,

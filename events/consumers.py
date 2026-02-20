@@ -96,12 +96,25 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.update_online_status(True)
         await self.broadcast_lounge_update() # Sync everyone with new online count
 
+        # Prepare break state for reconnecting participants
+        event = await self.get_event()
+        break_remaining = None
+        if event.is_on_break and event.break_started_at:
+            from django.utils import timezone as django_tz
+            elapsed = (django_tz.now() - event.break_started_at).total_seconds()
+            break_remaining = max(0, int(event.break_duration_seconds - elapsed))
+
         msg = {
             "type": "welcome",
             "event_id": self.event_id,
             "your_user_id": self.user.id,
             "lounge_state": lounge_state,
-            "online_users": await self.get_online_participants_info()
+            "online_users": await self.get_online_participants_info(),
+            "is_on_break": event.is_on_break,
+            "media_lock_active": bool(event.is_on_break),
+            "break_remaining_seconds": break_remaining,
+            "break_duration_seconds": event.break_duration_seconds if event.is_on_break else None,
+            "lounge_enabled_breaks": event.lounge_enabled_breaks if event.is_on_break else None,
         }
         main_room_support_status = await self.get_main_room_support_status()
         msg["main_room_support_status"] = main_room_support_status
@@ -354,7 +367,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             await self._set_breakout_active_flag(False)
             await self.clear_all_tables()
             await self.channel_layer.group_send(
-                self.group_name, 
+                self.group_name,
                 {"type": "breakout.end"}
             )
             await self.broadcast_lounge_update()
@@ -429,6 +442,25 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "event_id": event["event_id"],
             "settings": event["settings"],
             "timestamp": event["timestamp"],
+        })
+
+    # --- Break Mode Handlers ---
+    async def break_started(self, event):
+        """Broadcast break started to all participants."""
+        await self.send_json({
+            "type": "break_started",
+            "break_started_at": event.get("break_started_at"),
+            "break_duration_seconds": event.get("break_duration_seconds"),
+            "lounge_enabled_breaks": event.get("lounge_enabled_breaks"),
+            "media_lock_active": True,
+        })
+
+    async def break_ended(self, event):
+        """Broadcast break ended to all participants."""
+        await self.send_json({
+            "type": "break_ended",
+            "lounge_enabled_during": event.get("lounge_enabled_during"),
+            "media_lock_active": False,
         })
 
     async def broadcast_message(self, event: dict) -> None:
