@@ -808,24 +808,40 @@ class GroupViewSet(viewsets.ModelViewSet):
     def promote_to_main(self, request, pk=None):
         """
         Promote a sub-group to an independent main group.
-        Only SUPERUSERS can do this.
+        Allowed for: Superusers, Group Owners, Group Admins.
         """
         group = self.get_object()
         
-        # Validation
-        if not group.parent_id:
+        # Permission check
+        uid = getattr(request.user, "id", None)
+        is_allowed = (
+            request.user.is_superuser 
+            or (group.owner_id and group.owner_id == uid)
+            or (group.created_by_id == uid)
+            or self._is_admin(uid, group)
+        )
+        if not is_allowed:
+            return Response({"detail": "Forbidden"}, status=403)
+
+        # Validation: allow if has parent OR has secondary parent links
+        has_secondary = GroupParentAssociation.objects.filter(child_group=group).exists()
+        if not group.parent_id and not has_secondary:
             return Response(
-                {"detail": "This group is already a main group (no parent)."}, 
+                {"detail": "This group is already a main group (no parent and no secondary parents)."},
                 status=400
             )
 
-        # Action: Remove parent, keep community
+        # Action: Remove parent
         old_parent_id = group.parent_id
         group.parent = None
         group.save()
 
+        # Also remove any secondary parent links (GroupParentAssociation)
+        # where this group is the child.
+        deleted_count, _ = GroupParentAssociation.objects.filter(child_group=group).delete()
+
         # Log or notify if needed (optional)
-        print(f"User {request.user} promoted group {group.id} (was child of {old_parent_id}) to main group.")
+        print(f"User {request.user} promoted group {group.id} (was child of {old_parent_id}) to main group. Removed {deleted_count} parent links.")
 
         return Response(self.get_serializer(group).data)
     @action(detail=True, methods=["get"], url_path="members")
