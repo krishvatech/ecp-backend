@@ -191,8 +191,20 @@ class Conversation(models.Model):
         ]
 
 class Message(models.Model):
+    MESSAGE_TYPE_CHOICES = [
+        ("text", "Text"),
+        ("event_ended", "Event Ended"),
+    ]
+
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="messages")
-    sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sent_messages")
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="sent_messages",
+        null=True,
+        blank=True,
+        help_text="Null for system messages",
+    )
     event = models.ForeignKey(
         "events.Event",
         null=True,
@@ -203,7 +215,15 @@ class Message(models.Model):
     )
     body = models.TextField()
     attachments = ArrayField(models.JSONField(), default=list, blank=True)
-    
+
+    message_type = models.CharField(
+        max_length=16,
+        choices=MESSAGE_TYPE_CHOICES,
+        default="text",
+        db_index=True,
+        help_text="Type of message: text for regular messages, event_ended for system dividers",
+    )
+
     meeting_id = models.CharField(
         max_length=128,
         null=True,
