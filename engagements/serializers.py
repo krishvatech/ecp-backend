@@ -498,14 +498,11 @@ class ShareWriteSerializer(serializers.Serializer):
         if not users and not groups:
             raise serializers.ValidationError("Pick at least one friend (to_users) or one group (to_groups).")
 
-        # Validate group membership for regular users
         request = self.context.get("request")
+
+        # 1) Validate group membership for regular users sharing TO groups
         if request and request.user and not request.user.is_staff and groups:
             from groups.models import GroupMembership  # local import
-            
-            # Check if user is an ACTIVE member of ALL target groups
-            # We can do this by counting how many of the target groups the user is an active member of.
-            # If the count matches the number of unique target groups, they are good.
             
             unique_groups = set(groups)
             active_count = GroupMembership.objects.filter(
@@ -518,5 +515,58 @@ class ShareWriteSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {"to_groups": "You can only share posts to groups where you are an active member."}
                 )
+
+        # 2) Enforce privacy rules for posts originating FROM restricted groups
+        # The target_type/target_id comes from initial_data usually (write_only fields)
+        ttype = None
+        tid = None
+        if hasattr(self, 'initial_data'):
+            ttype = self.initial_data.get("target_type")
+            tid = self.initial_data.get("target_id")
+        
+        # Fallback to attrs if somehow available there
+        if not ttype: ttype = attrs.get("target_type")
+        if not tid: tid = attrs.get("target_id")
+
+        if ttype == "activity_feed.feeditem" and tid:
+            from activity_feed.models import FeedItem
+            from groups.models import Group, GroupMembership
+            try:
+                feed_item = FeedItem.objects.get(id=tid)
+                source_group = feed_item.group
+                
+                if source_group:
+                    is_restricted = False
+                    if getattr(source_group, 'visibility', '') == Group.VISIBILITY_PRIVATE:
+                        is_restricted = True
+                    if getattr(source_group, 'join_policy', '') in [Group.JOIN_INVITE, Group.JOIN_APPROVAL]:
+                        is_restricted = True
+                        
+                    if is_restricted:
+                        # a) Cannot share to any other groups
+                        if groups:
+                            for gid in groups:
+                                if gid != source_group.id:
+                                    raise serializers.ValidationError(
+                                        {"to_groups": "Posts from private or restricted groups cannot be shared to other groups."}
+                                    )
+                        
+                        # b) All user recipients MUST be active members of the source group
+                        if users:
+                            active_members_qs = GroupMembership.objects.filter(
+                                group=source_group,
+                                user_id__in=users,
+                                status=GroupMembership.STATUS_ACTIVE
+                            ).values_list('user_id', flat=True)
+                            active_members_set = set(active_members_qs)
+                            
+                            for uid in users:
+                                if uid not in active_members_set:
+                                    raise serializers.ValidationError(
+                                        {"to_users": "Posts from private or restricted groups can only be shared with active members of that group."}
+                                    )
+            except FeedItem.DoesNotExist:
+                pass
+
 
         return attrs
