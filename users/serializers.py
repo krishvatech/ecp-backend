@@ -665,10 +665,12 @@ class UserMiniSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
     kyc_status = serializers.SerializerMethodField()
     full_name = serializers.SerializerMethodField()
+    job_title = serializers.SerializerMethodField()
+    company = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ("id", "username", "email", "first_name", "last_name", "avatar_url", "kyc_status", "full_name")
+        fields = ("id", "username", "email", "first_name", "last_name", "avatar_url", "kyc_status", "full_name", "job_title", "company")
 
     def get_kyc_status(self, obj):
         return getattr(obj.profile, "kyc_status", None) if hasattr(obj, "profile") else None
@@ -684,6 +686,14 @@ class UserMiniSerializer(serializers.ModelSerializer):
             return profile.full_name
         # 3) Last resort: username
         return obj.username
+
+    def get_job_title(self, obj):
+        profile = getattr(obj, "profile", None)
+        return getattr(profile, "job_title", "") if profile else ""
+
+    def get_company(self, obj):
+        profile = getattr(obj, "profile", None)
+        return getattr(profile, "company", "") if profile else ""
 
     def _pick_image_field(self, user):
         prof = getattr(user, "profile", None)
@@ -1236,4 +1246,3 @@ class VerificationHistorySerializer(serializers.ModelSerializer):
             "id", "user", "kyc_status", "kyc_didit_raw_payload", 
             "kyc_manual_reason", "archived_at", "archived_by_details"
         ]
-

@@ -1582,7 +1582,7 @@ class SpeedNetworkingSessionSerializer(serializers.ModelSerializer):
     class Meta:
         model = SpeedNetworkingSession
         fields = [
-            'id', 'event', 'name', 'status', 'duration_minutes',
+            'id', 'event', 'name', 'status', 'duration_minutes', 'buffer_seconds',
             'matching_strategy', 'criteria_config', 'config_version',
             'started_at', 'ended_at', 'matches', 'created_at',
             'queue_count', 'active_matches_count'

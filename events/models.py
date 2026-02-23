@@ -592,6 +592,10 @@ class SpeedNetworkingSession(models.Model):
     name = models.CharField(max_length=255, default="Speed Networking Session")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     duration_minutes = models.IntegerField(default=5, help_text="Duration of each round in minutes")
+    buffer_seconds = models.IntegerField(
+        default=15,
+        help_text="Seconds to show the transition screen between rounds (0 to disable)."
+    )
 
     # Matching Strategy (NEW)
     matching_strategy = models.CharField(

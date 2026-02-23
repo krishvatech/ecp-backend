@@ -1770,6 +1770,14 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             logger.error(f"[BOTH_MATCH] Partner user {partner_dict['user_id']} not found")
             return None
 
+        # Safety net: prevent re-matching the same pair in this session.
+        if self._pair_matched_before(session, user, partner):
+            logger.info(
+                f"[BOTH_MATCH] Pair already matched in session {session.id}: "
+                f"{user.id} <-> {partner.id}"
+            )
+            return None
+
         match = None
         match_data = None
 
@@ -1923,6 +1931,14 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
 
         logger.debug(f"[BOTH_MATCH] Using basic matching (no criteria profile) with user {candidate.id}")
 
+        # Safety net: prevent re-matching the same pair in this session.
+        if self._pair_matched_before(session, user, candidate):
+            logger.info(
+                f"[BOTH_MATCH] Pair already matched in session {session.id}: "
+                f"{user.id} <-> {candidate.id}"
+            )
+            return None
+
         # Create match without criteria scoring
         dyte_meeting_room = f"match-{session.id}-{uuid.uuid4().hex[:8]}"
 
@@ -1968,6 +1984,15 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         except Exception as e:
             logger.error(f"[BOTH_MATCH] Error creating basic match: {e}")
             return None
+
+    def _pair_matched_before(self, session, user_a, user_b):
+        """Check whether two users have already been matched in this session."""
+        return SpeedNetworkingMatch.objects.filter(
+            session=session
+        ).filter(
+            Q(participant_1=user_a, participant_2=user_b) |
+            Q(participant_1=user_b, participant_2=user_a)
+        ).exists()
 
     def _get_previous_match_partners(self, session, user):
         """
