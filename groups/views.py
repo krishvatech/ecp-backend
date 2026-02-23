@@ -151,6 +151,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             # promotion flow
             "promotion_requests", "approve_promotion_requests", "reject_promotion_requests",
             "request_promotion",
+            "promote_to_main",
             # moderator content tools
             "moderator_can_i",
             "moderation_create_post", "moderation_delete_post",
@@ -163,9 +164,6 @@ class GroupViewSet(viewsets.ModelViewSet):
             "mutual_members",
 
         }
-        
-        if self.action == "promote_to_main":
-            return [GroupSuperuserOnly()]
 
         if self.action == "create":
             data = getattr(self.request, "data", {}) or {}
@@ -805,6 +803,7 @@ class GroupViewSet(viewsets.ModelViewSet):
 
 
     @action(detail=True, methods=["post"], url_path="promote-to-main")
+    @transaction.atomic
     def promote_to_main(self, request, pk=None):
         """
         Promote a sub-group to an independent main group.
@@ -833,6 +832,10 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         # Action: Remove parent
         old_parent_id = group.parent_id
+        old_parent = group.parent
+        membership_policy = request.data.get("membership_policy", "keep")
+        removed_count = 0
+
         group.parent = None
         group.save()
 
@@ -840,10 +843,52 @@ class GroupViewSet(viewsets.ModelViewSet):
         # where this group is the child.
         deleted_count, _ = GroupParentAssociation.objects.filter(child_group=group).delete()
 
-        # Log or notify if needed (optional)
-        print(f"User {request.user} promoted group {group.id} (was child of {old_parent_id}) to main group. Removed {deleted_count} parent links.")
+        if membership_policy == "remove_child_only" and old_parent_id:
+            # compute child_active_user_ids
+            child_active_user_ids = GroupMembership.objects.filter(
+                group=group, status=GroupMembership.STATUS_ACTIVE
+            ).values_list("user_id", flat=True)
 
-        return Response(self.get_serializer(group).data)
+            # compute other_child_active_user_ids
+            other_child_active_user_ids = GroupMembership.objects.filter(
+                group__parent_id=old_parent_id,
+                status=GroupMembership.STATUS_ACTIVE
+            ).exclude(group_id=group.id).values_list("user_id", flat=True)
+
+            removable_user_ids = set(child_active_user_ids) - set(other_child_active_user_ids)
+
+            if removable_user_ids:
+                memberships_to_delete = GroupMembership.objects.filter(
+                    group_id=old_parent_id,
+                    user_id__in=removable_user_ids,
+                    invited_by__isnull=True
+                ).exclude(
+                    role__in=[GroupMembership.ROLE_ADMIN, GroupMembership.ROLE_MODERATOR]
+                )
+                
+                if old_parent:
+                    exclude_users = []
+                    if old_parent.owner_id:
+                        exclude_users.append(old_parent.owner_id)
+                    if old_parent.created_by_id:
+                        exclude_users.append(old_parent.created_by_id)
+                    
+                    if exclude_users:
+                        memberships_to_delete = memberships_to_delete.exclude(user_id__in=exclude_users)
+                
+                removed_count, _ = memberships_to_delete.delete()
+
+        # Log or notify if needed (optional)
+        print(f"User {request.user} promoted group {group.id} (was child of {old_parent_id}) to main group. Removed {deleted_count} parent links. Removed parent memberships: {removed_count}")
+
+        data = self.get_serializer(group).data
+        data["_promotion"] = {
+            "old_parent_id": old_parent_id,
+            "membership_policy": membership_policy,
+            "removed_parent_memberships": removed_count
+        }
+
+        return Response(data)
     @action(detail=True, methods=["get"], url_path="members")
     def members(self, request, pk=None):
         group = self.get_object()
