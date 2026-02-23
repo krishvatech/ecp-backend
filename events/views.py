@@ -2422,21 +2422,26 @@ class EventViewSet(viewsets.ModelViewSet):
             event_started = event.start_time and event.start_time <= now
             event_ended = event.end_time and event.end_time < now
             
-            # Before event: check show_participants_before_event
-            if not event_started and not event.show_participants_before_event:
-                return Response(
-                    {"detail": "Participant list is not visible before the event."},
-                    status=status.HTTP_403_FORBIDDEN
-                )
+            # If the event is explicitly cancelled, we bypass the "ended" visibility check 
+            # so the frontend doesn't throw a 403 when trying to load the page.
+            is_cancelled = event.status == "cancelled"
             
-            # After event: check show_participants_after_event
-            elif event_ended and not event.show_participants_after_event:
-                return Response(
-                    {"detail": "Participant list is not visible after the event."},
-                    status=status.HTTP_403_FORBIDDEN
-                )
+            if not is_cancelled:
+                # Before event: check show_participants_before_event
+                if not event_started and not event.show_participants_before_event:
+                    return Response(
+                        {"detail": "Participant list is not visible before the event."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+                
+                # After event: check show_participants_after_event
+                elif event_ended and not event.show_participants_after_event:
+                    return Response(
+                        {"detail": "Participant list is not visible after the event."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
             
-            # During event: always visible (no restriction during live event)
+            # During event (or cancelled): always visible (no restriction during live event)
 
         # Fetch registrations (only registered status, exclude cancelled)
         qs = (
