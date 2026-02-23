@@ -9,6 +9,7 @@ Provides API endpoints for:
 """
 import logging
 import uuid
+import random
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q, Avg
@@ -47,6 +48,11 @@ logger = logging.getLogger(__name__)
 CRITERIA_KEYS = {'skill', 'experience', 'location', 'education'}
 ADVANCED_CONFIG_KEYS = {'random_factor', 'prefer_new_users'}
 ALLOWED_CRITERIA_CONFIG_KEYS = CRITERIA_KEYS | ADVANCED_CONFIG_KEYS
+
+HIGH_MATCH_SCORE_THRESHOLD = 70
+MEDIUM_MATCH_SCORE_THRESHOLD = 50
+LOW_MATCH_SCORE_THRESHOLD = 30
+THRESHOLD_WAIT_WINDOWS_SECONDS = (20, 40)
 
 
 # ============================================================================
@@ -1605,6 +1611,52 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
 
                 return Response({'status': 'extension_requested'})
 
+    def _get_threshold_for_wait_time(self, wait_seconds: float) -> int:
+        """
+        Progressive threshold relaxation based on queue wait time.
+        - first window: strict (high)
+        - second window: medium
+        - beyond second window: low
+        """
+        if wait_seconds < THRESHOLD_WAIT_WINDOWS_SECONDS[0]:
+            return HIGH_MATCH_SCORE_THRESHOLD
+        if wait_seconds < THRESHOLD_WAIT_WINDOWS_SECONDS[1]:
+            return MEDIUM_MATCH_SCORE_THRESHOLD
+        return LOW_MATCH_SCORE_THRESHOLD
+
+    def _get_queue_wait_seconds(self, queue_entry) -> float:
+        if not queue_entry or not queue_entry.joined_at:
+            return 0.0
+        return max(0.0, (timezone.now() - queue_entry.joined_at).total_seconds())
+
+    def _pick_candidate_with_fairness(self, scored_candidates, queue_wait_map):
+        """
+        Fairness priority:
+        1) longest-waiting candidate
+        2) higher match score
+        """
+        if not scored_candidates:
+            return None
+        ranked = sorted(
+            scored_candidates,
+            key=lambda item: (
+                -queue_wait_map.get(item[1].get('user_id'), 0.0),
+                -item[0],
+            )
+        )
+        return ranked[0]
+
+    def _pick_random_candidate_with_fairness(self, candidate_ids, queue_wait_map):
+        """
+        Random fallback with fairness guard:
+        choose randomly among the longest-waiting third of candidates.
+        """
+        if not candidate_ids:
+            return None
+        ranked_ids = sorted(candidate_ids, key=lambda uid: -queue_wait_map.get(uid, 0.0))
+        top_slice_size = max(1, len(ranked_ids) // 3)
+        return random.choice(ranked_ids[:top_slice_size])
+
     def _find_and_create_match(self, session, user, exclude_user=None):
         """
         Combined rule-based + criteria-based matching.
@@ -1620,7 +1672,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         """
         logger.info(f"[BOTH_MATCH] Starting combined matching for user_id={user.id}")
 
-        # Get ALL previous match partners in this session (comprehensive exclusion)
+        # Get ALL previous match partners in this event (comprehensive exclusion)
         exclude_user_ids = self._get_previous_match_partners(session, user)
 
         # Also exclude the immediate previous match partner if specified (for backward compatibility)
@@ -1713,6 +1765,18 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                 _build_user_profile_from_skills(candidate)
                 for candidate in candidate_users
             ]
+            queue_wait_map = dict(
+                SpeedNetworkingQueue.objects.filter(
+                    session=session,
+                    user_id__in=candidate_ids,
+                    is_active=True,
+                    current_match__isnull=True,
+                ).values_list('user_id', 'joined_at')
+            )
+            queue_wait_map = {
+                uid: max(0.0, (timezone.now() - joined_at).total_seconds()) if joined_at else 0.0
+                for uid, joined_at in queue_wait_map.items()
+            }
 
             logger.debug(f"[BOTH_MATCH] Built profiles for user and {len(candidate_profiles)} candidates from UserSkill")
 
@@ -1731,26 +1795,60 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             matches = criteria_engine.find_best_matches(
                 user_profile_dict,
                 candidate_profiles,
-                top_n=1
+                top_n=max(1, len(candidate_profiles))
             )
 
-            if matches:
-                score, partner_dict, breakdown = matches[0]
-                logger.info(f"[BOTH_MATCH] Found match with criteria score {score:.1f}")
+            try:
+                user_queue_entry = SpeedNetworkingQueue.objects.get(session=session, user=user)
+            except SpeedNetworkingQueue.DoesNotExist:
+                logger.warning(f"[BOTH_MATCH] Queue entry missing for user {user.id}; defaulting wait time to 0")
+                user_queue_entry = None
+
+            user_wait_seconds = self._get_queue_wait_seconds(user_queue_entry)
+            threshold = self._get_threshold_for_wait_time(user_wait_seconds)
+
+            scored_candidates = [
+                (score, candidate, breakdown)
+                for score, candidate, breakdown in matches
+                if score >= threshold
+            ]
+
+            if scored_candidates:
+                score, partner_dict, breakdown = self._pick_candidate_with_fairness(
+                    scored_candidates,
+                    queue_wait_map
+                )
+                logger.info(
+                    f"[BOTH_MATCH] Selected threshold-based match score={score:.1f}, "
+                    f"threshold={threshold}, user_wait={user_wait_seconds:.1f}s"
+                )
             else:
-                # Try fallback strategy
-                logger.info("[BOTH_MATCH] No direct match, trying fallback")
+                # If criteria score thresholds are not met, progressively relax via wait windows.
+                # If still no scored candidate fits, use fairness-aware random fallback.
+                logger.info(
+                    f"[BOTH_MATCH] No candidate met threshold={threshold}; "
+                    "trying fallback strategy"
+                )
                 match_result, fallback_step = criteria_engine.find_match_with_fallback(
                     user_profile_dict,
                     candidate_profiles
                 )
 
-                if not match_result:
-                    logger.warning("[BOTH_MATCH] No match found even with fallback")
-                    return None
-
-                score, partner_dict, breakdown = match_result
-                logger.info(f"[BOTH_MATCH] Fallback matched at step {fallback_step}")
+                if match_result:
+                    score, partner_dict, breakdown = match_result
+                    logger.info(f"[BOTH_MATCH] Fallback matched at step {fallback_step} with score {score:.1f}")
+                else:
+                    random_candidate_id = self._pick_random_candidate_with_fairness(candidate_ids, queue_wait_map)
+                    if not random_candidate_id:
+                        logger.warning("[BOTH_MATCH] Random fallback failed - no available candidates")
+                        return None
+                    partner_dict = {'user_id': random_candidate_id}
+                    score = LOW_MATCH_SCORE_THRESHOLD
+                    breakdown = {'fallback': LOW_MATCH_SCORE_THRESHOLD}
+                    logger.info(
+                        f"[BOTH_MATCH] Random fallback match selected user={random_candidate_id}, "
+                        f"user_wait={user_wait_seconds:.1f}s"
+                    )
         else:
             # Criteria-only not enabled, do basic match from filtered candidates
             return self._basic_match_from_candidates(
@@ -1919,11 +2017,24 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
 
         # Handle both User objects and ID lists
         if candidate_pool and isinstance(candidate_pool[0], User):
-            # Already User objects
-            candidate = candidate_pool[0] if len(candidate_pool) > 0 else None
+            candidate_ids = [u.id for u in candidate_pool]
         else:
-            # Get first available candidate by ID
-            candidate = User.objects.filter(id__in=candidate_pool).first()
+            candidate_ids = list(candidate_pool)
+
+        queue_wait_map = dict(
+            SpeedNetworkingQueue.objects.filter(
+                session=session,
+                user_id__in=candidate_ids,
+                is_active=True,
+                current_match__isnull=True,
+            ).values_list('user_id', 'joined_at')
+        )
+        queue_wait_map = {
+            uid: max(0.0, (timezone.now() - joined_at).total_seconds()) if joined_at else 0.0
+            for uid, joined_at in queue_wait_map.items()
+        }
+        candidate_id = self._pick_random_candidate_with_fairness(candidate_ids, queue_wait_map)
+        candidate = User.objects.filter(id=candidate_id).first() if candidate_id else None
 
         if not candidate:
             logger.warning(f"[BOTH_MATCH] No candidate found for basic matching")
@@ -1986,9 +2097,9 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             return None
 
     def _pair_matched_before(self, session, user_a, user_b):
-        """Check whether two users have already been matched in this session."""
+        """Check whether two users have already been matched in this event."""
         return SpeedNetworkingMatch.objects.filter(
-            session=session
+            session__event=session.event
         ).filter(
             Q(participant_1=user_a, participant_2=user_b) |
             Q(participant_1=user_b, participant_2=user_a)
@@ -1996,10 +2107,10 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
 
     def _get_previous_match_partners(self, session, user):
         """
-        Get all users that this user has already been matched with in the current session.
+        Get all users that this user has already been matched with in the current event.
 
         Args:
-            session: The speed networking session
+            session: The current speed networking session
             user: The user to find previous partners for
 
         Returns:
@@ -2007,9 +2118,9 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         """
         from django.db.models import Q
 
-        # Find all matches (completed, skipped, or active) where this user was a participant
+        # Find all matches in this event where this user was a participant
         previous_matches = SpeedNetworkingMatch.objects.filter(
-            session=session,
+            session__event=session.event,
             status__in=['ACTIVE', 'COMPLETED', 'SKIPPED']
         ).filter(
             Q(participant_1=user) | Q(participant_2=user)
@@ -2023,7 +2134,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             else:
                 previous_partners.add(match.participant_1.id)
 
-        logger.info(f"[MATCHING] User {user.id} has {len(previous_partners)} previous partners in session {session.id}: {previous_partners}")
+        logger.info(f"[MATCHING] User {user.id} has {len(previous_partners)} previous partners in event {session.event_id}: {previous_partners}")
         return list(previous_partners)
 
 
