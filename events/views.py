@@ -805,19 +805,25 @@ def _apply_bucket_filter(qs, bucket):
     
     if bucket == "live":
         # Live = status is 'live' (explicit) OR (status!='ended' AND now within start..end)
-        return qs.filter(Q(status="live") | (Q(start_time__lte=now, end_time__gte=now) & ~Q(status="ended")))
+        return qs.filter(Q(status="live") | (Q(start_time__lte=now, end_time__gte=now) & ~Q(status="ended"))).exclude(status="cancelled")
     
     elif bucket == "upcoming":
         # Upcoming = status!='ended' AND start_time > now
-        return qs.exclude(status="ended").filter(start_time__gt=now)
+        return qs.exclude(status="ended").filter(start_time__gt=now).exclude(status="cancelled")
         
     elif bucket == "past":
-        # Past = status='ended' OR end_time < now OR (end_time is null AND start_time < now)
-        return qs.filter(
+        # Past = status='ended' OR end_time < now OR (end_time is null AND start_time < now), EXCLUDING cancelled
+        qs = qs.filter(
             Q(status="ended") |
             Q(end_time__lt=now) |
             Q(end_time__isnull=True, start_time__lt=now)
         )
+        # Exclude cancelled from past
+        return qs.exclude(status="cancelled")
+        
+    elif bucket == "cancelled":
+        # Cancelled = status="cancelled"
+        return qs.filter(status="cancelled")
     
     return qs
 
@@ -896,7 +902,7 @@ class EventViewSet(viewsets.ModelViewSet):
         exclude_ended = (params.get("exclude_ended") or "").strip().lower()
         if exclude_ended in {"1", "true", "yes", "on"}:
             now = timezone.now()
-            qs = qs.exclude(status="ended")
+            qs = qs.exclude(status__in=["ended", "cancelled"])
             qs = qs.exclude(Q(end_time__isnull=False, end_time__lt=now) & ~Q(status="live"))
             qs = qs.exclude(
                 Q(end_time__isnull=True, start_time__isnull=False, start_time__lt=now) & ~Q(status="live")
@@ -1080,6 +1086,25 @@ class EventViewSet(viewsets.ModelViewSet):
                     "timestamp": timezone.now().isoformat(),
                 }
             )
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Allow hard deletion only if the event is a draft.
+        Otherwise, restrict deletion indicating soft cancellation should be used.
+        """
+        instance = self.get_object()
+        
+        # Superusers or staff can always delete
+        is_staff = getattr(request.user, "is_staff", False) or getattr(request.user, "is_superuser", False)
+        
+        if instance.status != "draft" and not is_staff:
+            from rest_framework import status
+            return Response(
+                {"detail": "Only draft events can be hard deleted. For published events, please use the cancel functionality."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        return super().destroy(request, *args, **kwargs)
 
     # ------------------ Dictionary Endpoints -----------------
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="categories")
@@ -1270,6 +1295,9 @@ class EventViewSet(viewsets.ModelViewSet):
         Register the current user for a single event.
         """
         event = self.get_object()
+
+        if event.status == "cancelled":
+            return Response({"detail": "Cannot register for a cancelled event."}, status=400)
 
         # Check capactity limit
         if event.max_participants is not None:
@@ -3237,6 +3265,13 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=403
             )
 
+        # 1.7) Check if event is cancelled
+        if event.status == "cancelled":
+            return Response(
+                {"error": "event_cancelled", "detail": "This event has been cancelled."},
+                status=400
+            )
+
         # 2) Decide host vs participant preset
         is_creator_or_staff = _is_event_host(user, event)
 
@@ -4023,8 +4058,82 @@ class EventViewSet(viewsets.ModelViewSet):
         
         # Optionally update attending count immediately if you want them counted strictly
         Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
-
         return Response({"ok": True, "detail": f"User {target_user.username} added successfully."})
+
+    @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="hosted")
+    def hosted(self, request):
+        """
+        Return events where the current user is a host.
+        Used for the 'Recommend another event' dropdown.
+        """
+        user = request.user
+        qs = Event.objects.select_related("community")
+        
+        if user.is_staff or getattr(user, "is_superuser", False):
+            pass # sees all events
+        else:
+            host_match = Q(participant_type="staff", user_id=user.id)
+            user_email = (getattr(user, "email", "") or "").strip()
+            if user_email:
+                host_match = host_match | Q(participant_type="guest", guest_email__iexact=user_email)
+            
+            qs = qs.filter(
+                Q(created_by_id=user.id) |
+                Q(community__owner_id=user.id) |
+                (Q(participants__role="host") & host_match)
+            ).distinct()
+            
+        # exclude cancelled, ended, and draft for recommendations
+        qs = qs.exclude(status__in=["ended", "cancelled", "draft"])
+        qs = qs.order_by("-start_time")
+        
+        page = self.paginate_queryset(qs)
+        ser = EventLiteSerializer(page if page is not None else qs, many=True, context={"request": request})
+        return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="cancel")
+    def cancel(self, request, pk=None):
+        """
+        Cancel an event. Only allowed by the host.
+        """
+        event = self.get_object()
+        
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only hosts can cancel this event."}, status=403)
+            
+        if event.status == "cancelled":
+            return Response({"detail": "Event is already cancelled."}, status=400)
+            
+        message = request.data.get("cancellation_message", "")
+        recommended_event_id = request.data.get("recommended_event_id")
+        notify_participants = request.data.get("notify_participants", True)
+        
+        event.status = "cancelled"
+        event.cancelled_at = timezone.now()
+        event.cancelled_by = request.user
+        event.cancellation_message = message
+        if recommended_event_id:
+            try:
+                event.recommended_event = Event.objects.get(id=recommended_event_id)
+            except Event.DoesNotExist:
+                pass
+                
+        event.is_live = False # ensure it's not marked live
+        event.save(update_fields=["status", "cancelled_at", "cancelled_by", "cancellation_message", "recommended_event", "is_live", "updated_at"])
+        
+        if notify_participants:
+            try:
+                from .tasks import send_event_cancelled_task
+                send_event_cancelled_task.delay(event.id)
+            except ImportError:
+                pass
+            
+        return Response({
+            "detail": "Event cancelled successfully.",
+            "status": "cancelled",
+            "cancelled_at": event.cancelled_at.isoformat() if event.cancelled_at else None,
+            "cancellation_message": event.cancellation_message
+        })
 
 
 # ============================================================

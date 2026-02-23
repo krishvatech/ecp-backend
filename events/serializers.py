@@ -414,6 +414,26 @@ class EventSerializer(serializers.ModelSerializer):
     sessions = EventSessionSerializer(many=True, read_only=True)
     has_sessions = serializers.SerializerMethodField(read_only=True)
 
+    # Cancellation fields
+    recommended_event_id = serializers.PrimaryKeyRelatedField(
+        queryset=Event.objects.all(),
+        source="recommended_event",
+        write_only=True,
+        required=False,
+        allow_null=True
+    )
+    recommended_event = serializers.SerializerMethodField(read_only=True)
+
+    def get_recommended_event(self, obj):
+        if obj.recommended_event_id:
+            return {
+                "id": obj.recommended_event.id,
+                "slug": obj.recommended_event.slug,
+                "title": obj.recommended_event.title,
+                "start_time": obj.recommended_event.start_time,
+            }
+        return None
+
     # Write-only field for sessions input during event creation (atomic with event)
     # Using custom field to handle JSON strings from FormData
     sessions_input = SessionsInputField(
@@ -440,6 +460,11 @@ class EventSerializer(serializers.ModelSerializer):
             "is_live",
             "is_on_break",
             "is_multi_day",
+            "cancelled_at",
+            "cancelled_by_id",
+            "cancellation_message",
+            "recommended_event",
+            "recommended_event_id",
             "replay_available",
             "replay_availability_duration",
             "category",
@@ -1427,6 +1452,17 @@ class PublicEventSerializer(serializers.ModelSerializer):
 class EventLiteSerializer(serializers.ModelSerializer):
     # Session-related fields for multi-day events
     sessions = EventSessionSerializer(many=True, read_only=True)
+    recommended_event = serializers.SerializerMethodField(read_only=True)
+
+    def get_recommended_event(self, obj):
+        if obj.recommended_event_id:
+            return {
+                "id": obj.recommended_event.id,
+                "slug": obj.recommended_event.slug,
+                "title": obj.recommended_event.title,
+                "start_time": obj.recommended_event.start_time,
+            }
+        return None
 
     class Meta:
         model = Event
@@ -1437,6 +1473,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "lounge_enabled_before", "lounge_before_buffer",
             "lounge_enabled_after", "lounge_after_buffer",
             "is_multi_day", "sessions",  # ✅ Added for multi-day event support
+            "cancellation_message", "recommended_event",
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):

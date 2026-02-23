@@ -1,0 +1,18 @@
+Hi {{ first_name }},
+
+We are writing to inform you that the event "{{ event_title }}" has unfortunately been cancelled.
+
+{% if cancellation_message %}
+Message from the host:
+{{ cancellation_message }}
+{% endif %}
+
+{% if has_recommended_event %}
+The host recommends checking out this alternative event instead: {{ recommended_event_title }}
+You can view it here: {{ recommended_event_url }}
+{% endif %}
+
+If you have any questions or need assistance, please reply to this email or contact us at {{ support_email }}.
+
+Best regards,
+The {{ app_name }} Team

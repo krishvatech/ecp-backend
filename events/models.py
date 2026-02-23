@@ -39,6 +39,7 @@ class Event(models.Model):
         ("published", "Published"),
         ("live", "Live"),
         ("ended", "Ended"),
+        ("cancelled", "Cancelled"),
     ]
     FORMAT_CHOICES = [
         ("in_person", "In-Person"),
@@ -63,6 +64,15 @@ class Event(models.Model):
         default=False,
         help_text="True if this event spans multiple calendar days"
     )
+
+    # Cancellation fields
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="cancelled_events")
+    cancellation_message = models.TextField(blank=True, default="")
+    recommended_event = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="recommended_from_cancelled"
+    )
+
     # New fields
     category = models.CharField(max_length=100, blank=True)
     format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default="in_person")

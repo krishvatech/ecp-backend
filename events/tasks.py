@@ -499,3 +499,24 @@ def _build_lounge_state_sync(event_id):
     except Exception as e:
         logger.warning(f"[LOUNGE_STATE] Failed to build lounge state for event {event_id}: {e}")
         return []
+
+@shared_task
+def send_event_cancelled_task(event_id):
+    """
+    Background task to send event cancellation emails to all participants.
+    """
+    from .models import Event
+    from users.email_utils import send_event_cancelled_email
+    
+    try:
+        event = Event.objects.select_related('recommended_event').get(id=event_id)
+        if event.status != "cancelled":
+            return f"Event {event_id} is not cancelled. Aborting emails."
+            
+        send_event_cancelled_email(event)
+        return f"Successfully sent cancellation emails for event {event_id}."
+    except Event.DoesNotExist:
+        return f"Event {event_id} not found."
+    except Exception as e:
+        logger.error(f"Failed to send cancellation emails for event {event_id}: {e}")
+        return str(e)

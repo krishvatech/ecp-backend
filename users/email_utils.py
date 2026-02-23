@@ -371,3 +371,59 @@ def send_admin_credentials_email(user, frontend_url=None):
         logger.error(f"Failed to send admin credentials email to {user.email}: {e}")
         return False
 
+def send_event_cancelled_email(event):
+    """
+    Send email to all participants (registered, cancellation_requested) when an event is cancelled.
+    """
+    from events.models import EventRegistration
+    
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    event_url = f"{frontend_base}/events/{event.slug}/"
+    recommended_event_url = ""
+    if getattr(event, 'recommended_event', None):
+        recommended_event_url = f"{frontend_base}/events/{event.recommended_event.slug}/"
+        
+    registrations = EventRegistration.objects.filter(
+        event=event,
+        status__in=["registered", "cancellation_requested"]
+    ).select_related("user")
+    
+    success_count = 0
+    support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+    
+    for reg in registrations:
+        user = reg.user
+        if not user or not user.email:
+            continue
+            
+        ctx = {
+            "app_name": "IMAA Connect",
+            "first_name": user.first_name or user.username or "there",
+            "event_title": event.title,
+            "cancellation_message": event.cancellation_message or "",
+            "has_recommended_event": bool(event.recommended_event),
+            "recommended_event_title": event.recommended_event.title if event.recommended_event else "",
+            "recommended_event_url": recommended_event_url,
+            "event_url": event_url,
+            "support_email": support_email,
+        }
+        
+        try:
+            text_body = render_to_string("emails/event_cancelled.txt", ctx)
+            html_body = render_to_string("emails/event_cancelled.html", ctx)
+            
+            send_mail(
+                subject=f"Update: '{event.title}' has been cancelled",
+                message=text_body,
+                from_email=support_email,
+                recipient_list=[user.email],
+                html_message=html_body,
+                fail_silently=True,
+            )
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Failed to send cancellation email to {user.email} for event {event.id}: {e}")
+            
+    logger.info(f"Sent {success_count} cancellation emails for event {event.id}")
+    return success_count
+
