@@ -2894,6 +2894,7 @@ class GeoCitySearchView(APIView):
                 "name": c.name,
                 "country_code": c.country_code,
                 "country_name": country_name,  # ✅ extra helpful field
+                "timezone": getattr(c, 'timezone', None),
                 "admin1_code": c.admin1_code,
                 "population": c.population,
                 "lat": c.latitude,
@@ -2915,6 +2916,7 @@ class GeoCitySearchView(APIView):
                 "name": q,
                 "country_code": country or None,
                 "country_name": fallback_country_name or None,
+                "timezone": None,
                 "admin1_code": None,
                 "population": None,
                 "lat": None,
