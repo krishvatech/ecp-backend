@@ -453,6 +453,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "data": event["data"]
         })
 
+    async def speed_networking_match_finalized(self, event):
+        """Notify user that a match was persisted to past matches."""
+        await self.send_json({
+            "type": "speed_networking_match_finalized",
+            "data": event["data"]
+        })
+
     async def speed_networking_queue_update(self, event):
         """Broadcast queue stats update to all clients in the event (for host panel real-time refresh)."""
         await self.send_json({

@@ -389,6 +389,55 @@ def _broadcast_queue_update(session, event_id):
     logger.info(f"[BROADCAST_QUEUE_UPDATE] Message sent to event group: event_{event_id}")
 
 
+def _build_user_match_payload(match, user, request=None):
+    """Build a single past-match payload from one participant's perspective."""
+    partner = match.participant_2 if match.participant_1_id == user.id else match.participant_1
+    serializer_context = {'request': request} if request else {}
+    partner_serializer = UserMiniSerializer(partner, context=serializer_context)
+    duration_seconds = (
+        (match.ended_at - match.created_at).total_seconds()
+        if match.ended_at and match.created_at else 0
+    )
+    return {
+        'match_id': match.id,
+        'partner': partner_serializer.data,
+        'status': match.status,
+        'duration_seconds': duration_seconds,
+        'started_at': match.created_at,
+        'ended_at': match.ended_at,
+        'match_score': match.match_score,
+    }
+
+
+def _emit_match_finalized(match, event_id, request=None):
+    """
+    Emit real-time finalized match events to both participants.
+    Uses match_id as a stable dedupe key on the frontend.
+    """
+    if match.status not in ['COMPLETED', 'SKIPPED']:
+        return
+
+    # Push participant-specific payloads to both matched users.
+    for participant in (match.participant_1, match.participant_2):
+        payload = _build_user_match_payload(match, participant, request=request)
+        send_speed_networking_user_message(participant.id, 'speed_networking.match_finalized', {
+            'event_id': int(event_id) if event_id is not None else match.session.event_id,
+            'session_id': match.session_id,
+            'match': payload,
+        })
+
+    # Also broadcast a host-friendly event to the event group so host panel updates instantly.
+    send_speed_networking_message(
+        int(event_id) if event_id is not None else match.session.event_id,
+        'speed_networking.match_finalized',
+        {
+            'event_id': int(event_id) if event_id is not None else match.session.event_id,
+            'session_id': match.session_id,
+            'match': SpeedNetworkingMatchSerializer(match).data,
+        }
+    )
+
+
 class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing Speed Networking sessions.
@@ -476,6 +525,7 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
             match.status = 'COMPLETED'
             match.ended_at = timezone.now()
             match.save()
+            _emit_match_finalized(match, event_id, request=request)
         
         # Clear queue
         session.queue.update(is_active=False)
@@ -1162,6 +1212,7 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
             match.status = 'COMPLETED'
             match.ended_at = timezone.now()
             match.save()
+            _emit_match_finalized(match, event_id, request=request)
             partner = match.participant_1 if match.participant_2_id == int(user_id) else match.participant_2
             send_speed_networking_user_message(partner.id, 'speed_networking.match_ended', {
                 'message': 'Your partner was removed from the session.'
@@ -1304,6 +1355,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             match.status = 'COMPLETED'
             match.ended_at = timezone.now()
             match.save()
+            _emit_match_finalized(match, event_id, request=request)
 
             # Get the partner before clearing the reference
             partner = match.participant_1 if match.participant_2 == request.user else match.participant_2
@@ -1444,6 +1496,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             match.ended_at = timezone.now()
             match.save()
             logger.info(f"[NEXT_MATCH] Match {match.id} marked as SKIPPED")
+            _emit_match_finalized(match, event_id, request=request)
 
             # Release users from this match in the queue
             SpeedNetworkingQueue.objects.filter(
