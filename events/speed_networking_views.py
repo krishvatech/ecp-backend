@@ -53,6 +53,13 @@ ALLOWED_CRITERIA_CONFIG_KEYS = CRITERIA_KEYS | ADVANCED_CONFIG_KEYS
 # Module-level helper functions for use in both ViewSets
 # ============================================================================
 
+def _is_host(request, event_id):
+    """Returns True if the request user is the event host or staff/superuser."""
+    if request.user.is_superuser or request.user.is_staff:
+        return True
+    return Event.objects.filter(id=event_id, created_by=request.user).exists()
+
+
 def _get_criteria_config(session):
     """Get criteria configuration for session with proper defaults."""
     if session.criteria_config:
@@ -475,10 +482,48 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         send_speed_networking_message(event_id, 'speed_networking.session_ended', {
             'session_id': session.id
         })
-        
+
         serializer = self.get_serializer(session)
         return Response(serializer.data)
-    
+
+    @action(detail=True, methods=['post'], url_path='extend-duration')
+    def extend_duration(self, request, event_id=None, pk=None):
+        """Host-only: increase round duration (before or during a session)."""
+        if not _is_host(request, event_id):
+            return Response({'error': 'Only the event host may change the duration.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        session = self.get_object()
+        new_minutes = request.data.get('duration_minutes')
+
+        # Validate
+        try:
+            new_minutes = int(new_minutes)
+        except (TypeError, ValueError):
+            return Response({'error': 'duration_minutes must be an integer.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        if new_minutes <= session.duration_minutes:
+            return Response(
+                {'error': f'New duration ({new_minutes}m) must be greater than the current duration ({session.duration_minutes}m).'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if new_minutes > 60:
+            return Response({'error': 'Duration cannot exceed 60 minutes.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        session.duration_minutes = new_minutes
+        session.save(update_fields=['duration_minutes'])
+
+        # Broadcast to all users in the event so timers recalculate
+        send_speed_networking_message(event_id, 'speed_networking.duration_updated', {
+            'session_id': session.id,
+            'new_duration_minutes': new_minutes,
+            'updated_at': timezone.now().isoformat(),
+        })
+
+        return Response({'duration_minutes': new_minutes, 'status': 'updated'})
+
     @action(detail=True, methods=['get'])
     def stats(self, request, event_id=None, pk=None):
         """Get session statistics."""
@@ -1480,7 +1525,86 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                     'status': 'queued',
                     'message': 'Waiting for next match...'
                 })
-    
+
+    @action(detail=True, methods=['post'], url_path='matches/(?P<match_id>[^/.]+)/request-extension')
+    def request_extension(self, request, event_id=None, session_id=None, match_id=None):
+        """Participant: request mutual time extension. Extension activates when both confirm."""
+        with transaction.atomic():
+            try:
+                # Lock the match to prevent race conditions
+                match = SpeedNetworkingMatch.objects.select_for_update().get(id=match_id)
+            except SpeedNetworkingMatch.DoesNotExist:
+                return Response({'error': 'Match not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+            user = request.user
+
+            # Authorization: must be a participant in this match
+            if user not in [match.participant_1, match.participant_2]:
+                return Response({'error': 'Not authorized.'}, status=status.HTTP_403_FORBIDDEN)
+
+            # Guards
+            if match.status != 'ACTIVE':
+                return Response({'error': 'Match is no longer active.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if match.extension_applied:
+                return Response({'error': 'Extension already used for this match.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+            # Mark this user's request
+            is_p1 = (user == match.participant_1)
+            if is_p1:
+                match.extension_requested_p1 = True
+                logger.info(f"[EXTENSION] Match {match.id}: P1 requested extension. Current state: p1={match.extension_requested_p1}, p2={match.extension_requested_p2}")
+            else:
+                match.extension_requested_p2 = True
+                logger.info(f"[EXTENSION] Match {match.id}: P2 requested extension. Current state: p1={match.extension_requested_p1}, p2={match.extension_requested_p2}")
+
+            both_confirmed = match.extension_requested_p1 and match.extension_requested_p2
+            logger.info(f"[EXTENSION] Match {match.id}: Both confirmed? {both_confirmed}")
+
+            if both_confirmed:
+                # Apply extension: add one default round duration to this match
+                extra_seconds = match.session.duration_minutes * 60
+                match.extended_by_seconds = extra_seconds
+                match.extension_applied = True
+                match.save(update_fields=[
+                    'extension_requested_p1', 'extension_requested_p2',
+                    'extension_applied', 'extended_by_seconds'
+                ])
+
+                # Notify both users: extension is live
+                payload = {
+                    'match_id': match.id,
+                    'extended_by_seconds': extra_seconds,
+                    'extension_applied': True,
+                }
+                logger.info(f"[EXTENSION] Match {match.id}: EXTENSION APPLIED! Notifying both users...")
+                send_speed_networking_user_message(
+                    match.participant_1.id, 'speed_networking.extension_applied', payload)
+                send_speed_networking_user_message(
+                    match.participant_2.id, 'speed_networking.extension_applied', payload)
+                logger.info(f"[EXTENSION] Match {match.id}: Extension applied notifications sent")
+
+                return Response({'status': 'extension_applied', 'extended_by_seconds': extra_seconds})
+            else:
+                match.save(update_fields=['extension_requested_p1', 'extension_requested_p2'])
+
+                # Notify both users: one side has requested, other side may confirm
+                payload = {
+                    'match_id': match.id,
+                    'requested_by_user_id': user.id,
+                    'extension_requested_p1': match.extension_requested_p1,
+                    'extension_requested_p2': match.extension_requested_p2,
+                }
+                logger.info(f"[EXTENSION] Match {match.id}: EXTENSION REQUESTED (waiting for partner). Notifying both users...")
+                send_speed_networking_user_message(
+                    match.participant_1.id, 'speed_networking.extension_requested', payload)
+                send_speed_networking_user_message(
+                    match.participant_2.id, 'speed_networking.extension_requested', payload)
+                logger.info(f"[EXTENSION] Match {match.id}: Extension requested notifications sent")
+
+                return Response({'status': 'extension_requested'})
+
     def _find_and_create_match(self, session, user, exclude_user=None):
         """
         Combined rule-based + criteria-based matching.

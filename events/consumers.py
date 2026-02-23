@@ -40,8 +40,17 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         self.user_group_name = f"user_{self.user.id}"
         await self.channel_layer.group_add(self.user_group_name, self.channel_name)
-        
+
         await self.accept()
+
+        # 🔍 DIAGNOSTIC: Log all handler methods on this consumer
+        handler_methods = [m for m in dir(self) if not m.startswith('_') and callable(getattr(self, m)) and m.startswith('speed_networking')]
+        if handler_methods:
+            logger.info(f"[CONSUMER] Speed Networking handlers registered: {handler_methods}")
+            if 'speed_networking_extension_requested' in handler_methods:
+                logger.info(f"[CONSUMER] ✅ Extension handler IS registered")
+            else:
+                logger.error(f"[CONSUMER] ❌ Extension handler NOT found!")
 
         # Custom Logic: Auto-restore breakout room on reconnect
         try:
@@ -450,6 +459,41 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "type": "speed_networking_queue_update",
             "data": event["data"]
         })
+
+    async def speed_networking_duration_updated(self, event):
+        """Broadcast new session duration to all users (host increased round time)."""
+        await self.send_json({
+            "type": "speed_networking_duration_updated",
+            "data": event["data"]
+        })
+
+    async def speed_networking_extension_requested(self, event):
+        """Notify both participants that one side has requested a time extension."""
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[WS] speed_networking_extension_requested handler called. Sending to user {self.user.id if self.user else 'unknown'}")
+        try:
+            await self.send_json({
+                "type": "speed_networking_extension_requested",
+                "data": event.get("data", {})
+            })
+            logger.info(f"[WS] ✅ Message sent to user {self.user.id if self.user else 'unknown'}")
+        except Exception as e:
+            logger.error(f"[WS] ❌ Failed to send message: {e}")
+
+    async def speed_networking_extension_applied(self, event):
+        """Notify both participants that the mutual extension has been applied."""
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[WS] speed_networking_extension_applied handler called. Sending to user {self.user.id if self.user else 'unknown'}")
+        try:
+            await self.send_json({
+                "type": "speed_networking_extension_applied",
+                "data": event.get("data", {})
+            })
+            logger.info(f"[WS] ✅ Message sent to user {self.user.id if self.user else 'unknown'}")
+        except Exception as e:
+            logger.error(f"[WS] ❌ Failed to send message: {e}")
 
     async def lounge_settings_update(self, event):
         """

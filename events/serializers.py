@@ -1558,11 +1558,13 @@ class SpeedNetworkingMatchSerializer(serializers.ModelSerializer):
             'id', 'session', 'participant_1', 'participant_2',
             'status', 'dyte_room_name', 'match_score', 'match_breakdown', 'rule_compliance',
             'match_probability', 'config_version', 'last_recalculated_at',
-            'created_at', 'ended_at'
+            'created_at', 'ended_at',
+            'extension_requested_p1', 'extension_requested_p2', 'extension_applied', 'extended_by_seconds'
         ]
         read_only_fields = ['id', 'created_at', 'ended_at', 'status', 'dyte_room_name',
                            'match_score', 'match_breakdown', 'rule_compliance',
-                           'match_probability', 'config_version', 'last_recalculated_at']
+                           'match_probability', 'config_version', 'last_recalculated_at',
+                           'extension_requested_p1', 'extension_requested_p2', 'extension_applied', 'extended_by_seconds']
 
 
 class SpeedNetworkingSessionSerializer(serializers.ModelSerializer):

@@ -669,6 +669,12 @@ class SpeedNetworkingMatch(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
 
+    # Time extension fields (for participant mutual extension feature)
+    extension_requested_p1 = models.BooleanField(default=False, help_text="Participant 1 has requested time extension")
+    extension_requested_p2 = models.BooleanField(default=False, help_text="Participant 2 has requested time extension")
+    extension_applied = models.BooleanField(default=False, help_text="Extension has been approved by both participants")
+    extended_by_seconds = models.IntegerField(default=0, help_text="Number of seconds added to this match via extension")
+
     class Meta:
         # Performance indexes (ADDED)
         indexes = [

@@ -93,14 +93,19 @@ def send_speed_networking_user_message(user_id, msg_type, data):
     """
     channel_layer = get_channel_layer()
     group_name = f"user_{user_id}"
+    logger.info(f"[SEND_USER_MSG] Sending '{msg_type}' to group '{group_name}' with data: {data}")
 
-    async_to_sync(channel_layer.group_send)(
-        group_name,
-        {
-            "type": msg_type,
-            "data": data
-        }
-    )
+    try:
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": msg_type,
+                "data": data
+            }
+        )
+        logger.info(f"[SEND_USER_MSG] ✅ Message sent successfully to {group_name}")
+    except Exception as e:
+        logger.error(f"[SEND_USER_MSG] ❌ Failed to send message to {group_name}: {e}")
 
 def send_admission_status_changed(user_id, admission_status):
     """

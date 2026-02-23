@@ -49,6 +49,11 @@ urlpatterns = [
         name='speed-networking-stop'
     ),
     path(
+        "events/<int:event_id>/speed-networking/<int:pk>/extend-duration/",
+        SpeedNetworkingSessionViewSet.as_view({'post': 'extend_duration'}),
+        name='speed-networking-extend-duration'
+    ),
+    path(
         "events/<int:event_id>/speed-networking/<int:pk>/stats/",
         SpeedNetworkingSessionViewSet.as_view({'get': 'stats'}),
         name='speed-networking-stats'
@@ -144,6 +149,11 @@ urlpatterns = [
         "events/<int:event_id>/speed-networking/matches/<int:match_id>/next/",
         SpeedNetworkingQueueViewSet.as_view({'post': 'next_match'}),
         name='speed-networking-next-match'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/matches/<int:match_id>/request-extension/",
+        SpeedNetworkingQueueViewSet.as_view({'post': 'request_extension'}),
+        name='speed-networking-request-extension'
     ),
     path(
         "events/<int:event_id>/speed-networking/<int:session_id>/user-matches/",
