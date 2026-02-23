@@ -2203,6 +2203,15 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             )
 
         user = request.user
+        event = session.event
+
+        # Enforce host-controlled match history visibility post-event
+        if event.status == 'ended' and not event.show_speed_networking_match_history:
+            if not _is_host(request, event_id):
+                return Response(
+                    {'detail': 'Match history visibility has been disabled for this event.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
         # Get all completed/skipped matches where user is a participant
         matches = SpeedNetworkingMatch.objects.filter(

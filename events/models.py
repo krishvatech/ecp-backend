@@ -219,6 +219,12 @@ class Event(models.Model):
         help_text="Allow participants to see the participant list after the event ends"
     )
 
+    # Speed Networking Match History Visibility Settings
+    show_speed_networking_match_history = models.BooleanField(
+        default=True,
+        help_text="Allow participants to view their speed networking match list after the event ends"
+    )
+
     class Meta:
         ordering = ["-created_at"]
     def save(self, *args, **kwargs):

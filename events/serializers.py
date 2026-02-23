@@ -509,6 +509,7 @@ class EventSerializer(serializers.ModelSerializer):
             "lounge_after_buffer",
             "show_participants_before_event",
             "show_participants_after_event",
+            "show_speed_networking_match_history",
             "participants",
             "event_participants",
             "sessions",
