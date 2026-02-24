@@ -3152,6 +3152,109 @@ class EventViewSet(viewsets.ModelViewSet):
                 "detail": str(e)
             }, status=500)
 
+    @action(detail=True, methods=["post"], url_path="lounge-close-and-remove-all")
+    def lounge_close_and_remove_all(self, request, pk=None):
+        """
+        Host closes the lounge and removes ALL participants from lounge tables.
+        This happens when the host disables the lounge settings.
+
+        - Removes all users from all lounge tables for this event
+        - Removes all users from Dyte meetings
+        - Returns list of removed user IDs for frontend notification
+        """
+        event = self.get_object()
+
+        # Check authorization - only event host/creator or staff
+        user = request.user
+        if not (user.is_staff or event.created_by_id == user.id):
+            return Response({"detail": "Not authorized"}, status=403)
+
+        try:
+            # Get all lounge participants for this event (not just BREAKOUT, but all tables)
+            all_participants = LoungeParticipant.objects.filter(
+                table__event_id=event.id
+            ).select_related('table', 'user')
+
+            removed_users = []
+            failed_users = []
+
+            for lounge_record in all_participants:
+                table = lounge_record.table
+                meeting_id = table.dyte_meeting_id
+                dyte_participant_id = lounge_record.dyte_participant_id
+                user_id = lounge_record.user.id
+                username = lounge_record.user.username
+
+                try:
+                    # Remove from Dyte meeting if exists
+                    if meeting_id:
+                        try:
+                            if dyte_participant_id:
+                                # Use stored Dyte participant ID for direct removal
+                                requests.delete(
+                                    f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_participant_id}",
+                                    headers=_dyte_headers(),
+                                    timeout=10,
+                                )
+                                logger.info(f"[LOUNGE_CLOSE] Removed user {user_id} from Dyte meeting {meeting_id}")
+                            else:
+                                # Fallback: Query Dyte to find the participant
+                                resp = requests.get(
+                                    f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
+                                    headers=_dyte_headers(),
+                                    params={"limit": 100},
+                                    timeout=10,
+                                )
+                                if resp.ok:
+                                    participants = resp.json().get("data", [])
+                                    for p in participants:
+                                        cid = p.get("client_specific_id") or p.get("custom_participant_id")
+                                        if cid == str(user_id):
+                                            participant_id = p.get("id")
+                                            requests.delete(
+                                                f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{participant_id}",
+                                                headers=_dyte_headers(),
+                                                timeout=10,
+                                            )
+                                            logger.info(f"[LOUNGE_CLOSE] Removed user {user_id} from Dyte meeting {meeting_id}")
+                                            break
+                        except Exception as e:
+                            logger.warning(f"[LOUNGE_CLOSE] Error removing user {user_id} from Dyte: {e}")
+                            # Don't fail, continue with DB removal
+
+                    # Remove from Django DB
+                    lounge_record.delete()
+                    removed_users.append({
+                        "user_id": user_id,
+                        "username": username
+                    })
+                    logger.info(f"[LOUNGE_CLOSE] User {user_id} ({username}) removed from lounge table {table.id}")
+
+                except Exception as e:
+                    logger.error(f"[LOUNGE_CLOSE] Error removing user {user_id}: {e}")
+                    failed_users.append({
+                        "user_id": user_id,
+                        "username": username,
+                        "error": str(e)
+                    })
+
+            logger.info(f"[LOUNGE_CLOSE] Event {event.id}: Removed {len(removed_users)} users from lounge. "
+                       f"Failed: {len(failed_users)}")
+
+            return Response({
+                "ok": True,
+                "message": f"Removed {len(removed_users)} users from lounge",
+                "removed_users": removed_users,
+                "failed_users": failed_users
+            }, status=200)
+
+        except Exception as e:
+            logger.error(f"[LOUNGE_CLOSE] Exception in lounge_close_and_remove_all: {str(e)}")
+            return Response({
+                "error": "close_lounge_failed",
+                "detail": str(e)
+            }, status=500)
+
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="track-replay")
     def track_replay(self, request, pk=None):
         """
