@@ -27,7 +27,7 @@ from .criteria_matching_engine import CriteriaBasedMatchingEngine
 
 from .models import (
     SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue, Event,
-    UserMatchingProfile, UserCriteriaProfile, SpeedNetworkingRule
+    UserMatchingProfile, UserCriteriaProfile, SpeedNetworkingRule, SpeedNetworkingInterestTag
 )
 from .serializers import (
     SpeedNetworkingSessionSerializer,
@@ -45,7 +45,7 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
-CRITERIA_KEYS = {'skill', 'experience', 'location', 'education'}
+CRITERIA_KEYS = {'skill', 'experience', 'location', 'education', 'interests'}
 ADVANCED_CONFIG_KEYS = {'random_factor', 'prefer_new_users'}
 ALLOWED_CRITERIA_CONFIG_KEYS = CRITERIA_KEYS | ADVANCED_CONFIG_KEYS
 
@@ -141,11 +141,15 @@ def _get_criteria_config(session):
         }
 
 
-def _build_user_profile_from_skills(user):
+def _build_user_profile_from_skills(user, session=None):
     """
     Build a profile dict for matching by reading from UserSkill directly.
 
-    Returns dict with keys: user_id, skills, experience_years, experience_level, etc.
+    Args:
+        user: Django User object
+        session: SpeedNetworkingSession (optional, used to fetch interests from queue)
+
+    Returns dict with keys: user_id, skills, experience_years, experience_level, interests, etc.
     """
     from users.models import UserSkill, UserProfile, Experience, Education
 
@@ -186,6 +190,15 @@ def _build_user_profile_from_skills(user):
         education_level = 1  # Default to Bachelor's level
         education_institution = ''
 
+    # Get interests from queue if session is provided
+    interests_list = []
+    if session:
+        queue_entry = SpeedNetworkingQueue.objects.filter(session=session, user=user).first()
+        if queue_entry:
+            interests_list = list(
+                queue_entry.interests.filter(is_active=True).values('category', 'side', 'label')
+            )
+
     # Build profile dict in the format expected by matching engine
     profile_dict = {
         'user_id': user.id,
@@ -205,10 +218,11 @@ def _build_user_profile_from_skills(user):
             'level': education_level,
             'institution': education_institution,
         },
+        'interests': interests_list,
         'preferred_match_type': 'any',
     }
 
-    logger.debug(f"[PROFILE] Built profile for user {user.id} from UserSkill: {len(skills_list)} skills")
+    logger.debug(f"[PROFILE] Built profile for user {user.id} from UserSkill: {len(skills_list)} skills, {len(interests_list)} interests")
     return profile_dict
 
 
@@ -755,6 +769,20 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
+            # Interests-specific validation
+            if criterion == 'interests' and 'match_mode' in config:
+                valid_modes = {'complementary', 'similar', 'both'}
+                if config['match_mode'] not in valid_modes:
+                    return Response(
+                        {
+                            'error': (
+                                f"interests.match_mode must be one of {valid_modes}, "
+                                f"got '{config['match_mode']}'"
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
         if 'random_factor' in criteria_config:
             try:
                 random_factor = float(criteria_config['random_factor'])
@@ -1233,6 +1261,72 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
 
         return Response({'message': 'User removed from queue'})
 
+    def interest_tags(self, request, event_id=None, pk=None):
+        """Get interest tags for a session (anyone) or create tags (host only)."""
+        session = self.get_object()
+
+        if request.method == 'GET':
+            # Anyone can view interest tags
+            tags = session.interest_tags.filter(is_active=True)
+            from .matching_serializers import SpeedNetworkingInterestTagSerializer
+            serializer = SpeedNetworkingInterestTagSerializer(tags, many=True)
+            return Response(serializer.data)
+
+        # POST: Create a new tag (host only)
+        if not _is_host(request, event_id):
+            return Response({'error': 'Only event hosts can create interest tags'},
+                          status=status.HTTP_403_FORBIDDEN)
+
+        request_data = request.data.copy()
+        request_data['session'] = session.id
+        from .matching_serializers import SpeedNetworkingInterestTagSerializer
+        serializer = SpeedNetworkingInterestTagSerializer(data=request_data)
+        if serializer.is_valid():
+            try:
+                # Check if a deleted tag with same label exists and reactivate it
+                label = serializer.validated_data.get('label')
+                category = serializer.validated_data.get('category')
+                side = serializer.validated_data.get('side')
+
+                existing_tag = SpeedNetworkingInterestTag.objects.filter(
+                    session=session,
+                    label=label,
+                    is_active=False
+                ).first()
+
+                if existing_tag:
+                    # Reactivate the existing tag instead of creating a duplicate
+                    existing_tag.is_active = True
+                    existing_tag.category = category
+                    existing_tag.side = side
+                    existing_tag.save()
+                    serializer = SpeedNetworkingInterestTagSerializer(existing_tag)
+                    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+                serializer.save(session=session)
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+            except Exception as e:
+                return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete_interest_tag(self, request, event_id=None, pk=None, tag_id=None):
+        """Soft-delete an interest tag (host only)."""
+        session = self.get_object()
+
+        # Host-only permission check
+        if not _is_host(request, event_id):
+            return Response({'error': 'Only event hosts can delete interest tags'},
+                          status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            tag = SpeedNetworkingInterestTag.objects.get(id=tag_id, session=session)
+        except SpeedNetworkingInterestTag.DoesNotExist:
+            return Response({'error': 'Tag not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        tag.is_active = False
+        tag.save(update_fields=['is_active'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
     """
@@ -1310,6 +1404,18 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             if not created and not queue_entry.is_active:
                 queue_entry.is_active = True
                 queue_entry.save()
+
+            # Handle interests if provided
+            interest_ids = request.data.get('interest_ids', [])
+            if interest_ids:
+                from .models import SpeedNetworkingInterestTag
+                # Validate that interests belong to this session
+                valid_tags = SpeedNetworkingInterestTag.objects.filter(
+                    id__in=interest_ids,
+                    session=session,
+                    is_active=True
+                )
+                queue_entry.interests.set(valid_tags)
 
             # Try to find a match immediately
             match = self._find_and_create_match(session, user)
@@ -1816,7 +1922,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             logger.info("[BOTH_MATCH] Applying criteria-based scoring")
 
             # Build user profile from UserSkill (primary source of truth)
-            user_profile_dict = _build_user_profile_from_skills(user)
+            user_profile_dict = _build_user_profile_from_skills(user, session=session)
 
             # Build candidate profiles from UserSkill
             from django.contrib.auth.models import User as DjangoUser
@@ -1832,7 +1938,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
 
             candidate_users = DjangoUser.objects.filter(id__in=candidate_ids)
             candidate_profiles = [
-                _build_user_profile_from_skills(candidate)
+                _build_user_profile_from_skills(candidate, session=session)
                 for candidate in candidate_users
             ]
             queue_wait_map = dict(

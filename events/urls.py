@@ -114,6 +114,16 @@ urlpatterns = [
         name='speed-networking-match-quality'
     ),
     path(
+        "events/<int:event_id>/speed-networking/<int:pk>/interest-tags/",
+        SpeedNetworkingSessionViewSet.as_view({'get': 'interest_tags', 'post': 'interest_tags'}),
+        name='speed-networking-interest-tags'
+    ),
+    path(
+        "events/<int:event_id>/speed-networking/<int:pk>/interest-tags/<int:tag_id>/",
+        SpeedNetworkingSessionViewSet.as_view({'delete': 'delete_interest_tag'}),
+        name='speed-networking-delete-interest-tag'
+    ),
+    path(
         "events/<int:event_id>/speed-networking/<int:pk>/start_config_comparison/",
         SpeedNetworkingQueueViewSet.as_view({'post': 'start_config_comparison'}),
         name='speed-networking-start-config-comparison'

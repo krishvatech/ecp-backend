@@ -21,7 +21,7 @@ import logging
 from typing import Dict, List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
-CRITERIA_KEYS = ('skill', 'experience', 'location', 'education')
+CRITERIA_KEYS = ('skill', 'experience', 'location', 'education', 'interests')
 
 
 # ============================================================================
@@ -479,6 +479,77 @@ def calculate_education_match_score(user_a_education: Dict,
 
 
 # ============================================================================
+# INTERESTS-BASED MATCHING
+# ============================================================================
+
+def calculate_interest_match_score(user_a_interests: List[Dict],
+                                   user_b_interests: List[Dict],
+                                   match_mode: str = 'complementary') -> float:
+    """
+    Calculate interest compatibility between two users.
+
+    Two interest tags are COMPLEMENTARY if they belong to the same category
+    and have opposite sides: ('seek' ↔ 'offer').
+    The side 'both' is complementary with everything.
+
+    Args:
+        user_a_interests: [{'category': 'investment', 'side': 'seek', 'label': '...'}, ...]
+        user_b_interests: Same format
+        match_mode: 'complementary' or 'similar'
+
+    Returns:
+        Score 0-100: Match quality percentage
+    """
+    if not user_a_interests or not user_b_interests:
+        logger.debug(f"[INTERESTS] Missing interests: A={bool(user_a_interests)}, B={bool(user_b_interests)}")
+        return 0.0
+
+    COMPLEMENTARY = {'seek': 'offer', 'offer': 'seek'}
+
+    if match_mode == 'complementary':
+        # Look for complementary (opposite side) interests
+        complementary_count = 0
+        for tag_a in user_a_interests:
+            cat_a = tag_a.get('category', '').lower()
+            side_a = tag_a.get('side', 'both')
+            for tag_b in user_b_interests:
+                cat_b = tag_b.get('category', '').lower()
+                side_b = tag_b.get('side', 'both')
+                # Categories must match
+                if cat_a != cat_b:
+                    continue
+                # Sides must be complementary or 'both'
+                if side_a == 'both' or side_b == 'both' or COMPLEMENTARY.get(side_a) == side_b:
+                    complementary_count += 1
+                    break  # Count each of A's interests only once
+
+        max_possible = max(len(user_a_interests), len(user_b_interests))
+        score = (complementary_count / max_possible) * 100 if max_possible > 0 else 0.0
+
+    else:  # similar mode - same side interests
+        similar_count = 0
+        for tag_a in user_a_interests:
+            cat_a = tag_a.get('category', '').lower()
+            side_a = tag_a.get('side', 'both')
+            for tag_b in user_b_interests:
+                cat_b = tag_b.get('category', '').lower()
+                side_b = tag_b.get('side', 'both')
+                # Categories must match and sides must match or be 'both'
+                if cat_a == cat_b and (side_a == side_b or side_a == 'both' or side_b == 'both'):
+                    similar_count += 1
+                    break  # Count each of A's interests only once
+
+        max_possible = max(len(user_a_interests), len(user_b_interests))
+        score = (similar_count / max_possible) * 100 if max_possible > 0 else 0.0
+
+    final_score = round(min(100, max(0, score)), 2)
+
+    logger.debug(f"[INTERESTS] Mode={match_mode}, Score={final_score}")
+
+    return final_score
+
+
+# ============================================================================
 # COMBINED MATCHING ENGINE
 # ============================================================================
 
@@ -531,6 +602,13 @@ class CriteriaBasedMatchingEngine:
                 'weight': 0.15,
                 'threshold': 40,
                 'match_type': 'complementary_fields'
+            },
+            'interests': {
+                'enabled': False,
+                'required': False,
+                'weight': 0.0,
+                'threshold': 50,
+                'match_mode': 'complementary'
             }
         }
 
@@ -597,6 +675,16 @@ class CriteriaBasedMatchingEngine:
             weights['education'] = self.criteria_config['education'].get('weight', 0.15)
             if self.criteria_config['education'].get('required', False):
                 required_criteria.append('education')
+
+        if self.criteria_config.get('interests', {}).get('enabled', False):
+            scores['interests'] = calculate_interest_match_score(
+                user_a.get('interests', []),
+                user_b.get('interests', []),
+                self.criteria_config['interests'].get('match_mode', 'complementary')
+            )
+            weights['interests'] = self.criteria_config['interests'].get('weight', 0.0)
+            if self.criteria_config['interests'].get('required', False):
+                required_criteria.append('interests')
 
         logger.debug(f"[MATCH] Calculated scores: {scores}, Required: {required_criteria}")
 

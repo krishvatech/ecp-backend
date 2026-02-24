@@ -3,7 +3,7 @@ Serializers for Speed Networking Matching Rules and Profiles.
 """
 
 from rest_framework import serializers
-from .models import SpeedNetworkingRule, UserMatchingProfile, MatchHistory
+from .models import SpeedNetworkingRule, UserMatchingProfile, MatchHistory, SpeedNetworkingInterestTag
 
 
 class SpeedNetworkingRuleSerializer(serializers.ModelSerializer):
@@ -224,3 +224,15 @@ class SessionMatchingStatsSerializer(serializers.Serializer):
     rule_compliance_rate = serializers.FloatField()
     queue_size = serializers.IntegerField()
     avg_wait_time_seconds = serializers.FloatField()
+
+
+class SpeedNetworkingInterestTagSerializer(serializers.ModelSerializer):
+    """
+    Serializer for SpeedNetworkingInterestTag.
+    Used for managing interest tags per speed networking session.
+    """
+
+    class Meta:
+        model = SpeedNetworkingInterestTag
+        fields = ['id', 'label', 'category', 'side', 'is_active', 'created_at']
+        read_only_fields = ['id', 'created_at']

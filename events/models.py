@@ -729,8 +729,53 @@ class SpeedNetworkingQueue(models.Model):
             models.Index(fields=['session', 'current_match']),
         ]
 
+    interests = models.ManyToManyField(
+        'SpeedNetworkingInterestTag',
+        blank=True,
+        related_name='queue_entries',
+        help_text="Interests this user is looking for / offering in this session"
+    )
+
     def __str__(self):
         return f"{self.user} in Queue for Session {self.session_id}"
+
+
+class SpeedNetworkingInterestTag(models.Model):
+    """
+    Host-defined interest tags for a speed networking session.
+    Tags are grouped by 'category' and each has a 'side' (offer/seek/both).
+    Complementary matching pairs a 'seek' tag with its 'offer' counterpart in the same category.
+
+    Example:
+        category='investment', side='seek', label='Looking for investors'
+        category='investment', side='offer', label='Offering investment opportunities'
+    """
+    SIDE_CHOICES = [
+        ('offer', 'Offering'),
+        ('seek', 'Seeking'),
+        ('both', 'Both / Open'),
+    ]
+
+    session = models.ForeignKey(
+        SpeedNetworkingSession,
+        on_delete=models.CASCADE,
+        related_name='interest_tags'
+    )
+    label = models.CharField(max_length=100, help_text="Display label, e.g. 'Looking for investors'")
+    category = models.CharField(max_length=50, help_text="Groups complementary tags, e.g. 'investment'")
+    side = models.CharField(max_length=10, choices=SIDE_CHOICES, default='both')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('session', 'label')
+        ordering = ['category', 'side']
+        indexes = [
+            models.Index(fields=['session', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f"[{self.session_id}] {self.label} ({self.category}/{self.side})"
 
 
 class EventParticipant(models.Model):
