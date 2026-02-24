@@ -330,6 +330,59 @@ def calculate_location_match_score(user_a_location: Dict,
     return 0
 
 
+def find_closest_candidate_by_distance(user_location: Dict,
+                                       candidate_profiles: List[Dict]) -> Optional[Tuple[Dict, float]]:
+    """
+    Find the closest candidate by geographic distance.
+
+    This is a fallback when criteria-based matching fails - picks whoever is
+    geographically closest, even if very far apart.
+
+    Args:
+        user_location: {city, country, lat, lon, timezone} of the user
+        candidate_profiles: List of candidate profile dicts
+
+    Returns:
+        Tuple of (candidate_profile, distance_km) or None if no valid locations
+    """
+    if not user_location or not candidate_profiles:
+        return None
+
+    user_lat = user_location.get('lat')
+    user_lon = user_location.get('lon')
+
+    # If user has no coordinates, can't calculate distance
+    if user_lat is None or user_lon is None:
+        logger.debug("[PROXIMITY] User missing coordinates for distance calculation")
+        return None
+
+    closest_candidate = None
+    min_distance = float('inf')
+
+    for candidate in candidate_profiles:
+        candidate_location = candidate.get('location', {})
+        cand_lat = candidate_location.get('lat')
+        cand_lon = candidate_location.get('lon')
+
+        # Skip candidates without coordinates
+        if cand_lat is None or cand_lon is None:
+            logger.debug(f"[PROXIMITY] Candidate {candidate.get('user_id')} missing coordinates")
+            continue
+
+        distance = haversine_distance(user_lat, user_lon, cand_lat, cand_lon)
+
+        if distance < min_distance:
+            min_distance = distance
+            closest_candidate = candidate
+
+    if closest_candidate:
+        logger.info(f"[PROXIMITY] Found closest candidate at {min_distance:.1f} km away")
+        return (closest_candidate, min_distance)
+
+    logger.warning("[PROXIMITY] No candidates with valid coordinates found")
+    return None
+
+
 # ============================================================================
 # EDUCATION-BASED MATCHING
 # ============================================================================
@@ -796,6 +849,60 @@ class CriteriaBasedMatchingEngine:
         if not user.get('education'):
             user['education'] = {'field': 'Unknown', 'level': 1}
         return user
+
+    def find_match_by_proximity(self, user: Dict, candidates: List[Dict]) -> Optional[Tuple[float, Dict, Dict]]:
+        """
+        Find match by geographic proximity - final fallback when criteria fail.
+
+        Picks the candidate closest to the user geographically, even if very far.
+        Used when all other matching strategies (criteria-based, fallback thresholds) fail.
+
+        Args:
+            user: User profile dict
+            candidates: List of candidate profile dicts
+
+        Returns:
+            Tuple of (score, candidate, breakdown) or None
+            - score: Based on distance (0-100)
+            - candidate: Selected candidate profile
+            - breakdown: {'proximity': score, 'distance_km': distance}
+        """
+        user_location = user.get('location', {})
+
+        result = find_closest_candidate_by_distance(user_location, candidates)
+
+        if not result:
+            logger.warning("[PROXIMITY_FALLBACK] No candidates with valid coordinates")
+            return None
+
+        closest_candidate, distance_km = result
+
+        # Convert distance to score using same logic as location matching
+        if distance_km < 10:
+            score = 100
+        elif distance_km < 50:
+            score = 80
+        elif distance_km < 100:
+            score = 60
+        elif distance_km < 200:
+            score = 40
+        elif distance_km < 500:
+            score = 20
+        else:
+            score = 10  # Always give a score if we found someone
+
+        breakdown = {
+            'proximity': score,
+            'distance_km': round(distance_km, 2)
+        }
+
+        logger.info(
+            f"[PROXIMITY_FALLBACK] Matched by proximity: "
+            f"distance={distance_km:.1f}km, score={score:.1f}, "
+            f"candidate_id={closest_candidate.get('user_id')}"
+        )
+
+        return (score, closest_candidate, breakdown)
 
     def get_score_explanation(self, scores: Dict) -> str:
         """

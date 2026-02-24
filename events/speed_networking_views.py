@@ -494,8 +494,13 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         session.started_at = timezone.now()
         session.save()
 
-        # Reset queue (clear any stale entries from previous runs)
-        session.queue.update(is_active=False, current_match=None)
+        # Clear stale queue entries from previous runs (older than 1 hour)
+        # Keep recently joined users active (they joined while session was PENDING)
+        from datetime import timedelta
+        stale_cutoff = timezone.now() - timedelta(hours=1)
+        session.queue.filter(joined_at__lt=stale_cutoff).update(is_active=False, current_match=None)
+        logger.info(f"[SESSION_START] Cleared stale queue entries older than 1 hour")
+
         session.matches.filter(status='ACTIVE').update(status='COMPLETED', ended_at=timezone.now())
 
         # Broadcast via WebSocket
@@ -1294,43 +1299,55 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
 
         user = request.user
 
-        # Get or create queue entry
-        queue_entry, created = SpeedNetworkingQueue.objects.get_or_create(
-            session=session,
-            user=user,
-            defaults={'is_active': True}
-        )
+        try:
+            # Get or create queue entry
+            queue_entry, created = SpeedNetworkingQueue.objects.get_or_create(
+                session=session,
+                user=user,
+                defaults={'is_active': True}
+            )
 
-        if not created and not queue_entry.is_active:
-            queue_entry.is_active = True
-            queue_entry.save()
+            if not created and not queue_entry.is_active:
+                queue_entry.is_active = True
+                queue_entry.save()
 
-        # Try to find a match immediately
-        match = self._find_and_create_match(session, user)
+            # Try to find a match immediately
+            match = self._find_and_create_match(session, user)
 
-        # Broadcast queue update to all clients (for host panel)
-        _broadcast_queue_update(session, event_id)
+            # Broadcast queue update to all clients (for host panel)
+            try:
+                _broadcast_queue_update(session, event_id)
+            except Exception as e:
+                logger.error(f"[JOIN] Failed to broadcast queue update: {e}")
+                # Don't fail the entire join if broadcast fails
 
-        if match:
-            serializer = SpeedNetworkingMatchSerializer(match)
-            data = serializer.data
+            if match:
+                serializer = SpeedNetworkingMatchSerializer(match)
+                data = serializer.data
 
-            # Add Dyte token
-            if match.dyte_room_name:
-                token = self._get_dyte_token_for_user(match, user)
-                if token:
-                    data['dyte_token'] = token
+                # Add Dyte token
+                if match.dyte_room_name:
+                    token = self._get_dyte_token_for_user(match, user)
+                    if token:
+                        data['dyte_token'] = token
 
-            return Response({
-                'status': 'matched',
-                'match': data,
-                'message': 'Match found!'
-            }, status=status.HTTP_200_OK)
-        else:
-            return Response({
-                'status': 'queued',
-                'message': 'Waiting for a match...'
-            }, status=status.HTTP_200_OK)
+                return Response({
+                    'status': 'matched',
+                    'match': data,
+                    'message': 'Match found!'
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'status': 'queued',
+                    'message': 'Waiting for a match...'
+                }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.exception(f"[JOIN] Unexpected error during join: {e}")
+            return Response(
+                {'error': f'Failed to join queue: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
     
     @action(detail=False, methods=['post'])
     def leave(self, request, event_id=None, session_id=None):
@@ -1891,17 +1908,28 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                     score, partner_dict, breakdown = match_result
                     logger.info(f"[BOTH_MATCH] Fallback matched at step {fallback_step} with score {score:.1f}")
                 else:
-                    random_candidate_id = self._pick_random_candidate_with_fairness(candidate_ids, queue_wait_map)
-                    if not random_candidate_id:
-                        logger.warning("[BOTH_MATCH] Random fallback failed - no available candidates")
-                        return None
-                    partner_dict = {'user_id': random_candidate_id}
-                    score = LOW_MATCH_SCORE_THRESHOLD
-                    breakdown = {'fallback': LOW_MATCH_SCORE_THRESHOLD}
-                    logger.info(
-                        f"[BOTH_MATCH] Random fallback match selected user={random_candidate_id}, "
-                        f"user_wait={user_wait_seconds:.1f}s"
+                    # Try proximity-based fallback (match by geographic distance)
+                    proximity_result = criteria_engine.find_match_by_proximity(
+                        user_profile_dict,
+                        candidate_profiles
                     )
+
+                    if proximity_result:
+                        score, partner_dict, breakdown = proximity_result
+                        logger.info(f"[BOTH_MATCH] Proximity fallback matched with score {score:.1f}")
+                    else:
+                        # Final fallback: random selection
+                        random_candidate_id = self._pick_random_candidate_with_fairness(candidate_ids, queue_wait_map)
+                        if not random_candidate_id:
+                            logger.warning("[BOTH_MATCH] Random fallback failed - no available candidates")
+                            return None
+                        partner_dict = {'user_id': random_candidate_id}
+                        score = LOW_MATCH_SCORE_THRESHOLD
+                        breakdown = {'fallback': LOW_MATCH_SCORE_THRESHOLD}
+                        logger.info(
+                            f"[BOTH_MATCH] Random fallback match selected user={random_candidate_id}, "
+                            f"user_wait={user_wait_seconds:.1f}s"
+                        )
         else:
             # Criteria-only not enabled, do basic match from filtered candidates
             return self._basic_match_from_candidates(
@@ -1933,67 +1961,71 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         match_data = None
 
         # Atomic database operations
-        with transaction.atomic():
-            try:
-                user_queue = SpeedNetworkingQueue.objects.select_for_update().get(
+        try:
+            with transaction.atomic():
+                try:
+                    user_queue = SpeedNetworkingQueue.objects.select_for_update().get(
+                        session=session,
+                        user=user
+                    )
+                except SpeedNetworkingQueue.DoesNotExist:
+                    logger.error(f"[BOTH_MATCH] Queue entry not found for user {user.id}")
+                    return None
+
+                if user_queue.current_match is not None:
+                    logger.debug(f"[BOTH_MATCH] User {user.id} already has a match")
+                    return None
+
+                # Lock partner's queue entry
+                try:
+                    partner_queue = SpeedNetworkingQueue.objects.select_for_update(
+                        skip_locked=True
+                    ).get(session=session, user=partner)
+                except SpeedNetworkingQueue.DoesNotExist:
+                    logger.error(f"[BOTH_MATCH] Queue entry not found for partner {partner.id}")
+                    return None
+
+                if partner_queue.current_match is not None:
+                    logger.debug(f"[BOTH_MATCH] Partner {partner.id} was claimed by another thread")
+                    return None
+
+                # Create Dyte room ID
+                dyte_meeting_room = f"match-{session.id}-{uuid.uuid4().hex[:8]}"
+
+                # Calculate probability from score
+                calculated_score = score if 'score' in locals() else 0
+                calculated_breakdown = breakdown if 'breakdown' in locals() else {}
+                calculated_probability = _calculate_match_probability(calculated_score)
+
+                # Create match record with both systems' data
+                match = SpeedNetworkingMatch.objects.create(
                     session=session,
-                    user=user
+                    participant_1=user,
+                    participant_2=partner,
+                    dyte_room_name=dyte_meeting_room,
+                    status='ACTIVE',
+                    match_score=calculated_score,
+                    match_breakdown=calculated_breakdown,
+                    match_probability=calculated_probability,  # NEW
+                    config_version=session.config_version,  # NEW
+                    rule_compliance=True  # Already validated by rule engine
                 )
-            except SpeedNetworkingQueue.DoesNotExist:
-                logger.error(f"[BOTH_MATCH] Queue entry not found for user {user.id}")
-                return None
 
-            if user_queue.current_match is not None:
-                logger.debug(f"[BOTH_MATCH] User {user.id} already has a match")
-                return None
+                # Update queue entries
+                user_queue.current_match = match
+                user_queue.save()
 
-            # Lock partner's queue entry
-            try:
-                partner_queue = SpeedNetworkingQueue.objects.select_for_update(
-                    skip_locked=True
-                ).get(session=session, user=partner)
-            except SpeedNetworkingQueue.DoesNotExist:
-                logger.error(f"[BOTH_MATCH] Queue entry not found for partner {partner.id}")
-                return None
+                partner_queue.current_match = match
+                partner_queue.save()
 
-            if partner_queue.current_match is not None:
-                logger.debug(f"[BOTH_MATCH] Partner {partner.id} was claimed by another thread")
-                return None
+                # Record match history (rule-based system)
+                if session.matching_strategy in ['rule_only', 'both']:
+                    rule_engine.record_match_history(user, partner, match)
 
-            # Create Dyte room ID
-            dyte_meeting_room = f"match-{session.id}-{uuid.uuid4().hex[:8]}"
-
-            # Calculate probability from score
-            calculated_score = score if 'score' in locals() else 0
-            calculated_breakdown = breakdown if 'breakdown' in locals() else {}
-            calculated_probability = _calculate_match_probability(calculated_score)
-
-            # Create match record with both systems' data
-            match = SpeedNetworkingMatch.objects.create(
-                session=session,
-                participant_1=user,
-                participant_2=partner,
-                dyte_room_name=dyte_meeting_room,
-                status='ACTIVE',
-                match_score=calculated_score,
-                match_breakdown=calculated_breakdown,
-                match_probability=calculated_probability,  # NEW
-                config_version=session.config_version,  # NEW
-                rule_compliance=True  # Already validated by rule engine
-            )
-
-            # Update queue entries
-            user_queue.current_match = match
-            user_queue.save()
-
-            partner_queue.current_match = match
-            partner_queue.save()
-
-            # Record match history (rule-based system)
-            if session.matching_strategy in ['rule_only', 'both']:
-                rule_engine.record_match_history(user, partner, match)
-
-            match_data = SpeedNetworkingMatchSerializer(match).data
+                match_data = SpeedNetworkingMatchSerializer(match).data
+        except Exception as e:
+            logger.error(f"[BOTH_MATCH] Database transaction error while creating match: {e}")
+            return None
 
         # ===============================================================
         # STEP 4: EXTERNAL API CALLS (Dyte)
@@ -2011,31 +2043,39 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             # Add participants to Dyte
             p1_token = None
             p2_token = None
+            p1_error = None
+            p2_error = None
 
             try:
-                p1_token, _ = add_dyte_participant(
+                p1_token, p1_error = add_dyte_participant(
                     real_meeting_id,
                     user.id,
                     f"{user.first_name} {user.last_name}".strip() or user.username,
                     DYTE_PRESET_PARTICIPANT
                 )
+                if not p1_token:
+                    logger.error(f"[BOTH_MATCH] Failed to get token for user {user.id}: {p1_error}")
             except Exception as e:
-                logger.error(f"[BOTH_MATCH] Dyte P1 failed: {e}")
+                logger.error(f"[BOTH_MATCH] Dyte P1 exception: {e}")
+                p1_error = str(e)
 
             try:
-                p2_token, _ = add_dyte_participant(
+                p2_token, p2_error = add_dyte_participant(
                     real_meeting_id,
                     partner.id,
                     f"{partner.first_name} {partner.last_name}".strip() or partner.username,
                     DYTE_PRESET_PARTICIPANT
                 )
+                if not p2_token:
+                    logger.error(f"[BOTH_MATCH] Failed to get token for partner {partner.id}: {p2_error}")
             except Exception as e:
-                logger.error(f"[BOTH_MATCH] Dyte P2 failed: {e}")
+                logger.error(f"[BOTH_MATCH] Dyte P2 exception: {e}")
+                p2_error = str(e)
 
             # Notify both users
             p1_data = match_data.copy()
-            if p1_token:
-                p1_data['dyte_token'] = p1_token
+            p1_data['dyte_token'] = p1_token
+            p1_data['dyte_error'] = p1_error
             p1_data['match_score'] = score if 'score' in locals() else 0
             p1_data['match_breakdown'] = breakdown if 'breakdown' in locals() else {}
 
@@ -2045,8 +2085,8 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             })
 
             p2_data = match_data.copy()
-            if p2_token:
-                p2_data['dyte_token'] = p2_token
+            p2_data['dyte_token'] = p2_token
+            p2_data['dyte_error'] = p2_error
             p2_data['match_score'] = score if 'score' in locals() else 0
             p2_data['match_breakdown'] = breakdown if 'breakdown' in locals() else {}
 
@@ -2055,7 +2095,10 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                 'match': p2_data
             })
 
-            logger.info(f"[BOTH_MATCH] Successfully matched user {user.id} with {partner.id}")
+            if p1_token and p2_token:
+                logger.info(f"[BOTH_MATCH] Successfully matched user {user.id} with {partner.id}")
+            else:
+                logger.warning(f"[BOTH_MATCH] Partial token generation: P1={bool(p1_token)}, P2={bool(p2_token)}")
 
         return match
 

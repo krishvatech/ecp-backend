@@ -115,17 +115,17 @@ urlpatterns = [
     ),
     path(
         "events/<int:event_id>/speed-networking/<int:pk>/start_config_comparison/",
-        SpeedNetworkingSessionViewSet.as_view({'post': 'start_config_comparison'}),
+        SpeedNetworkingQueueViewSet.as_view({'post': 'start_config_comparison'}),
         name='speed-networking-start-config-comparison'
     ),
     path(
         "events/<int:event_id>/speed-networking/<int:pk>/get_comparison_results/",
-        SpeedNetworkingSessionViewSet.as_view({'get': 'get_comparison_results'}),
+        SpeedNetworkingQueueViewSet.as_view({'get': 'get_comparison_results'}),
         name='speed-networking-get-comparison-results'
     ),
     path(
         "events/<int:event_id>/speed-networking/<int:pk>/finalize_comparison/",
-        SpeedNetworkingSessionViewSet.as_view({'post': 'finalize_comparison'}),
+        SpeedNetworkingQueueViewSet.as_view({'post': 'finalize_comparison'}),
         name='speed-networking-finalize-comparison'
     ),
 
