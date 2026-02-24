@@ -252,7 +252,7 @@ ROOT_URLCONF = "ecp_backend.urls"
 ASGI_APPLICATION = "ecp_backend.asgi.application"
 WSGI_APPLICATION = None  # Channels-based; no WSGI application needed
 
-_DB_CONN_MAX_AGE = 0 if DEBUG else int(os.getenv("DB_CONN_MAX_AGE", "300"))
+_DB_CONN_MAX_AGE = 600 if DEBUG else int(os.getenv("DB_CONN_MAX_AGE", "600"))
 
 DATABASES = {
     "default": {
@@ -264,7 +264,10 @@ DATABASES = {
         "PORT": os.getenv("POSTGRES_PORT", "5432"),
         "CONN_MAX_AGE": _DB_CONN_MAX_AGE,
         "CONN_HEALTH_CHECKS": True,           # validates stale pooled conns
-        "OPTIONS": {"connect_timeout": 5},    # fail fast instead of hanging
+        "OPTIONS": {
+            "connect_timeout": 5,    # fail fast instead of hanging
+            "options": "-c statement_timeout=30000"  # 30 second query timeout
+        },
     }
 }
 
@@ -278,6 +281,13 @@ CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": REDIS_URL,
+        "OPTIONS": {
+            "socket_connect_timeout": 5,
+            "socket_timeout": 5,
+            "socket_keepalive": True,
+        },
+        "KEY_PREFIX": "ecp",
+        "TIMEOUT": 300,  # 5 minute default timeout
     }
 }
 
@@ -442,25 +452,72 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": True,
 }
 
+# ============================================================================
+# PERFORMANCE OPTIMIZATION SETTINGS
+# ============================================================================
+
+# Request timeout settings to prevent hanging
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))  # 30 seconds
+
+# Database connection pooling
+# DEBUG mode now uses 600s timeout instead of 0 for better performance with concurrent requests
+DATABASE_CONNECT_TIMEOUT = 10
+DATABASE_STATEMENT_TIMEOUT = 30000  # 30 seconds
+
+# Celery task timeout to prevent infinite tasks
+CELERY_TASK_TIME_LIMIT = 300  # 5 minutes hard limit
+CELERY_TASK_SOFT_TIME_LIMIT = 240  # 4 minutes soft limit (allows graceful shutdown)
+
+# Redis connection timeout
+REDIS_SOCKET_CONNECT_TIMEOUT = 5
+REDIS_SOCKET_TIMEOUT = 5
+
 # Celery configuration
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULE = {}
 
+# OPTIMIZATION: Reduced frequency for 100+ concurrent user scalability
 CELERY_BEAT_SCHEDULE.update({
     "dispatch_suggestion_digest_local_9am": {
         "task": "friends.tasks.dispatch_suggestion_digest_local_9am",
-        "schedule": crontab(minute="*/1"),
+        "schedule": crontab(minute="*/5"),  # Reduced from every 1 minute to every 5 minutes
     }
 })
 
 CELERY_BEAT_SCHEDULE.update({
     "enforce_event_end_conditions": {
         "task": "events.tasks.enforce_event_end_conditions",
-        "schedule": crontab(minute="*/1"),
+        "schedule": crontab(minute="*/5"),  # Reduced from every 1 minute to every 5 minutes
     }
 })
+
+# ============================================================================
+# MEMORY & CONNECTION MANAGEMENT (100+ Concurrent Users)
+# ============================================================================
+
+# Celery configuration for resource management
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000  # Restart worker every 1000 tasks to free memory
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Process one task at a time (not 4x the concurrent limit)
+CELERY_TASK_TIME_LIMIT = 300  # 5 minute hard limit per task
+CELERY_TASK_SOFT_TIME_LIMIT = 240  # 4 minute soft limit (graceful shutdown)
+
+# Django ORM connection management
+# Close stale connections after each request
+from django.db import connections
+
+def close_old_connections(sender, **kwargs):
+    """Close database connections that have been idle."""
+    for conn in connections.all():
+        conn.close_if_unusable_or_obsolete()
+
+from django.core.signals import request_finished
+request_finished.connect(close_old_connections)
+
+# Memory management
+import gc
+gc.set_debug(0)  # Disable debug (it's expensive)
 
 # Security headers and cookie defaults
 SECURE_CONTENT_TYPE_NOSNIFF = True

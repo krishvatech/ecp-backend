@@ -640,7 +640,7 @@ class CriteriaBasedMatchingEngine:
                 user_b.get('skills', []),
                 self.criteria_config['skill'].get('match_mode', 'complementary')
             )
-            weights['skill'] = self.criteria_config['skill'].get('weight', 0.35)
+            weights['skill'] = self.criteria_config['skill'].get('weight') or 0.35
             if self.criteria_config['skill'].get('required', True):
                 required_criteria.append('skill')
 
@@ -652,7 +652,7 @@ class CriteriaBasedMatchingEngine:
                 user_b.get('experience_level'),
                 self.criteria_config['experience'].get('match_type', 'mentorship')
             )
-            weights['experience'] = self.criteria_config['experience'].get('weight', 0.30)
+            weights['experience'] = self.criteria_config['experience'].get('weight') or 0.30
             if self.criteria_config['experience'].get('required', True):
                 required_criteria.append('experience')
 
@@ -662,7 +662,7 @@ class CriteriaBasedMatchingEngine:
                 user_b.get('location', {}),
                 self.criteria_config['location'].get('match_strategy', 'radius')
             )
-            weights['location'] = self.criteria_config['location'].get('weight', 0.20)
+            weights['location'] = self.criteria_config['location'].get('weight') or 0.20
             if self.criteria_config['location'].get('required', False):
                 required_criteria.append('location')
 
@@ -672,7 +672,7 @@ class CriteriaBasedMatchingEngine:
                 user_b.get('education', {}),
                 self.criteria_config['education'].get('match_type', 'same_level')
             )
-            weights['education'] = self.criteria_config['education'].get('weight', 0.15)
+            weights['education'] = self.criteria_config['education'].get('weight') or 0.15
             if self.criteria_config['education'].get('required', False):
                 required_criteria.append('education')
 
@@ -682,7 +682,7 @@ class CriteriaBasedMatchingEngine:
                 user_b.get('interests', []),
                 self.criteria_config['interests'].get('match_mode', 'complementary')
             )
-            weights['interests'] = self.criteria_config['interests'].get('weight', 0.0)
+            weights['interests'] = self.criteria_config['interests'].get('weight') or 0.0
             if self.criteria_config['interests'].get('required', False):
                 required_criteria.append('interests')
 
@@ -698,12 +698,15 @@ class CriteriaBasedMatchingEngine:
                 return 0, scores, False
 
         # ===== STEP 3: Normalize weights to sum to 1.0 =====
-        total_weight = sum(weights.values())
+        # Filter out None values from weights
+        valid_weights = {k: v for k, v in weights.items() if v is not None}
+        total_weight = sum(valid_weights.values()) if valid_weights else 0
+
         if total_weight == 0:
-            logger.warning("[MATCH] No weights configured, cannot calculate score")
+            logger.warning("[MATCH] No valid weights configured, cannot calculate score")
             return 0, scores, False
 
-        normalized_weights = {k: v / total_weight for k, v in weights.items()}
+        normalized_weights = {k: v / total_weight for k, v in valid_weights.items()}
         logger.debug(f"[MATCH] Normalized weights: {normalized_weights}")
 
         # ===== STEP 4: Calculate weighted final score =====

@@ -1,6 +1,10 @@
 import os
 import requests
 import logging
+import hashlib
+import json
+from functools import wraps
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
@@ -133,3 +137,97 @@ def send_admission_status_changed(user_id, admission_status):
     send_speed_networking_user_message(user_id, "admission.status_changed", {
         "admission_status": admission_status
     })
+
+
+# ============================================================
+# =================== CACHING UTILITIES ======================
+# ============================================================
+
+def get_user_profile_cache_key(user_id, session_id=None):
+    """Generate cache key for user profile."""
+    if session_id:
+        return f"user_profile:{user_id}:session:{session_id}"
+    return f"user_profile:{user_id}"
+
+
+def get_candidates_cache_key(session_id, candidate_ids_hash):
+    """Generate cache key for candidate profiles batch."""
+    return f"candidates:{session_id}:{candidate_ids_hash}"
+
+
+def hash_candidate_ids(candidate_ids):
+    """Create hash of candidate IDs list for cache key."""
+    ids_str = ",".join(map(str, sorted(set(candidate_ids))))
+    return hashlib.md5(ids_str.encode()).hexdigest()[:8]
+
+
+def cache_user_profile(timeout=300):
+    """
+    Decorator to cache user profile building results.
+
+    Caches for 5 minutes (300 seconds) by default.
+    Avoid calling the expensive _build_user_profile_from_skills multiple times.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(user, session=None, queue_entry=None):
+            # Generate cache key
+            cache_key = get_user_profile_cache_key(user.id, session.id if session else None)
+
+            # Try to get from cache
+            cached_profile = cache.get(cache_key)
+            if cached_profile is not None:
+                logger.debug(f"[CACHE HIT] User profile for user_id={user.id}")
+                return cached_profile
+
+            # Not in cache, compute it
+            logger.debug(f"[CACHE MISS] Computing profile for user_id={user.id}")
+            profile = func(user, session=session, queue_entry=queue_entry)
+
+            # Store in cache
+            cache.set(cache_key, profile, timeout)
+            return profile
+
+        return wrapper
+    return decorator
+
+
+def invalidate_user_profile_cache(user_id, session_id=None):
+    """Invalidate cached user profile when user data changes."""
+    cache_key = get_user_profile_cache_key(user_id, session_id)
+    cache.delete(cache_key)
+    logger.debug(f"[CACHE INVALIDATE] Deleted cache for user_id={user_id}")
+
+
+def cache_matching_scores(timeout=120):
+    """
+    Decorator to cache matching score calculations.
+
+    Cache for 2 minutes (120 seconds).
+    Useful for find_best_matches when same users are matched repeatedly.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(self, user, candidate_pool, top_n=5):
+            # Create cache key from user ID and candidate IDs
+            user_id = user.get('user_id')
+            candidate_ids = [c.get('user_id') for c in candidate_pool]
+            ids_hash = hash_candidate_ids(candidate_ids)
+            cache_key = f"match_scores:{user_id}:{ids_hash}:top{top_n}"
+
+            # Try cache
+            cached_result = cache.get(cache_key)
+            if cached_result is not None:
+                logger.debug(f"[CACHE HIT] Match scores for user_id={user_id}, top_n={top_n}")
+                return cached_result
+
+            # Compute matches
+            logger.debug(f"[CACHE MISS] Computing match scores for user_id={user_id}")
+            result = func(self, user, candidate_pool, top_n=top_n)
+
+            # Cache result
+            cache.set(cache_key, result, timeout)
+            return result
+
+        return wrapper
+    return decorator

@@ -141,17 +141,28 @@ def _get_criteria_config(session):
         }
 
 
-def _build_user_profile_from_skills(user, session=None):
+def _build_user_profile_from_skills(user, session=None, queue_entry=None):
     """
     Build a profile dict for matching by reading from UserSkill directly.
+
+    OPTIMIZED: Results are cached for 5 minutes to avoid repeated queries.
 
     Args:
         user: Django User object
         session: SpeedNetworkingSession (optional, used to fetch interests from queue)
+        queue_entry: Pre-fetched SpeedNetworkingQueue entry (optional, avoids N+1 queries)
 
     Returns dict with keys: user_id, skills, experience_years, experience_level, interests, etc.
     """
     from users.models import UserSkill, UserProfile, Experience, Education
+    from django.core.cache import cache
+
+    # Check cache first to avoid rebuilding profile repeatedly
+    cache_key = f"user_profile:{user.id}:session:{session.id if session else 'none'}"
+    cached_profile = cache.get(cache_key)
+    if cached_profile is not None:
+        logger.debug(f"[CACHE HIT] User profile for user_id={user.id}")
+        return cached_profile
 
     # Get skills from UserSkill model using the related name
     skills_query = user.user_skills.select_related('skill')
@@ -190,9 +201,15 @@ def _build_user_profile_from_skills(user, session=None):
         education_level = 1  # Default to Bachelor's level
         education_institution = ''
 
-    # Get interests from queue if session is provided
+    # Get interests from queue if provided or fetch from session
     interests_list = []
-    if session:
+    if queue_entry:
+        # Use pre-fetched queue entry (optimized for batch operations)
+        interests_list = list(
+            queue_entry.interests.filter(is_active=True).values('category', 'side', 'label')
+        )
+    elif session:
+        # Fallback: fetch queue entry if not provided (for backward compatibility)
         queue_entry = SpeedNetworkingQueue.objects.filter(session=session, user=user).first()
         if queue_entry:
             interests_list = list(
@@ -223,6 +240,12 @@ def _build_user_profile_from_skills(user, session=None):
     }
 
     logger.debug(f"[PROFILE] Built profile for user {user.id} from UserSkill: {len(skills_list)} skills, {len(interests_list)} interests")
+
+    # Cache profile for 5 minutes to avoid repeated queries
+    from django.core.cache import cache
+    cache_key = f"user_profile:{user.id}:session:{session.id if session else 'none'}"
+    cache.set(cache_key, profile_dict, 300)  # 5 minute timeout
+
     return profile_dict
 
 
@@ -1936,11 +1959,36 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                 # No-rules path returns IDs directly
                 candidate_ids = candidates_after_rules
 
-            candidate_users = DjangoUser.objects.filter(id__in=candidate_ids)
-            candidate_profiles = [
-                _build_user_profile_from_skills(candidate, session=session)
-                for candidate in candidate_users
-            ]
+            # OPTIMIZATION: Batch prefetch to avoid N+1 queries
+            candidate_users = DjangoUser.objects.filter(
+                id__in=candidate_ids
+            ).prefetch_related(
+                'user_skills__skill',
+                'profile',
+                'experiences',
+                'educations'
+            )
+
+            # Batch fetch queue entries with interests (avoid N+1 query for interests)
+            queue_entries_dict = {
+                entry.user_id: entry
+                for entry in SpeedNetworkingQueue.objects.filter(
+                    session=session,
+                    user_id__in=candidate_ids,
+                    is_active=True
+                ).prefetch_related('interests')
+            }
+
+            # Build profiles with pre-fetched queue entries
+            candidate_profiles = []
+            for candidate in candidate_users:
+                queue_entry = queue_entries_dict.get(candidate.id)
+                profile = _build_user_profile_from_skills(
+                    candidate,
+                    session=session,
+                    queue_entry=queue_entry
+                )
+                candidate_profiles.append(profile)
             queue_wait_map = dict(
                 SpeedNetworkingQueue.objects.filter(
                     session=session,
@@ -1968,10 +2016,11 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             criteria_engine = CriteriaBasedMatchingEngine(session, criteria_config)
 
             # Find best matches based on criteria
+            # OPTIMIZATION: Limit scoring to top 10 candidates instead of all to reduce CPU usage
             matches = criteria_engine.find_best_matches(
                 user_profile_dict,
                 candidate_profiles,
-                top_n=max(1, len(candidate_profiles))
+                top_n=max(1, min(10, len(candidate_profiles)))
             )
 
             try:
