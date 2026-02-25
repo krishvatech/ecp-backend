@@ -1522,6 +1522,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "joined_live_at",
             "status",
             "is_host",
+            "current_location",
         )
         read_only_fields = (
             "id",
@@ -1543,6 +1544,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "joined_live_at",
             "status",
             "is_host",
+            "current_location",
         )
 
     def get_is_host(self, obj):

@@ -404,6 +404,22 @@ class EventRegistration(models.Model):
     # Moderation
     is_banned = models.BooleanField(default=False)
 
+    # Participant Location Tracking
+    LOCATION_CHOICES = [
+        ("pre_event", "Pre-Event (not joined)"),
+        ("social_lounge", "Social Lounge"),
+        ("waiting_room", "Waiting Room"),
+        ("main_room", "Main Room"),
+        ("breakout_room", "Breakout Room"),
+    ]
+    current_location = models.CharField(
+        max_length=20,
+        choices=LOCATION_CHOICES,
+        default="pre_event",
+        db_index=True,
+        help_text="Participant's current location within the event ecosystem",
+    )
+
     class Meta:
         db_table = 'event_registrations'
         unique_together = ('event', 'user')                 

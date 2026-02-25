@@ -507,12 +507,12 @@ def send_event_cancelled_task(event_id):
     """
     from .models import Event
     from users.email_utils import send_event_cancelled_email
-    
+
     try:
         event = Event.objects.select_related('recommended_event').get(id=event_id)
         if event.status != "cancelled":
             return f"Event {event_id} is not cancelled. Aborting emails."
-            
+
         send_event_cancelled_email(event)
         return f"Successfully sent cancellation emails for event {event_id}."
     except Event.DoesNotExist:
@@ -520,3 +520,25 @@ def send_event_cancelled_task(event_id):
     except Exception as e:
         logger.error(f"Failed to send cancellation emails for event {event_id}: {e}")
         return str(e)
+
+
+@shared_task(bind=True, max_retries=3)
+def execute_lounge_transition(self, event_id, transition, user_ids):
+    """
+    Celery task to execute lounge participant transitions after countdown delay.
+
+    Args:
+        event_id: Event.id to transition participants for
+        transition: "to_main_room" or "to_waiting_room"
+        user_ids: List of user IDs to transition
+
+    Executes the same transition logic as synchronous version but delayed.
+    """
+    try:
+        from .views import _execute_lounge_transition
+        _execute_lounge_transition(event_id, transition, user_ids)
+        return f"✅ Lounge transition complete: event={event_id}, transition={transition}, users={len(user_ids)}"
+    except Exception as exc:
+        logger.exception(f"❌ Lounge transition failed: event={event_id}, transition={transition}: {exc}")
+        # Retry up to max_retries times with exponential backoff
+        raise self.retry(exc=exc, countdown=5)

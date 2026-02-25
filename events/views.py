@@ -792,6 +792,62 @@ def _is_event_host(user, event) -> bool:
     return event.participants.filter(role="host").filter(host_match).exists()
 
 
+def _execute_lounge_transition(event_id, transition, user_ids):
+    """
+    Shared helper for lounge participant transitions.
+    Handles both synchronous and Celery-delayed execution.
+
+    Args:
+        event_id: Event.id to transition participants for
+        transition: "to_main_room" or "to_waiting_room"
+        user_ids: List of user IDs to transition
+
+    Performs:
+    1. Update EventRegistration.admission_status and current_location
+    2. Delete LoungeParticipant records
+    3. Broadcast lounge_stopped WebSocket event
+    """
+    if not user_ids:
+        return
+
+    try:
+        with transaction.atomic():
+            if transition == "to_main_room":
+                # Admit directly to main room
+                EventRegistration.objects.filter(
+                    event_id=event_id, user_id__in=user_ids
+                ).update(
+                    admission_status="admitted",
+                    admitted_at=timezone.now(),
+                    was_ever_admitted=True,
+                    current_location="main_room",
+                )
+            else:  # to_waiting_room (default)
+                # Move to waiting room
+                EventRegistration.objects.filter(
+                    event_id=event_id, user_id__in=user_ids
+                ).update(
+                    admission_status="waiting",
+                    waiting_started_at=timezone.now(),
+                    current_location="waiting_room",
+                )
+
+            # Remove from lounge seating
+            LoungeParticipant.objects.filter(
+                table__event_id=event_id, user_id__in=user_ids
+            ).delete()
+
+        # Broadcast lounge_stopped event to all participants
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"event_{event_id}",
+            {"type": "lounge_stopped", "transition": transition}
+        )
+        logger.info(f"✅ Lounge transition complete: event={event_id}, transition={transition}, users={len(user_ids)}")
+    except Exception as e:
+        logger.exception(f"❌ Lounge transition failed: event={event_id}, transition={transition}: {e}")
+
+
 # ============================================================
 # ======================== Event ViewSet =====================
 # ============================================================
@@ -1387,60 +1443,10 @@ class EventViewSet(viewsets.ModelViewSet):
                 event.idle_started_at = None
                 event.ended_by_host = False
 
-                # ✅ NEW: Enforce Waiting Room transition for valid participants
-                if event.waiting_room_enabled:
-                    # Identify users who should be moved to waiting room
-                    # Only move users who are currently seated in the lounge.
-                    # Exclude: Host, Staff, Speakers (EventParticipant)
-
-                    # 1. Get IDs of exempt users (Staff/Speakers)
-                    exempt_user_ids = set()
-                    exempt_user_ids.add(event.created_by_id)
-                    if host_user_id:
-                        exempt_user_ids.add(host_user_id)
-                    
-                    # Add EventParticipant users (staff/speakers)
-                    staff_participants = event.participants.filter(user__isnull=False).values_list('user_id', flat=True)
-                    exempt_user_ids.update(staff_participants)
-
-                    # 2. Only move users who are currently in the lounge
-                    lounge_user_ids = set(
-                        LoungeParticipant.objects.filter(
-                            table__event=event,
-                            user__isnull=False,
-                        ).values_list("user_id", flat=True)
-                    )
-
-                    target_user_ids = lounge_user_ids - exempt_user_ids
-                    updated_count = 0
-                    if target_user_ids:
-                        updated_count = EventRegistration.objects.filter(
-                            event=event,
-                            user_id__in=target_user_ids,
-                            user__isnull=False,
-                        ).exclude(
-                            user__is_staff=True
-                        ).update(
-                            admission_status="waiting",
-                            waiting_started_at=timezone.now()
-                        )
-
-                        # Remove users from lounge seating since they're now waiting
-                        LoungeParticipant.objects.filter(
-                            table__event=event,
-                            user_id__in=target_user_ids,
-                        ).delete()
-
-                    if updated_count > 0:
-                        logger.info(f" moved {updated_count} participants to waiting room for event {event.id}")
-                        
-                        # 3. Log audit trail for bulk action
-                        WaitingRoomAuditLog.objects.create(
-                            event=event,
-                            performed_by=request.user,
-                            action="bulk_waiting", # We might need to add this to choices or just use "entered" generically
-                            notes=f"Meeting started. Moved {updated_count} existing participants to Waiting Room."
-                        )
+                # ✅ UPDATED: Lounge participants stay in lounge until host manually admits them
+                # No automatic transition - host must manually admit via admitFromLounge action
+                if event.waiting_room_enabled and event.lounge_enabled_waiting_room:
+                    logger.info(f"✅ Meeting started with lounge enabled. Lounge participants will remain until manually admitted by host for event {event.id}")
             else:  # end
                 event.status = "ended"
                 event.is_live = False
@@ -3711,6 +3717,35 @@ class EventViewSet(viewsets.ModelViewSet):
         ]
         return Response({"count": len(data), "results": data})
 
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="lounge-participants")
+    def lounge_participants(self, request, pk=None):
+        """Host-only endpoint: Returns all participants currently in Social Lounge tables."""
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Host only"}, status=403)
+
+        lounge_occupants = LoungeParticipant.objects.filter(
+            table__event=event, table__category="LOUNGE"
+        ).select_related("user", "table")
+
+        user_ids = [lp.user_id for lp in lounge_occupants]
+        regs = {
+            r.user_id: r for r in EventRegistration.objects.filter(event=event, user_id__in=user_ids)
+        }
+
+        data = []
+        for lp in lounge_occupants:
+            reg = regs.get(lp.user_id)
+            data.append({
+                "user_id": lp.user_id,
+                "user_name": lp.user.get_full_name() or lp.user.username,
+                "table_id": lp.table_id,
+                "table_name": lp.table.name,
+                "admission_status": reg.admission_status if reg else "unknown",
+                "current_location": reg.current_location if reg else "social_lounge",
+            })
+        return Response({"count": len(data), "results": data})
+
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="waiting-room/admit")
     def waiting_room_admit(self, request, pk=None):
         event = self.get_object()
@@ -3726,15 +3761,15 @@ class EventViewSet(viewsets.ModelViewSet):
         if not user_ids and not admit_all:
             return Response({"detail": "Provide user_id, user_ids, or admit_all."}, status=400)
 
-        # ✅ Only allow admitting users who are ACTIVELY in waiting room
-        # Filter by waiting_started_at__isnull=False to exclude registered-but-not-joined users
-        qs = EventRegistration.objects.filter(
-            event=event,
-            admission_status="waiting",
-            waiting_started_at__isnull=False  # ✅ Only users actively waiting
-        )
+        # ✅ UPDATED: Allow admission from both waiting room and lounge contexts
+        # When specific user_ids are provided, admit even if waiting_started_at is null (lounge scenario)
+        # When admit_all is used, still require active waiting to exclude registered-but-not-joined users
+        qs = EventRegistration.objects.filter(event=event, admission_status="waiting")
         if not admit_all:
             qs = qs.filter(user_id__in=user_ids)
+        else:
+            # For admit_all, require active waiting (waiting_started_at set)
+            qs = qs.filter(waiting_started_at__isnull=False)
 
         # Get list of user IDs being admitted BEFORE update (for WebSocket notification)
         admitted_user_ids = list(qs.values_list('user_id', flat=True))
@@ -3748,8 +3783,14 @@ class EventViewSet(viewsets.ModelViewSet):
             rejected_by=None,
             rejection_reason="",
             was_ever_admitted=True,  # ✅ NEW: Mark for auto-rejoin
+            current_location="main_room",  # ✅ NEW: Update location for lounge context
             current_session_started_at=timezone.now(),  # Track session start
         )
+
+        # ✅ NEW: Remove admitted users from LoungeParticipant table (lounge context)
+        LoungeParticipant.objects.filter(
+            table__event=event, user_id__in=admitted_user_ids
+        ).delete()
 
         # ✅ NEW: Send WebSocket notification to each admitted user in real-time
         try:

@@ -7,6 +7,7 @@ from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 import random
+import asyncio
 import requests
 import logging
 from .utils import create_dyte_meeting, DYTE_API_BASE, _dyte_headers
@@ -103,6 +104,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         # Send welcome message with current lounge state
         lounge_state = await self.get_lounge_state()
         await self.update_online_status(True)
+        await self.sync_current_location_on_connect()  # ✅ NEW: Sync current_location from DB state
         await self.broadcast_lounge_update() # Sync everyone with new online count
 
         # Prepare break state for reconnecting participants
@@ -130,6 +132,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         except Exception as e:
             print(f"[CONSUMER] Error fetching user's lounge table: {e}")
 
+        # ✅ NEW: Include current_location for UI state restoration on reconnect
+        user_reg = await database_sync_to_async(
+            lambda: EventRegistration.objects.filter(event_id=self.event_id, user=self.user).first()
+        )()
+        user_current_location = user_reg.current_location if user_reg else "pre_event"
+        user_admission_status = user_reg.admission_status if user_reg else "waiting"
+
         msg = {
             "type": "welcome",
             "event_id": self.event_id,
@@ -142,6 +151,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "break_duration_seconds": event.break_duration_seconds if event.is_on_break else None,
             "lounge_enabled_breaks": event.lounge_enabled_breaks if event.is_on_break else None,
             "user_lounge_table_id": user_lounge_table_id,
+            "current_location": user_current_location,  # ✅ NEW
+            "admission_status": user_admission_status,  # ✅ NEW
         }
         main_room_support_status = await self.get_main_room_support_status()
         msg["main_room_support_status"] = main_room_support_status
@@ -403,6 +414,50 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         elif action == "request_assistance":
             await self.handle_request_assistance()
 
+        elif action == "admit_from_lounge":
+            # Host-only action with countdown transition from lounge/pre-event.
+            if not await self.is_host():
+                return await self.send_json({"type": "error", "message": "Host only"})
+            user_ids = content.get("user_ids", [])
+            if not user_ids:
+                return await self.send_json({"type": "error", "message": "No user IDs provided"})
+            transition = (content.get("transition") or "to_main_room").strip()
+            if transition not in ("to_main_room", "to_waiting_room"):
+                return await self.send_json({"type": "error", "message": "Invalid transition"})
+            countdown_seconds = content.get("countdown_seconds", 15)
+            try:
+                countdown_seconds = max(0, min(60, int(countdown_seconds)))
+            except Exception:
+                countdown_seconds = 15
+
+            eligible_user_ids = await self.get_transitionable_user_ids(user_ids)
+            if not eligible_user_ids:
+                return await self.send_json({"type": "error", "message": "No eligible participants found"})
+
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    "type": "lounge_countdown",
+                    "countdown_seconds": countdown_seconds,
+                    "transition": transition,
+                },
+            )
+            asyncio.create_task(
+                self._execute_lounge_transition_after_delay(
+                    transition=transition,
+                    user_ids=eligible_user_ids,
+                    delay_seconds=countdown_seconds,
+                )
+            )
+            await self.send_json(
+                {
+                    "type": "lounge_transition_scheduled",
+                    "transition": transition,
+                    "countdown_seconds": countdown_seconds,
+                    "user_ids": eligible_user_ids,
+                }
+            )
+
         else:
             # Traditional broadcast for other messages
             await self.channel_layer.group_send(
@@ -551,6 +606,23 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "main_room_support_status": event.get("main_room_support_status"),
         })
 
+    # ✅ NEW: Lounge countdown handler
+    async def lounge_countdown(self, event: dict) -> None:
+        """Handler for 'lounge_countdown' group message - sent when host starts event with countdown."""
+        await self.send_json({
+            "type": "lounge_countdown",
+            "countdown_seconds": event.get("countdown_seconds", 0),
+            "transition": event.get("transition", "to_waiting_room"),
+        })
+
+    # ✅ NEW: Lounge stopped handler
+    async def lounge_stopped(self, event: dict) -> None:
+        """Handler for 'lounge_stopped' group message - sent after countdown expires."""
+        await self.send_json({
+            "type": "lounge_stopped",
+            "transition": event.get("transition", "to_waiting_room"),
+        })
+
     async def broadcast_lounge_update(self):
         state = await self.get_lounge_state()
         online_users = await self.get_online_participants_info()
@@ -676,16 +748,47 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             })
 
     @database_sync_to_async
+    def sync_current_location_on_connect(self):
+        """Sync current_location field based on existing DB state on reconnect."""
+        try:
+            reg = EventRegistration.objects.get(event_id=self.event_id, user=self.user)
+
+            # Determine location from existing signals
+            in_lounge = LoungeParticipant.objects.filter(
+                table__event_id=self.event_id, user=self.user
+            ).exists()
+
+            if in_lounge:
+                location = "social_lounge"
+            elif reg.admission_status == "waiting":
+                location = "waiting_room"
+            elif reg.admission_status == "admitted":
+                location = "main_room"
+            else:
+                location = "pre_event"
+
+            if reg.current_location != location:
+                reg.current_location = location
+                reg.save(update_fields=["current_location"])
+                print(f"[CONSUMER] Synced {self.user.username} location: {location}")
+        except EventRegistration.DoesNotExist:
+            pass
+        except Exception as e:
+            print(f"[CONSUMER] Error syncing current_location for {self.user.username}: {e}")
+
+    @database_sync_to_async
     def get_online_participants_info(self):
         regs = EventRegistration.objects.filter(
-            event_id=self.event_id, 
+            event_id=self.event_id,
             is_online=True,
             is_banned=False  # Exclude banned users even if online flag is stuck
         ).exclude(user_id=self.user.id).select_related('user')
         return [{
             "user_id": r.user.id,
             "username": r.user.username,
-            "full_name": f"{r.user.first_name} {r.user.last_name}".strip() or r.user.username
+            "full_name": f"{r.user.first_name} {r.user.last_name}".strip() or r.user.username,
+            "current_location": r.current_location,  # ✅ NEW
+            "admission_status": r.admission_status,  # ✅ NEW
         } for r in regs]
 
     @database_sync_to_async
@@ -1448,14 +1551,30 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     user=self.user,
                     seat_index=seat_index
                 )
-                
+
                 # Check if it's a breakout room and save assignment
                 table = LoungeTable.objects.get(id=table_id)
                 if table.category == 'BREAKOUT':
-                    EventRegistration.objects.filter(event_id=self.event_id, user=self.user).update(last_breakout_table=table)
+                    EventRegistration.objects.filter(event_id=self.event_id, user=self.user).update(
+                        last_breakout_table=table,
+                        current_location="breakout_room"  # ✅ NEW: Update location
+                    )
                 else:
                     # If joining a non-breakout table (e.g. lounge), clear the tracked breakout room
-                    EventRegistration.objects.filter(event_id=self.event_id, user=self.user).update(last_breakout_table=None)
+                    # ✅ NEW: Update current_location to social_lounge
+                    EventRegistration.objects.filter(event_id=self.event_id, user=self.user).update(
+                        last_breakout_table=None,
+                        current_location="social_lounge"
+                    )
+                    # ✅ NEW: Ensure waiting_started_at is set for participants with admission_status="waiting"
+                    # so they can be admitted via waiting_room_admit endpoint
+                    from django.utils import timezone
+                    EventRegistration.objects.filter(
+                        event_id=self.event_id,
+                        user=self.user,
+                        admission_status="waiting",
+                        waiting_started_at__isnull=True
+                    ).update(waiting_started_at=timezone.now())
 
                 print(f"[CONSUMER] join_table: Created record for user {self.user.id} at table {table_id} seat {seat_index}")
                 return True, None, table
@@ -1531,13 +1650,121 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             # 3. Delete from Django DB
             lounge_record.delete()
 
+            # ✅ NEW: Update current_location based on admission_status
+            reg = EventRegistration.objects.get(event_id=self.event_id, user=self.user)
+            if reg.admission_status == "admitted":
+                new_location = "main_room"
+            elif reg.admission_status == "waiting":
+                new_location = "waiting_room"
+            else:
+                new_location = "pre_event"
+
+            reg.current_location = new_location
+            reg.save(update_fields=["current_location"])
+
             logger.info(f"[CONSUMER] User {self.user.username} (ID:{self.user.id}) left table. "
-                       f"Removed from both Django and Dyte.")
+                       f"Removed from both Django and Dyte. Location updated to: {new_location}")
             return 1, table
 
         except Exception as e:
             logger.error(f"[CONSUMER] leave_current_table error: {e}")
             return 0, None
+
+    @database_sync_to_async
+    def get_transitionable_user_ids(self, user_ids):
+        regs = EventRegistration.objects.filter(
+            event_id=self.event_id,
+            user_id__in=user_ids,
+            current_location__in=["social_lounge", "pre_event", "waiting_room"],
+        )
+        return list(regs.values_list("user_id", flat=True))
+
+    @database_sync_to_async
+    def perform_lounge_transition(self, transition, user_ids):
+        if not user_ids:
+            return []
+        with transaction.atomic():
+            regs = EventRegistration.objects.filter(event_id=self.event_id, user_id__in=user_ids)
+            transitioned_user_ids = list(regs.values_list("user_id", flat=True))
+            if not transitioned_user_ids:
+                return []
+            if transition == "to_main_room":
+                regs.update(
+                    admission_status="admitted",
+                    admitted_at=timezone.now(),
+                    admitted_by_id=self.user.id,
+                    was_ever_admitted=True,
+                    current_location="main_room",
+                    current_session_started_at=timezone.now(),
+                )
+            else:
+                regs.update(
+                    admission_status="waiting",
+                    waiting_started_at=timezone.now(),
+                    current_location="waiting_room",
+                )
+
+            LoungeParticipant.objects.filter(
+                table__event_id=self.event_id,
+                user_id__in=transitioned_user_ids,
+            ).delete()
+        return transitioned_user_ids
+
+    async def _execute_lounge_transition_after_delay(self, transition, user_ids, delay_seconds):
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+
+        transitioned_user_ids = await self.perform_lounge_transition(transition, user_ids)
+        if not transitioned_user_ids:
+            return
+
+        status_value = "admitted" if transition == "to_main_room" else "waiting"
+        for uid in transitioned_user_ids:
+            try:
+                await self.channel_layer.group_send(
+                    f"user_{uid}",
+                    {"type": "admission_status_changed", "data": {"admission_status": status_value}},
+                )
+            except Exception as e:
+                print(f"[CONSUMER] Error sending admission notification to user {uid}: {e}")
+
+        await self.channel_layer.group_send(
+            self.group_name,
+            {"type": "lounge_stopped", "transition": transition},
+        )
+        await self.broadcast_lounge_update()
+
+    @database_sync_to_async
+    def perform_admit_from_lounge(self, user_ids):
+        """Admit participants from Social Lounge → Main Room (host-only)."""
+        try:
+            with transaction.atomic():
+                regs = EventRegistration.objects.filter(
+                    event_id=self.event_id,
+                    user_id__in=user_ids,
+                    current_location__in=["social_lounge", "pre_event", "waiting_room"],
+                )
+                admitted_user_ids = list(regs.values_list("user_id", flat=True))
+
+                if admitted_user_ids:
+                    regs.update(
+                        admission_status="admitted",
+                        admitted_at=timezone.now(),
+                        admitted_by_id=self.user.id,
+                        was_ever_admitted=True,
+                        current_location="main_room",
+                        current_session_started_at=timezone.now(),
+                    )
+                    # Remove from lounge tables
+                    LoungeParticipant.objects.filter(
+                        table__event_id=self.event_id, user_id__in=admitted_user_ids
+                    ).delete()
+                    print(f"[CONSUMER] Admitted {len(admitted_user_ids)} participants from lounge: {admitted_user_ids}")
+
+                return admitted_user_ids
+        except Exception as e:
+            print(f"[CONSUMER] Error in perform_admit_from_lounge: {e}")
+            return []
 
     # ===== Late Joiner WebSocket Message Handlers =====
 

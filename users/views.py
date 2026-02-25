@@ -44,7 +44,7 @@ from django.contrib.auth import get_user_model
 from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
 from .serializers import PublicProfileSerializer
-from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileMembership, EmailChangeRequest, VerificationRequest, VerificationHistory
+from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileMembership, EmailChangeRequest, VerificationRequest, VerificationHistory, CognitoIdentity
 from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, AdminKYCSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer, VerificationRequestSerializer, VerificationHistorySerializer
 from .models import EducationDocument
 from .serializers import EducationDocumentSerializer
@@ -140,6 +140,45 @@ class UserViewSet(
     # enable advanced search via django-filter
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     search_fields = ["email", "username", "first_name", "last_name", "profile__full_name"]
+
+    def _resolve_user_from_identifier(self, identifier, queryset=None):
+        """
+        Resolve a user identifier accepted by clients:
+        - numeric DB user id
+        - Cognito `sub` UUID (via CognitoIdentity mapping)
+        - username fallback
+        """
+        raw = str(identifier or "").strip()
+        if not raw:
+            return None
+
+        base_qs = queryset or UserModel.objects.all()
+
+        if raw.isdigit():
+            return base_qs.filter(pk=int(raw)).first()
+
+        identity = (
+            CognitoIdentity.objects
+            .select_related("user")
+            .filter(cognito_sub=raw)
+            .first()
+        )
+        if identity and identity.user_id:
+            return base_qs.filter(pk=identity.user_id).first()
+
+        return base_qs.filter(username__iexact=raw).first()
+
+    def retrieve(self, request, *args, **kwargs):
+        identifier = kwargs.get(self.lookup_field)
+        user_obj = self._resolve_user_from_identifier(
+            identifier,
+            queryset=self.get_queryset(),
+        )
+        if not user_obj:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = self.get_serializer(user_obj)
+        return Response(serializer.data)
 
 
     def get_queryset(self):
@@ -395,10 +434,12 @@ class UserViewSet(
 
     @action(detail=True, methods=["get"], permission_classes=[AllowAny], url_path="profile")
     def public_profile(self, request, pk=None):
-        try:
-            target = UserModel.objects.select_related("profile").get(pk=pk)
-        except UserModel.DoesNotExist:
-            return Response({"detail": "Not found."}, status=404)
+        target = self._resolve_user_from_identifier(
+            pk,
+            queryset=UserModel.objects.select_related("profile"),
+        )
+        if not target:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Check if profile is accessible (staff can view all)
         user = request.user
