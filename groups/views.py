@@ -597,6 +597,23 @@ class GroupViewSet(viewsets.ModelViewSet):
                 or (hasattr(group, "owner_id") and group.owner_id == uid)
             )
         )
+
+    # Use: Can current user invite by email (allows non-staff admins/owners).
+    def _can_invite_by_email(self, request, group: Group) -> bool:
+        user = request.user
+        uid = getattr(user, "id", None)
+        if not uid or not user.is_authenticated:
+            return False
+            
+        if getattr(user, "is_staff", False):
+            return True
+            
+        if getattr(group, "owner_id", None) == uid or group.created_by_id == uid:
+            return True
+            
+        return GroupMembership.objects.filter(
+            group=group, user_id=uid, role=GroupMembership.ROLE_ADMIN, status=GroupMembership.STATUS_ACTIVE
+        ).exists()
     
     # Return the Community for this group
     def _resolve_group_community(self, group):
@@ -2716,7 +2733,138 @@ class GroupViewSet(viewsets.ModelViewSet):
         it.save(update_fields=["metadata"])
         return Response({"ok": True})
 
-    
+    @action(detail=True, methods=["post"], url_path="invite-emails", parser_classes=[JSONParser])
+    def invite_emails(self, request, pk=None):
+        group = self.get_object()
+        if not self._can_invite_by_email(request, group):
+            return Response({"detail": "Forbidden"}, status=403)
+            
+        from django.core.validators import EmailValidator
+        from django.core.exceptions import ValidationError
+        from django.core.cache import cache
+        from django.core import signing
+        import re
+        from datetime import datetime
+        from django.conf import settings
+        from users.email_utils import send_group_invite_email
+
+        emails_raw = request.data.get("emails_text", "")
+        if "emails" in request.data and isinstance(request.data["emails"], list):
+            emails_raw += "\n".join(request.data["emails"])
+            
+        # Parse emails
+        parts = re.split(r'[,\n\r\t; ]+', emails_raw)
+        validator = EmailValidator()
+        emails = []
+        for p in parts:
+            p = p.strip().lower()
+            if p and p not in emails:
+                try:
+                    validator(p)
+                    emails.append(p)
+                except ValidationError:
+                    pass
+                    
+        max_per_req = getattr(settings, "INVITE_EMAILS_MAX_PER_REQUEST", 20)
+        if len(emails) > max_per_req:
+            emails = emails[:max_per_req]
+            
+        if not emails:
+            return Response({"detail": "No valid emails provided"}, status=400)
+            
+        max_per_day = getattr(settings, "INVITE_EMAILS_MAX_PER_DAY", 100)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        cache_key = f"invite_email:group:{request.user.id}:{today_str}"
+        current_daily = cache.get(cache_key, 0)
+        
+        if current_daily >= max_per_day:
+            return Response({"detail": f"Daily limit of {max_per_day} invites reached."}, status=429)
+            
+        frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
+        group_id_str = group.slug or str(group.id)
+        
+        sent = 0
+        failed = []
+        
+        for email in emails:
+            if current_daily + sent >= max_per_day:
+                break
+                
+            payload = {
+                "kind": "group",
+                "group_id": group.id,
+                "email": email,
+                "invited_by": request.user.id
+            }
+            token = signing.dumps(payload, salt="group-email-invite")
+            invite_url = f"{frontend_url}/community/groups/{group_id_str}?invite_token={token}"
+            
+            success = send_group_invite_email(email, group, request.user, invite_url)
+            if success:
+                sent += 1
+            else:
+                failed.append({"email": email, "error": "Internal send error"})
+                
+        if sent > 0:
+            cache.set(cache_key, current_daily + sent, timeout=86400)
+            
+        return Response({
+            "ok": True,
+            "sent": sent,
+            "failed": failed,
+            "skipped": [],
+            "limit": {"per_request": max_per_req, "per_day": max_per_day}
+        })
+
+    @action(detail=True, methods=["post"], url_path="invite-emails/accept", parser_classes=[JSONParser])
+    def accept_invite_emails(self, request, pk=None):
+        group = self.get_object()
+        token = request.data.get("token")
+        if not token:
+            return Response({"detail": "Token required"}, status=400)
+            
+        from django.core import signing
+        from django.conf import settings
+        max_age = getattr(settings, "INVITE_EMAIL_TOKEN_MAX_AGE_SECONDS", 30 * 24 * 3600)
+        
+        try:
+            payload = signing.loads(token, salt="group-email-invite", max_age=max_age)
+        except signing.BadSignature:
+            return Response({"detail": "Invalid or expired token"}, status=400)
+            
+        if payload.get("kind") != "group" or payload.get("group_id") != group.id:
+            return Response({"detail": "Token not for this group"}, status=400)
+            
+        if not request.user.email or payload.get("email", "").lower() != request.user.email.lower():
+            return Response({"detail": "Token belongs to a different email"}, status=403)
+            
+        # Join group
+        invited_by_id = payload.get("invited_by")
+        membership, created = GroupMembership.objects.get_or_create(
+            group=group,
+            user=request.user,
+            defaults={
+                "role": GroupMembership.ROLE_MEMBER,
+                "status": GroupMembership.STATUS_ACTIVE,
+                "invited_by_id": invited_by_id
+            }
+        )
+        if not created and membership.status != GroupMembership.STATUS_ACTIVE:
+            membership.status = GroupMembership.STATUS_ACTIVE
+            membership.save(update_fields=["status"])
+            status_msg = "joined"
+        elif not created:
+            status_msg = "already_member"
+        else:
+            status_msg = "joined"
+            
+        self._ensure_parent_membership_active(group, request.user.id)
+            
+        return Response({
+            "ok": True,
+            "status": status_msg,
+            "group_id": group.id
+        })
 
 
 class UsersLookupView(APIView):

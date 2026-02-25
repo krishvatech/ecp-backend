@@ -1,0 +1,9 @@
+We are writing to inform you that you have been invited by {{ inviter_name }} to join the group "{{ group_name }}".
+
+You can accept the invitation by clicking the link below:
+{{ invite_url }}
+
+If you have any questions or need assistance, please reply to this email or contact us at {{ support_email }}.
+
+Best regards,
+The {{ app_name }} Team

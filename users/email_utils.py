@@ -427,3 +427,72 @@ def send_event_cancelled_email(event):
     logger.info(f"Sent {success_count} cancellation emails for event {event.id}")
     return success_count
 
+
+def send_group_invite_email(to_email, group, inviter, invite_url):
+    """
+    Send an email invitation to join a group.
+    """
+    app_name = "IMAA Connect"
+    inviter_name = inviter.get_full_name() or inviter.username or inviter.email
+    support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+
+    ctx = {
+        "app_name": app_name,
+        "inviter_name": inviter_name,
+        "group_name": group.name,
+        "invite_url": invite_url,
+        "support_email": support_email,
+    }
+
+    try:
+        text_body = render_to_string("emails/group_invite.txt", ctx)
+        html_body = render_to_string("emails/group_invite.html", ctx)
+
+        send_mail(
+            subject=f"You're invited to join '{group.name}' on {app_name}",
+            message=text_body,
+            from_email=support_email,
+            recipient_list=[to_email],
+            html_message=html_body,
+            fail_silently=True,
+        )
+        logger.info(f"Sent group invite email to {to_email} for group {group.id}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send group invite email to {to_email}: {e}")
+        return False
+
+
+def send_event_invite_email(to_email, event, inviter, invite_url):
+    """
+    Send an email invitation to attend an event.
+    """
+    app_name = "IMAA Connect"
+    inviter_name = inviter.get_full_name() or inviter.username or inviter.email
+    support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+
+    ctx = {
+        "app_name": app_name,
+        "inviter_name": inviter_name,
+        "event_title": event.title,
+        "invite_url": invite_url,
+        "support_email": support_email,
+    }
+
+    try:
+        text_body = render_to_string("emails/event_invite.txt", ctx)
+        html_body = render_to_string("emails/event_invite.html", ctx)
+
+        send_mail(
+            subject=f"You're invited to '{event.title}' on {app_name}",
+            message=text_body,
+            from_email=support_email,
+            recipient_list=[to_email],
+            html_message=html_body,
+            fail_silently=True,
+        )
+        logger.info(f"Sent event invite email to {to_email} for event {event.id}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send event invite email to {to_email}: {e}")
+        return False
