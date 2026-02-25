@@ -478,6 +478,8 @@ class EventSerializer(serializers.ModelSerializer):
             "attending_count",
             "registrations_count",
             "preview_image",
+            "cover_image",
+            "waiting_room_image",
             "lounge_table_capacity",
             "breakout_rooms_active",
             "waiting_room_enabled",
