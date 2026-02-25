@@ -374,6 +374,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 "description": getattr(e, "description", "") or "",
                 "community_id": getattr(e, "community_id", None),
                 "community_name": getattr(community, "name", None) if community else None,
+                "event_preview_image": None,  # populated at call site where request is available
             },
         }
 
@@ -492,6 +493,14 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             created_iso = _iso(getattr(e, "created_at", None) or getattr(e, "start_time", None))
             start_iso = _iso(getattr(e, "start_time", None))
 
+            # Build preview_image absolute URL
+            preview_image_url = None
+            if getattr(e, "preview_image", None):
+                try:
+                    preview_image_url = request.build_absolute_uri(e.preview_image.url)
+                except Exception:
+                    preview_image_url = str(e.preview_image)
+
             event_rows.append({
                 "id": f"event-{e.id}",  # keep unique vs FeedItem ids
                 "created_at": created_iso,
@@ -509,6 +518,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     "community_name": getattr(community, "name", None) if community else None,
                     "group_id": getattr(e, "group_id", None),
                     "group_name": getattr(group, "name", None) if group else None,
+                    "event_preview_image": preview_image_url,
                 },
             })
 
