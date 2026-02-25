@@ -20,6 +20,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.core.cache import cache
 
 # Import BOTH matching engines
 from .matching_engine import MatchingEngine
@@ -1586,8 +1587,17 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                 queue_entry.save()
         else:
             # Self-healing: active retry logic
-            # If user is waiting, try to find a match right now during the poll
+            # If user is waiting, try to find a match right now during the poll.
+            # Throttle expensive match attempts to avoid request storms under high concurrency.
             session = queue_entry.session
+            if session.status != 'ACTIVE':
+                return Response({})
+
+            throttle_key = f"sn:my-match-attempt:{session.id}:{request.user.id}"
+            # Allow only one matchmaking attempt per user every 2 seconds.
+            if not cache.add(throttle_key, 1, timeout=2):
+                return Response({})
+
             new_match = self._find_and_create_match(session, request.user)
 
             if new_match:
