@@ -836,6 +836,7 @@ class ProfileTrainingSerializer(serializers.ModelSerializer):
             "end_date",
             "currently_ongoing",
             "description",
+            "credential_id",
             "credential_url",
         )
 
@@ -882,6 +883,7 @@ class ProfileMembershipSerializer(serializers.ModelSerializer):
             "start_date",
             "end_date",
             "ongoing",
+            "membership_id",
             "membership_url",
         )
 

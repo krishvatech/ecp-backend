@@ -765,6 +765,7 @@ class ProfileTraining(models.Model):
     currently_ongoing = models.BooleanField(default=False)
 
     description = models.TextField(blank=True, default="")
+    credential_id = models.CharField(max_length=128, blank=True, default="")
     credential_url = models.URLField(blank=True, default="")
 
     class Meta:
@@ -919,6 +920,7 @@ class ProfileMembership(models.Model):
     end_date = models.DateField(null=True, blank=True)    # YYYY-MM-01
     ongoing = models.BooleanField(default=False)
 
+    membership_id = models.CharField(max_length=128, blank=True, default="")
     membership_url = models.URLField(blank=True, default="")
 
     class Meta:
