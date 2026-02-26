@@ -46,8 +46,8 @@ from .serializers import PublicProfileSerializer
 from .serializers import PublicProfileSerializer
 from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileMembership, EmailChangeRequest, VerificationRequest, VerificationHistory, CognitoIdentity
 from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, AdminKYCSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer, VerificationRequestSerializer, VerificationHistorySerializer
-from .models import EducationDocument
-from .serializers import EducationDocumentSerializer
+from .models import EducationDocument, TrainingDocument, MembershipDocument
+from .serializers import EducationDocumentSerializer, TrainingDocumentSerializer, MembershipDocumentSerializer
 from .esco_client import search_skills
 from .didit_client import (
     create_initial_kyc_session, 
@@ -2153,6 +2153,46 @@ class MeEducationDocumentViewSet(viewsets.ModelViewSet):
         education_id = self.request.data.get('education')
         education = generics.get_object_or_404(Education, id=education_id, user=self.request.user)
         serializer.save(education=education)
+
+
+class MeTrainingDocumentViewSet(viewsets.ModelViewSet):
+    """
+    Manage documents for the authenticated user's training entries.
+    Endpoints:
+      POST /api/users/me/training-documents/ (Requires 'training' ID and 'file')
+      DELETE /api/users/me/training-documents/<id>/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = TrainingDocumentSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        return TrainingDocument.objects.filter(training__user=self.request.user)
+
+    def perform_create(self, serializer):
+        training_id = self.request.data.get('training')
+        training = generics.get_object_or_404(ProfileTraining, id=training_id, user=self.request.user)
+        serializer.save(training=training)
+
+
+class MeMembershipDocumentViewSet(viewsets.ModelViewSet):
+    """
+    Manage documents for the authenticated user's membership entries.
+    Endpoints:
+      POST /api/users/me/membership-documents/ (Requires 'membership' ID and 'file')
+      DELETE /api/users/me/membership-documents/<id>/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = MembershipDocumentSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        return MembershipDocument.objects.filter(membership__user=self.request.user)
+
+    def perform_create(self, serializer):
+        membership_id = self.request.data.get('membership')
+        membership = generics.get_object_or_404(ProfileMembership, id=membership_id, user=self.request.user)
+        serializer.save(membership=membership)
 
 import re
 import unicodedata

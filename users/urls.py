@@ -21,6 +21,8 @@ from .views import (
     MeEducationViewSet, MeExperienceViewSet, MeProfileView,
     StaffUserViewSet,AdminNameChangeRequestViewSet, AdminKYCViewSet,
     MeEducationDocumentViewSet,
+    MeTrainingDocumentViewSet,
+    MeMembershipDocumentViewSet,
     DiditWebhookView,
     MeSkillViewSet,
     EscoSkillSearchView,
@@ -41,8 +43,10 @@ router.register(r"me/education-documents", MeEducationDocumentViewSet, basename=
 router.register(r"me/languages", MeLanguageViewSet, basename="me-languages")
 router.register(r"me/language-certificates", MeLanguageCertificateViewSet, basename="me-language-certificates")
 router.register(r"me/trainings", MeTrainingViewSet, basename="me-trainings")
+router.register(r"me/training-documents", MeTrainingDocumentViewSet, basename="me-training-documents")
 router.register(r"me/certifications", MeCertificationViewSet, basename="me-certifications")
 router.register(r"me/memberships", MeMembershipViewSet, basename="me-memberships")
+router.register(r"me/membership-documents", MeMembershipDocumentViewSet, basename="me-membership-documents")
 router.register(r"admin/users", StaffUserViewSet, basename="admin-users")
 router.register(r"admin/name-requests", AdminNameChangeRequestViewSet, basename="admin-name-requests")
 router.register(r"admin/kyc", AdminKYCViewSet, basename="admin-kyc")

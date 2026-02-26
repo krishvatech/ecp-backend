@@ -822,9 +822,17 @@ class MonthYearField(serializers.DateField):
         super().__init__(*args, **kwargs)
 
 
+class TrainingDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import TrainingDocument
+        model = TrainingDocument
+        fields = ["id", "file", "filename", "uploaded_at"]
+
+
 class ProfileTrainingSerializer(serializers.ModelSerializer):
     start_date = MonthYearField(required=False, allow_null=True)
     end_date = MonthYearField(required=False, allow_null=True)
+    documents = TrainingDocumentSerializer(many=True, read_only=True)
 
     class Meta:
         model = ProfileTraining
@@ -838,6 +846,7 @@ class ProfileTrainingSerializer(serializers.ModelSerializer):
             "description",
             "credential_id",
             "credential_url",
+            "documents",
         )
 
     def validate(self, attrs):
@@ -870,9 +879,17 @@ class ProfileCertificationSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class MembershipDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import MembershipDocument
+        model = MembershipDocument
+        fields = ["id", "file", "filename", "uploaded_at"]
+
+
 class ProfileMembershipSerializer(serializers.ModelSerializer):
     start_date = MonthYearField(required=False, allow_null=True)
     end_date = MonthYearField(required=False, allow_null=True)
+    documents = MembershipDocumentSerializer(many=True, read_only=True)
 
     class Meta:
         model = ProfileMembership
@@ -885,6 +902,7 @@ class ProfileMembershipSerializer(serializers.ModelSerializer):
             "ongoing",
             "membership_id",
             "membership_url",
+            "documents",
         )
 
     def validate(self, attrs):

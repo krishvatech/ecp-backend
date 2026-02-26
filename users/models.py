@@ -791,6 +791,26 @@ class ProfileTraining(models.Model):
         return f"{self.program_title} — {self.provider}"
 
 
+def training_document_path(instance, filename):
+    import os, uuid
+    name, ext = os.path.splitext(filename)
+    return f"training_docs/user_{instance.training.user.id}/{uuid.uuid4().hex[:8]}{ext}"
+
+class TrainingDocument(models.Model):
+    training = models.ForeignKey(
+        ProfileTraining, on_delete=models.CASCADE, related_name="documents"
+    )
+    file = models.FileField(upload_to=training_document_path)
+    filename = models.CharField(max_length=255, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self.file and not self.filename:
+            self.filename = os.path.basename(self.file.name)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Doc for {self.training}: {self.filename}"
 
 class ProfileCertification(models.Model):
     user = models.ForeignKey(
@@ -943,6 +963,27 @@ class ProfileMembership(models.Model):
 
     def __str__(self):
         return f"{self.organization_name} ({self.role_type})"
+
+def membership_document_path(instance, filename):
+    import os, uuid
+    name, ext = os.path.splitext(filename)
+    return f"membership_docs/user_{instance.membership.user.id}/{uuid.uuid4().hex[:8]}{ext}"
+
+class MembershipDocument(models.Model):
+    membership = models.ForeignKey(
+        ProfileMembership, on_delete=models.CASCADE, related_name="documents"
+    )
+    file = models.FileField(upload_to=membership_document_path)
+    filename = models.CharField(max_length=255, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self.file and not self.filename:
+            self.filename = os.path.basename(self.file.name)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Doc for {self.membership}: {self.filename}"
 
 class CognitoIdentity(models.Model):
     """
