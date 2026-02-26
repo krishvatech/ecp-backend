@@ -1,6 +1,9 @@
 from django.contrib.auth import get_user_model
+from django.db.models import Q
+from django.utils import timezone
+from datetime import timedelta
 from rest_framework import serializers
-from .models import Friendship, FriendRequest,Notification
+from .models import Friendship, FriendRequest, Notification
 from users.serializers import UserMiniSerializer 
 
 User = get_user_model()
@@ -104,10 +107,47 @@ class FriendRequestCreateSerializer(serializers.ModelSerializer):
         request = self.context["request"]
         me = request.user
         to_user = attrs["to_user"]
+
         if me.id == to_user.id:
-            raise serializers.ValidationError("You cannot send a request to yourself.")
+            raise serializers.ValidationError({"detail": "You cannot send a request to yourself."})
+
         if Friendship.are_friends(me.id, to_user.id):
-            raise serializers.ValidationError("You are already friends.")
+            raise serializers.ValidationError({"detail": "You are already friends."})
+
+        # Prevent duplicate pending outgoing request
+        if FriendRequest.objects.filter(from_user=me, to_user=to_user, status=FriendRequest.PENDING).exists():
+            raise serializers.ValidationError({"detail": "You already sent a contact request to this user."})
+
+        # Prevent sending if an incoming pending request exists
+        if FriendRequest.objects.filter(from_user=to_user, to_user=me, status=FriendRequest.PENDING).exists():
+            raise serializers.ValidationError({"detail": "This user already sent you a request. Please accept it instead."})
+
+        # Quota enforcement
+        if not (me.is_staff or me.is_superuser):
+            from django.conf import settings
+
+            WINDOW_DAYS = int(getattr(settings, "FRIEND_REQUEST_WINDOW_DAYS", 30))
+            LIMIT_FREE = int(getattr(settings, "FRIEND_REQUEST_LIMIT_FREE", 30))
+            LIMIT_PAID = int(getattr(settings, "FRIEND_REQUEST_LIMIT_PAID", 200))
+
+            cutoff = timezone.now() - timedelta(days=WINDOW_DAYS)
+            
+            # Determine if user is a paid member (KYC Verified)
+            is_paid = getattr(me, "profile", None) and me.profile.kyc_status == "approved"
+
+            limit = LIMIT_PAID if is_paid else LIMIT_FREE
+            used = FriendRequest.objects.filter(from_user=me, created_at__gte=cutoff).count()
+
+            if used >= limit:
+                oldest = FriendRequest.objects.filter(
+                    from_user=me, created_at__gte=cutoff
+                ).order_by("created_at").first()
+                
+                reset_at = oldest.created_at + timedelta(days=WINDOW_DAYS)
+                raise serializers.ValidationError(
+                    {"detail": f"You reached your monthly contact request limit ({limit}). Try again after {reset_at.strftime('%Y-%m-%d')}."}
+                )
+
         return attrs
 
     def create(self, validated_data):

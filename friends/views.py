@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.db.models import Q
+from django.conf import settings
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -16,6 +17,8 @@ from .serializers import (
     NotificationSerializer
 )
 from .permissions import IsAuthenticatedOnly
+from django.utils import timezone
+from datetime import timedelta
 
 User = get_user_model()
 
@@ -336,6 +339,59 @@ class FriendRequestViewSet(
         if self.action == "create":
             return FriendRequestCreateSerializer
         return FriendRequestSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        fr = serializer.save()
+        
+        # Return enriched response
+        full_ser = FriendRequestSerializer(fr)
+        data = full_ser.data
+        data.update({
+            "status": "outgoing_pending",
+            "request_id": fr.id
+        })
+        return Response(data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["get"], url_path="quota")
+    def quota(self, request):
+        """
+        Return the user's current contact request quota status.
+        """
+        me = request.user
+
+        WINDOW_DAYS = int(getattr(settings, "FRIEND_REQUEST_WINDOW_DAYS", 30))
+        LIMIT_FREE = int(getattr(settings, "FRIEND_REQUEST_LIMIT_FREE", 30))
+        LIMIT_PAID = int(getattr(settings, "FRIEND_REQUEST_LIMIT_PAID", 200))
+
+        cutoff = timezone.now() - timedelta(days=WINDOW_DAYS)
+        
+        # Determine if user is a paid member (KYC Verified)
+        is_paid = getattr(me, "profile", None) and me.profile.kyc_status == "approved"
+
+        limit = LIMIT_PAID if is_paid else LIMIT_FREE
+        
+        if me.is_staff or me.is_superuser:
+            return Response({
+                "window_days": WINDOW_DAYS,
+                "limit": None,
+                "used": 0,
+                "remaining": None,
+                "is_paid_member": is_paid,
+                "is_staff": True
+            })
+
+        used = FriendRequest.objects.filter(from_user=me, created_at__gte=cutoff).count()
+        remaining = max(0, limit - used)
+
+        return Response({
+            "window_days": WINDOW_DAYS,
+            "limit": limit,
+            "used": used,
+            "remaining": remaining,
+            "is_paid_member": is_paid
+        })
 
     def perform_create(self, serializer):
         serializer.save()

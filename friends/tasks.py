@@ -327,3 +327,32 @@ def send_suggestion_digest_daily(mutual_threshold: int = 2, friends_in_group_thr
         "skipped_empty": skipped_empty,
         "date": str(today),
     }
+@shared_task
+def expire_stale_friend_requests() -> dict:
+    """
+    Finds PENDING friend requests older than 30 days and EXPERIES (cancels) them.
+    Runs daily via Celery Beat.
+    """
+    days_limit = int(getattr(settings, "FRIEND_REQUEST_WINDOW_DAYS", 30))
+    cutoff = timezone.now() - timedelta(days=days_limit)
+    
+    stale_requests = FriendRequest.objects.filter(
+        status=FriendRequest.PENDING,
+        created_at__lt=cutoff
+    )
+    
+    count = stale_requests.count()
+    expired_ids = []
+    
+    # We use iterator to handle potentially large numbers of requests
+    for fr in stale_requests.iterator():
+        fr.cancel()
+        expired_ids.append(fr.id)
+        
+    logger.info(f"Expired {count} stale friend requests.")
+    
+    return {
+        "expired_count": count,
+        "expired_ids": expired_ids[:100],  # Return first 100 for logging
+        "cutoff": cutoff.isoformat()
+    }

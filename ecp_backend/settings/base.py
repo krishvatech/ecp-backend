@@ -490,8 +490,17 @@ CELERY_BEAT_SCHEDULE.update({
     "enforce_event_end_conditions": {
         "task": "events.tasks.enforce_event_end_conditions",
         "schedule": crontab(minute="*/5"),  # Reduced from every 1 minute to every 5 minutes
+    },
+    "expire_stale_friend_requests": {
+        "task": "friends.tasks.expire_stale_friend_requests",
+        "schedule": crontab(minute="0", hour="3"),  # Daily at 3:00 AM
     }
 })
+
+# Contact Request Quota Settings
+FRIEND_REQUEST_WINDOW_DAYS = int(os.getenv("FRIEND_REQUEST_WINDOW_DAYS", "30"))
+FRIEND_REQUEST_LIMIT_FREE = int(os.getenv("FRIEND_REQUEST_LIMIT_FREE", "30"))
+FRIEND_REQUEST_LIMIT_PAID = int(os.getenv("FRIEND_REQUEST_LIMIT_PAID", "200"))
 
 # ============================================================================
 # MEMORY & CONNECTION MANAGEMENT (100+ Concurrent Users)
