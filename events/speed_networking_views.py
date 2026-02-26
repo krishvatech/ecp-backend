@@ -587,28 +587,30 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='extend-duration')
     def extend_duration(self, request, event_id=None, pk=None):
-        """Host-only: increase round duration (before or during a session)."""
+        """Host-only: add minutes to the current round duration."""
         if not _is_host(request, event_id):
             return Response({'error': 'Only the event host may change the duration.'},
                             status=status.HTTP_403_FORBIDDEN)
 
         session = self.get_object()
-        new_minutes = request.data.get('duration_minutes')
+        extension_minutes = request.data.get('extension_minutes')
 
         # Validate
         try:
-            new_minutes = int(new_minutes)
+            extension_minutes = int(extension_minutes)
         except (TypeError, ValueError):
-            return Response({'error': 'duration_minutes must be an integer.'},
+            return Response({'error': 'extension_minutes must be an integer.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        if new_minutes <= session.duration_minutes:
+        if extension_minutes <= 0:
             return Response(
-                {'error': f'New duration ({new_minutes}m) must be greater than the current duration ({session.duration_minutes}m).'},
+                {'error': 'extension_minutes must be greater than 0.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        new_minutes = session.duration_minutes + extension_minutes
         if new_minutes > 60:
-            return Response({'error': 'Duration cannot exceed 60 minutes.'},
+            return Response({'error': f'Total duration cannot exceed 60 minutes. Current: {session.duration_minutes}m, requested add: {extension_minutes}m.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
         session.duration_minutes = new_minutes
