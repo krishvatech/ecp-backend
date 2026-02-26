@@ -434,14 +434,16 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             if not eligible_user_ids:
                 return await self.send_json({"type": "error", "message": "No eligible participants found"})
 
-            await self.channel_layer.group_send(
-                self.group_name,
-                {
-                    "type": "lounge_countdown",
-                    "countdown_seconds": countdown_seconds,
-                    "transition": transition,
-                },
-            )
+            for uid in eligible_user_ids:
+                await self.channel_layer.group_send(
+                    f"user_{uid}",
+                    {
+                        "type": "lounge_countdown",
+                        "countdown_seconds": countdown_seconds,
+                        "transition": transition,
+                        "user_ids": eligible_user_ids,
+                    },
+                )
             asyncio.create_task(
                 self._execute_lounge_transition_after_delay(
                     transition=transition,
@@ -1728,10 +1730,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             except Exception as e:
                 print(f"[CONSUMER] Error sending admission notification to user {uid}: {e}")
 
-        await self.channel_layer.group_send(
-            self.group_name,
-            {"type": "lounge_stopped", "transition": transition},
-        )
+        for uid in transitioned_user_ids:
+            await self.channel_layer.group_send(
+                f"user_{uid}",
+                {
+                    "type": "lounge_stopped",
+                    "transition": transition,
+                    "user_ids": transitioned_user_ids,
+                },
+            )
         await self.broadcast_lounge_update()
 
     @database_sync_to_async

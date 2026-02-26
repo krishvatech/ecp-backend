@@ -3743,6 +3743,10 @@ class EventViewSet(viewsets.ModelViewSet):
         data = []
         for lp in lounge_occupants:
             reg = regs.get(lp.user_id)
+            # Enforce single source of truth: only users whose authoritative
+            # current_location is social_lounge are shown in lounge participants.
+            if reg and reg.current_location != "social_lounge":
+                continue
             data.append({
                 "user_id": lp.user_id,
                 "user_name": lp.user.get_full_name() or lp.user.username,
