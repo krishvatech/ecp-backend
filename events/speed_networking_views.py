@@ -501,7 +501,43 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         event_id = self.kwargs.get('event_id')
         event = Event.objects.get(id=event_id)
-        serializer.save(created_by=self.request.user, event=event)
+        session = serializer.save(created_by=self.request.user, event=event)
+
+        # Create interest tag objects from criteria_config
+        self._create_interest_tags_from_criteria_config(session)
+
+    def perform_update(self, serializer):
+        """Override update to also sync interest tags from criteria_config."""
+        session = serializer.save()
+        # Recreate interest tags from criteria_config (soft-delete old ones first)
+        self._create_interest_tags_from_criteria_config(session)
+
+    def _create_interest_tags_from_criteria_config(self, session):
+        """Create SpeedNetworkingInterestTag objects from criteria_config tags."""
+        criteria_config = session.criteria_config or {}
+        interest_based_config = criteria_config.get('interest_based', {})
+        tags_list = interest_based_config.get('tags', [])
+
+        if not tags_list:
+            return
+
+        # Soft-delete existing tags for this session
+        session.interest_tags.all().update(is_active=False)
+
+        # Create new tag objects
+        for tag_data in tags_list:
+            if isinstance(tag_data, dict):
+                label = tag_data.get('label', '')
+                category = tag_data.get('category', '')
+                side = tag_data.get('type', 'both')  # 'type' in form, 'side' in model
+
+                # Try to reactivate existing tag, or create new one
+                tag, created = SpeedNetworkingInterestTag.objects.update_or_create(
+                    session=session,
+                    label=label,
+                    category=category,
+                    defaults={'side': side, 'is_active': True}
+                )
     
     @action(detail=True, methods=['post'])
     def start(self, request, event_id=None, pk=None):
@@ -1293,6 +1329,7 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
 
         if request.method == 'GET':
             # Anyone can view interest tags
+            # Tags are now automatically created from criteria_config when session is created/updated
             tags = session.interest_tags.filter(is_active=True)
             from .matching_serializers import SpeedNetworkingInterestTagSerializer
             serializer = SpeedNetworkingInterestTagSerializer(tags, many=True)
