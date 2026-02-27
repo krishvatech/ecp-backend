@@ -1,4 +1,4 @@
-"""
+﻿"""
 Views for the users app.
 
 Provides endpoints to list and retrieve user information, update the
@@ -185,7 +185,7 @@ class UserViewSet(
         """
         Determine the base queryset for the user directory.
 
-        Staff and superusers can view all users.  Non‑staff users may only
+        Staff and superusers can view all users.  Nonâ€‘staff users may only
         see themselves and other users who share an community with
         them (either as members or as owners).  This method returns a
         queryset filtered accordingly.
@@ -769,7 +769,7 @@ class RegisterView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
 
-        # ✅ Welcome email (non-blocking)
+        # âœ… Welcome email (non-blocking)
         # try:
         #     frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
 
@@ -787,7 +787,7 @@ class RegisterView(APIView):
         #     send_mail(
         #         subject=f"Welcome to {ctx['app_name']}",
         #         message=text_body,
-        #         from_email=settings.DEFAULT_FROM_EMAIL,  # ✅ same sender as forgot password
+        #         from_email=settings.DEFAULT_FROM_EMAIL,  # âœ… same sender as forgot password
         #         recipient_list=[user.email],
         #         html_message=html_body,
         #         fail_silently=False,
@@ -893,7 +893,7 @@ class ChangePasswordView(generics.GenericAPIView):
 
         user.set_password(new_password)
         user.save()
-        # ✅ Password changed alert email (non-blocking)
+        # âœ… Password changed alert email (non-blocking)
         try:
             frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
             changed_at = django_timezone.localtime(django_timezone.now()).strftime("%d %b %Y, %I:%M %p %Z")
@@ -913,7 +913,7 @@ class ChangePasswordView(generics.GenericAPIView):
             send_mail(
                 subject=f"Your {ctx['app_name']} password was changed",
                 message=text_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,  # ✅ same sender as forgot password
+                from_email=settings.DEFAULT_FROM_EMAIL,  # âœ… same sender as forgot password
                 recipient_list=[user.email],
                 html_message=html_body,
                 fail_silently=False,
@@ -965,7 +965,7 @@ class ResetPasswordView(generics.GenericAPIView):
         user = serializer.validated_data["user"]
         user.set_password(serializer.validated_data["new_password"])
         user.save()
-        # ✅ Password changed alert email (non-blocking)
+        # âœ… Password changed alert email (non-blocking)
         try:
             frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
             changed_at = django_timezone.localtime(django_timezone.now()).strftime("%d %b %Y, %I:%M %p %Z")
@@ -985,7 +985,7 @@ class ResetPasswordView(generics.GenericAPIView):
             send_mail(
                 subject=f"Your {ctx['app_name']} password was changed",
                 message=text_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,  # ✅ same sender as forgot password
+                from_email=settings.DEFAULT_FROM_EMAIL,  # âœ… same sender as forgot password
                 recipient_list=[user.email],
                 html_message=html_body,
                 fail_silently=False,
@@ -1000,6 +1000,8 @@ class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        reason = (request.data or {}).get("reason", "manual")
+        logger.warning(f"[AUTH] LogoutView called user_id={request.user.id} username={request.user.username} reason={reason}")
         try:
             refresh_token = request.data["refresh"]
             token = RefreshToken(refresh_token)
@@ -1072,6 +1074,8 @@ class SessionLogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        reason = (request.data or {}).get("reason", "manual")
+        logger.warning(f"[AUTH] SessionLogoutView called user_id={request.user.id} username={request.user.username} reason={reason} path={request.path}")
         django_logout(request)
         return Response({"detail": "logged_out"}, status=status.HTTP_200_OK)
 
@@ -1229,7 +1233,7 @@ class LinkedInCallback(APIView):
         # ---- Fetch profile via OIDC or classic REST ----
         try:
             if "openid" in settings.LINKEDIN_SCOPES or "profile" in settings.LINKEDIN_SCOPES:
-                # ✅ OIDC userinfo: id, name, picture, email
+                # âœ… OIDC userinfo: id, name, picture, email
                 resp = requests.get(OIDC_USERINFO, headers=headers, timeout=15)
                 if resp.status_code != 200:
                     return Response(
@@ -1833,12 +1837,12 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
             }
 
             if template_key == "approved":
-                subject = "Your name change request is approved ✅"
+                subject = "Your name change request is approved âœ…"
                 text_body = render_to_string("emails/name_change_approved.txt", ctx)
                 html_body = render_to_string("emails/name_change_approved.html", ctx)
 
             elif template_key == "rejected":
-                subject = "Your name change request was rejected ❌"
+                subject = "Your name change request was rejected âŒ"
                 text_body = render_to_string("emails/name_change_rejected.txt", ctx)
                 html_body = None
 
@@ -1899,12 +1903,12 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
         requested_name = " ".join([p for p in [name_req.new_first_name, name_req.new_middle_name, name_req.new_last_name] if p]).strip()
         id_name = (getattr(name_req, "doc_full_name", "") or "").strip()
 
-        # ✅ In-app notification to the user after admin decision
+        # âœ… In-app notification to the user after admin decision
         if new_status == "approved":
             create_notification_once(
                 recipient=name_req.user,
                 kind="event",
-                title="Name change approved ✅",
+                title="Name change approved âœ…",
                 description="Admin approved your name change request. Your profile name is updated.",
                 state="approved",
                 unique={"type": "name_change", "name_change_request_id": name_req.id, "decision": "approved"},
@@ -1914,7 +1918,7 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
             create_notification_once(
                 recipient=name_req.user,
                 kind="event",
-                title="Name change rejected ❌",
+                title="Name change rejected âŒ",
                 description=admin_note or "Admin rejected your name change request. Please submit a new request with correct documents.",
                 state="rejected",
                 unique={"type": "name_change", "name_change_request_id": name_req.id, "decision": "rejected"},
@@ -2372,7 +2376,7 @@ class DiditWebhookView(APIView):
             text_body = render_to_string("emails/admin_name_change_review.txt", ctx)
             html_body = render_to_string("emails/admin_name_change_review.html", ctx)
 
-            # Send individually (so admins don’t see each other’s emails)
+            # Send individually (so admins donâ€™t see each otherâ€™s emails)
             for admin in admins:
                 send_mail(
                     subject=subject,
@@ -2410,22 +2414,22 @@ class DiditWebhookView(APIView):
             }
 
             if template_key == "approved":
-                subject = "Your name change request is approved ✅"
+                subject = "Your name change request is approved âœ…"
                 text_body = render_to_string("emails/name_change_approved.txt", ctx)
                 html_body = render_to_string("emails/name_change_approved.html", ctx)
 
             elif template_key == "manual_review":
-                subject = "Your name change request is under review ⏳"
+                subject = "Your name change request is under review â³"
                 text_body = render_to_string("emails/name_change_manual_review.txt", ctx)
                 html_body = render_to_string("emails/name_change_manual_review.html", ctx)
 
             elif template_key == "verification_failed":
-                subject = "Verification failed for your name change ❌"
+                subject = "Verification failed for your name change âŒ"
                 text_body = render_to_string("emails/name_change_verification_failed.txt", ctx)
                 html_body = render_to_string("emails/name_change_verification_failed.html", ctx)
 
             elif template_key == "rejected":
-                subject = "Your name change request was rejected ❌"
+                subject = "Your name change request was rejected âŒ"
                 text_body = render_to_string("emails/name_change_rejected.txt", ctx)
                 html_body = None
 
@@ -2456,7 +2460,7 @@ class DiditWebhookView(APIView):
             reason_code = profile.kyc_decline_reason or ""
             reason_label = "Verification could not be confirmed"
             if reason_code == UserProfile.KYC_DECLINE_REASON_NAME_MISMATCH:
-                reason_label = "Name mismatch (your profile name didn’t match your ID name)"
+                reason_label = "Name mismatch (your profile name didnâ€™t match your ID name)"
 
             profile_name = (profile.full_name or f"{user.first_name} {user.last_name}").strip()
 
@@ -2477,11 +2481,11 @@ class DiditWebhookView(APIView):
             if profile.kyc_status == UserProfile.KYC_STATUS_APPROVED:
                 text_body = render_to_string("emails/kyc_approved.txt", ctx)
                 html_body = render_to_string("emails/kyc_approved.html", ctx)
-                subject = "Your identity verification is complete ✅"
+                subject = "Your identity verification is complete âœ…"
             elif profile.kyc_status == UserProfile.KYC_STATUS_DECLINED:
                 text_body = render_to_string("emails/kyc_failed.txt", ctx)
                 html_body = render_to_string("emails/kyc_failed.html", ctx)
-                subject = "Action needed: identity verification failed ❌"
+                subject = "Action needed: identity verification failed âŒ"
             else:
                 return  # no email for pending/review
 
@@ -2550,14 +2554,14 @@ class DiditWebhookView(APIView):
                 profile.legal_name_locked = False
                 profile.legal_name_verified_at = None
             profile.save()
-            # ✅ In-app notification for KYC fail/review (only when status changes)
+            # âœ… In-app notification for KYC fail/review (only when status changes)
             if prev_status != profile.kyc_status:
                 if profile.kyc_status == UserProfile.KYC_STATUS_DECLINED:
                     create_notification_once(
                         recipient=profile.user,
                         kind="event",  # keep existing kind so frontend shows without changes
-                        title="Identity verification failed ❌",
-                        description="We couldn’t confirm your identity. Please try again from Settings → Verification.",
+                        title="Identity verification failed âŒ",
+                        description="We couldnâ€™t confirm your identity. Please try again from Settings â†’ Verification.",
                         state="declined",
                         unique={"type": "kyc", "kyc_session_id": session_id, "result": "declined"},
                         data={"reason": profile.kyc_decline_reason or ""},
@@ -2566,8 +2570,8 @@ class DiditWebhookView(APIView):
                     create_notification_once(
                         recipient=profile.user,
                         kind="event",
-                        title="Identity verification under review ⏳",
-                        description="Your verification is under review. We’ll notify you once a decision is made.",
+                        title="Identity verification under review â³",
+                        description="Your verification is under review. Weâ€™ll notify you once a decision is made.",
                         state="review",
                         unique={"type": "kyc", "kyc_session_id": session_id, "result": "review"},
                     )
@@ -2639,7 +2643,7 @@ class DiditWebhookView(APIView):
                 create_notification_once(
                     recipient=profile.user,
                     kind="event",
-                    title="Your profile is verified ✅",
+                    title="Your profile is verified âœ…",
                     description="Identity verification completed successfully. Your verified badge is now active.",
                     state="approved",
                     unique={"type": "kyc", "kyc_session_id": session_id, "result": "approved"},
@@ -2649,8 +2653,8 @@ class DiditWebhookView(APIView):
                 create_notification_once(
                     recipient=profile.user,
                     kind="event",
-                    title="Identity verification failed ❌",
-                    description="Your profile name didn’t match your ID. Please update your name and retry verification.",
+                    title="Identity verification failed âŒ",
+                    description="Your profile name didnâ€™t match your ID. Please update your name and retry verification.",
                     state="declined",
                     unique={"type": "kyc", "kyc_session_id": session_id, "result": "declined"},
                     data={"reason": profile.kyc_decline_reason or ""},
@@ -2687,8 +2691,8 @@ class DiditWebhookView(APIView):
                 create_notification_once(
                     recipient=ncr.user,
                     kind="event",
-                    title="Name change verification failed ❌",
-                    description="We couldn’t verify your documents for the name change request. Please retry with correct documents.",
+                    title="Name change verification failed âŒ",
+                    description="We couldnâ€™t verify your documents for the name change request. Please retry with correct documents.",
                     state="failed",
                     unique={"type": "name_change", "name_change_request_id": ncr.id, "result": "failed"},
                 )
@@ -2751,7 +2755,7 @@ class DiditWebhookView(APIView):
             ncr.auto_approved = bool(ok)
 
             if ok:
-                # ✅ AUTO-APPROVE: apply same logic as Admin decide()
+                # âœ… AUTO-APPROVE: apply same logic as Admin decide()
                 user = ncr.user
                 profile = user.profile
 
@@ -2775,7 +2779,7 @@ class DiditWebhookView(APIView):
                 ncr.admin_note = "Auto-approved (Didit Approved + name match passed)."
                 template_key = "approved"
             else:
-                # ❌ mismatch => admin review
+                # âŒ mismatch => admin review
                 ncr.admin_note = "Didit Approved but name mismatch. Manual admin review required."
                 template_key = "manual_review"
 
@@ -2808,12 +2812,12 @@ class DiditWebhookView(APIView):
         #             requested_name=requested_name,
         #             id_name=(id_full or "").strip(),
         #         )
-        # ✅ In-app notifications (user + admin) on Didit Approved
+        # âœ… In-app notifications (user + admin) on Didit Approved
         if template_key == "approved":
             create_notification_once(
                 recipient=ncr.user,
                 kind="event",
-                title="Your name has been updated ✅",
+                title="Your name has been updated âœ…",
                 description="Your name change request is approved and your profile name is updated.",
                 state="approved",
                 unique={"type": "name_change", "name_change_request_id": ncr.id, "result": "approved"},
@@ -2825,8 +2829,8 @@ class DiditWebhookView(APIView):
             create_notification_once(
                 recipient=ncr.user,
                 kind="event",
-                title="Your name change is under review ⏳",
-                description="Your documents were verified, but the name didn’t match. Admin review is required.",
+                title="Your name change is under review â³",
+                description="Your documents were verified, but the name didnâ€™t match. Admin review is required.",
                 state="review",
                 unique={"type": "name_change", "name_change_request_id": ncr.id, "result": "review"},
                 data={"requested_name": requested_name, "id_name": (id_full or "").strip()},
@@ -2980,7 +2984,7 @@ class GeoCitySearchView(APIView):
 
         qs = qs.order_by("-population", "name")[:limit]
 
-        # ✅ Fetch once (avoid N+1) — map country_code -> country_name
+        # âœ… Fetch once (avoid N+1) â€” map country_code -> country_name
         cities = list(qs)
         country_codes = {c.country_code for c in cities if c.country_code}
         country_map = dict(
@@ -2994,17 +2998,17 @@ class GeoCitySearchView(APIView):
                 "geoname_id": c.geoname_id,
                 "name": c.name,
                 "country_code": c.country_code,
-                "country_name": country_name,  # ✅ extra helpful field
+                "country_name": country_name,  # âœ… extra helpful field
                 "timezone": getattr(c, 'timezone', None),
                 "admin1_code": c.admin1_code,
                 "population": c.population,
                 "lat": c.latitude,
                 "lng": c.longitude,
-                "label": f"{c.name}, {country_name}",  # ✅ Delhi, India
+                "label": f"{c.name}, {country_name}",  # âœ… Delhi, India
                 "is_other": False,
             })
 
-        # ✅ If no results for a typed query, add "Other / Not listed"
+        # âœ… If no results for a typed query, add "Other / Not listed"
         if q and not results:
             fallback_country_name = None
             if country:
@@ -3232,3 +3236,4 @@ class SaleorDashboardSsoView(APIView):
             return redirect(url)
 
         return Response({"url": url}, status=200)
+
