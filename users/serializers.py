@@ -654,11 +654,19 @@ class ExperiencePublicSerializer(serializers.ModelSerializer):
         fields = ("id", "position", "community_name",
                   "start_date", "end_date", "currently_work_here")
 
+class EducationDocumentSerializerPublic(serializers.ModelSerializer):
+    class Meta:
+        from .models import EducationDocument
+        model = EducationDocument
+        fields = ["id", "file", "filename", "uploaded_at"]
+
 class EducationPublicSerializer(serializers.ModelSerializer):
+    documents = EducationDocumentSerializerPublic(many=True, read_only=True)
+
     class Meta:
         model = Education
         fields = ("id", "school", "degree", "field_of_study",
-                  "start_date", "end_date")
+                  "start_date", "end_date", "documents")
 
 
 class UserMiniSerializer(serializers.ModelSerializer):
