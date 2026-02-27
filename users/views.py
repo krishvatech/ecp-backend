@@ -44,8 +44,8 @@ from django.contrib.auth import get_user_model
 from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
 from .serializers import PublicProfileSerializer
-from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileMembership, EmailChangeRequest, VerificationRequest, VerificationHistory, CognitoIdentity
-from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, AdminKYCSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer, VerificationRequestSerializer, VerificationHistorySerializer
+from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileCertificationDocument, ProfileMembership, EmailChangeRequest, VerificationRequest, VerificationHistory, CognitoIdentity
+from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, AdminKYCSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileCertificationDocumentSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer, VerificationRequestSerializer, VerificationHistorySerializer
 from .models import EducationDocument, TrainingDocument, MembershipDocument
 from .serializers import EducationDocumentSerializer, TrainingDocumentSerializer, MembershipDocumentSerializer
 from .esco_client import search_skills
@@ -2193,6 +2193,26 @@ class MeMembershipDocumentViewSet(viewsets.ModelViewSet):
         membership_id = self.request.data.get('membership')
         membership = generics.get_object_or_404(ProfileMembership, id=membership_id, user=self.request.user)
         serializer.save(membership=membership)
+
+
+class MeCertificationDocumentViewSet(viewsets.ModelViewSet):
+    """
+    Manage documents for the authenticated user's certification entries.
+    Endpoints:
+      POST /api/users/me/certification-documents/ (Requires 'certification' ID and 'file')
+      DELETE /api/users/me/certification-documents/<id>/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProfileCertificationDocumentSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        return ProfileCertificationDocument.objects.filter(certification__user=self.request.user)
+
+    def perform_create(self, serializer):
+        certification_id = self.request.data.get('certification')
+        certification = generics.get_object_or_404(ProfileCertification, id=certification_id, user=self.request.user)
+        serializer.save(certification=certification)
 
 import re
 import unicodedata

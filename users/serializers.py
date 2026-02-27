@@ -17,7 +17,7 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
-from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest, EducationDocument, UserSkill, EscoSkill, LanguageCertificate, IsoLanguage, UserLanguage, ProfileTraining, ProfileCertification, VerificationRequest, VerificationHistory, ProfileMembership
+from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest, EducationDocument, UserSkill, EscoSkill, LanguageCertificate, IsoLanguage, UserLanguage, ProfileTraining, ProfileCertification, ProfileCertificationDocument, VerificationRequest, VerificationHistory, ProfileMembership
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email as django_validate_email
 
@@ -856,9 +856,15 @@ class ProfileTrainingSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class ProfileCertificationDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProfileCertificationDocument
+        fields = ["id", "file", "filename", "uploaded_at"]
+
 class ProfileCertificationSerializer(serializers.ModelSerializer):
     issue_date = MonthYearField(required=False, allow_null=True)
     expiration_date = MonthYearField(required=False, allow_null=True)
+    documents = ProfileCertificationDocumentSerializer(many=True, read_only=True)
 
     class Meta:
         model = ProfileCertification
@@ -871,6 +877,7 @@ class ProfileCertificationSerializer(serializers.ModelSerializer):
             "no_expiration",
             "credential_id",
             "credential_url",
+            "documents",
         )
 
     def validate(self, attrs):

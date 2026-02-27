@@ -30,6 +30,7 @@ from .views import (
     MeLanguageCertificateViewSet,
     IsoLanguageSearchView,
     MeTrainingViewSet, MeCertificationViewSet, MeMembershipViewSet,
+    MeCertificationDocumentViewSet,
     GeoCitySearchView, AuthUsersMeView,
 
 )
@@ -45,6 +46,7 @@ router.register(r"me/language-certificates", MeLanguageCertificateViewSet, basen
 router.register(r"me/trainings", MeTrainingViewSet, basename="me-trainings")
 router.register(r"me/training-documents", MeTrainingDocumentViewSet, basename="me-training-documents")
 router.register(r"me/certifications", MeCertificationViewSet, basename="me-certifications")
+router.register(r"me/certification-documents", MeCertificationDocumentViewSet, basename="me-certification-documents")
 router.register(r"me/memberships", MeMembershipViewSet, basename="me-memberships")
 router.register(r"me/membership-documents", MeMembershipDocumentViewSet, basename="me-membership-documents")
 router.register(r"admin/users", StaffUserViewSet, basename="admin-users")

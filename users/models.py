@@ -848,6 +848,26 @@ class ProfileCertification(models.Model):
     def __str__(self):
         return f"{self.certification_name} — {self.issuing_organization}"
 
+def certification_document_path(instance, filename):
+    import os, uuid
+    name, ext = os.path.splitext(filename)
+    return f"certification_docs/user_{instance.certification.user.id}/{uuid.uuid4().hex[:8]}{ext}"
+
+class ProfileCertificationDocument(models.Model):
+    certification = models.ForeignKey(
+        ProfileCertification, on_delete=models.CASCADE, related_name="documents"
+    )
+    file = models.FileField(upload_to=certification_document_path)
+    filename = models.CharField(max_length=255, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self.file and not self.filename:
+            self.filename = os.path.basename(self.file.name)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Doc for {self.certification}: {self.filename}"
 
 class VerificationRequest(models.Model):
     """
