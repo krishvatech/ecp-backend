@@ -15,6 +15,7 @@ from .utils import create_dyte_meeting, DYTE_API_BASE, _dyte_headers
 logger = logging.getLogger(__name__)
 
 ASSISTANCE_COOLDOWN_SECONDS = 60
+DISCONNECT_CLEANUP_GRACE_SECONDS = 3
 
 class EventConsumer(AsyncJsonWebsocketConsumer):
     """Consumer to handle real-time communication within an event, including Social Lounge state."""
@@ -162,20 +163,33 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     async def disconnect(self, code: int) -> None:
         if hasattr(self, "group_name"):
-            # Auto-leave table on disconnect
-            await self.leave_current_table()
             await self.update_online_status(False)
 
-            # Cleanup Dyte participants
+            should_finalize_cleanup = True
             try:
-                meeting_ids = await self.get_user_dyte_meetings()
-                if meeting_ids:
-                    import asyncio
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, self.cleanup_dyte_participants_sync, meeting_ids)
+                await asyncio.sleep(DISCONNECT_CLEANUP_GRACE_SECONDS)
+                should_finalize_cleanup = await self.should_finalize_disconnect_cleanup()
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"[CLEANUP] Failed: {e}")
+                logger.warning(f"[CLEANUP] Grace-period check failed for user {self.user.id}: {e}")
+
+            if should_finalize_cleanup:
+                # Treat socket closes as provisional first. This avoids ejecting users
+                # when the client briefly reconnects during page transitions/reloads.
+                await self.leave_current_table()
+
+                # Cleanup Dyte participants
+                try:
+                    meeting_ids = await self.get_user_dyte_meetings()
+                    if meeting_ids:
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, self.cleanup_dyte_participants_sync, meeting_ids)
+                except Exception as e:
+                    logging.getLogger(__name__).error(f"[CLEANUP] Failed: {e}")
+            else:
+                logger.info(
+                    f"[CLEANUP] Skipping destructive cleanup for user {self.user.id} "
+                    f"on event {self.event_id}; another connection became active during grace period."
+                )
 
             await self.broadcast_lounge_update() # Sync everyone
             await self.broadcast_main_room_support_status()
@@ -1178,6 +1192,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     ).update(idle_started_at=None)
         except Exception as e:
             print(f"[CONSUMER] Error updating online status for {self.user.username}: {e}")
+
+    @database_sync_to_async
+    def should_finalize_disconnect_cleanup(self):
+        reg = EventRegistration.objects.filter(event_id=self.event_id, user=self.user).first()
+        if not reg:
+            return True
+        return reg.online_count == 0
 
     @database_sync_to_async
     def check_is_banned(self):
