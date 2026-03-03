@@ -23,6 +23,23 @@ from datetime import timedelta
 User = get_user_model()
 
 
+def _viewer_can_manage_hidden_connections(user):
+    return bool(user and (user.is_staff or user.is_superuser))
+
+
+def _can_view_connections_list(request_user, target_user):
+    if not request_user or not request_user.is_authenticated:
+        return False
+    if request_user.id == target_user.id:
+        return True
+    if _viewer_can_manage_hidden_connections(request_user):
+        return True
+    target_profile = getattr(target_user, "profile", None)
+    if getattr(target_profile, "connections_hidden", False):
+        return False
+    return Friendship.are_friends(request_user.id, target_user.id)
+
+
 class FriendshipViewSet(
     mixins.ListModelMixin,
     mixins.CreateModelMixin,
@@ -81,11 +98,15 @@ class FriendshipViewSet(
         except (TypeError, ValueError):
             return Response({"detail": "user_id is required"}, status=400)
 
-        # 404 if target doesn't exist
-        get_object_or_404(User, id=target_id)
-
+        target_user = get_object_or_404(User.objects.select_related("profile"), id=target_id)
         me_id = request.user.id
-        if me_id != target_id and not Friendship.are_friends(me_id, target_id):
+        target_profile = getattr(target_user, "profile", None)
+        if me_id != target_id and getattr(target_profile, "connections_hidden", False) and not _viewer_can_manage_hidden_connections(request.user):
+            return Response(
+                {"detail": "This member has hidden their connections list."},
+                status=403,
+            )
+        if not _can_view_connections_list(request.user, target_user):
             return Response(
                 {"detail": "You can only view friends of users who are your friends."},
                 status=403,
@@ -96,6 +117,18 @@ class FriendshipViewSet(
             .filter(Q(user1_id=target_id) | Q(user2_id=target_id))
             .order_by("-created_at")
         )
+        if not _viewer_can_manage_hidden_connections(request.user):
+            qs = qs.exclude(
+                (
+                    Q(user1_id=target_id)
+                    & Q(user2__profile__hide_from_others_connections=True)
+                    & ~Q(user2_id=request.user.id)
+                ) | (
+                    Q(user2_id=target_id)
+                    & Q(user1__profile__hide_from_others_connections=True)
+                    & ~Q(user1_id=request.user.id)
+                )
+            )
         ser = friendserializer(
             qs, many=True, context={"request": request, "perspective_id": target_id}
         )
@@ -249,6 +282,11 @@ class FriendshipViewSet(
             return Response({"detail": "user_id is required"}, status=400)
 
         me = request.user
+        other_user = get_object_or_404(User.objects.select_related("profile"), id=other_id)
+        if me.id != other_id and getattr(getattr(other_user, "profile", None), "connections_hidden", False) and not _viewer_can_manage_hidden_connections(me):
+            return Response([])
+        if not _can_view_connections_list(me, other_user):
+            return Response([])
         my_pairs = Friendship.objects.filter(Q(user1=me) | Q(user2=me))
         my_ids = set(
             [f.user1_id if f.user1_id != me.id else f.user2_id for f in my_pairs]
@@ -262,6 +300,8 @@ class FriendshipViewSet(
         )
         mutual_ids = list(my_ids.intersection(their_ids))
         users = User.objects.filter(id__in=mutual_ids)
+        if not _viewer_can_manage_hidden_connections(me):
+            users = users.exclude(profile__hide_from_others_connections=True).exclude(id=me.id)
         return Response(UserTinySerializer(users, many=True).data)
 
     @extend_schema(

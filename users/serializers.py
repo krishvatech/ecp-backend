@@ -137,6 +137,8 @@ class UserProfileMiniSerializer(serializers.ModelSerializer):
             "is_online",          # computed
             "kyc_status",         # Verification status
             "directory_hidden",   # NEW: privacy status
+            "connections_hidden",
+            "hide_from_others_connections",
         )
         read_only_fields = ("last_activity_at", "is_online")
 
@@ -158,7 +160,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "location", "links", "user_image", "user_image_url", "skills",
             "last_activity_at", "is_online","kyc_decline_reason",
             "kyc_status", "legal_name_locked", "legal_name_verified_at",
-            "directory_hidden", "pending_verification_request",
+            "directory_hidden", "connections_hidden", "hide_from_others_connections",
+            "pending_verification_request",
         ]
         read_only_fields = ("last_activity_at", "is_online", "kyc_status",
                             "legal_name_locked", "legal_name_verified_at", "pending_verification_request")
