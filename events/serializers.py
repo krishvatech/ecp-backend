@@ -87,7 +87,7 @@ def build_event_participant_lookup(event):
     }
 
 
-def resolve_registration_roles(registration, participant_lookup):
+def resolve_registration_roles(registration, participant_lookup, event=None):
     matches = []
     user_id = getattr(registration, "user_id", None)
     if user_id:
@@ -108,6 +108,8 @@ def resolve_registration_roles(registration, participant_lookup):
 
     deduped.sort(key=lambda p: (role_priority(p.role), p.display_order, (p.get_name() or "").lower(), p.id))
     roles = [p.role for p in deduped if p.role]
+    if not roles and user_id and user_id == getattr(event, "created_by_id", None):
+        roles = [EventParticipant.ROLE_HOST]
     primary_role = roles[0] if roles else None
     return deduped, roles, primary_role
 

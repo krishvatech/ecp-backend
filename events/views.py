@@ -2480,6 +2480,7 @@ class EventViewSet(viewsets.ModelViewSet):
             _matched_participants, roles, primary_role = resolve_registration_roles(
                 registration,
                 participant_lookup,
+                event=event,
             )
             public_role_visible = all(
                 is_public_role_visible(event, role)
