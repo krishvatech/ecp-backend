@@ -48,6 +48,25 @@ class FriendshipViewSet(
 ):
     permission_classes = [IsAuthenticatedOnly]
 
+    def _remove_friendship(self, request):
+        friend_user_id = request.query_params.get("user_id")
+        if friend_user_id is None:
+            return Response({"detail": "user_id is required."}, status=400)
+        try:
+            friend_id = int(friend_user_id)
+        except ValueError:
+            return Response({"detail": "Invalid user_id."}, status=400)
+
+        me = request.user
+        if friend_id == me.id:
+            return Response({"detail": "You cannot remove yourself."}, status=400)
+
+        u1, u2 = (me.id, friend_id) if me.id < friend_id else (friend_id, me.id)
+        deleted, _ = Friendship.objects.filter(user1_id=u1, user2_id=u2).delete()
+        if not deleted:
+            return Response({"detail": "Contact not found."}, status=404)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     def get_queryset(self):
         me = self.request.user
         return (
@@ -64,16 +83,23 @@ class FriendshipViewSet(
     def destroy(self, request, *args, **kwargs):
         """Unfriend by friendship id OR by ?user_id=..."""
         friend_user_id = request.query_params.get("user_id")
-        me = request.user
         if friend_user_id:
-            try:
-                friend_id = int(friend_user_id)
-            except ValueError:
-                return Response({"detail": "Invalid user_id."}, status=400)
-            u1, u2 = (me.id, friend_id) if me.id < friend_id else (friend_id, me.id)
-            Friendship.objects.filter(user1_id=u1, user2_id=u2).delete()
-            return Response(status=status.HTTP_204_NO_CONTENT)
+            return self._remove_friendship(request)
         return super().destroy(request, *args, **kwargs)
+
+    @extend_schema(
+        parameters=[OpenApiParameter(
+            name="user_id",
+            type=OpenApiTypes.INT,
+            location=OpenApiParameter.QUERY,
+            required=True,
+            description="Target user ID to remove from contacts",
+        )]
+    )
+    @action(detail=False, methods=["delete"], url_path="remove")
+    def remove(self, request):
+        """Remove an existing friendship by target user id."""
+        return self._remove_friendship(request)
     
     @extend_schema(
         parameters=[
