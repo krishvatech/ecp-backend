@@ -218,6 +218,18 @@ class Event(models.Model):
         default=False,
         help_text="Allow participants to see the participant list after the event ends"
     )
+    show_public_hosts = models.BooleanField(
+        default=True,
+        help_text="Allow host-role participants to appear publicly on event cards and participant lists"
+    )
+    show_public_speakers = models.BooleanField(
+        default=True,
+        help_text="Allow speaker-role participants to appear publicly on event cards and participant lists"
+    )
+    show_public_moderators = models.BooleanField(
+        default=False,
+        help_text="Allow moderator-role participants to appear publicly on event cards and participant lists"
+    )
 
     # Speed Networking Match History Visibility Settings
     show_speed_networking_match_history = models.BooleanField(

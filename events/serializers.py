@@ -28,6 +28,134 @@ from content.models import Resource
 import json
 
 
+ROLE_PRIORITY = {
+    EventParticipant.ROLE_HOST: 0,
+    EventParticipant.ROLE_SPEAKER: 1,
+    EventParticipant.ROLE_MODERATOR: 2,
+}
+
+ROLE_LABELS = {
+    EventParticipant.ROLE_HOST: "Host",
+    EventParticipant.ROLE_SPEAKER: "Speaker",
+    EventParticipant.ROLE_MODERATOR: "Moderator",
+}
+
+
+def role_priority(role):
+    return ROLE_PRIORITY.get((role or "").lower(), 99)
+
+
+def role_label(role):
+    return ROLE_LABELS.get((role or "").lower(), "Participant")
+
+
+def is_public_role_visible(event, role):
+    role = (role or "").lower()
+    if role == EventParticipant.ROLE_HOST:
+        return bool(getattr(event, "show_public_hosts", True))
+    if role == EventParticipant.ROLE_SPEAKER:
+        return bool(getattr(event, "show_public_speakers", True))
+    if role == EventParticipant.ROLE_MODERATOR:
+        return bool(getattr(event, "show_public_moderators", False))
+    return True
+
+
+def normalize_participant_email(value):
+    return (value or "").strip().lower()
+
+
+def build_event_participant_lookup(event):
+    participant_qs = (
+        event.participants.select_related("user", "user__profile")
+        .all()
+    )
+    by_user_id = {}
+    by_email = {}
+
+    for participant in participant_qs:
+        if participant.user_id:
+            by_user_id.setdefault(participant.user_id, []).append(participant)
+
+        email = normalize_participant_email(participant.get_email())
+        if email:
+            by_email.setdefault(email, []).append(participant)
+
+    return {
+        "participants": list(participant_qs),
+        "by_user_id": by_user_id,
+        "by_email": by_email,
+    }
+
+
+def resolve_registration_roles(registration, participant_lookup):
+    matches = []
+    user_id = getattr(registration, "user_id", None)
+    if user_id:
+        matches.extend(participant_lookup["by_user_id"].get(user_id, []))
+
+    if not matches:
+        email = normalize_participant_email(getattr(getattr(registration, "user", None), "email", ""))
+        if email:
+            matches.extend(participant_lookup["by_email"].get(email, []))
+
+    deduped = []
+    seen_ids = set()
+    for participant in matches:
+        if participant.id in seen_ids:
+            continue
+        seen_ids.add(participant.id)
+        deduped.append(participant)
+
+    deduped.sort(key=lambda p: (role_priority(p.role), p.display_order, (p.get_name() or "").lower(), p.id))
+    roles = [p.role for p in deduped if p.role]
+    primary_role = roles[0] if roles else None
+    return deduped, roles, primary_role
+
+
+def build_profile_url(user_id):
+    return f"/community/rich-profile/{user_id}" if user_id else None
+
+
+def serialize_featured_participants(event, context=None):
+    context = context or {}
+    request = context.get("request")
+    featured = []
+    participants = (
+        event.participants.select_related("user", "user__profile")
+        .all()
+    )
+    visible_participants = [
+        participant
+        for participant in participants
+        if is_public_role_visible(event, participant.role)
+    ]
+    visible_participants.sort(
+        key=lambda participant: (
+            role_priority(participant.role),
+            participant.display_order,
+            (participant.get_name() or "").lower(),
+            participant.id,
+        )
+    )
+
+    for participant in visible_participants:
+        image_url = participant.get_image_url() or ""
+        if image_url and request and not str(image_url).startswith(("http://", "https://")):
+            image_url = request.build_absolute_uri(image_url)
+        featured.append(
+            {
+                "user_id": participant.user_id,
+                "display_name": participant.get_name() or "",
+                "avatar_url": image_url or None,
+                "role": participant.role,
+                "role_label": role_label(participant.role),
+                "profile_url": build_profile_url(participant.user_id),
+                "is_profile_clickable": bool(participant.user_id),
+            }
+        )
+    return featured
+
+
 class ParticipantsField(serializers.ListField):
     """Custom field to handle participants sent as JSON string from FormData."""
 
@@ -128,6 +256,33 @@ class EventParticipantSerializer(serializers.ModelSerializer):
     def get_bio_text(self, obj):
         """Get bio with fallback logic."""
         return obj.get_bio()
+
+
+class FeaturedParticipantSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField(allow_null=True)
+    display_name = serializers.CharField()
+    avatar_url = serializers.CharField(allow_null=True, allow_blank=True)
+    role = serializers.CharField()
+    role_label = serializers.CharField()
+    profile_url = serializers.CharField(allow_null=True, allow_blank=True)
+    is_profile_clickable = serializers.BooleanField()
+
+
+class EventParticipantListItemSerializer(serializers.Serializer):
+    registration_id = serializers.IntegerField()
+    user_id = serializers.IntegerField(allow_null=True)
+    display_name = serializers.CharField()
+    email = serializers.CharField(allow_null=True, allow_blank=True)
+    avatar_url = serializers.CharField(allow_null=True, allow_blank=True)
+    kyc_status = serializers.CharField(allow_null=True, allow_blank=True)
+    profile_url = serializers.CharField(allow_null=True, allow_blank=True)
+    is_profile_clickable = serializers.BooleanField()
+    roles = serializers.ListField(child=serializers.CharField(), default=list)
+    primary_role = serializers.CharField(allow_null=True, allow_blank=True)
+    role_labels = serializers.ListField(child=serializers.CharField(), default=list)
+    is_public_role_visible = serializers.BooleanField()
+    is_hidden_from_public_role_display = serializers.BooleanField()
+    registered_at = serializers.DateTimeField(allow_null=True)
 
 
 class SessionParticipantSerializer(serializers.ModelSerializer):
@@ -409,6 +564,8 @@ class EventSerializer(serializers.ModelSerializer):
 
     # Read-only field for participants output
     event_participants = serializers.SerializerMethodField(read_only=True)
+    featured_participants = serializers.SerializerMethodField(read_only=True)
+    featured_participants_total = serializers.SerializerMethodField(read_only=True)
 
     # Session-related fields
     sessions = EventSessionSerializer(many=True, read_only=True)
@@ -511,9 +668,14 @@ class EventSerializer(serializers.ModelSerializer):
             "lounge_after_buffer",
             "show_participants_before_event",
             "show_participants_after_event",
+            "show_public_hosts",
+            "show_public_speakers",
+            "show_public_moderators",
             "show_speed_networking_match_history",
             "participants",
             "event_participants",
+            "featured_participants",
+            "featured_participants_total",
             "sessions",
             "has_sessions",
             "sessions_input",
@@ -1146,6 +1308,13 @@ class EventSerializer(serializers.ModelSerializer):
 
         return grouped
 
+    def get_featured_participants(self, obj):
+        participants = serialize_featured_participants(obj, self.context)
+        return FeaturedParticipantSerializer(participants[:3], many=True).data
+
+    def get_featured_participants_total(self, obj):
+        return len(serialize_featured_participants(obj, self.context))
+
     def get_has_sessions(self, obj):
         """Check if event has sessions."""
         return obj.has_sessions
@@ -1405,6 +1574,8 @@ class PublicEventSerializer(serializers.ModelSerializer):
     speakers = serializers.SerializerMethodField()
     preview_image = serializers.SerializerMethodField()
     sessions = EventSessionSerializer(many=True, read_only=True)
+    featured_participants = serializers.SerializerMethodField()
+    featured_participants_total = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -1415,6 +1586,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "location", "price", "is_free",
             "preview_image", "attending_count",
             "created_at", "sessions", "speakers",
+            "featured_participants", "featured_participants_total",
             "is_multi_day",
         ]
         read_only_fields = fields
@@ -1450,6 +1622,13 @@ class PublicEventSerializer(serializers.ModelSerializer):
             return str(obj.preview_image.url)
         except Exception:
             return str(obj.preview_image)
+
+    def get_featured_participants(self, obj):
+        participants = serialize_featured_participants(obj, self.context)
+        return FeaturedParticipantSerializer(participants[:3], many=True).data
+
+    def get_featured_participants_total(self, obj):
+        return len(serialize_featured_participants(obj, self.context))
 
 
 class EventLiteSerializer(serializers.ModelSerializer):

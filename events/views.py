@@ -67,7 +67,15 @@ from .serializers import (
     EventRegistrationSerializer,
     EventSessionSerializer,
     SessionAttendanceSerializer,
+    EventParticipantListItemSerializer,
+    build_event_participant_lookup,
+    build_profile_url,
+    is_public_role_visible,
+    role_label,
+    role_priority,
+    resolve_registration_roles,
 )
+from users.serializers import UserMiniSerializer
 from .utils import (
     DYTE_API_BASE,
     DYTE_AUTH_HEADER,
@@ -920,7 +928,7 @@ class EventViewSet(viewsets.ModelViewSet):
           - bucket (?bucket=upcoming|live|past)
         """
         user = self.request.user
-        qs = Event.objects.select_related("community")
+        qs = Event.objects.select_related("community").prefetch_related("sessions", "participants__user", "participants__user__profile")
 
         # Base visibility
         if not user.is_authenticated:
@@ -2460,14 +2468,79 @@ class EventViewSet(viewsets.ModelViewSet):
         qs = (
             EventRegistration.objects
             .filter(event=event, status='registered')
-            .select_related("user")
+            .select_related("user", "user__profile")
             .order_by("-registered_at")
         )
+        participant_lookup = build_event_participant_lookup(event)
+        is_organizer_view = is_organizer
+        rows = []
+        hidden_roles_count = 0
 
-        serializer = EventRegistrationSerializer(
-            qs, many=True, context={"request": request}
+        for registration in qs:
+            _matched_participants, roles, primary_role = resolve_registration_roles(
+                registration,
+                participant_lookup,
+            )
+            public_role_visible = all(
+                is_public_role_visible(event, role)
+                for role in roles
+            )
+            hidden_from_public = bool(roles) and not public_role_visible
+
+            if hidden_from_public and not is_organizer_view:
+                hidden_roles_count += 1
+                continue
+
+            try:
+                profile = registration.user.profile
+            except Exception:
+                profile = None
+
+            mini_user = UserMiniSerializer(registration.user, context={"request": request}).data
+            avatar_url = mini_user.get("avatar_url") or ""
+
+            rows.append(
+                {
+                    "registration_id": registration.id,
+                    "user_id": registration.user_id,
+                    "display_name": mini_user.get("full_name") or registration.user.get_full_name().strip() or registration.user.username or registration.user.email or "Unknown User",
+                    "email": registration.user.email or "",
+                    "avatar_url": avatar_url or None,
+                    "kyc_status": mini_user.get("kyc_status") or getattr(registration.user, "kyc_status", None) or getattr(profile, "kyc_status", "") or "",
+                    "profile_url": build_profile_url(registration.user_id),
+                    "is_profile_clickable": bool(registration.user_id),
+                    "roles": roles,
+                    "primary_role": primary_role,
+                    "role_labels": [role_label(role) for role in roles],
+                    "is_public_role_visible": public_role_visible,
+                    "is_hidden_from_public_role_display": hidden_from_public,
+                    "registered_at": registration.registered_at,
+                }
+            )
+
+        rows.sort(
+            key=lambda row: (
+                role_priority(row["primary_role"]),
+                row["display_name"].lower(),
+                row["registration_id"],
+            )
         )
-        return Response(serializer.data)
+
+        limit = request.query_params.get("limit")
+        if limit is not None:
+            try:
+                rows = rows[: max(0, int(limit))]
+            except (TypeError, ValueError):
+                pass
+
+        serializer = EventParticipantListItemSerializer(rows, many=True)
+        return Response(
+            {
+                "participants": serializer.data,
+                "hidden_roles_count": hidden_roles_count if not is_organizer_view else 0,
+                "total_registered_count": qs.count(),
+            }
+        )
 
     def _get_lounge_availability(self, event):
         """
@@ -4463,7 +4536,7 @@ class PublicEventDetailView(generics.RetrieveAPIView):
     serializer_class = PublicEventSerializer
     queryset = Event.objects.filter(
         status__in=["published", "live"]
-    ).select_related("community").prefetch_related("sessions")
+    ).select_related("community").prefetch_related("sessions", "participants__user", "participants__user__profile")
     lookup_field = "slug"
     lookup_url_kwarg = "slug"
 
