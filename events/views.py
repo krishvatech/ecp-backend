@@ -2468,6 +2468,7 @@ class EventViewSet(viewsets.ModelViewSet):
         qs = (
             EventRegistration.objects
             .filter(event=event, status='registered')
+            .exclude(user__is_superuser=True)
             .select_related("user", "user__profile")
             .order_by("-registered_at")
         )

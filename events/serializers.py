@@ -130,6 +130,7 @@ def serialize_featured_participants(event, context=None):
         participant
         for participant in participants
         if is_public_role_visible(event, participant.role)
+        and not getattr(participant.user, 'is_superuser', False)
     ]
     visible_participants.sort(
         key=lambda participant: (
