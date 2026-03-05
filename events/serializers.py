@@ -1429,11 +1429,18 @@ class EventSerializer(serializers.ModelSerializer):
         data["resource_links"]  = self._filter_urls(data.get("resource_links", []))
         data["resource_videos"] = self._filter_urls(data.get("resource_videos", []))
 
-        tz_value = data.get("timezone") or settings.TIME_ZONE
-        if isinstance(tz_value, str):
-            tz_value = tz_value.strip()
-        if not tz_value:
-            tz_value = settings.TIME_ZONE
+        # Preserve existing event timezone on updates when timezone is omitted.
+        # Falling back to settings.TIME_ZONE here can silently rewrite timezone
+        # during unrelated PATCH requests (e.g. settings toggles).
+        incoming_timezone = data.get("timezone", None)
+        if incoming_timezone is None:
+            tz_value = getattr(self.instance, "timezone", None) or settings.TIME_ZONE
+        else:
+            tz_value = incoming_timezone
+            if isinstance(tz_value, str):
+                tz_value = tz_value.strip()
+            if not tz_value:
+                tz_value = getattr(self.instance, "timezone", None) or settings.TIME_ZONE
         try:
             event_tz = ZoneInfo(tz_value)
         except ZoneInfoNotFoundError:
