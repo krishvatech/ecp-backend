@@ -159,6 +159,43 @@ def serialize_featured_participants(event, context=None):
     return featured
 
 
+def compute_public_registered_count(event, registrations_qs=None):
+    """
+    Count registered users visible in public participant listings.
+    Excludes:
+    - superusers
+    - registrations mapped to organizer roles hidden by event visibility settings
+    """
+    qs = registrations_qs
+    if qs is None:
+        qs = (
+            EventRegistration.objects
+            .filter(event=event, status='registered')
+            .exclude(user__is_superuser=True)
+            .select_related("user", "user__profile")
+        )
+
+    participant_lookup = build_event_participant_lookup(event)
+    visible_count = 0
+
+    for registration in qs:
+        _matched_participants, roles, _primary_role = resolve_registration_roles(
+            registration,
+            participant_lookup,
+            event=event,
+        )
+        public_role_visible = all(
+            is_public_role_visible(event, role)
+            for role in roles
+        )
+        hidden_from_public = bool(roles) and not public_role_visible
+        if hidden_from_public:
+            continue
+        visible_count += 1
+
+    return visible_count
+
+
 class ParticipantsField(serializers.ListField):
     """Custom field to handle participants sent as JSON string from FormData."""
 
@@ -552,6 +589,7 @@ class EventSerializer(serializers.ModelSerializer):
     created_by_id = serializers.IntegerField(read_only=True)
     attending_count = serializers.IntegerField(read_only=True)
     registrations_count = serializers.IntegerField(read_only=True)
+    public_registered_count = serializers.SerializerMethodField(read_only=True)
 
     # Let recording_url be blank or omitted; we will normalize/validate in validate()
     recording_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -637,6 +675,7 @@ class EventSerializer(serializers.ModelSerializer):
             "saleor_variant_id",
             "attending_count",
             "registrations_count",
+            "public_registered_count",
             "preview_image",
             "cover_image",
             "waiting_room_image",
@@ -692,6 +731,7 @@ class EventSerializer(serializers.ModelSerializer):
             "active_speaker",
             "attending_count",
             "registrations_count",
+            "public_registered_count",
             "live_started_at",
             "live_ended_at",
             "dyte_meeting_id",
@@ -1317,6 +1357,9 @@ class EventSerializer(serializers.ModelSerializer):
 
     def get_featured_participants_total(self, obj):
         return len(serialize_featured_participants(obj, self.context))
+
+    def get_public_registered_count(self, obj):
+        return compute_public_registered_count(obj)
 
     def get_has_sessions(self, obj):
         """Check if event has sessions."""

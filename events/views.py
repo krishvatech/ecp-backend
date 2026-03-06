@@ -2528,6 +2528,8 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         )
 
+        public_registered_count = len(rows)
+
         limit = request.query_params.get("limit")
         if limit is not None:
             try:
@@ -2541,6 +2543,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "participants": serializer.data,
                 "hidden_roles_count": hidden_roles_count if not is_organizer_view else 0,
                 "total_registered_count": qs.count(),
+                "public_registered_count": public_registered_count,
             }
         )
 
