@@ -3845,7 +3845,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="lounge-participants")
     def lounge_participants(self, request, pk=None):
-        """Host-only endpoint: Returns all participants currently in Social Lounge (at table or floating)."""
+        """Host-only endpoint: Returns all participants currently in Social Lounge (at table or floating), excluding hosts."""
         event = self.get_object()
         if not _is_event_host(request.user, event):
             return Response({"detail": "Host only"}, status=403)
@@ -3865,12 +3865,35 @@ class EventViewSet(viewsets.ModelViewSet):
             ).select_related("table")
         }
 
+        # ✅ NEW FIX: Exclude hosts from lounge participants list
+        # Build data only for non-hosts
         data = []
         for reg in regs:
+            user = reg.user
+            # Skip if user is a host (staff, superuser, event creator, community owner, or explicitly assigned role)
+            if (
+                user.is_staff
+                or getattr(user, "is_superuser", False)
+                or event.created_by_id == user.id
+                or getattr(event.community, "owner_id", None) == user.id
+            ):
+                continue
+
+            # Check if explicitly assigned host role in EventParticipant (ANY participant type)
+            # First check by user_id
+            if event.participants.filter(role="host", user_id=user.id).exists():
+                continue
+
+            # Then check by email for guest participants
+            user_email = (getattr(user, "email", "") or "").strip()
+            if user_email and event.participants.filter(role="host", guest_email__iexact=user_email).exists():
+                continue
+
+            # Include non-hosts
             lp = lounge_map.get(reg.user_id)
             data.append({
                 "user_id": reg.user_id,
-                "user_name": reg.user.get_full_name() or reg.user.username,
+                "user_name": user.get_full_name() or user.username,
                 "table_id": lp.table_id if lp else None,
                 "table_name": lp.table.name if lp else None,
                 "admission_status": reg.admission_status,
