@@ -3228,8 +3228,14 @@ class EventViewSet(viewsets.ModelViewSet):
             # 3. Delete from Django DB
             lounge_record.delete()
 
+            # ✅ FIX: Set current_location to "social_lounge" so user stays visible
+            # to host in lounge participant list (they just left a table, not the lounge)
+            EventRegistration.objects.filter(
+                event=event, user=user
+            ).update(current_location="social_lounge")
+
             logger.info(f"[LOUNGE_LEAVE] User {user.id} successfully left table {table.id}. "
-                       f"Removed from both Django and Dyte.")
+                       f"Removed from both Django and Dyte. Location set to social_lounge.")
 
             return Response({
                 "ok": True,
@@ -3804,34 +3810,36 @@ class EventViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="lounge-participants")
     def lounge_participants(self, request, pk=None):
-        """Host-only endpoint: Returns all participants currently in Social Lounge tables."""
+        """Host-only endpoint: Returns all participants currently in Social Lounge (at table or floating)."""
         event = self.get_object()
         if not _is_event_host(request.user, event):
             return Response({"detail": "Host only"}, status=403)
 
-        lounge_occupants = LoungeParticipant.objects.filter(
-            table__event=event, table__category="LOUNGE"
-        ).select_related("user", "table")
+        # ✅ FIX: Query all participants whose current_location is social_lounge
+        # This includes both "floating" users (no table) and users seated at tables
+        regs = EventRegistration.objects.filter(
+            event=event,
+            current_location="social_lounge"
+        ).select_related("user")
 
-        user_ids = [lp.user_id for lp in lounge_occupants]
-        regs = {
-            r.user_id: r for r in EventRegistration.objects.filter(event=event, user_id__in=user_ids)
+        # Get table assignments for those users (if any)
+        user_ids = [r.user_id for r in regs]
+        lounge_map = {
+            lp.user_id: lp for lp in LoungeParticipant.objects.filter(
+                table__event=event, table__category="LOUNGE", user_id__in=user_ids
+            ).select_related("table")
         }
 
         data = []
-        for lp in lounge_occupants:
-            reg = regs.get(lp.user_id)
-            # Enforce single source of truth: only users whose authoritative
-            # current_location is social_lounge are shown in lounge participants.
-            if reg and reg.current_location != "social_lounge":
-                continue
+        for reg in regs:
+            lp = lounge_map.get(reg.user_id)
             data.append({
-                "user_id": lp.user_id,
-                "user_name": lp.user.get_full_name() or lp.user.username,
-                "table_id": lp.table_id,
-                "table_name": lp.table.name,
-                "admission_status": reg.admission_status if reg else "unknown",
-                "current_location": reg.current_location if reg else "social_lounge",
+                "user_id": reg.user_id,
+                "user_name": reg.user.get_full_name() or reg.user.username,
+                "table_id": lp.table_id if lp else None,
+                "table_name": lp.table.name if lp else None,
+                "admission_status": reg.admission_status,
+                "current_location": reg.current_location,
             })
         return Response({"count": len(data), "results": data})
 

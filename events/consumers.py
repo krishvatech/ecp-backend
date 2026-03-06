@@ -474,6 +474,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 }
             )
 
+        elif action == "enter_lounge":
+            # ✅ NEW: Mark participant as being in Social Lounge (with or without table)
+            await self.handle_enter_lounge()
+
+        elif action == "exit_lounge":
+            # ✅ NEW: Mark participant as leaving Social Lounge overlay
+            await self.handle_exit_lounge()
+
         else:
             # Traditional broadcast for other messages
             await self.channel_layer.group_send(
@@ -762,6 +770,49 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 "ok": False,
                 "reason": "server_error",
             })
+
+    # --- Social Lounge Entry/Exit Handlers ---
+
+    async def handle_enter_lounge(self):
+        """Mark the participant as being in the Social Lounge area (with or without a table)."""
+        await self._set_lounge_location()
+
+    async def handle_exit_lounge(self):
+        """Reset location when user explicitly leaves the lounge overlay."""
+        await self._reset_lounge_location()
+
+    @database_sync_to_async
+    def _set_lounge_location(self):
+        """Set current_location to social_lounge."""
+        try:
+            EventRegistration.objects.filter(
+                event_id=self.event_id, user=self.user
+            ).update(current_location="social_lounge")
+            logger.info(f"[CONSUMER] {self.user.username} entered lounge area")
+        except Exception as e:
+            logger.warning(f"[CONSUMER] enter_lounge error: {e}")
+
+    @database_sync_to_async
+    def _reset_lounge_location(self):
+        """Reset location when user exits the lounge overlay."""
+        try:
+            reg = EventRegistration.objects.get(event_id=self.event_id, user=self.user)
+            # Only reset if they're not at a table (LoungeParticipant would still exist if at table)
+            in_lounge_table = LoungeParticipant.objects.filter(
+                table__event_id=self.event_id, user=self.user
+            ).exists()
+            if not in_lounge_table:
+                if reg.admission_status == "admitted":
+                    new_loc = "main_room"
+                elif reg.admission_status == "waiting":
+                    new_loc = "waiting_room"
+                else:
+                    new_loc = "pre_event"
+                reg.current_location = new_loc
+                reg.save(update_fields=["current_location"])
+                logger.info(f"[CONSUMER] {self.user.username} exited lounge, location reset to {new_loc}")
+        except Exception as e:
+            logger.warning(f"[CONSUMER] exit_lounge error: {e}")
 
     @database_sync_to_async
     def sync_current_location_on_connect(self):
@@ -1673,9 +1724,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             # 3. Delete from Django DB
             lounge_record.delete()
 
-            # ✅ NEW: Update current_location based on admission_status
+            # ✅ FIX: Keep current_location as "social_lounge" when leaving a LOUNGE table
+            # (user is still in lounge area). Only reset if leaving a BREAKOUT table.
             reg = EventRegistration.objects.get(event_id=self.event_id, user=self.user)
-            if reg.admission_status == "admitted":
+            if table.category == "LOUNGE":
+                new_location = "social_lounge"  # Still in lounge area
+            elif reg.admission_status == "admitted":
                 new_location = "main_room"
             elif reg.admission_status == "waiting":
                 new_location = "waiting_room"
