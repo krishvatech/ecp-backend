@@ -3409,15 +3409,19 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return response
 
-    # ------------------------ My Events ----------------------
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="mine")
     def mine(self, request):
         """
         List events the current user is registered for (newest first).
+        Each event in the response includes an `is_host` boolean so the
+        frontend can show "Join as Host" without a separate registration lookup.
         """
+        user = request.user
+        user_email = (getattr(user, "email", "") or "").strip()
+
         qs = (
             Event.objects
-            .filter(registrations__user=request.user, registrations__status__in=['registered', 'cancellation_requested'])
+            .filter(registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'])
             .distinct()
             .annotate(registrations_count=Count('registrations', distinct=True))
             .order_by("-start_time")
@@ -3429,8 +3433,39 @@ class EventViewSet(viewsets.ModelViewSet):
             qs = _apply_bucket_filter(qs, bucket)
 
         page = self.paginate_queryset(qs)
-        ser = EventLiteSerializer(page or qs, many=True)
-        return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+        events = page if page is not None else qs
+        ser = EventLiteSerializer(events, many=True, context={"request": request})
+        data = ser.data
+
+        # Annotate each event with is_host.
+        # Use the same narrow check as EventRegistrationSerializer.get_is_host():
+        #   - event creator or community owner → always host
+        #   - explicitly assigned in EventParticipant with role="host" → host
+        # We do NOT use _is_event_host() here because that grants all is_staff users
+        # host access on every event, which is a permissions helper, not a role label.
+        result = []
+        for event_obj, event_data in zip(events, data):
+            d = dict(event_data)
+
+            # Is this user the creator or community owner?
+            is_creator_or_owner = (
+                event_obj.created_by_id == user.id
+                or getattr(getattr(event_obj, "community", None), "owner_id", None) == user.id
+            )
+
+            if is_creator_or_owner:
+                d["is_host"] = True
+            else:
+                # Check explicit EventParticipant assignment with role="host"
+                host_match = Q(participant_type="staff", user_id=user.id)
+                if user_email:
+                    host_match = host_match | Q(participant_type="guest", guest_email__iexact=user_email)
+                d["is_host"] = event_obj.participants.filter(role="host").filter(host_match).exists()
+
+            result.append(d)
+
+        return self.get_paginated_response(result) if page is not None else Response(result)
+
 
     
 
@@ -4606,20 +4641,27 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         user = self.request.user
         qs = EventRegistration.objects.select_related("event").order_by("-registered_at")
 
-        # If strict permissions desired:
-        if user.is_staff or getattr(user, "is_superuser", False):
-            return qs
-        
-        # If user is event owner, they need access to registrations for that event
-        # Logic: Show if (I am the registrant) OR (I created the event)
-        qs = qs.filter(Q(user=user) | Q(event__created_by=user)).distinct()
+        # Staff / superusers can see all registrations, but we still
+        # apply ?event= and ?user= filters if provided so that lookups
+        # like ?event=30&user=2 return only what was asked for.
+        if not (user.is_staff or getattr(user, "is_superuser", False)):
+            # Normal users: only see their own registrations OR events they created
+            qs = qs.filter(Q(user=user) | Q(event__created_by=user)).distinct()
 
-        # Manual filter support for ?event=ID
+        # Apply ?event=ID filter for everyone
         event_id = self.request.query_params.get("event")
         if event_id:
             qs = qs.filter(event_id=event_id)
 
+        # Apply ?user=ID filter (staff/owner only; non-staff can only see their own)
+        user_id = self.request.query_params.get("user")
+        if user_id:
+            if user.is_staff or getattr(user, "is_superuser", False):
+                qs = qs.filter(user_id=user_id)
+            # For non-staff, the user filter is already enforced by the Q() above
+
         return qs
+
 
     def create(self, request, *args, **kwargs):
         # 1. Custom check for existing registration to handle re-registration
