@@ -34,6 +34,7 @@ from .views import (
     GeoCitySearchView, AuthUsersMeView,
 
 )
+from .wordpress_webhook import WordPressWebhookView, WordPressUserSyncView, WordPressProfileSyncAuthenticatedView
 
 # ---- NEW: Router for logged-in user's Education & Experience ----
 router = DefaultRouter()
@@ -83,6 +84,9 @@ urlpatterns = [
     # ---- NEW: compact profile view (returns both lists) ----
     path("me/profile/", MeProfileView.as_view(), name="me-profile"),
     path("didit/webhook/", DiditWebhookView.as_view(), name="didit-webhook"),
+    path("wordpress/webhook/", WordPressWebhookView.as_view(), name="wordpress-webhook"),
+    path("wordpress/sync/", WordPressUserSyncView.as_view(), name="wordpress-sync"),
+    path("wordpress/sync-profile/", WordPressProfileSyncAuthenticatedView.as_view(), name="wordpress-sync-profile"),
     path("skills/search/", EscoSkillSearchView.as_view(), name="esco-skill-search"),
     path("languages/search/", IsoLanguageSearchView.as_view(), name="iso-language-search"),
     path("cities/search/", GeoCitySearchView.as_view(), name="geonames-city-search"),

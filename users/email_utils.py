@@ -129,6 +129,41 @@ def create_cognito_user(username, email, temp_password, first_name="", last_name
         return False
 
 
+def update_cognito_user_email(username, email):
+    """
+    Update the email attribute of an existing Cognito user.
+
+    Args:
+        username: Cognito username
+        email: New email address
+
+    Returns:
+        bool: True if email updated successfully, False otherwise
+    """
+    region = getattr(settings, "COGNITO_REGION", "") or ""
+    pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
+
+    if not region or not pool_id:
+        logger.warning("Cognito not configured; skipping email update")
+        return False
+
+    try:
+        client = boto3.client("cognito-idp", region_name=region)
+        client.admin_update_user_attributes(
+            UserPoolId=pool_id,
+            Username=username,
+            UserAttributes=[
+                {"Name": "email", "Value": email},
+                {"Name": "email_verified", "Value": "true"},
+            ]
+        )
+        logger.info(f"Updated Cognito user email: username={username}, email={email}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to update Cognito user email for {username}: {e}")
+        return False
+
+
 def delete_cognito_user(username):
     """
     Delete a user from AWS Cognito.

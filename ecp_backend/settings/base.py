@@ -119,6 +119,7 @@ AWS_S3_REGION_NAME = os.getenv("AWS_REGION_NAME")
 COGNITO_REGION = os.getenv("COGNITO_REGION", "")
 COGNITO_USER_POOL_ID = os.getenv("COGNITO_USER_POOL_ID", "")
 COGNITO_APP_CLIENT_ID = os.getenv("COGNITO_APP_CLIENT_ID", "")
+COGNITO_CLIENT_ID = os.getenv("COGNITO_CLIENT_ID", "") or COGNITO_APP_CLIENT_ID
 COGNITO_STAFF_GROUP = os.getenv("COGNITO_STAFF_GROUP", "staff")
 COGNITO_DOMAIN = os.getenv("COGNITO_DOMAIN", "")
 COGNITO_SALEOR_CLIENT_ID = os.getenv("COGNITO_SALEOR_CLIENT_ID", "")
@@ -542,3 +543,12 @@ SALEOR_APP_TOKEN = os.getenv("SALEOR_APP_TOKEN", "")
 INVITE_EMAILS_MAX_PER_REQUEST = int(os.getenv("INVITE_EMAILS_MAX_PER_REQUEST", "20"))
 INVITE_EMAILS_MAX_PER_DAY = int(os.getenv("INVITE_EMAILS_MAX_PER_DAY", "100"))
 INVITE_EMAIL_TOKEN_MAX_AGE_SECONDS = int(os.getenv("INVITE_EMAIL_TOKEN_MAX_AGE_SECONDS", str(30 * 24 * 3600)))
+
+# ============================================================================
+# WORDPRESS IMAA INTEGRATION
+# ============================================================================
+WP_IMAA_API_URL = os.getenv("WP_IMAA_API_URL", "")
+WP_IMAA_API_USER = os.getenv("WP_IMAA_API_USER", "")
+WP_IMAA_API_PASSWORD = os.getenv("WP_IMAA_API_PASSWORD", "")
+WP_IMAA_AUTH_TYPE = os.getenv("WP_IMAA_AUTH_TYPE", "basic")
+WP_IMAA_WEBHOOK_SECRET_KEY = os.getenv("WP_IMAA_WEBHOOK_SECRET_KEY", "")

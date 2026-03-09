@@ -166,6 +166,35 @@ class UserProfile(models.Model):
         help_text="Users who can manage this deceased profile"
     )
 
+    # --- WordPress IMAA Integration ---
+    wordpress_id = models.IntegerField(null=True, blank=True, db_index=True, help_text="WordPress user ID from IMAA")
+    wordpress_email = models.EmailField(blank=True, db_index=True, help_text="Email synced from WordPress")
+    wordpress_username = models.CharField(max_length=255, blank=True, help_text="WordPress username from IMAA")
+    wordpress_avatar_url = models.URLField(blank=True, help_text="Avatar URL from WordPress")
+    wordpress_synced_at = models.DateTimeField(null=True, blank=True, help_text="Last sync timestamp from WordPress")
+
+    # --- Cognito Integration ---
+    cognito_temp_password = models.CharField(max_length=255, blank=True, default="", help_text="Temporary password for Cognito user authentication")
+
+    WORDPRESS_SYNC_STATUS_PENDING = "pending"
+    WORDPRESS_SYNC_STATUS_SYNCED = "synced"
+    WORDPRESS_SYNC_STATUS_FAILED = "failed"
+    WORDPRESS_SYNC_STATUS_DELETED = "deleted"
+
+    WORDPRESS_SYNC_STATUS_CHOICES = [
+        (WORDPRESS_SYNC_STATUS_PENDING, "Pending"),
+        (WORDPRESS_SYNC_STATUS_SYNCED, "Synced"),
+        (WORDPRESS_SYNC_STATUS_FAILED, "Failed"),
+        (WORDPRESS_SYNC_STATUS_DELETED, "Deleted"),
+    ]
+
+    wordpress_sync_status = models.CharField(
+        max_length=20,
+        choices=WORDPRESS_SYNC_STATUS_CHOICES,
+        default=WORDPRESS_SYNC_STATUS_PENDING,
+        help_text="Status of WordPress profile sync"
+    )
+
     @property
     def is_online(self):
         """
@@ -185,6 +214,8 @@ class UserProfile(models.Model):
             models.Index(fields=["last_activity_at"]),
             models.Index(fields=["profile_status"]),
             models.Index(fields=["is_deceased"]),
+            models.Index(fields=["wordpress_id"]),
+            models.Index(fields=["wordpress_email"]),
         ]
     
 class EscoSkill(models.Model):
