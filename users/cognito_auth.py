@@ -250,9 +250,13 @@ class CognitoJWTAuthentication(BaseAuthentication):
 
             # keep basic fields in sync
             updated = False
+            # Never downgrade a real email to WordPress placeholder from Cognito claims.
             if email and user.email != email:
-                user.email = email
-                updated = True
+                current_is_placeholder = (user.email or "").lower().endswith("@wordpress.local")
+                incoming_is_placeholder = email.endswith("@wordpress.local")
+                if not incoming_is_placeholder or current_is_placeholder:
+                    user.email = email
+                    updated = True
             if first_name and user.first_name != first_name:
                 user.first_name = first_name
                 updated = True

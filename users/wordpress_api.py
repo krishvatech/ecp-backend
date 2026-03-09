@@ -175,26 +175,51 @@ class WordPressAPIClient:
         """
         Authenticate WordPress user and return user data.
 
-        Note: This typically uses JWT or OAuth on WordPress side.
-        For now, we use the REST API user endpoint with Basic Auth.
+        Tries, in order:
+        1) Basic auth against /wp/v2/users/me
+        2) JWT plugin auth: POST /jwt-auth/v1/token then GET /wp/v2/users/me with Bearer token
         """
-        try:
-            url = f"{self.base_url}/wp/v2/users/me"
-            headers = self._get_headers()
-            auth = HTTPBasicAuth(username, password)
+        url_me = f"{self.base_url}/wp/v2/users/me"
+        headers = self._get_headers()
 
+        # Strategy 1: Basic auth
+        try:
             response = requests.get(
-                url,
+                url_me,
                 headers=headers,
-                auth=auth,
+                auth=HTTPBasicAuth(username, password),
                 timeout=10
             )
             response.raise_for_status()
-
             return response.json()
-
         except requests.exceptions.RequestException as e:
-            logger.warning(f"WordPress authentication failed for user {username}: {str(e)}")
+            logger.warning(f"WordPress basic authentication failed for user {username}: {str(e)}")
+
+        # Strategy 2: JWT plugin auth
+        try:
+            token_url = f"{self.base_url}/jwt-auth/v1/token"
+            token_res = requests.post(
+                token_url,
+                json={"username": username, "password": password},
+                headers={"Content-Type": "application/json"},
+                timeout=10,
+            )
+            token_res.raise_for_status()
+            token_payload = token_res.json() if token_res.content else {}
+            token = token_payload.get("token")
+            if not token:
+                logger.warning(f"WordPress JWT token missing for user {username}")
+                return None
+
+            me_res = requests.get(
+                url_me,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                timeout=10,
+            )
+            me_res.raise_for_status()
+            return me_res.json()
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"WordPress JWT authentication failed for user {username}: {str(e)}")
             return None
 
     def validate_webhook_secret(self, payload: str, signature: str) -> bool:

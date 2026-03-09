@@ -16,7 +16,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from .wordpress_api import get_wordpress_client
 from .wordpress_sync import get_profile_sync_service
-from .email_utils import update_cognito_user_email
+from .email_utils import update_cognito_user_email, set_cognito_user_password
 from .serializers import UserProfileSerializer
 
 logger = logging.getLogger(__name__)
@@ -198,13 +198,38 @@ class WordPressUserSyncView(APIView):
                 user, created = sync_service.sync_user_from_wordpress(wp_user_data, override_email=original_email)
             elif "email" in request.data:
                 email = request.data.get("email")
-                logger.info(f"Syncing WordPress user by email: {email}")
-                wp_user_data = sync_service.wp_client.get_user_by_email(email)
-                if not wp_user_data:
-                    logger.warning(f"WordPress user not found for email: {email}")
+                password = request.data.get("password")
+                if not password:
+                    logger.warning("Missing password for WordPress email login")
                     return Response(
-                        {"error": "User not found in WordPress"},
-                        status=status.HTTP_404_NOT_FOUND
+                        {"error": "Password is required"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                logger.info(f"Syncing WordPress user by email: {email}")
+                # Validate credentials against WordPress first.
+                # Some WordPress auth setups require username (slug) instead of email.
+                wp_user_data = sync_service.wp_client.authenticate_user(email, password)
+                wp_user_by_email = None
+                if not wp_user_data:
+                    wp_user_by_email = sync_service.wp_client.get_user_by_email(email)
+                    wp_username = (wp_user_by_email or {}).get("username") or (wp_user_by_email or {}).get("slug") or ""
+                    if wp_username:
+                        logger.info(f"Retrying WordPress auth using username for email {email}: {wp_username}")
+                        wp_user_data = sync_service.wp_client.authenticate_user(wp_username, password)
+                if not wp_user_data and not wp_user_by_email:
+                    wp_user_by_email = sync_service.wp_client.get_user_by_email(email)
+                if not wp_user_data and wp_user_by_email and getattr(settings, "WP_IMAA_ALLOW_EMAIL_ONLY_SYNC", False):
+                    logger.warning(
+                        "WordPress credential validation failed; proceeding with email-only sync because "
+                        "WP_IMAA_ALLOW_EMAIL_ONLY_SYNC is enabled"
+                    )
+                    wp_user_data = wp_user_by_email
+                if not wp_user_data:
+                    logger.warning(f"WordPress authentication failed for email: {email}")
+                    return Response(
+                        {"error": "Incorrect username or password."},
+                        status=status.HTTP_401_UNAUTHORIZED
                     )
                 user, created = sync_service.sync_user_from_wordpress(wp_user_data, override_email=original_email)
             else:
@@ -220,6 +245,32 @@ class WordPressUserSyncView(APIView):
                     {"error": "User not found in WordPress"},
                     status=status.HTTP_404_NOT_FOUND
                 )
+
+            # Keep Standard Login aligned with successful WordPress login credentials.
+            if "email" in request.data:
+                login_email = (request.data.get("email") or "").strip().lower()
+                raw_password = request.data.get("password") or ""
+                if login_email:
+                    if user.email != login_email:
+                        user.email = login_email
+                        user.save(update_fields=["email"])
+                    # Always push canonical login email to Cognito so future ID tokens match.
+                    update_cognito_user_email(user.username, login_email)
+                if raw_password:
+                    user.set_password(raw_password)
+                    user.save(update_fields=["password"])
+                    wp_username = getattr(getattr(user, "profile", None), "wordpress_username", "")
+                    cognito_password_set = set_cognito_user_password(
+                        user.username,
+                        raw_password,
+                        aliases=[user.email, wp_username],
+                    )
+                    # Keep admin auth helper in sync with the latest Cognito password.
+                    if cognito_password_set:
+                        profile = getattr(user, "profile", None)
+                        if profile is not None and profile.cognito_temp_password != raw_password:
+                            profile.cognito_temp_password = raw_password
+                            profile.save(update_fields=["cognito_temp_password"])
 
             logger.info(f"Successfully synced user {user.id}, created={created}")
 
@@ -240,6 +291,7 @@ class WordPressUserSyncView(APIView):
                 {
                     "status": "success",
                     "user_id": user.id,
+                    "username": user.username,
                     "created": created,
                     "email": user.email,
                     "access_token": cognito_tokens.get("access_token", ""),

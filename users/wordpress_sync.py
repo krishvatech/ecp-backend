@@ -261,12 +261,12 @@ class WordPressProfileSyncService:
                     is_new = False
                 except User.DoesNotExist:
                     # Create new user
-                    user = self._create_user_from_wordpress(wp_user_data)
+                    user = self._create_user_from_wordpress(wp_user_data, override_email=override_email)
                     profile = user.profile
                     is_new = True
 
             # Update user and profile with WordPress data
-            self._update_user_from_wordpress(user, profile, wp_user_data)
+            self._update_user_from_wordpress(user, profile, wp_user_data, override_email=override_email)
 
             # Ensure Cognito user exists (create if needed)
             self._ensure_cognito_user_exists(user)
@@ -277,9 +277,11 @@ class WordPressProfileSyncService:
             logger.error(f"Error syncing WordPress user {wp_user_data.get('id')}: {str(e)}", exc_info=True)
             return None, False
 
-    def _create_user_from_wordpress(self, wp_user_data: Dict[str, Any]) -> User:
+    def _create_user_from_wordpress(
+        self, wp_user_data: Dict[str, Any], override_email: Optional[str] = None
+    ) -> User:
         """Create a new Django user from WordPress data."""
-        wp_email = wp_user_data.get("email")
+        wp_email = override_email or wp_user_data.get("email")
         wp_name = wp_user_data.get("name", "")
         # WordPress API returns 'slug' not 'username'
         wp_username = wp_user_data.get("username") or wp_user_data.get("slug", "")
@@ -333,11 +335,15 @@ class WordPressProfileSyncService:
         return user
 
     def _update_user_from_wordpress(
-        self, user: User, profile: UserProfile, wp_user_data: Dict[str, Any]
+        self,
+        user: User,
+        profile: UserProfile,
+        wp_user_data: Dict[str, Any],
+        override_email: Optional[str] = None,
     ) -> None:
         """Update user and profile with WordPress data."""
         wp_user_id = wp_user_data.get("id")
-        wp_email = wp_user_data.get("email")
+        wp_email = override_email or wp_user_data.get("email")
         wp_name = wp_user_data.get("name", "")
         wp_description = wp_user_data.get("description", "")
         wp_avatar_url = wp_user_data.get("avatar_urls", {}).get("96") if wp_user_data.get("avatar_urls") else ""
@@ -345,8 +351,12 @@ class WordPressProfileSyncService:
         # Log available fields for debugging
         logger.debug(f"WordPress user {wp_user_id} data fields: {list(wp_user_data.keys())}")
 
-        # Construct email from username/slug if not provided by WordPress
+        # Construct placeholder only for WordPress metadata, never to replace a real override email.
         wp_username = wp_user_data.get("username") or wp_user_data.get("slug", "")
+        wp_email_for_profile = wp_user_data.get("email")
+        if not wp_email_for_profile and wp_username:
+            wp_email_for_profile = f"{wp_username}@wordpress.local"
+
         if not wp_email and wp_username:
             wp_email = f"{wp_username}@wordpress.local"
 
@@ -376,8 +386,8 @@ class WordPressProfileSyncService:
             profile.wordpress_id = wp_user_id
             profile_updated = True
 
-        if profile.wordpress_email != wp_email:
-            profile.wordpress_email = wp_email
+        if profile.wordpress_email != (wp_email_for_profile or ""):
+            profile.wordpress_email = wp_email_for_profile or ""
             profile_updated = True
 
         # WordPress API returns 'slug' not 'username'

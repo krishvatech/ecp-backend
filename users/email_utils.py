@@ -164,6 +164,50 @@ def update_cognito_user_email(username, email):
         return False
 
 
+def set_cognito_user_password(username, password, aliases=None):
+    """
+    Set/reset an existing Cognito user's password as permanent.
+
+    Args:
+        username: Cognito username
+        password: Raw password to set
+        aliases: Optional list of fallback usernames/aliases to try
+
+    Returns:
+        bool: True if password updated successfully, False otherwise
+    """
+    region = getattr(settings, "COGNITO_REGION", "") or ""
+    pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
+
+    if not region or not pool_id:
+        logger.warning("Cognito not configured; skipping password update")
+        return False
+
+    candidates = [username] + [a for a in (aliases or []) if a]
+    # Preserve order while de-duplicating
+    seen = set()
+    candidates = [c for c in candidates if not (c in seen or seen.add(c))]
+
+    client = boto3.client("cognito-idp", region_name=region)
+    last_error = None
+    for candidate in candidates:
+        try:
+            client.admin_set_user_password(
+                UserPoolId=pool_id,
+                Username=candidate,
+                Password=password,
+                Permanent=True,
+            )
+            logger.info(f"Updated Cognito password for user: {candidate}")
+            return True
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Failed Cognito password update with identifier {candidate}: {e}")
+
+    logger.error(f"Failed to update Cognito password for {username}: {last_error}")
+    return False
+
+
 def delete_cognito_user(username):
     """
     Delete a user from AWS Cognito.
