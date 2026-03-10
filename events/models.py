@@ -476,6 +476,7 @@ class AssistanceRequestLog(models.Model):
     """Audit log for audience assistance requests sent to hosts/moderators."""
     STATUS_CHOICES = [
         ("sent", "Sent"),
+        ("resolved", "Resolved"),
         ("rejected", "Rejected"),
         ("rate_limited", "Rate limited"),
     ]

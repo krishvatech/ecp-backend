@@ -429,6 +429,9 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         elif action == "request_assistance":
             await self.handle_request_assistance()
 
+        elif action == "resolve_assistance_request":
+            await self.handle_resolve_assistance_request(content)
+
         elif action == "admit_from_lounge":
             # Host-only action with countdown transition from lounge/pre-event.
             if not await self.is_host():
@@ -691,6 +694,18 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "timestamp": event.get("timestamp"),
         })
 
+    async def assistance_resolved(self, event: dict) -> None:
+        """Private notification sent to the requester when a host resolves support."""
+        await self.send_json({
+            "type": "assistance_resolved",
+            "event_id": event.get("event_id"),
+            "request_id": event.get("request_id"),
+            "requester_id": event.get("requester_id"),
+            "resolver_id": event.get("resolver_id"),
+            "resolver_name": event.get("resolver_name"),
+            "timestamp": event.get("timestamp"),
+        })
+
     async def handle_request_assistance(self):
         """Audience in main room can ask hosts/moderators for help with cooldown protection."""
         try:
@@ -768,6 +783,63 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             logger.exception("[ASSISTANCE] Failed request handling: %s", e)
             await self.send_json({
                 "type": "assistance_request_ack",
+                "ok": False,
+                "reason": "server_error",
+            })
+
+    async def handle_resolve_assistance_request(self, content: dict):
+        """Host/moderator resolves a support request and notifies the requester."""
+        try:
+            allowed = await self.can_resolve_assistance()
+            if not allowed:
+                await self.send_json({
+                    "type": "assistance_resolve_ack",
+                    "ok": False,
+                    "reason": "not_allowed",
+                })
+                return
+
+            request_id = content.get("request_id")
+            requester_id = content.get("requester_id")
+            if not request_id or not requester_id:
+                await self.send_json({
+                    "type": "assistance_resolve_ack",
+                    "ok": False,
+                    "reason": "missing_payload",
+                })
+                return
+
+            resolved = await self.resolve_assistance_request_log(request_id, requester_id)
+            if not resolved:
+                await self.send_json({
+                    "type": "assistance_resolve_ack",
+                    "ok": False,
+                    "reason": "not_found",
+                })
+                return
+
+            resolver_name = await self.get_requester_display_name()
+            payload = {
+                "type": "assistance_resolved",
+                "event_id": int(self.event_id),
+                "request_id": request_id,
+                "requester_id": int(requester_id),
+                "resolver_id": self.user.id,
+                "resolver_name": resolver_name,
+                "timestamp": timezone.now().isoformat(),
+            }
+
+            await self.channel_layer.group_send(f"user_{int(requester_id)}", payload)
+            await self.send_json({
+                "type": "assistance_resolve_ack",
+                "ok": True,
+                "request_id": request_id,
+                "requester_id": int(requester_id),
+            })
+        except Exception as e:
+            logger.exception("[ASSISTANCE] Failed resolve handling: %s", e)
+            await self.send_json({
+                "type": "assistance_resolve_ack",
                 "ok": False,
                 "reason": "server_error",
             })
@@ -1011,6 +1083,33 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             return False, "not_in_main_room"
 
         return True, None
+
+    @database_sync_to_async
+    def can_resolve_assistance(self):
+        try:
+            event = Event.objects.get(id=self.event_id)
+        except Event.DoesNotExist:
+            return False
+        privileged_ids = self._get_host_moderator_user_ids_sync(event)
+        return self.user.id in privileged_ids
+
+    @database_sync_to_async
+    def resolve_assistance_request_log(self, request_id, requester_id):
+        request = AssistanceRequestLog.objects.filter(
+            id=request_id,
+            event_id=self.event_id,
+            requester_id=requester_id,
+        ).first()
+        if not request:
+            return False
+
+        metadata = dict(request.metadata or {})
+        metadata["resolved_at"] = timezone.now().isoformat()
+        metadata["resolved_by"] = self.user.id
+        request.status = "resolved"
+        request.metadata = metadata
+        request.save(update_fields=["status", "metadata"])
+        return True
 
     @database_sync_to_async
     def log_assistance_request(self, message, recipient_count):
