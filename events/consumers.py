@@ -246,6 +246,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
             success, table = await self.leave_current_table()
             if success and table and table.category == 'BREAKOUT':
+                await self._mark_breakout_joiner_waiting(self.user.id)
                 await self.channel_layer.group_discard(f"breakout_{table.id}", self.channel_name)
             
             await self.broadcast_lounge_update()
@@ -1982,6 +1983,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 'full_name': self.user.get_full_name() or self.user.username,
                 'email': self.user.email,
             }
+            previous_assignment = await self._get_previous_breakout_assignment(self.user.id)
             notification_data = {
                 "late_joiner_id": joiner.id,
                 "participant_id": self.user.id,
@@ -1989,6 +1991,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 "participant_email": participant_info['email'],
                 "available_rooms": available_rooms,
                 "can_auto_assign": bool(available_rooms),
+                "previous_room_id": previous_assignment["id"] if previous_assignment else None,
+                "previous_room_name": previous_assignment["name"] if previous_assignment else None,
             }
             print(f"[LATE_JOINER] Broadcasting notification: {notification_data}")
             await self.channel_layer.group_send(
@@ -2088,8 +2092,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             user=self.user,
             defaults={'status': 'waiting'}
         )
-        if not created and obj.status in ('assigned', 'auto_assigned', 'main_room'):
-            return None  # Already handled
+        if not created and obj.status == 'main_room':
+            return None  # Host explicitly kept this participant in the main room
+        if not created and obj.status in ('assigned', 'auto_assigned'):
+            # Participant had a previous breakout assignment, but is back in main now.
+            obj.status = 'waiting'
+            obj.host_notified = False
+            obj.save(update_fields=['status', 'host_notified'])
+            return obj
         if not created:
             # Update to waiting if status was expired
             obj.status = 'waiting'
@@ -2128,6 +2138,23 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             notified_host_at=timezone.now(),
             notification_sent_count=F('notification_sent_count') + 1
         )
+
+    @database_sync_to_async
+    def _get_previous_breakout_assignment(self, participant_id):
+        from events.models import BreakoutJoiner
+
+        joiner = (
+            BreakoutJoiner.objects.select_related("assigned_room")
+            .filter(event_id=self.event_id, user_id=participant_id)
+            .first()
+        )
+        room = getattr(joiner, "assigned_room", None)
+        if not room:
+            return None
+        return {
+            "id": room.id,
+            "name": room.name,
+        }
 
     @database_sync_to_async
     def _assign_late_joiner_to_room_db(self, participant_id, room_id, assigned_by_id, method='manual'):
@@ -2172,6 +2199,18 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         from events.models import BreakoutJoiner
         BreakoutJoiner.objects.filter(event_id=self.event_id, user_id=participant_id).update(
             status='main_room', assignment_method='none'
+        )
+
+    @database_sync_to_async
+    def _mark_breakout_joiner_waiting(self, participant_id):
+        from events.models import BreakoutJoiner
+
+        BreakoutJoiner.objects.filter(
+            event_id=self.event_id,
+            user_id=participant_id,
+        ).update(
+            status='waiting',
+            host_notified=False,
         )
 
     @database_sync_to_async
