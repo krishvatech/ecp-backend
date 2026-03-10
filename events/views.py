@@ -60,6 +60,7 @@ from rest_framework.throttling import UserRateThrottle
 from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement
 from friends.models import Notification
 from groups.models import Group, GroupMembership
+from messaging.models import Conversation, Message
 from .serializers import (
     EventSerializer,
     PublicEventSerializer,
@@ -1302,14 +1303,54 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         user_ids = request.data.get("user_ids", [])
         group_ids = request.data.get("group_ids", [])
-        
-        invited_users = set()
+        invite_message = str(request.data.get("invite_message") or "").strip()
+        raw_send_message = request.data.get("send_message", False)
+        send_message = (
+            raw_send_message is True
+            or str(raw_send_message).strip().lower() in {"1", "true", "yes", "on"}
+        ) and bool(invite_message)
+
+        invited_users = {}
+        invite_sources = {}
+
+        def _display_name(user):
+            if not user:
+                return "System"
+            full_name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
+            return full_name or getattr(user, "username", "") or getattr(user, "email", "") or "User"
+
+        sender_name = _display_name(request.user)
+
+        def _set_user_source(target_user, source_type, source_name, source_id=None):
+            if not target_user:
+                return
+            invited_users[target_user.id] = target_user
+            entry = invite_sources.get(target_user.id)
+            if source_type == "group":
+                if entry and entry.get("type") == "group":
+                    names = entry.setdefault("names", [])
+                    if source_name and source_name not in names:
+                        names.append(source_name)
+                else:
+                    invite_sources[target_user.id] = {
+                        "type": "group",
+                        "id": source_id,
+                        "names": [source_name] if source_name else [],
+                    }
+                return
+
+            if not entry:
+                invite_sources[target_user.id] = {
+                    "type": source_type,
+                    "id": source_id,
+                    "name": source_name,
+                }
 
         # 1. Process individual users
         if user_ids:
             users = User.objects.filter(id__in=user_ids)
             for u in users:
-                invited_users.add(u)
+                _set_user_source(u, "user", sender_name, request.user.id)
 
         # 2. Process groups
         if group_ids:
@@ -1317,40 +1358,81 @@ class EventViewSet(viewsets.ModelViewSet):
             memberships = GroupMembership.objects.filter(
                 group_id__in=group_ids,
                 status="active"
-            ).select_related("user")
+            ).select_related("user", "group")
             for m in memberships:
-                invited_users.add(m.user)
+                _set_user_source(m.user, "group", getattr(m.group, "name", "Group"), m.group_id)
 
         # 3. Send Notifications
         # Filter out the actor themselves if they selected themselves (optional but good UX)
-        if request.user in invited_users:
-            invited_users.remove(request.user)
+        invited_users.pop(request.user.id, None)
+        invite_sources.pop(request.user.id, None)
 
         notifications_to_create = []
-        for recipient in invited_users:
-            # Check if already invited or registered? 
-            # For now, we utilize Notification system which usually allows duplicates unless logic prevents it.
-            # We will just send the notification.
-            
+        direct_messages_to_create = []
+
+        for recipient in invited_users.values():
+            source = invite_sources.get(recipient.id) or {
+                "type": "user",
+                "id": request.user.id,
+                "name": sender_name,
+            }
+            source_names = [x for x in (source.get("names") or []) if x]
+            if source.get("type") == "group":
+                invite_source_name = (
+                    source_names[0]
+                    if len(source_names) <= 1
+                    else f"{source_names[0]} +{len(source_names) - 1} more groups"
+                )
+            else:
+                invite_source_name = source.get("name") or sender_name
+
             notifications_to_create.append(
                 Notification(
                     recipient=recipient,
                     actor=request.user,
                     kind="event",
                     title=f"Invitation: {event.title}",
-                    description=f"You have been invited to {event.title}.",
-                    data={"event_id": event.id},
+                    description=invite_message or f"You have been invited to {event.title}.",
+                    data={
+                        "event_id": event.id,
+                        "event_title": event.title,
+                        "invite_source_type": source.get("type") or "user",
+                        "invite_source_id": source.get("id"),
+                        "invite_source_name": invite_source_name,
+                    },
                     is_read=False
                 )
             )
 
+            if send_message:
+                user_pair = sorted([request.user.id, recipient.id])
+                conversation, _ = Conversation.objects.get_or_create(
+                    user1_id=user_pair[0],
+                    user2_id=user_pair[1],
+                    defaults={"created_by": request.user},
+                )
+                direct_messages_to_create.append(
+                    Message(
+                        conversation=conversation,
+                        sender=request.user,
+                        body=invite_message,
+                        event=event,
+                    )
+                )
+
         if notifications_to_create:
             Notification.objects.bulk_create(notifications_to_create)
+        if direct_messages_to_create:
+            Message.objects.bulk_create(direct_messages_to_create)
 
         return Response({
             "ok": True, 
             "invited_count": len(invited_users),
-            "message": f"Sent invitations to {len(invited_users)} users."
+            "messaged_count": len(direct_messages_to_create),
+            "message": (
+                f"Sent invitations to {len(invited_users)} users."
+                + (f" Also sent {len(direct_messages_to_create)} event messages." if direct_messages_to_create else "")
+            )
         })
 
 
