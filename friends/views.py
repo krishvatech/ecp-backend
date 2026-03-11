@@ -168,9 +168,25 @@ class FriendshipViewSet(
         Query params:
           - limit: int (default 12, max 50)
           - q: optional search on username/first/last/email
-        Output items are shaped for your UI: {id, name, avatar, mutuals}
+        Output items are shaped for your UI: {id, name, avatar, mutuals, kyc_status}
         """
         me = request.user
+
+        def _name(u):
+            full = f"{getattr(u, 'first_name', '')} {getattr(u, 'last_name', '')}".strip()
+            return (
+                getattr(u, "display_name", None)
+                or full
+                or getattr(u, "username", None)
+                or getattr(u, "email", "")
+                or f"User #{u.id}"
+            )
+
+        def _avatar(u):
+            return getattr(u, "avatar_url", "") or getattr(getattr(u, "profile", None), "avatar", "") or ""
+
+        def _kyc_status(u):
+            return getattr(getattr(u, "profile", None), "kyc_status", None)
 
         # 1) my friend ids
         my_pairs = Friendship.objects.filter(Q(user1=me) | Q(user2=me))
@@ -182,8 +198,11 @@ class FriendshipViewSet(
             # Fallback for brand-new users:
             # Show all non-staff users, excluding me and anyone already related (friends or pending requests).
             BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
-            base = User.objects.filter(is_active=True, is_staff=False).exclude(id=me.id).exclude(
-                profile__profile_status__in=BLOCKED_PROFILE_STATUSES
+            base = (
+                User.objects.select_related("profile")
+                .filter(is_active=True, is_staff=False)
+                .exclude(id=me.id)
+                .exclude(profile__profile_status__in=BLOCKED_PROFILE_STATUSES)
             )
 
             # Exclude already-friends (should be none if not my_ids, but safe to keep)
@@ -214,22 +233,14 @@ class FriendshipViewSet(
             # Newest-ish first (fallback to id)
             base = base.order_by("-id")[:limit]
 
-            # Local helpers (duplicated here so we don't touch the rest of your code)
-            def _name(u):
-                full = f"{getattr(u, 'first_name', '')} {getattr(u, 'last_name', '')}".strip()
-                return (
-                    getattr(u, "display_name", None)
-                    or full
-                    or getattr(u, "username", None)
-                    or getattr(u, "email", "")
-                    or f"User #{u.id}"
-                )
-
-            def _avatar(u):
-                return getattr(u, "avatar_url", "") or getattr(getattr(u, "profile", None), "avatar", "") or ""
-
             data = [
-                {"id": u.id, "name": _name(u), "avatar": _avatar(u), "mutuals": 0}
+                {
+                    "id": u.id,
+                    "name": _name(u),
+                    "avatar": _avatar(u),
+                    "mutuals": 0,
+                    "kyc_status": _kyc_status(u),
+                }
                 for u in base
             ]
             return Response(data)
@@ -237,16 +248,17 @@ class FriendshipViewSet(
 
         # 2) users who are connected to any of my friends (FoF)
         BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
-        qs = User.objects.filter(
-            Q(friends_as_user1__user2_id__in=my_ids) |
-            Q(friends_as_user2__user1_id__in=my_ids)
-        ).exclude(
-            id=me.id
-        ).exclude(
-            id__in=my_ids
-        ).exclude(
-            profile__profile_status__in=BLOCKED_PROFILE_STATUSES  # Exclude suspended users
-        ).distinct()
+        qs = (
+            User.objects.select_related("profile")
+            .filter(
+                Q(friends_as_user1__user2_id__in=my_ids) |
+                Q(friends_as_user2__user1_id__in=my_ids)
+            )
+            .exclude(id=me.id)
+            .exclude(id__in=my_ids)
+            .exclude(profile__profile_status__in=BLOCKED_PROFILE_STATUSES)
+            .distinct()
+        )
 
         # 3) annotate mutual friend count (how many of *my* friends also friend this candidate)
         qs = qs.annotate(
@@ -282,18 +294,14 @@ class FriendshipViewSet(
         limit = max(1, min(limit, 50))
         qs = qs[:limit]
 
-        # 6) shape for your front-end slider
-        def _name(u):
-            # Try common display fields without assuming a specific custom field exists
-            full = f"{getattr(u, 'first_name', '')} {getattr(u, 'last_name', '')}".strip()
-            return getattr(u, "display_name", None) or full or getattr(u, "username", None) or getattr(u, "email", "") or f"User #{u.id}"
-
-        def _avatar(u):
-            # Prefer common custom accessors if present; else empty string
-            return getattr(u, "avatar_url", "") or getattr(getattr(u, "profile", None), "avatar", "") or ""
-
         data = [
-            {"id": u.id, "name": _name(u), "avatar": _avatar(u), "mutuals": int(getattr(u, "mutuals", 0))}
+            {
+                "id": u.id,
+                "name": _name(u),
+                "avatar": _avatar(u),
+                "mutuals": int(getattr(u, "mutuals", 0)),
+                "kyc_status": _kyc_status(u),
+            }
             for u in qs
         ]
         return Response(data)
