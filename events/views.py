@@ -3242,6 +3242,8 @@ class EventViewSet(viewsets.ModelViewSet):
         User leaves a lounge table.
         Removes from both Django DB and Dyte meeting to prevent 409 conflicts on rejoin.
         """
+        from .models import BreakoutJoiner
+
         user = request.user
         event = self.get_object()
 
@@ -3315,6 +3317,63 @@ class EventViewSet(viewsets.ModelViewSet):
             EventRegistration.objects.filter(
                 event=event, user=user
             ).update(current_location="social_lounge")
+
+            if table.category == "BREAKOUT":
+                EventRegistration.objects.filter(
+                    event=event,
+                    user=user,
+                ).update(last_breakout_table=None)
+
+                if event.breakout_rooms_active:
+                    joiner, _ = BreakoutJoiner.objects.get_or_create(
+                        event=event,
+                        user=user,
+                        defaults={"status": BreakoutJoiner.STATUS_WAITING},
+                    )
+                    joiner.status = BreakoutJoiner.STATUS_WAITING
+                    joiner.assigned_room = table
+                    joiner.host_notified = False
+                    joiner.save(update_fields=["status", "assigned_room", "host_notified"])
+
+                    breakout_tables = LoungeTable.objects.filter(
+                        event=event,
+                        category="BREAKOUT",
+                    ).prefetch_related("participants")
+                    available_rooms = []
+                    for breakout_table in breakout_tables:
+                        current = breakout_table.participants.count()
+                        if current < breakout_table.max_seats:
+                            available_rooms.append({
+                                "id": breakout_table.id,
+                                "name": breakout_table.name,
+                                "current_participants": current,
+                                "max_seats": breakout_table.max_seats,
+                                "available_seats": breakout_table.max_seats - current,
+                                "dyte_meeting_id": breakout_table.dyte_meeting_id,
+                            })
+
+                    notification_data = {
+                        "late_joiner_id": joiner.id,
+                        "participant_id": user.id,
+                        "participant_name": user.get_full_name() or user.username,
+                        "participant_email": user.email,
+                        "available_rooms": available_rooms,
+                        "can_auto_assign": bool(available_rooms),
+                        "previous_room_id": table.id,
+                        "previous_room_name": table.name,
+                    }
+
+                    BreakoutJoiner.objects.filter(id=joiner.id).update(
+                        host_notified=True,
+                        notified_host_at=timezone.now(),
+                        notification_sent_count=F("notification_sent_count") + 1,
+                    )
+
+                    channel_layer = get_channel_layer()
+                    async_to_sync(channel_layer.group_send)(
+                        f"event_{event.id}",
+                        {"type": "late_joiner_notification", "notification": notification_data},
+                    )
 
             logger.info(f"[LOUNGE_LEAVE] User {user.id} successfully left table {table.id}. "
                        f"Removed from both Django and Dyte. Location set to social_lounge.")

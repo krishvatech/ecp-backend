@@ -238,15 +238,21 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         elif action == "leave_table":
             print(f"[CONSUMER] User {self.user.username} requested to leave table")
-            
-            # Clear last_breakout_table assignment since user is manually leaving
-            await database_sync_to_async(
-                lambda: EventRegistration.objects.filter(event_id=self.event_id, user=self.user).update(last_breakout_table=None)
-            )()
 
             success, table = await self.leave_current_table()
             if success and table and table.category == 'BREAKOUT':
-                await self._mark_breakout_joiner_waiting(self.user.id)
+                await self._clear_last_breakout_assignment(self.user.id)
+                joiner_id, notification = await self._build_breakout_return_notification(
+                    participant_id=self.user.id,
+                    table_id=table.id,
+                )
+                if notification:
+                    await self.channel_layer.group_send(
+                        self.group_name,
+                        {"type": "late_joiner_notification", "notification": notification},
+                    )
+                    if joiner_id:
+                        await self._notify_late_joiner_host_db(joiner_id)
                 await self.channel_layer.group_discard(f"breakout_{table.id}", self.channel_name)
             
             await self.broadcast_lounge_update()
@@ -2249,11 +2255,84 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         )
         room = getattr(joiner, "assigned_room", None)
         if not room:
+            registration = (
+                EventRegistration.objects.select_related("last_breakout_table")
+                .filter(event_id=self.event_id, user_id=participant_id)
+                .first()
+            )
+            room = getattr(registration, "last_breakout_table", None)
+        if not room:
             return None
         return {
             "id": room.id,
             "name": room.name,
         }
+
+    @database_sync_to_async
+    def _clear_last_breakout_assignment(self, participant_id):
+        EventRegistration.objects.filter(
+            event_id=self.event_id,
+            user_id=participant_id,
+        ).update(last_breakout_table=None)
+
+    @database_sync_to_async
+    def _build_breakout_return_notification(self, participant_id, table_id):
+        from events.models import BreakoutJoiner, LoungeTable
+
+        event = Event.objects.filter(id=self.event_id).only("breakout_rooms_active").first()
+        if not event or not event.breakout_rooms_active:
+            return None, None
+
+        previous_room = LoungeTable.objects.filter(
+            id=table_id,
+            event_id=self.event_id,
+            category="BREAKOUT",
+        ).first()
+        if not previous_room:
+            return None, None
+
+        user = User.objects.filter(id=participant_id).first()
+        if not user:
+            return None, None
+
+        joiner, _ = BreakoutJoiner.objects.get_or_create(
+            event_id=self.event_id,
+            user_id=participant_id,
+            defaults={"status": BreakoutJoiner.STATUS_WAITING},
+        )
+        joiner.status = BreakoutJoiner.STATUS_WAITING
+        joiner.assigned_room = previous_room
+        joiner.host_notified = False
+        joiner.save(update_fields=["status", "assigned_room", "host_notified"])
+
+        tables = LoungeTable.objects.filter(
+            event_id=self.event_id,
+            category="BREAKOUT",
+        ).prefetch_related("participants")
+        available_rooms = []
+        for room in tables:
+            current = room.participants.count()
+            if current < room.max_seats:
+                available_rooms.append({
+                    "id": room.id,
+                    "name": room.name,
+                    "current_participants": current,
+                    "max_seats": room.max_seats,
+                    "available_seats": room.max_seats - current,
+                    "dyte_meeting_id": room.dyte_meeting_id,
+                })
+
+        notification_data = {
+            "late_joiner_id": joiner.id,
+            "participant_id": participant_id,
+            "participant_name": user.get_full_name() or user.username,
+            "participant_email": user.email,
+            "available_rooms": available_rooms,
+            "can_auto_assign": bool(available_rooms),
+            "previous_room_id": previous_room.id,
+            "previous_room_name": previous_room.name,
+        }
+        return joiner.id, notification_data
 
     @database_sync_to_async
     def _assign_late_joiner_to_room_db(self, participant_id, room_id, assigned_by_id, method='manual'):
