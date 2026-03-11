@@ -708,6 +708,7 @@ class EventSerializer(serializers.ModelSerializer):
             "lounge_enabled_breaks",
             "lounge_enabled_after",
             "lounge_after_buffer",
+            "lounge_enabled_speed_networking",
             "show_participants_before_event",
             "show_participants_after_event",
             "show_public_hosts",

@@ -16,9 +16,10 @@ from django.utils import timezone
 from django.contrib.auth.models import User
 from rest_framework.test import APIClient
 from events.models import (
-    Event, EventRegistration, LoungeTable, LoungeParticipant, Community
+    Event, EventRegistration, LoungeTable, LoungeParticipant, Community, SpeedNetworkingSession
 )
 from events.serializers import EventRegistrationSerializer
+from events.speed_networking_views import SpeedNetworkingQueueViewSet
 
 
 @pytest.fixture
@@ -218,6 +219,7 @@ class TestAdmitFromLoungeScenario:
         registration.current_location = "social_lounge"
         registration.save()
 
+
         lounge_participant = LoungeParticipant.objects.create(
             table=lounge_table,
             user=user,
@@ -262,6 +264,67 @@ class TestAdmitFromLoungeScenario:
         registration.save()
 
         assert not LoungeParticipant.objects.filter(user=user).exists()
+
+
+@pytest.mark.django_db
+class TestSpeedNetworkingNavigationPriority:
+    def _create_session(self, event, host_user, status="ACTIVE"):
+        return SpeedNetworkingSession.objects.create(
+            event=event,
+            created_by=host_user,
+            name="SN Session",
+            duration_minutes=5,
+            status=status,
+        )
+
+    def test_leave_prefers_main_room_when_live(self, event, host_user):
+        event.is_live = True
+        event.is_on_break = False
+        event.status = "live"
+        event.lounge_enabled_speed_networking = True
+        event.save(update_fields=["is_live", "is_on_break", "status", "lounge_enabled_speed_networking"])
+        session = self._create_session(event, host_user, status="ACTIVE")
+
+        decision = SpeedNetworkingQueueViewSet()._build_navigation_decision(event, session)
+        assert decision["target"] == "speed_networking_exit_options"
+        actions = {opt["action"] for opt in decision["options"]}
+        assert "go_to_main_room" in actions
+
+    def test_leave_goes_to_lounge_if_main_closed_and_lounge_enabled(self, event, host_user):
+        event.is_live = False
+        event.status = "published"
+        event.lounge_enabled_speed_networking = True
+        event.save(update_fields=["is_live", "status", "lounge_enabled_speed_networking"])
+        session = self._create_session(event, host_user, status="ENDED")
+
+        decision = SpeedNetworkingQueueViewSet()._build_navigation_decision(event, session)
+        assert decision["target"] == "social_lounge"
+
+    def test_leave_goes_to_event_ended_if_main_and_lounge_closed(self, event, host_user):
+        event.is_live = False
+        event.status = "ended"
+        event.lounge_enabled_speed_networking = False
+        event.lounge_enabled_after = False
+        event.save(update_fields=["is_live", "status", "lounge_enabled_speed_networking", "lounge_enabled_after"])
+        session = self._create_session(event, host_user, status="ENDED")
+
+        decision = SpeedNetworkingQueueViewSet()._build_navigation_decision(event, session)
+        assert decision["target"] == "event_ended"
+
+    def test_active_networking_with_main_closed_returns_options(self, event, host_user):
+        event.is_live = False
+        event.status = "published"
+        event.lounge_enabled_speed_networking = False
+        event.save(update_fields=["is_live", "status", "lounge_enabled_speed_networking"])
+        session = self._create_session(event, host_user, status="ACTIVE")
+
+        decision = SpeedNetworkingQueueViewSet()._build_navigation_decision(event, session)
+        assert decision["target"] == "speed_networking_exit_options"
+        actions = {opt["action"] for opt in decision["options"]}
+        assert "rejoin_speed_networking" in actions
+        assert "wait_for_main_room" in actions
+        assert "go_to_main_room" not in actions
+        assert "go_to_social_lounge" not in actions
 
 
 @pytest.mark.django_db

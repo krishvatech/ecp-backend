@@ -10,6 +10,7 @@ Provides API endpoints for:
 import logging
 import uuid
 import random
+from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q, Avg
@@ -28,7 +29,8 @@ from .criteria_matching_engine import CriteriaBasedMatchingEngine
 
 from .models import (
     SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue, Event,
-    UserMatchingProfile, UserCriteriaProfile, SpeedNetworkingRule, SpeedNetworkingInterestTag
+    UserMatchingProfile, UserCriteriaProfile, SpeedNetworkingRule, SpeedNetworkingInterestTag,
+    LoungeParticipant, EventRegistration
 )
 from .serializers import (
     SpeedNetworkingSessionSerializer,
@@ -608,6 +610,40 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         
         # Clear queue
         session.queue.update(is_active=False)
+
+        # Force all lounge occupants back to main room when speed networking stops.
+        try:
+            lounge_user_ids = list(
+                LoungeParticipant.objects.filter(table__event_id=session.event_id)
+                .values_list("user_id", flat=True)
+                .distinct()
+            )
+            if lounge_user_ids:
+                with transaction.atomic():
+                    EventRegistration.objects.filter(
+                        event_id=session.event_id,
+                        user_id__in=lounge_user_ids,
+                    ).update(
+                        admission_status="admitted",
+                        admitted_at=timezone.now(),
+                        was_ever_admitted=True,
+                        current_location="main_room",
+                    )
+                    LoungeParticipant.objects.filter(
+                        table__event_id=session.event_id,
+                        user_id__in=lounge_user_ids,
+                    ).delete()
+
+                channel_layer = get_channel_layer()
+                async_to_sync(channel_layer.group_send)(
+                    f"event_{session.event_id}",
+                    {"type": "lounge_stopped", "transition": "to_main_room"}
+                )
+                logger.info(
+                    f"[SN_STOP] Moved {len(lounge_user_ids)} lounge occupants to main room for event {session.event_id}"
+                )
+        except Exception as e:
+            logger.exception(f"[SN_STOP] Failed to move lounge occupants to main room: {e}")
         
         session.status = 'ENDED'
         session.ended_at = timezone.now()
@@ -1436,6 +1472,103 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                     return token
 
         return None
+
+    def _is_main_room_open(self, event):
+        """Main room is considered open while event is live and not on break."""
+        if event.status in {"ended", "cancelled"}:
+            return False
+        return bool(event.is_live and not event.is_on_break)
+
+    def _is_social_lounge_open(self, event, speed_networking_active=False):
+        """
+        Determine if Social Lounge is currently accessible.
+        During active speed networking, use dedicated toggle.
+        """
+        now = timezone.now()
+
+        if speed_networking_active:
+            return bool(event.lounge_enabled_speed_networking)
+
+        if event.lounge_enabled_before and event.start_time:
+            opening = event.start_time - timedelta(minutes=event.lounge_before_buffer)
+            if opening <= now < event.start_time:
+                return True
+
+        if event.is_live:
+            if event.is_on_break:
+                return bool(event.lounge_enabled_breaks)
+            return bool(event.lounge_enabled_during)
+
+        if event.live_ended_at and event.lounge_enabled_after:
+            closing = event.live_ended_at + timedelta(minutes=event.lounge_after_buffer)
+            if event.live_ended_at <= now < closing:
+                return True
+
+        return False
+
+    def _build_navigation_decision(self, event, session):
+        """
+        Priority logic for participants leaving speed networking:
+        1) Main room if open
+        2) Social lounge if open
+        3) Thank-you / event ended
+        Special: if networking still active and main room closed, return action options.
+        """
+        speed_networking_active = session.status == "ACTIVE"
+        main_room_open = self._is_main_room_open(event)
+        social_lounge_open = self._is_social_lounge_open(
+            event,
+            speed_networking_active=speed_networking_active
+        )
+
+        if speed_networking_active:
+            options = [
+                {"action": "rejoin_speed_networking", "enabled": True},
+            ]
+            if main_room_open:
+                options.append({"action": "go_to_main_room", "enabled": True})
+            else:
+                options.append({"action": "wait_for_main_room", "enabled": True})
+            if social_lounge_open:
+                options.append({"action": "go_to_social_lounge", "enabled": True})
+
+            return {
+                "target": "speed_networking_exit_options",
+                "reason": "Speed Networking is active. Choose where to go next.",
+                "main_room_open": main_room_open,
+                "social_lounge_open": social_lounge_open,
+                "speed_networking_active": speed_networking_active,
+                "options": options,
+            }
+
+        if main_room_open:
+            return {
+                "target": "main_room",
+                "reason": "Main Room is active.",
+                "main_room_open": main_room_open,
+                "social_lounge_open": social_lounge_open,
+                "speed_networking_active": speed_networking_active,
+                "options": [],
+            }
+
+        if social_lounge_open:
+            return {
+                "target": "social_lounge",
+                "reason": "Main Room is closed and Social Lounge is open.",
+                "main_room_open": main_room_open,
+                "social_lounge_open": social_lounge_open,
+                "speed_networking_active": speed_networking_active,
+                "options": [],
+            }
+
+        return {
+            "target": "event_ended",
+            "reason": "Main Room and Social Lounge are unavailable.",
+            "main_room_open": main_room_open,
+            "social_lounge_open": social_lounge_open,
+            "speed_networking_active": speed_networking_active,
+            "options": [],
+        }
     
     @action(detail=False, methods=['post'])
     def join(self, request, event_id=None, session_id=None):
@@ -1569,7 +1702,23 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         # Broadcast queue update to all clients (for host panel)
         _broadcast_queue_update(session, event_id)
 
-        return Response({'message': 'Left queue successfully'})
+        navigation = self._build_navigation_decision(session.event, session)
+        return Response({
+            'message': 'Left queue successfully',
+            'navigation': navigation,
+        })
+
+    @action(detail=False, methods=['get'], url_path='navigation-state')
+    def navigation_state(self, request, event_id=None, session_id=None):
+        """Return current navigation recommendation for a participant."""
+        try:
+            session = SpeedNetworkingSession.objects.get(id=session_id, event_id=event_id)
+        except SpeedNetworkingSession.DoesNotExist:
+            return Response(
+                {'error': 'Session not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        return Response({'navigation': self._build_navigation_decision(session.event, session)})
     
     @action(detail=False, methods=['get'])
     def my_match(self, request, event_id=None, session_id=None):

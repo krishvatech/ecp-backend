@@ -156,6 +156,11 @@ urlpatterns = [
         name='speed-networking-my-match'
     ),
     path(
+        "events/<int:event_id>/speed-networking/<int:session_id>/navigation-state/",
+        SpeedNetworkingQueueViewSet.as_view({'get': 'navigation_state'}),
+        name='speed-networking-navigation-state'
+    ),
+    path(
         "events/<int:event_id>/speed-networking/matches/<int:match_id>/next/",
         SpeedNetworkingQueueViewSet.as_view({'post': 'next_match'}),
         name='speed-networking-next-match'

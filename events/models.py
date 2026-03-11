@@ -170,6 +170,10 @@ class Event(models.Model):
     lounge_enabled_breaks = models.BooleanField(default=False)
     lounge_enabled_after = models.BooleanField(default=False)
     lounge_after_buffer = models.PositiveIntegerField(default=30)  # minutes
+    lounge_enabled_speed_networking = models.BooleanField(
+        default=False,
+        help_text="Allow participants to access Social Lounge when leaving Speed Networking",
+    )
     lounge_table_capacity = models.IntegerField(default=4, help_text="Max participants per table in Social Lounge")  # ✅ NEW
 
     # Breakout Late Joiner Settings

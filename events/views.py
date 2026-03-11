@@ -2656,6 +2656,22 @@ class EventViewSet(viewsets.ModelViewSet):
         # ✅ DURING event (is_live = True) - Check SECOND
         if event.is_live:
             logger.info(f"[_get_lounge_availability] Event {event.id}: DURING check - is_live=True, lounge_enabled_during={event.lounge_enabled_during}")
+
+            # Special override: if Speed Networking is active and this setting is enabled,
+            # Social Lounge should be available even when regular "during live" lounge is off.
+            if getattr(event, "lounge_enabled_speed_networking", False):
+                try:
+                    from .models import SpeedNetworkingSession
+                    sn_active = SpeedNetworkingSession.objects.filter(
+                        event_id=event.id,
+                        status="ACTIVE",
+                    ).exists()
+                except Exception:
+                    sn_active = False
+
+                if sn_active:
+                    return "OPEN", "Speed Networking is active", event.live_ended_at
+
             if event.is_on_break:
                 if event.lounge_enabled_breaks:
                     return "OPEN", "Event is on break", event.end_time
@@ -3900,6 +3916,95 @@ class EventViewSet(viewsets.ModelViewSet):
                 "mediaLockActive": bool(event.is_on_break),
                 "gracePeriodAdmitted": is_grace_period_join,
                 "admissionStatus": "admitted",
+            }
+        )
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="dyte/preview-token")
+    def dyte_preview_token(self, request, pk=None):
+        """
+        Return a main-room Dyte token for preview only.
+
+        Unlike dyte/join, this endpoint does NOT:
+        - apply waiting-room admission flow,
+        - move location to main room,
+        - remove participant from social lounge.
+        """
+        event = self.get_object()
+        user = request.user
+
+        # Ensure event meeting exists
+        try:
+            meeting_id = _ensure_dyte_meeting_for_event(event)
+        except RuntimeError as e:
+            logger.error(f"Dyte preview token meeting error for event {event.id}: {str(e)}")
+            return Response(
+                {"error": "dyte_meeting_error", "detail": str(e)},
+                status=500,
+            )
+
+        # Guards: banned / deregistered / event not joinable
+        if EventRegistration.objects.filter(event=event, user=user, is_banned=True).exists():
+            return Response({"error": "banned", "detail": "You are banned from this event."}, status=403)
+        if EventRegistration.objects.filter(event=event, user=user, status__in=["cancelled", "deregistered"]).exists():
+            return Response({"error": "not_registered", "detail": "You are not registered for this event."}, status=403)
+        if event.status == "cancelled":
+            return Response({"error": "event_cancelled", "detail": "This event has been cancelled."}, status=400)
+        if (not _is_event_host(user, event)) and event.status not in ("live", "published"):
+            return Response(
+                {"error": "event_not_live", "detail": f"Event is currently {event.status}. Only hosts can join."},
+                status=400,
+            )
+
+        # Preview is always audience/participant
+        preset_name = DYTE_PRESET_PARTICIPANT
+
+        profile = getattr(user, "profile", None)
+        name = (getattr(profile, "full_name", "") if profile else "") or getattr(user, "get_full_name", lambda: "")() or user.username
+        picture = ""
+        try:
+            if profile and getattr(profile, "user_image", None):
+                picture = profile.user_image.url
+        except Exception:
+            picture = ""
+
+        body = {
+            "name": name or f"User {user.id}",
+            "preset_name": preset_name,
+            "client_specific_id": str(user.id),
+        }
+        if picture:
+            body["picture"] = picture
+
+        try:
+            resp = requests.post(
+                f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
+                headers=_dyte_headers(),
+                json=body,
+                timeout=10,
+            )
+        except requests.RequestException as e:
+            logger.exception("❌ Dyte preview add participant exception: %s", e)
+            return Response({"error": "dyte_network_error", "detail": str(e)}, status=500)
+
+        if resp.status_code not in (200, 201):
+            logger.error("❌ Dyte preview add participant failed: %s", resp.text[:500])
+            return Response({"error": "dyte_participant_error", "detail": resp.text[:500]}, status=500)
+
+        data = (resp.json() or {}).get("data") or {}
+        auth_token = data.get("token")
+        if not auth_token:
+            return Response(
+                {"error": "dyte_token_missing", "detail": "Dyte did not return auth token."},
+                status=500,
+            )
+
+        return Response(
+            {
+                "authToken": auth_token,
+                "meetingId": meeting_id,
+                "presetName": preset_name,
+                "role": "audience",
+                "previewOnly": True,
             }
         )
 
