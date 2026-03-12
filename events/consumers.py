@@ -438,6 +438,9 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         elif action == "resolve_assistance_request":
             await self.handle_resolve_assistance_request(content)
 
+        elif action == "start_support_chat":
+            await self.handle_start_support_chat(content)
+
         elif action == "admit_from_lounge":
             # Host-only action with countdown transition from lounge/pre-event.
             if not await self.is_host():
@@ -712,6 +715,18 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "timestamp": event.get("timestamp"),
         })
 
+    async def support_chat_started(self, event: dict) -> None:
+        """Private notification sent to the requester when host starts support chat."""
+        await self.send_json({
+            "type": "support_chat_started",
+            "event_id": event.get("event_id"),
+            "request_id": event.get("request_id"),
+            "requester_id": event.get("requester_id"),
+            "host_id": event.get("host_id"),
+            "host_name": event.get("host_name"),
+            "timestamp": event.get("timestamp"),
+        })
+
     async def handle_request_assistance(self):
         """Audience in main room can ask hosts/moderators for help with cooldown protection."""
         try:
@@ -846,6 +861,54 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             logger.exception("[ASSISTANCE] Failed resolve handling: %s", e)
             await self.send_json({
                 "type": "assistance_resolve_ack",
+                "ok": False,
+                "reason": "server_error",
+            })
+
+    async def handle_start_support_chat(self, content: dict):
+        """Host/moderator starts direct support chat with requester."""
+        try:
+            allowed = await self.can_resolve_assistance()
+            if not allowed:
+                await self.send_json({
+                    "type": "support_chat_started_ack",
+                    "ok": False,
+                    "reason": "not_allowed",
+                })
+                return
+
+            request_id = content.get("request_id")
+            requester_id = content.get("requester_id")
+            if not requester_id:
+                await self.send_json({
+                    "type": "support_chat_started_ack",
+                    "ok": False,
+                    "reason": "missing_payload",
+                })
+                return
+
+            host_name = await self.get_requester_display_name()
+            payload = {
+                "type": "support_chat_started",
+                "event_id": int(self.event_id),
+                "request_id": request_id,
+                "requester_id": int(requester_id),
+                "host_id": self.user.id,
+                "host_name": host_name,
+                "timestamp": timezone.now().isoformat(),
+            }
+
+            await self.channel_layer.group_send(f"user_{int(requester_id)}", payload)
+            await self.send_json({
+                "type": "support_chat_started_ack",
+                "ok": True,
+                "request_id": request_id,
+                "requester_id": int(requester_id),
+            })
+        except Exception as e:
+            logger.exception("[ASSISTANCE] Failed start_support_chat handling: %s", e)
+            await self.send_json({
+                "type": "support_chat_started_ack",
                 "ok": False,
                 "reason": "server_error",
             })
