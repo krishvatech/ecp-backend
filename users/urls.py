@@ -32,6 +32,12 @@ from .views import (
     MeTrainingViewSet, MeCertificationViewSet, MeMembershipViewSet,
     MeCertificationDocumentViewSet,
     GeoCitySearchView, AuthUsersMeView,
+    AdminUserProfileView, AdminUserAvatarView, AdminEducationViewSet,
+    AdminExperienceViewSet, AdminTrainingViewSet, AdminCertificationViewSet,
+    AdminMembershipViewSet, AdminSkillViewSet, AdminLanguageViewSet,
+    AdminEducationDocumentViewSet, AdminTrainingDocumentViewSet,
+    AdminCertificationDocumentViewSet, AdminMembershipDocumentViewSet,
+    AdminLanguageCertificateViewSet, AdminUserWordPressSyncView,
 
 )
 from .wordpress_webhook import WordPressWebhookView, WordPressUserSyncView, WordPressProfileSyncAuthenticatedView
@@ -53,6 +59,20 @@ router.register(r"me/membership-documents", MeMembershipDocumentViewSet, basenam
 router.register(r"admin/users", StaffUserViewSet, basename="admin-users")
 router.register(r"admin/name-requests", AdminNameChangeRequestViewSet, basename="admin-name-requests")
 router.register(r"admin/kyc", AdminKYCViewSet, basename="admin-kyc")
+
+admin_profile_router = DefaultRouter()
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/educations", AdminEducationViewSet, basename="admin-user-educations")
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/experiences", AdminExperienceViewSet, basename="admin-user-experiences")
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/trainings", AdminTrainingViewSet, basename="admin-user-trainings")
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/certifications", AdminCertificationViewSet, basename="admin-user-certifications")
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/memberships", AdminMembershipViewSet, basename="admin-user-memberships")
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/skills", AdminSkillViewSet, basename="admin-user-skills")
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/languages", AdminLanguageViewSet, basename="admin-user-languages")
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/language-certificates", AdminLanguageCertificateViewSet, basename="admin-user-language-certificates")
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/education-documents", AdminEducationDocumentViewSet, basename="admin-user-education-documents")
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/training-documents", AdminTrainingDocumentViewSet, basename="admin-user-training-documents")
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/certification-documents", AdminCertificationDocumentViewSet, basename="admin-user-certification-documents")
+admin_profile_router.register(r"admin/users/(?P<user_id>\d+)/membership-documents", AdminMembershipDocumentViewSet, basename="admin-user-membership-documents")
 
 urlpatterns = [
     # Email + password login (returns refresh + access)
@@ -80,6 +100,9 @@ urlpatterns = [
     path("session/logout/", SessionLogoutView.as_view(), name="session_logout"),
     path("session/me/", SessionMeView.as_view(), name="session_me"),
     path("users/me/", AuthUsersMeView.as_view(), name="auth-users-me"),
+    path("admin/users/<int:user_id>/profile/", AdminUserProfileView.as_view(), name="admin-user-profile"),
+    path("admin/users/<int:user_id>/avatar/", AdminUserAvatarView.as_view(), name="admin-user-avatar"),
+    path("admin/users/<int:user_id>/sync-profile/", AdminUserWordPressSyncView.as_view(), name="admin-user-sync-profile"),
 
     # ---- NEW: compact profile view (returns both lists) ----
     path("me/profile/", MeProfileView.as_view(), name="me-profile"),
@@ -91,4 +114,5 @@ urlpatterns = [
     path("languages/search/", IsoLanguageSearchView.as_view(), name="iso-language-search"),
     path("cities/search/", GeoCitySearchView.as_view(), name="geonames-city-search"),
     path("", include(router.urls)),
+    path("", include(admin_profile_router.urls)),
 ]

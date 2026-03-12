@@ -12,6 +12,7 @@ import pytz
 from django.conf import settings
 from urllib.parse import urljoin
 from django.contrib.auth import get_user_model
+from django.db.models import Q
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
@@ -34,6 +35,8 @@ from .validators import (
 )
 
 from .models import UserProfile
+from activity_feed.models import FeedItem
+from friends.models import Friendship
 
 User = get_user_model()
 import logging
@@ -139,6 +142,7 @@ class UserProfileMiniSerializer(serializers.ModelSerializer):
             "directory_hidden",   # NEW: privacy status
             "connections_hidden",
             "hide_from_others_connections",
+            "can_edit_profiles",
         )
         read_only_fields = ("last_activity_at", "is_online")
 
@@ -160,6 +164,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "location", "links", "user_image", "user_image_url", "skills",
             "last_activity_at", "is_online","kyc_decline_reason",
             "kyc_status", "legal_name_locked", "legal_name_verified_at",
+            "can_edit_profiles",
             "directory_hidden", "connections_hidden", "hide_from_others_connections",
             "pending_verification_request",
         ]
@@ -236,6 +241,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     """Serializer for the Django User model with nested profile."""
     profile = UserProfileSerializer()
+    posts_count = serializers.SerializerMethodField()
+    contacts_count = serializers.SerializerMethodField()
     username = serializers.CharField(required=False, allow_blank=True)
     educations = EducationSerializer(many=True, read_only=True)
     experiences = ExperienceSerializer(many=True, read_only=True)
@@ -243,7 +250,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "username", "email", "profile", "first_name", "last_name","is_active", "is_superuser", "is_staff", "date_joined","educations", "experiences"]
+        fields = ["id", "username", "email", "profile", "first_name", "last_name","is_active", "is_superuser", "is_staff", "date_joined","educations", "experiences", "posts_count", "contacts_count"]
         read_only_fields = ["id", "is_active","is_superuser", "is_staff",  "date_joined","first_name", "last_name",]
 
     # username must not be numeric-only
@@ -255,6 +262,24 @@ class UserSerializer(serializers.ModelSerializer):
     # reuse shared email validator (strict) – applies on update too
     def validate_email(self, value: str) -> str:
         return validate_email_strict(value, instance=self.instance)
+
+    def get_posts_count(self, obj):
+        posts = FeedItem.objects.filter(actor_id=obj.id)
+
+        if obj.is_superuser:
+            return posts.filter(
+                community__owner_id=obj.id,
+                group__isnull=True,
+                event__isnull=True,
+            ).filter(
+                Q(verb="created_poll") |
+                Q(verb="posted", metadata__visibility="community")
+            ).count()
+
+        return posts.filter(verb__in=["posted", "created_poll"]).count()
+
+    def get_contacts_count(self, obj):
+        return Friendship.objects.filter(Q(user1_id=obj.id) | Q(user2_id=obj.id)).count()
 
     # support nested profile writes
     def update(self, instance, validated_data):
@@ -754,6 +779,7 @@ class StaffUserSerializer(serializers.ModelSerializer):
     is_staff = serializers.BooleanField(required=False)
     is_active = serializers.BooleanField(required=False)
     is_superuser = serializers.BooleanField(required=False)
+    can_edit_profiles = serializers.BooleanField(source="profile.can_edit_profiles", required=False)
     email = serializers.EmailField(required=True)
     first_name = serializers.CharField(required=True)
     last_name = serializers.CharField(required=True)
@@ -766,7 +792,7 @@ class StaffUserSerializer(serializers.ModelSerializer):
         fields = (
             "id", "username", "first_name", "last_name",
             "email", "is_active", "is_superuser",
-            "is_staff", "date_joined", "last_login",
+            "is_staff", "can_edit_profiles", "date_joined", "last_login",
             "profile", "avatar_url",
         )
         read_only_fields = (
@@ -782,6 +808,51 @@ class StaffUserSerializer(serializers.ModelSerializer):
         # Allow updating existing user, but check uniqueness for new ones?
         # unique validator on model handles it, checking here is good too.
         return value
+
+    def validate(self, attrs):
+        profile_data = attrs.get("profile", {}) or {}
+        requested_can_edit_profiles = profile_data.get("can_edit_profiles", None)
+
+        if requested_can_edit_profiles is None:
+            return attrs
+
+        target_is_staff = attrs.get("is_staff")
+        if target_is_staff is None and self.instance is not None:
+            target_is_staff = bool(self.instance.is_staff)
+
+        if requested_can_edit_profiles and not target_is_staff:
+            raise serializers.ValidationError({
+                "can_edit_profiles": "Please make this user a staff user first."
+            })
+
+        return attrs
+
+    def create(self, validated_data):
+        profile_data = validated_data.pop("profile", {}) or {}
+        can_edit_profiles = bool(profile_data.pop("can_edit_profiles", False))
+        user = User.objects.create(**validated_data)
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        profile.can_edit_profiles = bool(user.is_staff and can_edit_profiles)
+        profile.save(update_fields=["can_edit_profiles"])
+        return user
+
+    def update(self, instance, validated_data):
+        profile_data = validated_data.pop("profile", {}) or {}
+        can_edit_profiles = profile_data.pop("can_edit_profiles", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        profile, _ = UserProfile.objects.get_or_create(user=instance)
+        if not instance.is_staff:
+            profile.can_edit_profiles = False
+            profile.save(update_fields=["can_edit_profiles"])
+        elif can_edit_profiles is not None:
+            profile.can_edit_profiles = bool(can_edit_profiles)
+            profile.save(update_fields=["can_edit_profiles"])
+
+        return instance
 
 
     def get_avatar_url(self, obj):
@@ -1121,7 +1192,7 @@ class UserSkillSerializer(serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
-        user = self.context["request"].user
+        user = self.context.get("target_user") or self.context["request"].user
         skill_uri = validated_data.pop("skill_uri")
         preferred_label = validated_data.pop("preferred_label", "").strip() or skill_uri
 
@@ -1217,7 +1288,7 @@ class UserLanguageSerializer(serializers.ModelSerializer):
         return value.lower()
 
     def create(self, validated_data):
-        user = self.context["request"].user
+        user = self.context.get("target_user") or self.context["request"].user
 
         iso_639_1 = validated_data.pop("iso_639_1")
         iso_639_3 = validated_data.pop("iso_639_3", "").strip()
@@ -1256,6 +1327,52 @@ class UserLanguageSerializer(serializers.ModelSerializer):
             defaults=validated_data,
         )
         return obj
+
+
+class AdminUserProfileSerializer(serializers.ModelSerializer):
+    profile = UserProfileSerializer(required=False)
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "is_active",
+            "is_staff",
+            "is_superuser",
+            "profile",
+        ]
+        read_only_fields = ["id", "username", "is_active", "is_staff", "is_superuser"]
+
+    def update(self, instance, validated_data):
+        profile_data = validated_data.pop("profile", {}) or {}
+        request = self.context.get("request")
+        editor_is_superuser = bool(getattr(request, "user", None) and request.user.is_superuser)
+
+        privacy_fields = {
+            "directory_hidden",
+            "connections_hidden",
+            "hide_from_others_connections",
+        }
+        if not editor_is_superuser:
+            for key in privacy_fields:
+                profile_data.pop(key, None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if profile_data:
+            profile, _ = UserProfile.objects.get_or_create(user=instance)
+            for attr, value in profile_data.items():
+                if hasattr(profile, attr):
+                    setattr(profile, attr, value)
+            profile.save()
+
+        return instance
     
 
 class VerificationRequestSerializer(serializers.ModelSerializer):

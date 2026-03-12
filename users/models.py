@@ -30,6 +30,7 @@ class UserProfile(models.Model):
     """Extension of Django's built-in User model."""
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+    can_edit_profiles = models.BooleanField(default=False)
     directory_hidden = models.BooleanField(default=False, help_text="Hide from public roster/directory")
     connections_hidden = models.BooleanField(default=False, help_text="Hide your connections list from other members")
     hide_from_others_connections = models.BooleanField(default=False, help_text="Hide this member from other users' visible connection lists")

@@ -37,6 +37,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from .models import LinkedInAccount,EscoSkill
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q
+from activity_feed.models import FeedItem
+from friends.models import Friendship
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.utils.decorators import method_decorator
 from django.contrib.auth import login as django_login, logout as django_logout
@@ -45,7 +47,7 @@ from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
 from .serializers import PublicProfileSerializer
 from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileCertificationDocument, ProfileMembership, EmailChangeRequest, VerificationRequest, VerificationHistory, CognitoIdentity
-from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, AdminKYCSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileCertificationDocumentSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer, VerificationRequestSerializer, VerificationHistorySerializer
+from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, AdminKYCSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileCertificationDocumentSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer, VerificationRequestSerializer, VerificationHistorySerializer, AdminUserProfileSerializer, UserProfileSerializer
 from .models import EducationDocument, TrainingDocument, MembershipDocument
 from .serializers import EducationDocumentSerializer, TrainingDocumentSerializer, MembershipDocumentSerializer
 from .esco_client import search_skills
@@ -56,6 +58,7 @@ from .didit_client import (
     get_session_details
 )
 from .cognito_groups import sync_staff_group
+from .wordpress_sync import get_profile_sync_service
 from .serializers import (
     UserSerializer,
     EmailTokenObtainPairSerializer,
@@ -92,6 +95,47 @@ class IsSuperuser(permissions.BasePermission):
     def has_permission(self, request, view):
         user = getattr(request, "user", None)
         return bool(user and user.is_authenticated and user.is_superuser)
+
+
+class CanViewStaffUsers(permissions.BasePermission):
+    def has_permission(self, request, view):
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        if user.is_superuser:
+            return True
+        profile = getattr(user, "profile", None)
+        if request.method in permissions.SAFE_METHODS:
+            return bool(user.is_staff and profile and profile.can_edit_profiles)
+        return False
+
+
+class CanEditUserProfile(permissions.BasePermission):
+    def has_permission(self, request, view):
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        if user.is_superuser:
+            return True
+        profile = getattr(user, "profile", None)
+        return bool(user.is_staff and profile and profile.can_edit_profiles)
+
+    def has_object_permission(self, request, view, obj):
+        if request.user.is_superuser:
+            return True
+        target_user = obj
+        if not hasattr(target_user, "is_staff"):
+            target_user = (
+                getattr(obj, "user", None)
+                or getattr(getattr(obj, "education", None), "user", None)
+                or getattr(getattr(obj, "training", None), "user", None)
+                or getattr(getattr(obj, "certification", None), "user", None)
+                or getattr(getattr(obj, "membership", None), "user", None)
+                or getattr(getattr(obj, "user_language", None), "user", None)
+            )
+        if target_user is None:
+            return False
+        return not target_user.is_staff and not target_user.is_superuser
 
 
 def _state_cookie():
@@ -1629,6 +1673,278 @@ class MeProfileView(APIView):
         "memberships": memberships,
     })
 
+
+class AdminTargetUserMixin:
+    permission_classes = [CanEditUserProfile]
+    target_user_kwarg = "user_id"
+
+    def get_target_user(self):
+        user_id = self.kwargs.get(self.target_user_kwarg)
+        target = get_object_or_404(User, pk=user_id)
+        self.check_object_permissions(self.request, target)
+        return target
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["target_user"] = self.get_target_user()
+        return context
+
+
+class AdminUserProfileView(AdminTargetUserMixin, APIView):
+    def get(self, request, user_id):
+        target = self.get_target_user()
+        payload = AdminUserProfileSerializer(target, context={"request": request}).data
+        target_posts = FeedItem.objects.filter(actor_id=target.id)
+        if target.is_superuser:
+            payload["posts_count"] = target_posts.filter(
+                community__owner_id=target.id,
+                group__isnull=True,
+                event__isnull=True,
+            ).filter(
+                Q(verb="created_poll") |
+                Q(verb="posted", metadata__visibility="community")
+            ).count()
+        else:
+            payload["posts_count"] = target_posts.filter(
+                verb__in=["posted", "created_poll"]
+            ).count()
+        payload["contacts_count"] = Friendship.objects.filter(
+            Q(user1_id=target.id) | Q(user2_id=target.id)
+        ).count()
+        payload["educations"] = EducationSerializer(
+            Education.objects.filter(user=target).order_by("-end_date", "-start_date", "-id"),
+            many=True,
+            context={"request": request},
+        ).data
+        payload["experiences"] = ExperienceSerializer(
+            Experience.objects.filter(user=target).order_by("-currently_work_here", "-end_date", "-start_date", "-id"),
+            many=True,
+            context={"request": request},
+        ).data
+        payload["trainings"] = ProfileTrainingSerializer(
+            ProfileTraining.objects.filter(user=target).order_by("-currently_ongoing", "-end_date", "-start_date", "-id"),
+            many=True,
+            context={"request": request},
+        ).data
+        payload["certifications"] = ProfileCertificationSerializer(
+            ProfileCertification.objects.filter(user=target).order_by("-issue_date", "-id"),
+            many=True,
+            context={"request": request},
+        ).data
+        payload["memberships"] = ProfileMembershipSerializer(
+            ProfileMembership.objects.filter(user=target).order_by("-ongoing", "-end_date", "-start_date", "-id"),
+            many=True,
+            context={"request": request},
+        ).data
+        payload["skills"] = UserSkillSerializer(
+            UserSkill.objects.filter(user=target).select_related("skill").order_by("-proficiency_level", "-updated_at", "-id"),
+            many=True,
+            context={"request": request, "target_user": target},
+        ).data
+        payload["languages"] = UserLanguageSerializer(
+            UserLanguage.objects.filter(user=target).select_related("language").prefetch_related("certificates").order_by("language__english_name", "id"),
+            many=True,
+            context={"request": request, "target_user": target},
+        ).data
+        return Response(payload)
+
+    def patch(self, request, user_id):
+        target = self.get_target_user()
+        serializer = AdminUserProfileSerializer(
+            target,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class AdminUserAvatarView(AdminTargetUserMixin, APIView):
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, user_id):
+        target = self.get_target_user()
+        profile, _ = UserProfile.objects.get_or_create(user=target)
+        upload = request.FILES.get("avatar") or request.FILES.get("file") or request.FILES.get("user_image")
+        if not upload:
+            return Response({"detail": "Avatar file is required."}, status=status.HTTP_400_BAD_REQUEST)
+        profile.user_image = upload
+        profile.save()
+        return Response({
+            "user_image_url": request.build_absolute_uri(profile.user_image.url) if profile.user_image else "",
+            "avatar": request.build_absolute_uri(profile.user_image.url) if profile.user_image else "",
+        })
+
+
+class AdminUserWordPressSyncView(AdminTargetUserMixin, APIView):
+    def post(self, request, user_id):
+        target = self.get_target_user()
+        sync_service = get_profile_sync_service()
+
+        logger.info("Admin user %s requested WordPress profile sync for user %s", request.user.id, target.id)
+
+        wp_user_data = sync_service.wp_client.get_user_by_email(target.email)
+        if not wp_user_data:
+            return Response(
+                {"error": "This user's profile could not be found in WordPress."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        synced_user, _created = sync_service.sync_user_from_wordpress(
+            wp_user_data,
+            override_email=target.email,
+        )
+        if not synced_user:
+            return Response(
+                {"error": "Failed to sync this user from WordPress."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        profile_serializer = UserProfileSerializer(synced_user.profile, context={"request": request})
+        return Response(
+            {
+                "status": "success",
+                "message": "Profile synced successfully from WordPress",
+                "profile": profile_serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AdminEducationViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = EducationSerializer
+
+    def get_queryset(self):
+        return Education.objects.filter(user=self.get_target_user()).order_by("-end_date", "-start_date", "-id")
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.get_target_user())
+
+
+class AdminExperienceViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = ExperienceSerializer
+
+    def get_queryset(self):
+        return Experience.objects.filter(user=self.get_target_user()).order_by("-currently_work_here", "-end_date", "-start_date", "-id")
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.get_target_user())
+
+
+class AdminTrainingViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = ProfileTrainingSerializer
+
+    def get_queryset(self):
+        return ProfileTraining.objects.filter(user=self.get_target_user()).order_by("-currently_ongoing", "-end_date", "-start_date", "-id")
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.get_target_user())
+
+
+class AdminCertificationViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = ProfileCertificationSerializer
+
+    def get_queryset(self):
+        return ProfileCertification.objects.filter(user=self.get_target_user()).order_by("-issue_date", "-id")
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.get_target_user())
+
+
+class AdminMembershipViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = ProfileMembershipSerializer
+
+    def get_queryset(self):
+        return ProfileMembership.objects.filter(user=self.get_target_user()).order_by("-ongoing", "-end_date", "-start_date", "-id")
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.get_target_user())
+
+
+class AdminSkillViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = UserSkillSerializer
+
+    def get_queryset(self):
+        return UserSkill.objects.filter(user=self.get_target_user()).select_related("skill").order_by("-proficiency_level", "-updated_at", "-id")
+
+
+class AdminLanguageViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = UserLanguageSerializer
+
+    def get_queryset(self):
+        return UserLanguage.objects.filter(user=self.get_target_user()).select_related("language").prefetch_related("certificates").order_by("language__english_name", "id")
+
+
+class AdminLanguageCertificateViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = LanguageCertificateSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        return LanguageCertificate.objects.filter(user_language__user=self.get_target_user()).select_related("user_language", "user_language__language")
+
+    def perform_create(self, serializer):
+        user_language_id = self.request.data.get("user_language")
+        user_language = generics.get_object_or_404(UserLanguage, id=user_language_id, user=self.get_target_user())
+        serializer.save(user_language=user_language)
+
+
+class AdminEducationDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = EducationDocumentSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    http_method_names = ["get", "post", "delete"]
+
+    def get_queryset(self):
+        return EducationDocument.objects.filter(education__user=self.get_target_user())
+
+    def perform_create(self, serializer):
+        education_id = self.request.data.get("education")
+        education = generics.get_object_or_404(Education, id=education_id, user=self.get_target_user())
+        serializer.save(education=education)
+
+
+class AdminTrainingDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = TrainingDocumentSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    http_method_names = ["get", "post", "delete"]
+
+    def get_queryset(self):
+        return TrainingDocument.objects.filter(training__user=self.get_target_user())
+
+    def perform_create(self, serializer):
+        training_id = self.request.data.get("training")
+        training = generics.get_object_or_404(ProfileTraining, id=training_id, user=self.get_target_user())
+        serializer.save(training=training)
+
+
+class AdminCertificationDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = ProfileCertificationDocumentSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    http_method_names = ["get", "post", "delete"]
+
+    def get_queryset(self):
+        return ProfileCertificationDocument.objects.filter(certification__user=self.get_target_user())
+
+    def perform_create(self, serializer):
+        certification_id = self.request.data.get("certification")
+        certification = generics.get_object_or_404(ProfileCertification, id=certification_id, user=self.get_target_user())
+        serializer.save(certification=certification)
+
+
+class AdminMembershipDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+    serializer_class = MembershipDocumentSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    http_method_names = ["get", "post", "delete"]
+
+    def get_queryset(self):
+        return MembershipDocument.objects.filter(membership__user=self.get_target_user())
+
+    def perform_create(self, serializer):
+        membership_id = self.request.data.get("membership")
+        membership = generics.get_object_or_404(ProfileMembership, id=membership_id, user=self.get_target_user())
+        serializer.save(membership=membership)
+
     
 from .email_utils import send_admin_credentials_email, delete_cognito_user
 from .cognito_groups import sync_staff_group, add_user_to_group, remove_user_from_group
@@ -1645,7 +1961,7 @@ class StaffUserViewSet(viewsets.ModelViewSet):
     """
     queryset = User.objects.all().order_by("-date_joined")
     serializer_class = StaffUserSerializer
-    permission_classes = [IsSuperuser]
+    permission_classes = [CanViewStaffUsers]
     http_method_names = ["get", "post", "patch", "delete"]
 
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
@@ -1654,6 +1970,8 @@ class StaffUserViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         qs = super().get_queryset().select_related("profile")
+        if not self.request.user.is_superuser:
+            qs = qs.filter(is_staff=False, is_superuser=False)
         cid  = self.request.query_params.get("community_id")
         slug = self.request.query_params.get("community_slug")
 
@@ -3236,4 +3554,3 @@ class SaleorDashboardSsoView(APIView):
             return redirect(url)
 
         return Response({"url": url}, status=200)
-
