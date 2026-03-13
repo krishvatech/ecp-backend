@@ -270,16 +270,6 @@ class EventsLandingPage(Page):
         blank=True,
         default="/signup",
     )
-    cta_tertiary_label = models.CharField(
-        max_length=80,
-        blank=True,
-        default="Post an event",
-    )
-    cta_tertiary_url = models.CharField(
-        max_length=200,
-        blank=True,
-        default="/signup",
-    )
 
     content_panels = Page.content_panels + [
         MultiFieldPanel(
@@ -296,8 +286,6 @@ class EventsLandingPage(Page):
                 FieldPanel("cta_primary_url"),
                 FieldPanel("cta_secondary_label"),
                 FieldPanel("cta_secondary_url"),
-                FieldPanel("cta_tertiary_label"),
-                FieldPanel("cta_tertiary_url"),
             ],
             heading="CTA Buttons",
         ),

@@ -68,11 +68,6 @@ class CmsPageBySlugView(APIView):
                         "label": specific.cta_secondary_label or "",
                         "url": specific.cta_secondary_url or "",
                     },
-                    {
-                        "key": "tertiary",
-                        "label": specific.cta_tertiary_label or "",
-                        "url": specific.cta_tertiary_url or "",
-                    },
                 ]
             if hasattr(specific, "hero_cta_label"):
                 data["hero_cta_label"] = specific.hero_cta_label or ""
