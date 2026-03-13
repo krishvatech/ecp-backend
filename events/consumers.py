@@ -157,6 +157,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         }
         main_room_support_status = await self.get_main_room_support_status()
         msg["main_room_support_status"] = main_room_support_status
+        if await self.can_resolve_assistance():
+            msg["support_requests"] = await self.get_support_inbox_requests()
         print(f"[CONSUMER] Sending welcome to {self.user.username}: {msg.keys()}")
         await self.send_json(msg)
         await self.broadcast_main_room_support_status()
@@ -763,22 +765,22 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
             privileged_online_ids = await self.get_online_support_recipient_user_ids()
             target_ids = [uid for uid in privileged_online_ids if uid != self.user.id]
-            if not target_ids:
-                await self.log_assistance_attempt(
-                    status="rejected",
-                    message="Assistance request rejected: no active hosts/moderators online",
-                    recipient_count=0,
-                )
-                await self.send_json({
-                    "type": "assistance_request_ack",
-                    "ok": False,
-                    "reason": "no_active_hosts_or_moderators",
-                })
-                return
-
             requester_name = await self.get_requester_display_name()
-            request_msg = f"User {requester_name} needs assistance in the Main Room."
-            request_log = await self.log_assistance_request(request_msg, len(target_ids))
+            delivered_live = bool(target_ids)
+            request_msg = (
+                f"User {requester_name} needs assistance in the Main Room."
+                if delivered_live
+                else f"User {requester_name} requested assistance while no host/moderator was online."
+            )
+            request_log = await self.log_assistance_request(
+                request_msg,
+                len(target_ids),
+                metadata={
+                    "location": "main_room",
+                    "delivered_live": delivered_live,
+                    "queued_for_follow_up": not delivered_live,
+                },
+            )
             request_id = request_log.id if request_log else None
 
             payload = {
@@ -798,6 +800,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 "type": "assistance_request_ack",
                 "ok": True,
                 "request_id": request_id,
+                "delivered_live": delivered_live,
+                "queued_for_follow_up": not delivered_live,
                 "cooldown_seconds": ASSISTANCE_COOLDOWN_SECONDS,
             })
         except Exception as e:
@@ -1110,6 +1114,26 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         return full_name or self.user.username or f"User {self.user.id}"
 
     @database_sync_to_async
+    def get_support_inbox_requests(self):
+        return [
+            {
+                "id": str(request.id),
+                "requester_id": str(request.requester_id),
+                "requester_name": (
+                    f"{request.requester.first_name} {request.requester.last_name}".strip()
+                    or request.requester.username
+                    or f"User {request.requester_id}"
+                ),
+                "location": (request.metadata or {}).get("location") or "main_room",
+                "created_at": request.created_at.isoformat(),
+                "status": request.status,
+            }
+            for request in AssistanceRequestLog.objects.select_related("requester")
+            .filter(event_id=self.event_id, status__in=["sent", "resolved"])
+            .order_by("-created_at")[:25]
+        ]
+
+    @database_sync_to_async
     def can_request_assistance(self):
         try:
             event = Event.objects.get(id=self.event_id)
@@ -1181,7 +1205,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         return True
 
     @database_sync_to_async
-    def log_assistance_request(self, message, recipient_count):
+    def log_assistance_request(self, message, recipient_count, metadata=None):
         try:
             return AssistanceRequestLog.objects.create(
                 event_id=self.event_id,
@@ -1189,6 +1213,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 message=message,
                 recipient_count=recipient_count,
                 status="sent",
+                metadata=metadata or {},
             )
         except Exception:
             logger.exception("[ASSISTANCE] Failed to persist AssistanceRequestLog")
