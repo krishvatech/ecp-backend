@@ -1,6 +1,6 @@
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.db.models import BooleanField, Count, Exists, OuterRef, Value
+from django.db.models import BooleanField, Count, Exists, OuterRef
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -8,7 +8,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 
-from .models import Question, QuestionUpvote
+from .models import Question, QuestionGuestUpvote, QuestionUpvote
 from .serializers import QuestionSerializer
 
 User = get_user_model()
@@ -38,15 +38,20 @@ class QuestionViewSet(viewsets.ModelViewSet):
             qs = (
                 Question.objects
                 .annotate(
-                    upvotes_count=Count("upvoters"),
-                    user_upvoted=Value(False, output_field=BooleanField()),
+                    upvotes_count=Count("upvoters", distinct=True) + Count("guest_upvotes", distinct=True),
+                    user_upvoted=Exists(
+                        QuestionGuestUpvote.objects.filter(
+                            question=OuterRef("pk"),
+                            guest=user.guest,
+                        )
+                    ),
                 )
             )
         else:
             qs = (
                 Question.objects
                 .annotate(
-                    upvotes_count=Count("upvoters"),
+                    upvotes_count=Count("upvoters", distinct=True) + Count("guest_upvotes", distinct=True),
                     user_upvoted=Exists(
                         QuestionUpvote.objects.filter(
                             question=OuterRef("pk"),
@@ -147,6 +152,9 @@ class QuestionViewSet(viewsets.ModelViewSet):
         for q in queryset:
             # Fetch upvoters with their details
             upvoters = q.upvoters.all().values('id', 'username', 'first_name', 'last_name', 'email')
+            guest_upvoters = q.guest_upvotes.select_related("guest").values(
+                "guest_id", "guest__first_name", "guest__last_name", "guest__email"
+            )
             upvoters_list = [
                 {
                     'id': u['id'],
@@ -154,6 +162,16 @@ class QuestionViewSet(viewsets.ModelViewSet):
                     'username': u.get('username', ''),
                 }
                 for u in upvoters
+            ] + [
+                {
+                    "id": f"guest_{g['guest_id']}",
+                    "name": (
+                        f"{(g.get('guest__first_name') or '').strip()} {(g.get('guest__last_name') or '').strip()}".strip()
+                        or (g.get("guest__email", "").split("@")[0] if g.get("guest__email") else f"Guest {g['guest_id']}")
+                    ),
+                    "username": f"guest_{g['guest_id']}",
+                }
+                for g in guest_upvoters
             ]
 
             # Resolve asker name
@@ -198,20 +216,32 @@ class QuestionViewSet(viewsets.ModelViewSet):
         user = request.user
 
         if self._is_guest_user(user):
-            return Response(
-                {"detail": "Guest upvote is not supported yet."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            guest = getattr(user, "guest", None)
+            if not guest:
+                return Response({"detail": "Invalid guest session."}, status=status.HTTP_401_UNAUTHORIZED)
 
-        # Toggle
-        if question.upvoters.filter(id=user.id).exists():
-            question.upvoters.remove(user)
-            upvoted = False
+            link = QuestionGuestUpvote.objects.filter(question=question, guest=guest)
+            if link.exists():
+                link.delete()
+                upvoted = False
+            else:
+                QuestionGuestUpvote.objects.create(question=question, guest=guest)
+                upvoted = True
+            actor_id = f"guest_{guest.id}"
         else:
-            question.upvoters.add(user)
-            upvoted = True
+            # Toggle
+            if question.upvoters.filter(id=user.id).exists():
+                question.upvoters.remove(user)
+                upvoted = False
+            else:
+                question.upvoters.add(user)
+                upvoted = True
+            actor_id = user.id
 
-        upvote_count = question.upvoters.count()
+        upvote_count = (
+            QuestionUpvote.objects.filter(question=question).count()
+            + QuestionGuestUpvote.objects.filter(question=question).count()
+        )
 
         # 🔊 Broadcast to the same Channels group used by QnAConsumer
         # QnA group name shape: event_qna_{event_id}_table_{table_id} OR event_qna_{event_id}_main
@@ -227,7 +257,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "question_id": question.id,
             "upvote_count": upvote_count,
             "upvoted": upvoted,
-            "user_id": user.id,
+            "user_id": actor_id,
         }
         async_to_sync(channel_layer.group_send)(
             group, {"type": "qna.upvote", "payload": payload}
@@ -250,6 +280,9 @@ class QuestionViewSet(viewsets.ModelViewSet):
         """
         question = get_object_or_404(Question, pk=pk)
         upvoters = question.upvoters.all().values('id', 'username', 'first_name', 'last_name')
+        guest_upvoters = question.guest_upvotes.select_related("guest").values(
+            "guest_id", "guest__first_name", "guest__last_name", "guest__email"
+        )
         upvoters_list = [
             {
                 'id': u['id'],
@@ -257,10 +290,20 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 'username': u.get('username', ''),
             }
             for u in upvoters
+        ] + [
+            {
+                "id": f"guest_{g['guest_id']}",
+                "name": (
+                    f"{(g.get('guest__first_name') or '').strip()} {(g.get('guest__last_name') or '').strip()}".strip()
+                    or (g.get("guest__email", "").split("@")[0] if g.get("guest__email") else f"Guest {g['guest_id']}")
+                ),
+                "username": f"guest_{g['guest_id']}",
+            }
+            for g in guest_upvoters
         ]
         return Response({
             "question_id": question.id,
-            "upvote_count": question.upvoters.count(),
+            "upvote_count": question.upvoters.count() + question.guest_upvotes.count(),
             "upvoters": upvoters_list
         })
 

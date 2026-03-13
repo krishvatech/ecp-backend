@@ -155,7 +155,7 @@ class Question(models.Model):
         verbose_name_plural = "Questions"
 
     def upvote_count(self) -> int:
-        return self.upvoters.count()
+        return self.upvoters.count() + self.guest_upvotes.count()
 
     def __str__(self) -> str:
         hidden_status = " [HIDDEN]" if self.is_hidden else ""
@@ -181,3 +181,24 @@ class QuestionUpvote(models.Model):
 
     def __str__(self) -> str:
         return f"Q{self.question_id} ▲ by U{self.user_id}"
+
+
+class QuestionGuestUpvote(models.Model):
+    """
+    Through table for Question <-> GuestAttendee upvotes.
+    One guest can upvote a question at most once.
+    """
+
+    question = models.ForeignKey(Question, on_delete=models.CASCADE, related_name="guest_upvotes")
+    guest = models.ForeignKey("events.GuestAttendee", on_delete=models.CASCADE, related_name="question_upvotes")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("question", "guest")
+        indexes = [
+            models.Index(fields=["question", "created_at"], name="qna_guest_upvote_time_idx"),
+            models.Index(fields=["guest", "question"], name="qna_guest_upvote_guest_q_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Q{self.question_id} ▲ by G{self.guest_id}"
