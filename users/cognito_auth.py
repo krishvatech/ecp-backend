@@ -283,3 +283,56 @@ class CognitoJWTAuthentication(BaseAuthentication):
         except Exception as e:
             # logger.error(f"Cognito auth failed: {e}")
             raise AuthenticationFailed(f"Cognito auth failed: {str(e)}")
+
+
+def create_cognito_user_from_guest(
+    guest,
+    password: str,
+    first_name: str = "",
+    last_name: str = "",
+    email: str = "",
+):
+    """
+    Convert a GuestAttendee into a regular Django user account.
+
+    Note: this helper creates a local user account used by existing auth flows.
+    """
+    first_name = (first_name or getattr(guest, "first_name", "") or "").strip()
+    last_name = (last_name or getattr(guest, "last_name", "") or "").strip()
+    email = (email or getattr(guest, "email", "") or "").strip().lower()
+
+    if not email:
+        raise ValueError("Email is required.")
+
+    existing = User.objects.filter(email__iexact=email).first()
+    if existing:
+        raise ValueError("An account with this email already exists. Please sign in.")
+
+    base_username = email.split("@")[0] if "@" in email else f"guest{getattr(guest, 'id', '')}"
+    username = _unique_username(base_username)
+
+    with transaction.atomic():
+        user = User(
+            username=username,
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        user.set_password(password)
+        user.save()
+
+        from .models import UserProfile
+
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        full_name = f"{first_name} {last_name}".strip() or username
+        update_fields = []
+        if profile.full_name != full_name:
+            profile.full_name = full_name
+            update_fields.append("full_name")
+        if getattr(guest, "job_title", "") and not profile.job_title:
+            profile.job_title = guest.job_title
+            update_fields.append("job_title")
+        if update_fields:
+            profile.save(update_fields=update_fields)
+
+    return user

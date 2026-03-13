@@ -1,12 +1,18 @@
 # orders/views.py
 from django.db.models import F, Sum
 from rest_framework import permissions, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .models import Order, OrderItem
 from .serializers import OrderSerializer, OrderItemSerializer
 
+def _is_guest_user(user) -> bool:
+    return bool(getattr(user, "is_guest", False))
+
 def get_open_cart(user):
+    if _is_guest_user(user):
+        raise PermissionDenied("Cart is unavailable for guest users.")
     cart, _ = Order.objects.get_or_create(user=user, status="cart")
     return cart
 
@@ -20,6 +26,8 @@ class CartCount(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        if _is_guest_user(request.user):
+            return Response({"count": 0})
         cart = get_open_cart(request.user)
         count = cart.items.aggregate(n=Sum("quantity"))["n"] or 0
         return Response({"count": count})

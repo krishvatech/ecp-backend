@@ -26,7 +26,7 @@ from rest_framework import generics, status, permissions
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework_simplejwt.backends import TokenBackend
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
-from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 import os, time, json, base64, secrets, requests, boto3
 from datetime import datetime, timezone, timedelta
 from django.utils import timezone as django_timezone
@@ -86,6 +86,61 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 
 UserModel = get_user_model()
+
+
+def _is_guest_user(user) -> bool:
+    return bool(getattr(user, "is_guest", False))
+
+
+def _build_guest_me_payload(user):
+    guest = getattr(user, "guest", None)
+    guest_event = getattr(guest, "event", None)
+    return {
+        "id": None,
+        "username": None,
+        "email": getattr(user, "email", None),
+        "profile": {
+            "full_name": user.get_full_name() if hasattr(user, "get_full_name") else "",
+            "timezone": getattr(guest, "timezone", None),
+            "bio": "",
+            "headline": "",
+            "job_title": "",
+            "company": "",
+            "location": "",
+            "links": {},
+            "user_image": None,
+            "user_image_url": None,
+            "skills": [],
+            "last_activity_at": None,
+            "is_online": False,
+            "kyc_decline_reason": "",
+            "kyc_status": "not_requested",
+            "legal_name_locked": False,
+            "legal_name_verified_at": None,
+            "can_edit_profiles": False,
+            "directory_hidden": False,
+            "connections_hidden": False,
+            "hide_from_others_connections": False,
+            "pending_verification_request": False,
+        },
+        "first_name": "",
+        "last_name": "",
+        "is_active": True,
+        "is_superuser": False,
+        "is_staff": False,
+        "date_joined": None,
+        "educations": [],
+        "experiences": [],
+        "posts_count": 0,
+        "contacts_count": 0,
+        "is_guest": True,
+        "guest": {
+            "id": getattr(guest, "id", None),
+            "event_id": getattr(guest, "event_id", None),
+            "event_slug": getattr(guest_event, "slug", None),
+        },
+    }
+
 
 class IsSuperuser(permissions.BasePermission):
     """
@@ -242,6 +297,9 @@ class UserViewSet(
         user = self.request.user
         if not user.is_authenticated:
             return qs.none()
+        if _is_guest_user(user):
+            # Guest sessions are scoped to event participation and have no user-directory access.
+            return qs.none()
         if user.is_staff or user.is_superuser:
             return qs
 
@@ -265,6 +323,13 @@ class UserViewSet(
     @action(detail=False, methods=["get", "put", "patch"], url_path="me")
     def me(self, request):
         user = request.user
+        if _is_guest_user(user):
+            if request.method == "GET":
+                return Response(_build_guest_me_payload(user), status=status.HTTP_200_OK)
+            return Response(
+                {"detail": "Guest profiles cannot be updated."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         
         # Check suspension status
         BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
@@ -1143,6 +1208,9 @@ class AuthUsersMeView(APIView):
     def get(self, request):
         # Check suspension
         user = request.user
+        if _is_guest_user(user):
+            return Response(_build_guest_me_payload(user), status=status.HTTP_200_OK)
+
         BLOCKED = ("suspended", "fake", "deceased")
         profile = getattr(user, "profile", None)
         if profile and profile.profile_status in BLOCKED:
@@ -1161,6 +1229,11 @@ class AuthUsersMeView(APIView):
 
     def _update(self, request, partial: bool):
         user = request.user
+        if _is_guest_user(user):
+            return Response(
+                {"detail": "Guest profiles cannot be updated."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         data = request.data.copy()
         profile = {}
 
@@ -1566,6 +1639,8 @@ class MeEducationViewSet(viewsets.ModelViewSet):
     serializer_class = EducationSerializer
 
     def get_queryset(self):
+        if _is_guest_user(self.request.user):
+            return Education.objects.none()
         return (
             Education.objects
             .filter(user=self.request.user)
@@ -1573,6 +1648,8 @@ class MeEducationViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
+        if _is_guest_user(self.request.user):
+            raise PermissionDenied("Guests cannot modify profile data.")
         serializer.save(user=self.request.user)
 
 class MeTrainingViewSet(viewsets.ModelViewSet):
@@ -1580,11 +1657,15 @@ class MeTrainingViewSet(viewsets.ModelViewSet):
     serializer_class = ProfileTrainingSerializer
 
     def get_queryset(self):
+        if _is_guest_user(self.request.user):
+            return ProfileTraining.objects.none()
         return ProfileTraining.objects.filter(user=self.request.user).order_by(
             "-currently_ongoing", "-end_date", "-start_date", "-id"
         )
 
     def perform_create(self, serializer):
+        if _is_guest_user(self.request.user):
+            raise PermissionDenied("Guests cannot modify profile data.")
         serializer.save(user=self.request.user)
 
 
@@ -1593,9 +1674,13 @@ class MeCertificationViewSet(viewsets.ModelViewSet):
     serializer_class = ProfileCertificationSerializer
 
     def get_queryset(self):
+        if _is_guest_user(self.request.user):
+            return ProfileCertification.objects.none()
         return ProfileCertification.objects.filter(user=self.request.user).order_by("-issue_date", "-id")
 
     def perform_create(self, serializer):
+        if _is_guest_user(self.request.user):
+            raise PermissionDenied("Guests cannot modify profile data.")
         serializer.save(user=self.request.user)
 
 
@@ -1604,11 +1689,15 @@ class MeMembershipViewSet(viewsets.ModelViewSet):
     serializer_class = ProfileMembershipSerializer
 
     def get_queryset(self):
+        if _is_guest_user(self.request.user):
+            return ProfileMembership.objects.none()
         return ProfileMembership.objects.filter(user=self.request.user).order_by(
             "-ongoing", "-end_date", "-start_date", "-id"
         )
 
     def perform_create(self, serializer):
+        if _is_guest_user(self.request.user):
+            raise PermissionDenied("Guests cannot modify profile data.")
         serializer.save(user=self.request.user)
 
 
@@ -1622,6 +1711,8 @@ class MeExperienceViewSet(viewsets.ModelViewSet):
     serializer_class = ExperienceSerializer
 
     def get_queryset(self):
+        if _is_guest_user(self.request.user):
+            return Experience.objects.none()
         return (
             Experience.objects
             .filter(user=self.request.user)
@@ -1629,6 +1720,8 @@ class MeExperienceViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
+        if _is_guest_user(self.request.user):
+            raise PermissionDenied("Guests cannot modify profile data.")
         serializer.save(user=self.request.user)
 
 
@@ -1640,6 +1733,15 @@ class MeProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        if _is_guest_user(request.user):
+            return Response({
+                "educations": [],
+                "experiences": [],
+                "trainings": [],
+                "certifications": [],
+                "memberships": [],
+            })
+
         edus = EducationSerializer(
             Education.objects.filter(user=request.user).order_by("-end_date", "-start_date", "-id"),
             many=True,

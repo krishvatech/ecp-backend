@@ -23,6 +23,10 @@ from datetime import timedelta
 User = get_user_model()
 
 
+def _is_guest_user(user) -> bool:
+    return bool(getattr(user, "is_guest", False))
+
+
 def _viewer_can_manage_hidden_connections(user):
     return bool(user and (user.is_staff or user.is_superuser))
 
@@ -501,6 +505,8 @@ class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_queryset(self):
         me = self.request.user
+        if _is_guest_user(me):
+            return Notification.objects.none()
         qs = Notification.objects.filter(recipient=me).order_by("-created_at")
         kind = self.request.query_params.get("kind")
         unread = self.request.query_params.get("unread")
@@ -512,6 +518,8 @@ class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     @action(detail=False, methods=["post"], url_path="mark-read")
     def mark_read(self, request):
+        if _is_guest_user(request.user):
+            return Response({"ok": True})
         ids = request.data.get("ids", [])
         Notification.objects.filter(recipient=request.user, id__in=ids).update(is_read=True)
         return Response({"ok": True})

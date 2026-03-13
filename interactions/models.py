@@ -91,7 +91,17 @@ class Question(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="questions",
+        null=True,
+        blank=True,
         help_text="User who asked the question.",
+    )
+    guest_asker = models.ForeignKey(
+        "events.GuestAttendee",
+        on_delete=models.SET_NULL,
+        related_name="questions",
+        null=True,
+        blank=True,
+        help_text="Guest attendee who asked the question.",
     )
     content = models.TextField(help_text="Question text.")
     created_at = models.DateTimeField(auto_now_add=True, help_text="Creation timestamp.")
@@ -134,6 +144,12 @@ class Question(models.Model):
         indexes = [
             models.Index(fields=["event", "-created_at"], name="qna_event_created_idx"),
             models.Index(fields=["lounge_table", "-created_at"], name="qna_table_created_idx"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                name="question_has_user_or_guest",
+                check=models.Q(user__isnull=False) | models.Q(guest_asker__isnull=False),
+            ),
         ]
         verbose_name = "Question"
         verbose_name_plural = "Questions"

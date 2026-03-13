@@ -1,6 +1,6 @@
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.db.models import Count, Exists, OuterRef
+from django.db.models import BooleanField, Count, Exists, OuterRef, Value
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -23,24 +23,38 @@ class QuestionViewSet(viewsets.ModelViewSet):
     serializer_class = QuestionSerializer          # ✅ ADD THIS
     queryset = Question.objects.all()  # required by DRF, but we override get_queryset()
 
+    @staticmethod
+    def _is_guest_user(user) -> bool:
+        return bool(getattr(user, "is_guest", False))
+
     def get_queryset(self):
         event_id = self.request.query_params.get("event_id")
         # Optional: Filter by specific lounge table (or None for main room)
         # Frontend should send ?lounge_table_id=123 (or empty/missing for main room)
         lounge_table_id = self.request.query_params.get("lounge_table_id")
         
-        qs = (
-            Question.objects
-            .annotate(
-                upvotes_count=Count("upvoters"),
-                user_upvoted=Exists(
-                    QuestionUpvote.objects.filter(
-                        question=OuterRef("pk"),
-                        user=self.request.user
-                    )
-                ),
+        user = self.request.user
+        if self._is_guest_user(user):
+            qs = (
+                Question.objects
+                .annotate(
+                    upvotes_count=Count("upvoters"),
+                    user_upvoted=Value(False, output_field=BooleanField()),
+                )
             )
-        )
+        else:
+            qs = (
+                Question.objects
+                .annotate(
+                    upvotes_count=Count("upvoters"),
+                    user_upvoted=Exists(
+                        QuestionUpvote.objects.filter(
+                            question=OuterRef("pk"),
+                            user=user
+                        )
+                    ),
+                )
+            )
         if event_id:
             qs = qs.filter(event_id=event_id)
 
@@ -59,7 +73,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 __import__('events.models', fromlist=['Event']).Event,
                 id=event_id
             )
-            is_host = self.request.user == event.created_by or self.request.user.is_staff
+            is_host = self.request.user == event.created_by or getattr(self.request.user, "is_staff", False)
             if not is_host:
                 qs = qs.filter(is_hidden=False)
 
@@ -75,7 +89,10 @@ class QuestionViewSet(viewsets.ModelViewSet):
         
         # Save with user and table info
         # If lounge_table_id is None/empty, it saves as NULL (Main Room)
-        question = serializer.save(user=self.request.user, lounge_table_id=lounge_table_id or None)
+        if self._is_guest_user(self.request.user):
+            question = serializer.save(user=None, guest_asker=self.request.user.guest, lounge_table_id=lounge_table_id or None)
+        else:
+            question = serializer.save(user=self.request.user, guest_asker=None, lounge_table_id=lounge_table_id or None)
 
         # Broadcast to the same Channels group used by QnAConsumer
         from channels.layers import get_channel_layer
@@ -93,20 +110,25 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         # Build payload shape consistent with QnAConsumer.receive_json
         user = self.request.user
-        display_name = (
-            (getattr(user, "get_full_name", lambda: "")() or "").strip()
-            or user.first_name
-            or user.username
-            or (user.email.split("@")[0] if user.email else f"User {user.id}")
-        )
+        if self._is_guest_user(user):
+            display_name = user.guest.get_display_name()
+            asker_id = f"guest_{user.guest.id}"
+        else:
+            display_name = (
+                (getattr(user, "get_full_name", lambda: "")() or "").strip()
+                or user.first_name
+                or user.username
+                or (user.email.split("@")[0] if user.email else f"User {user.id}")
+            )
+            asker_id = question.user_id
 
         payload = {
             "type": "qna.question",
             "event_id": question.event_id,
             "lounge_table_id": question.lounge_table_id,  # Include table ID in payload
             "question_id": question.id,
-            "user_id": question.user_id,
-            "uid": question.user_id,
+            "user_id": asker_id,
+            "uid": asker_id,
             "user": display_name,
             "content": question.content,
             "upvote_count": 0,
@@ -136,19 +158,25 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
             # Resolve asker name
             asker = q.user
+            guest_asker = getattr(q, "guest_asker", None)
             asker_name = "Audience"
-            if asker:
+            asker_id = None
+            if guest_asker:
+                asker_name = guest_asker.get_display_name()
+                asker_id = f"guest_{guest_asker.id}"
+            elif asker:
                 asker_name = (
                     (getattr(asker, "get_full_name", lambda: "")() or "").strip()
                     or asker.first_name
                     or asker.username
                     or (asker.email.split("@")[0] if asker.email else f"User {asker.id}")
                 )
+                asker_id = q.user_id
             
             data.append({
                 "id": q.id,
                 "content": q.content,
-                "user_id": q.user_id,
+                "user_id": asker_id,
                 "user_name": asker_name, # ✅ Fixed: explicit name field
                 "upvote_count": q.upvotes_count,  # annotated
                 "user_upvoted": q.user_upvoted,  # annotated boolean
@@ -168,6 +196,12 @@ class QuestionViewSet(viewsets.ModelViewSet):
         """
         question = get_object_or_404(Question, pk=pk)
         user = request.user
+
+        if self._is_guest_user(user):
+            return Response(
+                {"detail": "Guest upvote is not supported yet."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # Toggle
         if question.upvoters.filter(id=user.id).exists():
@@ -297,7 +331,10 @@ class QuestionViewSet(viewsets.ModelViewSet):
         user = self.request.user
         
         # Permission check
-        is_owner = (user == instance.user)
+        is_owner = (
+            (not self._is_guest_user(user) and user == instance.user)
+            or (self._is_guest_user(user) and instance.guest_asker_id == getattr(user.guest, "id", None))
+        )
         is_host = (user == instance.event.created_by)
         
         if not (is_owner or is_host):
@@ -337,7 +374,10 @@ class QuestionViewSet(viewsets.ModelViewSet):
         q_id = instance.id
         
         # Permission check
-        is_owner = (user == instance.user)
+        is_owner = (
+            (not self._is_guest_user(user) and user == instance.user)
+            or (self._is_guest_user(user) and instance.guest_asker_id == getattr(user.guest, "id", None))
+        )
         is_host = (user == instance.event.created_by)
         
         if not (is_owner or is_host):

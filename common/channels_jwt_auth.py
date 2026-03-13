@@ -140,10 +140,46 @@ def _is_user_suspended(user):
     return profile and profile.profile_status in BLOCKED_PROFILE_STATUSES
 
 
+def _get_guest_user(token):
+    """
+    Validate guest JWT (HS256 signed with Django SECRET_KEY) and return GuestPrincipal.
+    Returns None if token is not a valid guest token.
+    """
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
+        if unverified.get("token_type") != "guest":
+            return None
+
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=["HS256"],
+        )
+
+        from events.models import GuestAttendee
+        from events.guest_auth import GuestPrincipal
+
+        guest = GuestAttendee.objects.filter(
+            id=payload.get("guest_id"),
+            token_jti=payload.get("jti"),
+            converted_at__isnull=True,
+        ).first()
+        if not guest:
+            return None
+        return GuestPrincipal(guest)
+    except Exception:
+        return None
+
+
 @database_sync_to_async
 def get_user_from_token(token):
     """Validate token and return user (sync function wrapped for async use)."""
     try:
+        # Guest JWT support for websocket flows.
+        guest_user = _get_guest_user(token)
+        if guest_user:
+            return guest_user
+
         status, cognito_user = _get_cognito_user(token)
         if status == "cognito_valid":
             # Check suspension status for Cognito users

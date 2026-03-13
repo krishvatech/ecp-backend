@@ -1373,3 +1373,95 @@ class UserCriteriaProfile(models.Model):
 
     def __str__(self):
         return f"{self.user.username}'s Speed Networking Profile"
+
+
+class GuestAttendee(models.Model):
+    """
+    Represents a guest (unauthenticated) attendee for an event.
+    Guests join with minimal info (name, email, role) using a temporary JWT.
+    When they register, converted_user is set and the JWT is invalidated.
+    """
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="guest_attendees"
+    )
+    email = models.EmailField()
+    first_name = models.CharField(max_length=150)
+    last_name = models.CharField(max_length=150)
+    job_title = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Current role or job title"
+    )
+
+    # JWT token management
+    token_jti = models.CharField(
+        max_length=64,
+        unique=True,
+        help_text="JWT ID for token revocation"
+    )
+    expires_at = models.DateTimeField(
+        help_text="Token expiration time"
+    )
+
+    # Conversion tracking (when guest registers)
+    converted_user = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="converted_from_guest",
+        help_text="Django user account created when guest registers"
+    )
+    converted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when guest converted to registered user"
+    )
+
+    # Participation tracking
+    created_at = models.DateTimeField(auto_now_add=True)
+    joined_live = models.BooleanField(default=False)
+    joined_live_at = models.DateTimeField(null=True, blank=True)
+
+    LOCATION_CHOICES = [
+        ("main_room", "Main Room"),
+        ("social_lounge", "Social Lounge"),
+        ("breakout_room", "Breakout Room"),
+    ]
+    current_location = models.CharField(
+        max_length=32,
+        default="main_room",
+        choices=LOCATION_CHOICES
+    )
+    lounge_table = models.ForeignKey(
+        "LoungeTable",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="guest_attendees",
+        help_text="Current lounge/breakout table for this guest (if seated).",
+    )
+    dyte_participant_id = models.CharField(
+        max_length=64,
+        blank=True,
+        help_text="Dyte SDK participant ID"
+    )
+
+    class Meta:
+        db_table = "guest_attendees"
+        unique_together = ("event", "email")
+        indexes = [
+            models.Index(fields=["event"]),
+            models.Index(fields=["email"]),
+            models.Index(fields=["token_jti"]),
+        ]
+
+    def get_display_name(self):
+        """Return full name or email if name not available."""
+        full_name = f"{self.first_name} {self.last_name}".strip()
+        return full_name or self.email
+
+    def __str__(self):
+        return f"{self.get_display_name()} (Guest) - {self.event.title}"

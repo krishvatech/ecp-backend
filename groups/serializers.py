@@ -306,7 +306,7 @@ class GroupSerializer(serializers.ModelSerializer):
         
         # We can re-use current_user_role logic if available
         role = self.get_current_user_role(obj)
-        is_staff = request.user.is_staff or request.user.is_superuser
+        is_staff = getattr(request.user, "is_staff", False) or getattr(request.user, "is_superuser", False)
         
         if role not in ['admin', 'owner'] and not is_staff:
             return None

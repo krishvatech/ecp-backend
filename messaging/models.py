@@ -59,6 +59,17 @@ class Conversation(models.Model):
         if not user or not getattr(user, "is_authenticated", False):
             return False
 
+        # Guest sessions are scoped to their own event/table only.
+        if getattr(user, "is_guest", False):
+            guest = getattr(user, "guest", None)
+            if not guest:
+                return False
+            if self.event_id:
+                return guest.event_id == self.event_id
+            if self.lounge_table_id:
+                return guest.event_id == self.lounge_table.event_id and guest.lounge_table_id == self.lounge_table_id
+            return False
+
         # Group rooms → only members (active or pending)
         if self.group_id:
             from groups.models import GroupMembership
@@ -204,6 +215,14 @@ class Message(models.Model):
         null=True,
         blank=True,
         help_text="Null for system messages",
+    )
+    guest_sender = models.ForeignKey(
+        "events.GuestAttendee",
+        on_delete=models.SET_NULL,
+        related_name="sent_messages_as_guest",
+        null=True,
+        blank=True,
+        help_text="Guest sender for guest-authenticated event/lounge chat messages.",
     )
     event = models.ForeignKey(
         "events.Event",

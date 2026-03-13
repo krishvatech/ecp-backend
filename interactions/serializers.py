@@ -12,6 +12,7 @@ class QuestionSerializer(serializers.ModelSerializer):
             "id",
             "event",
             "user",
+            "guest_asker",
             "user_display",
             "content",
             "created_at",
@@ -21,10 +22,14 @@ class QuestionSerializer(serializers.ModelSerializer):
             "hidden_at",
             "lounge_table",
         ]
-        read_only_fields = ["user", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at"]
+        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at"]
 
     def get_user_display(self, obj):
+        if getattr(obj, "guest_asker", None):
+            return obj.guest_asker.get_display_name()
         user = obj.user
+        if not user:
+            return "Audience"
         full = getattr(user, "get_full_name", lambda: "")()
         if full:
             return full

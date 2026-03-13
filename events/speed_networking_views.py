@@ -69,6 +69,22 @@ def _is_host(request, event_id):
     return Event.objects.filter(id=event_id, created_by=request.user).exists()
 
 
+def _is_guest_user(user) -> bool:
+    """Return True when request.user is GuestPrincipal (guest JWT session)."""
+    return bool(getattr(user, "is_guest", False))
+
+
+def _guest_not_supported_response():
+    """Standard response for APIs that require a real Django User."""
+    return Response(
+        {
+            "error": "guest_not_supported",
+            "detail": "Speed Networking is available for registered users only. Please register/sign in.",
+        },
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
 def _get_criteria_config(session):
     """Get criteria configuration for session with proper defaults."""
     if session.criteria_config:
@@ -1573,6 +1589,9 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['post'])
     def join(self, request, event_id=None, session_id=None):
         """Join the speed networking queue."""
+        if _is_guest_user(request.user):
+            return _guest_not_supported_response()
+
         try:
             session = SpeedNetworkingSession.objects.get(id=session_id, event_id=event_id)
         except SpeedNetworkingSession.DoesNotExist:
@@ -1654,6 +1673,9 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['post'])
     def leave(self, request, event_id=None, session_id=None):
         """Leave the speed networking queue."""
+        if _is_guest_user(request.user):
+            return _guest_not_supported_response()
+
         try:
             queue_entry = SpeedNetworkingQueue.objects.get(
                 session_id=session_id,
@@ -1723,6 +1745,9 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['get'])
     def my_match(self, request, event_id=None, session_id=None):
         """Get current active match for the user."""
+        if _is_guest_user(request.user):
+            return _guest_not_supported_response()
+
         try:
             queue_entry = SpeedNetworkingQueue.objects.get(
                 session_id=session_id,
@@ -1808,6 +1833,9 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
     @action(detail=True, methods=['post'], url_path='matches/(?P<match_id>[^/.]+)/next')
     def next_match(self, request, event_id=None, session_id=None, match_id=None):
         """Skip to next match."""
+        if _is_guest_user(request.user):
+            return _guest_not_supported_response()
+
         with transaction.atomic():
             try:
                 # Lock the match to prevent race conditions (double skippage)
@@ -1932,6 +1960,9 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
     @action(detail=True, methods=['post'], url_path='matches/(?P<match_id>[^/.]+)/request-extension')
     def request_extension(self, request, event_id=None, session_id=None, match_id=None):
         """Participant: request mutual time extension. Extension activates when both confirm."""
+        if _is_guest_user(request.user):
+            return _guest_not_supported_response()
+
         with transaction.atomic():
             try:
                 # Lock the match to prevent race conditions

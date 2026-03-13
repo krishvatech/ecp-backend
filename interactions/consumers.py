@@ -64,10 +64,18 @@ def _create_chat_message(event_id: int, user_id: int, content: str) -> ChatMessa
 
 
 @database_sync_to_async
-def _create_question(event_id: int, user_id: int, content: str, lounge_table_id: int = None) -> Question:
+def _create_question(event_id: int, user, content: str, lounge_table_id: int = None) -> Question:
+    if getattr(user, "is_guest", False) and getattr(user, "guest", None):
+        return Question.objects.create(
+            event_id=event_id,
+            user_id=None,
+            guest_asker_id=user.guest.id,
+            content=content.strip(),
+            lounge_table_id=lounge_table_id,
+        )
     return Question.objects.create(
         event_id=event_id,
-        user_id=user_id,
+        user_id=user.id,
         content=content.strip(),
         lounge_table_id=lounge_table_id,
     )
@@ -184,6 +192,9 @@ class ChatConsumer(BaseEventConsumer):
     group_name_prefix = "event_chat"
 
     async def receive_json(self, content: Dict[str, Any], **kwargs: Any) -> None:
+        if bool(getattr(self.user, "is_guest", False)):
+            await self.send_error("Guest chat over this channel is not supported.", code="guest_not_supported")
+            return
         msg = content.get("message")
         if not msg or not isinstance(msg, str):
             await self.send_error("Field 'message' (string) is required.", code="invalid_payload")
@@ -278,6 +289,9 @@ class QnAConsumer(BaseEventConsumer):
 
         # ---------- UPVOTE ----------
         if action == "upvote":
+            if bool(getattr(self.user, "is_guest", False)):
+                await self.send_error("Guest upvote is not supported.", code="guest_not_supported")
+                return
             if not isinstance(question_id, int):
                 await self.send_error("Invalid or missing 'question_id'.", code="invalid_payload")
                 return
@@ -313,15 +327,18 @@ class QnAConsumer(BaseEventConsumer):
             return
 
         # Use the table ID from the connection scope
-        q = await _create_question(self.event_id, self.user.id, text, self.lounge_table_id)
+        q = await _create_question(self.event_id, self.user, text, self.lounge_table_id)
+        asker_id = self.user.id
+        if bool(getattr(self.user, "is_guest", False)) and getattr(self.user, "guest", None):
+            asker_id = f"guest_{self.user.guest.id}"
 
         payload = {
             "type": "qna.question",
             "event_id": self.event_id,
             "lounge_table_id": self.lounge_table_id,
             "question_id": q.id,
-            "user_id": self.user.id,
-            "uid": self.user.id,
+            "user_id": asker_id,
+            "uid": asker_id,
             "user": _display_name(self.user),
             "content": q.content,
             "upvote_count": 0,

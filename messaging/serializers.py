@@ -209,6 +209,9 @@ class ConversationSerializer(serializers.ModelSerializer):
         u = getattr(req, "user", None)
         if not (u and u.is_authenticated):
             return 0
+        if getattr(u, "is_guest", False):
+            # Guest users don't have MessageReadReceipt rows (FK to auth user only).
+            return 0
         return (
             obj.messages.filter(is_hidden=False, is_deleted=False)
             .exclude(sender_id=u.id)
@@ -218,6 +221,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 
 class MessageSerializer(serializers.ModelSerializer):
     sender_id = serializers.IntegerField(read_only=True)
+    guest_sender_id = serializers.IntegerField(read_only=True)
     conversation_id = serializers.IntegerField(read_only=True)
     event_id = serializers.IntegerField(read_only=True)
     sender_name = serializers.SerializerMethodField()
@@ -238,6 +242,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "conversation", "conversation_id",
             "event_id",
             "sender", "sender_id",
+            "guest_sender_id",
             "sender_name", "sender_display", "sender_avatar",
             "mine",
             "body", "attachments",
@@ -254,6 +259,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "conversation", "conversation_id",
             "event_id",
             "sender", "sender_id",
+            "guest_sender_id",
             "sender_name", "sender_display", "sender_avatar",
             "mine",
             "created_at",
@@ -337,6 +343,9 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def get_sender_name(self, obj):
         u = getattr(obj, "sender", None)
+        guest = getattr(obj, "guest_sender", None)
+        if guest:
+            return guest.get_display_name()
         if not u:
             return ""
         prof = getattr(u, "profile", None)
@@ -348,6 +357,8 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def get_sender_avatar(self, obj):
         u = getattr(obj, "sender", None)
+        if getattr(obj, "guest_sender", None):
+            return ""
         if not u:
             return ""
         prof = getattr(u, "profile", None)
@@ -368,7 +379,12 @@ class MessageSerializer(serializers.ModelSerializer):
     def get_mine(self, obj):
         req = self.context.get("request")
         user = getattr(req, "user", None)
-        return bool(user and user.is_authenticated and obj.sender_id == user.id)
+        if not (user and user.is_authenticated):
+            return False
+        if getattr(user, "is_guest", False):
+            guest = getattr(user, "guest", None)
+            return bool(guest and obj.guest_sender_id == guest.id)
+        return obj.sender_id == user.id
 
     def validate_attachments(self, value):
         if not value:

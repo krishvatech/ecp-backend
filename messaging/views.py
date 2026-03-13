@@ -43,8 +43,29 @@ class ConversationViewSet(viewsets.ViewSet):
 
     permission_classes = [permissions.IsAuthenticated]
 
+    @staticmethod
+    def _is_guest_user(user) -> bool:
+        return bool(getattr(user, "is_guest", False))
+
+    def _deny_guest(self, request):
+        if self._is_guest_user(request.user):
+            raise PermissionDenied("Messaging is unavailable for guest users.")
+
     def get_queryset(self, request):
         user = request.user
+        if self._is_guest_user(user):
+            guest = getattr(user, "guest", None)
+            if not guest:
+                return Conversation.objects.none()
+            guest_filter = Q(event_id=guest.event_id)
+            if guest.lounge_table_id:
+                guest_filter |= Q(lounge_table_id=guest.lounge_table_id)
+            qs = Conversation.objects.filter(guest_filter).select_related(
+                "event",
+                "lounge_table",
+            )
+            return qs.order_by("-updated_at")
+
         from groups.models import GroupMembership
         from events.models import LoungeParticipant
 
@@ -154,6 +175,7 @@ class ConversationViewSet(viewsets.ViewSet):
         - Event chat:  {event: <event_id>}
         """
         user = request.user
+        self._deny_guest(request)
         event_id = request.data.get("event")
         group_id = request.data.get("group")
         recipient_id = request.data.get("recipient_id")
@@ -562,6 +584,7 @@ class ConversationViewSet(viewsets.ViewSet):
         """
         from rest_framework.exceptions import ValidationError
 
+        self._deny_guest(request)
         user = request.user
 
         recipient_id = (
@@ -620,6 +643,7 @@ class ConversationViewSet(viewsets.ViewSet):
         Return groups where the current user is an ACTIVE member.
         This ensures private groups the user is in are shown.
         """
+        self._deny_guest(request)
         from groups.models import GroupMembership
 
         mems = (GroupMembership.objects
@@ -669,12 +693,16 @@ class ConversationViewSet(viewsets.ViewSet):
             raise ValidationError({"event": "Invalid event id."})
 
         event = get_object_or_404(Event, pk=event_id)
+        if self._is_guest_user(request.user):
+            guest = getattr(request.user, "guest", None)
+            if not guest or guest.event_id != event.id:
+                raise PermissionDenied("Guest session is not valid for this event.")
 
         # One conversation per event
         conv, created = Conversation.objects.get_or_create(
             event=event,
             defaults={
-                "created_by": request.user if request.user.is_authenticated else None,
+                "created_by": None if self._is_guest_user(request.user) else request.user,
                 "title": title or event.title,
             },
         )
@@ -717,18 +745,26 @@ class ConversationViewSet(viewsets.ViewSet):
             raise ValidationError({"table_id": "Invalid lounge table id."})
 
         table = get_object_or_404(LoungeTable, pk=table_id)
+        if self._is_guest_user(request.user):
+            guest = getattr(request.user, "guest", None)
+            if not guest or guest.event_id != table.event_id:
+                raise PermissionDenied("Guest session is not valid for this room.")
 
-        is_seated = LoungeParticipant.objects.filter(
-            table_id=table.id,
-            user_id=request.user.id,
-        ).exists()
+        if self._is_guest_user(request.user):
+            guest = getattr(request.user, "guest", None)
+            is_seated = bool(guest and guest.lounge_table_id == table.id)
+        else:
+            is_seated = LoungeParticipant.objects.filter(
+                table_id=table.id,
+                user_id=request.user.id,
+            ).exists()
         if not is_seated:
             raise PermissionDenied("You are not seated in this room.")
 
         conv, created = Conversation.objects.get_or_create(
             lounge_table=table,
             defaults={
-                "created_by": request.user if request.user.is_authenticated else None,
+                "created_by": None if self._is_guest_user(request.user) else request.user,
                 "title": title or table.name,
             },
         )
@@ -804,7 +840,7 @@ class ConversationViewSet(viewsets.ViewSet):
                     members.append(m)
         elif getattr(conv, "lounge_table_id", None):
             try:
-                from events.models import LoungeParticipant
+                from events.models import LoungeParticipant, GuestAttendee
 
                 qs = (
                     LoungeParticipant.objects
@@ -816,6 +852,17 @@ class ConversationViewSet(viewsets.ViewSet):
                     m = as_member(lp.user, "Member")
                     if m:
                         members.append(m)
+                guest_qs = GuestAttendee.objects.filter(
+                    lounge_table_id=conv.lounge_table_id
+                ).order_by("id")[:200]
+                for g in guest_qs:
+                    members.append({
+                        "id": f"guest_{g.id}",
+                        "name": g.get_display_name(),
+                        "avatar": "",
+                        "role": "Guest",
+                        "is_you": bool(getattr(request.user, "is_guest", False) and getattr(request.user, "guest", None) and request.user.guest.id == g.id),
+                    })
             except Exception:
                 pass
         else:
@@ -913,6 +960,8 @@ class ConversationViewSet(viewsets.ViewSet):
             raise NotFound("Conversation not found.")
 
         user = request.user
+        if self._is_guest_user(user):
+            return Response({"ok": True, "marked": 0, "skipped": "guest"}, status=status.HTTP_200_OK)
         if not conv.user_can_view(user):
             raise PermissionDenied("You are not a participant of this conversation.")
 
@@ -940,6 +989,22 @@ class ConversationViewSet(viewsets.ViewSet):
         Kept simple to match MessagesPage.jsx.normalizeEvents().
         """
         user = request.user
+        if self._is_guest_user(user):
+            guest = getattr(user, "guest", None)
+            if not guest:
+                return Response([], status=status.HTTP_200_OK)
+            try:
+                ev = Event.objects.get(pk=guest.event_id)
+            except Event.DoesNotExist:
+                return Response([], status=status.HTTP_200_OK)
+            return Response([{
+                "id": ev.id,
+                "title": getattr(ev, "title", "") or getattr(ev, "name", "") or f"Event #{ev.id}",
+                "cover_image": getattr(ev, "cover_image", "") or getattr(ev, "banner", "") or "",
+                "event": {"id": ev.id, "title": getattr(ev, "title", "") or getattr(ev, "name", ""), "end_time": ev.end_time, "status": ev.status},
+                "end_time": ev.end_time,
+                "status": ev.status,
+            }], status=status.HTTP_200_OK)
         out = []
 
         # registrations (cap to 200)
@@ -1075,6 +1140,10 @@ class MessageViewSet(
     
     parser_classes = (JSONParser, FormParser, MultiPartParser)
 
+    @staticmethod
+    def _is_guest_user(user) -> bool:
+        return bool(getattr(user, "is_guest", False))
+
     def _get_conversation_id(self):
         # Accept common kwarg names from DRF-Nested or custom routers
         conv_id = (
@@ -1103,7 +1172,7 @@ class MessageViewSet(
             Message.objects
             .filter(conversation_id=conv_id, is_hidden=False, is_deleted=False)
             .annotate(is_pinned=Exists(pinned_subq))   # 👈 add this
-            .select_related("sender__profile", "event")
+            .select_related("sender__profile", "guest_sender", "event")
             .prefetch_related(my_receipts)
             .order_by("created_at")
         )
@@ -1123,6 +1192,8 @@ class MessageViewSet(
             raise NotFound("Conversation not found.")
         
         user = request.user
+        if not conv.user_can_view(user):
+            raise PermissionDenied("You are not a participant of this conversation.")
         # DM Access Check
         if (conv.group_id is None and conv.event_id is None and getattr(conv, "lounge_table_id", None) is None) and user.id not in (conv.user1_id, conv.user2_id):
             raise PermissionDenied("You are not a participant of this conversation.")
@@ -1144,14 +1215,18 @@ class MessageViewSet(
                 raise ValidationError({"event_id": "Invalid event id."})
 
             message_event = get_object_or_404(Event, pk=message_event_id)
-            can_access_event = (
-                message_event.created_by_id == user.id
-                or EventRegistration.objects.filter(
-                    user_id=user.id, event_id=message_event.id
-                ).exists()
-                or getattr(user, "is_staff", False)
-                or getattr(user, "is_superuser", False)
-            )
+            if self._is_guest_user(user):
+                guest = getattr(user, "guest", None)
+                can_access_event = bool(guest and guest.event_id == message_event.id)
+            else:
+                can_access_event = (
+                    message_event.created_by_id == user.id
+                    or EventRegistration.objects.filter(
+                        user_id=user.id, event_id=message_event.id
+                    ).exists()
+                    or getattr(user, "is_staff", False)
+                    or getattr(user, "is_superuser", False)
+                )
             if not can_access_event:
                 raise PermissionDenied("You are not allowed to attach this event context.")
 
@@ -1181,13 +1256,23 @@ class MessageViewSet(
         # 4. Create Message Object
         # We manually create the object to bypass Serializer validation 
         # (Serializer expects JSON for attachments, but we received Files)
-        message = Message.objects.create(
-            conversation=conv,
-            sender=user,
-            body=body_text,
-            attachments=uploaded_attachments,
-            event=message_event,
-        )
+        if self._is_guest_user(user):
+            message = Message.objects.create(
+                conversation=conv,
+                sender=None,
+                guest_sender=getattr(user, "guest", None),
+                body=body_text,
+                attachments=uploaded_attachments,
+                event=message_event,
+            )
+        else:
+            message = Message.objects.create(
+                conversation=conv,
+                sender=user,
+                body=body_text,
+                attachments=uploaded_attachments,
+                event=message_event,
+            )
 
         # 5. Return Response
         serializer = self.get_serializer(message)
@@ -1197,7 +1282,7 @@ class MessageViewSet(
     def get_object(self):
         conv_id = self._get_conversation_id()
         obj = get_object_or_404(
-            Message.objects.select_related("conversation", "sender__profile", "event"),
+            Message.objects.select_related("conversation", "sender__profile", "guest_sender", "event"),
             pk=self.kwargs.get(self.lookup_field),
             conversation_id=conv_id,
             is_hidden=False,
@@ -1224,6 +1309,10 @@ class MessageViewSet(
     def _can_moderate_message(self, user, msg: Message) -> bool:
         if not user or not getattr(user, "is_authenticated", False):
             return False
+        if getattr(user, "is_guest", False):
+            guest = getattr(user, "guest", None)
+            if guest and msg.guest_sender_id == guest.id:
+                return True
         if msg.sender_id == user.id:
             return True
         conv = getattr(msg, "conversation", None)
@@ -1328,6 +1417,9 @@ class MarkMessageReadView(GenericAPIView):
         # restrict to conversation's participants
         if not conv.user_can_view(user):
             raise PermissionDenied("You are not a participant of this conversation.")
+
+        if bool(getattr(user, "is_guest", False)):
+            return Response({"ok": True, "skipped": "guest"}, status=status.HTTP_200_OK)
 
         # don't read your own outbound message
         if msg.sender_id == user.id:

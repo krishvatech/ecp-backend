@@ -127,6 +127,10 @@ COGNITO_SALEOR_REDIRECT_URI = os.getenv("COGNITO_SALEOR_REDIRECT_URI", "")
 COGNITO_SALEOR_SCOPES = os.getenv("COGNITO_SALEOR_SCOPES", "openid email profile").split()
 SALEOR_SSO_PROMPT = os.getenv("SALEOR_SSO_PROMPT", "none")
 
+# Guest JWT Configuration
+GUEST_JWT_TTL_HOURS = int(os.getenv("GUEST_JWT_TTL_HOURS", "24"))
+GUEST_JWT_SECRET = SECRET_KEY  # Use Django SECRET_KEY for HS256 signing
+
 
 AWS_S3_FILE_OVERWRITE = False
 AWS_DEFAULT_ACL = None  # let bucket policy handle permissions
@@ -356,8 +360,9 @@ else:
 # Django REST Framework configuration
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "users.cognito_auth.CognitoJWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",
+        "events.guest_auth.GuestJWTAuthentication",  # Guest JWT tokens (HS256)
+        "users.cognito_auth.CognitoJWTAuthentication",  # Cognito RS256 tokens
+        "rest_framework.authentication.SessionAuthentication",  # Fallback
     ],
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",

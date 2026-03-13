@@ -57,7 +57,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee
 from friends.models import Notification
 from groups.models import Group, GroupMembership
 from messaging.models import Conversation, Message
@@ -84,6 +84,7 @@ from .utils import (
     DYTE_PRESET_PARTICIPANT,
     _dyte_headers,
     create_dyte_meeting,
+    add_dyte_participant,
     send_admission_status_changed,  # ✅ NEW: For real-time admission status updates
 )
 from asgiref.sync import async_to_sync
@@ -929,11 +930,18 @@ class EventViewSet(viewsets.ModelViewSet):
           - bucket (?bucket=upcoming|live|past)
         """
         user = self.request.user
+        is_guest_user = bool(getattr(user, "is_guest", False))
+        guest_event_id = getattr(getattr(user, "guest", None), "event_id", None) if is_guest_user else None
         qs = Event.objects.select_related("community").prefetch_related("sessions", "participants__user", "participants__user__profile")
 
         # Base visibility
         if not user.is_authenticated:
             qs = qs.filter(status__in=["published", "live"])
+        elif is_guest_user:
+            # Guest tokens are scoped to a single event. Avoid ORM joins that expect a Django User.
+            if guest_event_id is None:
+                return Event.objects.none()
+            qs = qs.filter(id=guest_event_id, status__in=["published", "live"])
         else:
             qs = qs.filter(
                 Q(status__in=["published", "live"]) |
@@ -954,7 +962,7 @@ class EventViewSet(viewsets.ModelViewSet):
         created_by_param = params.get("created_by")
         if created_by_param:
             if created_by_param == "me":
-                if not self.request.user.is_authenticated:
+                if not self.request.user.is_authenticated or is_guest_user:
                     return Event.objects.none()
                 qs = qs.filter(created_by_id=self.request.user.id)
             else:
@@ -2752,6 +2760,17 @@ class EventViewSet(viewsets.ModelViewSet):
                     "joined_at": p.joined_at.isoformat() if p.joined_at else None,
                 } for p in t.participants.all()
             }
+            guest_rows = event.guest_attendees.filter(lounge_table_id=t.id).order_by("id")
+            seat_start = (max(participants.keys()) + 1) if participants else 0
+            for i, g in enumerate(guest_rows):
+                participants[seat_start + i] = {
+                    "user_id": f"guest_{g.id}",
+                    "username": g.get_display_name(),
+                    "full_name": g.get_display_name(),
+                    "avatar_url": "",
+                    "joined_at": g.joined_live_at.isoformat() if g.joined_live_at else None,
+                    "is_guest": True,
+                }
             state.append({
                 "id": t.id,
                 "name": t.name,
@@ -2916,6 +2935,7 @@ class EventViewSet(viewsets.ModelViewSet):
         Get a Dyte authToken for a specific Social Lounge or Breakout room table.
         - For BREAKOUT tables: Allow join during live events regardless of lounge settings
         - For LOUNGE tables: Validate that the lounge is currently open before allowing join
+        - Supports both registered users and guest participants (via GuestJWTAuthentication)
         """
         table_id = request.data.get("table_id")
         if not table_id:
@@ -2929,6 +2949,72 @@ class EventViewSet(viewsets.ModelViewSet):
         event = table.event
         now = timezone.now()
         user = request.user
+
+        # ──── GUEST BRANCH ──────────────────────────────────────────────────────
+        if getattr(user, "is_guest", False):
+            # Guest participant (JWT authenticated)
+            guest = user.guest
+
+            # Guests can join lounge/breakout tables with host preset (full permissions)
+            try:
+                meeting_id = _ensure_dyte_meeting_for_event(event)
+                dyte_meeting_id = table.dyte_meeting_id if table.dyte_meeting_id else meeting_id
+            except RuntimeError as e:
+                logger.error(f"Dyte meeting error for lounge table {table.id}: {str(e)}")
+                return Response(
+                    {"error": "dyte_meeting_error", "detail": str(e)},
+                    status=500,
+                )
+
+            # Add guest as table participant (host preset for lounge tables)
+            dyte_participant_id = f"guest_{guest.id}"
+            dyte_resp = add_dyte_participant(
+                meeting_id=dyte_meeting_id,
+                user_id=dyte_participant_id,
+                name=guest.get_display_name(),
+                preset_name=DYTE_PRESET_HOST,  # Host preset for lounge tables
+            )
+            # add_dyte_participant() returns (token, error_message)
+            auth_token = ""
+            participant_id = dyte_participant_id
+            if isinstance(dyte_resp, tuple):
+                auth_token, dyte_error = dyte_resp
+                if dyte_error or not auth_token:
+                    return Response(
+                        {"error": "dyte_participant_error", "detail": dyte_error or "Dyte did not return auth token."},
+                        status=500,
+                    )
+            else:
+                data = (dyte_resp or {}).get("data", {})
+                auth_token = data.get("token", "")
+                participant_id = data.get("id", dyte_participant_id)
+                if not auth_token:
+                    return Response(
+                        {"error": "dyte_token_missing", "detail": "Dyte did not return auth token."},
+                        status=500,
+                    )
+
+            # Track guest lounge presence on GuestAttendee (LoungeParticipant has no guest FK)
+            guest.current_location = "social_lounge" if table.category == "LOUNGE" else "breakout_room"
+            guest.dyte_participant_id = participant_id
+            guest.lounge_table = table
+            guest.save(update_fields=["current_location", "dyte_participant_id", "lounge_table"])
+
+            logger.info(f"Guest {guest.email} joined lounge table {table.id}")
+
+            return Response({
+                # Keep both keys for compatibility across UI call sites.
+                "token": auth_token,
+                "authToken": auth_token,
+                "participant_id": participant_id,
+                "meetingId": dyte_meeting_id,
+                "presetName": DYTE_PRESET_HOST,
+                "role": "publisher",
+                "isGuest": True,
+                "guestName": guest.get_display_name(),
+                "table_id": table.id,
+            })
+        # ──── END GUEST BRANCH ──────────────────────────────────────────────────
 
         # ✅ FIX #1: Check waiting room status and enforce access control
         is_host = _is_event_host(user, event)
@@ -3262,6 +3348,32 @@ class EventViewSet(viewsets.ModelViewSet):
 
         user = request.user
         event = self.get_object()
+
+        if getattr(user, "is_guest", False):
+            guest = user.guest
+            table = guest.lounge_table
+            meeting_id = getattr(table, "dyte_meeting_id", None) if table else None
+            dyte_participant_id = guest.dyte_participant_id
+            try:
+                if meeting_id and dyte_participant_id:
+                    try:
+                        requests.delete(
+                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_participant_id}",
+                            headers=_dyte_headers(),
+                            timeout=10,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[LOUNGE_LEAVE][GUEST] Failed to remove from Dyte: {e}")
+
+                # Leaving a table from the live UI means returning to the main room context.
+                guest.current_location = "main_room"
+                guest.lounge_table = None
+                guest.dyte_participant_id = ""
+                guest.save(update_fields=["current_location", "lounge_table", "dyte_participant_id"])
+                return Response({"ok": True, "left_table": getattr(table, "id", None)})
+            except Exception as e:
+                logger.error(f"[LOUNGE_LEAVE][GUEST] Exception: {str(e)}")
+                return Response({"error": "leave_failed", "detail": str(e)}, status=500)
 
         try:
             # 1. Find the lounge record
@@ -3634,9 +3746,99 @@ class EventViewSet(viewsets.ModelViewSet):
         - Creates a Dyte meeting if one doesn't exist yet.
         - Adds the current user as participant (host or normal member).
         - Returns authToken for the frontend Dyte SDK.
+        - Supports both registered users and guest participants (via GuestJWTAuthentication)
         """
         event = self.get_object()
         user = request.user
+
+        # ──── GUEST BRANCH ──────────────────────────────────────────────────────
+        if getattr(user, "is_guest", False):
+            # Guest participant (JWT authenticated)
+            guest = user.guest
+            if guest.event_id != event.id:
+                return Response({"detail": "Guest token does not match this event."}, status=403)
+
+            # Respect waiting-room gate for guests.
+            # Guests may join main room only after host admission toggles them to main_room.
+            if event.waiting_room_enabled and (
+                guest.current_location != "main_room" or not guest.joined_live
+            ):
+                # Ensure they are explicitly in waiting state for host controls/listing.
+                if guest.current_location != "waiting_room":
+                    guest.current_location = "waiting_room"
+                    guest.lounge_table = None
+                    guest.save(update_fields=["current_location", "lounge_table"])
+                return Response(
+                    {
+                        "waiting": True,
+                        "waiting_room_enabled": True,
+                        "admission_status": "waiting",
+                        "lounge_allowed": bool(event.lounge_enabled_waiting_room),
+                        "networking_allowed": bool(event.networking_tables_enabled_waiting_room),
+                        "detail": "Waiting for host admission.",
+                    },
+                    status=202,
+                )
+
+            # 1) Ensure meeting exists
+            try:
+                meeting_id = _ensure_dyte_meeting_for_event(event)
+            except RuntimeError as e:
+                logger.error(f"Dyte meeting error for event {event.id}: {str(e)}")
+                return Response(
+                    {"error": "dyte_meeting_error", "detail": str(e)},
+                    status=500,
+                )
+
+            # 2) Add guest as participant (always audience preset, never host)
+            dyte_participant_id = f"guest_{guest.id}"
+            dyte_resp = add_dyte_participant(
+                meeting_id=meeting_id,
+                user_id=dyte_participant_id,
+                name=guest.get_display_name(),
+                preset_name=DYTE_PRESET_PARTICIPANT,  # Guests never get host preset
+            )
+            # add_dyte_participant() returns (token, error_message)
+            auth_token = ""
+            participant_id = dyte_participant_id
+            if isinstance(dyte_resp, tuple):
+                auth_token, dyte_error = dyte_resp
+                if dyte_error or not auth_token:
+                    return Response(
+                        {"error": "dyte_participant_error", "detail": dyte_error or "Dyte did not return auth token."},
+                        status=500,
+                    )
+            else:
+                data = (dyte_resp or {}).get("data", {})
+                auth_token = data.get("token", "")
+                participant_id = data.get("id", dyte_participant_id)
+                if not auth_token:
+                    return Response(
+                        {"error": "dyte_token_missing", "detail": "Dyte did not return auth token."},
+                        status=500,
+                    )
+
+            # 3) Update guest participation tracking
+            guest.joined_live = True
+            guest.joined_live_at = timezone.now()
+            guest.dyte_participant_id = participant_id
+            guest.current_location = "main_room"
+            guest.lounge_table = None
+            guest.save(update_fields=[
+                "joined_live", "joined_live_at", "dyte_participant_id", "current_location", "lounge_table"
+            ])
+
+            logger.info(f"Guest {guest.email} joined meeting {meeting_id}")
+
+            return Response({
+                "authToken": auth_token,
+                "meetingId": meeting_id,
+                "presetName": DYTE_PRESET_PARTICIPANT,
+                "role": "audience",
+                "isGuest": True,
+                "guestName": guest.get_display_name(),
+            })
+        # ──── END GUEST BRANCH ──────────────────────────────────────────────────
 
         # 1) Ensure meeting exists
         try:
@@ -4018,6 +4220,20 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=200,
             )
 
+        if getattr(user, "is_guest", False):
+            guest = getattr(user, "guest", None)
+            if not guest or guest.event_id != event.id:
+                return Response({"detail": "not_registered"}, status=403)
+            admission_status = "admitted" if guest.current_location == "main_room" else "waiting"
+            return Response(
+                {
+                    "waiting_room_enabled": True,
+                    "admission_status": admission_status,
+                    "lounge_allowed": bool(event.lounge_enabled_waiting_room),
+                    "networking_allowed": bool(event.networking_tables_enabled_waiting_room),
+                }
+            )
+
         # Auto-admit if waiting time has elapsed
         auto_seconds = int(event.auto_admit_seconds or 0)
         if auto_seconds > 0:
@@ -4087,6 +4303,22 @@ class EventViewSet(viewsets.ModelViewSet):
             }
             for r in waiting_regs
         ]
+        guest_waiting = GuestAttendee.objects.filter(
+            event=event,
+            current_location="waiting_room",
+            converted_at__isnull=True,
+        ).order_by("created_at")
+        for g in guest_waiting:
+            data.append(
+                {
+                    "user_id": f"guest_{g.id}",
+                    "user_name": g.get_display_name(),
+                    "user_email": g.email,
+                    "waiting_started_at": None,
+                    "registered_at": g.created_at,
+                    "is_guest": True,
+                }
+            )
         return Response({"count": len(data), "results": data})
 
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="lounge-participants")
@@ -4165,9 +4397,24 @@ class EventViewSet(viewsets.ModelViewSet):
         # ✅ UPDATED: Allow admission from both waiting room and lounge contexts
         # When specific user_ids are provided, admit even if waiting_started_at is null (lounge scenario)
         # When admit_all is used, still require active waiting to exclude registered-but-not-joined users
+        guest_ids = []
+        normal_user_ids = []
+        for raw_id in (user_ids or []):
+            raw_str = str(raw_id)
+            if raw_str.startswith("guest_"):
+                try:
+                    guest_ids.append(int(raw_str.split("_", 1)[1]))
+                except (TypeError, ValueError):
+                    continue
+            else:
+                try:
+                    normal_user_ids.append(int(raw_str))
+                except (TypeError, ValueError):
+                    continue
+
         qs = EventRegistration.objects.filter(event=event, admission_status="waiting")
         if not admit_all:
-            qs = qs.filter(user_id__in=user_ids)
+            qs = qs.filter(user_id__in=normal_user_ids)
         else:
             # For admit_all, require active waiting (waiting_started_at set)
             qs = qs.filter(waiting_started_at__isnull=False)
@@ -4176,7 +4423,7 @@ class EventViewSet(viewsets.ModelViewSet):
         admitted_user_ids = list(qs.values_list('user_id', flat=True))
 
         # ✅ Mark users as was_ever_admitted so they auto-rejoin if they disconnect
-        updated = qs.update(
+        updated_users = qs.update(
             admission_status="admitted",
             admitted_at=timezone.now(),
             admitted_by=request.user,
@@ -4186,6 +4433,21 @@ class EventViewSet(viewsets.ModelViewSet):
             was_ever_admitted=True,  # ✅ NEW: Mark for auto-rejoin
             current_location="main_room",  # ✅ NEW: Update location for lounge context
             current_session_started_at=timezone.now(),  # Track session start
+        )
+
+        guest_qs = GuestAttendee.objects.filter(
+            event=event,
+            current_location="waiting_room",
+            converted_at__isnull=True,
+        )
+        if not admit_all:
+            guest_qs = guest_qs.filter(id__in=guest_ids)
+        guest_ids_admitted = list(guest_qs.values_list("id", flat=True))
+        updated_guests = guest_qs.update(
+            current_location="main_room",
+            lounge_table=None,
+            joined_live=True,
+            joined_live_at=timezone.now(),
         )
 
         # ✅ NEW: Remove admitted users from LoungeParticipant table (lounge context)
@@ -4198,6 +4460,15 @@ class EventViewSet(viewsets.ModelViewSet):
             for admitted_user_id in admitted_user_ids:
                 send_admission_status_changed(admitted_user_id, "admitted")
                 print(f"[WAITING_ROOM] ✅ Sent real-time notification to user {admitted_user_id}: status=admitted")
+            if guest_ids_admitted:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+                channel_layer = get_channel_layer()
+                for guest_id in guest_ids_admitted:
+                    async_to_sync(channel_layer.group_send)(
+                        f"guest_user_{guest_id}",
+                        {"type": "admission_status_changed", "data": {"admission_status": "admitted"}},
+                    )
         except Exception as e:
             logger.warning(f"[WAITING_ROOM] Failed to send WebSocket notification: {e}")
             print(f"[WAITING_ROOM] ⚠️ WebSocket notification failed: {e}")
@@ -4221,7 +4492,7 @@ class EventViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.warning(f"[WAITING_ROOM] Failed to log admissions: {e}")
 
-        return Response({"ok": True, "admitted": updated})
+        return Response({"ok": True, "admitted": int(updated_users) + int(updated_guests)})
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="waiting-room/reject")
     def waiting_room_reject(self, request, pk=None):
@@ -4472,6 +4743,41 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         user = request.user
 
+        if getattr(user, "is_guest", False):
+            guest = user.guest
+            if guest.event_id != event.id:
+                return Response({"detail": "Guest token does not match this event."}, status=403)
+
+            if guest.lounge_table_id:
+                return Response({
+                    "table_id": guest.lounge_table_id,
+                    "seat_index": 0,
+                    "status": "already_seated",
+                    "is_guest": True,
+                })
+
+            requested_table_id = request.data.get("table_id")
+            table = None
+            if requested_table_id:
+                try:
+                    table = LoungeTable.objects.get(pk=requested_table_id, event=event)
+                except LoungeTable.DoesNotExist:
+                    table = None
+            if table is None:
+                table = LoungeTable.objects.filter(event=event).order_by("id").first()
+            if table is None:
+                return Response({"detail": "No available lounge seats at this time."}, status=400)
+
+            guest.lounge_table = table
+            guest.current_location = "social_lounge" if table.category == "LOUNGE" else "breakout_room"
+            guest.save(update_fields=["lounge_table", "current_location"])
+            return Response({
+                "table_id": table.id,
+                "seat_index": 0,
+                "status": "seated",
+                "is_guest": True,
+            })
+
         # Check if user is registered for this event
         is_registered = EventRegistration.objects.filter(
             event=event, user=user
@@ -4504,9 +4810,11 @@ class EventViewSet(viewsets.ModelViewSet):
                 occupied_seats = LoungeParticipant.objects.filter(
                     table=table
                 ).values_list("seat_index", flat=True)
+                # include guest occupancy for capacity checks
+                guest_occupied = set(range(table.guest_attendees.count()))
 
                 next_seat = 0
-                while next_seat in occupied_seats:
+                while next_seat in occupied_seats or next_seat in guest_occupied:
                     next_seat += 1
 
                 if next_seat >= table.max_seats:
@@ -4531,6 +4839,7 @@ class EventViewSet(viewsets.ModelViewSet):
         tables = LoungeTable.objects.filter(event=event).order_by("id")
         for table in tables:
             occupied_count = LoungeParticipant.objects.filter(table=table).count()
+            occupied_count += table.guest_attendees.count()
             if occupied_count < table.max_seats:
                 # This table has space
                 lp = LoungeParticipant.objects.create(
@@ -4910,10 +5219,13 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         user = self.request.user
         qs = EventRegistration.objects.select_related("event").order_by("-registered_at")
 
+        if getattr(user, "is_guest", False):
+            return qs.none()
+
         # Staff / superusers can see all registrations, but we still
         # apply ?event= and ?user= filters if provided so that lookups
         # like ?event=30&user=2 return only what was asked for.
-        if not (user.is_staff or getattr(user, "is_superuser", False)):
+        if not (getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)):
             # Normal users: only see their own registrations OR events they created
             qs = qs.filter(Q(user=user) | Q(event__created_by=user)).distinct()
 
@@ -4925,7 +5237,7 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         # Apply ?user=ID filter (staff/owner only; non-staff can only see their own)
         user_id = self.request.query_params.get("user")
         if user_id:
-            if user.is_staff or getattr(user, "is_superuser", False):
+            if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
                 qs = qs.filter(user_id=user_id)
             # For non-staff, the user filter is already enforced by the Q() above
 
@@ -4935,6 +5247,8 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         # 1. Custom check for existing registration to handle re-registration
         user = request.user
+        if getattr(user, "is_guest", False):
+            return Response({"detail": "Guests cannot create user registrations."}, status=403)
         event_id = request.data.get("event_id") or request.data.get("event")
 
         if event_id and user.is_authenticated:
@@ -4959,6 +5273,8 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         """
         Force user= current request.user on create.
         """
+        if getattr(self.request.user, "is_guest", False):
+            raise PermissionDenied("Guests cannot create user registrations.")
         serializer.save(user=self.request.user)
 
     @action(detail=False, methods=["get"], url_path="mine")
@@ -4967,6 +5283,9 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         Alias to list only my registrations with pagination support.
         Always strict to request.user.
         """
+        if getattr(request.user, "is_guest", False):
+            return Response([])
+
         qs = self.get_queryset().filter(
             user=request.user,
             status__in=['registered', 'cancellation_requested']
@@ -5371,6 +5690,7 @@ def _build_lounge_state_sync(event_id):
         state = []
         for t in tables:
             participants = {}
+            occupied_seats = set()
             for p in t.participants.all():
                 profile = getattr(p.user, "profile", None)
                 img = getattr(profile, "user_image", None) if profile else None
@@ -5388,6 +5708,31 @@ def _build_lounge_state_sync(event_id):
                     "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username,
                     "avatar_url": avatar_url,
                 }
+                occupied_seats.add(p.seat_index)
+
+            # Include guests seated at this table.
+            guest_rows = GuestAttendee.objects.filter(
+                event_id=event_id,
+                lounge_table=t,
+                converted_at__isnull=True,
+            ).only("id", "first_name", "last_name", "email")
+            next_free_seat = 0
+            for guest in guest_rows:
+                while next_free_seat in occupied_seats:
+                    next_free_seat += 1
+                if next_free_seat >= max(t.max_seats, 1):
+                    break
+
+                guest_name = f"{guest.first_name} {guest.last_name}".strip() or guest.email
+                participants[str(next_free_seat)] = {
+                    "user_id": f"guest_{guest.id}",
+                    "username": f"guest_{guest.id}",
+                    "full_name": guest_name,
+                    "avatar_url": "",
+                    "is_guest": True,
+                }
+                occupied_seats.add(next_free_seat)
+                next_free_seat += 1
             icon_url = ""
             if getattr(t, "icon", None):
                 try:

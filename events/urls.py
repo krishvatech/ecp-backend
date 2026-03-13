@@ -7,6 +7,7 @@ from .views import (
     RecordingWebhookView,
     EventSessionViewSet,
 )
+from .guest_views import GuestJoinView, GuestRegisterView, GuestRegisterLinkView
 from .speed_networking_views import SpeedNetworkingSessionViewSet, SpeedNetworkingQueueViewSet
 from .webhooks import realtime_webhook
 
@@ -18,6 +19,11 @@ router.register(r"event-registrations", EventRegistrationViewSet, basename="even
 urlpatterns = [
     # Public event landing page endpoint
     path("events/public/<slug:slug>/", PublicEventDetailView.as_view(), name="event-public-detail"),
+
+    # Guest attendee endpoints
+    path("events/<int:pk>/guest-join/", GuestJoinView.as_view(), name="guest-join"),
+    path("auth/guest-register/", GuestRegisterView.as_view(), name="guest-register"),
+    path("auth/guest-register/link/", GuestRegisterLinkView.as_view(), name="guest-register-link"),
 ] + router.urls + [
     path("events/recording/webhook/", RecordingWebhookView.as_view(), name="dyte-recording-webhook"),
     path("realtime/webhook/", realtime_webhook, name="realtime-webhook"),

@@ -1,7 +1,7 @@
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.core.cache import cache
-from .models import LoungeTable, LoungeParticipant, Event, EventRegistration, EventParticipant, AssistanceRequestLog
+from .models import LoungeTable, LoungeParticipant, Event, EventRegistration, EventParticipant, AssistanceRequestLog, GuestAttendee
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import F
@@ -19,6 +19,9 @@ DISCONNECT_CLEANUP_GRACE_SECONDS = 3
 
 class EventConsumer(AsyncJsonWebsocketConsumer):
     """Consumer to handle real-time communication within an event, including Social Lounge state."""
+
+    def _is_guest_user(self):
+        return bool(getattr(self.user, "is_guest", False) and getattr(self.user, "guest", None))
 
     async def connect(self) -> None:
         self.user = self.scope.get("user")
@@ -40,7 +43,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=4003)
             return
 
-        self.user_group_name = f"user_{self.user.id}"
+        if self._is_guest_user():
+            self.user_group_name = f"guest_user_{self.user.guest.id}"
+        else:
+            self.user_group_name = f"user_{self.user.id}"
         await self.channel_layer.group_add(self.user_group_name, self.channel_name)
 
         await self.accept()
@@ -119,31 +125,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         # ✅ STATE PRIORITY FIX: Include user's current lounge table ID in welcome message
         # This allows the frontend to immediately set isBreakoutRef.current = true
         # even if breakout_restored message is delayed, preventing break screen flash.
-        user_lounge_table_id = None
-        try:
-            participant = await database_sync_to_async(
-                LoungeParticipant.objects.filter(
-                    table__event_id=self.event_id,
-                    user=self.user,
-                    table__category='LOUNGE'
-                ).select_related('table').first
-            )()
-            if participant:
-                user_lounge_table_id = participant.table_id
-        except Exception as e:
-            print(f"[CONSUMER] Error fetching user's lounge table: {e}")
-
-        # ✅ NEW: Include current_location for UI state restoration on reconnect
-        user_reg = await database_sync_to_async(
-            lambda: EventRegistration.objects.filter(event_id=self.event_id, user=self.user).first()
-        )()
-        user_current_location = user_reg.current_location if user_reg else "pre_event"
-        user_admission_status = user_reg.admission_status if user_reg else "waiting"
+        user_lounge_table_id, user_current_location, user_admission_status = await self.get_user_presence_context()
 
         msg = {
             "type": "welcome",
             "event_id": self.event_id,
-            "your_user_id": self.user.id,
+            "your_user_id": f"guest_{self.user.guest.id}" if self._is_guest_user() else self.user.id,
             "lounge_state": lounge_state,
             "online_users": await self.get_online_participants_info(),
             "is_on_break": event.is_on_break,
@@ -464,8 +451,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 return await self.send_json({"type": "error", "message": "No eligible participants found"})
 
             for uid in eligible_user_ids:
+                target_group = f"user_{uid}"
+                if str(uid).startswith("guest_"):
+                    target_group = f"guest_user_{str(uid).split('_', 1)[1]}"
                 await self.channel_layer.group_send(
-                    f"user_{uid}",
+                    target_group,
                     {
                         "type": "lounge_countdown",
                         "countdown_seconds": countdown_seconds,
@@ -931,6 +921,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     def _set_lounge_location(self):
         """Set current_location to social_lounge."""
         try:
+            if self._is_guest_user():
+                guest = self.user.guest
+                guest.current_location = "social_lounge"
+                guest.save(update_fields=["current_location"])
+                logger.info(f"[CONSUMER] {self.user.username} entered lounge area (guest)")
+                return
+
             EventRegistration.objects.filter(
                 event_id=self.event_id, user=self.user
             ).update(current_location="social_lounge")
@@ -942,6 +939,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     def _reset_lounge_location(self):
         """Reset location when user exits the lounge overlay."""
         try:
+            if self._is_guest_user():
+                guest = self.user.guest
+                if guest.lounge_table_id:
+                    return
+                guest.current_location = "main_room"
+                guest.save(update_fields=["current_location"])
+                logger.info(f"[CONSUMER] {self.user.username} exited lounge, location reset to main_room (guest)")
+                return
+
             reg = EventRegistration.objects.get(event_id=self.event_id, user=self.user)
             # Only reset if they're not at a table (LoungeParticipant would still exist if at table)
             in_lounge_table = LoungeParticipant.objects.filter(
@@ -964,6 +970,18 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     def sync_current_location_on_connect(self):
         """Sync current_location field based on existing DB state on reconnect."""
         try:
+            if self._is_guest_user():
+                guest = self.user.guest
+                if guest.lounge_table_id:
+                    location = "breakout_room" if (guest.lounge_table and guest.lounge_table.category == "BREAKOUT") else "social_lounge"
+                else:
+                    location = "main_room"
+                if guest.current_location != location:
+                    guest.current_location = location
+                    guest.save(update_fields=["current_location"])
+                    print(f"[CONSUMER] Synced {self.user.username} location: {location} (guest)")
+                return
+
             reg = EventRegistration.objects.get(event_id=self.event_id, user=self.user)
 
             # Determine location from existing signals
@@ -990,19 +1008,66 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             print(f"[CONSUMER] Error syncing current_location for {self.user.username}: {e}")
 
     @database_sync_to_async
+    def get_user_presence_context(self):
+        """Return (user_lounge_table_id, current_location, admission_status) for welcome payload."""
+        if self._is_guest_user():
+            guest = self.user.guest
+            table_id = guest.lounge_table_id
+            location = guest.current_location or "main_room"
+            # Guest sessions are effectively admitted for live-room UX.
+            return table_id, location, "admitted"
+
+        user_lounge_table_id = None
+        participant = LoungeParticipant.objects.filter(
+            table__event_id=self.event_id,
+            user=self.user,
+            table__category='LOUNGE'
+        ).select_related('table').first()
+        if participant:
+            user_lounge_table_id = participant.table_id
+
+        user_reg = EventRegistration.objects.filter(event_id=self.event_id, user=self.user).first()
+        user_current_location = user_reg.current_location if user_reg else "pre_event"
+        user_admission_status = user_reg.admission_status if user_reg else "waiting"
+        return user_lounge_table_id, user_current_location, user_admission_status
+
+    @database_sync_to_async
     def get_online_participants_info(self):
         regs = EventRegistration.objects.filter(
             event_id=self.event_id,
             is_online=True,
             is_banned=False  # Exclude banned users even if online flag is stuck
         ).exclude(user_id=self.user.id).select_related('user')
-        return [{
+        users = [{
             "user_id": r.user.id,
             "username": r.user.username,
             "full_name": f"{r.user.first_name} {r.user.last_name}".strip() or r.user.username,
             "current_location": r.current_location,  # ✅ NEW
             "admission_status": r.admission_status,  # ✅ NEW
         } for r in regs]
+
+        guests_qs = GuestAttendee.objects.filter(
+            event_id=self.event_id,
+            converted_at__isnull=True,
+            joined_live=True,
+        ).select_related("lounge_table")
+
+        if self._is_guest_user():
+            guests_qs = guests_qs.exclude(id=self.user.guest.id)
+
+        guests = [{
+            "user_id": f"guest_{g.id}",
+            "username": f"guest_{g.id}",
+            "full_name": g.get_display_name(),
+            "current_location": g.current_location or "main_room",
+            "admission_status": "admitted",
+            "is_guest": True,
+            "lounge_table_id": g.lounge_table_id,
+            "lounge_table_name": g.lounge_table.name if g.lounge_table_id and g.lounge_table else "",
+            "dyte_participant_id": g.dyte_participant_id or "",
+        } for g in guests_qs]
+
+        return users + guests
 
     @database_sync_to_async
     def get_main_room_support_status(self):
@@ -1310,15 +1375,29 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     async def breakout_force_join(self, event: dict) -> None:
         """Targeted force join for specific user"""
-        print(f"[HANDLER] breakout_force_join: self.user.id={self.user.id}, target={event['user_id']}")
-        if str(self.user.id) == str(event["user_id"]):
-            print(f"[HANDLER] ✅ Sending force_join_breakout to user {self.user.id}")
+        target_user_id = str(event.get("user_id", ""))
+        target_guest_id = str(event.get("guest_id", ""))
+
+        if self._is_guest_user():
+            self_guest_id = str(self.user.guest.id)
+            matches_target = (
+                (target_guest_id and self_guest_id == target_guest_id) or
+                (target_user_id and target_user_id == f"guest_{self_guest_id}")
+            )
+            debug_self = f"guest_{self_guest_id}"
+        else:
+            matches_target = bool(target_user_id) and str(self.user.id) == target_user_id
+            debug_self = str(self.user.id)
+
+        print(f"[HANDLER] breakout_force_join: self={debug_self}, target_user={target_user_id}, target_guest={target_guest_id}")
+        if matches_target:
+            print(f"[HANDLER] ✅ Sending force_join_breakout to {debug_self}")
             await self.send_json({
                 "type": "force_join_breakout",
                 "table_id": event["table_id"]
             })
         else:
-            print(f"[HANDLER] ⚠️ breakout_force_join mismatch: {self.user.id} != {event['user_id']}")
+            print(f"[HANDLER] ⚠️ breakout_force_join mismatch: self={debug_self}, target_user={target_user_id}, target_guest={target_guest_id}")
 
     async def breakout_debug(self, event: dict) -> None:
         """Broadcast debug info to host"""
@@ -1395,6 +1474,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def is_host(self):
+        if self._is_guest_user():
+            return False
         # A host is the creator OR any staff/superuser
         if self.user.is_superuser or self.user.is_staff:
             return True
@@ -1403,6 +1484,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     @database_sync_to_async
     def update_online_status(self, increment):
         try:
+            if self._is_guest_user():
+                # Guests don't have EventRegistration rows; nothing to track here.
+                return
+
             with transaction.atomic():
                 reg, _ = EventRegistration.objects.select_for_update().get_or_create(
                     event_id=self.event_id, 
@@ -1440,6 +1525,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def should_finalize_disconnect_cleanup(self):
+        if self._is_guest_user():
+            return True
         reg = EventRegistration.objects.filter(event_id=self.event_id, user=self.user).first()
         if not reg:
             return True
@@ -1447,6 +1534,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def check_is_banned(self):
+        if self._is_guest_user():
+            return False
         return EventRegistration.objects.filter(
             event_id=self.event_id, 
             user=self.user, 
@@ -1459,6 +1548,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         EventRegistration.objects.filter(event_id=self.event_id).update(last_breakout_table=None)
         # Remove participants
         LoungeParticipant.objects.filter(table__event_id=self.event_id).delete()
+        # Reset guest table assignments/state
+        GuestAttendee.objects.filter(
+            event_id=self.event_id,
+            converted_at__isnull=True,
+        ).update(
+            lounge_table=None,
+            current_location="main_room",
+        )
 
     @database_sync_to_async
     def perform_random_assignment(self, per_room):
@@ -1469,23 +1566,35 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             per_room = event.lounge_table_capacity or 4
             
         print(f"[RANDOM_ASSIGN] Starting: event={self.event_id}, per_room={per_room}")
-        # 1. Get all online participants (excluding host)
+        # 1. Get all online participants (registered users + guests)
         registrations = EventRegistration.objects.filter(
             event_id=self.event_id,
             is_online=True,
             admission_status="admitted",
             joined_live=True,
         ).exclude(user_id=self.user.id).select_related('user')
-        
-        users = [reg.user for reg in list(registrations)]
-        print(f"[RANDOM_ASSIGN] Found {len(users)} online attendees.")
-        if not users:
+
+        participant_entries = [{"kind": "user", "user": reg.user} for reg in registrations]
+
+        guest_rows = GuestAttendee.objects.filter(
+            event_id=self.event_id,
+            converted_at__isnull=True,
+            joined_live=True,
+            dyte_participant_id__isnull=False,
+        ).exclude(dyte_participant_id="")
+        participant_entries.extend({"kind": "guest", "guest": guest} for guest in guest_rows)
+
+        print(
+            f"[RANDOM_ASSIGN] Found {len(participant_entries)} online attendees "
+            f"({len(list(registrations))} users, {guest_rows.count()} guests)."
+        )
+        if not participant_entries:
             return []
-        random.shuffle(users)
+        random.shuffle(participant_entries)
 
         # 2. Ensure we have enough BREAKOUT tables
         # Recalculate needed tables based on updated per_room
-        num_rooms_needed = (len(users) + per_room - 1) // per_room if per_room > 0 else 1
+        num_rooms_needed = (len(participant_entries) + per_room - 1) // per_room if per_room > 0 else 1
         
         # Get existing breakout tables
         tables = list(LoungeTable.objects.filter(event_id=self.event_id, category='BREAKOUT').order_by('id'))
@@ -1518,47 +1627,82 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             with transaction.atomic():
                 # Clear all current assignments in the event
                 LoungeParticipant.objects.filter(table__event_id=self.event_id).delete()
+                EventRegistration.objects.filter(event_id=self.event_id).update(last_breakout_table=None)
+                GuestAttendee.objects.filter(
+                    event_id=self.event_id,
+                    converted_at__isnull=True,
+                ).update(
+                    lounge_table=None,
+                    current_location="main_room",
+                )
 
                 # ✅ FIX #2A: Proper round-robin assignment with validation
-                for idx, user in enumerate(users):
+                for idx, entry in enumerate(participant_entries):
                     table_idx = idx % len(tables)
                     table = tables[table_idx]
                     seat_index = idx // len(tables)  # ✅ FIXED: Proper seat calculation
 
-                    # ✅ NEW: Verify user isn't already assigned
-                    existing = LoungeParticipant.objects.filter(
-                        user=user,
-                        table__event_id=self.event_id
-                    ).exists()
-                    if existing:
-                        print(f"[RANDOM_ASSIGN] ⚠️ User {user.id} already assigned, skipping duplicate")
-                        continue
+                    if entry["kind"] == "user":
+                        user = entry["user"]
+                        existing = LoungeParticipant.objects.filter(
+                            user=user,
+                            table__event_id=self.event_id
+                        ).exists()
+                        if existing:
+                            print(f"[RANDOM_ASSIGN] ⚠️ User {user.id} already assigned, skipping duplicate")
+                            continue
 
-                    # Create assignment record
-                    lounge_participant = LoungeParticipant.objects.create(
-                        table=table,
-                        user=user,
-                        seat_index=seat_index
-                    )
+                        LoungeParticipant.objects.create(
+                            table=table,
+                            user=user,
+                            seat_index=seat_index
+                        )
 
-                    # Save assignment if breakout
-                    if table.category == 'BREAKOUT':
-                        EventRegistration.objects.filter(event_id=self.event_id, user=user).update(last_breakout_table=table)
+                        if table.category == 'BREAKOUT':
+                            EventRegistration.objects.filter(event_id=self.event_id, user=user).update(last_breakout_table=table)
 
-                    assignments.append((user.id, table.id, table.dyte_meeting_id))
+                        assignments.append({
+                            "target_type": "user",
+                            "target_id": user.id,
+                            "table_id": table.id,
+                            "meeting_id": table.dyte_meeting_id,
+                        })
 
-                    print(f"[RANDOM_ASSIGN] ✅ Assigned user {user.id} to table {table.id} "
-                          f"(meeting {table.dyte_meeting_id}), seat_index={seat_index}")
+                        print(f"[RANDOM_ASSIGN] ✅ Assigned user {user.id} to table {table.id} "
+                              f"(meeting {table.dyte_meeting_id}), seat_index={seat_index}")
+                    else:
+                        guest = entry["guest"]
+                        GuestAttendee.objects.filter(id=guest.id, event_id=self.event_id).update(
+                            lounge_table=table,
+                            current_location="breakout_room" if table.category == "BREAKOUT" else "social_lounge",
+                        )
+
+                        assignments.append({
+                            "target_type": "guest",
+                            "target_id": guest.id,
+                            "table_id": table.id,
+                            "meeting_id": table.dyte_meeting_id,
+                        })
+
+                        print(f"[RANDOM_ASSIGN] ✅ Assigned guest_{guest.id} to table {table.id} "
+                              f"(meeting {table.dyte_meeting_id})")
 
                 # ✅ NEW: Validate all assignments were created
                 total_assigned = LoungeParticipant.objects.filter(
                     table__event_id=self.event_id
                 ).count()
-                print(f"[RANDOM_ASSIGN] Total assignments: {len(assignments)}, DB count: {total_assigned}")
+                total_guest_assigned = GuestAttendee.objects.filter(
+                    event_id=self.event_id,
+                    converted_at__isnull=True,
+                    lounge_table__isnull=False,
+                    current_location__in=["breakout_room", "social_lounge"],
+                ).count()
+                total_db_assigned = total_assigned + total_guest_assigned
+                print(f"[RANDOM_ASSIGN] Total assignments: {len(assignments)}, DB count: {total_db_assigned}")
 
-                if len(assignments) != total_assigned:
+                if len(assignments) != total_db_assigned:
                     print(f"[RANDOM_ASSIGN] ⚠️ Assignment count mismatch: "
-                          f"expected {len(assignments)}, got {total_assigned}")
+                          f"expected {len(assignments)}, got {total_db_assigned}")
 
         except Exception as e:
             print(f"[RANDOM_ASSIGN] ❌ Failed to perform random assignment: {e}")
@@ -1583,16 +1727,29 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         # ✅ FIX: Notify each assigned user via the group
         # Assignments now include meeting_id for better debugging
         for assignment in assignments:
-            user_id = assignment[0]
-            table_id = assignment[1]
-            await self.channel_layer.group_send(
-                f"user_{user_id}",
-                {
-                    "type": "breakout_force_join",
-                    "user_id": user_id,
-                    "table_id": table_id
-                }
-            )
+            target_type = assignment.get("target_type")
+            target_id = assignment.get("target_id")
+            table_id = assignment.get("table_id")
+
+            if target_type == "guest":
+                await self.channel_layer.group_send(
+                    f"guest_user_{target_id}",
+                    {
+                        "type": "breakout_force_join",
+                        "user_id": f"guest_{target_id}",
+                        "guest_id": target_id,
+                        "table_id": table_id,
+                    }
+                )
+            else:
+                await self.channel_layer.group_send(
+                    f"user_{target_id}",
+                    {
+                        "type": "breakout_force_join",
+                        "user_id": target_id,
+                        "table_id": table_id
+                    }
+                )
 
     async def perform_manual_assignment_and_notify(self, user_ids, table_id):
         """Perform manual assignment and notify assigned users."""
@@ -1709,6 +1866,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         debug_counts = []
         for t in tables:
             participants = {}
+            occupied_seats = set()
             for p in t.participants.all():
                 profile = getattr(p.user, "profile", None)
                 img = getattr(profile, "user_image", None) if profile else None
@@ -1726,6 +1884,31 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username,
                     "avatar_url": avatar_url,
                 }
+                occupied_seats.add(p.seat_index)
+
+            # Include guests seated at this table (GuestAttendee has no seat index column).
+            guest_rows = GuestAttendee.objects.filter(
+                event_id=self.event_id,
+                lounge_table=t,
+                converted_at__isnull=True,
+            ).only("id", "first_name", "last_name", "email")
+            next_free_seat = 0
+            for guest in guest_rows:
+                while next_free_seat in occupied_seats:
+                    next_free_seat += 1
+                if next_free_seat >= max(t.max_seats, 1):
+                    break
+
+                guest_name = f"{guest.first_name} {guest.last_name}".strip() or guest.email
+                participants[str(next_free_seat)] = {
+                    "user_id": f"guest_{guest.id}",
+                    "username": f"guest_{guest.id}",
+                    "full_name": guest_name,
+                    "avatar_url": "",
+                    "is_guest": True,
+                }
+                occupied_seats.add(next_free_seat)
+                next_free_seat += 1
             icon_url = ""
             if getattr(t, "icon", None):
                 try:
@@ -1794,6 +1977,30 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     def join_table(self, table_id, seat_index):
         try:
             with transaction.atomic():
+                table_obj = LoungeTable.objects.get(id=table_id)
+
+                if self._is_guest_user():
+                    guest = self.user.guest
+
+                    # Guests don't have LoungeParticipant rows. Keep occupancy checks consistent
+                    # by counting both real users and guests at the target table.
+                    user_count = LoungeParticipant.objects.filter(table_id=table_id).count()
+                    guest_count = GuestAttendee.objects.filter(
+                        event_id=self.event_id,
+                        lounge_table_id=table_id,
+                        converted_at__isnull=True,
+                    ).exclude(id=guest.id).count()
+                    current_count = user_count + guest_count
+                    if current_count >= table_obj.max_seats:
+                        print(f"[CONSUMER] join_table: Table {table_id} is FULL ({current_count}/{table_obj.max_seats}) [guest]")
+                        return False, "Table is full", None
+
+                    guest.lounge_table = table_obj
+                    guest.current_location = "breakout_room" if table_obj.category == "BREAKOUT" else "social_lounge"
+                    guest.save(update_fields=["lounge_table", "current_location"])
+                    print(f"[CONSUMER] join_table: Guest {guest.id} joined table {table_id}")
+                    return True, None, table_obj
+
                 # 1. Clear user from any other table in this event
                 del_count, _ = LoungeParticipant.objects.filter(
                     table__event_id=self.event_id, 
@@ -1807,7 +2014,6 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     return False, "Seat already occupied", None
                 
                 # 2.5 Check if table is full (Double-check against max_seats)
-                table_obj = LoungeTable.objects.get(id=table_id)
                 current_count = LoungeParticipant.objects.filter(table_id=table_id).count()
                 if current_count >= table_obj.max_seats:
                      print(f"[CONSUMER] join_table: Table {table_id} is FULL ({current_count}/{table_obj.max_seats})")
@@ -1857,6 +2063,33 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         Deletes from both Django DB AND Dyte meeting to prevent 409 conflicts on rejoin.
         """
         try:
+            if self._is_guest_user():
+                guest = self.user.guest
+                table = guest.lounge_table
+                if not table:
+                    logger.info(f"[CONSUMER] No lounge record found for guest {guest.id}")
+                    return 0, None
+
+                meeting_id = getattr(table, "dyte_meeting_id", None)
+                dyte_participant_id = guest.dyte_participant_id
+                if meeting_id and dyte_participant_id:
+                    try:
+                        requests.delete(
+                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_participant_id}",
+                            headers=_dyte_headers(),
+                            timeout=10,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[CONSUMER] Error removing guest from Dyte: {e}")
+
+                # Keep behavior consistent with REST endpoint: leaving table returns to main room context.
+                guest.current_location = "main_room"
+                guest.lounge_table = None
+                guest.dyte_participant_id = ""
+                guest.save(update_fields=["current_location", "lounge_table", "dyte_participant_id"])
+                logger.info(f"[CONSUMER] Guest {guest.id} left table {table.id}; location=main_room")
+                return 1, table
+
             # 1. Find the current table participant record
             lounge_record = LoungeParticipant.objects.filter(
                 table__event_id=self.event_id,
@@ -1943,42 +2176,96 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def get_transitionable_user_ids(self, user_ids):
-        regs = EventRegistration.objects.filter(
-            event_id=self.event_id,
-            user_id__in=user_ids,
-            current_location__in=["social_lounge", "pre_event", "waiting_room"],
-        )
-        return list(regs.values_list("user_id", flat=True))
+        normalized_ids = []
+        reg_user_ids = []
+        guest_ids = []
+        for raw in (user_ids or []):
+            raw_s = str(raw)
+            if raw_s.startswith("guest_"):
+                try:
+                    guest_ids.append(int(raw_s.split("_", 1)[1]))
+                except (TypeError, ValueError):
+                    continue
+            else:
+                try:
+                    reg_user_ids.append(int(raw_s))
+                except (TypeError, ValueError):
+                    continue
+
+        if reg_user_ids:
+            regs = EventRegistration.objects.filter(
+                event_id=self.event_id,
+                user_id__in=reg_user_ids,
+                current_location__in=["social_lounge", "pre_event", "waiting_room"],
+            )
+            normalized_ids.extend(list(regs.values_list("user_id", flat=True)))
+
+        if guest_ids:
+            guests = GuestAttendee.objects.filter(
+                event_id=self.event_id,
+                id__in=guest_ids,
+                current_location__in=["social_lounge", "pre_event", "waiting_room"],
+            ).values_list("id", flat=True)
+            normalized_ids.extend([f"guest_{gid}" for gid in guests])
+
+        return normalized_ids
 
     @database_sync_to_async
     def perform_lounge_transition(self, transition, user_ids):
         if not user_ids:
             return []
         with transaction.atomic():
-            regs = EventRegistration.objects.filter(event_id=self.event_id, user_id__in=user_ids)
+            reg_user_ids = []
+            guest_ids = []
+            for raw in (user_ids or []):
+                raw_s = str(raw)
+                if raw_s.startswith("guest_"):
+                    try:
+                        guest_ids.append(int(raw_s.split("_", 1)[1]))
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    try:
+                        reg_user_ids.append(int(raw_s))
+                    except (TypeError, ValueError):
+                        continue
+
+            regs = EventRegistration.objects.filter(event_id=self.event_id, user_id__in=reg_user_ids)
             transitioned_user_ids = list(regs.values_list("user_id", flat=True))
-            if not transitioned_user_ids:
-                return []
-            if transition == "to_main_room":
-                regs.update(
-                    admission_status="admitted",
-                    admitted_at=timezone.now(),
-                    admitted_by_id=self.user.id,
-                    was_ever_admitted=True,
-                    current_location="main_room",
-                    current_session_started_at=timezone.now(),
-                )
-            else:
-                regs.update(
-                    admission_status="waiting",
-                    waiting_started_at=timezone.now(),
-                    current_location="waiting_room",
-                )
+            if transitioned_user_ids:
+                if transition == "to_main_room":
+                    regs.update(
+                        admission_status="admitted",
+                        admitted_at=timezone.now(),
+                        admitted_by_id=self.user.id,
+                        was_ever_admitted=True,
+                        current_location="main_room",
+                        current_session_started_at=timezone.now(),
+                    )
+                else:
+                    regs.update(
+                        admission_status="waiting",
+                        waiting_started_at=timezone.now(),
+                        current_location="waiting_room",
+                    )
 
             LoungeParticipant.objects.filter(
                 table__event_id=self.event_id,
                 user_id__in=transitioned_user_ids,
             ).delete()
+
+            if guest_ids:
+                guest_qs = GuestAttendee.objects.filter(event_id=self.event_id, id__in=guest_ids)
+                if transition == "to_main_room":
+                    guest_qs.update(
+                        current_location="main_room",
+                        lounge_table=None,
+                        joined_live=True,
+                        joined_live_at=timezone.now(),
+                    )
+                else:
+                    guest_qs.update(current_location="waiting_room", lounge_table=None)
+                transitioned_user_ids.extend([f"guest_{gid}" for gid in guest_ids])
         return transitioned_user_ids
 
     async def _execute_lounge_transition_after_delay(self, transition, user_ids, delay_seconds):
@@ -1992,16 +2279,22 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         status_value = "admitted" if transition == "to_main_room" else "waiting"
         for uid in transitioned_user_ids:
             try:
+                target_group = f"user_{uid}"
+                if str(uid).startswith("guest_"):
+                    target_group = f"guest_user_{str(uid).split('_', 1)[1]}"
                 await self.channel_layer.group_send(
-                    f"user_{uid}",
+                    target_group,
                     {"type": "admission_status_changed", "data": {"admission_status": status_value}},
                 )
             except Exception as e:
                 print(f"[CONSUMER] Error sending admission notification to user {uid}: {e}")
 
         for uid in transitioned_user_ids:
+            target_group = f"user_{uid}"
+            if str(uid).startswith("guest_"):
+                target_group = f"guest_user_{str(uid).split('_', 1)[1]}"
             await self.channel_layer.group_send(
-                f"user_{uid}",
+                target_group,
                 {
                     "type": "lounge_stopped",
                     "transition": transition,
