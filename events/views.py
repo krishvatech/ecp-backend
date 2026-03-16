@@ -951,6 +951,22 @@ class EventViewSet(viewsets.ModelViewSet):
                 Q(registrations__user_id=user.id, registrations__status="registered")  # registered participants can see event even after it ends (for post-event lounge)
             ).distinct()
 
+            # ✅ Hide unpublished recordings from regular participants
+            # Exclude events with unpublished recordings, BUT only from users who are
+            # ONLY registered participants (not hosts, owners, or community members)
+            # This allows hosts/owners to see unpublished recordings, but hides them from other participants
+
+            # Check if user is host, owner, or community member
+            user_is_host_or_admin = Q(created_by_id=user.id) | Q(community__owner_id=user.id) | Q(community__members=user)
+
+            # Hide unpublished recordings from non-host participants
+            qs = qs.exclude(
+                Q(recording_url__isnull=False, recording_url__gt='') &  # has recording URL
+                Q(replay_visible_to_participants=False) &  # recording NOT published
+                Q(registrations__user_id=user.id, registrations__status="registered") &  # user is registered
+                ~user_is_host_or_admin  # BUT user is NOT host/owner/admin
+            ).distinct()
+
         # ---- Filters (applied only when provided) ----
         params = self.request.query_params
 
@@ -2562,6 +2578,7 @@ class EventViewSet(viewsets.ModelViewSet):
             "ok": True,
             "recording_url": s3_key,
             "replay_available": True,
+            "replay_visible_to_participants": False,
             "notifications_queued": send_notifications,
         })
 
