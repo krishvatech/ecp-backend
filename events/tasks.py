@@ -624,7 +624,7 @@ def send_replay_notifications_task(self, event_id):
                 # Create in-app notification
                 Notification.objects.create(
                     recipient=user,
-                    actor=None,
+                    actor=event.created_by,  # Set actor to event creator so it shows their name
                     kind="event",
                     title=notif_title,
                     description=notif_desc,
