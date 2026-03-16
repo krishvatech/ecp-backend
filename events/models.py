@@ -146,6 +146,10 @@ class Event(models.Model):
         blank=True,
         help_text="Set when replay notifications are dispatched. Null = never sent."
     )
+    replay_visible_to_participants = models.BooleanField(
+        default=False,
+        help_text="If False, only host can download/see recording. If True, participants can access after notifications sent."
+    )
     # Dyte live meeting fields
     dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     dyte_meeting_title = models.CharField(max_length=255, blank=True, null=True)

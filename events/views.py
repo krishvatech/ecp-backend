@@ -2521,7 +2521,8 @@ class EventViewSet(viewsets.ModelViewSet):
 
         event.recording_url = s3_key
         event.replay_available = True
-        event.save(update_fields=["recording_url", "replay_available", "updated_at"])
+        event.replay_visible_to_participants = True  # Now participants can see/access
+        event.save(update_fields=["recording_url", "replay_available", "replay_visible_to_participants", "updated_at"])
 
         logger.info(
             f"[CONFIRM_UPLOAD] event={event.id} s3_key={s3_key} "
@@ -2594,6 +2595,7 @@ class EventViewSet(viewsets.ModelViewSet):
             "total_to_notify": noshow + partial,
             "already_sent": event.replay_notifications_sent_at is not None,
             "sent_at": event.replay_notifications_sent_at,
+            "visible_to_participants": event.replay_visible_to_participants,
         }
 
         if request.method == "GET":
@@ -2610,6 +2612,12 @@ class EventViewSet(viewsets.ModelViewSet):
 
         if not event.replay_available or not event.recording_url:
             return Response({"error": "Replay is not available yet."}, status=400)
+
+        if not event.replay_visible_to_participants:
+            return Response({
+                "error": "Replay is not yet visible to participants. Host must confirm upload first.",
+                **preview,
+            }, status=400)
 
         if force:
             # Reset sent_at so the task will proceed
@@ -5725,7 +5733,8 @@ class RecordingWebhookView(views.APIView):
         # 4) Store the S3 key on the Event
         event.recording_url = s3_key
         event.replay_available = True
-        event.save(update_fields=["recording_url", "replay_available", "updated_at"])
+        event.replay_visible_to_participants = False  # Only host can access initially
+        event.save(update_fields=["recording_url", "replay_available", "replay_visible_to_participants", "updated_at"])
 
         logger.info(
             "✅ Saved recording for event=%s meeting=%s s3_key=%s, replay_available=True",
