@@ -2545,7 +2545,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         event.recording_url = s3_key
         event.replay_available = True
-        event.replay_visible_to_participants = True  # Now participants can see/access
+        event.replay_visible_to_participants = False  # Restricted to host until published
         event.save(update_fields=["recording_url", "replay_available", "replay_visible_to_participants", "updated_at"])
 
         logger.info(
@@ -2564,6 +2564,36 @@ class EventViewSet(viewsets.ModelViewSet):
             "replay_available": True,
             "notifications_queued": send_notifications,
         })
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="publish-replay")
+    def publish_replay(self, request, pk=None):
+        """
+        Host explicitly publishes the recording to all registered participants.
+        After this, replay_visible_to_participants=True and participants can see/download.
+
+        Request body: {} (empty)
+        Response: { "ok": true, "replay_visible_to_participants": true }
+        """
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"error": "Permission denied"}, status=403)
+
+        if not event.replay_available or not event.recording_url:
+            return Response({"error": "No recording available to publish."}, status=400)
+
+        if event.replay_visible_to_participants:
+            return Response({
+                "ok": True,
+                "already_published": True,
+                "replay_visible_to_participants": True
+            })
+
+        event.replay_visible_to_participants = True
+        event.save(update_fields=["replay_visible_to_participants", "updated_at"])
+
+        logger.info(f"[PUBLISH_REPLAY] event={event.id} published by user={request.user.id}")
+
+        return Response({"ok": True, "replay_visible_to_participants": True})
 
     @action(detail=True, methods=["post", "get"], permission_classes=[IsAuthenticated], url_path="send-replay-notifications")
     def send_replay_notifications(self, request, pk=None):
@@ -2639,7 +2669,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         if not event.replay_visible_to_participants:
             return Response({
-                "error": "Replay is not yet visible to participants. Host must confirm upload first.",
+                "error": "Replay is not yet published. Please publish the recording before sending notifications.",
                 **preview,
             }, status=400)
 
