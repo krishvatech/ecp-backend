@@ -2641,10 +2641,21 @@ class EventViewSet(viewsets.ModelViewSet):
             )
             attendance_map = {a["user_id"]: a["total_seconds"] for a in qs}
 
-        registrations = EventRegistration.objects.filter(
+        # ✅ Exclude hosts and admins - only count actual participants
+        from django.db.models import Q
+        registrations_qs = EventRegistration.objects.filter(
             event=event,
             status__in=["registered", "cancellation_requested"],
-        ).only("user_id", "joined_live")
+        )
+
+        # Exclude event creator
+        registrations_qs = registrations_qs.exclude(user_id=event.created_by_id)
+
+        # Exclude community owner (if community exists)
+        if event.community and event.community.owner_id:
+            registrations_qs = registrations_qs.exclude(user_id=event.community.owner_id)
+
+        registrations = registrations_qs.only("user_id", "joined_live")
 
         threshold = 0.8 * (event_duration_seconds or 0)
         noshow = 0
@@ -2761,19 +2772,21 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        # ✅ Only show active registrations (not cancelled/deregistered)
         qs = (
             EventRegistration.objects
-            .filter(event=event)
+            .filter(event=event, status__in=["registered", "cancellation_requested"])
             .select_related("user")
             .order_by("-registered_at")
         )
-        # Filter by status if provided: ?status=joined_live or ?status=watched_replay
+        # Filter by attendance status if provided: ?status=joined_live or ?status=watched_replay
         status_filter = (request.query_params.get("status") or "").strip().lower()
         if status_filter == "joined_live":
             qs = qs.filter(joined_live=True)
         elif status_filter == "watched_replay":
             qs = qs.filter(watched_replay=True)
         elif status_filter == "did_not_attend":
+            # Did Not Attend = registered but never joined and never watched replay
             qs = qs.filter(joined_live=False, watched_replay=False)
 
         page = self.paginate_queryset(qs)

@@ -1881,15 +1881,28 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
     def get_attendance_category(self, obj):
         """
         Determine attendance category based on joined_live status and duration.
+
+        ✅ EXCLUDES HOSTS/ADMINS - they should not appear in attendee categories
+
         Categories:
+        - None: User is host/creator/owner (EXCLUDED from attendee lists)
         - 'noshow': Did not join live
         - 'partial': Joined but attended < 80% of event duration
         - 'full': Joined and attended >= 80% of event duration
         """
+        # ✅ Exclude hosts, creators, and community owners
+        # These should not appear in attendee categorization
+        event = obj.event
+        user_id = obj.user_id
+        if event and user_id:
+            if (user_id == getattr(event, "created_by_id", None) or
+                user_id == getattr(getattr(event, "community", None), "owner_id", None)):
+                return None  # ← Exclude from attendee lists
+
+        # Regular attendee categorization
         if not obj.joined_live:
             return 'noshow'
 
-        event = obj.event
         if not event or not event.start_time or not event.end_time:
             # If no event duration, mark as partial
             return 'partial'
