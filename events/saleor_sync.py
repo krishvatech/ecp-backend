@@ -143,8 +143,12 @@ def _update_product_in_saleor(event, url, headers, channel):
     if event.saleor_variant_id:
         logger.info(f"💰 UPDATING Price on Variant: {event.saleor_variant_id} | Event: {event.title}")
         _update_variant_price(event, url, headers, event.saleor_variant_id, channel)
+
+        # Also update stock if max_participants changed
+        logger.info(f"📦 UPDATING Stock: {event.max_participants or 'Unlimited (999999)'} | Variant: {event.saleor_variant_id}")
+        _create_or_update_stock(event, url, headers, event.saleor_variant_id)
     else:
-        logger.warning(f"⚠️  No variant ID found for event {event.id}. Price not updated.")
+        logger.warning(f"⚠️  No variant ID found for event {event.id}. Price and stock not updated.")
 
 def _create_variant(event, url, headers, product_id, channel):
     mutation = """
@@ -185,6 +189,10 @@ def _create_variant(event, url, headers, product_id, channel):
              event.save(update_fields=["saleor_variant_id"])
              logger.info(f"💰 Setting Price: {event.currency} {price_val} | Variant: {variant_id} | Channel: {channel}")
              _update_variant_channel_listing(event, url, headers, variant_id, channel)
+
+             # Set stock based on max_participants
+             logger.info(f"📦 Setting Stock: {event.max_participants or 'Unlimited (999999)'} | Variant: {variant_id}")
+             _create_or_update_stock(event, url, headers, variant_id)
 
     except Exception as e:
         logger.error(f"❌ Exception creating variant: {e}")
@@ -385,6 +393,110 @@ def _get_existing_product_type(url, headers, name):
     except:
         pass
     return None
+
+def _get_or_create_warehouse(url, headers):
+    """Get default warehouse or create one if it doesn't exist."""
+    # Try to fetch existing warehouses
+    query = """
+    query Warehouses {
+      warehouses(first: 1) {
+        edges { node { id name } }
+      }
+    }
+    """
+    try:
+        r = requests.post(url, json={"query": query}, headers=headers)
+        warehouses = r.json().get("data", {}).get("warehouses", {}).get("edges", [])
+        if warehouses:
+            warehouse_id = warehouses[0]["node"]["id"]
+            logger.info(f"DEBUG: Found existing warehouse ID: {warehouse_id}")
+            return warehouse_id
+    except Exception as e:
+        logger.warning(f"Error fetching warehouses: {e}")
+
+    # If no warehouse exists, create one
+    mutation = """
+    mutation CreateWarehouse($name: String!, $slug: String!) {
+      warehouseCreate(input: {name: $name, slug: $slug}) {
+        warehouse { id }
+        errors { field message }
+      }
+    }
+    """
+    try:
+        r = requests.post(url, json={"query": mutation, "variables": {"name": "Default", "slug": "default"}}, headers=headers)
+        warehouse_id = r.json().get("data", {}).get("warehouseCreate", {}).get("warehouse", {}).get("id")
+        if warehouse_id:
+            logger.info(f"DEBUG: Created warehouse ID: {warehouse_id}")
+            return warehouse_id
+    except Exception as e:
+        logger.error(f"Error creating warehouse: {e}")
+
+    return None
+
+def _create_or_update_stock(event, url, headers, variant_id):
+    """
+    Update stock for event variant using productVariantStocksUpdate mutation.
+    Saleor 3.22.x uses this mutation for stock management.
+    - max_participants = quantity in Saleor
+    - NULL = 999999 (practically unlimited)
+    """
+    warehouse_id = _get_or_create_warehouse(url, headers)
+    if not warehouse_id:
+        logger.error(f"❌ STOCK SYNC FAILED: Could not get warehouse for event {event.id}")
+        return
+
+    # Determine stock quantity
+    stock_qty = event.max_participants if event.max_participants else 999999
+
+    # Use productVariantStocksUpdate mutation (Saleor 3.22.x)
+    mutation_update = """
+    mutation UpdateVariantStocks($variantId: ID!, $stocks: [StockInput!]!) {
+      productVariantStocksUpdate(variantId: $variantId, stocks: $stocks) {
+        productVariant { id }
+        errors { field message }
+      }
+    }
+    """
+
+    try:
+        variables = {
+            "variantId": variant_id,
+            "stocks": [
+                {
+                    "warehouse": warehouse_id,
+                    "quantity": stock_qty
+                }
+            ]
+        }
+        r = requests.post(url, json={"query": mutation_update, "variables": variables}, headers=headers)
+        response_data = r.json()
+        logger.info(f"DEBUG: productVariantStocksUpdate response: {response_data}")
+
+        # Check for GraphQL errors
+        graphql_errors = response_data.get("errors", [])
+        if graphql_errors:
+            logger.error(f"❌ GraphQL Error updating stock: {graphql_errors}")
+            return
+
+        stock_data = response_data.get("data", {}).get("productVariantStocksUpdate", {})
+        errors = stock_data.get("errors", [])
+
+        if errors:
+            logger.error(f"❌ STOCK UPDATE ERROR: {errors}")
+            return
+
+        variant_result = stock_data.get("productVariant", {})
+        if variant_result.get("id"):
+            logger.info(f"✅ STOCK SET | Qty: {stock_qty} units | Variant: {variant_id} | Warehouse: {warehouse_id}")
+            return
+
+        logger.warning(f"⚠️  Unexpected response structure: {stock_data}")
+
+    except Exception as e:
+        logger.error(f"❌ Exception updating stock: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
 
 import json
 def json_description(text):
