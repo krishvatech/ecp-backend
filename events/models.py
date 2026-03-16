@@ -141,6 +141,11 @@ class Event(models.Model):
     recording_url = models.URLField(blank=True)
     replay_available = models.BooleanField(default=False)
     replay_availability_duration = models.CharField(max_length=100, blank=True, null=True)
+    replay_notifications_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when replay notifications are dispatched. Null = never sent."
+    )
     # Dyte live meeting fields
     dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     dyte_meeting_title = models.CharField(max_length=255, blank=True, null=True)

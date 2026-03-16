@@ -523,6 +523,142 @@ def send_event_cancelled_task(event_id):
 
 
 @shared_task(bind=True, max_retries=3)
+def send_replay_notifications_task(self, event_id):
+    """
+    Send contextual replay notifications to registrants based on attendance.
+
+    Categorizes registrants as:
+    - No-show: joined_live=False -> "You missed the webinar"
+    - Partial: joined_live=True, duration < 80% of event duration -> "Parts you missed"
+    - Full: joined_live=True, duration >= 80% -> skip (they saw it all)
+
+    Creates both in-app Notification records AND sends emails.
+    Idempotent: checks replay_notifications_sent_at before sending.
+    """
+    from .models import EventRegistration, SessionAttendance
+    from friends.models import Notification
+    from users.email_utils import send_replay_noshow_email, send_replay_partial_email
+    from django.db.models import Sum
+
+    try:
+        event = Event.objects.get(id=event_id)
+    except Event.DoesNotExist:
+        logger.error(f"[REPLAY_NOTIFY] Event {event_id} not found")
+        return {"error": "event_not_found"}
+
+    # Idempotency guard: do not resend if already sent
+    if event.replay_notifications_sent_at is not None:
+        logger.info(f"[REPLAY_NOTIFY] Skipping event {event_id}: already sent at {event.replay_notifications_sent_at}")
+        return {"skipped": True, "reason": "already_sent"}
+
+    if not event.replay_available or not event.recording_url:
+        logger.warning(f"[REPLAY_NOTIFY] Event {event_id}: replay not available yet, aborting")
+        return {"skipped": True, "reason": "replay_not_available"}
+
+    # Calculate event duration in seconds
+    event_duration_seconds = None
+    if event.start_time and event.end_time:
+        delta = event.end_time - event.start_time
+        event_duration_seconds = delta.total_seconds()
+
+    # Build a lookup: user_id -> total duration_seconds across all sessions for this event
+    attendance_map = {}
+    if event_duration_seconds and event_duration_seconds > 0:
+        attendances = (
+            SessionAttendance.objects
+            .filter(session__event_id=event_id)
+            .values('user_id')
+            .annotate(total_seconds=Sum('duration_seconds'))
+        )
+        attendance_map = {a['user_id']: a['total_seconds'] for a in attendances}
+
+    registrations = EventRegistration.objects.filter(
+        event=event,
+        status__in=["registered", "cancellation_requested"],
+    ).select_related("user")
+
+    threshold = 0.8 * (event_duration_seconds or 0)
+
+    noshow_count = 0
+    partial_count = 0
+    full_count = 0
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    event_url = f"{frontend_base}/events/{event.slug}/"
+
+    try:
+        with transaction.atomic():
+            for reg in registrations:
+                user = reg.user
+                if not user:
+                    continue
+
+                total_seconds = attendance_map.get(user.id, 0)
+
+                # Determine category
+                if not reg.joined_live:
+                    category = "noshow"
+                elif event_duration_seconds and event_duration_seconds > 0 and total_seconds >= threshold:
+                    category = "full"
+                else:
+                    # joined_live=True but either no duration data or < 80%
+                    # Edge case: joined_live=True but NO SessionAttendance record
+                    # -> treat as partial (they joined but we have no duration)
+                    category = "partial"
+
+                if category == "full":
+                    full_count += 1
+                    continue  # Skip full attendees
+
+                # Build notification title/description
+                if category == "noshow":
+                    notif_title = f"Recording available: {event.title}"
+                    notif_desc = "You missed the live session. Watch the full recording now."
+                    send_replay_noshow_email(user, event)
+                    noshow_count += 1
+                else:  # partial
+                    notif_title = f"Catch up on {event.title}"
+                    notif_desc = "You left early. The full recording is now available."
+                    send_replay_partial_email(user, event)
+                    partial_count += 1
+
+                # Create in-app notification
+                Notification.objects.create(
+                    recipient=user,
+                    actor=None,
+                    kind="event",
+                    title=notif_title,
+                    description=notif_desc,
+                    data={
+                        "event_id": event.id,
+                        "event_slug": event.slug,
+                        "event_url": event_url,
+                        "notification_type": "replay_available",
+                        "attendance_category": category,
+                    },
+                )
+
+            # Mark notifications as sent (prevents duplicate sends)
+            Event.objects.filter(pk=event_id).update(
+                replay_notifications_sent_at=timezone.now()
+            )
+
+        logger.info(
+            f"[REPLAY_NOTIFY] Event {event_id}: sent to {noshow_count} no-shows, "
+            f"{partial_count} partial attendees; skipped {full_count} full attendees"
+        )
+        return {
+            "ok": True,
+            "noshow": noshow_count,
+            "partial": partial_count,
+            "full_skipped": full_count,
+        }
+
+    except Exception as exc:
+        logger.exception(f"[REPLAY_NOTIFY] Task failed for event {event_id}: {exc}")
+        raise self.retry(exc=exc, countdown=60)
+
+
+@shared_task(bind=True, max_retries=3)
 def execute_lounge_transition(self, event_id, transition, user_ids):
     """
     Celery task to execute lounge participant transitions after countdown delay.

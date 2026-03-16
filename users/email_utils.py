@@ -575,3 +575,85 @@ def send_event_invite_email(to_email, event, inviter, invite_url):
     except Exception as e:
         logger.error(f"Failed to send event invite email to {to_email}: {e}")
         return False
+
+
+def send_replay_noshow_email(user, event):
+    """
+    Send "You missed the webinar - here is the recording" email to a no-show registrant.
+    Called per-user by the Celery task.
+    """
+    if not user or not user.email:
+        return False
+
+    app_name = "IMAA Connect"
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    event_url = f"{frontend_base}/events/{event.slug}/"
+    replay_url = f"{frontend_base}/account/recordings"
+    support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+
+    ctx = {
+        "app_name": app_name,
+        "first_name": user.first_name or user.username or "there",
+        "event_title": event.title,
+        "event_url": event_url,
+        "replay_url": replay_url,
+        "support_email": support_email,
+    }
+
+    try:
+        text_body = render_to_string("emails/replay_no_show.txt", ctx)
+        html_body = render_to_string("emails/replay_no_show.html", ctx)
+        send_mail(
+            subject=f"You missed '{event.title}' – the recording is now available",
+            message=text_body,
+            from_email=support_email,
+            recipient_list=[user.email],
+            html_message=html_body,
+            fail_silently=True,
+        )
+        logger.info(f"Sent no-show replay email to {user.email} for event {event.id}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send no-show replay email to {user.email}: {e}")
+        return False
+
+
+def send_replay_partial_email(user, event):
+    """
+    Send "Here are the parts you missed" email to a partial attendee.
+    Called per-user by the Celery task.
+    """
+    if not user or not user.email:
+        return False
+
+    app_name = "IMAA Connect"
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    event_url = f"{frontend_base}/events/{event.slug}/"
+    replay_url = f"{frontend_base}/account/recordings"
+    support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+
+    ctx = {
+        "app_name": app_name,
+        "first_name": user.first_name or user.username or "there",
+        "event_title": event.title,
+        "event_url": event_url,
+        "replay_url": replay_url,
+        "support_email": support_email,
+    }
+
+    try:
+        text_body = render_to_string("emails/replay_partial.txt", ctx)
+        html_body = render_to_string("emails/replay_partial.html", ctx)
+        send_mail(
+            subject=f"You left '{event.title}' early – catch what you missed",
+            message=text_body,
+            from_email=support_email,
+            recipient_list=[user.email],
+            html_message=html_body,
+            fail_silently=True,
+        )
+        logger.info(f"Sent partial replay email to {user.email} for event {event.id}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send partial replay email to {user.email}: {e}")
+        return False

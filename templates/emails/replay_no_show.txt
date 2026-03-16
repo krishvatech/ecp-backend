@@ -1,0 +1,10 @@
+Hi {{ first_name }},
+
+We noticed you weren't able to join "{{ event_title }}" live — no worries, the full recording is now available.
+
+Watch the recording here: {{ replay_url }}
+
+If you have any questions, contact us at {{ support_email }}.
+
+Best regards,
+The {{ app_name }} Team

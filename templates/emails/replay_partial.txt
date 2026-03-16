@@ -1,0 +1,10 @@
+Hi {{ first_name }},
+
+Thanks for joining part of "{{ event_title }}"! The full recording is now available so you can catch what you missed.
+
+Watch the recording here: {{ replay_url }}
+
+If you have any questions, contact us at {{ support_email }}.
+
+Best regards,
+The {{ app_name }} Team

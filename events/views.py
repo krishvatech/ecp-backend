@@ -2376,6 +2376,7 @@ class EventViewSet(viewsets.ModelViewSet):
         logger.info(f"[MOOD API] User {request.user.id} set mood to '{mood}' for event {pk}")
         return Response({"user_id": request.user.id, "mood": mood, "allowed_moods": MOOD_ALLOWED_EMOJIS})
 
+    @action(detail=False, methods=["post"], permission_classes=[IsAuthenticated], url_path="download-recording")
     def download_recording(self, request):
         """Generate a pre-signed URL for downloading recording from S3"""
         import boto3
@@ -2420,8 +2421,207 @@ class EventViewSet(viewsets.ModelViewSet):
                 {"error": "Failed to generate download URL", "detail": str(e)},
                 status=500,
             )
-    
-    
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="generate-replay-upload-url")
+    def generate_replay_upload_url(self, request, pk=None):
+        """
+        Generate a presigned S3 PUT URL for direct browser-to-S3 upload of a manual replay.
+
+        Request body: { "filename": "my-recording.mp4", "content_type": "video/mp4" }
+        Response: { "upload_url": "...", "s3_key": "...", "expires_in": 3600 }
+        """
+        import boto3
+        import uuid
+        from botocore.config import Config
+
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"error": "Permission denied"}, status=403)
+
+        filename = (request.data.get("filename") or "replay.mp4").strip()
+        content_type = (request.data.get("content_type") or "video/mp4").strip()
+
+        # Sanitize extension from filename
+        _, ext = os.path.splitext(filename)
+        ext = ext.lower() if ext else ".mp4"
+
+        # Allowed video types
+        ALLOWED_TYPES = {"video/mp4", "video/webm", "video/quicktime", "video/x-msvideo"}
+        if content_type not in ALLOWED_TYPES:
+            return Response({"error": f"Unsupported content_type: {content_type}"}, status=400)
+
+        bucket = AWS_S3_BUCKET
+        if not bucket:
+            return Response({"error": "aws_bucket_not_configured"}, status=500)
+
+        s3_key = f"recordings/{event.slug}/manual-replay/{uuid.uuid4().hex}{ext}"
+
+        try:
+            s3_client = boto3.client(
+                "s3",
+                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+                region_name=AWS_S3_REGION,
+                config=Config(signature_version="s3v4"),
+            )
+
+            upload_url = s3_client.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": bucket,
+                    "Key": s3_key,
+                    "ContentType": content_type,
+                },
+                ExpiresIn=3600,
+            )
+        except Exception as e:
+            logger.exception(f"[UPLOAD_URL] Failed to generate presigned PUT URL for event {event.id}: {e}")
+            return Response({"error": "Failed to generate upload URL", "detail": str(e)}, status=500)
+
+        logger.info(f"[UPLOAD_URL] Generated presigned PUT URL for event={event.id} key={s3_key}")
+
+        return Response({
+            "upload_url": upload_url,
+            "s3_key": s3_key,
+            "expires_in": 3600,
+            "content_type": content_type,
+        })
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="confirm-replay-upload")
+    def confirm_replay_upload(self, request, pk=None):
+        """
+        Confirm that a manual replay file was successfully uploaded to S3.
+        Sets event.recording_url and event.replay_available = True.
+        Optionally dispatches replay notification Celery task.
+
+        Request body: {
+            "s3_key": "recordings/event-slug/manual-replay/abc123.mp4",
+            "send_notifications": true
+        }
+        """
+        from .tasks import send_replay_notifications_task
+
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"error": "Permission denied"}, status=403)
+
+        s3_key = (request.data.get("s3_key") or "").strip()
+        if not s3_key:
+            return Response({"error": "s3_key is required"}, status=400)
+
+        # Validate that s3_key belongs to this event (security: prevent overwriting other events)
+        expected_prefix = f"recordings/{event.slug}/manual-replay/"
+        if not s3_key.startswith(expected_prefix):
+            return Response(
+                {"error": f"Invalid s3_key. Must start with: {expected_prefix}"},
+                status=400,
+            )
+
+        send_notifications = bool(request.data.get("send_notifications", False))
+
+        event.recording_url = s3_key
+        event.replay_available = True
+        event.save(update_fields=["recording_url", "replay_available", "updated_at"])
+
+        logger.info(
+            f"[CONFIRM_UPLOAD] event={event.id} s3_key={s3_key} "
+            f"send_notifications={send_notifications}"
+        )
+
+        if send_notifications:
+            # Dispatch Celery task asynchronously
+            send_replay_notifications_task.delay(event.id)
+            logger.info(f"[CONFIRM_UPLOAD] Queued replay notification task for event {event.id}")
+
+        return Response({
+            "ok": True,
+            "recording_url": s3_key,
+            "replay_available": True,
+            "notifications_queued": send_notifications,
+        })
+
+    @action(detail=True, methods=["post", "get"], permission_classes=[IsAuthenticated], url_path="send-replay-notifications")
+    def send_replay_notifications(self, request, pk=None):
+        """
+        GET: Returns preview counts (no-shows, partial attendees, full attendees).
+        POST: Dispatches the Celery notification task (if not already sent).
+              Body: { "force": false } — set force=true to resend even if already sent.
+        """
+        from .tasks import send_replay_notifications_task
+        from django.db.models import Sum
+
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"error": "Permission denied"}, status=403)
+
+        # Shared: compute preview counts
+        event_duration_seconds = None
+        if event.start_time and event.end_time:
+            event_duration_seconds = (event.end_time - event.start_time).total_seconds()
+
+        attendance_map = {}
+        if event_duration_seconds and event_duration_seconds > 0:
+            qs = (
+                SessionAttendance.objects
+                .filter(session__event_id=event.id)
+                .values("user_id")
+                .annotate(total_seconds=Sum("duration_seconds"))
+            )
+            attendance_map = {a["user_id"]: a["total_seconds"] for a in qs}
+
+        registrations = EventRegistration.objects.filter(
+            event=event,
+            status__in=["registered", "cancellation_requested"],
+        ).only("user_id", "joined_live")
+
+        threshold = 0.8 * (event_duration_seconds or 0)
+        noshow = 0
+        partial = 0
+        full = 0
+
+        for reg in registrations:
+            if not reg.joined_live:
+                noshow += 1
+            elif event_duration_seconds and attendance_map.get(reg.user_id, 0) >= threshold:
+                full += 1
+            else:
+                partial += 1
+
+        preview = {
+            "noshow_count": noshow,
+            "partial_count": partial,
+            "full_count": full,
+            "total_to_notify": noshow + partial,
+            "already_sent": event.replay_notifications_sent_at is not None,
+            "sent_at": event.replay_notifications_sent_at,
+        }
+
+        if request.method == "GET":
+            return Response(preview)
+
+        # POST: dispatch
+        force = bool(request.data.get("force", False))
+
+        if event.replay_notifications_sent_at and not force:
+            return Response({
+                **preview,
+                "error": "Notifications already sent. Pass force=true to resend.",
+            }, status=409)
+
+        if not event.replay_available or not event.recording_url:
+            return Response({"error": "Replay is not available yet."}, status=400)
+
+        if force:
+            # Reset sent_at so the task will proceed
+            Event.objects.filter(pk=event.id).update(replay_notifications_sent_at=None)
+            event.replay_notifications_sent_at = None
+
+        send_replay_notifications_task.delay(event.id)
+        logger.info(f"[SEND_NOTIF] Queued replay notifications for event {event.id} (force={force})")
+
+        return Response({**preview, "queued": True})
+
+
     @action(detail=True, methods=["post"], permission_classes=[AllowAny], url_path="attending")
     def attending(self, request, pk=None):
         op = (request.data.get("op") or "").strip().lower()
@@ -5524,10 +5724,11 @@ class RecordingWebhookView(views.APIView):
 
         # 4) Store the S3 key on the Event
         event.recording_url = s3_key
-        event.save(update_fields=["recording_url", "updated_at"])
+        event.replay_available = True
+        event.save(update_fields=["recording_url", "replay_available", "updated_at"])
 
         logger.info(
-            "✅ Saved recording for event=%s meeting=%s s3_key=%s",
+            "✅ Saved recording for event=%s meeting=%s s3_key=%s, replay_available=True",
             event.id,
             meeting_id,
             s3_key,
