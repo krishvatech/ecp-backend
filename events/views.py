@@ -2378,13 +2378,37 @@ class EventViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], permission_classes=[IsAuthenticated], url_path="download-recording")
     def download_recording(self, request):
-        """Generate a pre-signed URL for downloading recording from S3"""
+        """Generate a pre-signed URL for downloading recording from S3
+
+        Access control:
+        - Host can download at any time
+        - Participants can only download if replay_visible_to_participants = True
+        """
         import boto3
         from botocore.config import Config
-        
+
         recording_url = request.data.get('recording_url')
         if not recording_url:
             return Response({"error": "recording_url required"}, status=400)
+
+        # Find the event by recording_url
+        try:
+            event = Event.objects.get(recording_url=recording_url)
+        except Event.DoesNotExist:
+            return Response({"error": "Recording not found"}, status=404)
+
+        # Check access: host can always download, participants need replay_visible_to_participants
+        is_host = _is_event_host(request.user, event)
+        is_participant = EventRegistration.objects.filter(
+            event=event,
+            user=request.user,
+            status__in=["registered", "cancellation_requested"]
+        ).exists()
+
+        if not is_host and not (is_participant and event.replay_visible_to_participants):
+            return Response({
+                "error": "Recording is not yet available. Host is still processing the replay."
+            }, status=403)
         
         try:
             s3_client = boto3.client(

@@ -591,8 +591,9 @@ class EventSerializer(serializers.ModelSerializer):
     registrations_count = serializers.IntegerField(read_only=True)
     public_registered_count = serializers.SerializerMethodField(read_only=True)
 
-    # Let recording_url be blank or omitted; we will normalize/validate in validate()
-    recording_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    # Access-controlled recording_url (host can always see, participants only if visible)
+    recording_url = serializers.SerializerMethodField(read_only=True)
+    replay_visible_to_participants = serializers.BooleanField(read_only=True)
 
     # Write-only field for participants input (handles JSON string or list)
     participants = ParticipantsField(
@@ -632,6 +633,36 @@ class EventSerializer(serializers.ModelSerializer):
             }
         return None
 
+    def get_recording_url(self, obj):
+        """
+        Access control for recording_url:
+        - Host can always see the URL
+        - Participants can only see if replay_visible_to_participants = True
+        """
+        from events.views import _is_event_host
+        from events.models import EventRegistration
+
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return None
+
+        # Host can always see
+        if _is_event_host(request.user, obj):
+            return obj.recording_url
+
+        # Participants can only see if visible
+        is_participant = EventRegistration.objects.filter(
+            event=obj,
+            user=request.user,
+            status__in=["registered", "cancellation_requested"]
+        ).exists()
+
+        if is_participant and obj.replay_visible_to_participants:
+            return obj.recording_url
+
+        # Otherwise, hide the URL
+        return None
+
     # Write-only field for sessions input during event creation (atomic with event)
     # Using custom field to handle JSON strings from FormData
     sessions_input = SessionsInputField(
@@ -665,6 +696,7 @@ class EventSerializer(serializers.ModelSerializer):
             "recommended_event_id",
             "replay_available",
             "replay_availability_duration",
+            "replay_visible_to_participants",
             "category",
             "format",
             "location",
@@ -1730,6 +1762,8 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
     user_avatar_url = serializers.SerializerMethodField()
     user_kyc_status = serializers.SerializerMethodField()
     is_host = serializers.SerializerMethodField()
+    attendance_duration_seconds = serializers.SerializerMethodField()
+    attendance_category = serializers.SerializerMethodField()
 
     class Meta:
         model = EventRegistration
@@ -1758,6 +1792,8 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "status",
             "is_host",
             "current_location",
+            "attendance_duration_seconds",
+            "attendance_category",
         )
         read_only_fields = (
             "id",
@@ -1821,6 +1857,52 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
         if prof and hasattr(prof, "kyc_status"):
             return prof.kyc_status
         return getattr(u, "kyc_status", None)
+
+    def get_attendance_duration_seconds(self, obj):
+        """
+        Calculate total attendance duration for this user at this event.
+        Uses SessionAttendance records aggregated by duration_seconds.
+        """
+        from django.db.models import Sum
+        from .models import SessionAttendance
+
+        if not obj.event_id or not obj.user_id:
+            return 0
+
+        total = SessionAttendance.objects.filter(
+            session__event_id=obj.event_id,
+            user_id=obj.user_id
+        ).aggregate(total=Sum('duration_seconds'))['total']
+
+        return total or 0
+
+    def get_attendance_category(self, obj):
+        """
+        Determine attendance category based on joined_live status and duration.
+        Categories:
+        - 'noshow': Did not join live
+        - 'partial': Joined but attended < 80% of event duration
+        - 'full': Joined and attended >= 80% of event duration
+        """
+        if not obj.joined_live:
+            return 'noshow'
+
+        event = obj.event
+        if not event or not event.start_time or not event.end_time:
+            # If no event duration, mark as partial
+            return 'partial'
+
+        event_duration_seconds = (event.end_time - event.start_time).total_seconds()
+        if event_duration_seconds <= 0:
+            return 'partial'
+
+        threshold = 0.8 * event_duration_seconds
+        attendance_duration = self.get_attendance_duration_seconds(obj)
+
+        if attendance_duration >= threshold:
+            return 'full'
+        else:
+            return 'partial'
 
 
 class SpeedNetworkingMatchSerializer(serializers.ModelSerializer):
