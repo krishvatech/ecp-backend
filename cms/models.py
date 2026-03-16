@@ -5,6 +5,7 @@ from wagtail.images.blocks import ImageChooserBlock
 from wagtail.fields import StreamField, RichTextField
 from wagtail.admin.panels import FieldPanel, MultiFieldPanel
 from wagtail.models import Page
+from wagtail_ai.panels import AITitleFieldPanel, AIDescriptionFieldPanel
 
 class HomeFeaturedCardBlock(blocks.StructBlock):
     image = ImageChooserBlock(required=False)
@@ -110,8 +111,8 @@ class HomePage(Page):
     content_panels = Page.content_panels + [
         MultiFieldPanel(
             [
-                FieldPanel("hero_title"),
-                FieldPanel("hero_subtitle"),
+                AITitleFieldPanel("hero_title"),
+                AITitleFieldPanel("hero_subtitle"),
                 FieldPanel("hero_background_image"),
                 FieldPanel("hero_cta_label"),
                 FieldPanel("hero_cta_url"),
@@ -200,8 +201,8 @@ class AboutPage(Page):
     content_panels = Page.content_panels + [
         MultiFieldPanel(
             [
-                FieldPanel("hero_title"),
-                FieldPanel("hero_subtitle"),
+                AITitleFieldPanel("hero_title"),
+                AITitleFieldPanel("hero_subtitle"),
                 FieldPanel("hero_background_image"),
             ],
             heading="Hero Section",
@@ -214,14 +215,14 @@ class AboutPage(Page):
         ),
         MultiFieldPanel(
             [
-                FieldPanel("features_title"),
+                AITitleFieldPanel("features_title"),
                 FieldPanel("features"),
             ],
             heading="Feature Cards",
         ),
         MultiFieldPanel(
             [
-                FieldPanel("mission_title"),
+                AITitleFieldPanel("mission_title"),
                 FieldPanel("mission_html"),
             ],
             heading="Mission Section",
@@ -274,8 +275,8 @@ class EventsLandingPage(Page):
     content_panels = Page.content_panels + [
         MultiFieldPanel(
             [
-                FieldPanel("hero_title"),
-                FieldPanel("hero_subtitle"),
+                AITitleFieldPanel("hero_title"),
+                AITitleFieldPanel("hero_subtitle"),
                 FieldPanel("hero_background_image"),
             ],
             heading="Hero Section",

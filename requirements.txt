@@ -38,5 +38,6 @@ drf_spectacular_sidecar
 django-filter
 agora_token_builder
 
-wagtail==7.0.3
+wagtail>=7.1,<8
+wagtail-ai>=3.0,<4
 whitenoise==6.7.0

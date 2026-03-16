@@ -97,6 +97,20 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100 MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100 MB
 WAGTAIL_SITE_NAME = "Events & Community - IMAA Connect - CMS"
 WAGTAILADMIN_BASE_URL = os.getenv("WAGTAILADMIN_BASE_URL", "http://localhost:8000")
+
+# Wagtail AI Configuration
+WAGTAIL_AI = {
+    "PROVIDERS": {
+        "default": {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+        },
+    },
+    "IMAGE_DESCRIPTION_PROVIDER": "default",
+}
+
+# Enable AI image features
+WAGTAILIMAGES_IMAGE_FORM_BASE = "wagtail_ai.forms.DescribeImageForm"
 ALLOWED_HOSTS = [h.strip() for h in DJANGO_ALLOWED_HOSTS.split(",") if h.strip()]
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")
@@ -219,6 +233,8 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "drf_spectacular_sidecar",
 
+    "wagtail_ai",
+    "wagtail.contrib.settings",
     "wagtail.contrib.forms",
     "wagtail.contrib.redirects",
     "wagtail.embeds",
