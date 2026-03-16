@@ -78,6 +78,12 @@ class Event(models.Model):
     format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default="in_person")
     location = models.CharField(max_length=255, blank=True)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    currency = models.CharField(
+        max_length=3,
+        default="SGD",
+        editable=False,
+        help_text="Currency code (ISO 4217). Always SGD (Singapore Dollar)"
+    )
     is_free = models.BooleanField(default=False)
     attending_count = models.PositiveIntegerField(default=0)
     max_participants = models.PositiveIntegerField(
@@ -252,6 +258,15 @@ class Event(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+    def clean(self):
+        """Validate price."""
+        from django.core.exceptions import ValidationError
+
+        # Validate price is not negative
+        if self.price and self.price < 0:
+            raise ValidationError("Price cannot be negative.")
+
     def save(self, *args, **kwargs):
         if not self.slug:
             from django.utils import timezone
@@ -266,6 +281,11 @@ class Event(models.Model):
                 slug = f"{base_slug}-{suffix}"
                 suffix += 1
             self.slug = slug
+
+        # Ensure default currency is set
+        if not self.currency:
+            self.currency = "SGD"
+
         super().save(*args, **kwargs)
     def __str__(self) -> str:
         return f"{self.title} ({self.community.name})"

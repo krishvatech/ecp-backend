@@ -701,6 +701,7 @@ class EventSerializer(serializers.ModelSerializer):
             "format",
             "location",
             "price",
+            "currency",
             "is_free",
             "max_participants",
             "saleor_product_id",
@@ -769,6 +770,7 @@ class EventSerializer(serializers.ModelSerializer):
             "live_ended_at",
             "dyte_meeting_id",
             "dyte_meeting_title",
+            "currency",  # Always SGD, read-only
         ]
         extra_kwargs = {
             # Let custom validate_slug() handle uniqueness so create can auto-suffix collisions.
@@ -1669,7 +1671,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "id", "slug", "title", "description",
             "start_time", "end_time", "timezone",
             "status", "is_live", "category", "format",
-            "location", "price", "is_free",
+            "location", "price", "currency", "is_free",
             "preview_image", "attending_count",
             "created_at", "sessions", "speakers",
             "featured_participants", "featured_participants_total",
@@ -1736,7 +1738,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         model = Event
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
-            "preview_image", "cover_image", "waiting_room_image", "location", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "price", "is_free",
+            "preview_image", "cover_image", "waiting_room_image", "location", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "price", "currency", "is_free",
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer",
             "lounge_enabled_after", "lounge_after_buffer",

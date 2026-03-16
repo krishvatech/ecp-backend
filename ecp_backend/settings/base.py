@@ -559,6 +559,7 @@ CSRF_COOKIE_SECURE = False     # Should be True in production
 SALEOR_DASHBOARD_URL = os.getenv("SALEOR_DASHBOARD_URL", "http://127.0.0.1:9001/")
 SALEOR_API_URL = os.getenv("SALEOR_API_URL", "http://localhost:8001/graphql/")
 SALEOR_APP_TOKEN = os.getenv("SALEOR_APP_TOKEN", "")
+SALEOR_CHANNEL_SLUG = os.getenv("SALEOR_CHANNEL_SLUG", "default-channel")  # SGD channel slug
 
 # Email Invite Limits
 INVITE_EMAILS_MAX_PER_REQUEST = int(os.getenv("INVITE_EMAILS_MAX_PER_REQUEST", "20"))

@@ -7,11 +7,12 @@ logger = logging.getLogger(__name__)
 def sync_event_to_saleor_sync(event):
     """
     Synchronously creates/updates a Saleor Product for the given Event.
+    All prices are synced in SGD (Singapore Dollar).
     """
     saleor_url = getattr(settings, "SALEOR_API_URL", None)
     saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
-    # Default channel slug is usually 'default-channel' in standard Saleor
-    channel_slug = "default-channel" 
+    # Use configured channel slug from settings (sgd-channel for SGD currency)
+    channel_slug = getattr(settings, "SALEOR_CHANNEL_SLUG", "default-channel") 
 
     if not saleor_url or not saleor_token:
         logger.warning("Skipping Saleor event sync: Settings missing.")
@@ -51,16 +52,20 @@ def sync_event_to_saleor_sync(event):
 
     # 2. Extract Event Data
     # For slug, we ensure unique in Saleor by re-using event slug
-    product_slug = event.slug 
+    product_slug = event.slug
     price_amount = float(event.price) if event.price else 0.0
+
+    logger.info(f"🔄 SALEOR SYNC START | Event: {event.title} | Price: {event.currency} {price_amount} | Channel: {channel_slug}")
 
     # 3. Create or Update Product
     if not event.saleor_product_id:
-        logger.info(f"DEBUG: Creating new product for event {event.id}")
+        logger.info(f"➕ Creating NEW product for event {event.id} | Price: {event.currency} {price_amount}")
         _create_product_in_saleor(event, saleor_url, headers, category_id, product_type_id, channel_slug)
     else:
-        logger.info(f"DEBUG: Updating existing product {event.saleor_product_id}")
+        logger.info(f"🔄 Updating EXISTING product {event.saleor_product_id} | Price: {event.currency} {price_amount}")
         _update_product_in_saleor(event, saleor_url, headers, channel_slug)
+
+    logger.info(f"✅ SALEOR SYNC COMPLETE | Event: {event.title}")
 
 
 def _create_product_in_saleor(event, url, headers, cat_id, type_id, channel):
@@ -111,6 +116,7 @@ def _create_product_in_saleor(event, url, headers, cat_id, type_id, channel):
         logger.error(f"Exc creating product: {e}")
 
 def _update_product_in_saleor(event, url, headers, channel):
+    logger.info(f"📝 UPDATING Product in Saleor: {event.title} (Event ID: {event.id})")
     mutation = """
     mutation UpdateProduct($id: ID!, $input: ProductInput!) {
       productUpdate(id: $id, input: $input) {
@@ -126,7 +132,7 @@ def _update_product_in_saleor(event, url, headers, channel):
             "description": json_description(event.description or "")
         }
     }
-    
+
     try:
         r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers)
         logger.info(f"DEBUG: productUpdate response: {r.json()}")
@@ -135,7 +141,10 @@ def _update_product_in_saleor(event, url, headers, channel):
 
     # For now, we prioritize price update on the variant
     if event.saleor_variant_id:
+        logger.info(f"💰 UPDATING Price on Variant: {event.saleor_variant_id} | Event: {event.title}")
         _update_variant_price(event, url, headers, event.saleor_variant_id, channel)
+    else:
+        logger.warning(f"⚠️  No variant ID found for event {event.id}. Price not updated.")
 
 def _create_variant(event, url, headers, product_id, channel):
     mutation = """
@@ -148,7 +157,8 @@ def _create_variant(event, url, headers, product_id, channel):
     """
     # SKU = EVENT-{ID}
     sku = f"EVENT-{event.id}"
-    
+    price_val = float(event.price) if event.price else 0.0
+
     variables = {
         "input": {
             "product": product_id,
@@ -156,27 +166,28 @@ def _create_variant(event, url, headers, product_id, channel):
             "attributes": [] # Required by some Saleor configs even if empty
         }
     }
-    
+
     try:
         r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers)
         data = r.json()
         logger.info(f"DEBUG: productVariantCreate response: {data}") # DEBUG
-        
+
         var_data = data.get("data", {}).get("productVariantCreate", {})
         errors = var_data.get("errors", [])
         if errors:
-            logger.error(f"Variant Create Errors: {errors}")
+            logger.error(f"❌ Variant Create Errors: {errors}")
             return
-            
+
         variant_id = var_data.get("productVariant", {}).get("id")
         if variant_id:
-             logger.info(f"DEBUG: Created Variant ID: {variant_id}")
+             logger.info(f"✅ Created Variant ID: {variant_id} | SKU: {sku}")
              event.saleor_variant_id = variant_id
              event.save(update_fields=["saleor_variant_id"])
+             logger.info(f"💰 Setting Price: {event.currency} {price_val} | Variant: {variant_id} | Channel: {channel}")
              _update_variant_channel_listing(event, url, headers, variant_id, channel)
 
     except Exception as e:
-        logger.error(f"Exc creating variant: {e}")
+        logger.error(f"❌ Exception creating variant: {e}")
 
 def _update_product_channel_listing(url, headers, product_id, channel):
     mutation = """
@@ -215,7 +226,9 @@ def _update_product_channel_listing(url, headers, product_id, channel):
 
 def _update_variant_channel_listing(event, url, headers, variant_id, channel):
     channel_id = _get_channel_id(url, headers, channel)
-    if not channel_id: return
+    if not channel_id:
+        logger.warning(f"Channel '{channel}' not found in Saleor. Price sync FAILED for event {event.id}")
+        return
 
     # Fix: Schema expects a LIST of inputs directly based on error message
     mutation = """
@@ -236,9 +249,16 @@ def _update_variant_channel_listing(event, url, headers, variant_id, channel):
     }
     try:
         r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers)
-        logger.info(f"DEBUG: updateVariantChannel response: {r.json()}")
+        response_data = r.json()
+        errors = response_data.get("data", {}).get("productVariantChannelListingUpdate", {}).get("errors", [])
+
+        if errors:
+            logger.error(f"❌ PRICE SYNC FAILED for Event {event.id}: {errors}")
+        else:
+            logger.info(f"✅ PRICE SET to {event.currency} {price_val} | Event: {event.title} (ID: {event.id}) | Channel: {channel}")
+            logger.info(f"DEBUG: updateVariantChannel response: {response_data}")
     except Exception as e:
-        logger.error(f"Exc updating variant channel: {e}")
+        logger.error(f"❌ Exception updating variant channel price for Event {event.id}: {e}")
 
 
 def _update_variant_price(event, url, headers, variant_id, channel):
