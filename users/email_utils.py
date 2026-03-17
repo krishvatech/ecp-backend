@@ -6,12 +6,87 @@ import logging
 import boto3
 from django.conf import settings
 from django.core.mail import send_mail
+from django.template import Template as DjangoTemplate, Context
 from django.template.loader import render_to_string
 from django.utils.crypto import get_random_string
 from botocore.exceptions import ClientError
 from .cognito_groups import add_user_to_speaker_group
 
 logger = logging.getLogger(__name__)
+
+
+def send_template_email(template_key, to_email, context, subject_override=None, fail_silently=False):
+    """
+    Central email sending helper with DB-first and file fallback logic.
+
+    Attempts to load email template from DB (EmailTemplate model).
+    If found and is_active=True: renders html_body/text_body using Django Template engine.
+    If not found or is_active=False: falls back to file-based templates (emails/<key>.html/.txt).
+
+    All template fields support full Django template syntax:
+    - Variables: {{ variable }}
+    - Tags: {% if %}, {% for %}, etc.
+    - Filters: |date:"F j, Y", |truncatewords:30, etc.
+
+    Args:
+        template_key: One of the 17 EmailTemplate.TEMPLATE_KEY_CHOICES values
+        to_email: Recipient email address
+        context: Dict of template variables
+        subject_override: If provided, overrides the DB/default subject
+        fail_silently: Passed to send_mail (False blocks errors, True logs silently)
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    db_template = None
+    try:
+        from cms.models import EmailTemplate
+        db_template = EmailTemplate.objects.get(template_key=template_key, is_active=True)
+    except Exception:
+        # DoesNotExist, ImportError, or DB error — fallback to files
+        pass
+
+    # --- Step 1: Render subject, html_body, text_body ---
+    try:
+        if db_template:
+            # Render DB-stored template strings through Django template engine
+            ctx = Context(context)
+            subject = subject_override or DjangoTemplate(db_template.subject).render(ctx)
+            html_body = DjangoTemplate(db_template.html_body).render(ctx)
+            text_body = DjangoTemplate(db_template.text_body).render(ctx)
+        else:
+            # Fallback to file templates
+            subject = subject_override or f"[{template_key}]"
+            html_path = f"emails/{template_key}.html"
+            txt_path = f"emails/{template_key}.txt"
+            try:
+                html_body = render_to_string(html_path, context)
+            except Exception:
+                html_body = None
+            try:
+                text_body = render_to_string(txt_path, context)
+            except Exception:
+                text_body = ""
+
+    except Exception as e:
+        logger.error(f"send_template_email: Failed to render template '{template_key}': {e}")
+        return False
+
+    # --- Step 2: Send ---
+    try:
+        send_mail(
+            subject=subject,
+            message=text_body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[to_email],
+            html_message=html_body or None,
+            fail_silently=fail_silently,
+        )
+        logger.info(f"send_template_email: Sent '{template_key}' to {to_email}")
+        return True
+    except Exception as e:
+        logger.error(f"send_template_email: Failed to send '{template_key}' to {to_email}: {e}")
+        return False
 
 
 def generate_temporary_password(length=12):
@@ -289,29 +364,14 @@ def send_speaker_credentials_email(user, frontend_url=None):
         "support_email": settings.DEFAULT_FROM_EMAIL,
     }
 
-    # Render email templates
-    try:
-        text_body = render_to_string("emails/speaker_credentials.txt", ctx)
-        html_body = render_to_string("emails/speaker_credentials.html", ctx)
-    except Exception as e:
-        logger.error(f"Failed to render speaker credentials email templates: {e}")
-        return False
-
-    # Send email
-    try:
-        send_mail(
-            subject=f"Your {ctx['app_name']} Speaker Account - Login Credentials",
-            message=text_body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            html_message=html_body,
-            fail_silently=False,
-        )
-        logger.info(f"Speaker credentials email sent to {user.email}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send speaker credentials email to {user.email}: {e}")
-        return False
+    # Send email via template helper
+    return send_template_email(
+        template_key="speaker_credentials",
+        to_email=user.email,
+        context=ctx,
+        subject_override=f"Your {ctx['app_name']} Speaker Account - Login Credentials",
+        fail_silently=False,
+    )
 
 
 def send_event_confirmation_email(participant):
@@ -349,29 +409,14 @@ def send_event_confirmation_email(participant):
         "support_email": settings.DEFAULT_FROM_EMAIL,
     }
 
-    # Render email templates
-    try:
-        text_body = render_to_string("emails/event_confirmation.txt", ctx)
-        html_body = render_to_string("emails/event_confirmation.html", ctx)
-    except Exception as e:
-        logger.error(f"Failed to render event confirmation email templates: {e}")
-        return False
-
-    # Send email
-    try:
-        send_mail(
-            subject=f"You're Confirmed as {ctx['role']} - {event.title}",
-            message=text_body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            html_message=html_body,
-            fail_silently=False,
-        )
-        logger.info(f"Event confirmation email sent to {user.email} for event {event.id}")
-        return False
-    except Exception as e:
-        logger.error(f"Failed to send event confirmation email to {user.email}: {e}")
-        return False
+    # Send email via template helper
+    return send_template_email(
+        template_key="event_confirmation",
+        to_email=user.email,
+        context=ctx,
+        subject_override=f"You're Confirmed as {ctx['role']} - {event.title}",
+        fail_silently=False,
+    )
 
 
 def send_admin_credentials_email(user, frontend_url=None):
@@ -426,29 +471,14 @@ def send_admin_credentials_email(user, frontend_url=None):
         "support_email": settings.DEFAULT_FROM_EMAIL,
     }
 
-    # 5. Render templates
-    try:
-        text_body = render_to_string("emails/admin_credentials.txt", ctx)
-        html_body = render_to_string("emails/admin_credentials.html", ctx)
-    except Exception as e:
-        logger.error(f"Failed to render admin credentials email templates: {e}")
-        return False
-
-    # 6. Send email
-    try:
-        send_mail(
-            subject=f"Welcome to {ctx['app_name']} - Your Admin Credentials",
-            message=text_body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            html_message=html_body,
-            fail_silently=False,
-        )
-        logger.info(f"Admin credentials email sent to {user.email}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send admin credentials email to {user.email}: {e}")
-        return False
+    # 5. Send email via template helper
+    return send_template_email(
+        template_key="admin_credentials",
+        to_email=user.email,
+        context=ctx,
+        subject_override=f"Welcome to {ctx['app_name']} - Your Admin Credentials",
+        fail_silently=False,
+    )
 
 def send_event_cancelled_email(event):
     """
@@ -474,7 +504,7 @@ def send_event_cancelled_email(event):
         user = reg.user
         if not user or not user.email:
             continue
-            
+
         ctx = {
             "app_name": "IMAA Connect",
             "first_name": user.first_name or user.username or "there",
@@ -486,22 +516,15 @@ def send_event_cancelled_email(event):
             "event_url": event_url,
             "support_email": support_email,
         }
-        
-        try:
-            text_body = render_to_string("emails/event_cancelled.txt", ctx)
-            html_body = render_to_string("emails/event_cancelled.html", ctx)
-            
-            send_mail(
-                subject=f"Update: '{event.title}' has been cancelled",
-                message=text_body,
-                from_email=support_email,
-                recipient_list=[user.email],
-                html_message=html_body,
-                fail_silently=True,
-            )
+
+        if send_template_email(
+            template_key="event_cancelled",
+            to_email=user.email,
+            context=ctx,
+            subject_override=f"Update: '{event.title}' has been cancelled",
+            fail_silently=True,
+        ):
             success_count += 1
-        except Exception as e:
-            logger.error(f"Failed to send cancellation email to {user.email} for event {event.id}: {e}")
             
     logger.info(f"Sent {success_count} cancellation emails for event {event.id}")
     return success_count
@@ -523,23 +546,13 @@ def send_group_invite_email(to_email, group, inviter, invite_url):
         "support_email": support_email,
     }
 
-    try:
-        text_body = render_to_string("emails/group_invite.txt", ctx)
-        html_body = render_to_string("emails/group_invite.html", ctx)
-
-        send_mail(
-            subject=f"You're invited to join '{group.name}' on {app_name}",
-            message=text_body,
-            from_email=support_email,
-            recipient_list=[to_email],
-            html_message=html_body,
-            fail_silently=True,
-        )
-        logger.info(f"Sent group invite email to {to_email} for group {group.id}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send group invite email to {to_email}: {e}")
-        return False
+    return send_template_email(
+        template_key="group_invite",
+        to_email=to_email,
+        context=ctx,
+        subject_override=f"You're invited to join '{group.name}' on {app_name}",
+        fail_silently=True,
+    )
 
 
 def send_event_invite_email(to_email, event, inviter, invite_url):
@@ -558,23 +571,13 @@ def send_event_invite_email(to_email, event, inviter, invite_url):
         "support_email": support_email,
     }
 
-    try:
-        text_body = render_to_string("emails/event_invite.txt", ctx)
-        html_body = render_to_string("emails/event_invite.html", ctx)
-
-        send_mail(
-            subject=f"You're invited to '{event.title}' on {app_name}",
-            message=text_body,
-            from_email=support_email,
-            recipient_list=[to_email],
-            html_message=html_body,
-            fail_silently=True,
-        )
-        logger.info(f"Sent event invite email to {to_email} for event {event.id}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send event invite email to {to_email}: {e}")
-        return False
+    return send_template_email(
+        template_key="event_invite",
+        to_email=to_email,
+        context=ctx,
+        subject_override=f"You're invited to '{event.title}' on {app_name}",
+        fail_silently=True,
+    )
 
 
 def send_replay_noshow_email(user, event):
@@ -600,22 +603,13 @@ def send_replay_noshow_email(user, event):
         "support_email": support_email,
     }
 
-    try:
-        text_body = render_to_string("emails/replay_no_show.txt", ctx)
-        html_body = render_to_string("emails/replay_no_show.html", ctx)
-        send_mail(
-            subject=f"You missed '{event.title}' – the recording is now available",
-            message=text_body,
-            from_email=support_email,
-            recipient_list=[user.email],
-            html_message=html_body,
-            fail_silently=True,
-        )
-        logger.info(f"Sent no-show replay email to {user.email} for event {event.id}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send no-show replay email to {user.email}: {e}")
-        return False
+    return send_template_email(
+        template_key="replay_no_show",
+        to_email=user.email,
+        context=ctx,
+        subject_override=f"You missed '{event.title}' – the recording is now available",
+        fail_silently=True,
+    )
 
 
 def send_replay_partial_email(user, event):
@@ -641,19 +635,10 @@ def send_replay_partial_email(user, event):
         "support_email": support_email,
     }
 
-    try:
-        text_body = render_to_string("emails/replay_partial.txt", ctx)
-        html_body = render_to_string("emails/replay_partial.html", ctx)
-        send_mail(
-            subject=f"You left '{event.title}' early – catch what you missed",
-            message=text_body,
-            from_email=support_email,
-            recipient_list=[user.email],
-            html_message=html_body,
-            fail_silently=True,
-        )
-        logger.info(f"Sent partial replay email to {user.email} for event {event.id}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send partial replay email to {user.email}: {e}")
-        return False
+    return send_template_email(
+        template_key="replay_partial",
+        to_email=user.email,
+        context=ctx,
+        subject_override=f"You left '{event.title}' early – catch what you missed",
+        fail_silently=True,
+    )

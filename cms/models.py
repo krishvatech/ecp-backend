@@ -1,10 +1,13 @@
 from django.db import models
+from django.core.exceptions import ValidationError
+from django.template import Template as DjangoTemplate, TemplateSyntaxError
 
 from wagtail import blocks
 from wagtail.images.blocks import ImageChooserBlock
 from wagtail.fields import StreamField, RichTextField
 from wagtail.admin.panels import FieldPanel, MultiFieldPanel
 from wagtail.models import Page
+from wagtail.snippets.models import register_snippet
 from wagtail_ai.panels import AITitleFieldPanel, AIDescriptionFieldPanel
 
 class HomeFeaturedCardBlock(blocks.StructBlock):
@@ -343,3 +346,142 @@ class ProfileLayoutPage(Page):
     parent_page_types = ["cms.HomePage"]
     subpage_types = []
     max_count = 1
+
+
+# Email template choices for all transactional email types
+TEMPLATE_KEY_CHOICES = [
+    ("welcome", "Welcome"),
+    ("password_changed", "Password Changed"),
+    ("speaker_credentials", "Speaker Credentials"),
+    ("admin_credentials", "Admin Credentials"),
+    ("event_confirmation", "Event Confirmation"),
+    ("event_cancelled", "Event Cancelled"),
+    ("event_invite", "Event Invite"),
+    ("group_invite", "Group Invite"),
+    ("replay_no_show", "Replay: No Show"),
+    ("replay_partial", "Replay: Partial Attendance"),
+    ("kyc_approved", "KYC Approved"),
+    ("kyc_failed", "KYC Failed"),
+    ("name_change_approved", "Name Change Approved"),
+    ("name_change_manual_review", "Name Change Manual Review"),
+    ("name_change_verification_failed", "Name Change Verification Failed"),
+    ("name_change_rejected", "Name Change Rejected"),
+    ("admin_name_change_review", "Admin Name Change Review"),
+]
+
+# Per-template-key required placeholders — used in clean() validation
+REQUIRED_PLACEHOLDERS = {
+    "welcome": ["{{ first_name }}", "{{ app_name }}"],
+    "password_changed": ["{{ first_name }}", "{{ changed_at }}"],
+    "speaker_credentials": ["{{ first_name }}", "{{ temporary_password }}", "{{ login_url }}"],
+    "admin_credentials": ["{{ first_name }}", "{{ temporary_password }}", "{{ login_url }}"],
+    "event_confirmation": ["{{ first_name }}", "{{ event_title }}"],
+    "event_cancelled": ["{{ first_name }}", "{{ event_title }}"],
+    "event_invite": ["{{ inviter_name }}", "{{ event_title }}", "{{ invite_url }}"],
+    "group_invite": ["{{ inviter_name }}", "{{ group_name }}", "{{ invite_url }}"],
+    "replay_no_show": ["{{ first_name }}", "{{ event_title }}", "{{ replay_url }}"],
+    "replay_partial": ["{{ first_name }}", "{{ event_title }}", "{{ replay_url }}"],
+    "kyc_approved": ["{{ first_name }}"],
+    "kyc_failed": ["{{ first_name }}"],
+    "name_change_approved": ["{{ first_name }}", "{{ new_name }}"],
+    "name_change_manual_review": ["{{ first_name }}"],
+    "name_change_verification_failed": ["{{ first_name }}"],
+    "name_change_rejected": ["{{ first_name }}"],
+    "admin_name_change_review": ["{{ user_email }}", "{{ request_id }}"],
+}
+
+
+@register_snippet
+class EmailTemplate(models.Model):
+    """
+    Editable email template snippet for Wagtail CMS.
+    Stores subject line, HTML body, and plain-text body for transactional emails.
+    All fields support Django template syntax ({{ variable }}, {% if %}, filters, etc).
+    """
+
+    template_key = models.CharField(
+        max_length=80,
+        choices=TEMPLATE_KEY_CHOICES,
+        unique=True,
+        help_text="Identifier used in code. Cannot be changed after creation.",
+    )
+    subject = models.CharField(
+        max_length=250,
+        help_text="Email subject line. Supports {{ variable }} substitution.",
+    )
+    html_body = models.TextField(
+        help_text=(
+            "Full HTML email body. Supports Django template syntax: "
+            "{{ variable }}, {% if %}, {% for %}, filters like |date:\"F j, Y\"."
+        ),
+    )
+    text_body = models.TextField(
+        help_text="Plain-text fallback body. Supports Django template syntax.",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text=(
+            "If unchecked, the system falls back to the file-based template. "
+            "Use this to temporarily disable DB overrides without deleting."
+        ),
+    )
+    notes = models.TextField(
+        blank=True,
+        help_text="Internal notes for editors. Not sent to users.",
+    )
+    last_updated = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    panels = [
+        FieldPanel("template_key"),
+        FieldPanel("subject"),
+        FieldPanel("html_body", classname="full"),
+        FieldPanel("text_body", classname="full"),
+        FieldPanel("is_active"),
+        FieldPanel("notes"),
+    ]
+
+    def __str__(self):
+        return f"{self.get_template_key_display()} ({'active' if self.is_active else 'inactive'})"
+
+    def clean(self):
+        """Validate Django template syntax and required placeholders."""
+        errors = {}
+
+        # 1. Validate Django template syntax for html_body
+        if self.html_body:
+            try:
+                DjangoTemplate(self.html_body)
+            except TemplateSyntaxError as e:
+                errors["html_body"] = f"Invalid Django template syntax: {e}"
+
+        # 2. Validate Django template syntax for text_body
+        if self.text_body:
+            try:
+                DjangoTemplate(self.text_body)
+            except TemplateSyntaxError as e:
+                errors["text_body"] = f"Invalid Django template syntax: {e}"
+
+        # 3. Validate Django template syntax for subject
+        if self.subject:
+            try:
+                DjangoTemplate(self.subject)
+            except TemplateSyntaxError as e:
+                errors["subject"] = f"Invalid Django template syntax in subject: {e}"
+
+        # 4. Check required placeholders present in html_body
+        required = REQUIRED_PLACEHOLDERS.get(self.template_key, [])
+        missing = [p for p in required if p not in self.html_body]
+        if missing:
+            errors["html_body"] = (
+                errors.get("html_body", "")
+                + f"\nMissing required placeholders: {', '.join(missing)}"
+            ).strip()
+
+        if errors:
+            raise ValidationError(errors)
+
+    class Meta:
+        verbose_name = "Email Template"
+        verbose_name_plural = "Email Templates"
+        ordering = ["template_key"]

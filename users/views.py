@@ -1004,6 +1004,7 @@ class ChangePasswordView(generics.GenericAPIView):
         user.save()
         # âœ… Password changed alert email (non-blocking)
         try:
+            from users.email_utils import send_template_email
             frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
             changed_at = django_timezone.localtime(django_timezone.now()).strftime("%d %b %Y, %I:%M %p %Z")
 
@@ -1016,15 +1017,11 @@ class ChangePasswordView(generics.GenericAPIView):
                 "support_email": settings.DEFAULT_FROM_EMAIL,
             }
 
-            text_body = render_to_string("emails/password_changed.txt", ctx)
-            html_body = render_to_string("emails/password_changed.html", ctx)
-
-            send_mail(
-                subject=f"Your {ctx['app_name']} password was changed",
-                message=text_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,  # âœ… same sender as forgot password
-                recipient_list=[user.email],
-                html_message=html_body,
+            send_template_email(
+                template_key="password_changed",
+                to_email=user.email,
+                context=ctx,
+                subject_override=f"Your {ctx['app_name']} password was changed",
                 fail_silently=False,
             )
         except Exception as e:
@@ -1076,6 +1073,7 @@ class ResetPasswordView(generics.GenericAPIView):
         user.save()
         # âœ… Password changed alert email (non-blocking)
         try:
+            from users.email_utils import send_template_email
             frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
             changed_at = django_timezone.localtime(django_timezone.now()).strftime("%d %b %Y, %I:%M %p %Z")
 
@@ -1088,15 +1086,11 @@ class ResetPasswordView(generics.GenericAPIView):
                 "support_email": settings.DEFAULT_FROM_EMAIL,
             }
 
-            text_body = render_to_string("emails/password_changed.txt", ctx)
-            html_body = render_to_string("emails/password_changed.html", ctx)
-
-            send_mail(
-                subject=f"Your {ctx['app_name']} password was changed",
-                message=text_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,  # âœ… same sender as forgot password
-                recipient_list=[user.email],
-                html_message=html_body,
+            send_template_email(
+                template_key="password_changed",
+                to_email=user.email,
+                context=ctx,
+                subject_override=f"Your {ctx['app_name']} password was changed",
                 fail_silently=False,
             )
         except Exception as e:
@@ -2257,26 +2251,28 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
             }
 
             if template_key == "approved":
-                subject = "Your name change request is approved âœ…"
-                text_body = render_to_string("emails/name_change_approved.txt", ctx)
-                html_body = render_to_string("emails/name_change_approved.html", ctx)
+                from users.email_utils import send_template_email
+                send_template_email(
+                    template_key="name_change_approved",
+                    to_email=user.email,
+                    context=ctx,
+                    subject_override="Your name change request is approved ✓",
+                    fail_silently=False,
+                )
 
             elif template_key == "rejected":
-                subject = "Your name change request was rejected âŒ"
-                text_body = render_to_string("emails/name_change_rejected.txt", ctx)
-                html_body = None
+                from users.email_utils import send_template_email
+                send_template_email(
+                    template_key="name_change_rejected",
+                    to_email=user.email,
+                    context=ctx,
+                    subject_override="Your name change request was rejected ✗",
+                    fail_silently=False,
+                )
 
             else:
                 return
 
-            send_mail(
-                subject=subject,
-                message=text_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-                html_message=html_body,
-                fail_silently=False,
-            )
         except Exception as e:
             logger.warning(f"Admin name-change email failed for {getattr(user,'email',None)}: {e}")
 
@@ -2793,17 +2789,14 @@ class DiditWebhookView(APIView):
 
             subject = f"New Identity Review Required: Name Change Request #{ncr.id}"
 
-            text_body = render_to_string("emails/admin_name_change_review.txt", ctx)
-            html_body = render_to_string("emails/admin_name_change_review.html", ctx)
-
-            # Send individually (so admins donâ€™t see each otherâ€™s emails)
+            from users.email_utils import send_template_email
+            # Send individually (so admins don't see each other's emails)
             for admin in admins:
-                send_mail(
-                    subject=subject,
-                    message=text_body,
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[admin.email],
-                    html_message=html_body,
+                send_template_email(
+                    template_key="admin_name_change_review",
+                    to_email=admin.email,
+                    context=ctx,
+                    subject_override=subject,
                     fail_silently=False,
                 )
 
@@ -2834,24 +2827,42 @@ class DiditWebhookView(APIView):
             }
 
             if template_key == "approved":
-                subject = "Your name change request is approved âœ…"
-                text_body = render_to_string("emails/name_change_approved.txt", ctx)
-                html_body = render_to_string("emails/name_change_approved.html", ctx)
+                from users.email_utils import send_template_email
+                send_template_email(
+                    template_key="name_change_approved",
+                    to_email=user.email,
+                    context=ctx,
+                    subject_override="Your name change request is approved ✓",
+                    fail_silently=False,
+                )
 
             elif template_key == "manual_review":
-                subject = "Your name change request is under review â³"
-                text_body = render_to_string("emails/name_change_manual_review.txt", ctx)
-                html_body = render_to_string("emails/name_change_manual_review.html", ctx)
-
+                from users.email_utils import send_template_email
+                send_template_email(
+                    template_key="name_change_manual_review",
+                    to_email=user.email,
+                    context=ctx,
+                    subject_override="Your name change request is under review",
+                    fail_silently=False,
+                )
             elif template_key == "verification_failed":
-                subject = "Verification failed for your name change âŒ"
-                text_body = render_to_string("emails/name_change_verification_failed.txt", ctx)
-                html_body = render_to_string("emails/name_change_verification_failed.html", ctx)
-
+                from users.email_utils import send_template_email
+                send_template_email(
+                    template_key="name_change_verification_failed",
+                    to_email=user.email,
+                    context=ctx,
+                    subject_override="Verification failed for your name change",
+                    fail_silently=False,
+                )
             elif template_key == "rejected":
-                subject = "Your name change request was rejected âŒ"
-                text_body = render_to_string("emails/name_change_rejected.txt", ctx)
-                html_body = None
+                from users.email_utils import send_template_email
+                send_template_email(
+                    template_key="name_change_rejected",
+                    to_email=user.email,
+                    context=ctx,
+                    subject_override="Your name change request was rejected",
+                    fail_silently=False,
+                )
 
             else:
                 return
@@ -2899,13 +2910,23 @@ class DiditWebhookView(APIView):
             }
 
             if profile.kyc_status == UserProfile.KYC_STATUS_APPROVED:
-                text_body = render_to_string("emails/kyc_approved.txt", ctx)
-                html_body = render_to_string("emails/kyc_approved.html", ctx)
-                subject = "Your identity verification is complete âœ…"
+                send_template_email(
+                    template_key="kyc_approved",
+                    to_email=user.email,
+                    context=ctx,
+                    subject_override="Your identity verification is complete",
+                    fail_silently=False,
+                )
+                subject = None  # Not used
             elif profile.kyc_status == UserProfile.KYC_STATUS_DECLINED:
-                text_body = render_to_string("emails/kyc_failed.txt", ctx)
-                html_body = render_to_string("emails/kyc_failed.html", ctx)
-                subject = "Action needed: identity verification failed âŒ"
+                send_template_email(
+                    template_key="kyc_failed",
+                    to_email=user.email,
+                    context=ctx,
+                    subject_override="Action needed: identity verification failed",
+                    fail_silently=False,
+                )
+                subject = None  # Not used
             else:
                 return  # no email for pending/review
 
