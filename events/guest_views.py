@@ -325,3 +325,190 @@ class GuestRegisterLinkView(APIView):
             {"message": "Guest account linked successfully.", "email": email},
             status=status.HTTP_200_OK,
         )
+
+
+class GuestProfileUpdateView(APIView):
+    """
+    GET /api/events/{event_id}/guest-profile/
+    PATCH /api/events/{event_id}/guest-profile/
+
+    Allow guests to view and update their profile information during a live event.
+    Requires authentication with a valid guest JWT token.
+
+    GET Response (200 OK):
+    {
+        "guest": {
+            "id": 7,
+            "first_name": "John",
+            "last_name": "Doe",
+            "email": "john@example.com",
+            "company": "Acme Corp",
+            "job_title": "Software Engineer",
+            "name": "John Doe"
+        }
+    }
+
+    PATCH Request body:
+    {
+        "first_name": "John",
+        "last_name": "Doe",
+        "email": "john@example.com",
+        "company": "Acme Corp",
+        "job_title": "Software Engineer"
+    }
+
+    PATCH Response (200 OK):
+    {
+        "message": "Profile updated successfully",
+        "guest": {
+            "id": 7,
+            "first_name": "John",
+            "last_name": "Doe",
+            "email": "john@example.com",
+            "company": "Acme Corp",
+            "job_title": "Software Engineer",
+            "name": "John Doe"
+        }
+    }
+
+    Error responses:
+    - 403: Only guests can use this endpoint
+    - 404: Event or guest not found
+    - 400: Invalid data
+    """
+
+    def get(self, request, pk=None):
+        """Handle guest profile fetch request."""
+
+        # 1. Verify request.user is a guest
+        if not getattr(request.user, "is_guest", False):
+            logger.warning(
+                f"Non-guest user attempted guest profile fetch: {request.user}"
+            )
+            return Response(
+                {"error": "Only guests can use this endpoint."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # 2. Get event and guest
+        try:
+            event = Event.objects.get(pk=pk)
+        except Event.DoesNotExist:
+            return Response(
+                {"error": "Event not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        guest = request.user.guest
+        if guest.event_id != event.id:
+            logger.warning(
+                f"Guest {guest.id} attempted to fetch profile for different event {event.id}"
+            )
+            return Response(
+                {"error": "Guest does not belong to this event."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # 3. Return guest profile
+        return Response({
+            "guest": {
+                "id": guest.id,
+                "first_name": guest.first_name,
+                "last_name": guest.last_name,
+                "email": guest.email,
+                "company": guest.company,
+                "job_title": guest.job_title,
+                "name": guest.get_display_name()
+            }
+        }, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk=None):
+        """Handle guest profile update request."""
+
+        # 1. Verify request.user is a guest
+        if not getattr(request.user, "is_guest", False):
+            logger.warning(
+                f"Non-guest user attempted guest profile update: {request.user}"
+            )
+            return Response(
+                {"error": "Only guests can use this endpoint."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # 2. Get event and guest
+        try:
+            event = Event.objects.get(pk=pk)
+        except Event.DoesNotExist:
+            return Response(
+                {"error": "Event not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        guest = request.user.guest
+        if guest.event_id != event.id:
+            logger.warning(
+                f"Guest {guest.id} attempted to update profile for different event {event.id}"
+            )
+            return Response(
+                {"error": "Guest does not belong to this event."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # 3. Extract and validate request data
+        first_name = request.data.get("first_name", "").strip()
+        last_name = request.data.get("last_name", "").strip()
+        email = request.data.get("email", "").strip().lower()
+        company = request.data.get("company", "").strip()
+        job_title = request.data.get("job_title", "").strip()
+
+        # Validate required fields
+        if not first_name:
+            return Response(
+                {"error": "first_name is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not last_name:
+            return Response(
+                {"error": "last_name is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not email:
+            return Response(
+                {"error": "email is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 4. Check if new email conflicts with another guest (but allow same email for this guest)
+        if email != guest.email:
+            existing = GuestAttendee.objects.filter(
+                event=event,
+                email=email
+            ).exclude(id=guest.id).first()
+            if existing:
+                return Response(
+                    {"error": "Email already in use by another guest in this event."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # 5. Update guest record
+        guest.first_name = first_name
+        guest.last_name = last_name
+        guest.email = email
+        guest.company = company
+        guest.job_title = job_title
+        guest.save()
+
+        logger.info(f"Guest {guest.id} updated profile for event {event.id}")
+
+        return Response({
+            "message": "Profile updated successfully",
+            "guest": {
+                "id": guest.id,
+                "first_name": guest.first_name,
+                "last_name": guest.last_name,
+                "email": guest.email,
+                "company": guest.company,
+                "job_title": guest.job_title,
+                "name": guest.get_display_name()
+            }
+        }, status=status.HTTP_200_OK)

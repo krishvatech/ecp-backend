@@ -1432,6 +1432,11 @@ class GuestAttendee(models.Model):
         blank=True,
         help_text="Current role or job title"
     )
+    company = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Guest's company or organization"
+    )
 
     # JWT token management
     token_jti = models.CharField(
