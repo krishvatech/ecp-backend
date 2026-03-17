@@ -697,6 +697,7 @@ class EventSerializer(serializers.ModelSerializer):
             "replay_available",
             "replay_availability_duration",
             "replay_visible_to_participants",
+            "replay_publishing_mode",
             "category",
             "format",
             "location",

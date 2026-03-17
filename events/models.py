@@ -156,6 +156,15 @@ class Event(models.Model):
         default=False,
         help_text="If False, only host can download/see recording. If True, participants can access after notifications sent."
     )
+    replay_publishing_mode = models.CharField(
+        max_length=20,
+        choices=[
+            ("manual_review", "Manual Review"),
+            ("auto_publish", "Auto Publish"),
+        ],
+        default="manual_review",
+        help_text="Whether to auto-publish recording once available, or hold for host review."
+    )
     # Dyte live meeting fields
     dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     dyte_meeting_title = models.CharField(max_length=255, blank=True, null=True)

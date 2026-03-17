@@ -2561,7 +2561,8 @@ class EventViewSet(viewsets.ModelViewSet):
 
         event.recording_url = s3_key
         event.replay_available = True
-        event.replay_visible_to_participants = False  # Restricted to host until published
+        # Auto-publish if mode is auto_publish, otherwise restrict to host until published
+        event.replay_visible_to_participants = (event.replay_publishing_mode == "auto_publish")
         event.save(update_fields=["recording_url", "replay_available", "replay_visible_to_participants", "updated_at"])
 
         logger.info(
@@ -2578,7 +2579,8 @@ class EventViewSet(viewsets.ModelViewSet):
             "ok": True,
             "recording_url": s3_key,
             "replay_available": True,
-            "replay_visible_to_participants": False,
+            "replay_visible_to_participants": event.replay_visible_to_participants,
+            "replay_publishing_mode": event.replay_publishing_mode,
             "notifications_queued": send_notifications,
         })
 
