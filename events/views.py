@@ -2598,6 +2598,11 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response({"error": "Permission denied"}, status=403)
 
         if not event.replay_available or not event.recording_url:
+            # Recording may still be processing if the meeting has ended but no URL yet
+            if (event.live_ended_at or event.status == "ended") and not event.recording_url:
+                return Response({
+                    "error": "Recording is still being processed. Please wait a few minutes and refresh the page."
+                }, status=400)
             return Response({"error": "No recording available to publish."}, status=400)
 
         if event.replay_visible_to_participants:
@@ -5737,6 +5742,11 @@ class RecordingWebhookView(views.APIView):
         # 1) Find our Event that corresponds to this meeting
         try:
             event = Event.objects.get(dyte_meeting_id=meeting_id)
+            logger.info(
+                "🔍 Webhook found event: id=%s, replay_publishing_mode=%s",
+                event.id,
+                event.replay_publishing_mode
+            )
         except Event.DoesNotExist:
             logger.error("❌ Event not found for meeting_id=%s", meeting_id)
             return Response({"error": "event_not_found"}, status=404)
@@ -5819,7 +5829,14 @@ class RecordingWebhookView(views.APIView):
         # 4) Store the S3 key on the Event
         event.recording_url = s3_key
         event.replay_available = True
-        event.replay_visible_to_participants = False  # Only host can access initially
+        event.replay_visible_to_participants = (event.replay_publishing_mode == "auto_publish")
+
+        logger.info(
+            "🔍 Webhook setting replay_visible_to_participants: replay_publishing_mode=%s, visible=%s",
+            event.replay_publishing_mode,
+            event.replay_visible_to_participants
+        )
+
         event.save(update_fields=["recording_url", "replay_available", "replay_visible_to_participants", "updated_at"])
 
         logger.info(
