@@ -683,6 +683,18 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             }
         )
 
+    async def guest_profile_updated(self, event: dict) -> None:
+        """
+        Handler for guest profile updates.
+        Broadcasts updated online-users list to all participants when a guest updates their profile.
+        """
+        # Fetch updated online participants info and send to all clients
+        online_users = await self.get_online_participants_info()
+        await self.send_json({
+            "type": "online_users",
+            "online_users": online_users,
+        })
+
     async def assistance_requested(self, event: dict) -> None:
         """Private notification sent to hosts/moderators when audience requests help."""
         await self.send_json({
@@ -1062,6 +1074,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "current_location": g.current_location or "main_room",
             "admission_status": "admitted",
             "is_guest": True,
+            "company": g.company or "",
+            "job_title": g.job_title or "",
             "lounge_table_id": g.lounge_table_id,
             "lounge_table_name": g.lounge_table.name if g.lounge_table_id and g.lounge_table else "",
             "dyte_participant_id": g.dyte_participant_id or "",

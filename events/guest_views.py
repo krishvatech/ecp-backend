@@ -35,7 +35,8 @@ class GuestJoinView(APIView):
         "first_name": "John",
         "last_name": "Doe",
         "email": "john@example.com",
-        "job_title": "Software Engineer"  # optional
+        "job_title": "Software Engineer",  # optional
+        "company_name": "Acme Corp"  # optional
     }
 
     Response (201 Created):
@@ -75,6 +76,7 @@ class GuestJoinView(APIView):
         last_name = request.data.get("last_name", "").strip()
         email = request.data.get("email", "").strip().lower()
         job_title = request.data.get("job_title", "").strip()
+        company_name = request.data.get("company_name", "").strip()
 
         # Validate required fields
         if not first_name:
@@ -115,6 +117,7 @@ class GuestJoinView(APIView):
             existing.first_name = first_name
             existing.last_name = last_name
             existing.job_title = job_title
+            existing.company = company_name
             existing.token_jti = jti
             existing.expires_at = expires_at
             # Keep guests in waiting-room state when policy is enabled, unless already admitted.
@@ -132,6 +135,7 @@ class GuestJoinView(APIView):
                 first_name=first_name,
                 last_name=last_name,
                 job_title=job_title,
+                company=company_name,
                 token_jti=jti,
                 expires_at=expires_at,
                 current_location=initial_location,
@@ -156,6 +160,8 @@ class GuestJoinView(APIView):
             "guest_id": guest.id,
             "name": guest.get_display_name(),
             "email": guest.email,
+            "company": guest.company,
+            "job_title": guest.job_title,
             "event_id": event.id,
             "expires_at": expires_at.isoformat(),
         }, status=status.HTTP_201_CREATED)
@@ -325,6 +331,45 @@ class GuestRegisterLinkView(APIView):
             {"message": "Guest account linked successfully.", "email": email},
             status=status.HTTP_200_OK,
         )
+
+
+class GuestProfileDetailView(APIView):
+    """
+    GET /api/events/{event_id}/guests/{guest_id}/profile/
+
+    Allow hosts/staff to view a specific guest's profile information.
+    Requires authentication with a valid host/staff token.
+    """
+
+    def get(self, request, event_id=None, guest_id=None):
+        """Fetch a guest's profile details."""
+        try:
+            event = Event.objects.get(pk=event_id)
+        except Event.DoesNotExist:
+            return Response(
+                {"error": "Event not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        try:
+            guest = GuestAttendee.objects.get(pk=guest_id, event=event)
+        except GuestAttendee.DoesNotExist:
+            return Response(
+                {"error": "Guest not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({
+            "guest": {
+                "id": guest.id,
+                "first_name": guest.first_name,
+                "last_name": guest.last_name,
+                "email": guest.email,
+                "company": guest.company,
+                "job_title": guest.job_title,
+                "name": guest.get_display_name()
+            }
+        }, status=status.HTTP_200_OK)
 
 
 class GuestProfileUpdateView(APIView):
@@ -499,6 +544,33 @@ class GuestProfileUpdateView(APIView):
         guest.save()
 
         logger.info(f"Guest {guest.id} updated profile for event {event.id}")
+
+        # ✅ Trigger WebSocket update to notify other participants of profile change
+        try:
+            from asgiref.sync import async_to_sync
+            from channels.layers import get_channel_layer
+            channel_layer = get_channel_layer()
+            group_name = f"event_{event.id}"
+
+            # Send update message to WebSocket group with full profile data
+            async_to_sync(channel_layer.group_send)(
+                group_name,
+                {
+                    "type": "guest_profile_updated",
+                    "guest_id": guest.id,
+                    "event_id": event.id,
+                    "participant_id": f"guest_{guest.id}",
+                    "first_name": guest.first_name,
+                    "last_name": guest.last_name,
+                    "email": guest.email,
+                    "company": guest.company,
+                    "job_title": guest.job_title,
+                    "name": guest.get_display_name(),
+                }
+            )
+            logger.info(f"Broadcast guest profile update for guest {guest.id} to event {event.id}")
+        except Exception as e:
+            logger.warning(f"Failed to broadcast guest profile update: {str(e)}")
 
         return Response({
             "message": "Profile updated successfully",
