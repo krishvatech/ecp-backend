@@ -266,6 +266,14 @@ class CognitoJWTAuthentication(BaseAuthentication):
             if updated:
                 user.save(update_fields=["email", "first_name", "last_name"])
 
+            # Keep profile full_name in sync with user's first_name + last_name
+            profile = getattr(user, "profile", None)
+            if profile:
+                full_name = f"{user.first_name} {user.last_name}".strip()
+                if full_name and profile.full_name != full_name:
+                    profile.full_name = full_name
+                    profile.save(update_fields=["full_name"])
+
             # --- ECP <-> Saleor Sync (Synchronous) ---
             from .saleor_sync import sync_user_to_saleor_sync
             try:

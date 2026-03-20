@@ -55,13 +55,24 @@ class CognitoBootstrapView(APIView):
         # Ensure profile exists + initialize activity time
         profile, _ = UserProfile.objects.get_or_create(user=user)
 
+        profile_update_fields = []
+
+        # Set full_name from user's first_name + last_name
+        full_name = f"{user.first_name} {user.last_name}".strip()
+        if full_name and profile.full_name != full_name:
+            profile.full_name = full_name
+            profile_update_fields.append("full_name")
+
         tz = (data.get("timezone") or "").strip()
         if tz and tz in pytz.all_timezones and profile.timezone != tz:
             profile.timezone = tz
-            profile.save(update_fields=["timezone"])
+            profile_update_fields.append("timezone")
 
         if not profile.last_activity_at:
             profile.last_activity_at = timezone.now()
-            profile.save(update_fields=["last_activity_at"])
+            profile_update_fields.append("last_activity_at")
+
+        if profile_update_fields:
+            profile.save(update_fields=profile_update_fields)
 
         return Response({"detail": "ok"}, status=status.HTTP_200_OK)
