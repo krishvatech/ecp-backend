@@ -117,6 +117,13 @@ class CognitoJWTAuthentication(BaseAuthentication):
         try:
             header = jwt.get_unverified_header(token)
             kid = header.get("kid")
+
+            # If no 'kid' in header, this is not a Cognito token (e.g., WordPress sync tokens)
+            # Let other authenticators handle it
+            if not kid:
+                logger.debug("CognitoAuth: No 'kid' in token header, not a Cognito token")
+                return None
+
             public_key = _get_public_key(kid)
 
             iss = _issuer()
