@@ -585,6 +585,20 @@ class UserViewSet(
         certs = ProfileCertification.objects.filter(user=target).order_by("-issue_date", "-id")
         mems = ProfileMembership.objects.filter(user=target).order_by("-ongoing", "-end_date", "-start_date", "-id")
 
+        # Track profile view if conditions are met
+        if user.is_authenticated and user.id != target.id and (target.is_staff or target.is_superuser):
+            from users.models import ProfileView
+            viewer_country = ""
+            if hasattr(user, "profile") and user.profile:
+                viewer_country = user.profile.location.split(",")[-1].strip()[:2].upper() if user.profile.location else ""
+            is_anon = hasattr(user, "profile") and user.profile and user.profile.anonymous_profile_views
+            ProfileView.objects.create(
+                viewer=user,
+                target_user=target,
+                is_anonymous=is_anon,
+                viewer_country=viewer_country
+            )
+
         payload = {
             "user": target,
             "profile": getattr(target, "profile", None),
@@ -637,6 +651,30 @@ class UserViewSet(
             "locations": list(locations),
         })
 
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="me/profile-visitors")
+    def profile_visitors(self, request):
+        """Get list of visitors to current user's profile (staff/admin only)."""
+        user = request.user
+        if not (user.is_staff or user.is_superuser):
+            return Response(
+                {"detail": "Only staff members can view their profile visitors."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        from users.models import ProfileView
+        from users.serializers import ProfileVisitorSerializer
+
+        # Get recent visitors, most recent first
+        visitors = ProfileView.objects.filter(
+            target_user=user
+        ).select_related("viewer", "viewer__profile").order_by("-viewed_at")[:100]
+
+        serializer = ProfileVisitorSerializer(
+            visitors,
+            many=True,
+            context={"request": request}
+        )
+        return Response(serializer.data)
 
    # users/views.py  (inside UserViewSet)
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="roster")

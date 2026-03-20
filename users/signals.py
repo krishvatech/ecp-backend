@@ -96,3 +96,54 @@ def sync_cognito_status(sender, instance, created, **kwargs):
     except Exception as e:
         # Log failure but don't crash the app
         print(f"Failed to sync Cognito status for {instance.user.username}: {e}")
+
+
+def create_profile_view_notification(sender, instance, created, **kwargs):
+    """
+    Create a notification when someone views a staff/admin profile.
+    Throttled to avoid spam (max 1 notification per viewer per 12 hours).
+    """
+    if not created:
+        return
+
+    from django.utils import timezone
+    from datetime import timedelta
+    from friends.models import Notification
+
+    viewer = instance.viewer
+    target = instance.target_user
+
+    # Check if we already notified target about this viewer in the last 12 hours
+    cutoff_time = timezone.now() - timedelta(hours=12)
+    existing = Notification.objects.filter(
+        recipient=target,
+        actor=viewer,
+        kind="profile_view",
+        created_at__gte=cutoff_time
+    ).exists()
+
+    if existing:
+        return  # Already notified recently
+
+    # Create the notification
+    if instance.is_anonymous:
+        if instance.viewer_country:
+            title = f"Someone from {instance.viewer_country} viewed your profile."
+        else:
+            title = "Someone viewed your profile."
+    else:
+        profile = getattr(viewer, "profile", None)
+        name = profile.full_name if profile and profile.full_name else viewer.username
+        title = f"{name} viewed your profile."
+
+    Notification.objects.create(
+        recipient=target,
+        actor=viewer if not instance.is_anonymous else None,
+        kind="profile_view",
+        title=title,
+        data={
+            "profile_view_id": instance.id,
+            "viewer_id": viewer.id if not instance.is_anonymous else None,
+            "is_anonymous": instance.is_anonymous,
+        }
+    )

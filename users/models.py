@@ -34,6 +34,7 @@ class UserProfile(models.Model):
     directory_hidden = models.BooleanField(default=False, help_text="Hide from public roster/directory")
     connections_hidden = models.BooleanField(default=False, help_text="Hide your connections list from other members")
     hide_from_others_connections = models.BooleanField(default=False, help_text="Hide this member from other users' visible connection lists")
+    anonymous_profile_views = models.BooleanField(default=False, help_text="Don't disclose which profiles you have visited")
     full_name = models.CharField(max_length=255, blank=True)
     middle_name = models.CharField(max_length=150, blank=True, default="")
     timezone = models.CharField(max_length=64, default="Asia/Kolkata")
@@ -1058,3 +1059,41 @@ class CognitoIdentity(models.Model):
 
     def __str__(self):
         return f"{self.provider}:{self.cognito_sub} -> user_id={self.user_id}"
+
+
+class ProfileView(models.Model):
+    """
+    Records when a user views another user's profile.
+    Only tracks views of staff/admin profiles.
+    """
+    viewer = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="profile_views_made",
+        help_text="User who viewed the profile"
+    )
+    target_user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="profile_views_received",
+        help_text="User whose profile was viewed (must be staff/admin)"
+    )
+    viewed_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    is_anonymous = models.BooleanField(default=False, help_text="Whether viewer has anonymous_profile_views enabled")
+    viewer_country = models.CharField(
+        max_length=2,
+        blank=True,
+        default="",
+        help_text="Country code snapshot at time of view"
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["target_user", "-viewed_at"]),
+            models.Index(fields=["viewer", "target_user"]),
+        ]
+        verbose_name = "Profile View"
+        verbose_name_plural = "Profile Views"
+
+    def __str__(self):
+        return f"View({self.viewer_id} -> {self.target_user_id} @ {self.viewed_at})"

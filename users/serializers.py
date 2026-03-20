@@ -18,7 +18,7 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
-from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest, EducationDocument, UserSkill, EscoSkill, LanguageCertificate, IsoLanguage, UserLanguage, ProfileTraining, ProfileCertification, ProfileCertificationDocument, VerificationRequest, VerificationHistory, ProfileMembership
+from .models import User as UserModel, UserProfile, Experience, Education, NameChangeRequest, EducationDocument, UserSkill, EscoSkill, LanguageCertificate, IsoLanguage, UserLanguage, ProfileTraining, ProfileCertification, ProfileCertificationDocument, VerificationRequest, VerificationHistory, ProfileMembership, ProfileView
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email as django_validate_email
 
@@ -166,6 +166,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "kyc_status", "legal_name_locked", "legal_name_verified_at",
             "can_edit_profiles",
             "directory_hidden", "connections_hidden", "hide_from_others_connections",
+            "anonymous_profile_views",
             "pending_verification_request",
         ]
         read_only_fields = ("last_activity_at", "is_online", "kyc_status",
@@ -1394,10 +1395,47 @@ class VerificationRequestSerializer(serializers.ModelSerializer):
 
 class VerificationHistorySerializer(serializers.ModelSerializer):
     archived_by_details = UserMiniSerializer(source="archived_by", read_only=True)
-    
+
     class Meta:
         model = VerificationHistory
         fields = [
-            "id", "user", "kyc_status", "kyc_didit_raw_payload", 
+            "id", "user", "kyc_status", "kyc_didit_raw_payload",
             "kyc_manual_reason", "archived_at", "archived_by_details"
         ]
+
+
+class ProfileVisitorSerializer(serializers.Serializer):
+    """Serializer for profile visitor information, respecting anonymity."""
+    id = serializers.IntegerField(source="viewer.id", read_only=True)
+    username = serializers.CharField(source="viewer.username", read_only=True, allow_null=True)
+    full_name = serializers.CharField(source="viewer.profile.full_name", read_only=True, allow_null=True)
+    avatar_url = serializers.SerializerMethodField()
+    headline = serializers.CharField(source="viewer.profile.headline", read_only=True, allow_null=True)
+    company = serializers.CharField(source="viewer.profile.company", read_only=True, allow_null=True)
+    job_title = serializers.CharField(source="viewer.profile.job_title", read_only=True, allow_null=True)
+    country = serializers.CharField(source="viewer_country", read_only=True, allow_null=True)
+    viewed_at = serializers.DateTimeField(read_only=True)
+    is_anonymous = serializers.BooleanField(read_only=True)
+    display_text = serializers.SerializerMethodField()
+
+    def get_avatar_url(self, obj):
+        """Return avatar URL if not anonymous, else None."""
+        if obj.is_anonymous:
+            return None
+        profile = getattr(obj.viewer, "profile", None)
+        if profile and profile.user_image:
+            request = self.context.get("request")
+            if request:
+                return request.build_absolute_uri(profile.user_image.url)
+            return profile.user_image.url
+        return None
+
+    def get_display_text(self, obj):
+        """Generate display text based on anonymity."""
+        if obj.is_anonymous:
+            if obj.viewer_country:
+                return f"Someone from {obj.viewer_country} viewed your profile."
+            return "Someone viewed your profile."
+        profile = getattr(obj.viewer, "profile", None)
+        name = profile.full_name if profile and profile.full_name else obj.viewer.username
+        return f"{name} viewed your profile."
