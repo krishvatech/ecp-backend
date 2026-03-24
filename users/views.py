@@ -2080,7 +2080,7 @@ class AdminMembershipDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet
         serializer.save(membership=membership)
 
     
-from .email_utils import send_admin_credentials_email, delete_cognito_user
+from .email_utils import send_admin_credentials_email, delete_cognito_user, create_cognito_user
 from .cognito_groups import sync_staff_group, add_user_to_group, remove_user_from_group
 
 
@@ -2237,7 +2237,83 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         # Then delete from Django
         instance.delete()
 
-    
+    @action(detail=False, methods=["post"], url_path="create-with-password")
+    def create_with_password(self, request):
+        """
+        Create a new user with admin-set password (no email invitation).
+        POST /api/admin/users/create-with-password/
+        Body: {
+            "email": "user@example.com",
+            "first_name": "John",
+            "last_name": "Doe",
+            "password": "SecurePassword123",
+            "is_staff": true,
+            "is_superuser": false
+        }
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data.get("email")
+        password = request.data.get("password")
+
+        if not password:
+            return Response({"detail": "Password is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if len(password) < 8:
+            return Response({"detail": "Password must be at least 8 characters."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if User.objects.filter(email__iexact=email).exists():
+            return Response({"detail": "User with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Auto-generate username if missing
+        if not serializer.validated_data.get("username"):
+            base = email.split("@")[0]
+            base = "".join(c for c in base if c.isalnum() or c in "._-")
+            if not base: base = "user"
+
+            candidate = base
+            idx = 1
+            while User.objects.filter(username=candidate).exists():
+                candidate = f"{base}{idx}"
+                idx += 1
+            serializer.validated_data["username"] = candidate
+
+        # Create the user object
+        user = serializer.save()
+
+        # Set the provided password
+        user.set_password(password)
+        user.save(update_fields=['password'])
+
+        # Create in Cognito with the provided password
+        cognito_success = create_cognito_user(
+            username=user.username,
+            email=user.email,
+            temp_password=password,  # Use provided password instead of temporary
+            first_name=user.first_name or "",
+            last_name=user.last_name or ""
+        )
+
+        if not cognito_success:
+            logger.error(f"Failed to create Cognito user for {user.email}")
+            # Continue anyway, user is already in Django DB
+
+        # Sync permissions
+        if user.is_staff:
+            sync_staff_group(username=user.username, is_staff=True)
+
+        if user.is_superuser:
+            if not user.is_staff:
+                user.is_staff = True
+                user.save(update_fields=["is_staff"])
+                sync_staff_group(username=user.username, is_staff=True)
+            add_user_to_group(username=user.username, group_name="platform_admin")
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+
     
 class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
     """
