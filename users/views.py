@@ -3825,3 +3825,150 @@ class SaleorDashboardSsoView(APIView):
             return redirect(url)
 
         return Response({"url": url}, status=200)
+
+
+class MagicLinkAuthView(APIView):
+    """
+    Validate magic login token and return access token for authenticated request.
+    For guest application approvals, also generates and returns a guest JWT token.
+    Frontend will call this endpoint with token from email, get access_token back,
+    and use it to authenticate subsequent requests.
+
+    GET /auth/magic-link/?token=<token>
+    Returns: {
+        "access_token": "...",
+        "user": {"id": ..., "email": ...},
+        "event": {"id": ..., "slug": ...},
+        "guest_token": "...",  # Only for approved guest applications
+        "guest_id": 123        # Only for approved guest applications
+    }
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        token = request.query_params.get("token", "").strip()
+
+        if not token:
+            return Response(
+                {"detail": "Magic login token required"},
+                status=400
+            )
+
+        from .models import MagicLoginToken
+        from rest_framework.authtoken.models import Token
+        from django.utils import timezone
+        import jwt
+        import uuid
+
+        try:
+            # Find the magic token
+            magic_token = MagicLoginToken.objects.select_related('user').get(token=token)
+
+            # Check if token is valid and not used
+            if not magic_token.is_valid:
+                return Response(
+                    {"detail": "Magic link has expired or already been used"},
+                    status=403
+                )
+
+            # Mark token as used
+            magic_token.mark_as_used()
+
+            # Get or create access token for the user
+            access_token, _ = Token.objects.get_or_create(user=magic_token.user)
+
+            # Build response
+            response_data = {
+                "access_token": access_token.key,
+                "user": {
+                    "id": magic_token.user.id,
+                    "email": magic_token.user.email,
+                    "first_name": magic_token.user.first_name,
+                    "last_name": magic_token.user.last_name,
+                },
+                "event": {
+                    "id": magic_token.event.id,
+                    "slug": magic_token.event.slug,
+                } if magic_token.event else None
+            }
+
+            # Check if this is a guest application approval (has event context)
+            if magic_token.event:
+                try:
+                    from events.models import GuestAttendee, EventApplication
+
+                    # Check if there's an approved guest application for this user/event
+                    app = EventApplication.objects.filter(
+                        event=magic_token.event,
+                        user=magic_token.user,
+                        status='approved'
+                    ).first()
+
+                    if app:
+                        # Create or update GuestAttendee for this approved guest
+                        jti = str(uuid.uuid4())
+                        ttl_hours = getattr(settings, "GUEST_JWT_TTL_HOURS", 24)
+                        expires_at = timezone.now() + timedelta(hours=ttl_hours)
+
+                        # Check if GuestAttendee exists (by email + event)
+                        guest = GuestAttendee.objects.filter(
+                            event=magic_token.event,
+                            email=magic_token.user.email
+                        ).first()
+
+                        if guest:
+                            # Update existing guest attendee
+                            guest.first_name = magic_token.user.first_name
+                            guest.last_name = magic_token.user.last_name
+                            guest.token_jti = jti
+                            guest.expires_at = expires_at
+                            guest.converted_user = magic_token.user
+                            guest.save()
+                            logger.info(f"Updated GuestAttendee {guest.id} for approved application {app.id}")
+                        else:
+                            # Create new GuestAttendee linked to converted_user
+                            guest = GuestAttendee.objects.create(
+                                event=magic_token.event,
+                                email=magic_token.user.email,
+                                first_name=magic_token.user.first_name,
+                                last_name=magic_token.user.last_name,
+                                token_jti=jti,
+                                expires_at=expires_at,
+                                converted_user=magic_token.user,
+                                current_location="waiting_room" if magic_token.event.waiting_room_enabled else "main_room"
+                            )
+                            logger.info(f"Created GuestAttendee {guest.id} for approved application {app.id}")
+
+                        # Generate guest JWT token
+                        payload = {
+                            "token_type": "guest",
+                            "guest_id": guest.id,
+                            "event_id": magic_token.event.id,
+                            "jti": jti,
+                            "exp": expires_at,
+                        }
+
+                        secret = getattr(settings, "GUEST_JWT_SECRET", settings.SECRET_KEY)
+                        guest_token = jwt.encode(payload, secret, algorithm="HS256")
+
+                        # Add guest token to response
+                        response_data["guest_token"] = guest_token
+                        response_data["guest_id"] = guest.id
+                        logger.info(f"Generated guest JWT token for approved guest {guest.id}")
+                except Exception as e:
+                    # If guest token generation fails, log but continue with regular response
+                    logger.warning(f"Failed to generate guest token for approved application: {e}")
+
+            return Response(response_data, status=200)
+
+        except MagicLoginToken.DoesNotExist:
+            return Response(
+                {"detail": "Invalid magic link"},
+                status=404
+            )
+        except Exception as e:
+            logger.error(f"Error validating magic link: {e}")
+            return Response(
+                {"detail": "Failed to validate magic link"},
+                status=500
+            )

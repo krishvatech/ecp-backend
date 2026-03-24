@@ -60,12 +60,15 @@ class GuestJoinView(APIView):
 
     def post(self, request, pk=None):
         """Handle guest join request."""
+        logger.info(f"[GuestJoin] POST request received for event {pk}")
+        logger.info(f"[GuestJoin] Request data: {request.data}")
 
         # 1. Validate and get event
         try:
             event = Event.objects.get(pk=pk)
+            logger.info(f"[GuestJoin] ✅ Event found: {event.title} (ID: {event.id})")
         except Event.DoesNotExist:
-            logger.warning(f"Guest join attempt for non-existent event: {pk}")
+            logger.warning(f"[GuestJoin] ❌ Event not found: {pk}")
             return Response(
                 {"error": "Event not found."},
                 status=status.HTTP_404_NOT_FOUND

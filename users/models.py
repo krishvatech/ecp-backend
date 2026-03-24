@@ -1097,3 +1097,38 @@ class ProfileView(models.Model):
 
     def __str__(self):
         return f"View({self.viewer_id} -> {self.target_user_id} @ {self.viewed_at})"
+
+
+class MagicLoginToken(models.Model):
+    """
+    Magic link tokens for auto-login without password.
+    Used for guest application approvals to allow seamless re-entry.
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="magic_tokens")
+    event = models.ForeignKey("events.Event", on_delete=models.CASCADE, null=True, blank=True,
+                              help_text="Event this token is for (optional, for redirect)")
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    used_at = models.DateTimeField(null=True, blank=True, db_index=True, help_text="When token was used")
+    expires_at = models.DateTimeField(db_index=True, help_text="Token expiration time")
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["token", "expires_at"]),
+            models.Index(fields=["user", "-created_at"]),
+        ]
+        verbose_name = "Magic Login Token"
+        verbose_name_plural = "Magic Login Tokens"
+
+    def __str__(self):
+        return f"MagicToken({self.user.email}, expires={self.expires_at.strftime('%Y-%m-%d %H:%M')})"
+
+    @property
+    def is_valid(self):
+        """Check if token is still valid and unused"""
+        return self.used_at is None and timezone.now() < self.expires_at
+
+    def mark_as_used(self):
+        """Mark token as used"""
+        self.used_at = timezone.now()
+        self.save(update_fields=['used_at'])

@@ -12,6 +12,12 @@ Time: {{ event_date|time:"g:i A" }}
 
 You're all set! You can now join the event when it starts.
 
+{% if magic_link %}
+Join with One Click (auto-login): {{ magic_link }}
+
+This link will automatically log you in and take you to the event.
+{% else %}
 View Event: {{ event_url }}
+{% endif %}
 
 We're excited to see you at the event!

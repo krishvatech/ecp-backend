@@ -4,15 +4,48 @@ Centralizes email sending logic with consistent error handling.
 """
 import logging
 import boto3
+import secrets
 from django.conf import settings
 from django.core.mail import send_mail
 from django.template import Template as DjangoTemplate, Context
 from django.template.loader import render_to_string
 from django.utils.crypto import get_random_string
+from django.utils import timezone
+from datetime import timedelta
 from botocore.exceptions import ClientError
 from .cognito_groups import add_user_to_speaker_group
 
 logger = logging.getLogger(__name__)
+
+
+def generate_magic_login_token(user, event=None, expires_in_hours=24):
+    """
+    Generate a magic login token for guest application approval.
+
+    Args:
+        user: User instance to create token for
+        event: Optional Event instance for redirect context
+        expires_in_hours: Token expiration time in hours (default 24)
+
+    Returns:
+        str: The generated token
+    """
+    from .models import MagicLoginToken
+
+    # Generate secure random token
+    token = secrets.token_urlsafe(48)
+    expires_at = timezone.now() + timedelta(hours=expires_in_hours)
+
+    # Create and save token
+    magic_token = MagicLoginToken.objects.create(
+        user=user,
+        event=event,
+        token=token,
+        expires_at=expires_at
+    )
+
+    logger.info(f"Generated magic token for user {user.id} ({user.email}), expires in {expires_in_hours} hours")
+    return token
 
 
 def send_template_email(template_key, to_email, context, subject_override=None, fail_silently=False):
@@ -646,7 +679,7 @@ def send_replay_partial_email(user, event):
 
 def send_application_approved_email(application):
     """
-    Send an approval email to an applicant.
+    Send an approval email to an applicant with magic login link for guests.
 
     Args:
         application: EventApplication instance with approved status
@@ -660,6 +693,24 @@ def send_application_approved_email(application):
     app_name = "IMAA Connect"
     frontend_base = getattr(settings, 'FRONTEND_URL', '')
     event_url = f"{frontend_base}/events/{application.event.slug}/"
+    magic_link = None
+
+    # For guest applications (no linked user yet), generate magic login token
+    # Backend already created user during approval, so application.user should exist
+    if application.user:
+        try:
+            from urllib.parse import quote
+            token = generate_magic_login_token(application.user, application.event, expires_in_hours=24)
+            # Direct guests to live meeting page instead of event detail page
+            # Use path-only URL (next will be relative) - simpler and more reliable
+            live_path = f"/live/{application.event.slug or application.event.id}?id={application.event.id}&role=audience"
+            # URL encode only the path (preserves / ? = &)
+            next_param = quote(live_path, safe='/?=&')
+            magic_link = f"{frontend_base}/auth/magic-link?token={token}&next={next_param}"
+            logger.info(f"Generated magic link for approved guest application {application.id}")
+        except Exception as e:
+            logger.error(f"Failed to generate magic link for application {application.id}: {e}")
+            # Continue without magic link if generation fails
 
     ctx = {
         "app_name": app_name,
@@ -667,6 +718,7 @@ def send_application_approved_email(application):
         "event_title": application.event.title,
         "event_date": application.event.start_time,
         "event_url": event_url,
+        "magic_link": magic_link,
     }
 
     return send_template_email(

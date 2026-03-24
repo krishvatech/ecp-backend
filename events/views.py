@@ -1571,7 +1571,58 @@ class EventViewSet(viewsets.ModelViewSet):
             user=request.user if request.user.is_authenticated else None,
             **data
         )
-        return Response(EventApplicationSerializer(app).data, status=201)
+
+        # For guest applications (unauthenticated users), immediately generate guest JWT
+        guest_token = None
+        guest_id = None
+        if not request.user.is_authenticated:
+            try:
+                import jwt
+                import uuid
+                from datetime import timedelta
+
+                # Create GuestAttendee for this applicant
+                jti = str(uuid.uuid4())
+                ttl_hours = getattr(settings, "GUEST_JWT_TTL_HOURS", 24)
+                expires_at = timezone.now() + timedelta(hours=ttl_hours)
+
+                guest = GuestAttendee.objects.create(
+                    event=event,
+                    email=email,
+                    first_name=data.get('first_name', ''),
+                    last_name=data.get('last_name', ''),
+                    job_title=data.get('job_title', ''),
+                    company=data.get('company_name', ''),
+                    token_jti=jti,
+                    expires_at=expires_at,
+                    current_location="waiting_room" if event.waiting_room_enabled else "main_room"
+                )
+
+                # Generate guest JWT token
+                payload = {
+                    "token_type": "guest",
+                    "guest_id": guest.id,
+                    "event_id": event.id,
+                    "jti": jti,
+                    "exp": expires_at,
+                }
+                secret = getattr(settings, "GUEST_JWT_SECRET", settings.SECRET_KEY)
+                guest_token = jwt.encode(payload, secret, algorithm="HS256")
+                guest_id = guest.id
+
+                logger.info(f"Guest application {app.id}: Created GuestAttendee {guest.id} with JWT token")
+            except Exception as e:
+                logger.warning(f"Failed to generate guest JWT for application {app.id}: {e}")
+                # Continue without guest token - user can still apply, just won't have immediate join
+
+        # Return application with guest token if available
+        response_data = EventApplicationSerializer(app).data
+        if guest_token:
+            response_data['guest_token'] = guest_token
+            response_data['guest_id'] = guest_id
+            logger.info(f"Returning guest_token for application {app.id}")
+
+        return Response(response_data, status=201)
 
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="applications")
     def applications(self, request, pk=None):
@@ -1646,6 +1697,48 @@ class EventViewSet(viewsets.ModelViewSet):
             # Update application to link to the new user
             app.user = user
             app.save()
+
+            # Create GuestAttendee for approved guest application
+            # This allows the guest to join immediately using their JWT token
+            try:
+                import jwt
+                import uuid
+                from datetime import timedelta
+
+                # Check if GuestAttendee already exists
+                guest = GuestAttendee.objects.filter(event=event, email=app.email).first()
+
+                jti = str(uuid.uuid4())
+                ttl_hours = getattr(settings, "GUEST_JWT_TTL_HOURS", 24)
+                expires_at = timezone.now() + timedelta(hours=ttl_hours)
+
+                if guest:
+                    # Update existing GuestAttendee
+                    guest.first_name = app.first_name
+                    guest.last_name = app.last_name
+                    guest.token_jti = jti
+                    guest.expires_at = expires_at
+                    guest.converted_user = user
+                    guest.save()
+                    logger.info(f"Updated GuestAttendee {guest.id} for approved application {app.id}")
+                else:
+                    # Create new GuestAttendee linked to the approved user
+                    guest = GuestAttendee.objects.create(
+                        event=event,
+                        email=app.email,
+                        first_name=app.first_name,
+                        last_name=app.last_name,
+                        job_title=getattr(app, 'job_title', ''),
+                        company=getattr(app, 'company_name', ''),
+                        token_jti=jti,
+                        expires_at=expires_at,
+                        converted_user=user,
+                        current_location="waiting_room" if event.waiting_room_enabled else "main_room"
+                    )
+                    logger.info(f"Created GuestAttendee {guest.id} for approved application {app.id}")
+            except Exception as e:
+                logger.warning(f"Failed to create GuestAttendee for approved application {app.id}: {e}")
+                # Continue without guest attendee - user can still be approved, just can't join as guest
 
         # Send approval email
         from users.email_utils import send_application_approved_email

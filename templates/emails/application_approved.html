@@ -24,7 +24,12 @@
         <p>You're all set! You can now join the event when it starts.</p>
 
         <div style="text-align: center; margin: 30px 0;">
-            <a href="{{ event_url }}" style="background-color: #28a745; color: white; padding: 14px 28px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">View Event</a>
+            {% if magic_link %}
+                <a href="{{ magic_link }}" style="background-color: #28a745; color: white; padding: 14px 28px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Join Event with One Click</a>
+                <p style="color: #6c757d; font-size: 13px; margin-top: 10px;">This link will automatically log you in and take you to the event.</p>
+            {% else %}
+                <a href="{{ event_url }}" style="background-color: #28a745; color: white; padding: 14px 28px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">View Event</a>
+            {% endif %}
         </div>
 
         <hr style="border: none; border-top: 1px solid #dee2e6; margin: 30px 0;">
