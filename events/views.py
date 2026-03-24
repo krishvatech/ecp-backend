@@ -20,6 +20,7 @@ import time
 import random
 import threading
 import unicodedata
+import secrets
 from ecp_backend.celery import app as celery_app
 
 # ============================================================
@@ -57,7 +58,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication
 from friends.models import Notification
 from groups.models import Group, GroupMembership
 from messaging.models import Conversation, Message
@@ -75,6 +76,8 @@ from .serializers import (
     role_label,
     role_priority,
     resolve_registration_roles,
+    EventApplicationSerializer,
+    EventApplicationSubmitSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -1519,6 +1522,171 @@ class EventViewSet(viewsets.ModelViewSet):
              Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
              
         return Response({"ok": True, "created": was_created, "event_id": event.id})
+
+    @action(detail=True, methods=["post", "get"], permission_classes=[AllowAny], url_path="apply")
+    def apply(self, request, pk=None):
+        """
+        Apply to an event with 'apply' registration type.
+        POST: Submit application (authenticated or unauthenticated)
+        GET: Check own application status (authenticated only)
+        """
+        event = self.get_object()
+
+        if event.registration_type != 'apply':
+            return Response({'detail': 'This event uses standard registration.'}, status=400)
+
+        if request.method == 'GET':
+            # Authenticated users: return their own application
+            if request.user.is_authenticated:
+                try:
+                    app = EventApplication.objects.get(event=event, user=request.user)
+                    return Response(EventApplicationSerializer(app).data)
+                except EventApplication.DoesNotExist:
+                    return Response({'status': 'none'})
+
+            # Unauthenticated users: check by email (passed as query param)
+            email = request.query_params.get('email', '').strip().lower()
+            if email:
+                try:
+                    app = EventApplication.objects.get(event=event, email=email)
+                    return Response(EventApplicationSerializer(app).data)
+                except EventApplication.DoesNotExist:
+                    return Response({'status': 'none'})
+
+            return Response({'status': 'none'})
+
+        # POST — submit application
+        serializer = EventApplicationSubmitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        email = data['email']
+
+        # Check for duplicate
+        if EventApplication.objects.filter(event=event, email=email).exists():
+            return Response({'detail': 'An application with this email already exists.'}, status=409)
+
+        app = EventApplication.objects.create(
+            event=event,
+            user=request.user if request.user.is_authenticated else None,
+            **data
+        )
+        return Response(EventApplicationSerializer(app).data, status=201)
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="applications")
+    def applications(self, request, pk=None):
+        """
+        List all applications for an event (host/admin only).
+        Query params:
+        - status: filter by 'pending', 'approved', 'declined'
+        - search: search by name or email
+        """
+        event = self.get_object()
+
+        # Permission: must be event owner or admin
+        if not (event.created_by == request.user or request.user.is_staff):
+            return Response({'detail': 'Forbidden.'}, status=403)
+
+        status_filter = request.query_params.get('status')
+        qs = event.applications.all()
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        search = request.query_params.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(email__icontains=search)
+            )
+
+        return Response(EventApplicationSerializer(qs, many=True).data)
+
+    @action(detail=True, methods=["post"], url_path=r"applications/(?P<app_id>\d+)/approve", permission_classes=[IsAuthenticated])
+    def approve_application(self, request, pk=None, app_id=None):
+        """
+        Approve an application and optionally auto-register the applicant.
+        """
+        event = self.get_object()
+        if not (event.created_by == request.user or request.user.is_staff):
+            return Response({'detail': 'Forbidden.'}, status=403)
+
+        app = get_object_or_404(EventApplication, id=app_id, event=event)
+        app.status = 'approved'
+        app.reviewed_at = timezone.now()
+        app.reviewed_by = request.user
+        app.save()
+
+        # Auto-register the applicant
+        if app.user:
+            # Applicant has account - register them directly
+            EventRegistration.objects.get_or_create(event=event, user=app.user)
+        else:
+            # Guest applicant - create a User account and register them
+            User = get_user_model()
+            # Generate username from email (take first part)
+            email_base = app.email.split('@')[0]
+            username = email_base
+            counter = 1
+            while User.objects.filter(username=username).exists():
+                username = f"{email_base}{counter}"
+                counter += 1
+
+            # Create user with random password (they can reset via email)
+            temp_password = secrets.token_urlsafe(16)
+            user = User.objects.create_user(
+                username=username,
+                email=app.email,
+                first_name=app.first_name,
+                last_name=app.last_name,
+                password=temp_password
+            )
+            # Register the newly created user
+            EventRegistration.objects.get_or_create(event=event, user=user)
+            # Update application to link to the new user
+            app.user = user
+            app.save()
+
+        # Send approval email
+        from users.email_utils import send_application_approved_email
+        send_application_approved_email(app)
+
+        return Response(EventApplicationSerializer(app).data)
+
+    @action(detail=True, methods=["post"], url_path=r"applications/(?P<app_id>\d+)/decline", permission_classes=[IsAuthenticated])
+    def decline_application(self, request, pk=None, app_id=None):
+        """
+        Decline an application with optional custom rejection message.
+        Body: {"rejection_message": "Optional message to applicant"}
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        event = self.get_object()
+        if not (event.created_by == request.user or request.user.is_staff):
+            return Response({'detail': 'Forbidden.'}, status=403)
+
+        app = get_object_or_404(EventApplication, id=app_id, event=event)
+        rejection_message = request.data.get('rejection_message', '')
+
+        logger.info(f"Declining application {app.id} for {app.email}")
+
+        app.status = 'declined'
+        app.reviewed_at = timezone.now()
+        app.reviewed_by = request.user
+        app.rejection_message = rejection_message
+        app.save()
+
+        # Send decline email (with host's custom message)
+        from users.email_utils import send_application_declined_email
+        try:
+            logger.info(f"Sending decline email to {app.email} with message: {rejection_message}")
+            result = send_application_declined_email(app, custom_message=rejection_message)
+            logger.info(f"Decline email result: {result}")
+        except Exception as e:
+            logger.error(f"Failed to send decline email: {e}")
+
+        return Response(EventApplicationSerializer(app).data)
 
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="max-price")
     def max_price(self, request):

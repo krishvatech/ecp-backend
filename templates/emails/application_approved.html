@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Application Approved</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div style="background-color: #f8f9fa; border-radius: 8px; padding: 30px; margin-bottom: 20px;">
+        <h1 style="color: #28a745; margin-top: 0;">🎉 Congratulations!</h1>
+
+        <p>Hello {{ applicant_name }},</p>
+
+        <p>Great news! Your application has been <strong>approved</strong> for:</p>
+
+        <div style="background-color: white; border-left: 4px solid #28a745; padding: 20px; margin: 20px 0; border-radius: 5px;">
+            <h2 style="margin-top: 0; color: #2c3e50;">{{ event_title }}</h2>
+            {% if event_date %}
+            <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_date|date:"F j, Y" }}</p>
+            <p style="margin: 5px 0;"><strong>⏰ Time:</strong> {{ event_date|time:"g:i A" }}</p>
+            {% endif %}
+        </div>
+
+        <p>You're all set! You can now join the event when it starts.</p>
+
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{{ event_url }}" style="background-color: #28a745; color: white; padding: 14px 28px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">View Event</a>
+        </div>
+
+        <hr style="border: none; border-top: 1px solid #dee2e6; margin: 30px 0;">
+
+        <p style="color: #6c757d; font-size: 14px;">
+            We're excited to see you at the event!
+        </p>
+    </div>
+</body>
+</html>

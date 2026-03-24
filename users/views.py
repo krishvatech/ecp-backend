@@ -1765,8 +1765,16 @@ class MeProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        if _is_guest_user(request.user):
+        user = request.user
+
+        if _is_guest_user(user):
             return Response({
+                "first_name": "",
+                "last_name": "",
+                "email": "",
+                "username": "",
+                "job_title": "",
+                "company": "",
                 "educations": [],
                 "experiences": [],
                 "trainings": [],
@@ -1775,37 +1783,63 @@ class MeProfileView(APIView):
             })
 
         edus = EducationSerializer(
-            Education.objects.filter(user=request.user).order_by("-end_date", "-start_date", "-id"),
+            Education.objects.filter(user=user).order_by("-end_date", "-start_date", "-id"),
             many=True,
         ).data
         exps = ExperienceSerializer(
-            Experience.objects.filter(user=request.user).order_by("-currently_work_here", "-end_date", "-start_date", "-id"),
+            Experience.objects.filter(user=user).order_by("-currently_work_here", "-end_date", "-start_date", "-id"),
             many=True,
         ).data
 
         trainings = ProfileTrainingSerializer(
-            ProfileTraining.objects.filter(user=request.user).order_by("-currently_ongoing", "-end_date", "-start_date", "-id"),
+            ProfileTraining.objects.filter(user=user).order_by("-currently_ongoing", "-end_date", "-start_date", "-id"),
             many=True
         ).data
 
         certifications = ProfileCertificationSerializer(
-            ProfileCertification.objects.filter(user=request.user).order_by("-issue_date", "-id"),
+            ProfileCertification.objects.filter(user=user).order_by("-issue_date", "-id"),
             many=True
         ).data
 
         memberships = ProfileMembershipSerializer(
-            ProfileMembership.objects.filter(user=request.user).order_by("-ongoing", "-end_date", "-start_date", "-id"),
+            ProfileMembership.objects.filter(user=user).order_by("-ongoing", "-end_date", "-start_date", "-id"),
             many=True
         ).data
 
+        job_title = ""
+        company = ""
+        try:
+            if hasattr(user, 'profile') and user.profile:
+                job_title = user.profile.job_title or ""
+                company = user.profile.company or ""
+        except:
+            pass
+
+        # If job_title or company not set on profile, try to get from most recent experience
+        if not job_title or not company:
+            try:
+                latest_exp = Experience.objects.filter(user=user).order_by("-currently_work_here", "-end_date", "-start_date").first()
+                if latest_exp:
+                    if not job_title:
+                        job_title = latest_exp.position or ""
+                    if not company:
+                        company = latest_exp.community_name or ""
+            except Exception:
+                pass
 
         return Response({
-        "educations": edus,
-        "experiences": exps,
-        "trainings": trainings,
-        "certifications": certifications,
-        "memberships": memberships,
-    })
+            "first_name": user.first_name or "",
+            "last_name": user.last_name or "",
+            "email": user.email or "",
+            "username": user.username or "",
+            "job_title": job_title,
+            "company": company,
+            "educations": edus,
+            "experiences": exps,
+            "trainings": trainings,
+            "certifications": certifications,
+            "memberships": memberships,
+        })
 
 
 class AdminTargetUserMixin:
@@ -2080,7 +2114,7 @@ class AdminMembershipDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet
         serializer.save(membership=membership)
 
     
-from .email_utils import send_admin_credentials_email, delete_cognito_user, create_cognito_user
+from .email_utils import send_admin_credentials_email, delete_cognito_user
 from .cognito_groups import sync_staff_group, add_user_to_group, remove_user_from_group
 
 

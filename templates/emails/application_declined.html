@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Application Status</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div style="background-color: #f8f9fa; border-radius: 8px; padding: 30px; margin-bottom: 20px;">
+        <h1 style="color: #6c757d; margin-top: 0;">Application Status Update</h1>
+
+        <p>Hello {{ applicant_name }},</p>
+
+        <p>Thank you for applying to our event. We appreciate your interest in:</p>
+
+        <div style="background-color: white; border-left: 4px solid #6c757d; padding: 20px; margin: 20px 0; border-radius: 5px;">
+            <h2 style="margin-top: 0; color: #2c3e50;">{{ event_title }}</h2>
+        </div>
+
+        <p>Unfortunately, we were unable to approve your application at this time.</p>
+
+        {% if custom_message %}
+        <div style="background-color: #fff3cd; border-radius: 5px; padding: 15px; margin: 20px 0; border-left: 4px solid #ffc107;">
+            <h3 style="margin-top: 0; color: #856404;">Additional Information:</h3>
+            <p style="margin: 10px 0; color: #856404;">{{ custom_message }}</p>
+        </div>
+        {% endif %}
+
+        <p>We encourage you to explore other upcoming events or reach out if you have any questions.</p>
+
+        <hr style="border: none; border-top: 1px solid #dee2e6; margin: 30px 0;">
+
+        <p style="color: #6c757d; font-size: 14px;">
+            We hope to see you at a future event!
+        </p>
+    </div>
+</body>
+</html>

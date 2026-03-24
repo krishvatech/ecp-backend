@@ -642,3 +642,69 @@ def send_replay_partial_email(user, event):
         subject_override=f"You left '{event.title}' early – catch what you missed",
         fail_silently=True,
     )
+
+
+def send_application_approved_email(application):
+    """
+    Send an approval email to an applicant.
+
+    Args:
+        application: EventApplication instance with approved status
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    if not application or not application.email:
+        return False
+
+    app_name = "IMAA Connect"
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    event_url = f"{frontend_base}/events/{application.event.slug}/"
+
+    ctx = {
+        "app_name": app_name,
+        "applicant_name": f"{application.first_name} {application.last_name}",
+        "event_title": application.event.title,
+        "event_date": application.event.start_time,
+        "event_url": event_url,
+    }
+
+    return send_template_email(
+        template_key="application_approved",
+        to_email=application.email,
+        context=ctx,
+        subject_override=f"Your application to '{application.event.title}' has been approved!",
+        fail_silently=True,
+    )
+
+
+def send_application_declined_email(application, custom_message=''):
+    """
+    Send a decline email to an applicant with optional custom message.
+
+    Args:
+        application: EventApplication instance with declined status
+        custom_message: Optional custom rejection message from the host
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    if not application or not application.email:
+        return False
+
+    app_name = "IMAA Connect"
+
+    ctx = {
+        "app_name": app_name,
+        "applicant_name": f"{application.first_name} {application.last_name}",
+        "event_title": application.event.title,
+        "custom_message": custom_message or '',
+    }
+
+    return send_template_email(
+        template_key="application_declined",
+        to_email=application.email,
+        context=ctx,
+        subject_override=f"Your application to '{application.event.title}' – status update",
+        fail_silently=True,
+    )

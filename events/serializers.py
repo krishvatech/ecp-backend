@@ -21,7 +21,7 @@ from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
 from .models import (
     Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
-    EventSession, SessionParticipant, SessionAttendance
+    EventSession, SessionParticipant, SessionAttendance, EventApplication
 )
 from community.models import Community
 from content.models import Resource
@@ -704,6 +704,7 @@ class EventSerializer(serializers.ModelSerializer):
             "price",
             "currency",
             "is_free",
+            "registration_type",
             "max_participants",
             "saleor_product_id",
             "saleor_variant_id",
@@ -1740,7 +1741,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         model = Event
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
-            "preview_image", "cover_image", "waiting_room_image", "location", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "replay_visible_to_participants", "price", "currency", "is_free",
+            "preview_image", "cover_image", "waiting_room_image", "location", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "replay_visible_to_participants", "price", "currency", "is_free", "registration_type",
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer",
             "lounge_enabled_after", "lounge_after_buffer",
@@ -1967,7 +1968,7 @@ class SpeedNetworkingSessionSerializer(serializers.ModelSerializer):
 class SpeedNetworkingQueueSerializer(serializers.ModelSerializer):
     user = UserMiniSerializer(read_only=True)
     current_match = SpeedNetworkingMatchSerializer(read_only=True)
-    
+
     class Meta:
         model = SpeedNetworkingQueue
         fields = [
@@ -1975,3 +1976,34 @@ class SpeedNetworkingQueueSerializer(serializers.ModelSerializer):
             'current_match', 'joined_at'
         ]
         read_only_fields = ['id', 'joined_at', 'session']
+
+
+class EventApplicationSerializer(serializers.ModelSerializer):
+    """Serializer for EventApplication model - read-only for fetching applications."""
+    applicant_name = serializers.SerializerMethodField()
+
+    def get_applicant_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}"
+
+    class Meta:
+        model = EventApplication
+        fields = [
+            'id', 'event_id', 'user_id', 'applicant_name',
+            'first_name', 'last_name', 'email',
+            'job_title', 'company_name', 'linkedin_url',
+            'status', 'applied_at', 'reviewed_at',
+            'reviewed_by_id', 'rejection_message',
+        ]
+        read_only_fields = [
+            'id', 'applied_at', 'reviewed_at', 'reviewed_by_id', 'status'
+        ]
+
+
+class EventApplicationSubmitSerializer(serializers.Serializer):
+    """Serializer for submitting an application - write-only, used for POST requests."""
+    first_name = serializers.CharField(max_length=150, allow_blank=True, default='')
+    last_name = serializers.CharField(max_length=150, allow_blank=True, default='')
+    email = serializers.CharField(max_length=254, allow_blank=True, default='')  # Changed from EmailField to allow blank
+    job_title = serializers.CharField(max_length=200, allow_blank=True, default='')
+    company_name = serializers.CharField(max_length=200, allow_blank=True, default='')
+    linkedin_url = serializers.URLField(required=False, allow_blank=True, default='')

@@ -85,6 +85,16 @@ class Event(models.Model):
         help_text="Currency code (ISO 4217). Always SGD (Singapore Dollar)"
     )
     is_free = models.BooleanField(default=False)
+    REGISTRATION_TYPE_CHOICES = [
+        ('open', 'Open Registration'),
+        ('apply', 'Application Required'),
+    ]
+    registration_type = models.CharField(
+        max_length=20,
+        choices=REGISTRATION_TYPE_CHOICES,
+        default='open',
+        help_text="Registration flow: 'open' for instant registration, 'apply' for application review"
+    )
     attending_count = models.PositiveIntegerField(default=0)
     max_participants = models.PositiveIntegerField(
         null=True, 
@@ -1512,3 +1522,67 @@ class GuestAttendee(models.Model):
 
     def __str__(self):
         return f"{self.get_display_name()} (Guest) - {self.event.title}"
+
+
+class EventApplication(models.Model):
+    """
+    Represents an application to an event with 'apply' registration type.
+    Tracks applicants (authenticated users or guests) and their application status.
+    """
+    APPLICATION_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('approved', 'Approved'),
+        ('declined', 'Declined'),
+    ]
+
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='applications',
+        help_text="The event this application is for"
+    )
+    user = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='event_applications',
+        help_text="Authenticated user (null if guest application)"
+    )
+
+    # Application information (always collected)
+    first_name = models.CharField(max_length=150, blank=True, default='')
+    last_name = models.CharField(max_length=150, blank=True, default='')
+    email = models.EmailField(blank=True, default='')
+    job_title = models.CharField(max_length=200, blank=True, default='')
+    company_name = models.CharField(max_length=200, blank=True, default='')
+    linkedin_url = models.URLField(blank=True, default='')
+
+    # Application status
+    status = models.CharField(
+        max_length=20,
+        choices=APPLICATION_STATUS_CHOICES,
+        default='pending'
+    )
+    applied_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='reviewed_applications'
+    )
+    rejection_message = models.TextField(blank=True, default='')
+
+    class Meta:
+        db_table = 'event_applications'
+        unique_together = ('event', 'email')
+        ordering = ['-applied_at']
+        indexes = [
+            models.Index(fields=['event', 'status']),
+            models.Index(fields=['email']),
+        ]
+
+    def __str__(self):
+        return f"{self.first_name} {self.last_name} → {self.event.title} ({self.status})"

@@ -1,0 +1,17 @@
+Congratulations!
+
+Hello {{ applicant_name }},
+
+Great news! Your application has been approved for:
+
+{{ event_title }}
+{% if event_date %}
+Date: {{ event_date|date:"F j, Y" }}
+Time: {{ event_date|time:"g:i A" }}
+{% endif %}
+
+You're all set! You can now join the event when it starts.
+
+View Event: {{ event_url }}
+
+We're excited to see you at the event!

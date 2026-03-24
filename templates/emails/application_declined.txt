@@ -1,0 +1,18 @@
+Application Status Update
+
+Hello {{ applicant_name }},
+
+Thank you for applying to our event. We appreciate your interest in:
+
+{{ event_title }}
+
+Unfortunately, we were unable to approve your application at this time.
+
+{% if custom_message %}
+Additional Information:
+{{ custom_message }}
+{% endif %}
+
+We encourage you to explore other upcoming events or reach out if you have any questions.
+
+We hope to see you at a future event!
