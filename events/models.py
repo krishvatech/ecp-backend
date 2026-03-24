@@ -246,6 +246,10 @@ class Event(models.Model):
         default=False,
         help_text="Allow participants to see the participant list after the event ends"
     )
+    show_registered_participant_count = models.BooleanField(
+        default=True,
+        help_text="Show the number of registered participants on event cards"
+    )
     show_public_hosts = models.BooleanField(
         default=True,
         help_text="Allow host-role participants to appear publicly on event cards and participant lists"
