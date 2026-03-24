@@ -85,6 +85,12 @@ class Event(models.Model):
         help_text="Currency code (ISO 4217). Always SGD (Singapore Dollar)"
     )
     is_free = models.BooleanField(default=False)
+    price_label = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Optional display label (e.g. 'By application only', 'GBP 500'). Informational only — does not trigger payment."
+    )
     REGISTRATION_TYPE_CHOICES = [
         ('open', 'Open Registration'),
         ('apply', 'Application Required'),

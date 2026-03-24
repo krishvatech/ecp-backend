@@ -1487,7 +1487,7 @@ class EventViewSet(viewsets.ModelViewSet):
             if not is_already_registered and current_count >= event.max_participants:
                 return Response({"detail": "Event is full."}, status=409)
 
-        if not event.is_free:
+        if not event.is_free and event.price and event.price > 0:
             is_already_registered = event.registrations.filter(user=request.user, status__in=["registered", "waitlisted"]).exists()
             if not is_already_registered:
                 return Response({"detail": "This is a paid event. Please purchase a ticket to register.", "code": "requires_payment"}, status=402)
