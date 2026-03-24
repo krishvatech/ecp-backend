@@ -916,31 +916,31 @@ class RegisterView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
 
-        # âœ… Welcome email (non-blocking)
-        # try:
-        #     frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
+        # Welcome email (non-blocking)
+        try:
+            frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
 
-        #     ctx = {
-        #         "app_name": "IMAA Connect",  # TODO: change to your brand name
-        #         "first_name": (user.first_name or user.username or "there"),
-        #         "email": user.email,
-        #         "login_url": f"{frontend_app_url}/signin",
-        #         "support_email": settings.DEFAULT_FROM_EMAIL,  # or your support email
-        #     }
+            ctx = {
+                "app_name": "IMAA Connect",  # TODO: change to your brand name
+                "first_name": (user.first_name or user.username or "there"),
+                "email": user.email,
+                "login_url": f"{frontend_app_url}/signin",
+                "support_email": settings.DEFAULT_FROM_EMAIL,  # or your support email
+            }
 
-        #     text_body = render_to_string("emails/welcome.txt", ctx)
-        #     html_body = render_to_string("emails/welcome.html", ctx)
+            text_body = render_to_string("emails/welcome.txt", ctx)
+            html_body = render_to_string("emails/welcome.html", ctx)
 
-        #     send_mail(
-        #         subject=f"Welcome to {ctx['app_name']}",
-        #         message=text_body,
-        #         from_email=settings.DEFAULT_FROM_EMAIL,  # âœ… same sender as forgot password
-        #         recipient_list=[user.email],
-        #         html_message=html_body,
-        #         fail_silently=False,
-        #     )
-        # except Exception as e:
-        #     logger.warning(f"Welcome email failed for {getattr(user,'email',None)}: {e}")
+            send_mail(
+                subject=f"Welcome to {ctx['app_name']}",
+                message=text_body,
+                from_email=settings.DEFAULT_FROM_EMAIL,  # same sender as forgot password
+                recipient_list=[user.email],
+                html_message=html_body,
+                fail_silently=False,
+            )
+        except Exception as e:
+            logger.warning(f"Welcome email failed for {getattr(user,'email',None)}: {e}")
 
 
         # issue JWT (simplejwt)
