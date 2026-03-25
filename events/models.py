@@ -193,6 +193,39 @@ class Event(models.Model):
     saleor_product_id = models.CharField(max_length=255, blank=True, null=True)
     saleor_variant_id = models.CharField(max_length=255, blank=True, null=True)
 
+    # WordPress Events Calendar sync fields
+    wordpress_event_id = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        unique=True,
+        db_index=True,
+        help_text="The Events Calendar (WordPress) post ID for this event"
+    )
+    wordpress_event_url = models.URLField(
+        blank=True,
+        help_text="Canonical URL of this event on the WordPress site"
+    )
+    wordpress_synced_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp of the last successful sync from WordPress"
+    )
+    wordpress_sync_status = models.CharField(
+        max_length=20,
+        blank=True,
+        choices=[
+            ("synced", "Synced"),
+            ("pending", "Pending"),
+            ("error", "Error"),
+            ("skipped", "Skipped"),
+        ],
+        help_text="Last sync result from WordPress"
+    )
+    wp_sync_locked = models.BooleanField(
+        default=False,
+        help_text="When True, WordPress sync will not overwrite manual edits to this event"
+    )
+
     # Legacy Agora recording fields (no longer used)
     # Meta
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_events")

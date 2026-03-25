@@ -10,6 +10,7 @@ from .views import (
 from .guest_views import GuestJoinView, GuestRegisterView, GuestRegisterLinkView, GuestProfileUpdateView, GuestProfileDetailView
 from .speed_networking_views import SpeedNetworkingSessionViewSet, SpeedNetworkingQueueViewSet
 from .webhooks import realtime_webhook
+from .wordpress_event_webhook import WordPressEventWebhookView
 
 router = DefaultRouter()
 router.register(r"events", EventViewSet, basename="event")
@@ -17,6 +18,9 @@ router.register(r"event-registrations", EventRegistrationViewSet, basename="even
 
 
 urlpatterns = [
+    # WordPress Events Calendar sync webhook
+    path("events/wordpress/webhook/", WordPressEventWebhookView.as_view(), name="wp-event-webhook"),
+
     # Public event landing page endpoint
     path("events/public/<slug:slug>/", PublicEventDetailView.as_view(), name="event-public-detail"),
 

@@ -678,3 +678,52 @@ def execute_lounge_transition(self, event_id, transition, user_ids):
         logger.exception(f"❌ Lounge transition failed: event={event_id}, transition={transition}: {exc}")
         # Retry up to max_retries times with exponential backoff
         raise self.retry(exc=exc, countdown=5)
+
+
+@shared_task(name="events.poll_wordpress_events")
+def poll_wordpress_events():
+    """
+    Celery beat task: poll WordPress for events modified in last 30 minutes.
+
+    Safety net for missed webhooks. Syncs all recently modified WordPress events
+    to the Django platform.
+
+    Configured to run every 15 minutes via CELERY_BEAT_SCHEDULE.
+    """
+    if not getattr(settings, "WP_SYNC_ENABLED", True):
+        logger.info("WordPress event sync is disabled (WP_SYNC_ENABLED=False)")
+        return
+
+    try:
+        from datetime import timedelta
+        from .wordpress_event_api import get_wordpress_event_client
+        from .wordpress_event_sync import get_wordpress_event_sync_service
+
+        # Poll for events modified in the last 30 minutes
+        from_dt = (timezone.now() - timedelta(minutes=30)).isoformat()
+
+        logger.info(f"Polling WordPress events modified after {from_dt}")
+
+        client = get_wordpress_event_client()
+        events = client.list_recently_modified_events(after=from_dt)
+
+        if not events:
+            logger.debug("No recently modified WordPress events found")
+            return {"status": "ok", "synced_count": 0}
+
+        service = get_wordpress_event_sync_service()
+        synced_count = 0
+
+        for wp_event in events:
+            wp_id = wp_event.get("id")
+            event, action = service.sync_from_wp_data(wp_event)
+            if action in ("created", "updated", "cancelled"):
+                synced_count += 1
+                logger.info(f"Synced WP event {wp_id}: {action}")
+
+        logger.info(f"WordPress event polling complete: synced {synced_count} events")
+        return {"status": "ok", "synced_count": synced_count}
+
+    except Exception as e:
+        logger.error(f"Failed to poll WordPress events: {e}", exc_info=True)
+        return {"status": "error", "error": str(e)}

@@ -59,7 +59,12 @@ LOGGING = {
         # Events app logging
         "events": {
             "handlers": ["console"],
-            "level": "INFO",
+            "level": "DEBUG",
+            "propagate": False,
+        },
+        "events.wordpress_event_sync": {
+            "handlers": ["console"],
+            "level": "DEBUG",
             "propagate": False,
         },
         "events.views": {
@@ -516,7 +521,11 @@ CELERY_BEAT_SCHEDULE.update({
     "expire_stale_friend_requests": {
         "task": "friends.tasks.expire_stale_friend_requests",
         "schedule": crontab(minute="0", hour="3"),  # Daily at 3:00 AM
-    }
+    },
+    "poll-wordpress-events": {
+        "task": "events.poll_wordpress_events",
+        "schedule": crontab(minute="*/15"),  # Every 15 minutes — polls for recently modified WP events
+    },
 })
 
 # Contact Request Quota Settings
@@ -575,3 +584,12 @@ WP_IMAA_API_PASSWORD = os.getenv("WP_IMAA_API_PASSWORD", "")
 WP_IMAA_AUTH_TYPE = os.getenv("WP_IMAA_AUTH_TYPE", "basic")
 WP_IMAA_WEBHOOK_SECRET_KEY = os.getenv("WP_IMAA_WEBHOOK_SECRET_KEY", "")
 WP_IMAA_ALLOW_EMAIL_ONLY_SYNC = os.getenv("WP_IMAA_ALLOW_EMAIL_ONLY_SYNC", "false").lower() in ("1", "true", "yes", "on")
+
+# WordPress Events Calendar (The Events Calendar plugin) sync settings
+# ============================================================================
+WP_SYNC_DEFAULT_COMMUNITY_ID = int(os.getenv("WP_SYNC_DEFAULT_COMMUNITY_ID", "1"))
+# WP_SYNC_SERVICE_ACCOUNT_ID is the 4th-priority fallback for event creator resolution.
+# Priority: creator.wp_user_id > creator.email > organizer[0].email > this setting > superuser
+WP_SYNC_SERVICE_ACCOUNT_ID = int(os.getenv("WP_SYNC_SERVICE_ACCOUNT_ID", "0")) or None
+WP_SYNC_ENABLED = os.getenv("WP_SYNC_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+WP_SYNC_IMAGE_DOWNLOAD = os.getenv("WP_SYNC_IMAGE_DOWNLOAD", "true").lower() in ("1", "true", "yes", "on")
