@@ -2114,7 +2114,7 @@ class AdminMembershipDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet
         serializer.save(membership=membership)
 
     
-from .email_utils import send_admin_credentials_email, delete_cognito_user
+from .email_utils import send_admin_credentials_email, delete_cognito_user, create_cognito_user
 from .cognito_groups import sync_staff_group, add_user_to_group, remove_user_from_group
 
 
