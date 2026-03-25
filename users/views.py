@@ -9,6 +9,7 @@ from rest_framework import status
 from django.template.loader import render_to_string
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework import mixins, permissions, status, viewsets, filters
+from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -2132,6 +2133,7 @@ class StaffUserViewSet(viewsets.ModelViewSet):
     permission_classes = [CanViewStaffUsers]
     http_method_names = ["get", "post", "patch", "delete"]
 
+    pagination_class = LimitOffsetPagination
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["username", "first_name", "last_name", "email"]
     ordering_fields = ["date_joined", "last_login", "username", "email"]
@@ -2153,6 +2155,15 @@ class StaffUserViewSet(viewsets.ModelViewSet):
             if slug:
                 filt |= Q(community__slug=slug)
             qs = qs.filter(filt)
+
+        # Filter by user type if specified
+        user_type_filter = self.request.query_params.get("user_type_filter")
+        if user_type_filter == "superuser":
+            qs = qs.filter(is_superuser=True)
+        elif user_type_filter == "staff":
+            qs = qs.filter(is_staff=True, is_superuser=False)
+        elif user_type_filter == "normal":
+            qs = qs.filter(is_staff=False, is_superuser=False)
 
         # Deduplicate by email: keep only the first user for each email
         # (handles case where multiple User records exist with same email in DB)
