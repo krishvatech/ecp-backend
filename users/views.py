@@ -36,7 +36,7 @@ from django.utils.crypto import get_random_string
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import LinkedInAccount,EscoSkill
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q
+from django.db.models import Q, F
 from activity_feed.models import FeedItem
 from friends.models import Friendship
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -2137,6 +2137,9 @@ class StaffUserViewSet(viewsets.ModelViewSet):
     ordering_fields = ["date_joined", "last_login", "username", "email"]
     
     def get_queryset(self):
+        from django.db.models import Window
+        from django.db.models.functions import RowNumber
+
         qs = super().get_queryset().select_related("profile")
         if not self.request.user.is_superuser:
             qs = qs.filter(is_staff=False, is_superuser=False)
@@ -2149,9 +2152,21 @@ class StaffUserViewSet(viewsets.ModelViewSet):
                 filt |= Q(community__id=cid)
             if slug:
                 filt |= Q(community__slug=slug)
-            qs = qs.filter(filt).distinct()
+            qs = qs.filter(filt)
 
-        return qs
+        # Deduplicate by email: keep only the first user for each email
+        # (handles case where multiple User records exist with same email in DB)
+        qs = qs.annotate(
+            row_num=Window(
+                expression=RowNumber(),
+                partition_by=[F('email')],
+                order_by=F('id').asc()
+            )
+        ).filter(row_num=1)
+
+        # Always apply distinct() to prevent duplicate user records
+        # when select_related() is used with ManyToMany relationships
+        return qs.distinct()
 
     def create(self, request, *args, **kwargs):
         """

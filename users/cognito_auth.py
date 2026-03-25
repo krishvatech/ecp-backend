@@ -199,13 +199,18 @@ class CognitoJWTAuthentication(BaseAuthentication):
 
                 # ✅ 4) If still not found, create a new DB user
                 if not user:
-                    base = email.split("@")[0] if email else (provider_username or "user")
-                    user = User.objects.create(
-                        username=_unique_username(base),
-                        email=email or "",
-                        first_name=first_name,
-                        last_name=last_name,
-                    )
+                    # Final check: prevent email duplicates (even if email already exists, use existing user)
+                    if email:
+                        user = User.objects.filter(email__iexact=email).order_by("id").first()
+
+                    if not user:
+                        base = email.split("@")[0] if email else (provider_username or "user")
+                        user = User.objects.create(
+                            username=_unique_username(base),
+                            email=email or "",
+                            first_name=first_name,
+                            last_name=last_name,
+                        )
 
                 # ✅ 5) Create mapping: sub -> user (prevents future duplicates)
                 try:
