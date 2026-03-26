@@ -6,6 +6,7 @@ from .views import (
     EventRegistrationViewSet,
     RecordingWebhookView,
     EventSessionViewSet,
+    VirtualSpeakerViewSet,
 )
 from .guest_views import GuestJoinView, GuestRegisterView, GuestRegisterLinkView, GuestProfileUpdateView, GuestProfileDetailView
 from .speed_networking_views import SpeedNetworkingSessionViewSet, SpeedNetworkingQueueViewSet
@@ -15,6 +16,7 @@ from .wordpress_event_webhook import WordPressEventWebhookView
 router = DefaultRouter()
 router.register(r"events", EventViewSet, basename="event")
 router.register(r"event-registrations", EventRegistrationViewSet, basename="eventregistration")
+router.register(r"virtual-speakers", VirtualSpeakerViewSet, basename="virtual-speaker")
 
 
 urlpatterns = [

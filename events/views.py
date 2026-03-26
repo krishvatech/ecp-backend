@@ -58,7 +58,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant
 from friends.models import Notification
 from groups.models import Group, GroupMembership
 from messaging.models import Conversation, Message
@@ -78,6 +78,8 @@ from .serializers import (
     resolve_registration_roles,
     EventApplicationSerializer,
     EventApplicationSubmitSerializer,
+    VirtualSpeakerSerializer,
+    VirtualSpeakerConvertSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -895,6 +897,155 @@ def _apply_bucket_filter(qs, bucket):
         return qs.filter(status="cancelled")
     
     return qs
+
+# ============================================================================
+# ================== Virtual Speaker ViewSet ==============================
+# ============================================================================
+
+class VirtualSpeakerViewSet(viewsets.ModelViewSet):
+    """
+    CRUD operations for virtual speaker profiles (reusable across events).
+    Supports conversion to real user accounts.
+    """
+
+    serializer_class = VirtualSpeakerSerializer
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ['name', 'job_title', 'company']
+    ordering_fields = ['name', 'created_at']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        """Filter by community from query param (optional for list, required filtering applied)."""
+        community_id = self.request.query_params.get('community_id')
+
+        # For list endpoint, filter by community_id if provided
+        if self.action == 'list' and community_id:
+            return VirtualSpeaker.objects.filter(community_id=community_id)
+
+        # For detail endpoints (retrieve, update, delete, convert, etc.), return all
+        if self.action in ['retrieve', 'update', 'partial_update', 'destroy', 'convert', 'resend_invite']:
+            return VirtualSpeaker.objects.all()
+
+        # For list without community_id, return all (allows browsing all speakers)
+        return VirtualSpeaker.objects.all()
+
+    def perform_create(self, serializer):
+        """Set the creator and community when creating."""
+        # Get community_id from request data
+        community_id = self.request.data.get('community_id')
+        # Ensure community_id is always set
+        serializer.save(community_id=community_id, created_by=self.request.user)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated], url_path='convert')
+    def convert(self, request, pk=None):
+        """Convert a virtual speaker to a real user account."""
+        from django.contrib.auth.models import User
+        from django.core.files.base import ContentFile
+        from users.models import UserProfile
+        from users.task import send_speaker_credentials_task
+
+        vs = self.get_object()
+
+        if vs.status == VirtualSpeaker.STATUS_CONVERTED:
+            return Response({'detail': 'Already converted.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        print(f"DEBUG: request.data = {request.data}")
+        print(f"DEBUG: request.content_type = {request.content_type}")
+
+        serializer = VirtualSpeakerConvertSerializer(data=request.data)
+        if not serializer.is_valid():
+            print(f"DEBUG: serializer.errors = {serializer.errors}")
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        email = serializer.validated_data['email']
+        send_invite = serializer.validated_data.get('send_invite', True)
+
+        # Check if email already in use
+        if User.objects.filter(email=email).exists():
+            return Response({'detail': 'A user with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            # 1. Create Django User
+            name_parts = vs.name.split(' ', 1)
+            base_username = email.split('@')[0]
+            username = base_username
+            counter = 1
+            while User.objects.filter(username=username).exists():
+                username = f"{base_username}{counter}"
+                counter += 1
+
+            user = User.objects.create(
+                username=username,
+                email=email,
+                first_name=name_parts[0],
+                last_name=name_parts[1] if len(name_parts) > 1 else '',
+                is_active=True,
+            )
+            user.set_unusable_password()
+            user.save()
+
+            # 2. Create UserProfile with VirtualSpeaker data
+            profile, _ = UserProfile.objects.get_or_create(user=user)
+            profile.bio = vs.bio
+            profile.job_title = vs.job_title
+            profile.company = vs.company
+            if vs.profile_image:
+                vs.profile_image.seek(0)
+                profile.user_image.save(vs.profile_image.name, ContentFile(vs.profile_image.read()))
+            profile.save()
+
+            # 3. Update EventParticipant records for this virtual speaker
+            from .models import EventParticipant, SessionParticipant
+            EventParticipant.objects.filter(
+                virtual_speaker=vs,
+                participant_type=EventParticipant.PARTICIPANT_TYPE_VIRTUAL,
+            ).update(
+                participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+                user=user,
+                virtual_speaker=None,
+            )
+
+            # 4. Update SessionParticipant records
+            SessionParticipant.objects.filter(
+                virtual_speaker=vs,
+                participant_type=SessionParticipant.PARTICIPANT_TYPE_VIRTUAL,
+            ).update(
+                participant_type=SessionParticipant.PARTICIPANT_TYPE_STAFF,
+                user=user,
+                virtual_speaker=None,
+            )
+
+            # 5. Mark VirtualSpeaker as converted
+            vs.status = VirtualSpeaker.STATUS_CONVERTED
+            vs.converted_user = user
+            vs.converted_at = timezone.now()
+            vs.invited_email = email
+            vs.save()
+
+        # 6. Send invite email asynchronously (Cognito + credentials)
+        if send_invite:
+            send_speaker_credentials_task.delay(user.id)
+
+        return Response({
+            'ok': True,
+            'user_id': user.id,
+            'email': email,
+            'invite_sent': send_invite,
+        })
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated], url_path='resend-invite')
+    def resend_invite(self, request, pk=None):
+        """Resend invitation to a converted virtual speaker."""
+        from users.task import send_speaker_credentials_task
+
+        vs = self.get_object()
+        if vs.status != VirtualSpeaker.STATUS_CONVERTED or not vs.converted_user:
+            return Response({'detail': 'Not yet converted.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        send_speaker_credentials_task.delay(vs.converted_user_id)
+        return Response({'ok': True})
+
 
 class EventViewSet(viewsets.ModelViewSet):
     """
@@ -3170,11 +3321,39 @@ class EventViewSet(viewsets.ModelViewSet):
                 }
             )
 
+        # Add virtual speakers to the participants list
+        virtual_speakers = EventParticipant.objects.filter(
+            event=event,
+            participant_type=EventParticipant.PARTICIPANT_TYPE_VIRTUAL
+        ).select_related("virtual_speaker").order_by("display_order")
+
+        for participant in virtual_speakers:
+            if participant.virtual_speaker:
+                vs = participant.virtual_speaker
+                rows.append(
+                    {
+                        "registration_id": None,
+                        "user_id": None,
+                        "display_name": vs.name,
+                        "email": "",
+                        "avatar_url": vs.profile_image.url if vs.profile_image else None,
+                        "kyc_status": "",
+                        "profile_url": None,
+                        "is_profile_clickable": False,
+                        "roles": [participant.role] if participant.role else [],
+                        "primary_role": participant.role or "speaker",
+                        "role_labels": [role_label(participant.role)] if participant.role else ["Speaker"],
+                        "is_public_role_visible": is_public_role_visible(event, participant.role) if participant.role else True,
+                        "is_hidden_from_public_role_display": False,
+                        "registered_at": None,
+                    }
+                )
+
         rows.sort(
             key=lambda row: (
                 role_priority(row["primary_role"]),
                 row["display_name"].lower(),
-                row["registration_id"],
+                row.get("registration_id"),
             )
         )
 

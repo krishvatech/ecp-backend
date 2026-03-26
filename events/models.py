@@ -904,17 +904,20 @@ class SpeedNetworkingInterestTag(models.Model):
 
 class EventParticipant(models.Model):
     """
-    Hybrid model supporting both staff users and external guest speakers.
+    Hybrid model supporting staff users, external guest speakers, and virtual speaker profiles.
 
     For staff participants: Links to User account, optionally override bio/image per event
     For guest participants: Standalone data without User account (useful for external speakers)
+    For virtual participants: Links to VirtualSpeaker profile (reusable across events)
     """
 
     PARTICIPANT_TYPE_STAFF = 'staff'
     PARTICIPANT_TYPE_GUEST = 'guest'
+    PARTICIPANT_TYPE_VIRTUAL = 'virtual'
     PARTICIPANT_TYPE_CHOICES = [
         (PARTICIPANT_TYPE_STAFF, 'Staff Member'),
         (PARTICIPANT_TYPE_GUEST, 'Guest Speaker'),
+        (PARTICIPANT_TYPE_VIRTUAL, 'Virtual Speaker'),
     ]
 
     ROLE_SPEAKER = 'speaker'
@@ -993,6 +996,16 @@ class EventParticipant(models.Model):
         help_text="Profile image of guest speaker"
     )
 
+    # Virtual participant field (for reusable virtual speaker profiles)
+    virtual_speaker = models.ForeignKey(
+        'VirtualSpeaker',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='event_participations',
+        help_text="Linked VirtualSpeaker profile (only for virtual type)"
+    )
+
     # Metadata
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1017,6 +1030,9 @@ class EventParticipant(models.Model):
         elif self.participant_type == self.PARTICIPANT_TYPE_GUEST:
             if not self.guest_name:
                 raise ValidationError("Guest speakers must have a name")
+        elif self.participant_type == self.PARTICIPANT_TYPE_VIRTUAL:
+            if not self.virtual_speaker:
+                raise ValidationError("Virtual participants must have a VirtualSpeaker assigned")
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -1029,12 +1045,16 @@ class EventParticipant(models.Model):
     # Helper methods for frontend/serializers
     def get_name(self):
         """Get participant name with fallback logic"""
+        if self.virtual_speaker:
+            return self.virtual_speaker.name
         if self.user:
             return self.user.get_full_name() or self.user.username
         return self.guest_name
 
     def get_email(self):
         """Get participant email"""
+        if self.virtual_speaker and self.virtual_speaker.converted_user:
+            return self.virtual_speaker.converted_user.email
         if self.user:
             return self.user.email
         return self.guest_email
@@ -1043,6 +1063,8 @@ class EventParticipant(models.Model):
         """Get bio with fallback logic"""
         if self.event_bio:
             return self.event_bio
+        if self.virtual_speaker:
+            return self.virtual_speaker.bio or ""
         if self.user and hasattr(self.user, 'profile'):
             return self.user.profile.bio or ""
         return self.guest_bio or ""
@@ -1051,6 +1073,8 @@ class EventParticipant(models.Model):
         """Get image URL with fallback logic"""
         if self.event_image:
             return self.event_image.url
+        if self.virtual_speaker and self.virtual_speaker.profile_image:
+            return self.virtual_speaker.profile_image.url
         if self.user and hasattr(self.user, 'profile'):
             profile = self.user.profile
             if getattr(profile, 'user_image', None):
@@ -1134,9 +1158,11 @@ class SessionParticipant(models.Model):
 
     PARTICIPANT_TYPE_STAFF = 'staff'
     PARTICIPANT_TYPE_GUEST = 'guest'
+    PARTICIPANT_TYPE_VIRTUAL = 'virtual'
     PARTICIPANT_TYPE_CHOICES = [
         (PARTICIPANT_TYPE_STAFF, 'Staff Member'),
         (PARTICIPANT_TYPE_GUEST, 'Guest Speaker'),
+        (PARTICIPANT_TYPE_VIRTUAL, 'Virtual Speaker'),
     ]
 
     ROLE_SPEAKER = 'speaker'
@@ -1164,6 +1190,16 @@ class SessionParticipant(models.Model):
     guest_bio = models.TextField(blank=True)
     guest_image = models.ImageField(upload_to=event_participant_image_upload_to, blank=True, null=True)
 
+    # Virtual participant field (for reusable virtual speaker profiles)
+    virtual_speaker = models.ForeignKey(
+        'VirtualSpeaker',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='session_participations',
+        help_text="Linked VirtualSpeaker profile (only for virtual type)"
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1180,6 +1216,8 @@ class SessionParticipant(models.Model):
             raise ValidationError("Staff participants must have a user assigned")
         elif self.participant_type == self.PARTICIPANT_TYPE_GUEST and not self.guest_name:
             raise ValidationError("Guest speakers must have a name")
+        elif self.participant_type == self.PARTICIPANT_TYPE_VIRTUAL and not self.virtual_speaker:
+            raise ValidationError("Virtual participants must have a VirtualSpeaker assigned")
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -1190,11 +1228,15 @@ class SessionParticipant(models.Model):
 
     # Helper methods (mirror EventParticipant)
     def get_name(self):
+        if self.virtual_speaker:
+            return self.virtual_speaker.name
         if self.user:
             return self.user.get_full_name() or self.user.username
         return self.guest_name
 
     def get_email(self):
+        if self.virtual_speaker and self.virtual_speaker.converted_user:
+            return self.virtual_speaker.converted_user.email
         if self.user:
             return self.user.email
         return self.guest_email
@@ -1202,6 +1244,8 @@ class SessionParticipant(models.Model):
     def get_bio(self):
         if self.session_bio:
             return self.session_bio
+        if self.virtual_speaker:
+            return self.virtual_speaker.bio or ""
         if self.user and hasattr(self.user, 'profile'):
             return self.user.profile.bio or ""
         return self.guest_bio or ""
@@ -1209,6 +1253,8 @@ class SessionParticipant(models.Model):
     def get_image_url(self):
         if self.session_image:
             return self.session_image.url
+        if self.virtual_speaker and self.virtual_speaker.profile_image:
+            return self.virtual_speaker.profile_image.url
         if self.user and hasattr(self.user, 'profile'):
             profile = self.user.profile
             if getattr(profile, 'user_image', None):
@@ -1223,6 +1269,112 @@ class SessionParticipant(models.Model):
             avatar = self.user.avatar
             return avatar.url if hasattr(avatar, "url") else str(avatar)
         return self.guest_image.url if self.guest_image else None
+
+
+# ============================================================================
+# ================= Virtual Speaker Profile Model =======================
+# ============================================================================
+
+def virtual_speaker_image_upload_to(instance, filename):
+    """Upload path for virtual speaker profile images."""
+    name, ext = os.path.splitext(filename or "")
+    base = slugify(name) or "speaker"
+    return f"virtual-speakers/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
+
+
+class VirtualSpeaker(models.Model):
+    """
+    Reusable virtual speaker profile (no email required initially).
+    Can be assigned to multiple events and later converted to a real user account.
+    """
+    STATUS_ACTIVE = 'active'
+    STATUS_CONVERTED = 'converted'
+    STATUS_CHOICES = [
+        ('active', 'Active Virtual Speaker'),
+        ('converted', 'Converted to User'),
+    ]
+
+    community = models.ForeignKey(
+        Community,
+        on_delete=models.CASCADE,
+        related_name='virtual_speakers',
+        help_text="Community this speaker belongs to"
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_virtual_speakers',
+        help_text="Organizer who created this virtual speaker"
+    )
+
+    # Profile fields (reusable across events)
+    name = models.CharField(
+        max_length=255,
+        help_text="Full name"
+    )
+    job_title = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Job title or role"
+    )
+    company = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Company or organization"
+    )
+    bio = models.TextField(
+        blank=True,
+        help_text="Biography or description"
+    )
+    profile_image = models.ImageField(
+        upload_to=virtual_speaker_image_upload_to,
+        blank=True,
+        null=True,
+        help_text="Profile picture"
+    )
+
+    # Conversion lifecycle
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_ACTIVE,
+        db_index=True,
+        help_text="Current status of the virtual speaker"
+    )
+    converted_user = models.OneToOneField(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='virtual_speaker_origin',
+        help_text="Real user account this was converted to"
+    )
+    converted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When this was converted to a real user"
+    )
+    invited_email = models.EmailField(
+        blank=True,
+        help_text="Email address used for conversion"
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        indexes = [
+            models.Index(fields=['community', 'status']),
+            models.Index(fields=['community', 'name']),
+        ]
+        verbose_name = 'Virtual Speaker'
+        verbose_name_plural = 'Virtual Speakers'
+
+    def __str__(self):
+        status_label = f" ({self.get_status_display()})" if self.status == 'converted' else ""
+        return f"{self.name}{status_label}"
 
 
 class SessionAttendance(models.Model):

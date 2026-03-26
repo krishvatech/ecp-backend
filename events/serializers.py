@@ -21,7 +21,7 @@ from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
 from .models import (
     Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
-    EventSession, SessionParticipant, SessionAttendance, EventApplication
+    EventSession, SessionParticipant, SessionAttendance, EventApplication, VirtualSpeaker
 )
 from community.models import Community
 from content.models import Resource
@@ -123,7 +123,7 @@ def serialize_featured_participants(event, context=None):
     request = context.get("request")
     featured = []
     participants = (
-        event.participants.select_related("user", "user__profile")
+        event.participants.select_related("user", "user__profile", "virtual_speaker")
         .all()
     )
     visible_participants = [
@@ -144,6 +144,17 @@ def serialize_featured_participants(event, context=None):
         image_url = participant.get_image_url() or ""
         if image_url and request and not str(image_url).startswith(("http://", "https://")):
             image_url = request.build_absolute_uri(image_url)
+
+        # Determine participant type label
+        if participant.participant_type == "virtual":
+            participant_type_label = "Virtual Speaker"
+        elif participant.participant_type == "guest":
+            participant_type_label = "Guest"
+        elif participant.participant_type == "user":
+            participant_type_label = "User"
+        else:  # staff
+            participant_type_label = "Staff"
+
         featured.append(
             {
                 "user_id": participant.user_id,
@@ -151,6 +162,8 @@ def serialize_featured_participants(event, context=None):
                 "avatar_url": image_url or None,
                 "role": participant.role,
                 "role_label": role_label(participant.role),
+                "participant_type": participant.participant_type,
+                "participant_type_label": participant_type_label,
                 "profile_url": build_profile_url(participant.user_id),
                 "is_profile_clickable": bool(participant.user_id),
             }
@@ -245,11 +258,14 @@ class SessionsInputField(serializers.ListField):
 
 
 class EventParticipantSerializer(serializers.ModelSerializer):
-    """Read-only serializer for EventParticipant with computed fields supporting both staff and guest types."""
+    """Read-only serializer for EventParticipant with computed fields supporting staff, guest, and virtual types."""
 
     user_id = serializers.SerializerMethodField()
+    virtual_speaker_id = serializers.SerializerMethodField()
     name = serializers.SerializerMethodField()
     email = serializers.SerializerMethodField()
+    job_title = serializers.SerializerMethodField()
+    company = serializers.SerializerMethodField()
     profile_image_url = serializers.SerializerMethodField()
     bio_text = serializers.SerializerMethodField()
     participant_type = serializers.CharField(read_only=True)
@@ -260,8 +276,11 @@ class EventParticipantSerializer(serializers.ModelSerializer):
             'id',
             'participant_type',
             'user_id',
+            'virtual_speaker_id',
             'name',
             'email',
+            'job_title',
+            'company',
             'role',
             'bio_text',
             'profile_image_url',
@@ -271,10 +290,14 @@ class EventParticipantSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_user_id(self, obj):
-        """Get user ID for staff type, None for guest."""
+        """Get user ID for staff type, None for guest/virtual."""
         if obj.participant_type == EventParticipant.PARTICIPANT_TYPE_STAFF and obj.user:
             return obj.user.id
         return None
+
+    def get_virtual_speaker_id(self, obj):
+        """Get virtual speaker ID for virtual type."""
+        return obj.virtual_speaker_id if obj.participant_type == EventParticipant.PARTICIPANT_TYPE_VIRTUAL else None
 
     def get_name(self, obj):
         """Get display name based on participant type."""
@@ -283,6 +306,22 @@ class EventParticipantSerializer(serializers.ModelSerializer):
     def get_email(self, obj):
         """Get email based on participant type."""
         return obj.get_email()
+
+    def get_job_title(self, obj):
+        """Get job title from virtual speaker or user profile."""
+        if obj.virtual_speaker:
+            return obj.virtual_speaker.job_title
+        if obj.user and hasattr(obj.user, 'profile'):
+            return obj.user.profile.job_title or ""
+        return ""
+
+    def get_company(self, obj):
+        """Get company from virtual speaker or user profile."""
+        if obj.virtual_speaker:
+            return obj.virtual_speaker.company
+        if obj.user and hasattr(obj.user, 'profile'):
+            return obj.user.profile.company or ""
+        return ""
 
     def get_profile_image_url(self, obj):
         """Get profile image URL with fallback logic."""
@@ -373,6 +412,61 @@ class SessionAttendanceSerializer(serializers.ModelSerializer):
 
     def get_user_name(self, obj):
         return obj.user.get_full_name() or obj.user.username
+
+
+# ============================================================================
+# ================= Virtual Speaker Serializers ==========================
+# ============================================================================
+
+class VirtualSpeakerSerializer(serializers.ModelSerializer):
+    """Serializer for virtual speaker profiles (CRUD operations)."""
+
+    profile_image_url = serializers.SerializerMethodField()
+    is_converted = serializers.SerializerMethodField()
+    converted_user_id = serializers.SerializerMethodField()
+    community_id = serializers.IntegerField(write_only=True, required=True)
+
+    class Meta:
+        model = VirtualSpeaker
+        fields = [
+            'id', 'community_id', 'name', 'job_title', 'company', 'bio',
+            'profile_image', 'profile_image_url',
+            'status', 'is_converted', 'converted_user_id',
+            'invited_email', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'status', 'is_converted', 'converted_user_id',
+            'profile_image_url', 'created_at', 'updated_at'
+        ]
+
+    def get_profile_image_url(self, obj):
+        if obj.profile_image:
+            request = self.context.get('request')
+            url = obj.profile_image.url
+            return request.build_absolute_uri(url) if request else url
+        return None
+
+    def get_is_converted(self, obj):
+        return obj.status == VirtualSpeaker.STATUS_CONVERTED
+
+    def get_converted_user_id(self, obj):
+        return obj.converted_user_id
+
+    def create(self, validated_data):
+        community_id = validated_data.pop('community_id', None)
+        if community_id:
+            validated_data['community_id'] = community_id
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['created_by'] = request.user
+        return super().create(validated_data)
+
+
+class VirtualSpeakerConvertSerializer(serializers.Serializer):
+    """Serializer for converting a virtual speaker to a real user account."""
+
+    email = serializers.EmailField()
+    send_invite = serializers.BooleanField(default=True, required=False)
 
 
 class EventSessionSerializer(serializers.ModelSerializer):
@@ -957,9 +1051,25 @@ class EventSerializer(serializers.ModelSerializer):
                     'display_order': p_data.get('display_order', idx),
                     'client_index': p_data.get('client_index', idx),
                 })
+
+            elif p_type == 'virtual':
+                # Virtual participant requires virtual_speaker_id
+                vs_id = p_data.get('virtual_speaker_id')
+                if not vs_id:
+                    raise serializers.ValidationError({
+                        'participants': f'Missing virtual_speaker_id for virtual participant at index {idx}'
+                    })
+
+                validated_participants.append({
+                    'type': 'virtual',
+                    'virtual_speaker_id': vs_id,
+                    'role': role,
+                    'display_order': p_data.get('display_order', idx),
+                    'client_index': p_data.get('client_index', idx),
+                })
             else:
                 raise serializers.ValidationError({
-                    'participants': f'Invalid type "{p_type}" at index {idx}. Must be: staff or guest'
+                    'participants': f'Invalid type "{p_type}" at index {idx}. Must be: staff, guest, or virtual'
                 })
 
         # Verify all staff user IDs exist (batch query)
@@ -973,13 +1083,15 @@ class EventSerializer(serializers.ModelSerializer):
                     'participants': f'User IDs not found: {missing_ids}'
                 })
 
-        # De-duplicate: for staff by (user_id, role), for guest by (name, email, role)
+        # De-duplicate: for staff by (user_id, role), for guest by (name, email, role), for virtual by (virtual_speaker_id, role)
         dedup_key_map = {}
         for p in validated_participants:
             if p['type'] == 'staff':
                 key = ('staff', p['user_id'], p['role'])
-            else:
+            elif p['type'] == 'guest':
                 key = ('guest', p['guest_name'], p['guest_email'], p['role'])
+            else:  # virtual
+                key = ('virtual', p['virtual_speaker_id'], p['role'])
 
             if key not in dedup_key_map:
                 dedup_key_map[key] = p
@@ -1010,7 +1122,8 @@ class EventSerializer(serializers.ModelSerializer):
                 if participant_image_file:
                     participant.event_image = participant_image_file
                 participant.save()
-            else:  # guest
+
+            elif p_data['type'] == 'guest':
                 guest_email = p_data['guest_email']
                 guest_name = p_data['guest_name']
 
@@ -1072,6 +1185,31 @@ class EventSerializer(serializers.ModelSerializer):
                 )
                 if participant_image_file:
                     participant.guest_image = participant_image_file
+                participant.save()
+
+            elif p_data['type'] == 'virtual':
+                # Virtual participant - try to get converted user first
+                vs = VirtualSpeaker.objects.get(pk=p_data['virtual_speaker_id'])
+
+                if vs.status == VirtualSpeaker.STATUS_CONVERTED and vs.converted_user:
+                    # Virtual speaker already converted - use as staff
+                    registration_user_ids.add(vs.converted_user.id)
+                    participant = EventParticipant(
+                        event=event,
+                        participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+                        user=vs.converted_user,
+                        role=p_data['role'],
+                        display_order=p_data['display_order'],
+                    )
+                else:
+                    # Virtual speaker still virtual - create virtual participant
+                    participant = EventParticipant(
+                        event=event,
+                        participant_type=EventParticipant.PARTICIPANT_TYPE_VIRTUAL,
+                        virtual_speaker=vs,
+                        role=p_data['role'],
+                        display_order=p_data['display_order'],
+                    )
                 participant.save()
 
         # Auto-register all participant users so events appear in "My Events".
