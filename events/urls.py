@@ -24,7 +24,7 @@ urlpatterns = [
     path("events/wordpress/webhook/", WordPressEventWebhookView.as_view(), name="wp-event-webhook"),
 
     # Public event landing page endpoint
-    path("events/public/<slug:slug>/", PublicEventDetailView.as_view(), name="event-public-detail"),
+    path("events/public/<str:slug>/", PublicEventDetailView.as_view(), name="event-public-detail"),
 
     # Guest attendee endpoints
     path("events/<int:pk>/guest-join/", GuestJoinView.as_view(), name="guest-join"),

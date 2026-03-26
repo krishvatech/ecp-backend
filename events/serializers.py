@@ -1590,14 +1590,26 @@ class EventSerializer(serializers.ModelSerializer):
         return tz_value
 
     def validate_slug(self, value):
-        """Validate slug format and uniqueness."""
+        """Validate slug format and uniqueness. Special chars like @, #, $, & are allowed."""
         if not value:
             return value  # Allow blank (auto-generated in save())
-        import re
-        if not re.match(r'^[a-z0-9]+(?:-[a-z0-9]+)*$', value):
+
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Slug cannot be blank.")
+        if '/' in value:
             raise serializers.ValidationError(
-                "Slug must contain only lowercase letters, numbers, and hyphens."
+                "Slug cannot contain forward slashes (/)."
             )
+        if '\x00' in value:
+            raise serializers.ValidationError(
+                "Slug cannot contain null characters."
+            )
+        if len(value) > 255:
+            raise serializers.ValidationError(
+                "Slug is too long (max 255 characters)."
+            )
+
         # Check uniqueness (exclude self if updating)
         qs = Event.objects.filter(slug=value)
         if self.instance:

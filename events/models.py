@@ -52,7 +52,7 @@ class Event(models.Model):
         related_name="events"
     )
     title = models.CharField(max_length=255)
-    slug = models.SlugField(max_length=255, unique=True, blank=True)
+    slug = models.CharField(max_length=255, unique=True, blank=True)
     description = models.TextField(blank=True)
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
