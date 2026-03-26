@@ -15,6 +15,11 @@
 
         <div style="background-color: white; border-left: 4px solid #6c757d; padding: 20px; margin: 20px 0; border-radius: 5px;">
             <h2 style="margin-top: 0; color: #2c3e50;">{{ event_title }}</h2>
+            {% if event_start %}
+            <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_start|date:"F j, Y" }}</p>
+            <p style="margin: 5px 0;"><strong>⏰ Time:</strong> {{ event_start|time:"g:i A" }} - {{ event_end|time:"g:i A" }}</p>
+            {% if event_timezone %}<p style="margin: 5px 0;"><strong>🌍 Timezone:</strong> {{ event_timezone }}</p>{% endif %}
+            {% endif %}
         </div>
 
         <p>Unfortunately, we were unable to approve your application at this time.</p>

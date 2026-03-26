@@ -11,6 +11,14 @@
     <p>We are writing to inform you that you have been invited by <strong>{{ inviter_name }}</strong> to attend the
         event <strong>"{{ event_title }}"</strong>.</p>
 
+    {% if event_start %}
+    <div style="background-color: #f9f9f9; padding: 15px; margin: 20px 0;">
+        <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_start|date:"F j, Y" }}</p>
+        <p style="margin: 5px 0;"><strong>⏰ Time:</strong> {{ event_start|time:"g:i A" }} - {{ event_end|time:"g:i A" }}</p>
+        {% if event_timezone %}<p style="margin: 5px 0;"><strong>🌍 Timezone:</strong> {{ event_timezone }}</p>{% endif %}
+    </div>
+    {% endif %}
+
     <p style="text-align: center; margin: 25px 0;">
         <a href="{{ invite_url }}"
             style="background-color: #0066cc; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">Accept

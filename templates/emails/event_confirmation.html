@@ -18,6 +18,7 @@
             {% if event_start %}
             <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_start|date:"F j, Y" }}</p>
             <p style="margin: 5px 0;"><strong>⏰ Time:</strong> {{ event_start|time:"g:i A" }} - {{ event_end|time:"g:i A" }}</p>
+            {% if event_timezone %}<p style="margin: 5px 0;"><strong>🌍 Timezone:</strong> {{ event_timezone }}</p>{% endif %}
             {% endif %}
             {% if event_description %}
             <p style="margin-top: 15px; color: #6c757d;">{{ event_description|truncatewords:30 }}</p>
