@@ -352,6 +352,9 @@ def create_cognito_user_from_guest(
         if getattr(guest, "job_title", "") and not profile.job_title:
             profile.job_title = guest.job_title
             update_fields.append("job_title")
+        if getattr(guest, "company", "") and not profile.company:
+            profile.company = guest.company
+            update_fields.append("company")
         if update_fields:
             profile.save(update_fields=update_fields)
 

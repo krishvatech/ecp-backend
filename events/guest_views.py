@@ -330,8 +330,50 @@ class GuestRegisterLinkView(APIView):
             guest.converted_at = timezone.now()
         guest.save(update_fields=["converted_user", "converted_at"])
 
+        # Sync guest profile fields to UserProfile (job_title, company, full_name)
+        profile_data = {"job_title": "", "company": "", "full_name": ""}
+        try:
+            from users.models import UserProfile
+            profile, _ = UserProfile.objects.get_or_create(user=user)
+            profile_update_fields = []
+
+            if guest.job_title and not profile.job_title:
+                profile.job_title = guest.job_title
+                profile_update_fields.append("job_title")
+
+            if guest.company and not profile.company:
+                profile.company = guest.company
+                profile_update_fields.append("company")
+
+            # Ensure full_name is populated (often blank on first Cognito login)
+            full_name = f"{user.first_name} {user.last_name}".strip()
+            if full_name and not profile.full_name:
+                profile.full_name = full_name
+                profile_update_fields.append("full_name")
+
+            if profile_update_fields:
+                profile.save(update_fields=profile_update_fields)
+                logger.info(
+                    f"[GuestRegisterLink] Synced profile fields {profile_update_fields} "
+                    f"from guest {guest.id} to user {user.id}"
+                )
+
+            # Prepare response with synced profile data
+            profile_data = {
+                "job_title": profile.job_title,
+                "company": profile.company,
+                "full_name": profile.full_name,
+            }
+        except Exception as e:
+            logger.warning(f"[GuestRegisterLink] Profile sync failed for user {user.id}: {e}")
+            # Non-fatal: continue without profile sync
+
         return Response(
-            {"message": "Guest account linked successfully.", "email": email},
+            {
+                "message": "Guest account linked successfully.",
+                "email": email,
+                "profile": profile_data,
+            },
             status=status.HTTP_200_OK,
         )
 
