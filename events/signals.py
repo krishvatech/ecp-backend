@@ -1,5 +1,6 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.db import transaction
 from .models import Event, EventParticipant
 from .saleor_sync import sync_event_to_saleor_sync
 import threading
@@ -40,6 +41,7 @@ def send_event_confirmation_on_create(sender, instance, created, **kwargs):
     """
     Send event confirmation email when a new EventParticipant is created.
     Only sends for staff participants (users with accounts).
+    Uses on_commit callback to ensure participant is fully saved before queuing task.
     """
     if not created:
         return  # Only send on creation, not updates
@@ -54,11 +56,14 @@ def send_event_confirmation_on_create(sender, instance, created, **kwargs):
     # Import here to avoid circular imports
     from users.task import send_event_confirmation_task
 
-    # Send email asynchronously
-    try:
-        send_event_confirmation_task.delay(instance.id)
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(
-            f"Failed to queue event confirmation email for participant {instance.id}: {e}"
-        )
+    # Queue email task AFTER transaction commits (ensures participant is saved)
+    def queue_email():
+        try:
+            send_event_confirmation_task.delay(instance.id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                f"Failed to queue event confirmation email for participant {instance.id}: {e}"
+            )
+
+    transaction.on_commit(queue_email)
