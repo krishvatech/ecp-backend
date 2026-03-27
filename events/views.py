@@ -59,6 +59,7 @@ from rest_framework.throttling import UserRateThrottle
 # ============================================================
 
 from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant
+from .permissions import IsSuperuserOnly
 from friends.models import Notification
 from groups.models import Group, GroupMembership
 from messaging.models import Conversation, Message
@@ -906,10 +907,11 @@ class VirtualSpeakerViewSet(viewsets.ModelViewSet):
     """
     CRUD operations for virtual speaker profiles (reusable across events).
     Supports conversion to real user accounts.
+    Restricted to superusers (platform admins) only.
     """
 
     serializer_class = VirtualSpeakerSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperuserOnly]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ['name', 'job_title', 'company']
@@ -938,7 +940,7 @@ class VirtualSpeakerViewSet(viewsets.ModelViewSet):
         # Ensure community_id is always set
         serializer.save(community_id=community_id, created_by=self.request.user)
 
-    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated], url_path='convert')
+    @action(detail=True, methods=['post'], permission_classes=[IsSuperuserOnly], url_path='convert')
     def convert(self, request, pk=None):
         """Convert a virtual speaker to a real user account."""
         from django.contrib.auth.models import User
@@ -1034,7 +1036,7 @@ class VirtualSpeakerViewSet(viewsets.ModelViewSet):
             'invite_sent': send_invite,
         })
 
-    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated], url_path='resend-invite')
+    @action(detail=True, methods=['post'], permission_classes=[IsSuperuserOnly], url_path='resend-invite')
     def resend_invite(self, request, pk=None):
         """Resend invitation to a converted virtual speaker."""
         from users.task import send_speaker_credentials_task
