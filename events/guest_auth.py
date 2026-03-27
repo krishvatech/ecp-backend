@@ -144,6 +144,10 @@ class GuestJWTAuthentication(BaseAuthentication):
                 "You have already registered. Please sign in with your account."
             )
 
+        # Check if guest is banned
+        if guest.is_banned:
+            return None  # Treat as unauthenticated (allows public pages to work)
+
         # Success
         return (GuestPrincipal(guest), token)
 

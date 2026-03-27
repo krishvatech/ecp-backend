@@ -1712,6 +1712,12 @@ class GuestAttendee(models.Model):
         help_text="Dyte SDK participant ID"
     )
 
+    # Moderation
+    is_banned = models.BooleanField(
+        default=False,
+        help_text="True if this guest has been banned from this event"
+    )
+
     class Meta:
         db_table = "guest_attendees"
         unique_together = ("event", "email")

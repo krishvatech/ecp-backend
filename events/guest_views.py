@@ -209,6 +209,14 @@ class GuestJoinView(APIView):
                 "message": "You have already registered. Please sign in."
             }, status=status.HTTP_409_CONFLICT)
 
+        # 3.5. Check if guest is banned
+        if existing and existing.is_banned:
+            logger.info(f"Banned guest {email} attempted to join event {event.id}")
+            return Response({
+                "error": "banned",
+                "message": "You have been banned from this event."
+            }, status=status.HTTP_403_FORBIDDEN)
+
         # 4. Create or update GuestAttendee (without verified status yet)
         if existing:
             # Update profile info for existing guest
@@ -365,6 +373,14 @@ class GuestVerifyOTPView(APIView):
                 "error": "account_exists",
                 "message": "You have already registered. Please sign in."
             }, status=status.HTTP_409_CONFLICT)
+
+        # 5.5. Check if guest is banned
+        if existing and existing.is_banned:
+            logger.info(f"[GuestVerifyOTP] Banned guest {email} attempted to verify OTP for event {event.id}")
+            return Response({
+                "error": "banned",
+                "message": "You have been banned from this event."
+            }, status=status.HTTP_403_FORBIDDEN)
 
         # 6. Create or update GuestAttendee with verified status
         jti = str(uuid.uuid4())

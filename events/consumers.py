@@ -1549,10 +1549,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     @database_sync_to_async
     def check_is_banned(self):
         if self._is_guest_user():
-            return False
+            from .models import GuestAttendee
+            return GuestAttendee.objects.filter(
+                event_id=self.event_id,
+                id=self.user.guest.id,
+                is_banned=True
+            ).exists()
         return EventRegistration.objects.filter(
-            event_id=self.event_id, 
-            user=self.user, 
+            event_id=self.event_id,
+            user=self.user,
             is_banned=True
         ).exists()
 

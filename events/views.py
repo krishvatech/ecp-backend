@@ -2575,7 +2575,7 @@ class EventViewSet(viewsets.ModelViewSet):
     def kick_participant(self, request, pk=None):
         """
         Kick a participant from the meeting (temporary removal).
-        Body: {"user_id": <id>}
+        Body: {"user_id": <id or "guest_<id>"}>
         """
         event = self.get_object()
         if not _is_event_host(request.user, event):
@@ -2585,19 +2585,39 @@ class EventViewSet(viewsets.ModelViewSet):
         if not target_id:
             return Response({"detail": "user_id required"}, status=400)
 
-        EventRegistration.objects.filter(event=event, user_id=target_id).update(
-            current_mood=None,
-            mood_updated_at=timezone.now(),
-        )
-
-        # Notify via WebSocket
+        target_str = str(target_id)
         channel_layer = get_channel_layer()
+
+        if target_str.startswith("guest_"):
+            # Handle guest kick
+            try:
+                guest_id = int(target_str.split("_", 1)[1])
+            except (ValueError, IndexError):
+                return Response({"detail": "Invalid guest ID format"}, status=400)
+
+            if not GuestAttendee.objects.filter(event=event, id=guest_id).exists():
+                return Response({"detail": "Guest not found in this event"}, status=404)
+
+            # Notify guest via personal group
+            async_to_sync(channel_layer.group_send)(
+                f"guest_user_{guest_id}",
+                {"type": "broadcast_message", "payload": {"type": "kicked", "event_id": event.id}}
+            )
+        else:
+            # Handle registered user kick (existing logic)
+            EventRegistration.objects.filter(event=event, user_id=target_id).update(
+                current_mood=None,
+                mood_updated_at=timezone.now(),
+            )
+            async_to_sync(channel_layer.group_send)(
+                f"user_{target_id}",
+                {"type": "broadcast_message", "payload": {"type": "kicked", "event_id": event.id}}
+            )
+
+        # Broadcast to all event participants to refresh participant list
         async_to_sync(channel_layer.group_send)(
-            f"user_{target_id}",
-            {
-                "type": "broadcast_message",
-                "payload": {"type": "kicked", "event_id": event.id}
-            }
+            f"event_{event.id}",
+            {"type": "broadcast_message", "payload": {"type": "participant_kicked", "kicked_user_id": target_str, "event_id": event.id}}
         )
 
         return Response({"ok": True, "message": "User kicked"})
@@ -2606,7 +2626,7 @@ class EventViewSet(viewsets.ModelViewSet):
     def ban_participant(self, request, pk=None):
         """
         Ban a participant from the meeting (permanent removal).
-        Body: {"user_id": <id>}
+        Body: {"user_id": <id or "guest_<id>"}>
         """
         event = self.get_object()
         if not _is_event_host(request.user, event):
@@ -2616,24 +2636,44 @@ class EventViewSet(viewsets.ModelViewSet):
         if not target_id:
             return Response({"detail": "user_id required"}, status=400)
 
-        # 1. Update registration to banned
-        try:
-            reg = EventRegistration.objects.get(event=event, user_id=target_id)
-            reg.is_banned = True
-            reg.current_mood = None
-            reg.mood_updated_at = timezone.now()
-            reg.save(update_fields=["is_banned", "current_mood", "mood_updated_at"])
-        except EventRegistration.DoesNotExist:
-            return Response({"detail": "User not registered for this event"}, status=404)
-
-        # 2. Notify via WebSocket
+        target_str = str(target_id)
         channel_layer = get_channel_layer()
+
+        if target_str.startswith("guest_"):
+            # Handle guest ban
+            try:
+                guest_id = int(target_str.split("_", 1)[1])
+            except (ValueError, IndexError):
+                return Response({"detail": "Invalid guest ID format"}, status=400)
+
+            updated = GuestAttendee.objects.filter(event=event, id=guest_id).update(is_banned=True)
+            if not updated:
+                return Response({"detail": "Guest not found in this event"}, status=404)
+
+            async_to_sync(channel_layer.group_send)(
+                f"guest_user_{guest_id}",
+                {"type": "broadcast_message", "payload": {"type": "banned", "event_id": event.id}}
+            )
+        else:
+            # Handle registered user ban (existing logic)
+            try:
+                reg = EventRegistration.objects.get(event=event, user_id=target_id)
+                reg.is_banned = True
+                reg.current_mood = None
+                reg.mood_updated_at = timezone.now()
+                reg.save(update_fields=["is_banned", "current_mood", "mood_updated_at"])
+            except EventRegistration.DoesNotExist:
+                return Response({"detail": "User not registered for this event"}, status=404)
+
+            async_to_sync(channel_layer.group_send)(
+                f"user_{target_id}",
+                {"type": "broadcast_message", "payload": {"type": "banned", "event_id": event.id}}
+            )
+
+        # Broadcast to all event participants to refresh participant list
         async_to_sync(channel_layer.group_send)(
-            f"user_{target_id}",
-            {
-                "type": "broadcast_message",
-                "payload": {"type": "banned", "event_id": event.id}
-            }
+            f"event_{event.id}",
+            {"type": "broadcast_message", "payload": {"type": "participant_banned", "banned_user_id": target_str, "event_id": event.id}}
         )
 
         return Response({"ok": True, "message": "User banned"})
@@ -2641,8 +2681,8 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="unban")
     def unban_participant(self, request, pk=None):
         """
-        Unban a participant.
-        Body: {"user_id": <id>}
+        Unban a participant (registered user or guest).
+        Body: {"user_id": <id or "guest_<id>"}>
         """
         event = self.get_object()
         if not _is_event_host(request.user, event):
@@ -2652,31 +2692,59 @@ class EventViewSet(viewsets.ModelViewSet):
         if not target_id:
             return Response({"detail": "user_id required"}, status=400)
 
-        try:
-            reg = EventRegistration.objects.get(event=event, user_id=target_id)
-            reg.is_banned = False
-            reg.save(update_fields=["is_banned"])
-        except EventRegistration.DoesNotExist:
-            return Response({"detail": "User not registered"}, status=404)
+        target_str = str(target_id)
 
-        return Response({"ok": True, "message": "User unbanned"})
+        if target_str.startswith("guest_"):
+            # Handle guest unban
+            try:
+                guest_id = int(target_str.split("_", 1)[1])
+            except (ValueError, IndexError):
+                return Response({"detail": "Invalid guest ID format"}, status=400)
+
+            updated = GuestAttendee.objects.filter(event=event, id=guest_id).update(is_banned=False)
+            if not updated:
+                return Response({"detail": "Guest not found in this event"}, status=404)
+        else:
+            # Handle registered user unban
+            try:
+                reg = EventRegistration.objects.get(event=event, user_id=target_id)
+                reg.is_banned = False
+                reg.save(update_fields=["is_banned"])
+            except EventRegistration.DoesNotExist:
+                return Response({"detail": "User not registered"}, status=404)
+
+        return Response({"ok": True, "message": "Participant unbanned"})
 
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="banned-users")
     def banned_users(self, request, pk=None):
         """
-        List all banned users for this event.
+        List all banned users (registered and guests) for this event.
         """
         event = self.get_object()
         if not _is_event_host(request.user, event):
             return Response({"detail": "Only the host can view banned users."}, status=403)
 
+        data = []
+
+        # Add banned registered users
         banned_regs = EventRegistration.objects.filter(event=event, is_banned=True).select_related('user')
-        data = [{
-            "user_id": r.user.id,
-            "full_name": r.user.first_name + " " + r.user.last_name,
-            "username": r.user.username,
-            "avatar": r.user.avatar.url if hasattr(r.user, 'avatar') and r.user.avatar else None
-        } for r in banned_regs]
+        for r in banned_regs:
+            data.append({
+                "user_id": r.user.id,
+                "full_name": r.user.first_name + " " + r.user.last_name,
+                "username": r.user.username,
+                "avatar": r.user.avatar.url if hasattr(r.user, 'avatar') and r.user.avatar else None
+            })
+
+        # Add banned guests with "guest_" prefix
+        banned_guests = GuestAttendee.objects.filter(event=event, is_banned=True)
+        for g in banned_guests:
+            data.append({
+                "user_id": f"guest_{g.id}",
+                "full_name": g.get_display_name(),
+                "username": g.email,
+                "avatar": None
+            })
 
         return Response(data)
 
