@@ -1996,6 +1996,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 if self._is_guest_user():
                     guest = self.user.guest
 
+                    # ✅ NEW: Block guests from joining tables during active speed networking
+                    from .models import SpeedNetworkingSession
+                    if SpeedNetworkingSession.objects.filter(event_id=self.event_id, status='ACTIVE').exists():
+                        print(f"[CONSUMER] join_table: Blocked guest {guest.id} — speed networking session in progress")
+                        return False, "Speed Networking is in progress. Sign up to participate.", None
+
                     # Guests don't have LoungeParticipant rows. Keep occupancy checks consistent
                     # by counting both real users and guests at the target table.
                     user_count = LoungeParticipant.objects.filter(table_id=table_id).count()
