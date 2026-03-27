@@ -156,6 +156,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
     user_image_url = serializers.SerializerMethodField(read_only=True)
     is_online = serializers.SerializerMethodField(read_only=True)
     pending_verification_request = serializers.SerializerMethodField(read_only=True)
+    profile_completion_percentage = serializers.SerializerMethodField(read_only=True)
+    missing_sections = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = UserProfile
@@ -167,18 +169,25 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "can_edit_profiles",
             "directory_hidden", "connections_hidden", "hide_from_others_connections",
             "anonymous_profile_views",
-            "pending_verification_request",
+            "pending_verification_request", "profile_completion_percentage", "missing_sections",
         ]
         read_only_fields = ("last_activity_at", "is_online", "kyc_status",
-                            "legal_name_locked", "legal_name_verified_at", "pending_verification_request")
+                            "legal_name_locked", "legal_name_verified_at", "pending_verification_request",
+                            "profile_completion_percentage", "missing_sections")
 
     def get_pending_verification_request(self, obj):
         user = getattr(obj, "user", None)
         if not user: return False
-        # Avoid circular import if possible, or use string reference if configured, 
+        # Avoid circular import if possible, or use string reference if configured,
         # but here we need to import model or use generic relation check
         from .models import VerificationRequest
         return VerificationRequest.objects.filter(user=user, status=VerificationRequest.STATUS_PENDING).exists()
+
+    def get_profile_completion_percentage(self, obj):
+        return obj.calculate_profile_completion()
+
+    def get_missing_sections(self, obj):
+        return obj.get_missing_sections()
 
 
     def get_user_image_url(self, obj):

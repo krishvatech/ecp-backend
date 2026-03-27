@@ -206,6 +206,69 @@ class UserProfile(models.Model):
             return False
         return timezone.now() - self.last_activity_at <= self.ONLINE_THRESHOLD
 
+    def get_missing_sections(self):
+        """
+        Returns list of missing/empty profile sections.
+        """
+        missing = []
+
+        # 1. About section - requires bio
+        if not (self.bio and self.bio.strip()):
+            missing.append("bio")
+
+        # 2. Skills section - requires at least one skill entry
+        if not self.user.user_skills.exists():
+            missing.append("skills")
+
+        # 3. Experience section - requires at least one experience entry
+        if not self.user.experiences.exists():
+            missing.append("experience")
+
+        # 4. Education section - requires at least one education entry
+        if not self.user.educations.exists():
+            missing.append("education")
+
+        # 5. Certifications & Licenses section - requires at least one certification
+        if not self.user.certifications.exists():
+            missing.append("certifications")
+
+        # 6. Memberships section - requires at least one membership
+        if not self.user.memberships.exists():
+            missing.append("memberships")
+
+        # 7. E-Mail section - requires at least one email in links
+        emails = self.links.get('emails', []) if isinstance(self.links, dict) else []
+        if not (emails and len(emails) > 0):
+            missing.append("email")
+
+        # 8. Phone Numbers section - requires at least one phone in links
+        phones = self.links.get('phones', []) if isinstance(self.links, dict) else []
+        if not (phones and len(phones) > 0):
+            missing.append("phone")
+
+        # 9. Social Links section - requires at least one social link in links
+        socials = self.links.get('socials', {}) if isinstance(self.links, dict) else {}
+        if not (socials and any(socials.get(key) for key in ['linkedin', 'x', 'facebook', 'instagram', 'github'])):
+            missing.append("social_links")
+
+        # 10. Websites section - requires at least one website in links
+        websites = self.links.get('websites', []) if isinstance(self.links, dict) else []
+        if not (websites and len(websites) > 0):
+            missing.append("websites")
+
+        return missing
+
+    def calculate_profile_completion(self):
+        """
+        Calculate profile completion percentage based on profile sections.
+        Each section requires at least one entry to be considered complete.
+        Returns a value 0-100.
+        """
+        missing = self.get_missing_sections()
+        sections_completed = 10 - len(missing)
+        total_sections = 10
+        return int((sections_completed / total_sections) * 100) if total_sections > 0 else 0
+
     def __str__(self) -> str:
         return f"Profile<{self.user.username}>"
 
