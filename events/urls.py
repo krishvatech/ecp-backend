@@ -8,7 +8,15 @@ from .views import (
     EventSessionViewSet,
     VirtualSpeakerViewSet,
 )
-from .guest_views import GuestJoinView, GuestRegisterView, GuestRegisterLinkView, GuestProfileUpdateView, GuestProfileDetailView
+from .guest_views import (
+    GuestJoinView,
+    GuestVerifyOTPView,
+    ResendGuestOTPView,
+    GuestRegisterView,
+    GuestRegisterLinkView,
+    GuestProfileUpdateView,
+    GuestProfileDetailView,
+)
 from .speed_networking_views import SpeedNetworkingSessionViewSet, SpeedNetworkingQueueViewSet
 from .webhooks import realtime_webhook
 from .wordpress_event_webhook import WordPressEventWebhookView
@@ -28,6 +36,8 @@ urlpatterns = [
 
     # Guest attendee endpoints
     path("events/<int:pk>/guest-join/", GuestJoinView.as_view(), name="guest-join"),
+    path("events/<int:pk>/guest-verify-otp/", GuestVerifyOTPView.as_view(), name="guest-verify-otp"),
+    path("events/<int:pk>/guest-resend-otp/", ResendGuestOTPView.as_view(), name="guest-resend-otp"),
     path("events/<int:pk>/guest-profile/", GuestProfileUpdateView.as_view(), name="guest-profile-update"),
     path("events/<int:event_id>/guests/<int:guest_id>/profile/", GuestProfileDetailView.as_view(), name="guest-profile-detail"),
     path("auth/guest-register/", GuestRegisterView.as_view(), name="guest-register"),

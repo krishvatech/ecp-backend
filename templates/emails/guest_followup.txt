@@ -1,0 +1,24 @@
+Thanks for Attending {{ event_title }}!
+
+Hi {{ guest_name }},
+
+We hope you enjoyed {{ event_title }} on {{ app_name }}. Now it's time to take your experience to the next level!
+
+Create Your Free Account Today
+
+By creating an account with {{ app_name }}, you'll unlock exclusive benefits:
+
+{% for benefit in benefits %}
+- {{ benefit }}
+{% endfor %}
+
+We've pre-filled your email address to make signup quick and easy. Just set your password and you're ready to go!
+
+Create your account here:
+{{ signup_url }}
+
+Best regards,
+The {{ app_name }} Team
+
+---
+If you have any questions, please contact us at support@example.com.

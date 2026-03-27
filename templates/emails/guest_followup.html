@@ -1,0 +1,44 @@
+{% autoescape off %}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Join {{ app_name }} – Unlock Exclusive Benefits</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2>Thanks for Attending {{ event_title }}!</h2>
+
+        <p>Hi {{ guest_name }},</p>
+
+        <p>We hope you enjoyed <strong>{{ event_title }}</strong> on {{ app_name }}. Now it's time to take your experience to the next level!</p>
+
+        <h3 style="color: #007bff; margin-top: 25px;">Create Your Free Account Today</h3>
+
+        <p>By creating an account with {{ app_name }}, you'll unlock exclusive benefits:</p>
+
+        <ul style="margin: 15px 0; padding-left: 20px;">
+            {% for benefit in benefits %}
+            <li style="margin: 8px 0;">{{ benefit }}</li>
+            {% endfor %}
+        </ul>
+
+        <p style="text-align: center; margin: 30px 0;">
+            <a href="{{ signup_url }}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">Create Your Account</a>
+        </p>
+
+        <p style="color: #666; font-size: 14px;">We've pre-filled your email address to make signup quick and easy. Just set your password and you're ready to go!</p>
+
+        <p>If the button above doesn't work, copy and paste this link into your browser:</p>
+        <p><a href="{{ signup_url }}">{{ signup_url }}</a></p>
+
+        <p style="margin-top: 30px;">Best regards,<br>The {{ app_name }} Team</p>
+
+        <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+        <p style="font-size: 12px; color: #777;">
+            If you have any questions, please contact us at <a href="mailto:support@example.com">support@example.com</a>.
+        </p>
+    </div>
+</body>
+</html>
+{% endautoescape %}

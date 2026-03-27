@@ -779,3 +779,128 @@ def send_application_declined_email(application, custom_message=''):
         subject_override=f"Your application to '{application.event.title}' – status update",
         fail_silently=True,
     )
+
+
+def send_guest_otp_email(to_email, guest_name, otp_code, event_title):
+    """
+    Send a 6-digit OTP verification code to a guest's email.
+
+    Used when a guest joins an event and needs to verify their email
+    before receiving a guest JWT token.
+
+    Args:
+        to_email: Guest's email address
+        guest_name: Guest's first name for personalization
+        otp_code: 6-digit numeric OTP code
+        event_title: Title of the event being joined
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    if not to_email or not otp_code:
+        return False
+
+    app_name = "IMAA Connect"
+
+    ctx = {
+        "app_name": app_name,
+        "guest_name": guest_name or "Guest",
+        "otp_code": otp_code,
+        "event_title": event_title,
+        "expiry_minutes": 10,
+    }
+
+    return send_template_email(
+        template_key="guest_otp",
+        to_email=to_email,
+        context=ctx,
+        subject_override=f"Your verification code for {event_title}",
+        fail_silently=True,
+    )
+
+
+def send_guest_followup_email(to_email, guest_name, event_title, signup_url):
+    """
+    Send a follow-up email to encourage a guest to register after attending an event.
+
+    Sent 24 hours after an event ends to guests who attended but haven't registered yet.
+    Highlights benefits like access to past events, certificates, and personalized dashboard.
+
+    Args:
+        to_email: Guest's email address
+        guest_name: Guest's first name for personalization
+        event_title: Title of the event they attended
+        signup_url: URL for signing up with pre-filled email
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    if not to_email:
+        return False
+
+    app_name = "IMAA Connect"
+
+    ctx = {
+        "app_name": app_name,
+        "guest_name": guest_name or "Guest",
+        "event_title": event_title,
+        "signup_url": signup_url,
+        "benefits": [
+            "Access to past events and replays",
+            "Digital certificates and badges",
+            "Personalized networking dashboard",
+            "Event recommendations tailored to your interests",
+        ],
+    }
+
+    return send_template_email(
+        template_key="guest_followup",
+        to_email=to_email,
+        context=ctx,
+        subject_override=f"Join {app_name} to unlock exclusive benefits",
+        fail_silently=True,
+    )
+
+
+def link_guest_history_to_user(user, email):
+    """
+    Link all past GuestAttendee records matching an email to a registered user.
+
+    Called when:
+    - Guest converts to registered user (GuestRegisterView)
+    - Existing user links to guest session (GuestRegisterLinkView)
+    - Standard user registration matches a guest email (signal)
+    - User verifies an email alias (UserEmailAlias verification)
+
+    This ensures the user's attendance history is consolidated across
+    all email addresses they've used as a guest.
+
+    Args:
+        user: Django User instance
+        email: Email address to link guest records from
+
+    Returns:
+        int: Number of GuestAttendee records linked
+    """
+    from events.models import GuestAttendee
+
+    if not user or not email:
+        return 0
+
+    email = email.strip().lower()
+
+    # Find all unlinked GuestAttendee records for this email
+    guests = GuestAttendee.objects.filter(
+        email=email,
+        converted_user__isnull=True  # Only link unlinked records
+    )
+
+    count = guests.count()
+    if count > 0:
+        # Link all guests to this user
+        guests.update(converted_user=user, converted_at=timezone.now())
+        logger.info(
+            f"Linked {count} guest attendee record(s) for email {email} to user {user.id}"
+        )
+
+    return count

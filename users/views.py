@@ -3998,3 +3998,287 @@ class MagicLinkAuthView(APIView):
                 {"detail": "Failed to validate magic link"},
                 status=500
             )
+
+
+# ============================================================
+# ============= Email Alias Management Views ================
+# ============================================================
+
+class AddEmailAliasView(APIView):
+    """
+    POST /api/users/me/email-aliases/
+
+    Add a new email alias to the current authenticated user's account.
+    Sends an OTP to verify the email address.
+
+    Requires authentication (DRF token or JWT).
+
+    Request body:
+    {
+        "email": "another@example.com"
+    }
+
+    Response (200 OK):
+    {
+        "message": "Verification code sent to another@example.com",
+        "email": "another@example.com"
+    }
+
+    Error responses:
+    - 400: Invalid email or email already in use
+    - 401: Not authenticated
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """Add a new email alias and send OTP."""
+        from .models import UserEmailAlias
+        from users.email_utils import send_mail
+
+        # Extract email
+        new_email = request.data.get("email", "").strip().lower()
+        if not new_email:
+            return Response(
+                {"error": "email is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user = request.user
+
+        # Validate email is not already primary for any user
+        User = get_user_model()
+        if User.objects.filter(email__iexact=new_email).exclude(id=user.id).exists():
+            return Response(
+                {"error": "This email is already registered as a primary email."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check if email is already an alias for this user
+        if UserEmailAlias.objects.filter(user=user, email=new_email).exists():
+            return Response(
+                {"error": "This email is already an alias for your account."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Generate OTP
+        otp_code = ''.join([str(random.randint(0, 9)) for _ in range(6)])
+        expires_at = timezone.now() + timedelta(minutes=10)
+
+        # Create or update UserEmailAlias
+        alias, created = UserEmailAlias.objects.update_or_create(
+            user=user,
+            email=new_email,
+            defaults={
+                "otp_code": otp_code,
+                "otp_expires_at": expires_at,
+                "verified": False,
+            }
+        )
+
+        # Send OTP email
+        try:
+            from django.core.mail import send_mail as django_send_mail
+            message = f"Your email verification code: {otp_code}\n\nThis code expires in 10 minutes."
+            django_send_mail(
+                subject="Verify your email address",
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[new_email],
+                fail_silently=False,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send OTP email to {new_email}: {e}")
+            return Response(
+                {"error": "Failed to send verification code. Please try again."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        logger.info(f"Email alias OTP sent to {new_email} for user {user.id}")
+        return Response({
+            "message": f"Verification code sent to {new_email}",
+            "email": new_email,
+        }, status=status.HTTP_200_OK)
+
+
+class VerifyEmailAliasView(APIView):
+    """
+    POST /api/users/me/email-aliases/verify/
+
+    Verify an email alias with OTP code and merge guest attendance history.
+
+    Requires authentication (DRF token or JWT).
+
+    Request body:
+    {
+        "email": "another@example.com",
+        "otp_code": "123456"
+    }
+
+    Response (200 OK):
+    {
+        "verified": true,
+        "email": "another@example.com",
+        "events_merged": 3
+    }
+
+    Error responses:
+    - 400: Invalid OTP or validation error
+    - 401: Not authenticated
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """Verify email alias OTP and merge guest history."""
+        from .models import UserEmailAlias
+        from users.email_utils import link_guest_history_to_user
+
+        # Extract input
+        email = request.data.get("email", "").strip().lower()
+        otp_code = request.data.get("otp_code", "").strip()
+
+        if not email or not otp_code:
+            return Response(
+                {"error": "email and otp_code are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user = request.user
+
+        # Find the alias
+        try:
+            alias = UserEmailAlias.objects.get(user=user, email=email)
+        except UserEmailAlias.DoesNotExist:
+            return Response(
+                {"error": "Email alias not found."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate OTP
+        if alias.otp_code != otp_code:
+            alias.attempt_count += 1
+            alias.save(update_fields=["attempt_count"])
+
+            # Rate limit after 5 attempts
+            if alias.attempt_count >= 5:
+                alias.delete()
+                return Response(
+                    {"error": "Too many failed attempts. Please request a new code."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            return Response(
+                {"error": "Invalid verification code."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check if OTP is expired
+        if alias.otp_expires_at and timezone.now() > alias.otp_expires_at:
+            return Response(
+                {"error": "Verification code has expired. Please request a new one."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Mark as verified
+        alias.verified = True
+        alias.verified_at = timezone.now()
+        alias.otp_code = ""  # Clear the OTP
+        alias.otp_expires_at = None
+        alias.attempt_count = 0
+        alias.save()
+
+        logger.info(f"Email alias {email} verified for user {user.id}")
+
+        # Link all guest history for this email to the user
+        events_merged = link_guest_history_to_user(user, email)
+
+        return Response({
+            "verified": True,
+            "email": email,
+            "events_merged": events_merged,
+        }, status=status.HTTP_200_OK)
+
+
+class ListEmailAliasView(APIView):
+    """
+    GET /api/users/me/email-aliases/
+
+    List all email aliases for the authenticated user.
+
+    Requires authentication (DRF token or JWT).
+
+    Response (200 OK):
+    {
+        "primary_email": "user@example.com",
+        "aliases": [
+            {
+                "id": 1,
+                "email": "another@example.com",
+                "verified": true,
+                "verified_at": "2026-03-27T10:00:00Z",
+                "added_at": "2026-03-27T09:00:00Z"
+            },
+            ...
+        ]
+    }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """List user's email aliases."""
+        from .models import UserEmailAlias
+
+        user = request.user
+        aliases = UserEmailAlias.objects.filter(user=user).order_by("-verified_at", "email")
+
+        return Response({
+            "primary_email": user.email,
+            "aliases": [
+                {
+                    "id": alias.id,
+                    "email": alias.email,
+                    "verified": alias.verified,
+                    "verified_at": alias.verified_at.isoformat() if alias.verified_at else None,
+                    "added_at": alias.added_at.isoformat(),
+                }
+                for alias in aliases
+            ],
+        }, status=status.HTTP_200_OK)
+
+
+class RemoveEmailAliasView(APIView):
+    """
+    DELETE /api/users/me/email-aliases/{id}/
+
+    Remove an email alias from the user's account.
+
+    Requires authentication (DRF token or JWT).
+
+    Response (204 No Content): Success
+
+    Error responses:
+    - 404: Alias not found
+    - 401: Not authenticated
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, alias_id=None):
+        """Remove an email alias."""
+        from .models import UserEmailAlias
+
+        user = request.user
+
+        try:
+            alias = UserEmailAlias.objects.get(id=alias_id, user=user)
+            email = alias.email
+            alias.delete()
+            logger.info(f"Removed email alias {email} for user {user.id}")
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except UserEmailAlias.DoesNotExist:
+            return Response(
+                {"error": "Email alias not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )

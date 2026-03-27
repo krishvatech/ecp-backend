@@ -38,6 +38,11 @@ from .views import (
     AdminEducationDocumentViewSet, AdminTrainingDocumentViewSet,
     AdminCertificationDocumentViewSet, AdminMembershipDocumentViewSet,
     AdminLanguageCertificateViewSet, AdminUserWordPressSyncView,
+    # Email alias views
+    AddEmailAliasView,
+    VerifyEmailAliasView,
+    ListEmailAliasView,
+    RemoveEmailAliasView,
 
 )
 from .wordpress_webhook import WordPressWebhookView, WordPressUserSyncView, WordPressProfileSyncAuthenticatedView
@@ -114,6 +119,13 @@ urlpatterns = [
     path("skills/search/", EscoSkillSearchView.as_view(), name="esco-skill-search"),
     path("languages/search/", IsoLanguageSearchView.as_view(), name="iso-language-search"),
     path("cities/search/", GeoCitySearchView.as_view(), name="geonames-city-search"),
+
+    # Email alias management
+    path("users/me/email-aliases/", AddEmailAliasView.as_view(), name="add-email-alias"),
+    path("users/me/email-aliases/verify/", VerifyEmailAliasView.as_view(), name="verify-email-alias"),
+    path("users/me/email-aliases/list/", ListEmailAliasView.as_view(), name="list-email-aliases"),
+    path("users/me/email-aliases/<int:alias_id>/", RemoveEmailAliasView.as_view(), name="remove-email-alias"),
+
     path("", include(router.urls)),
     path("", include(admin_profile_router.urls)),
 ]

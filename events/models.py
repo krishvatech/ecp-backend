@@ -1646,10 +1646,12 @@ class GuestAttendee(models.Model):
     # JWT token management
     token_jti = models.CharField(
         max_length=64,
-        unique=True,
+        blank=True,
         help_text="JWT ID for token revocation"
     )
     expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
         help_text="Token expiration time"
     )
 
@@ -1672,6 +1674,19 @@ class GuestAttendee(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     joined_live = models.BooleanField(default=False)
     joined_live_at = models.DateTimeField(null=True, blank=True)
+
+    # Email verification
+    email_verified = models.BooleanField(
+        default=False,
+        help_text="True if email has been verified via OTP"
+    )
+
+    # Follow-up tracking
+    follow_up_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when follow-up email was sent to encourage signup"
+    )
 
     LOCATION_CHOICES = [
         ("main_room", "Main Room"),
@@ -1713,6 +1728,68 @@ class GuestAttendee(models.Model):
 
     def __str__(self):
         return f"{self.get_display_name()} (Guest) - {self.event.title}"
+
+
+class GuestEmailOTP(models.Model):
+    """
+    Short-lived one-time passcodes (OTP) for verifying guest email addresses
+    before allowing event access.
+
+    When a guest joins, they provide an email, we send them a 6-digit OTP,
+    and they must verify it before receiving a guest JWT token.
+    """
+    email = models.EmailField(db_index=True)
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="guest_otps",
+        help_text="The event for which this OTP was issued"
+    )
+    code = models.CharField(
+        max_length=6,
+        help_text="6-digit numeric OTP code"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(
+        help_text="OTP expires after 10 minutes"
+    )
+    used_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when OTP was verified (null if not yet used)"
+    )
+    attempt_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of verification attempts (to prevent brute-force)"
+    )
+
+    class Meta:
+        db_table = "guest_email_otps"
+        indexes = [
+            models.Index(fields=["email", "event", "created_at"]),
+            models.Index(fields=["event", "used_at"]),
+        ]
+
+    @property
+    def is_valid(self):
+        """Check if OTP is still valid (not expired and not yet used)."""
+        from django.utils import timezone
+        return self.used_at is None and timezone.now() < self.expires_at
+
+    @property
+    def is_expired(self):
+        """Check if OTP has expired."""
+        from django.utils import timezone
+        return timezone.now() > self.expires_at
+
+    def mark_as_used(self):
+        """Mark the OTP as used."""
+        from django.utils import timezone
+        self.used_at = timezone.now()
+        self.save(update_fields=["used_at"])
+
+    def __str__(self):
+        return f"OTP for {self.email} - {self.event.title}"
 
 
 class EventApplication(models.Model):

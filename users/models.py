@@ -1132,3 +1132,70 @@ class MagicLoginToken(models.Model):
         """Mark token as used"""
         self.used_at = timezone.now()
         self.save(update_fields=['used_at'])
+
+
+class UserEmailAlias(models.Model):
+    """
+    Additional verified email addresses for a user.
+
+    When a user adds a secondary email address and verifies it via OTP,
+    we link all past guest attendance history under that email to their account.
+    This allows users to consolidate attendance records across different emails.
+    """
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="email_aliases",
+        help_text="The user who owns this email alias"
+    )
+    email = models.EmailField(
+        unique=True,
+        db_index=True,
+        help_text="Additional email address"
+    )
+    otp_code = models.CharField(
+        max_length=6,
+        blank=True,
+        help_text="6-digit numeric OTP code for verification (cleared after use)"
+    )
+    otp_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="OTP expiration time"
+    )
+    verified = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True if email has been verified via OTP"
+    )
+    verified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when email was verified"
+    )
+    added_at = models.DateTimeField(auto_now_add=True)
+    attempt_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of OTP verification attempts"
+    )
+
+    class Meta:
+        db_table = "user_email_aliases"
+        indexes = [
+            models.Index(fields=["user", "verified"]),
+            models.Index(fields=["email"]),
+        ]
+        unique_together = ("user", "email")
+        verbose_name = "User Email Alias"
+        verbose_name_plural = "User Email Aliases"
+
+    @property
+    def is_otp_valid(self):
+        """Check if OTP is still valid (not expired)."""
+        if not self.otp_expires_at:
+            return False
+        return timezone.now() < self.otp_expires_at
+
+    def __str__(self):
+        status = "verified" if self.verified else "unverified"
+        return f"{self.email} ({status}) - {self.user.email}"

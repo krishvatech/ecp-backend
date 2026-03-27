@@ -201,6 +201,16 @@ def _end_event_from_system(event, reason: str) -> None:
 
     logger.info("Ended event %s (%s)", event.id, reason)
 
+    # 📧 Send follow-up emails to guests immediately
+    try:
+        send_guest_followup_task.apply_async(
+            args=[event.id],
+            countdown=0  # Send immediately, not after 24 hours
+        )
+        logger.info(f"Scheduled follow-up email task for event {event.id}")
+    except Exception as e:
+        logger.warning(f"Failed to schedule follow-up email task for event {event.id}: {e}")
+
 
 @shared_task
 def enforce_event_end_conditions() -> dict:
@@ -726,4 +736,76 @@ def poll_wordpress_events():
 
     except Exception as e:
         logger.error(f"Failed to poll WordPress events: {e}", exc_info=True)
+        return {"status": "error", "error": str(e)}
+
+
+@shared_task(name="events.send_guest_followup_task")
+def send_guest_followup_task(event_id):
+    """
+    Celery task: Send follow-up emails to guest attendees post-event.
+
+    Scheduled to run 24 hours after an event ends.
+    Sends encouraging emails to guests who attended but haven't registered yet,
+    highlighting benefits like access to past events, certificates, and personalized dashboard.
+
+    Args:
+        event_id: ID of the event that ended
+
+    Returns:
+        dict: {"status": "ok", "emails_sent": int} or {"status": "error", "error": str}
+    """
+    try:
+        from .models import GuestAttendee, Event
+        from users.email_utils import send_guest_followup_email
+
+        # Get the event
+        try:
+            event = Event.objects.get(pk=event_id)
+        except Event.DoesNotExist:
+            logger.warning(f"[SendGuestFollowup] Event {event_id} not found")
+            return {"status": "error", "error": "Event not found"}
+
+        # Find guests who should receive follow-up email
+        # - Not yet registered (converted_user is None)
+        # - Haven't received follow-up yet (follow_up_sent_at is None)
+        # - Verified their email (email_verified is True)
+        # - Actually attended the event (joined_live is True)
+        guests = GuestAttendee.objects.filter(
+            event=event,
+            converted_user__isnull=True,  # Not yet registered
+            follow_up_sent_at__isnull=True,  # Haven't received follow-up yet
+            email_verified=True,  # Verified their email
+            joined_live=True,  # Actually attended
+        )
+
+        emails_sent = 0
+        for guest in guests:
+            try:
+                signup_url = f"{getattr(settings, 'FRONTEND_URL', 'https://app.example.com')}/signup?prefill_email={guest.email}"
+
+                email_sent = send_guest_followup_email(
+                    to_email=guest.email,
+                    guest_name=guest.first_name,
+                    event_title=event.title,
+                    signup_url=signup_url,
+                )
+
+                if email_sent:
+                    # Mark email as sent
+                    guest.follow_up_sent_at = timezone.now()
+                    guest.save(update_fields=["follow_up_sent_at"])
+                    emails_sent += 1
+                    logger.info(f"[SendGuestFollowup] Sent follow-up email to {guest.email} for event {event.id}")
+                else:
+                    logger.warning(f"[SendGuestFollowup] Failed to send email to {guest.email}")
+
+            except Exception as e:
+                logger.warning(f"[SendGuestFollowup] Error sending email to guest {guest.id}: {e}")
+                continue
+
+        logger.info(f"[SendGuestFollowup] Completed for event {event.id}: {emails_sent} emails sent")
+        return {"status": "ok", "emails_sent": emails_sent}
+
+    except Exception as e:
+        logger.error(f"[SendGuestFollowup] Task failed: {e}", exc_info=True)
         return {"status": "error", "error": str(e)}

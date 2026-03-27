@@ -55,6 +55,20 @@ def ensure_profile(sender, instance, created, **kwargs):
     # Run after the transaction commits so IDs are available
     transaction.on_commit(_create)
 
+    # Link guest history if this is a newly created user with an email that has guest records
+    if created and instance.email:
+        def _link_guest_history():
+            from users.email_utils import link_guest_history_to_user
+            try:
+                link_guest_history_to_user(instance, instance.email)
+            except Exception as e:
+                from django.utils import timezone
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Failed to link guest history for user {instance.id}: {e}")
+
+        transaction.on_commit(_link_guest_history)
+
 
 @receiver(post_save, sender=UserProfile)
 def sync_cognito_status(sender, instance, created, **kwargs):

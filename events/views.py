@@ -2084,6 +2084,17 @@ class EventViewSet(viewsets.ModelViewSet):
                 # Log but don't fail the API response
                 logger.warning(f"Failed to broadcast meeting_ended to event {event.id}: {e}")
 
+            # 📧 Send follow-up emails to guests immediately
+            try:
+                from events.tasks import send_guest_followup_task
+                send_guest_followup_task.apply_async(
+                    args=[event.id],
+                    countdown=0  # Send immediately when host ends meeting
+                )
+                logger.info(f"Scheduled follow-up email task for event {event.id}")
+            except Exception as e:
+                logger.warning(f"Failed to schedule follow-up email task for event {event.id}: {e}")
+
         return Response({
             "ok": True,
             "status": event.status,
@@ -2200,6 +2211,17 @@ class EventViewSet(viewsets.ModelViewSet):
         except Exception as e:
             # Log but don't fail the API response
             logger.warning(f"Failed to broadcast meeting_ended to event {event.id}: {e}")
+
+        # 📧 Send follow-up emails to guests immediately
+        try:
+            from events.tasks import send_guest_followup_task
+            send_guest_followup_task.apply_async(
+                args=[event.id],
+                countdown=0  # Send immediately when host ends meeting
+            )
+            logger.info(f"Scheduled follow-up email task for event {event.id}")
+        except Exception as e:
+            logger.warning(f"Failed to schedule follow-up email task for event {event.id}: {e}")
 
         return Response(
             {"message": "Meeting ended", "status": event.status, "event_id": event.id}
@@ -4422,16 +4444,25 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="mine")
     def mine(self, request):
         """
-        List events the current user is registered for (newest first).
+        List events the current user is registered for OR attended as a guest (newest first).
+        Includes:
+        - Events with EventRegistration (registered user)
+        - Events with GuestAttendee where converted_user=user (guest who registered)
         Each event in the response includes an `is_host` boolean so the
         frontend can show "Join as Host" without a separate registration lookup.
         """
+        from django.db.models import Q
+
         user = request.user
         user_email = (getattr(user, "email", "") or "").strip()
 
+        # Include both registered events AND events where user is a converted guest
         qs = (
             Event.objects
-            .filter(registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'])
+            .filter(
+                Q(registrations__user=user, registrations__status__in=['registered', 'cancellation_requested']) |
+                Q(guest_attendees__converted_user=user)  # Guest attendance linked to user
+            )
             .distinct()
             .annotate(registrations_count=Count('registrations', distinct=True))
             .order_by("-start_time")

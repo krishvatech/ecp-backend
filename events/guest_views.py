@@ -2,13 +2,16 @@
 Guest Attendee API Views
 
 This module provides endpoints for guest (unauthenticated) event participation:
-- GuestJoinView: Allow visitors to join events without registration
+- GuestJoinView: Request email verification via OTP for event access
+- GuestVerifyOTPView: Verify OTP and receive guest JWT token
+- ResendGuestOTPView: Resend OTP if expired
 - GuestRegisterView: Convert guest session to registered Cognito account
 """
 
 import uuid
 import jwt
 import logging
+import random
 from datetime import timedelta
 from django.utils import timezone
 from django.conf import settings
@@ -17,18 +20,111 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.exceptions import ValidationError, PermissionDenied
-from .models import Event, GuestAttendee
+from .models import Event, GuestAttendee, GuestEmailOTP
 from .guest_auth import GuestPrincipal
 
 logger = logging.getLogger(__name__)
+
+
+def generate_otp_code():
+    """Generate a random 6-digit numeric OTP."""
+    return ''.join([str(random.randint(0, 9)) for _ in range(6)])
+
+
+def send_guest_otp(event, email, guest_name, max_attempts=5, rate_limit_seconds=60):
+    """
+    Send an OTP code to a guest's email for event access verification.
+
+    Args:
+        event: Event instance
+        email: Guest's email address
+        guest_name: Guest's first name
+        max_attempts: Max OTP generation attempts before rate limiting
+        rate_limit_seconds: Seconds to wait before resending
+
+    Returns:
+        dict: {
+            "success": bool,
+            "message": str,
+            "otp_required": bool (for API response),
+            "seconds_remaining": int (if rate limited)
+        }
+    """
+    from users.email_utils import send_guest_otp_email
+
+    # Check if there's a recent valid OTP
+    recent_otps = GuestEmailOTP.objects.filter(
+        event=event,
+        email=email,
+        used_at__isnull=True
+    ).order_by('-created_at')
+
+    if recent_otps.exists():
+        latest = recent_otps.first()
+        time_since_created = timezone.now() - latest.created_at
+
+        # Rate limit: only allow resend after rate_limit_seconds
+        if time_since_created.total_seconds() < rate_limit_seconds:
+            seconds_remaining = int(rate_limit_seconds - time_since_created.total_seconds())
+            return {
+                "success": False,
+                "message": f"OTP already sent. Please wait {seconds_remaining} seconds before requesting another.",
+                "otp_required": True,
+                "seconds_remaining": seconds_remaining,
+            }
+
+        # If latest OTP is still valid (not expired), return it instead of creating new one
+        if latest.is_valid:
+            return {
+                "success": True,
+                "message": f"OTP sent to {email}",
+                "otp_required": True,
+            }
+
+    # Generate new OTP
+    otp_code = generate_otp_code()
+    expires_at = timezone.now() + timedelta(minutes=10)
+
+    otp = GuestEmailOTP.objects.create(
+        email=email,
+        event=event,
+        code=otp_code,
+        expires_at=expires_at,
+    )
+
+    # Send OTP via email
+    email_sent = send_guest_otp_email(
+        to_email=email,
+        guest_name=guest_name,
+        otp_code=otp_code,
+        event_title=event.title
+    )
+
+    if email_sent:
+        logger.info(f"[GuestOTP] Sent OTP {otp_code} to {email} for event {event.id}")
+        return {
+            "success": True,
+            "message": f"Verification code sent to {email}",
+            "otp_required": True,
+        }
+    else:
+        # Email send failed - delete the OTP record
+        otp.delete()
+        logger.error(f"[GuestOTP] Failed to send OTP email to {email}")
+        return {
+            "success": False,
+            "message": "Failed to send verification code. Please try again.",
+            "otp_required": False,
+        }
 
 
 class GuestJoinView(APIView):
     """
     POST /api/events/{event_id}/guest-join/
 
-    Allow unauthenticated users to join an event as guests.
-    Returns a short-lived JWT token for guest session.
+    Initiate guest event access by requesting email verification.
+    Sends a 6-digit OTP code to the provided email address.
+    Guest must verify OTP via /guest-verify-otp/ before receiving JWT token.
 
     Request body:
     {
@@ -39,18 +135,21 @@ class GuestJoinView(APIView):
         "company_name": "Acme Corp"  # optional
     }
 
-    Response (201 Created):
+    Response (200 OK):
     {
-        "token": "<jwt_token>",
-        "guest_id": 7,
-        "name": "John Doe",
-        "email": "john@example.com",
-        "event_id": 42,
-        "expires_at": "2026-03-14T10:00:00Z"
+        "otp_required": true,
+        "message": "Verification code sent to john@example.com"
+    }
+
+    Response (429 Too Many Requests - if rate limited):
+    {
+        "otp_required": true,
+        "message": "OTP already sent. Please wait 45 seconds before requesting another.",
+        "seconds_remaining": 45
     }
 
     Error responses:
-    - 400: Missing required fields
+    - 400: Missing required fields or validation error
     - 404: Event not found
     - 409: Email already has registered account for this event
     """
@@ -59,7 +158,7 @@ class GuestJoinView(APIView):
     authentication_classes = []  # No auth required to join as guest
 
     def post(self, request, pk=None):
-        """Handle guest join request."""
+        """Handle guest join request - send OTP to email."""
         logger.info(f"[GuestJoin] POST request received for event {pk}")
         logger.info(f"[GuestJoin] Request data: {request.data}")
 
@@ -110,27 +209,21 @@ class GuestJoinView(APIView):
                 "message": "You have already registered. Please sign in."
             }, status=status.HTTP_409_CONFLICT)
 
-        # 4. Create or update GuestAttendee
-        jti = str(uuid.uuid4())
-        ttl_hours = getattr(settings, "GUEST_JWT_TTL_HOURS", 24)
-        expires_at = timezone.now() + timedelta(hours=ttl_hours)
-
+        # 4. Create or update GuestAttendee (without verified status yet)
         if existing:
-            # Re-issue token for existing guest
+            # Update profile info for existing guest
             existing.first_name = first_name
             existing.last_name = last_name
             existing.job_title = job_title
             existing.company = company_name
-            existing.token_jti = jti
-            existing.expires_at = expires_at
-            # Keep guests in waiting-room state when policy is enabled, unless already admitted.
+            # Keep guests in waiting-room state when policy is enabled, unless already admitted
             if event.waiting_room_enabled and existing.current_location != "main_room":
                 existing.current_location = "waiting_room"
-            existing.save()
+            existing.save(update_fields=["first_name", "last_name", "job_title", "company", "current_location"])
             guest = existing
-            logger.info(f"Re-issued guest token for {email} on event {event.id}")
+            logger.info(f"Updated profile for existing guest {email} on event {event.id}")
         else:
-            # Create new guest attendee
+            # Create new guest attendee (not verified yet)
             initial_location = "waiting_room" if event.waiting_room_enabled else "main_room"
             guest = GuestAttendee(
                 event=event,
@@ -139,14 +232,176 @@ class GuestJoinView(APIView):
                 last_name=last_name,
                 job_title=job_title,
                 company=company_name,
-                token_jti=jti,
-                expires_at=expires_at,
                 current_location=initial_location,
+                email_verified=False,
             )
             guest.save()
             logger.info(f"Created new guest attendee {email} for event {event.id}")
 
-        # 5. Issue JWT token
+        # 5. Send OTP to email
+        otp_result = send_guest_otp(event, email, first_name)
+
+        if not otp_result["success"]:
+            # Email send failed or rate limited
+            if otp_result.get("seconds_remaining"):
+                return Response(
+                    otp_result,
+                    status=status.HTTP_429_TOO_MANY_REQUESTS
+                )
+            return Response(
+                {"error": otp_result["message"]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Return success - OTP sent
+        return Response(otp_result, status=status.HTTP_200_OK)
+
+
+class GuestVerifyOTPView(APIView):
+    """
+    POST /api/events/{event_id}/guest-verify-otp/
+
+    Verify the OTP code sent to guest's email and receive guest JWT token.
+
+    Request body:
+    {
+        "email": "john@example.com",
+        "first_name": "John",
+        "last_name": "Doe",
+        "otp_code": "123456",
+        "job_title": "Software Engineer",  # optional
+        "company": "Acme Corp"  # optional
+    }
+
+    Response (201 Created):
+    {
+        "token": "<jwt_token>",
+        "guest_id": 7,
+        "name": "John Doe",
+        "email": "john@example.com",
+        "company": "Acme Corp",
+        "job_title": "Software Engineer",
+        "event_id": 42,
+        "expires_at": "2026-03-14T10:00:00Z"
+    }
+
+    Error responses:
+    - 400: Invalid OTP or other validation error
+    - 404: Event not found
+    - 409: Email already has registered account
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, pk=None):
+        """Handle OTP verification and JWT token issuance."""
+        logger.info(f"[GuestVerifyOTP] POST request for event {pk}")
+
+        # 1. Validate and get event
+        try:
+            event = Event.objects.get(pk=pk)
+        except Event.DoesNotExist:
+            logger.warning(f"[GuestVerifyOTP] Event not found: {pk}")
+            return Response(
+                {"error": "Event not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # 2. Extract and validate request data
+        email = request.data.get("email", "").strip().lower()
+        otp_code = request.data.get("otp_code", "").strip()
+        first_name = request.data.get("first_name", "").strip()
+        last_name = request.data.get("last_name", "").strip()
+        job_title = request.data.get("job_title", "").strip()
+        company = request.data.get("company", "").strip()
+
+        if not email or not otp_code:
+            return Response(
+                {"error": "email and otp_code are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 3. Find and validate OTP
+        otp = GuestEmailOTP.objects.filter(
+            event=event,
+            email=email,
+            code=otp_code,
+            used_at__isnull=True
+        ).order_by('-created_at').first()
+
+        if not otp:
+            logger.warning(f"[GuestVerifyOTP] Invalid OTP for {email} on event {event.id}")
+            return Response(
+                {"error": "Invalid verification code."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check if OTP is expired
+        if otp.is_expired:
+            logger.warning(f"[GuestVerifyOTP] Expired OTP for {email}")
+            return Response(
+                {"error": "Verification code has expired. Please request a new one."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check if OTP is still valid (not used)
+        if not otp.is_valid:
+            logger.warning(f"[GuestVerifyOTP] Already-used OTP for {email}")
+            return Response(
+                {"error": "Verification code has already been used."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 4. Mark OTP as used
+        otp.mark_as_used()
+        logger.info(f"[GuestVerifyOTP] OTP verified for {email}")
+
+        # 5. Check if email already has CONVERTED account for this event
+        existing = GuestAttendee.objects.filter(event=event, email=email).first()
+        if existing and existing.converted_at:
+            logger.info(f"Email {email} has already registered account for event {event.id}")
+            return Response({
+                "error": "account_exists",
+                "message": "You have already registered. Please sign in."
+            }, status=status.HTTP_409_CONFLICT)
+
+        # 6. Create or update GuestAttendee with verified status
+        jti = str(uuid.uuid4())
+        ttl_hours = getattr(settings, "GUEST_JWT_TTL_HOURS", 24)
+        expires_at = timezone.now() + timedelta(hours=ttl_hours)
+
+        if existing:
+            # Update existing guest with verified status
+            existing.first_name = first_name or existing.first_name
+            existing.last_name = last_name or existing.last_name
+            existing.job_title = job_title or existing.job_title
+            existing.company = company or existing.company
+            existing.token_jti = jti
+            existing.expires_at = expires_at
+            existing.email_verified = True
+            existing.save()
+            guest = existing
+            logger.info(f"Updated existing guest {email} with verified status")
+        else:
+            # Create new guest attendee with verified status
+            initial_location = "waiting_room" if event.waiting_room_enabled else "main_room"
+            guest = GuestAttendee(
+                event=event,
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                job_title=job_title,
+                company=company,
+                token_jti=jti,
+                expires_at=expires_at,
+                current_location=initial_location,
+                email_verified=True,
+            )
+            guest.save()
+            logger.info(f"Created new verified guest {email}")
+
+        # 7. Issue JWT token
         payload = {
             "token_type": "guest",
             "guest_id": guest.id,
@@ -168,6 +423,88 @@ class GuestJoinView(APIView):
             "event_id": event.id,
             "expires_at": expires_at.isoformat(),
         }, status=status.HTTP_201_CREATED)
+
+
+class ResendGuestOTPView(APIView):
+    """
+    POST /api/events/{event_id}/guest-resend-otp/
+
+    Resend a verification code if the previous one expired.
+    Rate-limited to 1 resend per 60 seconds per email per event.
+
+    Request body:
+    {
+        "email": "john@example.com",
+        "first_name": "John"  # optional, for personalization
+    }
+
+    Response (200 OK):
+    {
+        "otp_required": true,
+        "message": "Verification code sent to john@example.com"
+    }
+
+    Response (429 Too Many Requests - if rate limited):
+    {
+        "otp_required": true,
+        "message": "Please wait 45 seconds before requesting another code.",
+        "seconds_remaining": 45
+    }
+
+    Error responses:
+    - 400: Missing email field
+    - 404: Event not found
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, pk=None):
+        """Handle OTP resend request."""
+        logger.info(f"[GuestResendOTP] POST request for event {pk}")
+
+        # 1. Validate and get event
+        try:
+            event = Event.objects.get(pk=pk)
+        except Event.DoesNotExist:
+            logger.warning(f"[GuestResendOTP] Event not found: {pk}")
+            return Response(
+                {"error": "Event not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # 2. Extract email
+        email = request.data.get("email", "").strip().lower()
+        first_name = request.data.get("first_name", "").strip()
+
+        if not email:
+            return Response(
+                {"error": "email is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 3. Invalidate all prior unused OTPs for this email/event
+        GuestEmailOTP.objects.filter(
+            event=event,
+            email=email,
+            used_at__isnull=True
+        ).update(used_at=timezone.now())
+
+        # 4. Send new OTP
+        otp_result = send_guest_otp(event, email, first_name)
+
+        if not otp_result["success"]:
+            if otp_result.get("seconds_remaining"):
+                return Response(
+                    otp_result,
+                    status=status.HTTP_429_TOO_MANY_REQUESTS
+                )
+            return Response(
+                {"error": otp_result["message"]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response(otp_result, status=status.HTTP_200_OK)
 
 
 class GuestRegisterView(APIView):
@@ -252,6 +589,7 @@ class GuestRegisterView(APIView):
         try:
             # 4. Trigger signup and create Django User
             from users.cognito_auth import create_cognito_user_from_guest
+            from users.email_utils import link_guest_history_to_user
 
             user = create_cognito_user_from_guest(
                 guest=guest,
@@ -265,6 +603,9 @@ class GuestRegisterView(APIView):
             guest.converted_user = user
             guest.converted_at = timezone.now()
             guest.save()
+
+            # 6. Link all guest history for this email to the new user
+            link_guest_history_to_user(user, email)
 
             logger.info(
                 f"Guest {guest.email} converted to registered user {user.id}"
@@ -329,6 +670,10 @@ class GuestRegisterLinkView(APIView):
         if guest.converted_at is None:
             guest.converted_at = timezone.now()
         guest.save(update_fields=["converted_user", "converted_at"])
+
+        # Link all guest history for this email to the registered user
+        from users.email_utils import link_guest_history_to_user
+        link_guest_history_to_user(user, email)
 
         # Sync guest profile fields to UserProfile (job_title, company, full_name)
         profile_data = {"job_title": "", "company": "", "full_name": ""}
