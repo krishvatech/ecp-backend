@@ -236,24 +236,41 @@ class UserProfile(models.Model):
         if not self.user.memberships.exists():
             missing.append("memberships")
 
-        # 7. E-Mail section - requires at least one email in links
-        emails = self.links.get('emails', []) if isinstance(self.links, dict) else []
-        if not (emails and len(emails) > 0):
+        # Helper function to safely check if a list has content
+        def has_items(data):
+            return isinstance(data, list) and len(data) > 0
+
+        # Helper function to check if a social link URL exists
+        def has_social_url(url):
+            return isinstance(url, str) and url.strip() != ""
+
+        # Get contact section (nested structure)
+        contact = self.links.get('contact', {}) if isinstance(self.links, dict) else {}
+
+        # 7. E-Mail section - requires at least one email in contact.emails
+        emails = contact.get('emails', []) if isinstance(contact, dict) else []
+        if not has_items(emails):
             missing.append("email")
 
-        # 8. Phone Numbers section - requires at least one phone in links
-        phones = self.links.get('phones', []) if isinstance(self.links, dict) else []
-        if not (phones and len(phones) > 0):
+        # 8. Phone Numbers section - requires at least one phone in contact.phones
+        phones = contact.get('phones', []) if isinstance(contact, dict) else []
+        if not has_items(phones):
             missing.append("phone")
 
-        # 9. Social Links section - requires at least one social link in links
-        socials = self.links.get('socials', {}) if isinstance(self.links, dict) else {}
-        if not (socials and any(socials.get(key) for key in ['linkedin', 'x', 'facebook', 'instagram', 'github'])):
+        # 9. Social Links section - requires at least one social link (x, facebook, linkedin, instagram, github)
+        has_socials = (
+            has_social_url(self.links.get('x', '')) or
+            has_social_url(self.links.get('facebook', '')) or
+            has_social_url(self.links.get('linkedin', '')) or
+            has_social_url(self.links.get('instagram', '')) or
+            has_social_url(self.links.get('github', ''))
+        ) if isinstance(self.links, dict) else False
+        if not has_socials:
             missing.append("social_links")
 
-        # 10. Websites section - requires at least one website in links
-        websites = self.links.get('websites', []) if isinstance(self.links, dict) else []
-        if not (websites and len(websites) > 0):
+        # 10. Websites section - requires at least one website in contact.websites
+        websites = contact.get('websites', []) if isinstance(contact, dict) else []
+        if not has_items(websites):
             missing.append("websites")
 
         return missing
