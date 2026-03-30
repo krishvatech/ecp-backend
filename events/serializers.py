@@ -26,6 +26,7 @@ from .models import (
 from community.models import Community
 from content.models import Resource
 import json
+from .validators import validate_non_multiday_event, validate_multiday_event, validate_session_datetimes
 
 
 ROLE_PRIORITY = {
@@ -503,17 +504,9 @@ class EventSessionSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """Validate session times against event times."""
-        from django.utils import timezone
-
         start = data.get('start_time')
         end = data.get('end_time')
         event = data.get('event')
-
-        # Validate session end is after session start
-        if start and end and end <= start:
-            raise serializers.ValidationError(
-                {"end_time": "end_time must be after start_time"}
-            )
 
         # Get event from context if not in data (for POST requests)
         if not event:
@@ -526,31 +519,13 @@ class EventSessionSerializer(serializers.ModelSerializer):
                     except Event.DoesNotExist:
                         event = None
 
-        # Validate session times are within event times
-        if event and start and end:
-            event_start = event.start_time
-            event_end = event.end_time
-
-            # Check if event has valid start/end times
-            if event_start and event_end:
-                # Session cannot start before event starts
-                if start < event_start:
-                    raise serializers.ValidationError(
-                        {"start_time": f"Session cannot start before event starts ({event_start.isoformat()})"}
-                    )
-
-                # Session cannot end after event ends
-                # Allow sessions on the end date if the event ends at midnight (00:00:00)
-                # This handles cases where user selects "Feb 20" as end date (saved as Feb 20 00:00)
-                # but expects the whole day of Feb 20 to be available.
-                cutoff_time = event_end
-                if event_end.hour == 0 and event_end.minute == 0 and event_end.second == 0:
-                     cutoff_time = event_end + timedelta(days=1)
-
-                if end > cutoff_time:
-                    raise serializers.ValidationError(
-                        {"end_time": f"Session cannot end after event ends ({event_end.isoformat()})"}
-                    )
+        # Validate session times (includes end > start, event boundary checks, and 30-min rule for today)
+        if start and end and event:
+            validate_session_datetimes(start, end, event, instance=self.instance)
+        elif start and end and end <= start:
+            raise serializers.ValidationError(
+                {"end_time": "Session end time must be after start time."}
+            )
 
         return data
 
@@ -1715,46 +1690,32 @@ class EventSerializer(serializers.ModelSerializer):
         print(f"  Data before return: start_time={data.get('start_time')}, end_time={data.get('end_time')}")
         print(f"🔴 BACKEND TIME VALIDATION END\n")
 
-        now = timezone.now()
-
-        # On edit (PATCH/PUT), allow already-past times if they are unchanged from the stored event.
-        # This lets users update metadata/sessions for events that already started.
-        existing_start = getattr(self.instance, "start_time", None)
-        existing_end = getattr(self.instance, "end_time", None)
-        if existing_start and timezone.is_naive(existing_start):
-            existing_start = timezone.make_aware(existing_start, dt_timezone.utc)
-        if existing_end and timezone.is_naive(existing_end):
-            existing_end = timezone.make_aware(existing_end, dt_timezone.utc)
-
-        def _unchanged_dt(new_value, old_value, tolerance_seconds=60):
-            if not new_value or not old_value:
-                return False
-            return abs((new_value - old_value).total_seconds()) <= tolerance_seconds
-
-        if end_time and not start_time:
-            raise serializers.ValidationError({"start_time": "Provide start_time when setting end_time."})
-        if start_time and start_time < now:
-            if not (self.instance and _unchanged_dt(start_time, existing_start)):
-                raise serializers.ValidationError({"start_time": "Start time cannot be in the past."})
-        if end_time and end_time < now:
-            if not (self.instance and _unchanged_dt(end_time, existing_end)):
-                raise serializers.ValidationError({"end_time": "End time cannot be in the past."})
-        if start_time and end_time and not (end_time > start_time):
-            raise serializers.ValidationError({"end_time": "End time must be later than start time."})
+        # Timezone-aware validation with support for today's +30min rule and multiday events
+        is_multi_day = data.get("is_multi_day", getattr(self.instance, "is_multi_day", False))
+        if is_multi_day:
+            validate_multiday_event(start_time, end_time, tz_value, self.instance)
+        else:
+            validate_non_multiday_event(start_time, end_time, tz_value, self.instance)
 
         # Validate sessions_input: all session dates must fall within event dates
+        # and respect the 30-minute rule if event is scheduled for today
         sessions_input = data.get('sessions_input', [])
-
-        print(f"\n🔍 VALIDATE METHOD - sessions_input check:")
-        print(f"   Type: {type(sessions_input)}")
-        print(f"   Value: {sessions_input}")
-        print(f"   Is empty: {not sessions_input}")
 
         event_start = data.get('start_time')
         event_end = data.get('end_time')
 
         if sessions_input and event_start and event_end:
             from dateutil.parser import parse as parse_datetime
+            from types import SimpleNamespace
+
+            # Create a mock event object with the necessary fields for session validation
+            mock_event = SimpleNamespace(
+                start_time=event_start,
+                end_time=event_end,
+                timezone=tz_value,
+                is_multi_day=is_multi_day,
+            )
+
             errors = []
             for i, session in enumerate(sessions_input):
                 sess_start = session.get('start_time')
@@ -1776,17 +1737,18 @@ class EventSerializer(serializers.ModelSerializer):
                         errors.append(f"'{label}' has invalid end_time format: {sess_end}")
                         continue
 
-                # Now compare with event times (both are datetime objects)
-                if sess_start and sess_start < event_start:
-                    errors.append(
-                        f"'{label}' starts before the event "
-                        f"({sess_start.isoformat()} < {event_start.isoformat()})"
-                    )
-                if sess_end and sess_end > event_end:
-                    errors.append(
-                        f"'{label}' ends after the event "
-                        f"({sess_end.isoformat()} > {event_end.isoformat()})"
-                    )
+                # Validate session times using the timezone-aware validator
+                # This enforces: end > start, within event bounds, and 30-min rule if event is today
+                try:
+                    validate_session_datetimes(sess_start, sess_end, mock_event)
+                except serializers.ValidationError as e:
+                    if isinstance(e.detail, dict):
+                        # Extract field-specific errors
+                        for field, msg in e.detail.items():
+                            errors.append(f"'{label}' {msg.lower()}")
+                    else:
+                        errors.append(f"'{label}': {e.detail}")
+
             if errors:
                 raise serializers.ValidationError({"sessions_input": errors})
 
