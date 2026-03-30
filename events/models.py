@@ -77,6 +77,10 @@ class Event(models.Model):
     category = models.CharField(max_length=100, blank=True)
     format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default="in_person")
     location = models.CharField(max_length=255, blank=True)
+    location_city = models.CharField(max_length=255, blank=True)
+    location_country = models.CharField(max_length=255, blank=True)
+    venue_name = models.CharField(max_length=255, blank=True, help_text="Venue name (e.g., Hotel, Office building)")
+    venue_address = models.CharField(max_length=500, blank=True, help_text="Exact venue address - only shown to registered/accepted members")
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     currency = models.CharField(
         max_length=3,

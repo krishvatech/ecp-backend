@@ -769,6 +769,10 @@ class EventSerializer(serializers.ModelSerializer):
             "category",
             "format",
             "location",
+            "location_city",
+            "location_country",
+            "venue_name",
+            "venue_address",
             "price",
             "price_label",
             "currency",
@@ -1521,6 +1525,7 @@ class EventSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         request = self.context.get("request")
+
         if instance.preview_image:
             url = instance.preview_image.url
             data["preview_image"] = request.build_absolute_uri(url) if request else url
@@ -1530,6 +1535,27 @@ class EventSerializer(serializers.ModelSerializer):
         if instance.waiting_room_image:
             url = instance.waiting_room_image.url
             data["waiting_room_image"] = request.build_absolute_uri(url) if request else url
+
+        # Privacy gate: only show venue_name and venue_address to registered/admitted members or host
+        if request and request.user.is_authenticated:
+            from events.views import _is_event_host
+
+            is_host = _is_event_host(request.user, instance)
+            is_registered = EventRegistration.objects.filter(
+                event=instance,
+                user=request.user,
+                status__in=["registered", "admitted", "cancellation_requested"]
+            ).exists()
+
+            # If not host and not registered, remove venue details
+            if not is_host and not is_registered:
+                data.pop("venue_name", None)
+                data.pop("venue_address", None)
+        else:
+            # Unauthenticated users: don't show venue details
+            data.pop("venue_name", None)
+            data.pop("venue_address", None)
+
         return data
 
     def validate_price(self, value):
@@ -1766,6 +1792,18 @@ class EventSerializer(serializers.ModelSerializer):
                         'participants': f'Item at index {idx} must be a dictionary'
                     })
 
+        # Auto-populate location from location_city + location_country
+        location_city = (data.get('location_city') or '').strip()
+        location_country = (data.get('location_country') or '').strip()
+
+        if location_city and location_country:
+            data['location'] = f"{location_city}, {location_country}"
+        elif location_city:
+            data['location'] = location_city
+        elif location_country:
+            data['location'] = location_country
+        # Otherwise, keep the location value as provided or blank
+
         return data
 
 
@@ -1786,7 +1824,8 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "id", "slug", "title", "description",
             "start_time", "end_time", "timezone",
             "status", "is_live", "category", "format",
-            "location", "price", "price_label", "currency", "is_free",
+            "location", "location_city", "location_country",
+            "price", "price_label", "currency", "is_free",
             "preview_image", "attending_count",
             "created_at", "sessions", "speakers",
             "featured_participants", "featured_participants_total",
@@ -1853,7 +1892,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         model = Event
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
-            "preview_image", "cover_image", "waiting_room_image", "location", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type",
+            "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type",
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer",
             "lounge_enabled_after", "lounge_after_buffer",
