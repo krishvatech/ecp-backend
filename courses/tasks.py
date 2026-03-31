@@ -1,112 +1,143 @@
 """
-Celery tasks for syncing Moodle LMS data into the local database.
+Celery tasks for syncing Moodle LMS data into the local database
+via the Edwiser Bridge WordPress REST API (imaa-institute.org).
+
+Edwiser Bridge syncs courses from Moodle into WordPress; this platform
+then pulls from WordPress/EB as the authoritative source.
 
 Schedule (configured in settings.py):
   - sync_moodle_courses_and_categories: every 6 hours
   - sync_all_user_moodle_enrollments:  every 30 minutes
 """
 import logging
-from datetime import datetime, timezone
+from urllib.parse import urlparse, parse_qs
 
 from celery import shared_task
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
 
 from .models import MoodleCategory, MoodleCourse, MoodleEnrollment
-from .moodle_api import get_moodle_client
+from .edwiser_api import get_edwiser_client
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
 
+def _parse_moodle_course_id(course_url: str) -> int | None:
+    """
+    Extract Moodle course ID from an Edwiser Bridge course URL.
+
+    EB encodes the Moodle course ID as a query param, e.g.:
+      https://imaa-institute.org?mdl_course_id=2
+    """
+    if not course_url:
+        return None
+    try:
+        qs = parse_qs(urlparse(course_url).query)
+        val = qs.get("mdl_course_id", [None])[0]
+        return int(val) if val else None
+    except (ValueError, TypeError):
+        return None
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def sync_moodle_courses_and_categories(self):
     """
-    Pull all categories and courses from Moodle and upsert into local DB.
+    Pull all courses and categories from Edwiser Bridge and upsert into local DB.
     Runs every 6 hours.
+
+    EB API field mapping:
+      Course: id→moodle_id, title→full_name, excerpt→summary,
+              thumbnail→image_url, link→moodle_url, suspended→(not is_visible)
+      Category: id→moodle_id, name→name, count→course_count
     """
     try:
-        client = get_moodle_client()
+        client = get_edwiser_client()
     except ValueError as e:
-        logger.warning("Moodle not configured, skipping sync: %s", e)
+        logger.warning("Edwiser Bridge not configured, skipping sync: %s", e)
         return {"skipped": True, "reason": str(e)}
 
-    # --- Sync categories ---
-    categories = client.get_categories()
+    data = client.get_all_courses()
+    courses = data.get("courses") or []
+    eb_categories = data.get("categories") or []
+
+    # --- Upsert categories (returned as top-level list from EB) ---
+    # Format: {"id": 925, "name": "...", "slug": "...", "count": 15}
     category_map: dict[int, MoodleCategory] = {}
-    for cat in categories:
-        moodle_id = cat.get("id")
-        if not moodle_id:
+    for cat in eb_categories:
+        cat_id = cat.get("id")
+        if not cat_id:
             continue
         obj, _ = MoodleCategory.objects.update_or_create(
-            moodle_id=moodle_id,
+            moodle_id=cat_id,
             defaults={
                 "name": cat.get("name", "")[:500],
-                "parent_moodle_id": cat.get("parent") or None,
-                "course_count": cat.get("coursecount", 0),
+                "parent_moodle_id": None,  # EB top-level categories have no parent info
+                "course_count": cat.get("count") or 0,
             },
         )
-        category_map[moodle_id] = obj
+        category_map[cat_id] = obj
 
-    logger.info("Synced %d Moodle categories", len(category_map))
+    logger.info("Synced %d categories from Edwiser Bridge", len(category_map))
 
-    # --- Sync courses ---
-    courses = client.get_all_courses()
+    # --- Upsert courses ---
+    # EB uses WordPress post ID as course identifier.
+    # moodle_id stores the WP post ID (unique key); moodle_url stores the WP course page link.
     synced = 0
     for course in courses:
-        moodle_id = course.get("id")
-        if not moodle_id:
+        wp_course_id = course.get("id")
+        if not wp_course_id:
             continue
 
-        # Extract course image from overviewfiles
-        # search_courses returns pluginfile.php URLs — append token for access
-        image_url = ""
-        for f in course.get("overviewfiles", []):
-            if f.get("mimetype", "").startswith("image/"):
-                raw_url = f.get("fileurl", "")
-                if raw_url and "token=" not in raw_url:
-                    image_url = f"{raw_url}?token={settings.MOODLE_TOKEN}"
-                else:
-                    image_url = raw_url
-                break
+        # Resolve category: EB embeds categories as [{"id": N, "name": "..."}]
+        course_cats = course.get("categories") or []
+        category = None
+        if course_cats:
+            cat_id = course_cats[0].get("id")
+            category = category_map.get(cat_id)
 
-        cat_id = course.get("categoryid")
-        category = category_map.get(cat_id)
+        # suspended=true means the course is hidden/disabled in EB
+        is_visible = not bool(course.get("suspended", False))
 
         MoodleCourse.objects.update_or_create(
-            moodle_id=moodle_id,
+            moodle_id=wp_course_id,
             defaults={
-                "short_name": course.get("shortname", "")[:255],
-                "full_name": course.get("fullname", "")[:500],
-                "summary": course.get("summary", ""),
+                "short_name": course.get("title", "")[:255],
+                "full_name": course.get("title", "")[:500],
+                "summary": course.get("excerpt") or "",
                 "category": category,
-                "image_url": image_url[:1000],
-                "enrolled_user_count": course.get("enrolledusercount", 0),
-                "completion_enabled": bool(course.get("enablecompletion", 0)),
-                "is_visible": bool(course.get("visible", 1)),
+                "image_url": (course.get("thumbnail") or "")[:1000],
+                "moodle_url": (course.get("link") or "")[:1000],
+                "enrolled_user_count": 0,  # not provided by EB catalogue endpoint
+                "completion_enabled": False,
+                "is_visible": is_visible,
             },
         )
         synced += 1
 
-    logger.info("Synced %d Moodle courses", synced)
+    logger.info("Synced %d courses via Edwiser Bridge", synced)
     return {"categories": len(category_map), "courses": synced}
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def sync_all_user_moodle_enrollments(self):
     """
-    For every ECP user that has a Moodle account (matched by email),
-    sync their enrollments + progress into MoodleEnrollment.
+    For every active ECP user that has a linked WordPress account,
+    sync their Edwiser Bridge enrollments + progress into MoodleEnrollment.
     Runs every 30 minutes.
     """
     try:
-        client = get_moodle_client()
+        client = get_edwiser_client()
     except ValueError as e:
-        logger.warning("Moodle not configured, skipping enrollment sync: %s", e)
+        logger.warning("Edwiser Bridge not configured, skipping enrollment sync: %s", e)
         return {"skipped": True}
 
-    users = User.objects.filter(is_active=True).only("id", "email")
+    # Only process users with a known WordPress ID (the EB API key)
+    users = (
+        User.objects.filter(is_active=True, profile__wordpress_id__isnull=False)
+        .select_related("profile")
+        .only("id", "email")
+    )
     synced_users = 0
     synced_enrollments = 0
 
@@ -117,7 +148,7 @@ def sync_all_user_moodle_enrollments(self):
             synced_enrollments += count
 
     logger.info(
-        "Enrollment sync complete: %d users, %d enrollments",
+        "EB enrollment sync complete: %d users, %d enrollments",
         synced_users,
         synced_enrollments,
     )
@@ -127,14 +158,14 @@ def sync_all_user_moodle_enrollments(self):
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def sync_single_user_moodle_enrollments(self, user_id: int):
     """
-    Sync Moodle enrollments for a single ECP user.
-    Called on login or explicit refresh.
+    Sync Edwiser Bridge enrollments for a single ECP user.
+    Called on login or explicit refresh via POST /api/courses/my-courses/refresh/.
     """
     try:
-        client = get_moodle_client()
-        user = User.objects.get(id=user_id)
+        client = get_edwiser_client()
+        user = User.objects.select_related("profile").get(id=user_id)
     except (ValueError, User.DoesNotExist) as e:
-        logger.warning("Cannot sync enrollments for user %s: %s", user_id, e)
+        logger.warning("Cannot sync EB enrollments for user %s: %s", user_id, e)
         return {"skipped": True}
 
     count = _sync_user_enrollments(client, user)
@@ -143,90 +174,103 @@ def sync_single_user_moodle_enrollments(self, user_id: int):
 
 def _sync_user_enrollments(client, user) -> int | None:
     """
-    Internal helper: look up user in Moodle by email, fetch their courses,
-    and upsert MoodleEnrollment records.
+    Fetch enrolled courses for a user via Edwiser Bridge using their
+    WordPress user ID (UserProfile.wordpress_id).
 
-    Uses cached moodle_user_id from UserProfile if available, otherwise
-    looks up by email (same matching key Edwiser Bridge uses) and caches it.
+    EB /my-courses response per course:
+      {
+        "id": 5988,             <- WP post ID
+        "title": "...",
+        "thumbnail": "...",
+        "link": "...",
+        "categories": [...],
+        "progress": {
+          "percentage": 0,
+          "status": "not_started",
+          "course_url": "https://imaa-institute.org?mdl_course_id=2",  <- Moodle ID here
+          "completed": false
+        }
+      }
 
-    Returns number of enrollments synced, or None if user not found in Moodle.
+    Returns number of enrollments synced, or None if user has no wordpress_id.
     """
-    # Use cached moodle_user_id if available (avoids repeated email lookups)
     try:
         profile = user.profile
-        moodle_user_id = profile.moodle_user_id
+        # moodle_user_id is repurposed here as the cached imaa-institute.org WP user ID.
+        # (Direct Moodle API calls are no longer made; this field is free to reuse.)
+        eb_wp_user_id = profile.moodle_user_id
     except Exception:
         profile = None
-        moodle_user_id = None
+        eb_wp_user_id = None
 
-    if not moodle_user_id:
-        moodle_user = client.get_user_by_email(user.email)
-        if not moodle_user:
+    if not eb_wp_user_id:
+        # Look up the user on imaa-institute.org by email and cache for future syncs
+        eb_wp_user_id = client.get_user_id_by_email(user.email)
+        if not eb_wp_user_id:
+            logger.debug("User %s not found on imaa-institute.org, skipping", user.email)
             return None
-        moodle_user_id = moodle_user.get("id")
-        if not moodle_user_id:
-            return None
-
-        # Cache the Moodle user ID for future syncs
         if profile is not None:
-            profile.moodle_user_id = moodle_user_id
+            profile.moodle_user_id = eb_wp_user_id
             profile.save(update_fields=["moodle_user_id"])
-            logger.info("Cached moodle_user_id=%d for user %s", moodle_user_id, user.email)
+            logger.info("Cached EB WP user ID=%d for %s", eb_wp_user_id, user.email)
 
-    moodle_courses = client.get_user_courses(moodle_user_id)
+    eb_courses = client.get_user_courses(eb_wp_user_id)
     synced = 0
 
-    for mc in moodle_courses:
-        course_id = mc.get("id")
-        if not course_id:
+    for ec in eb_courses:
+        wp_course_id = ec.get("id")
+        if not wp_course_id:
             continue
 
-        # Get or create local course record (minimal — full sync runs separately)
+        progress_data = ec.get("progress") or {}
+
+        # Extract the Moodle course ID from the EB course_url query param
+        # e.g. "https://imaa-institute.org?mdl_course_id=2" → 2
+        moodle_id = _parse_moodle_course_id(progress_data.get("course_url"))
+        # Fall back to WP post ID if Moodle ID cannot be parsed
+        course_key = moodle_id or wp_course_id
+
+        # Resolve local MoodleCourse — minimal create if not yet synced by catalogue task
         course_obj, _ = MoodleCourse.objects.get_or_create(
-            moodle_id=course_id,
+            moodle_id=course_key,
             defaults={
-                "full_name": mc.get("fullname", "")[:500],
-                "short_name": mc.get("shortname", "")[:255],
-                "summary": mc.get("summary", ""),
-                "completion_enabled": bool(mc.get("completionhascriteria", False)),
+                "full_name": ec.get("title", "")[:500],
+                "short_name": ec.get("title", "")[:255],
+                "summary": ec.get("excerpt") or "",
+                "image_url": (ec.get("thumbnail") or "")[:1000],
+                "moodle_url": (ec.get("link") or progress_data.get("course_url") or "")[:1000],
+                "completion_enabled": False,
             },
         )
 
-        # Extract image (append Moodle token so URL is publicly accessible)
-        image_url = ""
-        for f in mc.get("overviewfiles", []):
-            if f.get("mimetype", "").startswith("image/"):
-                raw_url = f.get("fileurl", "")
-                if raw_url and "token=" not in raw_url:
-                    raw_url = f"{raw_url}?token={settings.MOODLE_TOKEN}"
-                image_url = raw_url
-                break
-        if image_url and not course_obj.image_url:
-            # Append token for webservice/pluginfile.php URLs too
-            if "token=" not in image_url:
-                image_url = f"{image_url}?token={settings.MOODLE_TOKEN}"
-            course_obj.image_url = image_url[:1000]
-            course_obj.save(update_fields=["image_url"])
+        # Update image / url if missing on existing record
+        updated_fields = []
+        if not course_obj.image_url and ec.get("thumbnail"):
+            course_obj.image_url = ec["thumbnail"][:1000]
+            updated_fields.append("image_url")
+        if not course_obj.moodle_url and (ec.get("link") or progress_data.get("course_url")):
+            course_obj.moodle_url = (ec.get("link") or progress_data.get("course_url"))[:1000]
+            updated_fields.append("moodle_url")
+        if updated_fields:
+            course_obj.save(update_fields=updated_fields)
 
-        # Progress from Moodle (0–100 float or None)
-        progress = mc.get("progress") or 0.0
-        completed = progress >= 100.0
+        # Progress — EB returns percentage (0–100)
+        progress = float(progress_data.get("percentage") or 0.0)
+        completed = bool(progress_data.get("completed") or (progress >= 100.0))
 
-        # Last access timestamp
-        last_access_ts = mc.get("lastaccess")
-        last_access = (
-            datetime.fromtimestamp(last_access_ts, tz=timezone.utc)
-            if last_access_ts
-            else None
-        )
+        # EB /my-courses does not return last_access
+        last_access = None
+
+        # moodle_user_id stores the imaa-institute.org WP user ID (repurposed field, no migration).
+        effective_moodle_user_id = eb_wp_user_id or 0
 
         with transaction.atomic():
             MoodleEnrollment.objects.update_or_create(
                 user=user,
                 course=course_obj,
                 defaults={
-                    "moodle_user_id": moodle_user_id,
-                    "progress": float(progress),
+                    "moodle_user_id": effective_moodle_user_id,
+                    "progress": progress,
                     "completed": completed,
                     "last_access": last_access,
                 },

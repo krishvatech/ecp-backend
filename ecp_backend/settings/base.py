@@ -592,7 +592,7 @@ MOODLE_URL = os.getenv("MOODLE_URL", "https://lms.edtechprof.com")
 MOODLE_TOKEN = os.getenv("MOODLE_TOKEN", "")
 
 # ============================================================================
-# WORDPRESS IMAA INTEGRATION
+# WORDPRESS IMAA INTEGRATION (staging.manda.sg — events & user sync)
 # ============================================================================
 WP_IMAA_API_URL = os.getenv("WP_IMAA_API_URL", "")
 WP_IMAA_API_USER = os.getenv("WP_IMAA_API_USER", "")
@@ -600,6 +600,15 @@ WP_IMAA_API_PASSWORD = os.getenv("WP_IMAA_API_PASSWORD", "")
 WP_IMAA_AUTH_TYPE = os.getenv("WP_IMAA_AUTH_TYPE", "basic")
 WP_IMAA_WEBHOOK_SECRET_KEY = os.getenv("WP_IMAA_WEBHOOK_SECRET_KEY", "")
 WP_IMAA_ALLOW_EMAIL_ONLY_SYNC = os.getenv("WP_IMAA_ALLOW_EMAIL_ONLY_SYNC", "false").lower() in ("1", "true", "yes", "on")
+
+# ============================================================================
+# EDWISER BRIDGE INTEGRATION (imaa-institute.org — course catalogue & enrollments)
+# Edwiser Bridge plugin syncs courses from Moodle into this WordPress site.
+# ============================================================================
+EB_WP_API_URL = os.getenv("EB_WP_API_URL", "")        # e.g. https://imaa-institute.org/wp-json
+EB_WP_API_USER = os.getenv("EB_WP_API_USER", "")
+EB_WP_API_PASSWORD = os.getenv("EB_WP_API_PASSWORD", "")
+EB_WP_AUTH_TYPE = os.getenv("EB_WP_AUTH_TYPE", "basic")
 
 # WordPress Events Calendar (The Events Calendar plugin) sync settings
 # ============================================================================
