@@ -172,6 +172,14 @@ class UserProfile(models.Model):
     wordpress_id = models.IntegerField(null=True, blank=True, db_index=True, help_text="WordPress user ID from IMAA")
     wordpress_email = models.EmailField(blank=True, db_index=True, help_text="Email synced from WordPress")
     wordpress_username = models.CharField(max_length=255, blank=True, help_text="WordPress username from IMAA")
+
+    # --- Moodle LMS Integration ---
+    # Matched/cached via email (same matching key Edwiser Bridge uses).
+    # Populated on first successful Moodle lookup; used for all subsequent API calls.
+    moodle_user_id = models.IntegerField(
+        null=True, blank=True, db_index=True,
+        help_text="Moodle numeric user ID — cached after first email-based lookup"
+    )
     wordpress_avatar_url = models.URLField(blank=True, help_text="Avatar URL from WordPress")
     wordpress_synced_at = models.DateTimeField(null=True, blank=True, help_text="Last sync timestamp from WordPress")
 

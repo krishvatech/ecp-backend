@@ -83,6 +83,7 @@ urlpatterns = [
     path("api/", include("friends.urls")),
     path("api/", include("community.urls")), 
     
+    path("api/", include("courses.urls")),
     path("api/content/", include("content.urls")),
     path("api/activity/", include("activity_feed.urls")),
     path("api/engagements/", include("engagements.urls")),

@@ -234,7 +234,8 @@ INSTALLED_APPS = [
     'friends',
     'engagements',
     "moderation",
-    
+    "courses",
+
     "drf_spectacular",
     "drf_spectacular_sidecar",
 
@@ -526,6 +527,15 @@ CELERY_BEAT_SCHEDULE.update({
         "task": "events.poll_wordpress_events",
         "schedule": crontab(minute="*/15"),  # Every 15 minutes — polls for recently modified WP events
     },
+    # Moodle LMS sync
+    "sync-moodle-courses-and-categories": {
+        "task": "courses.tasks.sync_moodle_courses_and_categories",
+        "schedule": crontab(minute="0", hour="*/6"),  # Every 6 hours
+    },
+    "sync-all-user-moodle-enrollments": {
+        "task": "courses.tasks.sync_all_user_moodle_enrollments",
+        "schedule": crontab(minute="*/30"),  # Every 30 minutes
+    },
 })
 
 # Contact Request Quota Settings
@@ -574,6 +584,12 @@ SALEOR_CHANNEL_SLUG = os.getenv("SALEOR_CHANNEL_SLUG", "default-channel")  # SGD
 INVITE_EMAILS_MAX_PER_REQUEST = int(os.getenv("INVITE_EMAILS_MAX_PER_REQUEST", "20"))
 INVITE_EMAILS_MAX_PER_DAY = int(os.getenv("INVITE_EMAILS_MAX_PER_DAY", "100"))
 INVITE_EMAIL_TOKEN_MAX_AGE_SECONDS = int(os.getenv("INVITE_EMAIL_TOKEN_MAX_AGE_SECONDS", str(30 * 24 * 3600)))
+
+# ============================================================================
+# MOODLE LMS INTEGRATION
+# ============================================================================
+MOODLE_URL = os.getenv("MOODLE_URL", "https://lms.edtechprof.com")
+MOODLE_TOKEN = os.getenv("MOODLE_TOKEN", "")
 
 # ============================================================================
 # WORDPRESS IMAA INTEGRATION
