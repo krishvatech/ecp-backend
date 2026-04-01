@@ -162,47 +162,82 @@ class EdwiserBridgeAPIClient:
         Uses the standard WP REST API (not EB-specific).
         Requires admin credentials to search users.
 
-        TODO: Remove static override before production.
+        Strategy:
+          1. Search by email string (works on some WP configs)
+          2. Fall back to search by name (first part of email prefix, no digits)
         """
-
         url = f"{self.base_url}/wp/v2/users"
-        try:
-            resp = requests.get(
-                url,
-                params={"search": email, "per_page": 5},
-                headers=self._get_headers(),
-                auth=self._get_auth(),
-                timeout=10,
-            )
-            resp.raise_for_status()
-            users = resp.json()
-            if not isinstance(users, list) or not users:
-                return None
-            # Try exact email match first, fall back to first result
-            for u in users:
-                if u.get("email") == email or u.get("slug") == email.split("@")[0]:
-                    return u.get("id")
-            return users[0].get("id")
-        except requests.exceptions.RequestException as e:
-            logger.error("EB user lookup failed for %s: %s", email, e)
-            return None
 
-    def get_user_courses(self, wp_user_id: int) -> List[Dict]:
+        # Build search terms: full email prefix and a letters-only version
+        prefix = email.split("@")[0].lower()
+        import re
+        name_only = re.sub(r"[^a-z]", "", prefix)  # e.g. "lakshya19ahlawat" → "lakshyaahlawat"
+
+        search_terms = list(dict.fromkeys([email, prefix, name_only]))  # deduplicated, ordered
+
+        for term in search_terms:
+            try:
+                resp = requests.get(
+                    url,
+                    params={"search": term, "per_page": 10},
+                    headers=self._get_headers(),
+                    auth=self._get_auth(),
+                    timeout=10,
+                )
+                if resp.status_code == 404:
+                    continue
+                resp.raise_for_status()
+                users = resp.json()
+                if not isinstance(users, list) or not users:
+                    continue
+                # Prefer exact email match
+                for u in users:
+                    if u.get("email") == email:
+                        return u.get("id")
+                # Fall back to slug match
+                for u in users:
+                    if u.get("slug") in (prefix, name_only):
+                        return u.get("id")
+            except requests.exceptions.RequestException as e:
+                logger.error("EB user lookup failed for %s (term=%s): %s", email, term, e)
+                continue
+
+        logger.warning("EB user not found on WordPress for email: %s", email)
+        return None
+
+    def get_user_courses(self, wp_user_id: int = None, email: str = None) -> List[Dict]:
         """
         Fetch the enrolled courses + progress for a WordPress user.
+
+        Accepts either wp_user_id or email — the EB /my-courses endpoint supports both.
+        Email is preferred when wp_user_id is unknown.
 
         The /my-courses endpoint returns:
           {
             "enrolled_courses": [{..., "progress": {"percentage": N, "completed": bool, "course_url": "...?mdl_course_id=N"}}],
             ...
           }
-
-        Uses UserProfile.wordpress_id as the identifier.
         """
-        result = self._get("/my-courses", params={"user_id": wp_user_id})
+        if email:
+            params = {"email": email}
+        elif wp_user_id:
+            params = {"user_id": wp_user_id}
+        else:
+            return []
+        result = self._get("/my-courses", params=params)
         if not isinstance(result, dict):
             return []
         return result.get("enrolled_courses") or []
+
+    def get_wp_user_id_by_email(self, email: str) -> Optional[int]:
+        """
+        Get the WordPress user ID for a given email using the EB dashboard endpoint.
+        The /user-account/dashboard endpoint returns the authenticated user's WP ID,
+        but when called with admin credentials it reflects the admin user.
+        Instead, use get_user_courses(email=email) which works without needing the WP ID.
+        This method is kept for cases where the WP ID is explicitly needed.
+        """
+        return self.get_user_id_by_email(email)
 
 
 _eb_client: Optional[EdwiserBridgeAPIClient] = None

@@ -206,17 +206,10 @@ def _sync_user_enrollments(client, user) -> int | None:
         eb_wp_user_id = None
 
     if not eb_wp_user_id:
-        # Look up the user on imaa-institute.org by email and cache for future syncs
-        eb_wp_user_id = client.get_user_id_by_email(user.email)
-        if not eb_wp_user_id:
-            logger.debug("User %s not found on imaa-institute.org, skipping", user.email)
-            return None
-        if profile is not None:
-            profile.moodle_user_id = eb_wp_user_id
-            profile.save(update_fields=["moodle_user_id"])
-            logger.info("Cached EB WP user ID=%d for %s", eb_wp_user_id, user.email)
-
-    eb_courses = client.get_user_courses(eb_wp_user_id)
+        # /my-courses accepts email directly — no WP user ID lookup needed
+        eb_courses = client.get_user_courses(email=user.email)
+    else:
+        eb_courses = client.get_user_courses(wp_user_id=eb_wp_user_id)
     synced = 0
     active_course_keys = set()  # track moodle_ids returned by EB API
 
