@@ -15,6 +15,7 @@ Endpoints:
   POST /api/courses/admin/sync/          — Admin: trigger full background sync
 """
 import logging
+from html import unescape
 
 from rest_framework import status
 from rest_framework.decorators import action
@@ -44,11 +45,11 @@ def _eb_course_to_dict(course: dict) -> dict:
     return {
         "id": None,
         "moodle_id": course.get("id"),
-        "short_name": course.get("title") or "",
-        "full_name": course.get("title") or "",
-        "summary": course.get("excerpt") or "",
+        "short_name": unescape(course.get("title") or ""),
+        "full_name": unescape(course.get("title") or ""),
+        "summary": unescape(course.get("excerpt") or ""),
         "category": cats[0].get("id") if cats else None,
-        "category_name": cats[0].get("name") if cats else None,
+        "category_name": unescape(cats[0].get("name") or "") if cats else None,
         "image_url": course.get("thumbnail") or "",
         "enrolled_user_count": 0,
         "completion_enabled": False,
@@ -64,7 +65,7 @@ def _eb_category_to_dict(cat: dict) -> dict:
     return {
         "id": None,
         "moodle_id": cat.get("id"),
-        "name": cat.get("name") or "",
+        "name": unescape(cat.get("name") or ""),
         "parent_moodle_id": None,
         "course_count": cat.get("count") or 0,
         "source": "live",
@@ -80,11 +81,11 @@ def _eb_enrollment_to_dict(ec: dict) -> dict:
         "id": None,
         "course_id": None,
         "moodle_course_id": ec.get("id"),
-        "full_name": ec.get("title") or "",
-        "short_name": ec.get("title") or "",
+        "full_name": unescape(ec.get("title") or ""),
+        "short_name": unescape(ec.get("title") or ""),
         "image_url": ec.get("thumbnail") or "",
         "course_url": ec.get("link") or progress_data.get("course_url") or "",
-        "category_name": cats[0].get("name") if cats else None,
+        "category_name": unescape(cats[0].get("name") or "") if cats else None,
         "progress": percentage,
         "completed": bool(progress_data.get("completed") or percentage >= 100.0),
         "last_access": None,
@@ -133,6 +134,12 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
             courses = []
 
         if courses:
+            # DEBUG — print raw first course to see all field names from EB API
+            import json
+            print("[DEBUG] RAW first course from EB API:")
+            print(json.dumps(courses[0], indent=2, default=str))
+            logger.debug("[DEBUG] RAW first course from EB API: %s", json.dumps(courses[0], default=str))
+
             # Filter visible courses
             courses = [c for c in courses if not c.get("suspended", False)]
 
@@ -238,6 +245,14 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
 
             if eb_wp_user_id:
                 eb_enrollments = client.get_user_courses(eb_wp_user_id)
+
+                # DEBUG — print raw first enrollment to see all field names from EB API
+                if eb_enrollments:
+                    import json
+                    print("[DEBUG] RAW first enrolled course from EB API:")
+                    print(json.dumps(eb_enrollments[0], indent=2, default=str))
+                    logger.debug("[DEBUG] RAW first enrolled course from EB API: %s", json.dumps(eb_enrollments[0], default=str))
+
                 return Response([_eb_enrollment_to_dict(e) for e in eb_enrollments])
 
         except Exception as exc:
