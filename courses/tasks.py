@@ -216,6 +216,7 @@ def _sync_user_enrollments(client, user) -> int | None:
 
     eb_courses = client.get_user_courses(eb_wp_user_id)
     synced = 0
+    active_course_keys = set()  # track moodle_ids returned by EB API
 
     for ec in eb_courses:
         wp_course_id = ec.get("id")
@@ -229,6 +230,7 @@ def _sync_user_enrollments(client, user) -> int | None:
         moodle_id = _parse_moodle_course_id(progress_data.get("course_url"))
         # Fall back to WP post ID if Moodle ID cannot be parsed
         course_key = moodle_id or wp_course_id
+        active_course_keys.add(course_key)
 
         # Resolve local MoodleCourse — minimal create if not yet synced by catalogue task
         course_obj, _ = MoodleCourse.objects.get_or_create(
@@ -276,5 +278,16 @@ def _sync_user_enrollments(client, user) -> int | None:
                 },
             )
         synced += 1
+
+    # Remove enrollments that are no longer in the EB API response
+    # (user was unenrolled from a course on imaa-institute.org)
+    deleted, _ = MoodleEnrollment.objects.filter(user=user).exclude(
+        course__moodle_id__in=active_course_keys
+    ).delete()
+    if deleted:
+        logger.info(
+            "Removed %d stale enrollment(s) for user %s (no longer in EB API)",
+            deleted, user.email,
+        )
 
     return synced
