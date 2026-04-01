@@ -109,6 +109,53 @@ class EdwiserBridgeAPIClient:
         result = self._get(f"/courses/{eb_course_id}")
         return result if isinstance(result, dict) else None
 
+    def get_course_raw(self, eb_course_id: int) -> Optional[Dict]:
+        """
+        Fetch a single course with all available fields for discovery/debugging.
+        Also probes undocumented EB endpoints for content, sections, modules.
+        Returns a dict with 'course' and 'probed_endpoints' keys.
+        """
+        course = self._get(f"/courses/{eb_course_id}")
+        probed = {}
+
+        # Probe potential undocumented EB content endpoints
+        for path in [
+            f"/courses/{eb_course_id}/content",
+            f"/courses/{eb_course_id}/sections",
+            f"/courses/{eb_course_id}/modules",
+            f"/courses/{eb_course_id}/curriculum",
+        ]:
+            result = self._get(path)
+            probed[path] = result
+
+        return {"course": course, "probed_endpoints": probed}
+
+    def get_sso_login_url(self, wp_user_id: int, redirect_url: str) -> Optional[str]:
+        """
+        Attempt to generate a one-time auto-login URL for a WordPress user.
+        Uses the WP REST API to create a magic login link so the user is
+        auto-authenticated inside the iframe without needing to log in again.
+
+        Returns the auto-login URL string, or None if not supported by the site.
+        """
+        url = f"{self.base_url}/wp/v2/users/{wp_user_id}/auto-login"
+        try:
+            resp = requests.post(
+                url,
+                json={"redirect_to": redirect_url},
+                headers=self._get_headers(),
+                auth=self._get_auth(),
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("login_url") or data.get("url") or data.get("autologin_url")
+            logger.debug("SSO endpoint not available (status %d): %s", resp.status_code, url)
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.debug("SSO login URL generation failed: %s", e)
+            return None
+
     def get_user_id_by_email(self, email: str) -> Optional[int]:
         """
         Look up a WordPress user ID on imaa-institute.org by email address.

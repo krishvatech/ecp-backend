@@ -30,13 +30,21 @@ from rest_framework.response import Response
 from rest_framework.viewsets import ReadOnlyModelViewSet
 
 from .edwiser_api import get_edwiser_client
-from .models import MoodleCategory, MoodleCourse, MoodleEnrollment
+from .models import MoodleCategory, MoodleCourse, MoodleEnrollment, CourseSection, CourseModule, ModuleCompletion
 from .serializers import (
     MoodleCategorySerializer,
     MoodleCourseSerializer,
     MoodleEnrollmentListSerializer,
+    CourseSectionSerializer,
 )
-from .tasks import sync_moodle_courses_and_categories, sync_single_user_moodle_enrollments, _sync_user_enrollments
+from .tasks import (
+    sync_moodle_courses_and_categories,
+    sync_single_user_moodle_enrollments,
+    _sync_user_enrollments,
+    sync_course_content,
+    sync_user_module_completions,
+    _sync_course_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +225,13 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
         serializer = MoodleEnrollmentListSerializer(enrollments, many=True)
         result = _proxy_image_urls_in_list(request, serializer.data)
 
+        logger.debug(
+            "[DEBUG] my_courses | user=%s | enrolled_count=%d | courses=%s",
+            user.email,
+            len(result),
+            [{"course_id": e["course_id"], "full_name": e["full_name"], "progress": e["progress"]} for e in result],
+        )
+
         # Always trigger background enrollment refresh (non-blocking, user-specific)
         sync_single_user_moodle_enrollments.delay(user.id)
         logger.info("Background enrollment sync triggered for user %s", user.email)
@@ -288,3 +303,366 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
             {"detail": "Full course sync queued."},
             status=status.HTTP_202_ACCEPTED,
         )
+
+    # ------------------------------------------------------------------
+    # Raw EB API response (Phase 1 discovery)
+    # GET /api/courses/{id}/raw/
+    # ------------------------------------------------------------------
+
+    @action(detail=True, methods=["get"], url_path="raw", permission_classes=[IsAdminUser])
+    def raw(self, request, pk=None):
+        """
+        Admin-only: return the raw Edwiser Bridge API response for a course.
+        Used to discover what fields EB exposes (sections, videos, quizzes, etc.)
+        """
+        instance = self.get_object()
+        try:
+            client = get_edwiser_client()
+            data = client.get_course_raw(instance.moodle_id)
+        except Exception as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(data)
+
+    # ------------------------------------------------------------------
+    # Course detail for player  —  GET /api/courses/{id}/detail/
+    # ------------------------------------------------------------------
+
+    @action(detail=True, methods=["get"], url_path="detail", permission_classes=[IsAuthenticated])
+    def course_detail(self, request, pk=None):
+        """
+        Returns full course metadata + current user's progress.
+        Used by the in-platform course player page.
+        """
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        course_data = dict(serializer.data)
+        course_data["image_url"] = _proxy_image_url(request, course_data.get("image_url") or "")
+
+        # Attach user progress
+        progress_data = {"progress": 0, "completed": False}
+        try:
+            enrollment = MoodleEnrollment.objects.get(user=request.user, course=instance)
+            progress_data = {
+                "progress": enrollment.progress,
+                "completed": enrollment.completed,
+                "last_access": enrollment.last_access,
+            }
+        except MoodleEnrollment.DoesNotExist:
+            pass
+
+        logger.debug(
+            "[DEBUG] course_detail | user=%s | course_id=%s | moodle_id=%s | full_name=%s | progress=%s | completed=%s",
+            request.user.email,
+            instance.pk,
+            instance.moodle_id,
+            instance.full_name,
+            progress_data.get("progress"),
+            progress_data.get("completed"),
+        )
+
+        return Response({**course_data, **progress_data})
+
+    # ------------------------------------------------------------------
+    # SSO Launch URL  —  GET /api/courses/{id}/launch-url/
+    # ------------------------------------------------------------------
+
+    @action(detail=True, methods=["get"], url_path="launch-url", permission_classes=[IsAuthenticated])
+    def launch_url(self, request, pk=None):
+        """
+        Returns a URL to load the course in the in-platform iframe player.
+        Attempts to generate an SSO auto-login URL so the user is authenticated
+        inside the iframe automatically. Falls back to the plain course URL.
+        """
+        instance = self.get_object()
+        course_url = instance.moodle_url
+
+        # Try SSO auto-login URL
+        sso_url = None
+        try:
+            eb_wp_user_id = request.user.profile.moodle_user_id
+            if eb_wp_user_id:
+                client = get_edwiser_client()
+                sso_url = client.get_sso_login_url(eb_wp_user_id, course_url)
+        except Exception as exc:
+            logger.debug("SSO URL generation skipped: %s", exc)
+
+        return Response({
+            "url": sso_url or course_url,
+            "sso": sso_url is not None,
+            "course_url": course_url,
+        })
+
+    # ------------------------------------------------------------------
+    # Course content (sections + modules)  —  GET /api/courses/{id}/content/
+    # ------------------------------------------------------------------
+
+    @action(detail=True, methods=["get"], url_path="content", permission_classes=[IsAuthenticated])
+    def course_content(self, request, pk=None):
+        """
+        Returns sections and modules for a course, with per-user completion status.
+        Triggers background syncs for content and completion if not yet cached.
+
+        Response shape:
+          {
+            "course_id": N,
+            "moodle_course_id": N,
+            "sections": [
+              {
+                "id": N, "name": "...", "position": N,
+                "modules": [
+                  {
+                    "id": N, "name": "...", "modtype": "resource|url|quiz|...",
+                    "content_url": "...", "content_mimetype": "...",
+                    "module_url": "...", "completed": true/false, ...
+                  }
+                ]
+              }
+            ],
+            "syncing": true/false   ← true means background sync was triggered
+          }
+        """
+        instance = self.get_object()
+        syncing = False
+
+        # Sync content if not yet cached
+        sections_qs = CourseSection.objects.filter(course=instance)
+        if not sections_qs.exists():
+            # Synchronously sync content so we can return data right away
+            try:
+                from .moodle_rest_api import get_moodle_client
+                client = get_moodle_client()
+                _sync_course_content(client, instance)
+                sections_qs = CourseSection.objects.filter(course=instance)
+                syncing = False
+            except Exception as exc:
+                logger.warning("Inline content sync failed for course %d: %s", instance.pk, exc)
+                # Queue background sync for next request
+                sync_course_content.delay(instance.pk)
+                syncing = True
+        else:
+            # Refresh in background
+            sync_course_content.delay(instance.pk)
+            syncing = True
+
+        # Build completion map for this user
+        completion_map = {}
+        module_completions = ModuleCompletion.objects.filter(
+            user=request.user,
+            module__section__course=instance,
+        ).values_list("module__moodle_module_id", "completed")
+        for cmid, completed in module_completions:
+            completion_map[cmid] = completed
+
+        # Trigger background completion sync
+        sync_user_module_completions.delay(instance.pk, request.user.pk)
+
+        # Include all sections — frontend filters by content (modules or summary)
+        sections = sections_qs.prefetch_related("modules")
+        serializer = CourseSectionSerializer(
+            sections,
+            many=True,
+            context={"request": request, "completion_map": completion_map},
+        )
+
+        section_summary = [
+            {
+                "section": s["name"] or f"Section {s['position']}",
+                "modules": [
+                    {"name": m["name"], "modtype": m["modtype"], "visible": m["visible"], "completed": m["completed"]}
+                    for m in (s.get("modules") or [])
+                ],
+            }
+            for s in serializer.data
+        ]
+        logger.debug(
+            "[DEBUG] course_content | user=%s | course_id=%s | sections=%s | syncing=%s | content=%s",
+            request.user.email,
+            instance.pk,
+            serializer.data,
+            syncing,
+            section_summary,
+        )
+
+        return Response({
+            "course_id": instance.pk,
+            "moodle_course_id": instance.moodle_id,
+            "sections": serializer.data,
+            "syncing": syncing,
+        })
+
+    # ------------------------------------------------------------------
+    # Module native detail  —  GET /api/courses/{id}/modules/{cmid}/detail/
+    # ------------------------------------------------------------------
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="modules/(?P<cmid>[0-9]+)/detail",
+        permission_classes=[IsAuthenticated],
+    )
+    def module_detail(self, request, pk=None, cmid=None):
+        """
+        Returns native content for a module (assignment intro HTML, quiz info, etc.)
+        so it can be rendered inside the platform without an iframe.
+        """
+        from .moodle_rest_api import get_moodle_client
+        instance = self.get_object()
+        cmid = int(cmid)
+
+        try:
+            module = CourseModule.objects.get(moodle_module_id=cmid, section__course=instance)
+        except CourseModule.DoesNotExist:
+            return Response({"detail": "Module not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        result = {
+            "cmid": cmid,
+            "name": module.name,
+            "modtype": module.modtype,
+            "module_url": module.module_url,
+            "completion": module.completion,
+        }
+
+        try:
+            client = get_moodle_client()
+
+            if module.modtype == "assign":
+                data = client.get_assignment_detail(instance.moodle_id, cmid)
+                if data:
+                    raw_intro = data.get("intro", "")
+                    introfiles = data.get("introfiles") or []
+
+                    logger.debug(
+                        "[DEBUG] module_detail assign | cmid=%s | introfiles=%s | intro_snippet=%s",
+                        cmid,
+                        [{"filename": f.get("filename"), "fileurl": f.get("fileurl"), "mimetype": f.get("mimetype")} for f in introfiles],
+                        raw_intro[:300],
+                    )
+
+                    # Append token to all pluginfile.php image URLs inside the intro HTML
+                    import re
+                    def _add_token(m):
+                        url = m.group(1)
+                        sep = "&amp;" if "&amp;" in m.group(0) else "&" if "?" in url else "?"
+                        if "token=" not in url:
+                            url = f"{url}{'&' if '?' in url else '?'}token={client.token}"
+                        return f'src="{url}"'
+                    intro_with_token = re.sub(r'src="(https?://[^"]*pluginfile\.php[^"]*)"', _add_token, raw_intro)
+
+                    result.update({
+                        "intro": intro_with_token,
+                        "introformat": data.get("introformat", 1),
+                        "introfiles": [
+                            {
+                                "filename": f.get("filename"),
+                                "fileurl": f"{f.get('fileurl', '')}?token={client.token}" if f.get("fileurl") else "",
+                                "mimetype": f.get("mimetype", ""),
+                                "filesize": f.get("filesize", 0),
+                            }
+                            for f in introfiles
+                        ],
+                        "duedate": data.get("duedate"),
+                        "allowsubmissionsfromdate": data.get("allowsubmissionsfromdate"),
+                        "nosubmissions": data.get("nosubmissions", 0),
+                    })
+
+            elif module.modtype == "quiz":
+                data = client.get_quiz_detail(instance.moodle_id, cmid)
+                if data:
+                    result.update({
+                        "intro": data.get("intro", ""),
+                        "timelimit": data.get("timelimit", 0),
+                        "attempts": data.get("attempts", 0),
+                        "grademethod": data.get("grademethod"),
+                        "timeopen": data.get("timeopen"),
+                        "timeclose": data.get("timeclose"),
+                    })
+
+        except Exception as exc:
+            logger.warning("module_detail: failed to fetch native content for cmid %s: %s", cmid, exc)
+
+        return Response(result)
+
+    # ------------------------------------------------------------------
+    # Module launch URL  —  GET /api/courses/{id}/modules/{cmid}/launch-url/
+    # ------------------------------------------------------------------
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="modules/(?P<cmid>[0-9]+)/launch-url",
+        permission_classes=[IsAuthenticated],
+    )
+    def module_launch_url(self, request, pk=None, cmid=None):
+        """
+        Returns a URL to load a module (assignment/quiz/etc.) inside the platform iframe.
+        Attempts to generate an SSO auto-login URL; falls back to the plain module URL.
+        """
+        instance = self.get_object()
+        try:
+            module = CourseModule.objects.get(
+                moodle_module_id=cmid,
+                section__course=instance,
+            )
+        except CourseModule.DoesNotExist:
+            return Response({"detail": "Module not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        module_url = module.module_url
+        if not module_url:
+            return Response({"detail": "Module URL not available."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Try SSO auto-login URL
+        sso_url = None
+        try:
+            eb_wp_user_id = request.user.profile.moodle_user_id
+            if eb_wp_user_id:
+                client = get_edwiser_client()
+                sso_url = client.get_sso_login_url(eb_wp_user_id, module_url)
+        except Exception as exc:
+            logger.debug("Module SSO URL generation skipped: %s", exc)
+
+        return Response({
+            "url": sso_url or module_url,
+            "sso": sso_url is not None,
+            "module_url": module_url,
+        })
+
+    # ------------------------------------------------------------------
+    # Mark module complete  —  POST /api/courses/{id}/modules/{cmid}/complete/
+    # ------------------------------------------------------------------
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="modules/(?P<cmid>[0-9]+)/complete",
+        permission_classes=[IsAuthenticated],
+    )
+    def mark_module_complete(self, request, pk=None, cmid=None):
+        """
+        Mark a module as manually complete for the requesting user.
+        Calls Moodle REST API and updates local ModuleCompletion record.
+        """
+        from .moodle_rest_api import get_moodle_client
+        from .models import CourseModule
+
+        try:
+            module = CourseModule.objects.get(moodle_module_id=cmid)
+        except CourseModule.DoesNotExist:
+            return Response({"detail": "Module not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if module.completion != 1:
+            return Response({"detail": "This module does not support manual completion."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            client = get_moodle_client()
+            client.mark_activity_complete(int(cmid))
+        except Exception as exc:
+            logger.warning("Moodle mark_complete failed for cmid %s: %s", cmid, exc)
+
+        # Update local record regardless of Moodle result
+        ModuleCompletion.objects.update_or_create(
+            user=request.user,
+            module=module,
+            defaults={"completed": True},
+        )
+
+        return Response({"detail": "Marked as complete.", "cmid": cmid})

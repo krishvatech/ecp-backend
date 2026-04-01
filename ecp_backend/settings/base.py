@@ -56,6 +56,12 @@ LOGGING = {
             "level": "DEBUG",
             "propagate": False,
         },
+        # Courses app logging
+        "courses": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
         # Events app logging
         "events": {
             "handlers": ["console"],
@@ -603,6 +609,10 @@ EB_WP_API_URL = os.getenv("EB_WP_API_URL", "")        # e.g. https://imaa-instit
 EB_WP_API_USER = os.getenv("EB_WP_API_USER", "")
 EB_WP_API_PASSWORD = os.getenv("EB_WP_API_PASSWORD", "")
 EB_WP_AUTH_TYPE = os.getenv("EB_WP_AUTH_TYPE", "basic")
+
+# Moodle REST API — direct access for course content (sections, modules, completion)
+MOODLE_URL = os.getenv("MOODLE_URL", "")              # e.g. https://imaa-institute.org/moodle
+MOODLE_TOKEN = os.getenv("MOODLE_TOKEN", "")          # Moodle web service token
 
 # WordPress Events Calendar (The Events Calendar plugin) sync settings
 # ============================================================================

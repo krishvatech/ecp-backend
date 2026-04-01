@@ -1,23 +1,25 @@
 """
-Celery tasks for syncing Moodle LMS data into the local database
-via the Edwiser Bridge WordPress REST API (imaa-institute.org).
+Celery tasks for syncing Moodle LMS data into the local database.
 
-Edwiser Bridge syncs courses from Moodle into WordPress; this platform
-then pulls from WordPress/EB as the authoritative source.
+Data sources:
+  - Edwiser Bridge (EB) WordPress API — course catalogue + enrollments + progress
+  - Moodle REST API (direct) — course content: sections, modules, completion
 
 Schedule (configured in settings.py):
-  - sync_moodle_courses_and_categories: every 6 hours
-  - sync_all_user_moodle_enrollments:  every 30 minutes
+  - sync_moodle_courses_and_categories: every 6 hours (via EB)
+  - sync_all_user_moodle_enrollments:  every 30 minutes (via EB)
+  - sync_course_content:               on demand / after course sync (via Moodle REST)
 """
 import logging
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from celery import shared_task
 from django.contrib.auth import get_user_model
 from django.db import transaction
 
-from .models import MoodleCategory, MoodleCourse, MoodleEnrollment
+from .models import MoodleCategory, MoodleCourse, MoodleEnrollment, CourseSection, CourseModule, ModuleCompletion
 from .edwiser_api import get_edwiser_client
+from .moodle_rest_api import get_moodle_client
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -291,3 +293,188 @@ def _sync_user_enrollments(client, user) -> int | None:
         )
 
     return synced
+
+
+# ---------------------------------------------------------------------------
+# Course content sync (Moodle REST API)
+# ---------------------------------------------------------------------------
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def sync_course_content(self, course_db_id: int):
+    """
+    Sync sections and modules for one course from Moodle REST API.
+    Called on demand when a user opens the course player.
+
+    Uses MoodleCourse.moodle_id as the Moodle course ID.
+    """
+    try:
+        client = get_moodle_client()
+    except ValueError as exc:
+        logger.warning("Moodle REST not configured, skipping content sync: %s", exc)
+        return {"skipped": True, "reason": str(exc)}
+
+    try:
+        course = MoodleCourse.objects.get(pk=course_db_id)
+    except MoodleCourse.DoesNotExist:
+        logger.warning("Course %d not found, skipping content sync", course_db_id)
+        return {"skipped": True}
+
+    return _sync_course_content(client, course)
+
+
+def _sync_course_content(client, course: MoodleCourse) -> dict:
+    """
+    Fetch and upsert sections + modules for a course.
+    Returns summary dict with section/module counts.
+    """
+    sections_data = client.get_course_contents(course.moodle_id)
+    if not sections_data:
+        logger.warning("No content returned for course %d (moodle_id=%d)", course.pk, course.moodle_id)
+        return {"sections": 0, "modules": 0}
+
+    section_count = 0
+    module_count = 0
+
+    for pos, sec in enumerate(sections_data):
+        sec_id = sec.get("id")
+        if sec_id is None:
+            continue
+
+        sec_name = sec.get("name") or f"Section {pos}"
+        # Moodle default section names are numeric strings — replace with topic if blank
+        if sec_name.strip().isdigit():
+            sec_name = sec.get("section", sec_name)
+
+        section_obj, _ = CourseSection.objects.update_or_create(
+            course=course,
+            moodle_section_id=sec_id,
+            defaults={
+                "position": pos,
+                "name": str(sec_name)[:500],
+                "summary": sec.get("summary") or "",
+                "visible": bool(sec.get("visible", True)),
+            },
+        )
+        section_count += 1
+
+        modules_data = sec.get("modules") or []
+        for mod_pos, mod in enumerate(modules_data):
+            cmid = mod.get("id")
+            if not cmid:
+                continue
+
+            modname = mod.get("modname") or "other"
+            known_types = {"resource", "url", "page", "quiz", "hvp", "label", "assign", "folder", "forum"}
+            modtype = modname if modname in known_types else "other"
+
+            # Use uservisible (student perspective) if present; fall back to visible (admin toggle).
+            # Store ALL modules regardless — hidden ones show as locked in UI.
+            user_visible = mod.get("uservisible")
+            if user_visible is None:
+                user_visible = bool(mod.get("visible", True))
+            else:
+                user_visible = bool(user_visible)
+
+            # Extract file content (first downloadable file for resource modules)
+            content_url = ""
+            content_filename = ""
+            content_mimetype = ""
+            content_filesize = None
+
+            contents = mod.get("contents") or []
+            for c in contents:
+                if c.get("type") == "file":
+                    raw_url = c.get("fileurl") or ""
+                    # Append token if not already present
+                    if raw_url and "token=" not in raw_url:
+                        sep = "&" if "?" in raw_url else "?"
+                        raw_url = f"{raw_url}{sep}token={client.token}"
+                    # Remove forcedownload=1 so videos/PDFs open inline instead of downloading
+                    if raw_url and "forcedownload=1" in raw_url:
+                        parsed = urlparse(raw_url)
+                        qs = parse_qs(parsed.query, keep_blank_values=True)
+                        qs.pop("forcedownload", None)
+                        raw_url = urlunparse(parsed._replace(query=urlencode(qs, doseq=True)))
+                    content_url = raw_url[:2000]
+                    content_filename = (c.get("filename") or "")[:500]
+                    content_mimetype = (c.get("mimetype") or "")[:200]
+                    content_filesize = c.get("filesize")
+                    break  # take first file only
+
+            module_url = (mod.get("url") or "")[:2000]
+
+            # For H5P (hvp) modules: construct the Moodle embed URL
+            # Moodle doesn't return a file URL for H5P — we build the embed URL from cmid
+            if modtype == "hvp" and not module_url and cmid:
+                module_url = f"{client.base_url}/mod/hvp/embed.php?id={cmid}"
+
+            with transaction.atomic():
+                CourseModule.objects.update_or_create(
+                    moodle_module_id=cmid,
+                    defaults={
+                        "section": section_obj,
+                        "name": (mod.get("name") or "")[:500],
+                        "modtype": modtype,
+                        "position": mod_pos,
+                        "visible": user_visible,
+                        "module_url": module_url,
+                        "content_url": content_url,
+                        "content_filename": content_filename,
+                        "content_mimetype": content_mimetype,
+                        "content_filesize": content_filesize,
+                        "completion": mod.get("completion") or 0,
+                    },
+                )
+            module_count += 1
+
+    logger.info(
+        "Content sync complete for course %d: %d sections, %d modules",
+        course.pk, section_count, module_count,
+    )
+    return {"sections": section_count, "modules": module_count}
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def sync_user_module_completions(self, course_db_id: int, user_id: int):
+    """
+    Sync per-module completion status for a user in a course from Moodle REST API.
+    Called when user opens the course player.
+    """
+    try:
+        client = get_moodle_client()
+    except ValueError as exc:
+        logger.warning("Moodle REST not configured: %s", exc)
+        return {"skipped": True}
+
+    try:
+        course = MoodleCourse.objects.get(pk=course_db_id)
+        user = User.objects.select_related("profile").get(pk=user_id)
+    except (MoodleCourse.DoesNotExist, User.DoesNotExist) as exc:
+        logger.warning("Cannot sync completions: %s", exc)
+        return {"skipped": True}
+
+    # Look up the real Moodle user ID by email.
+    # NOTE: profile.moodle_user_id stores the EB/WordPress user ID (repurposed field),
+    # NOT the Moodle LMS user ID — so we must always query Moodle directly here.
+    moodle_user_id = client.get_user_id_by_email(user.email)
+    if not moodle_user_id:
+        logger.debug("Moodle user not found for %s", user.email)
+        return {"skipped": True}
+
+    completion_map = client.get_activities_completion(course.moodle_id, moodle_user_id)
+    synced = 0
+
+    for cmid, completed in completion_map.items():
+        try:
+            module = CourseModule.objects.get(moodle_module_id=cmid)
+        except CourseModule.DoesNotExist:
+            continue
+        ModuleCompletion.objects.update_or_create(
+            user=user,
+            module=module,
+            defaults={"completed": completed},
+        )
+        synced += 1
+
+    logger.info("Synced %d module completions for user %s in course %d", synced, user.email, course.pk)
+    return {"synced": synced}
