@@ -16,9 +16,12 @@ Endpoints:
 """
 import logging
 from html import unescape
+from urllib.parse import urlparse, urlencode
 
+import requests as http_requests
+from django.http import HttpResponse, Http404
 from rest_framework import status
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes, authentication_classes
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.viewsets import ReadOnlyModelViewSet
@@ -95,6 +98,70 @@ def _eb_enrollment_to_dict(ec: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Image proxy — bypasses imaa-institute.org hotlink protection
+# ---------------------------------------------------------------------------
+
+ALLOWED_IMAGE_HOSTS = {"imaa-institute.org", "www.imaa-institute.org"}
+
+
+def _proxy_image_url(request, url: str) -> str:
+    """Rewrite an IMAA image URL to go through our backend proxy."""
+    if not url:
+        return url
+    try:
+        host = urlparse(url).netloc
+        if host in ALLOWED_IMAGE_HOSTS:
+            return request.build_absolute_uri(
+                "/api/courses/image-proxy/?" + urlencode({"url": url})
+            )
+    except Exception:
+        pass
+    return url
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([])
+def image_proxy(request):
+    """
+    Proxy images from imaa-institute.org to bypass hotlink protection.
+    The browser request has a Referer header that triggers a 403.
+    Server-side fetch has no Referer, so it succeeds.
+    """
+    url = request.query_params.get("url", "")
+    if not url:
+        raise Http404
+
+    # Only proxy images from allowed hosts
+    try:
+        host = urlparse(url).netloc
+    except Exception:
+        raise Http404
+
+    if host not in ALLOWED_IMAGE_HOSTS:
+        return HttpResponse("Forbidden", status=403)
+
+    try:
+        resp = http_requests.get(
+            url,
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"},  # no Referer — that's the fix
+            stream=True,
+        )
+        if resp.status_code != 200:
+            return HttpResponse(status=resp.status_code)
+
+        content_type = resp.headers.get("Content-Type", "image/jpeg")
+        django_resp = HttpResponse(resp.content, content_type=content_type)
+        django_resp["Cache-Control"] = "public, max-age=86400"  # cache 1 day
+        return django_resp
+
+    except Exception as exc:
+        logger.warning("Image proxy failed for %s: %s", url, exc)
+        return HttpResponse("Failed to fetch image", status=502)
+
+
+# ---------------------------------------------------------------------------
 # ViewSet
 # ---------------------------------------------------------------------------
 
@@ -157,7 +224,10 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
                 q = search.lower()
                 courses = [c for c in courses if q in (c.get("title") or "").lower()]
 
-            return Response([_eb_course_to_dict(c) for c in courses])
+            result = [_eb_course_to_dict(c) for c in courses]
+            for item in result:
+                item["image_url"] = _proxy_image_url(request, item.get("image_url", ""))
+            return Response(result)
 
         # Fallback — DB cache
         logger.warning("Falling back to DB for course list (EB API returned no data)")
@@ -181,7 +251,9 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
             course = None
 
         if course:
-            return Response(_eb_course_to_dict(course))
+            result = _eb_course_to_dict(course)
+            result["image_url"] = _proxy_image_url(request, result.get("image_url", ""))
+            return Response(result)
 
         # Fallback — DB cache
         logger.warning("Falling back to DB for course %s", instance.moodle_id)
@@ -253,7 +325,10 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
                     print(json.dumps(eb_enrollments[0], indent=2, default=str))
                     logger.debug("[DEBUG] RAW first enrolled course from EB API: %s", json.dumps(eb_enrollments[0], default=str))
 
-                return Response([_eb_enrollment_to_dict(e) for e in eb_enrollments])
+                result = [_eb_enrollment_to_dict(e) for e in eb_enrollments]
+                for item in result:
+                    item["image_url"] = _proxy_image_url(request, item.get("image_url", ""))
+                return Response(result)
 
         except Exception as exc:
             logger.warning("EB API unavailable for my-courses (user %s): %s", user.email, exc)
