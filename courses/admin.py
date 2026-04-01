@@ -18,12 +18,8 @@ class MoodleCourseAdmin(admin.ModelAdmin):
     ]
     list_filter = ["is_visible", "completion_enabled", "category"]
     search_fields = ["full_name", "short_name"]
-    readonly_fields = ["synced_at", "course_url"]
+    readonly_fields = ["synced_at", "moodle_url"]
     ordering = ["full_name"]
-
-    def course_url(self, obj):
-        return obj.course_url
-    course_url.short_description = "LMS URL"
 
 
 @admin.register(MoodleEnrollment)

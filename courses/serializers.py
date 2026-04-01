@@ -31,8 +31,7 @@ class MoodleCourseSerializer(serializers.ModelSerializer):
         ]
 
     def get_course_url(self, obj):
-        # Prefer stored moodle_url (WP/EB course page) over computed Moodle direct URL
-        return obj.moodle_url or obj.course_url
+        return obj.moodle_url
 
 
 class MoodleEnrollmentSerializer(serializers.ModelSerializer):
@@ -79,4 +78,4 @@ class MoodleEnrollmentListSerializer(serializers.ModelSerializer):
         ]
 
     def get_course_url(self, obj):
-        return obj.course.moodle_url or obj.course.course_url
+        return obj.course.moodle_url

@@ -54,12 +54,6 @@ class MoodleCourse(models.Model):
     def __str__(self):
         return self.full_name
 
-    @property
-    def course_url(self):
-        """Direct link to the course on the Moodle LMS."""
-        from django.conf import settings
-        base = (settings.MOODLE_URL or "").rstrip("/")
-        return f"{base}/course/view.php?id={self.moodle_id}"
 
 
 class MoodleEnrollment(models.Model):

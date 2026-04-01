@@ -586,12 +586,6 @@ INVITE_EMAILS_MAX_PER_DAY = int(os.getenv("INVITE_EMAILS_MAX_PER_DAY", "100"))
 INVITE_EMAIL_TOKEN_MAX_AGE_SECONDS = int(os.getenv("INVITE_EMAIL_TOKEN_MAX_AGE_SECONDS", str(30 * 24 * 3600)))
 
 # ============================================================================
-# MOODLE LMS INTEGRATION
-# ============================================================================
-MOODLE_URL = os.getenv("MOODLE_URL", "https://lms.edtechprof.com")
-MOODLE_TOKEN = os.getenv("MOODLE_TOKEN", "")
-
-# ============================================================================
 # WORDPRESS IMAA INTEGRATION (staging.manda.sg — events & user sync)
 # ============================================================================
 WP_IMAA_API_URL = os.getenv("WP_IMAA_API_URL", "")
