@@ -14,12 +14,15 @@ Tests cover:
 import pytest
 from django.utils import timezone
 from django.contrib.auth.models import User
+from rest_framework.test import APIRequestFactory
 from rest_framework.test import APIClient
 from events.models import (
-    Event, EventRegistration, LoungeTable, LoungeParticipant, Community, SpeedNetworkingSession
+    Event, EventRegistration, LoungeTable, LoungeParticipant, Community, SpeedNetworkingSession, GuestAttendee
 )
 from events.serializers import EventRegistrationSerializer
 from events.speed_networking_views import SpeedNetworkingQueueViewSet
+from events.guest_auth import GuestPrincipal
+from events.guest_views import GuestRegisterLinkView
 
 
 @pytest.fixture
@@ -517,6 +520,46 @@ class TestLocationFieldMigration:
         # Verify all have default location
         for reg in EventRegistration.objects.filter(event=event):
             assert reg.current_location == "pre_event"
+
+
+@pytest.mark.django_db
+class TestGuestSignupSessionTransfer:
+    """Verify a guest who signs up keeps the same admission state."""
+
+    def test_guest_register_link_preserves_admitted_meeting_state(self, event):
+        user = User.objects.create_user(
+            username="converteduser",
+            email="guest-convert@example.com",
+            first_name="Converted",
+            last_name="User",
+            password="testpass123",
+        )
+        guest = GuestAttendee.objects.create(
+            event=event,
+            first_name="Guest",
+            last_name="User",
+            email="guest-convert@example.com",
+            joined_live=True,
+            joined_live_at=timezone.now(),
+            current_location="main_room",
+        )
+
+        request = APIRequestFactory().post(
+            "/api/auth/guest-register/link/",
+            {"email": "guest-convert@example.com"},
+            format="json",
+        )
+        request.user = GuestPrincipal(guest)
+
+        response = GuestRegisterLinkView.as_view()(request)
+
+        assert response.status_code == 200
+
+        registration = EventRegistration.objects.get(event=event, user=user)
+        assert registration.admission_status == "admitted"
+        assert registration.was_ever_admitted is True
+        assert registration.joined_live is True
+        assert registration.current_location == "main_room"
 
 
 # Summary of verified functionality

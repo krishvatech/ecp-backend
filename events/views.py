@@ -123,6 +123,17 @@ MOOD_ALLOWED_EMOJIS = [
     "🚀", "💯", "🎉", "❤️", "💙", "💚", "🤝", "🙏",
     "😅", "😬", "😐", "😕", "😮", "😢", "😭", "😡",
 ]
+
+
+def _get_converted_guest_for_event(user, event):
+    if not user or not getattr(user, "id", None) or not event:
+        return None
+
+    return (
+        GuestAttendee.objects.filter(event=event, converted_user=user)
+        .order_by("-joined_live_at", "-converted_at", "-created_at")
+        .first()
+    )
 MOOD_ALLOWED_SET = set(MOOD_ALLOWED_EMOJIS)
 
 
@@ -4749,6 +4760,13 @@ class EventViewSet(viewsets.ModelViewSet):
 
         preset_name = DYTE_PRESET_HOST if is_host else DYTE_PRESET_PARTICIPANT
         role_string = "publisher" if is_host else "audience"
+        converted_guest = _get_converted_guest_for_event(user, event)
+        converted_guest_was_admitted = bool(
+            converted_guest and (
+                converted_guest.current_location in {"main_room", "social_lounge", "breakout_room"}
+                or converted_guest.joined_live
+            )
+        )
 
         # Waiting room gating (only for non-hosts)
         defaults = {"status": "registered", "admission_status": "admitted"}
@@ -4776,12 +4794,47 @@ class EventViewSet(viewsets.ModelViewSet):
                 # ✅ NEW: Mark grace period admissions as was_ever_admitted so they auto-rejoin
                 defaults["was_ever_admitted"] = True
                 defaults["current_session_started_at"] = timezone.now()
+            if converted_guest_was_admitted:
+                defaults["admission_status"] = "admitted"
+                defaults["was_ever_admitted"] = True
+                defaults["current_session_started_at"] = converted_guest.joined_live_at or timezone.now()
+                defaults["admitted_at"] = converted_guest.joined_live_at or timezone.now()
         registration, _created = EventRegistration.objects.get_or_create(
             event=event,
             user=user,
             defaults=defaults,
         )
         if event.waiting_room_enabled and not is_host:
+            if converted_guest_was_admitted:
+                converted_guest_updates = []
+                if registration.admission_status != "admitted":
+                    registration.admission_status = "admitted"
+                    converted_guest_updates.append("admission_status")
+                if not registration.was_ever_admitted:
+                    registration.was_ever_admitted = True
+                    converted_guest_updates.append("was_ever_admitted")
+                if not registration.admitted_at:
+                    registration.admitted_at = converted_guest.joined_live_at or timezone.now()
+                    converted_guest_updates.append("admitted_at")
+                if not registration.current_session_started_at:
+                    registration.current_session_started_at = converted_guest.joined_live_at or timezone.now()
+                    converted_guest_updates.append("current_session_started_at")
+                if registration.waiting_started_at is not None:
+                    registration.waiting_started_at = None
+                    converted_guest_updates.append("waiting_started_at")
+                converted_location = converted_guest.current_location or "main_room"
+                if registration.current_location != converted_location:
+                    registration.current_location = converted_location
+                    converted_guest_updates.append("current_location")
+                if converted_guest.joined_live and not registration.joined_live:
+                    registration.joined_live = True
+                    converted_guest_updates.append("joined_live")
+                if converted_guest.joined_live_at and not registration.joined_live_at:
+                    registration.joined_live_at = converted_guest.joined_live_at
+                    converted_guest_updates.append("joined_live_at")
+                if converted_guest_updates:
+                    registration.save(update_fields=converted_guest_updates)
+
             # Check if within grace period
             is_in_grace_period = False
             if event.start_time:
@@ -5089,6 +5142,21 @@ class EventViewSet(viewsets.ModelViewSet):
             )
 
         reg = EventRegistration.objects.filter(event=event, user=user).first()
+        if not reg:
+            converted_guest = _get_converted_guest_for_event(user, event)
+            if converted_guest:
+                converted_guest_is_admitted = bool(
+                    converted_guest.current_location in {"main_room", "social_lounge", "breakout_room"}
+                    or converted_guest.joined_live
+                )
+                return Response(
+                    {
+                        "waiting_room_enabled": True,
+                        "admission_status": "admitted" if converted_guest_is_admitted else "waiting",
+                        "lounge_allowed": bool(event.lounge_enabled_waiting_room),
+                        "networking_allowed": bool(event.networking_tables_enabled_waiting_room),
+                    }
+                )
         if not reg and event.created_by_id != user.id:
             return Response({"detail": "not_registered"}, status=403)
 

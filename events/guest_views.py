@@ -13,6 +13,7 @@ import jwt
 import logging
 import random
 from datetime import timedelta
+from django.db.models import F
 from django.utils import timezone
 from django.conf import settings
 from rest_framework.views import APIView
@@ -20,10 +21,93 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.exceptions import ValidationError, PermissionDenied
-from .models import Event, GuestAttendee, GuestEmailOTP
+from .models import Event, EventRegistration, GuestAttendee, GuestEmailOTP
 from .guest_auth import GuestPrincipal
 
 logger = logging.getLogger(__name__)
+
+
+def _sync_converted_guest_registration(user, guest):
+    """
+    Mirror a converted guest's admission state onto the registered user's
+    EventRegistration so they can continue the same meeting session seamlessly.
+    """
+    if not user or not guest:
+        return None
+
+    guest_is_admitted = guest.current_location in {"main_room", "social_lounge", "breakout_room"} or bool(guest.joined_live)
+    now = timezone.now()
+
+    registration_defaults = {
+        "status": "registered",
+        "admission_status": "admitted" if guest_is_admitted else ("waiting" if guest.event.waiting_room_enabled else "admitted"),
+        "joined_live": bool(guest.joined_live),
+        "joined_live_at": guest.joined_live_at,
+        "current_location": guest.current_location if guest.current_location else ("main_room" if guest_is_admitted else "waiting_room"),
+        "was_ever_admitted": guest_is_admitted,
+        "current_session_started_at": guest.joined_live_at if guest_is_admitted else None,
+        "admitted_at": guest.joined_live_at if guest_is_admitted else None,
+        "waiting_started_at": None if guest_is_admitted else now,
+        "last_breakout_table": guest.lounge_table if guest.current_location == "breakout_room" else None,
+    }
+
+    registration, created = EventRegistration.objects.get_or_create(
+        event=guest.event,
+        user=user,
+        defaults=registration_defaults,
+    )
+
+    if created:
+        Event.objects.filter(pk=guest.event_id).update(attending_count=F("attending_count") + 1)
+        return registration
+
+    update_fields = []
+
+    if registration.status != "registered":
+        registration.status = "registered"
+        update_fields.append("status")
+
+    if guest_is_admitted:
+        if registration.admission_status != "admitted":
+            registration.admission_status = "admitted"
+            update_fields.append("admission_status")
+        if not registration.was_ever_admitted:
+            registration.was_ever_admitted = True
+            update_fields.append("was_ever_admitted")
+        if registration.waiting_started_at is not None:
+            registration.waiting_started_at = None
+            update_fields.append("waiting_started_at")
+        if not registration.admitted_at:
+            registration.admitted_at = guest.joined_live_at or now
+            update_fields.append("admitted_at")
+        if not registration.current_session_started_at:
+            registration.current_session_started_at = guest.joined_live_at or now
+            update_fields.append("current_session_started_at")
+    elif not registration.admission_status:
+        registration.admission_status = "waiting" if guest.event.waiting_room_enabled else "admitted"
+        update_fields.append("admission_status")
+
+    if guest.joined_live and not registration.joined_live:
+        registration.joined_live = True
+        update_fields.append("joined_live")
+    if guest.joined_live_at and not registration.joined_live_at:
+        registration.joined_live_at = guest.joined_live_at
+        update_fields.append("joined_live_at")
+
+    target_location = guest.current_location or ("main_room" if guest_is_admitted else "waiting_room")
+    if target_location and registration.current_location != target_location:
+        registration.current_location = target_location
+        update_fields.append("current_location")
+
+    target_breakout_table = guest.lounge_table if guest.current_location == "breakout_room" else None
+    if registration.last_breakout_table_id != getattr(target_breakout_table, "id", None):
+        registration.last_breakout_table = target_breakout_table
+        update_fields.append("last_breakout_table")
+
+    if update_fields:
+        registration.save(update_fields=update_fields)
+
+    return registration
 
 
 def generate_otp_code():
@@ -690,6 +774,7 @@ class GuestRegisterLinkView(APIView):
         # Link all guest history for this email to the registered user
         from users.email_utils import link_guest_history_to_user
         link_guest_history_to_user(user, email)
+        _sync_converted_guest_registration(user, guest)
 
         # Sync guest profile fields to UserProfile (job_title, company, full_name)
         profile_data = {"job_title": "", "company": "", "full_name": ""}
