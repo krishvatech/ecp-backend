@@ -27,7 +27,7 @@ from ecp_backend.celery import app as celery_app
 # ======================= Django Imports =====================
 # ============================================================
 from django.db import transaction
-from django.db.models import Q, F, Max, Count
+from django.db.models import Q, F, Max, Count, Prefetch
 from django.db.models.functions import Lower
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -58,7 +58,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog
 from .permissions import IsSuperuserOnly
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -3478,6 +3478,80 @@ class EventViewSet(viewsets.ModelViewSet):
                 "public_registered_count": public_registered_count,
             }
         )
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="guest-audit")
+    def guest_audit(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can view guest audit records."}, status=403)
+
+        guests = (
+            GuestAttendee.objects
+            .filter(event=event)
+            .select_related("converted_user", "converted_user__profile")
+            .prefetch_related(
+                Prefetch(
+                    "audit_logs",
+                    queryset=GuestProfileAuditLog.objects.order_by("-changed_at", "-id"),
+                )
+            )
+            .order_by("-created_at", "-id")
+        )
+
+        rows = []
+        for guest in guests:
+            converted_user = guest.converted_user
+            change_logs = []
+            changed_fields = set()
+
+            for log in guest.audit_logs.all():
+                changed_fields.add(log.field_name)
+                change_logs.append({
+                    "id": log.id,
+                    "field_name": log.field_name,
+                    "field_label": log.get_field_name_display(),
+                    "old_value": log.old_value or "",
+                    "new_value": log.new_value or "",
+                    "source": log.source,
+                    "source_label": log.get_source_display(),
+                    "changed_at": log.changed_at,
+                })
+
+            rows.append({
+                "guest_id": guest.id,
+                "name": guest.get_display_name(),
+                "first_name": guest.first_name,
+                "last_name": guest.last_name,
+                "guest_email": guest.email,
+                "company": guest.company or "",
+                "job_title": guest.job_title or "",
+                "email_verified": bool(guest.email_verified),
+                "created_at": guest.created_at,
+                "joined_live": bool(guest.joined_live),
+                "joined_live_at": guest.joined_live_at,
+                "current_location": guest.current_location or "",
+                "converted_at": guest.converted_at,
+                "change_count": len(change_logs),
+                "changed_fields": sorted(changed_fields),
+                "converted_user": (
+                    {
+                        "id": converted_user.id,
+                        "email": converted_user.email or "",
+                        "name": converted_user.get_full_name().strip() or converted_user.username or converted_user.email or "",
+                    }
+                    if converted_user else None
+                ),
+                "registered_email": converted_user.email if converted_user else "",
+                "email_changed_on_signup": bool(converted_user and (converted_user.email or "").strip().lower() != (guest.email or "").strip().lower()),
+                "changes": change_logs,
+            })
+
+        return Response({
+            "event_id": event.id,
+            "guest_count": len(rows),
+            "converted_count": sum(1 for row in rows if row["converted_user"]),
+            "guests": rows,
+        })
 
     def _get_lounge_availability(self, event):
         """

@@ -13,18 +13,45 @@ import jwt
 import logging
 import random
 from datetime import timedelta
+from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.exceptions import ValidationError, PermissionDenied
-from .models import Event, EventRegistration, GuestAttendee, GuestEmailOTP
+from .models import Event, EventRegistration, GuestAttendee, GuestEmailOTP, GuestProfileAuditLog
 from .guest_auth import GuestPrincipal
 
 logger = logging.getLogger(__name__)
+
+
+def _record_guest_profile_changes(*, guest, event, source, changes):
+    if not guest or not event or not changes:
+        return
+
+    logs = []
+    for field_name, payload in changes.items():
+        old_value = str((payload or {}).get("old") or "")
+        new_value = str((payload or {}).get("new") or "")
+        if old_value == new_value:
+            continue
+        logs.append(
+            GuestProfileAuditLog(
+                guest=guest,
+                event=event,
+                field_name=field_name,
+                old_value=old_value,
+                new_value=new_value,
+                source=source,
+            )
+        )
+
+    if logs:
+        GuestProfileAuditLog.objects.bulk_create(logs)
 
 
 def _sync_converted_guest_registration(user, guest):
@@ -303,6 +330,16 @@ class GuestJoinView(APIView):
 
         # 4. Create or update GuestAttendee (without verified status yet)
         if existing:
+            changes = {}
+            if existing.first_name != first_name:
+                changes[GuestProfileAuditLog.FIELD_FIRST_NAME] = {"old": existing.first_name, "new": first_name}
+            if existing.last_name != last_name:
+                changes[GuestProfileAuditLog.FIELD_LAST_NAME] = {"old": existing.last_name, "new": last_name}
+            if existing.job_title != job_title:
+                changes[GuestProfileAuditLog.FIELD_JOB_TITLE] = {"old": existing.job_title, "new": job_title}
+            if existing.company != company_name:
+                changes[GuestProfileAuditLog.FIELD_COMPANY] = {"old": existing.company, "new": company_name}
+
             # Update profile info for existing guest
             existing.first_name = first_name
             existing.last_name = last_name
@@ -313,6 +350,12 @@ class GuestJoinView(APIView):
                 existing.current_location = "waiting_room"
             existing.save(update_fields=["first_name", "last_name", "job_title", "company", "current_location"])
             guest = existing
+            _record_guest_profile_changes(
+                guest=guest,
+                event=event,
+                source=GuestProfileAuditLog.SOURCE_GUEST_JOIN,
+                changes=changes,
+            )
             logger.info(f"Updated profile for existing guest {email} on event {event.id}")
         else:
             # Create new guest attendee (not verified yet)
@@ -743,13 +786,19 @@ class GuestRegisterLinkView(APIView):
             )
 
         email = (request.data.get("email") or "").strip().lower()
+        guest_email = (request.data.get("guest_email") or "").strip().lower()
+        first_name = (request.data.get("first_name") or "").strip()
+        last_name = (request.data.get("last_name") or "").strip()
+        company = (request.data.get("company") or "").strip()
+        job_title = (request.data.get("job_title") or "").strip()
+        preserve_guest_email_history = bool(request.data.get("preserve_guest_email_history"))
+
         if not email:
             return Response(
                 {"error": "email is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        from django.contrib.auth import get_user_model
         User = get_user_model()
 
         user = User.objects.filter(email__iexact=email).first()
@@ -760,68 +809,159 @@ class GuestRegisterLinkView(APIView):
             )
 
         guest = request.user.guest
-        if guest.email.strip().lower() != email:
+        current_guest_email = (guest.email or "").strip().lower()
+        original_guest_email = guest_email or current_guest_email
+
+        if original_guest_email != current_guest_email:
             return Response(
-                {"error": "Email does not match the current guest session."},
+                {"error": "Guest email does not match the current guest session."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        guest.converted_user = user
-        if guest.converted_at is None:
-            guest.converted_at = timezone.now()
-        guest.save(update_fields=["converted_user", "converted_at"])
+        if email != current_guest_email and not preserve_guest_email_history:
+            return Response(
+                {"error": "Please confirm that you want to sign up with a different email."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # Link all guest history for this email to the registered user
-        from users.email_utils import link_guest_history_to_user
-        link_guest_history_to_user(user, email)
-        _sync_converted_guest_registration(user, guest)
-
-        # Sync guest profile fields to UserProfile (job_title, company, full_name)
-        profile_data = {"job_title": "", "company": "", "full_name": ""}
-        try:
-            from users.models import UserProfile
-            profile, _ = UserProfile.objects.get_or_create(user=user)
-            profile_update_fields = []
-
-            if guest.job_title and not profile.job_title:
-                profile.job_title = guest.job_title
-                profile_update_fields.append("job_title")
-
-            if guest.company and not profile.company:
-                profile.company = guest.company
-                profile_update_fields.append("company")
-
-            # Ensure full_name is populated (often blank on first Cognito login)
-            full_name = f"{user.first_name} {user.last_name}".strip()
-            if full_name and not profile.full_name:
-                profile.full_name = full_name
-                profile_update_fields.append("full_name")
-
-            if profile_update_fields:
-                profile.save(update_fields=profile_update_fields)
-                logger.info(
-                    f"[GuestRegisterLink] Synced profile fields {profile_update_fields} "
-                    f"from guest {guest.id} to user {user.id}"
+        if email != current_guest_email:
+            from users.models import UserEmailAlias
+            alias_conflict = UserEmailAlias.objects.filter(email=current_guest_email).exclude(user=user).exists()
+            if alias_conflict:
+                return Response(
+                    {"error": "The original guest email is already linked to another account."},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Prepare response with synced profile data
-            profile_data = {
-                "job_title": profile.job_title,
-                "company": profile.company,
-                "full_name": profile.full_name,
-            }
-        except Exception as e:
-            logger.warning(f"[GuestRegisterLink] Profile sync failed for user {user.id}: {e}")
-            # Non-fatal: continue without profile sync
+        with transaction.atomic():
+            guest_update_fields = []
+            audit_changes = {}
+            if first_name and guest.first_name != first_name:
+                audit_changes[GuestProfileAuditLog.FIELD_FIRST_NAME] = {"old": guest.first_name, "new": first_name}
+                guest.first_name = first_name
+                guest_update_fields.append("first_name")
+            if last_name and guest.last_name != last_name:
+                audit_changes[GuestProfileAuditLog.FIELD_LAST_NAME] = {"old": guest.last_name, "new": last_name}
+                guest.last_name = last_name
+                guest_update_fields.append("last_name")
+            if company != guest.company:
+                audit_changes[GuestProfileAuditLog.FIELD_COMPANY] = {"old": guest.company, "new": company}
+                guest.company = company
+                guest_update_fields.append("company")
+            if job_title != guest.job_title:
+                audit_changes[GuestProfileAuditLog.FIELD_JOB_TITLE] = {"old": guest.job_title, "new": job_title}
+                guest.job_title = job_title
+                guest_update_fields.append("job_title")
+            if email != current_guest_email:
+                audit_changes[GuestProfileAuditLog.FIELD_ACCOUNT_EMAIL] = {"old": current_guest_email, "new": email}
 
-        return Response(
-            {
-                "message": "Guest account linked successfully.",
-                "email": email,
-                "profile": profile_data,
-            },
-            status=status.HTTP_200_OK,
-        )
+            guest.converted_user = user
+            if guest.converted_at is None:
+                guest.converted_at = timezone.now()
+            guest_update_fields.extend(["converted_user", "converted_at"])
+            guest.save(update_fields=list(dict.fromkeys(guest_update_fields)))
+            _record_guest_profile_changes(
+                guest=guest,
+                event=guest.event,
+                source=GuestProfileAuditLog.SOURCE_SIGNUP,
+                changes=audit_changes,
+            )
+
+            # Link all guest history for this email to the registered user
+            from users.email_utils import link_guest_history_to_user
+            linked_counts = {
+                "guest_email": link_guest_history_to_user(user, current_guest_email),
+                "signup_email": 0,
+            }
+            if email != current_guest_email:
+                linked_counts["signup_email"] = link_guest_history_to_user(user, email)
+            _sync_converted_guest_registration(user, guest)
+
+            # Sync guest profile fields to User and UserProfile using the latest signup form data.
+            profile_data = {"job_title": "", "company": "", "full_name": ""}
+            try:
+                from users.models import UserEmailAlias, UserProfile
+
+                user_update_fields = []
+                if first_name and user.first_name != first_name:
+                    user.first_name = first_name
+                    user_update_fields.append("first_name")
+                if last_name and user.last_name != last_name:
+                    user.last_name = last_name
+                    user_update_fields.append("last_name")
+                if user_update_fields:
+                    user.save(update_fields=user_update_fields)
+
+                profile, _ = UserProfile.objects.get_or_create(user=user)
+                profile_update_fields = []
+
+                preferred_job_title = job_title or guest.job_title or ""
+                if profile.job_title != preferred_job_title:
+                    profile.job_title = preferred_job_title
+                    profile_update_fields.append("job_title")
+
+                preferred_company = company or guest.company or ""
+                if profile.company != preferred_company:
+                    profile.company = preferred_company
+                    profile_update_fields.append("company")
+
+                full_name = f"{user.first_name} {user.last_name}".strip()
+                if full_name and profile.full_name != full_name:
+                    profile.full_name = full_name
+                    profile_update_fields.append("full_name")
+
+                if profile_update_fields:
+                    profile.save(update_fields=profile_update_fields)
+                    logger.info(
+                        f"[GuestRegisterLink] Synced profile fields {profile_update_fields} "
+                        f"from guest {guest.id} to user {user.id}"
+                    )
+
+                if email != current_guest_email:
+                    alias, created = UserEmailAlias.objects.get_or_create(
+                        email=current_guest_email,
+                        defaults={"user": user},
+                    )
+                    alias_updates = []
+                    if not alias.verified:
+                        alias.verified = True
+                        alias_updates.append("verified")
+                    if alias.verified_at is None:
+                        alias.verified_at = timezone.now()
+                        alias_updates.append("verified_at")
+                    if alias.otp_code:
+                        alias.otp_code = ""
+                        alias_updates.append("otp_code")
+                    if alias.otp_expires_at is not None:
+                        alias.otp_expires_at = None
+                        alias_updates.append("otp_expires_at")
+                    if alias.attempt_count != 0:
+                        alias.attempt_count = 0
+                        alias_updates.append("attempt_count")
+                    if alias_updates:
+                        alias.save(update_fields=alias_updates)
+
+                # Prepare response with synced profile data
+                profile_data = {
+                    "job_title": profile.job_title,
+                    "company": profile.company,
+                    "full_name": profile.full_name,
+                }
+            except Exception as e:
+                logger.warning(f"[GuestRegisterLink] Profile sync failed for user {user.id}: {e}")
+                # Non-fatal: continue without profile sync
+
+            return Response(
+                {
+                    "message": "Guest account linked successfully.",
+                    "email": email,
+                    "guest_email": current_guest_email,
+                    "email_changed": email != current_guest_email,
+                    "linked_history": linked_counts,
+                    "profile": profile_data,
+                },
+                status=status.HTTP_200_OK,
+            )
 
 
 class GuestProfileDetailView(APIView):
@@ -1026,6 +1166,18 @@ class GuestProfileUpdateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+        changes = {}
+        if guest.first_name != first_name:
+            changes[GuestProfileAuditLog.FIELD_FIRST_NAME] = {"old": guest.first_name, "new": first_name}
+        if guest.last_name != last_name:
+            changes[GuestProfileAuditLog.FIELD_LAST_NAME] = {"old": guest.last_name, "new": last_name}
+        if guest.email != email:
+            changes[GuestProfileAuditLog.FIELD_EMAIL] = {"old": guest.email, "new": email}
+        if guest.company != company:
+            changes[GuestProfileAuditLog.FIELD_COMPANY] = {"old": guest.company, "new": company}
+        if guest.job_title != job_title:
+            changes[GuestProfileAuditLog.FIELD_JOB_TITLE] = {"old": guest.job_title, "new": job_title}
+
         # 5. Update guest record
         guest.first_name = first_name
         guest.last_name = last_name
@@ -1033,6 +1185,12 @@ class GuestProfileUpdateView(APIView):
         guest.company = company
         guest.job_title = job_title
         guest.save()
+        _record_guest_profile_changes(
+            guest=guest,
+            event=event,
+            source=GuestProfileAuditLog.SOURCE_PROFILE_EDIT,
+            changes=changes,
+        )
 
         logger.info(f"Guest {guest.id} updated profile for event {event.id}")
 

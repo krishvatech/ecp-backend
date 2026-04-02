@@ -26,6 +26,8 @@ class CognitoBootstrapView(APIView):
         email = (data.get("email") or "").strip().lower()
         first_name = (data.get("firstName") or data.get("first_name") or "").strip()
         last_name = (data.get("lastName") or data.get("last_name") or "").strip()
+        company = (data.get("company") or "").strip()
+        job_title = (data.get("job_title") or data.get("jobTitle") or "").strip()
 
         # Safety: don't allow spoofing someone else's identity
         if email and user.email and email != (user.email or "").lower():
@@ -62,6 +64,14 @@ class CognitoBootstrapView(APIView):
         if full_name and profile.full_name != full_name:
             profile.full_name = full_name
             profile_update_fields.append("full_name")
+
+        if profile.company != company:
+            profile.company = company
+            profile_update_fields.append("company")
+
+        if profile.job_title != job_title:
+            profile.job_title = job_title
+            profile_update_fields.append("job_title")
 
         tz = (data.get("timezone") or "").strip()
         if tz and tz in pytz.all_timezones and profile.timezone != tz:

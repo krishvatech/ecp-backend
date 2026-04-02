@@ -1740,6 +1740,61 @@ class GuestAttendee(models.Model):
         return f"{self.get_display_name()} (Guest) - {self.event.title}"
 
 
+class GuestProfileAuditLog(models.Model):
+    FIELD_FIRST_NAME = "first_name"
+    FIELD_LAST_NAME = "last_name"
+    FIELD_EMAIL = "email"
+    FIELD_COMPANY = "company"
+    FIELD_JOB_TITLE = "job_title"
+    FIELD_ACCOUNT_EMAIL = "account_email"
+
+    FIELD_CHOICES = [
+        (FIELD_FIRST_NAME, "First Name"),
+        (FIELD_LAST_NAME, "Last Name"),
+        (FIELD_EMAIL, "Email"),
+        (FIELD_COMPANY, "Company"),
+        (FIELD_JOB_TITLE, "Job Title"),
+        (FIELD_ACCOUNT_EMAIL, "Account Email"),
+    ]
+
+    SOURCE_GUEST_JOIN = "guest_join"
+    SOURCE_PROFILE_EDIT = "profile_edit"
+    SOURCE_SIGNUP = "signup_conversion"
+
+    SOURCE_CHOICES = [
+        (SOURCE_GUEST_JOIN, "Guest Join"),
+        (SOURCE_PROFILE_EDIT, "Profile Edit"),
+        (SOURCE_SIGNUP, "Signup Conversion"),
+    ]
+
+    guest = models.ForeignKey(
+        GuestAttendee,
+        on_delete=models.CASCADE,
+        related_name="audit_logs",
+    )
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="guest_audit_logs",
+    )
+    field_name = models.CharField(max_length=50, choices=FIELD_CHOICES)
+    old_value = models.TextField(blank=True, default="")
+    new_value = models.TextField(blank=True, default="")
+    source = models.CharField(max_length=50, choices=SOURCE_CHOICES, default=SOURCE_PROFILE_EDIT)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "guest_profile_audit_logs"
+        ordering = ["-changed_at", "-id"]
+        indexes = [
+            models.Index(fields=["event", "-changed_at"]),
+            models.Index(fields=["guest", "-changed_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.guest_id}:{self.field_name}:{self.source}"
+
+
 class GuestEmailOTP(models.Model):
     """
     Short-lived one-time passcodes (OTP) for verifying guest email addresses
