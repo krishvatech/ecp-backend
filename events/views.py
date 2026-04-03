@@ -1365,6 +1365,22 @@ class EventViewSet(viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
     # ------------------ Dictionary Endpoints -----------------
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="by-slug/(?P<slug>[^/]+)")
+    def by_slug(self, request, slug=None):
+        """
+        Fetch a single event by slug for public landing page display.
+        Returns comprehensive event data including cover image, venue info, and registration type.
+        """
+        try:
+            event = self.get_queryset().get(slug=slug)
+            serializer = self.get_serializer(event)
+            return Response(serializer.data)
+        except Event.DoesNotExist:
+            return Response(
+                {"detail": "Event not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="categories")
     def categories(self, request):
         """

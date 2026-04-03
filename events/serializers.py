@@ -156,6 +156,22 @@ def serialize_featured_participants(event, context=None):
         else:  # staff
             participant_type_label = "Staff"
 
+        # Get professional info/experience based on participant type
+        professional_info = ""
+        if participant.participant_type == "staff" and participant.user and hasattr(participant.user, 'profile'):
+            profile = participant.user.profile
+            # Priority: headline > (job_title + company) > event_bio
+            if profile.headline:
+                professional_info = profile.headline
+            else:
+                parts = [profile.job_title, profile.company]
+                combined = " – ".join([p for p in parts if p]).strip()
+                professional_info = combined or participant.event_bio
+        elif participant.participant_type == "guest":
+            professional_info = participant.guest_bio
+        elif participant.participant_type == "virtual" and participant.virtual_speaker:
+            professional_info = participant.virtual_speaker.bio
+
         featured.append(
             {
                 "user_id": participant.user_id,
@@ -165,6 +181,7 @@ def serialize_featured_participants(event, context=None):
                 "role_label": role_label(participant.role),
                 "participant_type": participant.participant_type,
                 "participant_type_label": participant_type_label,
+                "professional_info": professional_info or "",
                 "profile_url": build_profile_url(participant.user_id),
                 "is_profile_clickable": bool(participant.user_id),
             }
@@ -343,6 +360,7 @@ class FeaturedParticipantSerializer(serializers.Serializer):
     avatar_url = serializers.CharField(allow_null=True, allow_blank=True)
     role = serializers.CharField()
     role_label = serializers.CharField()
+    professional_info = serializers.CharField(allow_blank=True, default='')
     profile_url = serializers.CharField(allow_null=True, allow_blank=True)
     is_profile_clickable = serializers.BooleanField()
 
