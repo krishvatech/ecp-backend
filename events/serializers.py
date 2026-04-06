@@ -1526,7 +1526,7 @@ class EventSerializer(serializers.ModelSerializer):
 
     def get_featured_participants(self, obj):
         participants = serialize_featured_participants(obj, self.context)
-        return FeaturedParticipantSerializer(participants[:3], many=True).data
+        return FeaturedParticipantSerializer(participants, many=True).data
 
     def get_featured_participants_total(self, obj):
         return len(serialize_featured_participants(obj, self.context))
@@ -1885,7 +1885,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
 
     def get_featured_participants(self, obj):
         participants = serialize_featured_participants(obj, self.context)
-        return FeaturedParticipantSerializer(participants[:3], many=True).data
+        return FeaturedParticipantSerializer(participants, many=True).data
 
     def get_featured_participants_total(self, obj):
         return len(serialize_featured_participants(obj, self.context))
