@@ -5,10 +5,9 @@ Hello {{ applicant_name }},
 Great news! Your application has been approved for:
 
 {{ event_title }}
-{% if event_date %}
-Date: {{ event_date|date:"F j, Y" }}
-Time: {{ event_date|time:"g:i A" }}
-{% endif %}
+{% if event_start %}{% if is_multi_day %}Date: {{ event_start|date:"F j, Y" }} – {{ event_end|date:"F j, Y" }}{% else %}Date: {{ event_start|date:"F j, Y" }}
+Time: {{ event_start|time:"g:i A" }}{% if event_end %} - {{ event_end|time:"g:i A" }}{% endif %}{% endif %}
+{% if event_timezone %}Timezone: {{ event_timezone }}{% endif %}{% endif %}
 
 You're all set! You can now join the event when it starts.
 
