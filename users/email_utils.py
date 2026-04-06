@@ -735,6 +735,7 @@ def send_application_approved_email(application):
         "event_date": application.event.start_time,
         "event_start": application.event.start_time,
         "event_end": application.event.end_time,
+        "is_multi_day": application.event.is_multi_day,
         "event_timezone": application.event.timezone,
         "event_url": event_url,
         "magic_link": magic_link,
@@ -771,6 +772,7 @@ def send_application_declined_email(application, custom_message=''):
         "event_title": application.event.title,
         "event_start": application.event.start_time,
         "event_end": application.event.end_time,
+        "is_multi_day": application.event.is_multi_day,
         "event_timezone": application.event.timezone,
         "custom_message": custom_message or '',
     }
