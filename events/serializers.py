@@ -698,6 +698,12 @@ class EventSerializer(serializers.ModelSerializer):
     # Session-related fields
     sessions = EventSessionSerializer(many=True, read_only=True)
     has_sessions = serializers.SerializerMethodField(read_only=True)
+    main_sessions_count = serializers.SerializerMethodField(read_only=True)
+    breakout_sessions_count = serializers.SerializerMethodField(read_only=True)
+    workshops_count = serializers.SerializerMethodField(read_only=True)
+    networking_count = serializers.SerializerMethodField(read_only=True)
+    calculated_hours_minutes = serializers.SerializerMethodField(read_only=True)
+    calculated_hours_display = serializers.SerializerMethodField(read_only=True)
 
     # Cancellation fields
     recommended_event_id = serializers.PrimaryKeyRelatedField(
@@ -848,6 +854,13 @@ class EventSerializer(serializers.ModelSerializer):
             "featured_participants_total",
             "sessions",
             "has_sessions",
+            "main_sessions_count",
+            "breakout_sessions_count",
+            "workshops_count",
+            "networking_count",
+            "calculated_hours_minutes",
+            "calculated_hours_display",
+            "hours_calculation_session_types",
             "sessions_input",
         ]
         
@@ -1455,6 +1468,14 @@ class EventSerializer(serializers.ModelSerializer):
             except (json.JSONDecodeError, TypeError):
                 participants_data = None
 
+        # Permission check: only superusers (platform_admin) can update hours_calculation_session_types
+        request = self.context.get('request')
+        if 'hours_calculation_session_types' in validated_data:
+            if not (request and request.user and request.user.is_superuser):
+                raise serializers.ValidationError(
+                    {"hours_calculation_session_types": "Only platform administrators can modify session types for hours calculation."}
+                )
+
         # Update event fields
         instance = super().update(instance, validated_data)
 
@@ -1537,6 +1558,47 @@ class EventSerializer(serializers.ModelSerializer):
     def get_has_sessions(self, obj):
         """Check if event has sessions."""
         return obj.has_sessions
+
+    def get_main_sessions_count(self, obj):
+        """Count sessions of type 'main'."""
+        return obj.sessions.filter(session_type="main").count()
+
+    def get_breakout_sessions_count(self, obj):
+        """Count sessions of type 'breakout'."""
+        return obj.sessions.filter(session_type="breakout").count()
+
+    def get_workshops_count(self, obj):
+        """Count sessions of type 'workshop'."""
+        return obj.sessions.filter(session_type="workshop").count()
+
+    def get_networking_count(self, obj):
+        """Count sessions of type 'networking'."""
+        return obj.sessions.filter(session_type="networking").count()
+
+    def get_calculated_hours_minutes(self, obj):
+        """Calculate total hours in minutes based on selected session types."""
+        # Get the default: ['main', 'breakout', 'workshop']
+        selected_types = obj.hours_calculation_session_types
+        if not selected_types:
+            selected_types = ["main", "breakout", "workshop"]
+
+        # Query sessions matching selected types
+        sessions = obj.sessions.filter(session_type__in=selected_types)
+
+        total_minutes = 0
+        for session in sessions:
+            if session.start_time and session.end_time:
+                duration = session.end_time - session.start_time
+                total_minutes += duration.total_seconds() / 60
+
+        return int(total_minutes)
+
+    def get_calculated_hours_display(self, obj):
+        """Return formatted hours:minutes display."""
+        total_minutes = self.get_calculated_hours_minutes(obj)
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        return f"{hours}h {minutes}m" if hours > 0 or minutes > 0 else "0h"
 
     # ---------- Field-level validations ----------
     

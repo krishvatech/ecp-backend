@@ -316,6 +316,13 @@ class Event(models.Model):
         help_text="Allow moderator-role participants to appear publicly on event cards and participant lists"
     )
 
+    # Multi-day Sessions Settings
+    hours_calculation_session_types = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of session types to include in hours calculation. Valid values: 'main', 'breakout', 'workshop', 'networking'. Defaults to ['main', 'breakout', 'workshop']"
+    )
+
     # Speed Networking Match History Visibility Settings
     show_speed_networking_match_history = models.BooleanField(
         default=True,
