@@ -977,6 +977,82 @@ class EventSerializer(serializers.ModelSerializer):
             kept.append(s)
         return kept
 
+    def _update_participants(self, event, participants_data):
+        """
+        Intelligently update event participants.
+
+        - Keeps existing participants (no duplicate emails) but updates their role if changed
+        - Only sends confirmation emails to NEWLY ADDED participants
+        - Deletes removed participants
+        - Handles role changes gracefully
+        """
+        if not participants_data:
+            # If participants list is empty, delete all
+            event.participants.all().delete()
+            return
+
+        from django.contrib.auth.models import User
+
+        # Build keys from existing participants (WITHOUT role for identity matching)
+        existing_participants = event.participants.all()
+        existing_by_identity = {}  # Map of identity_key → (ep_object, role)
+
+        for ep in existing_participants:
+            if ep.participant_type == EventParticipant.PARTICIPANT_TYPE_STAFF:
+                identity_key = ('staff', ep.user_id)
+            elif ep.participant_type == EventParticipant.PARTICIPANT_TYPE_GUEST:
+                identity_key = ('guest', ep.guest_name, ep.guest_email)
+            else:  # virtual
+                identity_key = ('virtual', ep.virtual_speaker_id)
+
+            existing_by_identity[identity_key] = (ep, ep.role)
+
+        # Build identity keys from new participants data
+        new_by_identity = {}  # Map of identity_key → (role, p_data)
+        for p_data in participants_data:
+            p_type = (p_data.get('type', 'staff') or 'staff').lower()
+            role = (p_data.get('role') or '').lower()
+
+            if p_type == 'staff':
+                user_id = p_data.get('user_id')
+                if user_id:
+                    identity_key = ('staff', user_id)
+                    new_by_identity[identity_key] = (role, p_data)
+            elif p_type == 'guest':
+                guest_name = (p_data.get('name') or '').strip()
+                guest_email = (p_data.get('email') or '').strip()
+                if guest_name:
+                    identity_key = ('guest', guest_name, guest_email)
+                    new_by_identity[identity_key] = (role, p_data)
+            elif p_type == 'virtual':
+                vs_id = p_data.get('virtual_speaker_id')
+                if vs_id:
+                    identity_key = ('virtual', vs_id)
+                    new_by_identity[identity_key] = (role, p_data)
+
+        # Process deletions and updates
+        for identity_key, (ep, old_role) in existing_by_identity.items():
+            if identity_key not in new_by_identity:
+                # Participant was removed
+                ep.delete()
+            else:
+                # Participant still exists; check if role changed
+                new_role, _ = new_by_identity[identity_key]
+                if new_role != old_role:
+                    # Update role without triggering new email
+                    ep.role = new_role
+                    ep.save(update_fields=['role'])
+
+        # Create only new participants (those not in existing_by_identity)
+        new_participants_data = []
+        for identity_key, (new_role, p_data) in new_by_identity.items():
+            if identity_key not in existing_by_identity:
+                new_participants_data.append(p_data)
+
+        # Create new participants (this will trigger confirmation emails only for truly new ones)
+        if new_participants_data:
+            self._create_participants(event, new_participants_data)
+
     def _create_participants(self, event, participants_data):
         """
         Create EventParticipant records from input data.
@@ -1479,12 +1555,10 @@ class EventSerializer(serializers.ModelSerializer):
         # Update event fields
         instance = super().update(instance, validated_data)
 
-        # If participants data provided, replace existing participants
+        # If participants data provided, intelligently update participants
+        # Only send confirmation emails to newly added participants
         if participants_data is not None:
-            # Delete existing participants
-            instance.participants.all().delete()
-            # Create new participants
-            self._create_participants(instance, participants_data)
+            self._update_participants(instance, participants_data)
 
         return instance
 
