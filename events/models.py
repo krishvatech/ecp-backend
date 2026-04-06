@@ -1134,6 +1134,14 @@ class EventSession(models.Model):
     dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     recording_url = models.URLField(blank=True)
 
+    # Session image (portrait orientation)
+    session_image = models.ImageField(
+        upload_to='session_images/',
+        blank=True,
+        null=True,
+        help_text="Portrait orientation image for session preview"
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

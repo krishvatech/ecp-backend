@@ -514,7 +514,7 @@ class EventSessionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'event', 'session_date', 'title', 'description', 'start_time', 'end_time',
             'session_type', 'display_order', 'is_live', 'live_started_at', 'live_ended_at',
-            'use_parent_meeting', 'dyte_meeting_id', 'recording_url',
+            'use_parent_meeting', 'dyte_meeting_id', 'recording_url', 'session_image',
             'participants', 'session_participants', 'attendance_count',
             'created_at', 'updated_at'
         ]
