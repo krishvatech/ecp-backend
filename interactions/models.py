@@ -149,6 +149,27 @@ class Question(models.Model):
         blank=True,
         help_text="Host-provided reason when rejecting a question.",
     )
+    is_answered = models.BooleanField(
+        default=False,
+        help_text="Whether this question has been answered.",
+    )
+    answered_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the question was marked as answered.",
+    )
+    answered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="answered_questions",
+        help_text="User who marked this question as answered.",
+    )
+    requires_followup = models.BooleanField(
+        default=False,
+        help_text="Flag question for follow-up after event.",
+    )
 
     class Meta:
         ordering = ["-created_at"]

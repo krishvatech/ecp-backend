@@ -386,3 +386,11 @@ class QnAConsumer(BaseEventConsumer):
         Triggered when a host rejects a pending question.
         """
         await self.send_json(event.get("payload", {}))
+
+    async def qna_answered(self, event: Dict[str, Any]) -> None:
+        """
+        Called when group_send(type='qna.answered', payload=...) is triggered.
+        Forward answered question payload to all connected clients.
+        Triggered when a host marks a question as answered.
+        """
+        await self.send_json(event.get("payload", {}))

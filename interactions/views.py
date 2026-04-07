@@ -213,6 +213,9 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "event_id": q.event_id,
                 "lounge_table_id": q.lounge_table_id, # Return to client
                 "created_at": q.created_at.isoformat(),
+                "is_answered": q.is_answered,
+                "answered_at": q.answered_at.isoformat() if q.answered_at else None,
+                "requires_followup": q.requires_followup,
             })
         return Response(data)
     
@@ -483,6 +486,63 @@ class QuestionViewSet(viewsets.ModelViewSet):
         async_to_sync(channel_layer.group_send)(
             group,
             {"type": "qna.rejected", "payload": payload},
+        )
+
+        serializer = self.get_serializer(question)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"])
+    def mark_answered(self, request, pk=None):
+        """
+        Toggle answered status for a question. Host only.
+        Broadcasts qna.answered when status changes.
+        """
+        from django.utils import timezone
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        user = request.user
+
+        # Permission check: Only host/admin can mark answered
+        is_host = (user == question.event.created_by or user.is_staff)
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can mark questions as answered.")
+
+        # Toggle answered status
+        question.is_answered = not question.is_answered
+        if question.is_answered:
+            question.answered_by = user
+            question.answered_at = timezone.now()
+        else:
+            question.answered_by = None
+            question.answered_at = None
+
+        # Handle requires_followup flag
+        requires_followup = request.data.get("requires_followup", question.requires_followup)
+        question.requires_followup = requires_followup
+
+        question.save(update_fields=["is_answered", "answered_by", "answered_at", "requires_followup"])
+
+        # Broadcast to WebSocket group
+        if question.lounge_table_id:
+            group = f"event_qna_{question.event_id}_table_{question.lounge_table_id}"
+        else:
+            group = f"event_qna_{question.event_id}_main"
+
+        channel_layer = get_channel_layer()
+
+        payload = {
+            "type": "qna.answered",
+            "event_id": question.event_id,
+            "question_id": question.id,
+            "is_answered": question.is_answered,
+            "answered_at": question.answered_at.isoformat() if question.answered_at else None,
+            "requires_followup": question.requires_followup,
+        }
+
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.answered", "payload": payload},
         )
 
         serializer = self.get_serializer(question)

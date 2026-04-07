@@ -23,8 +23,11 @@ class QuestionSerializer(serializers.ModelSerializer):
             "lounge_table",
             "moderation_status",
             "rejection_reason",
+            "is_answered",
+            "answered_at",
+            "requires_followup",
         ]
-        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at", "moderation_status", "rejection_reason"]
+        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at", "moderation_status", "rejection_reason", "is_answered", "answered_at", "requires_followup"]
 
     def get_user_display(self, obj):
         if getattr(obj, "guest_asker", None):
