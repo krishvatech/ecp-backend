@@ -170,6 +170,23 @@ class Question(models.Model):
         default=False,
         help_text="Flag question for follow-up after event.",
     )
+    is_pinned = models.BooleanField(
+        default=False,
+        help_text="Whether this question is pinned to the top.",
+    )
+    pinned_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the question was pinned.",
+    )
+    pinned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pinned_questions",
+        help_text="User who pinned this question.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -177,6 +194,7 @@ class Question(models.Model):
             models.Index(fields=["event", "-created_at"], name="qna_event_created_idx"),
             models.Index(fields=["lounge_table", "-created_at"], name="qna_table_created_idx"),
             models.Index(fields=["event", "moderation_status"], name="qna_event_status_idx"),
+            models.Index(fields=["event", "is_pinned"], name="qna_event_pinned_idx"),
         ]
         constraints = [
             models.CheckConstraint(

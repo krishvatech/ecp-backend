@@ -216,6 +216,8 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "is_answered": q.is_answered,
                 "answered_at": q.answered_at.isoformat() if q.answered_at else None,
                 "requires_followup": q.requires_followup,
+                "is_pinned": q.is_pinned,
+                "pinned_at": q.pinned_at.isoformat() if q.pinned_at else None,
             })
         return Response(data)
     
@@ -547,6 +549,85 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(question)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"])
+    def pin(self, request, pk=None):
+        """
+        Toggle pin status for a question. Host only.
+        Auto-unpins the oldest question when a 4th is pinned.
+        Broadcasts qna.pinned when status changes.
+        """
+        from django.utils import timezone
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        user = request.user
+
+        # Permission check: Only host/admin can pin questions
+        is_host = (user == question.event.created_by or user.is_staff)
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can pin questions.")
+
+        unpinned_id = None
+
+        # Toggle pin status
+        if question.is_pinned:
+            # Unpin
+            question.is_pinned = False
+            question.pinned_by = None
+            question.pinned_at = None
+        else:
+            # Check if already 3 pinned questions - auto-unpin oldest if so
+            pinned_count = Question.objects.filter(
+                event=question.event, is_pinned=True
+            ).count()
+
+            if pinned_count >= 3:
+                # Get oldest pinned question and unpin it
+                oldest_pinned = Question.objects.filter(
+                    event=question.event, is_pinned=True
+                ).order_by("pinned_at").first()
+
+                if oldest_pinned:
+                    oldest_pinned.is_pinned = False
+                    oldest_pinned.pinned_by = None
+                    oldest_pinned.pinned_at = None
+                    oldest_pinned.save(update_fields=["is_pinned", "pinned_by", "pinned_at"])
+                    unpinned_id = oldest_pinned.id
+
+            # Pin the current question
+            question.is_pinned = True
+            question.pinned_by = user
+            question.pinned_at = timezone.now()
+
+        question.save(update_fields=["is_pinned", "pinned_by", "pinned_at"])
+
+        # Broadcast to WebSocket group
+        if question.lounge_table_id:
+            group = f"event_qna_{question.event_id}_table_{question.lounge_table_id}"
+        else:
+            group = f"event_qna_{question.event_id}_main"
+
+        channel_layer = get_channel_layer()
+
+        payload = {
+            "type": "qna.pinned",
+            "event_id": question.event_id,
+            "question_id": question.id,
+            "is_pinned": question.is_pinned,
+            "pinned_at": question.pinned_at.isoformat() if question.pinned_at else None,
+            "unpinned_question_id": unpinned_id,
+        }
+
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.pinned", "payload": payload},
+        )
+
+        return Response(
+            {"question_id": question.id, "is_pinned": question.is_pinned},
+            status=status.HTTP_200_OK
+        )
 
     def perform_update(self, serializer):
         """

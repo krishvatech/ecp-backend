@@ -394,3 +394,11 @@ class QnAConsumer(BaseEventConsumer):
         Triggered when a host marks a question as answered.
         """
         await self.send_json(event.get("payload", {}))
+
+    async def qna_pinned(self, event: Dict[str, Any]) -> None:
+        """
+        Called when group_send(type='qna.pinned', payload=...) is triggered.
+        Forward pinned question payload to all connected clients.
+        Triggered when a host pins or unpins a question.
+        """
+        await self.send_json(event.get("payload", {}))
