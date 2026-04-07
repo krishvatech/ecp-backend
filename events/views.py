@@ -3542,6 +3542,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "company": guest.company or "",
                 "job_title": guest.job_title or "",
                 "email_verified": bool(guest.email_verified),
+                "is_banned": bool(guest.is_banned),
                 "created_at": guest.created_at,
                 "joined_live": bool(guest.joined_live),
                 "joined_live_at": guest.joined_live_at,

@@ -146,7 +146,7 @@ class GuestJWTAuthentication(BaseAuthentication):
 
         # Check if guest is banned
         if guest.is_banned:
-            return None  # Treat as unauthenticated (allows public pages to work)
+            raise AuthenticationFailed("You have been banned from this event.")
 
         # Success
         return (GuestPrincipal(guest), token)
