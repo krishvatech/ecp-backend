@@ -73,6 +73,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         # Filter out hidden questions for non-hosts
         # Hosts/admins can see all questions including hidden ones
+        # Also filter out non-approved questions when moderation is enabled
         if event_id:
             event = get_object_or_404(
                 __import__('events.models', fromlist=['Event']).Event,
@@ -81,6 +82,9 @@ class QuestionViewSet(viewsets.ModelViewSet):
             is_host = self.request.user == event.created_by or getattr(self.request.user, "is_staff", False)
             if not is_host:
                 qs = qs.filter(is_hidden=False)
+                # When moderation is enabled, only show approved questions to attendees
+                if event.qna_moderation_enabled:
+                    qs = qs.filter(moderation_status="approved")
 
         return qs.order_by("-upvotes_count", "-created_at")
 
@@ -88,10 +92,11 @@ class QuestionViewSet(viewsets.ModelViewSet):
         """
         Attach the current user when creating a question
         AND broadcast it to all connected QnA WebSocket clients.
+        Handle moderation status based on event setting.
         """
         # Capture optional table ID from request body
         lounge_table_id = self.request.data.get("lounge_table")
-        
+
         # Save with user and table info
         # If lounge_table_id is None/empty, it saves as NULL (Main Room)
         if self._is_guest_user(self.request.user):
@@ -99,12 +104,17 @@ class QuestionViewSet(viewsets.ModelViewSet):
         else:
             question = serializer.save(user=self.request.user, guest_asker=None, lounge_table_id=lounge_table_id or None)
 
+        # Check if event has moderation enabled and set status accordingly
+        if question.event.qna_moderation_enabled:
+            question.moderation_status = "pending"
+            question.save(update_fields=["moderation_status"])
+
         # Broadcast to the same Channels group used by QnAConsumer
         from channels.layers import get_channel_layer
         from asgiref.sync import async_to_sync
 
         channel_layer = get_channel_layer()
-        
+
         # Determine the target group based on where the question was asked
         if question.lounge_table_id:
             # Broadcast ONLY to this table
@@ -138,6 +148,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "content": question.content,
             "upvote_count": 0,
             "created_at": question.created_at.isoformat(),
+            "moderation_status": question.moderation_status,  # NEW: include status
         }
 
         async_to_sync(channel_layer.group_send)(
@@ -361,6 +372,119 @@ class QuestionViewSet(viewsets.ModelViewSet):
         )
 
         # Return updated question
+        serializer = self.get_serializer(question)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        """
+        Host approves a pending question → visible to all attendees.
+        Broadcasts qna.approved so attendees can render it.
+        Permission: Host/Admin only.
+        """
+        from rest_framework.exceptions import PermissionDenied
+        from django.utils import timezone
+
+        question = get_object_or_404(Question, pk=pk)
+        user = request.user
+
+        # Permission check: Only host/admin can approve
+        is_host = (user == question.event.created_by or user.is_staff)
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can approve questions.")
+
+        # Update status
+        question.moderation_status = "approved"
+        question.save(update_fields=["moderation_status"])
+
+        # Determine broadcast group
+        if question.lounge_table_id:
+            group = f"event_qna_{question.event_id}_table_{question.lounge_table_id}"
+        else:
+            group = f"event_qna_{question.event_id}_main"
+
+        channel_layer = get_channel_layer()
+
+        # Get asker display name
+        if question.guest_asker:
+            display_name = question.guest_asker.get_display_name()
+            asker_id = f"guest_{question.guest_asker.id}"
+        elif question.user:
+            display_name = (
+                (getattr(question.user, "get_full_name", lambda: "")() or "").strip()
+                or question.user.first_name
+                or question.user.username
+                or (question.user.email.split("@")[0] if question.user.email else f"User {question.user.id}")
+            )
+            asker_id = question.user_id
+        else:
+            display_name = "Audience"
+            asker_id = None
+
+        payload = {
+            "type": "qna.approved",
+            "event_id": question.event_id,
+            "question_id": question.id,
+            "content": question.content,
+            "user_id": asker_id,
+            "user_name": display_name,
+            "upvote_count": question.upvoters.count() + question.guest_upvotes.count(),
+            "created_at": question.created_at.isoformat(),
+        }
+
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.approved", "payload": payload},
+        )
+
+        serializer = self.get_serializer(question)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        """
+        Host rejects a question (removed from queue, optionally with reason).
+        Broadcasts qna.rejected so queue is updated.
+        Permission: Host/Admin only.
+        """
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        user = request.user
+
+        # Permission check: Only host/admin can reject
+        is_host = (user == question.event.created_by or user.is_staff)
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can reject questions.")
+
+        # Get reason from request if provided
+        reason = request.data.get("reason", "")
+
+        # Update status
+        question.moderation_status = "rejected"
+        question.rejection_reason = reason
+        question.save(update_fields=["moderation_status", "rejection_reason"])
+
+        # Determine broadcast group
+        if question.lounge_table_id:
+            group = f"event_qna_{question.event_id}_table_{question.lounge_table_id}"
+        else:
+            group = f"event_qna_{question.event_id}_main"
+
+        channel_layer = get_channel_layer()
+
+        payload = {
+            "type": "qna.rejected",
+            "event_id": question.event_id,
+            "question_id": question.id,
+            "reason": reason,
+        }
+
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.rejected", "payload": payload},
+        )
+
         serializer = self.get_serializer(question)
         return Response(serializer.data, status=status.HTTP_200_OK)
 

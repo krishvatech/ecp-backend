@@ -315,6 +315,10 @@ class Event(models.Model):
         default=False,
         help_text="Allow moderator-role participants to appear publicly on event cards and participant lists"
     )
+    qna_moderation_enabled = models.BooleanField(
+        default=False,
+        help_text="Require host approval before Q&A questions are visible to attendees."
+    )
 
     # Multi-day Sessions Settings
     hours_calculation_session_types = models.JSONField(

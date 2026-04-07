@@ -370,3 +370,19 @@ class QnAConsumer(BaseEventConsumer):
         Triggered when a host/admin toggles question visibility.
         """
         await self.send_json(event.get("payload", {}))
+
+    async def qna_approved(self, event: Dict[str, Any]) -> None:
+        """
+        Called when group_send(type='qna.approved', payload=...) is triggered.
+        Forward approved question payload to all connected clients.
+        Triggered when a host approves a pending question.
+        """
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_rejected(self, event: Dict[str, Any]) -> None:
+        """
+        Called when group_send(type='qna.rejected', payload=...) is triggered.
+        Forward rejected question payload to all connected clients.
+        Triggered when a host rejects a pending question.
+        """
+        await self.send_json(event.get("payload", {}))

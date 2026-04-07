@@ -138,12 +138,24 @@ class Question(models.Model):
         related_name="questions",
         help_text="Lounge table (if applicable). Null means Main Room.",
     )
+    moderation_status = models.CharField(
+        max_length=20,
+        choices=[("pending", "Pending"), ("approved", "Approved"), ("rejected", "Rejected")],
+        default="approved",
+        help_text="Approval status when qna_moderation_enabled on event.",
+    )
+    rejection_reason = models.TextField(
+        null=True,
+        blank=True,
+        help_text="Host-provided reason when rejecting a question.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["event", "-created_at"], name="qna_event_created_idx"),
             models.Index(fields=["lounge_table", "-created_at"], name="qna_table_created_idx"),
+            models.Index(fields=["event", "moderation_status"], name="qna_event_status_idx"),
         ]
         constraints = [
             models.CheckConstraint(

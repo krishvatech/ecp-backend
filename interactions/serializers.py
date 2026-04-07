@@ -21,8 +21,10 @@ class QuestionSerializer(serializers.ModelSerializer):
             "hidden_by",
             "hidden_at",
             "lounge_table",
+            "moderation_status",
+            "rejection_reason",
         ]
-        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at"]
+        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at", "moderation_status", "rejection_reason"]
 
     def get_user_display(self, obj):
         if getattr(obj, "guest_asker", None):
