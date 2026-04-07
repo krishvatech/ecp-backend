@@ -199,6 +199,10 @@ class Question(models.Model):
         related_name="anonymized_questions",
         help_text="Host who anonymized this question (null if self-anonymized by submitter).",
     )
+    display_order = models.IntegerField(
+        default=0,
+        help_text="Manual sort order for host reorder. Lower = higher in list.",
+    )
 
     class Meta:
         ordering = ["-created_at"]

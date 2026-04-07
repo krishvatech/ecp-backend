@@ -86,7 +86,14 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 if event.qna_moderation_enabled:
                     qs = qs.filter(moderation_status="approved")
 
-        return qs.order_by("-upvotes_count", "-created_at")
+        # Support sort parameter: newest, manual, hot/most_voted (default)
+        sort = self.request.query_params.get("sort", "most_voted")
+        if sort == "newest":
+            return qs.order_by("-created_at")
+        elif sort == "manual":
+            return qs.order_by("display_order", "-created_at")
+        else:  # hot or most_voted
+            return qs.order_by("-upvotes_count", "-created_at")
 
     def perform_create(self, serializer):
         """
@@ -118,6 +125,13 @@ class QuestionViewSet(viewsets.ModelViewSet):
         if is_anonymous != question.is_anonymous:
             question.is_anonymous = is_anonymous
             question.save(update_fields=["is_anonymous"])
+
+        # Initialize display_order: new questions go to the end of their event+table group
+        count = Question.objects.filter(
+            event_id=question.event_id, lounge_table_id=question.lounge_table_id
+        ).count()
+        question.display_order = count
+        question.save(update_fields=["display_order"])
 
         # Broadcast to the same Channels group used by QnAConsumer
         from channels.layers import get_channel_layer
@@ -164,6 +178,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "created_at": question.created_at.isoformat(),
             "moderation_status": question.moderation_status,  # NEW: include status
             "is_anonymous": question.is_anonymous,  # Include anonymous status
+            "display_order": question.display_order,  # Include sort order
         }
 
         async_to_sync(channel_layer.group_send)(
@@ -254,6 +269,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "pinned_at": q.pinned_at.isoformat() if q.pinned_at else None,
                 "is_anonymous": q.is_anonymous,
                 "anonymized_by": q.anonymized_by_id,
+                "display_order": q.display_order,
             })
         return Response(data)
     
@@ -708,6 +724,28 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         return Response(
             {"question_id": question.id, "is_anonymous": question.is_anonymous},
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=["patch"])
+    def reorder(self, request, pk=None):
+        """
+        Update display_order for manual host reorder. Host only.
+        """
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        if request.user != question.event.created_by and not request.user.is_staff:
+            raise PermissionDenied("Only event host/admin can reorder questions.")
+
+        new_order = request.data.get("display_order")
+        if new_order is None:
+            return Response({"detail": "display_order is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        question.display_order = int(new_order)
+        question.save(update_fields=["display_order"])
+        return Response(
+            {"question_id": question.id, "display_order": question.display_order},
             status=status.HTTP_200_OK
         )
 
