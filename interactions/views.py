@@ -93,6 +93,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         Attach the current user when creating a question
         AND broadcast it to all connected QnA WebSocket clients.
         Handle moderation status based on event setting.
+        Handle anonymous status based on event setting or user toggle.
         """
         # Capture optional table ID from request body
         lounge_table_id = self.request.data.get("lounge_table")
@@ -108,6 +109,15 @@ class QuestionViewSet(viewsets.ModelViewSet):
         if question.event.qna_moderation_enabled:
             question.moderation_status = "pending"
             question.save(update_fields=["moderation_status"])
+
+        # Check if anonymous mode is enabled (event-wide override) or user submitted with anonymous toggle
+        is_anonymous = bool(self.request.data.get("is_anonymous", False))
+        if question.event.qna_anonymous_mode:
+            is_anonymous = True  # Force all questions to be anonymous
+
+        if is_anonymous != question.is_anonymous:
+            question.is_anonymous = is_anonymous
+            question.save(update_fields=["is_anonymous"])
 
         # Broadcast to the same Channels group used by QnAConsumer
         from channels.layers import get_channel_layer
@@ -137,6 +147,10 @@ class QuestionViewSet(viewsets.ModelViewSet):
             )
             asker_id = question.user_id
 
+        # If anonymous, show "Anonymous" as display name in broadcast
+        if question.is_anonymous:
+            display_name = "Anonymous"
+
         payload = {
             "type": "qna.question",
             "event_id": question.event_id,
@@ -149,6 +163,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "upvote_count": 0,
             "created_at": question.created_at.isoformat(),
             "moderation_status": question.moderation_status,  # NEW: include status
+            "is_anonymous": question.is_anonymous,  # Include anonymous status
         }
 
         async_to_sync(channel_layer.group_send)(
@@ -158,7 +173,19 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         # Optimize query by selecting related user
-        queryset = self.get_queryset().select_related("user")
+        queryset = self.get_queryset().select_related("user", "anonymized_by")
+
+        # Determine if user is a host (for visibility of anonymous questions)
+        event_id = request.query_params.get("event_id")
+        from events.models import Event
+        is_host = False
+        if event_id:
+            try:
+                event = Event.objects.get(pk=event_id)
+                is_host = (request.user == event.created_by or request.user.is_staff)
+            except Event.DoesNotExist:
+                pass
+
         data = []
         for q in queryset:
             # Fetch upvoters with their details
@@ -201,12 +228,19 @@ class QuestionViewSet(viewsets.ModelViewSet):
                     or (asker.email.split("@")[0] if asker.email else f"User {asker.id}")
                 )
                 asker_id = q.user_id
-            
+
+            # For non-hosts, hide the real name if question is anonymous
+            effective_name = asker_name
+            effective_id = asker_id
+            if q.is_anonymous and not is_host:
+                effective_name = "Anonymous"
+                effective_id = None
+
             data.append({
                 "id": q.id,
                 "content": q.content,
-                "user_id": asker_id,
-                "user_name": asker_name, # ✅ Fixed: explicit name field
+                "user_id": effective_id,
+                "user_name": effective_name,
                 "upvote_count": q.upvotes_count,  # annotated
                 "user_upvoted": q.user_upvoted,  # annotated boolean
                 "upvoters": upvoters_list,  # NEW: list of users who upvoted
@@ -218,6 +252,8 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "requires_followup": q.requires_followup,
                 "is_pinned": q.is_pinned,
                 "pinned_at": q.pinned_at.isoformat() if q.pinned_at else None,
+                "is_anonymous": q.is_anonymous,
+                "anonymized_by": q.anonymized_by_id,
             })
         return Response(data)
     
@@ -626,6 +662,52 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         return Response(
             {"question_id": question.id, "is_pinned": question.is_pinned},
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=["post"])
+    def anonymize(self, request, pk=None):
+        """
+        Toggle anonymous status for a question. Host only.
+        Broadcasts qna.anonymized when status changes.
+        """
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        user = request.user
+
+        # Permission check: Only host/admin can anonymize questions
+        is_host = (user == question.event.created_by or user.is_staff)
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can anonymize questions.")
+
+        # Toggle anonymous status
+        question.is_anonymous = not question.is_anonymous
+        question.anonymized_by = user if question.is_anonymous else None
+        question.save(update_fields=["is_anonymous", "anonymized_by"])
+
+        # Broadcast to WebSocket group
+        if question.lounge_table_id:
+            group = f"event_qna_{question.event_id}_table_{question.lounge_table_id}"
+        else:
+            group = f"event_qna_{question.event_id}_main"
+
+        channel_layer = get_channel_layer()
+
+        payload = {
+            "type": "qna.anonymized",
+            "event_id": question.event_id,
+            "question_id": question.id,
+            "is_anonymous": question.is_anonymous,
+        }
+
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.anonymized", "payload": payload},
+        )
+
+        return Response(
+            {"question_id": question.id, "is_anonymous": question.is_anonymous},
             status=status.HTTP_200_OK
         )
 

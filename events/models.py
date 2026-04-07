@@ -319,6 +319,10 @@ class Event(models.Model):
         default=False,
         help_text="Require host approval before Q&A questions are visible to attendees."
     )
+    qna_anonymous_mode = models.BooleanField(
+        default=False,
+        help_text="Force all Q&A questions to be submitted anonymously."
+    )
 
     # Multi-day Sessions Settings
     hours_calculation_session_types = models.JSONField(

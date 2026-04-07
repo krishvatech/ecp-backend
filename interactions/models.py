@@ -187,6 +187,18 @@ class Question(models.Model):
         related_name="pinned_questions",
         help_text="User who pinned this question.",
     )
+    is_anonymous = models.BooleanField(
+        default=False,
+        help_text="Whether the question was submitted anonymously.",
+    )
+    anonymized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="anonymized_questions",
+        help_text="Host who anonymized this question (null if self-anonymized by submitter).",
+    )
 
     class Meta:
         ordering = ["-created_at"]

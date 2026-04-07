@@ -402,3 +402,11 @@ class QnAConsumer(BaseEventConsumer):
         Triggered when a host pins or unpins a question.
         """
         await self.send_json(event.get("payload", {}))
+
+    async def qna_anonymized(self, event: Dict[str, Any]) -> None:
+        """
+        Called when group_send(type='qna.anonymized', payload=...) is triggered.
+        Forward anonymized question payload to all connected clients.
+        Triggered when a host toggles the anonymous status of a question.
+        """
+        await self.send_json(event.get("payload", {}))

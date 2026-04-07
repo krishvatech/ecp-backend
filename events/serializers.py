@@ -849,6 +849,7 @@ class EventSerializer(serializers.ModelSerializer):
             "show_public_moderators",
             "show_speed_networking_match_history",
             "qna_moderation_enabled",
+            "qna_anonymous_mode",
             "participants",
             "event_participants",
             "featured_participants",
