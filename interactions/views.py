@@ -27,6 +27,61 @@ class QuestionViewSet(viewsets.ModelViewSet):
     def _is_guest_user(user) -> bool:
         return bool(getattr(user, "is_guest", False))
 
+    def _build_absolute_media_url(self, raw_url):
+        if not raw_url:
+            return ""
+        if isinstance(raw_url, str) and raw_url.startswith(("http://", "https://")):
+            return raw_url
+        try:
+            return self.request.build_absolute_uri(raw_url)
+        except Exception:
+            return str(raw_url)
+
+    def _get_question_asker_snapshot(self, question, *, reveal_anonymous_name=True):
+        asker_name = "Audience"
+        asker_id = None
+        asker_avatar_url = ""
+
+        guest_asker = getattr(question, "guest_asker", None)
+        asker = getattr(question, "user", None)
+
+        if guest_asker:
+            asker_name = guest_asker.get_display_name()
+            asker_id = f"guest_{guest_asker.id}"
+        elif asker:
+            asker_name = (
+                (getattr(asker, "get_full_name", lambda: "")() or "").strip()
+                or asker.first_name
+                or asker.username
+                or (asker.email.split("@")[0] if asker.email else f"User {asker.id}")
+            )
+            asker_id = question.user_id
+
+            profile = getattr(asker, "profile", None)
+            raw_avatar = (
+                getattr(profile, "user_image", None)
+                or getattr(asker, "avatar", None)
+                or getattr(profile, "avatar", None)
+                or getattr(profile, "image", None)
+            )
+            if raw_avatar:
+                try:
+                    raw_avatar = raw_avatar.url
+                except Exception:
+                    raw_avatar = str(raw_avatar)
+                asker_avatar_url = self._build_absolute_media_url(raw_avatar)
+
+        if question.is_anonymous and not reveal_anonymous_name:
+            asker_name = "Anonymous"
+            asker_id = None
+            asker_avatar_url = ""
+
+        return {
+            "asker_id": asker_id,
+            "asker_name": asker_name,
+            "asker_avatar_url": asker_avatar_url,
+        }
+
     def get_queryset(self):
         event_id = self.request.query_params.get("event_id")
         # Optional: Filter by specific lounge table (or None for main room)
@@ -147,32 +202,21 @@ class QuestionViewSet(viewsets.ModelViewSet):
             # Broadcast ONLY to main room
             group = f"event_qna_{question.event_id}_main"
 
-        # Build payload shape consistent with QnAConsumer.receive_json
-        user = self.request.user
-        if self._is_guest_user(user):
-            display_name = user.guest.get_display_name()
-            asker_id = f"guest_{user.guest.id}"
-        else:
-            display_name = (
-                (getattr(user, "get_full_name", lambda: "")() or "").strip()
-                or user.first_name
-                or user.username
-                or (user.email.split("@")[0] if user.email else f"User {user.id}")
-            )
-            asker_id = question.user_id
-
-        # If anonymous, show "Anonymous" as display name in broadcast
-        if question.is_anonymous:
-            display_name = "Anonymous"
+        asker_snapshot = self._get_question_asker_snapshot(
+            question,
+            reveal_anonymous_name=not question.is_anonymous,
+        )
 
         payload = {
             "type": "qna.question",
             "event_id": question.event_id,
             "lounge_table_id": question.lounge_table_id,  # Include table ID in payload
             "question_id": question.id,
-            "user_id": asker_id,
-            "uid": asker_id,
-            "user": display_name,
+            "user_id": asker_snapshot["asker_id"],
+            "uid": asker_snapshot["asker_id"],
+            "user": asker_snapshot["asker_name"],
+            "user_name": asker_snapshot["asker_name"],
+            "user_avatar_url": asker_snapshot["asker_avatar_url"],
             "content": question.content,
             "upvote_count": 0,
             "created_at": question.created_at.isoformat(),
@@ -188,7 +232,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         # Optimize query by selecting related user
-        queryset = self.get_queryset().select_related("user", "anonymized_by")
+        queryset = self.get_queryset().select_related("user", "user__profile", "guest_asker", "anonymized_by")
 
         # Determine if user is a host (for visibility of anonymous questions)
         event_id = request.query_params.get("event_id")
@@ -227,35 +271,17 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 for g in guest_upvoters
             ]
 
-            # Resolve asker name
-            asker = q.user
-            guest_asker = getattr(q, "guest_asker", None)
-            asker_name = "Audience"
-            asker_id = None
-            if guest_asker:
-                asker_name = guest_asker.get_display_name()
-                asker_id = f"guest_{guest_asker.id}"
-            elif asker:
-                asker_name = (
-                    (getattr(asker, "get_full_name", lambda: "")() or "").strip()
-                    or asker.first_name
-                    or asker.username
-                    or (asker.email.split("@")[0] if asker.email else f"User {asker.id}")
-                )
-                asker_id = q.user_id
-
-            # For non-hosts, hide the real name if question is anonymous
-            effective_name = asker_name
-            effective_id = asker_id
-            if q.is_anonymous and not is_host:
-                effective_name = "Anonymous"
-                effective_id = None
+            asker_snapshot = self._get_question_asker_snapshot(
+                q,
+                reveal_anonymous_name=is_host,
+            )
 
             data.append({
                 "id": q.id,
                 "content": q.content,
-                "user_id": effective_id,
-                "user_name": effective_name,
+                "user_id": asker_snapshot["asker_id"],
+                "user_name": asker_snapshot["asker_name"],
+                "user_avatar_url": asker_snapshot["asker_avatar_url"],
                 "upvote_count": q.upvotes_count,  # annotated
                 "user_upvoted": q.user_upvoted,  # annotated boolean
                 "upvoters": upvoters_list,  # NEW: list of users who upvoted
@@ -462,29 +488,16 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         channel_layer = get_channel_layer()
 
-        # Get asker display name
-        if question.guest_asker:
-            display_name = question.guest_asker.get_display_name()
-            asker_id = f"guest_{question.guest_asker.id}"
-        elif question.user:
-            display_name = (
-                (getattr(question.user, "get_full_name", lambda: "")() or "").strip()
-                or question.user.first_name
-                or question.user.username
-                or (question.user.email.split("@")[0] if question.user.email else f"User {question.user.id}")
-            )
-            asker_id = question.user_id
-        else:
-            display_name = "Audience"
-            asker_id = None
+        asker_snapshot = self._get_question_asker_snapshot(question, reveal_anonymous_name=True)
 
         payload = {
             "type": "qna.approved",
             "event_id": question.event_id,
             "question_id": question.id,
             "content": question.content,
-            "user_id": asker_id,
-            "user_name": display_name,
+            "user_id": asker_snapshot["asker_id"],
+            "user_name": asker_snapshot["asker_name"],
+            "user_avatar_url": asker_snapshot["asker_avatar_url"],
             "upvote_count": question.upvoters.count() + question.guest_upvotes.count(),
             "created_at": question.created_at.isoformat(),
         }
