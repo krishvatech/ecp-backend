@@ -7,9 +7,15 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.contrib.auth import get_user_model
+import html
+import ipaddress
+import re
+import socket
+from urllib.parse import urljoin, urlparse
 
 from .models import Question, QuestionGuestUpvote, QuestionUpvote
 from .serializers import QuestionSerializer
+import requests
 
 User = get_user_model()
 
@@ -80,6 +86,97 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "asker_id": asker_id,
             "asker_name": asker_name,
             "asker_avatar_url": asker_avatar_url,
+        }
+
+    def _is_public_preview_url(self, raw_url):
+        try:
+            parsed = urlparse(str(raw_url or "").strip())
+        except Exception:
+            return False
+
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return False
+
+        hostname = parsed.hostname.strip().lower()
+        if hostname in {"localhost", "127.0.0.1", "::1"} or hostname.endswith(".local"):
+            return False
+
+        try:
+            ip = ipaddress.ip_address(hostname)
+            return not (
+                ip.is_private or
+                ip.is_loopback or
+                ip.is_link_local or
+                ip.is_multicast or
+                ip.is_reserved
+            )
+        except ValueError:
+            pass
+
+        try:
+            infos = socket.getaddrinfo(hostname, None)
+        except socket.gaierror:
+            return False
+
+        for info in infos:
+            try:
+                resolved_ip = ipaddress.ip_address(info[4][0])
+            except Exception:
+                continue
+            if (
+                resolved_ip.is_private or
+                resolved_ip.is_loopback or
+                resolved_ip.is_link_local or
+                resolved_ip.is_multicast or
+                resolved_ip.is_reserved
+            ):
+                return False
+        return True
+
+    def _extract_link_preview(self, raw_url):
+        if not self._is_public_preview_url(raw_url):
+            raise ValidationError({"url": "Only public http(s) URLs are allowed."})
+
+        response = requests.get(
+            raw_url,
+            headers={
+                "User-Agent": "EventsCommunityPlatformBot/1.0 (+link-preview)",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+            timeout=5,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+
+        final_url = response.url or raw_url
+        text = response.text[:200000]
+
+        def first_match(patterns):
+            for pattern in patterns:
+                match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                if match:
+                    value = html.unescape((match.group(1) or "").strip())
+                    if value:
+                        return value
+            return ""
+
+        title = first_match([
+            r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
+            r'<meta[^>]+name=["\']twitter:title["\'][^>]+content=["\']([^"\']+)["\']',
+            r"<title[^>]*>(.*?)</title>",
+        ])
+
+        favicon = first_match([
+            r'<link[^>]+rel=["\'][^"\']*(?:shortcut icon|icon)[^"\']*["\'][^>]+href=["\']([^"\']+)["\']',
+        ])
+        favicon_url = urljoin(final_url, favicon) if favicon else urljoin(final_url, "/favicon.ico")
+
+        parsed_final = urlparse(final_url)
+        return {
+            "url": final_url,
+            "title": title or parsed_final.netloc,
+            "hostname": parsed_final.netloc,
+            "favicon_url": favicon_url,
         }
 
     def get_queryset(self):
@@ -298,6 +395,19 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "display_order": q.display_order,
             })
         return Response(data)
+
+    @action(detail=False, methods=["get"], url_path="link-preview")
+    def link_preview(self, request):
+        raw_url = request.query_params.get("url", "")
+        if not raw_url:
+            raise ValidationError({"url": "This query parameter is required."})
+
+        try:
+            preview = self._extract_link_preview(raw_url)
+        except requests.RequestException:
+            return Response({"detail": "Unable to fetch link preview."}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response(preview, status=status.HTTP_200_OK)
     
 
     @action(detail=True, methods=["post"])
