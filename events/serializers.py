@@ -119,7 +119,7 @@ def build_profile_url(user_id):
     return f"/community/rich-profile/{user_id}" if user_id else None
 
 
-def serialize_featured_participants(event, context=None):
+def serialize_featured_participants(event, context=None, skip_visibility_filter=False):
     context = context or {}
     request = context.get("request")
     featured = []
@@ -127,11 +127,15 @@ def serialize_featured_participants(event, context=None):
         event.participants.select_related("user", "user__profile", "virtual_speaker")
         .all()
     )
-    visible_participants = [
-        participant
-        for participant in participants
-        if is_public_role_visible(event, participant.role)
-    ]
+    # Skip visibility filter if requested (e.g., for public marketing pages)
+    if skip_visibility_filter:
+        visible_participants = list(participants)
+    else:
+        visible_participants = [
+            participant
+            for participant in participants
+            if is_public_role_visible(event, participant.role)
+        ]
     visible_participants.sort(
         key=lambda participant: (
             role_priority(participant.role),
@@ -1622,11 +1626,15 @@ class EventSerializer(serializers.ModelSerializer):
         return grouped
 
     def get_featured_participants(self, obj):
-        participants = serialize_featured_participants(obj, self.context)
+        request = self.context.get("request")
+        skip_visibility = request and request.query_params.get("featured_all") == "true" if request else False
+        participants = serialize_featured_participants(obj, self.context, skip_visibility_filter=skip_visibility)
         return FeaturedParticipantSerializer(participants, many=True).data
 
     def get_featured_participants_total(self, obj):
-        return len(serialize_featured_participants(obj, self.context))
+        request = self.context.get("request")
+        skip_visibility = request and request.query_params.get("featured_all") == "true" if request else False
+        return len(serialize_featured_participants(obj, self.context, skip_visibility_filter=skip_visibility))
 
     def get_public_registered_count(self, obj):
         return compute_public_registered_count(obj)
@@ -2022,11 +2030,15 @@ class PublicEventSerializer(serializers.ModelSerializer):
             return str(obj.preview_image)
 
     def get_featured_participants(self, obj):
-        participants = serialize_featured_participants(obj, self.context)
+        request = self.context.get("request")
+        skip_visibility = request and request.query_params.get("featured_all") == "true" if request else False
+        participants = serialize_featured_participants(obj, self.context, skip_visibility_filter=skip_visibility)
         return FeaturedParticipantSerializer(participants, many=True).data
 
     def get_featured_participants_total(self, obj):
-        return len(serialize_featured_participants(obj, self.context))
+        request = self.context.get("request")
+        skip_visibility = request and request.query_params.get("featured_all") == "true" if request else False
+        return len(serialize_featured_participants(obj, self.context, skip_visibility_filter=skip_visibility))
 
 
 class EventLiteSerializer(serializers.ModelSerializer):
