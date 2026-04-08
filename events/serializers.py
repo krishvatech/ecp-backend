@@ -164,13 +164,27 @@ def serialize_featured_participants(event, context=None, skip_visibility_filter=
         professional_info = ""
         if participant.participant_type == "staff" and participant.user and hasattr(participant.user, 'profile'):
             profile = participant.user.profile
-            # Priority: headline > (job_title + company) > event_bio
+            # Priority: headline > latest_experience > (job_title + company) > event_bio
             if profile.headline:
                 professional_info = profile.headline
             else:
-                parts = [profile.job_title, profile.company]
-                combined = " – ".join([p for p in parts if p]).strip()
-                professional_info = combined or participant.event_bio
+                # Try to get latest experience (most recent work)
+                latest_experience = (
+                    participant.user.experiences.all()
+                    .order_by('-start_date', '-end_date', '-id')
+                    .first()
+                )
+                if latest_experience:
+                    # Use position (job title) and community_name (company) from experience
+                    parts = [latest_experience.position, latest_experience.community_name]
+                    professional_info = " – ".join([p for p in parts if p]).strip()
+                else:
+                    # Fallback to profile job_title and company
+                    parts = [profile.job_title, profile.company]
+                    professional_info = " – ".join([p for p in parts if p]).strip()
+
+                # Final fallback to event bio if nothing else
+                professional_info = professional_info or participant.event_bio
         elif participant.participant_type == "guest":
             professional_info = participant.guest_bio
         elif participant.participant_type == "virtual" and participant.virtual_speaker:
