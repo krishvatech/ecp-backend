@@ -5105,6 +5105,59 @@ class EventViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="rtk/join")
+    def rtk_join(self, request, pk=None):
+        """
+        Join this event's Cloudflare RealtimeKit (RTK) meeting.
+
+        Returns an RTK auth token that the frontend uses with RealtimeKit SDK.
+        Similar flow to dyte_join but uses RTK API instead.
+        """
+        from .utils import ensure_rtk_meeting_for_event, add_rtk_participant
+        import os
+
+        event = self.get_object()
+        user = request.user
+        role = request.data.get("role", "audience")
+
+        # Determine if user is a host/publisher
+        is_host = (
+            role == "publisher"
+            and (event.community.owner == user or user.is_staff)
+        )
+
+        RTK_PRESET_HOST = os.getenv("RTK_PRESET_HOST", "participant")
+        RTK_PRESET_PARTICIPANT = os.getenv("RTK_PRESET_PARTICIPANT", "participant")
+        preset_name = RTK_PRESET_HOST if is_host else RTK_PRESET_PARTICIPANT
+
+        # Ensure RTK meeting exists for this event
+        meeting_id, err = ensure_rtk_meeting_for_event(event)
+        if err:
+            return Response(
+                {"error": f"Could not create RTK meeting: {err}"},
+                status=500,
+            )
+
+        # Add participant and get auth token
+        display_name = user.get_full_name() or user.username or user.email or "Guest"
+        auth_token, err = add_rtk_participant(
+            meeting_id, user.id, display_name, preset_name
+        )
+        if err:
+            return Response(
+                {"error": f"Could not add participant: {err}"},
+                status=500,
+            )
+
+        return Response(
+            {
+                "authToken": auth_token,
+                "meetingId": meeting_id,
+                "presetName": preset_name,
+                "role": "publisher" if is_host else "audience",
+            }
+        )
+
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="dyte/preview-token")
     def dyte_preview_token(self, request, pk=None):
         """

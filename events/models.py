@@ -188,6 +188,8 @@ class Event(models.Model):
     # Dyte live meeting fields
     dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     dyte_meeting_title = models.CharField(max_length=255, blank=True, null=True)
+    # Cloudflare RealtimeKit meeting fields
+    rtk_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     # Cloudflare RealtimeKit recording control fields
     rtk_recording_id = models.CharField(max_length=255, blank=True, null=True)
     is_recording = models.BooleanField(default=False)

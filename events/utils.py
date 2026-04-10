@@ -231,3 +231,79 @@ def cache_matching_scores(timeout=120):
 
         return wrapper
     return decorator
+
+
+# ============================================
+# Cloudflare RealtimeKit (RTK) Integration
+# ============================================
+
+CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
+RTK_API_KEY = os.getenv("RTK_API_KEY", "")
+RTK_PROJECT_ID = os.getenv("RTK_PROJECT_ID", "")
+
+RTK_API_BASE = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/realtime/kit/{RTK_PROJECT_ID}"
+
+
+def _rtk_cf_headers():
+    """HTTP headers for Cloudflare RealtimeKit REST API."""
+    return {
+        "Authorization": f"Bearer {RTK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def ensure_rtk_meeting_for_event(event):
+    """
+    Create RTK meeting via Cloudflare API if not already created.
+    Returns: (meeting_id, error_message)
+    """
+    if event.rtk_meeting_id:
+        return event.rtk_meeting_id, None
+
+    try:
+        resp = requests.post(
+            f"{RTK_API_BASE}/meetings",
+            json={"title": event.title},
+            headers=_rtk_cf_headers(),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        meeting_id = resp.json().get("data", {}).get("id")
+        if not meeting_id:
+            return None, "No meeting ID in response"
+
+        event.rtk_meeting_id = meeting_id
+        event.save(update_fields=["rtk_meeting_id"])
+        logger.info(f"Created RTK meeting {meeting_id} for event {event.id}")
+        return meeting_id, None
+    except Exception as e:
+        logger.error(f"Failed to create RTK meeting for event {event.id}: {e}")
+        return None, str(e)
+
+
+def add_rtk_participant(meeting_id, user_id, name, preset_name):
+    """
+    Add participant to RTK meeting and get auth token.
+    Returns: (auth_token, error_message)
+    """
+    try:
+        resp = requests.post(
+            f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
+            json={
+                "name": name,
+                "preset_name": preset_name,
+                "custom_participant_id": str(user_id),
+            },
+            headers=_rtk_cf_headers(),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        token = resp.json().get("data", {}).get("token")
+        if not token:
+            return None, "No auth token in response"
+
+        logger.info(f"Added RTK participant {user_id} to meeting {meeting_id}")
+        return token, None
+    except Exception as e:
+        logger.error(f"Failed to add RTK participant {user_id} to meeting {meeting_id}: {e}")
+        return None, str(e)
