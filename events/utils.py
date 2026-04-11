@@ -255,30 +255,40 @@ def _rtk_cf_headers():
 def ensure_rtk_meeting_for_event(event):
     """
     Create RTK meeting via Cloudflare API if not already created.
+    Uses select_for_update() to prevent race conditions.
     Returns: (meeting_id, error_message)
     """
-    if event.rtk_meeting_id:
-        return event.rtk_meeting_id, None
+    from django.db import transaction
+    from events.models import Event
 
-    try:
-        resp = requests.post(
-            f"{RTK_API_BASE}/meetings",
-            json={"title": event.title},
-            headers=_rtk_cf_headers(),
-            timeout=10,
-        )
-        resp.raise_for_status()
-        meeting_id = resp.json().get("data", {}).get("id")
-        if not meeting_id:
-            return None, "No meeting ID in response"
+    # Lock the event row to prevent concurrent creation
+    with transaction.atomic():
+        # Re-fetch the event with a lock to catch any concurrent updates
+        event = Event.objects.select_for_update().get(pk=event.pk)
 
-        event.rtk_meeting_id = meeting_id
-        event.save(update_fields=["rtk_meeting_id"])
-        logger.info(f"Created RTK meeting {meeting_id} for event {event.id}")
-        return meeting_id, None
-    except Exception as e:
-        logger.error(f"Failed to create RTK meeting for event {event.id}: {e}")
-        return None, str(e)
+        # Check again after acquiring lock
+        if event.rtk_meeting_id:
+            return event.rtk_meeting_id, None
+
+        try:
+            resp = requests.post(
+                f"{RTK_API_BASE}/meetings",
+                json={"title": event.title},
+                headers=_rtk_cf_headers(),
+                timeout=10,
+            )
+            resp.raise_for_status()
+            meeting_id = resp.json().get("data", {}).get("id")
+            if not meeting_id:
+                return None, "No meeting ID in response"
+
+            event.rtk_meeting_id = meeting_id
+            event.save(update_fields=["rtk_meeting_id"])
+            logger.info(f"Created RTK meeting {meeting_id} for event {event.id}")
+            return meeting_id, None
+        except Exception as e:
+            logger.error(f"Failed to create RTK meeting for event {event.id}: {e}")
+            return None, str(e)
 
 
 def add_rtk_participant(meeting_id, user_id, name, preset_name):
