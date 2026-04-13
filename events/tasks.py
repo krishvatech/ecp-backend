@@ -501,7 +501,7 @@ def _build_lounge_state_sync(event_id):
                 "name": t.name,
                 "category": t.category,
                 "max_seats": t.max_seats,
-                "dyte_meeting_id": t.dyte_meeting_id,
+                "rtk_meeting_id": t.rtk_meeting_id,
                 "icon_url": icon_url,
                 "participants": participants
             })

@@ -43,7 +43,7 @@ urlpatterns = [
     path("auth/guest-register/", GuestRegisterView.as_view(), name="guest-register"),
     path("auth/guest-register/link/", GuestRegisterLinkView.as_view(), name="guest-register-link"),
 ] + router.urls + [
-    path("events/recording/webhook/", RecordingWebhookView.as_view(), name="dyte-recording-webhook"),
+    path("events/recording/webhook/", RecordingWebhookView.as_view(), name="rtk-recording-webhook"),
     path("realtime/webhook/", realtime_webhook, name="realtime-webhook"),
     path(
         "realtimekit/webhooks/chat-synced/",

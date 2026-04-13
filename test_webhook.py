@@ -14,7 +14,7 @@ from rest_framework.test import APIRequestFactory
 event = Event.objects.get(id=643)
 print(f"\n{'='*60}")
 print(f"Event: {event.title}")
-print(f"Meeting ID: {event.dyte_meeting_id}")
+print(f"Meeting ID: {event.rtk_meeting_id}")
 print(f"\nBEFORE webhook:")
 print(f"  replay_publishing_mode: {event.replay_publishing_mode}")
 print(f"  replay_visible_to_participants: {event.replay_visible_to_participants}")
@@ -24,7 +24,7 @@ print(f"  recording_url: {event.recording_url}")
 factory = APIRequestFactory()
 payload = {
     "event": "recording.statusUpdate",  # ✅ REQUIRED!
-    "meeting": {"id": event.dyte_meeting_id},
+    "meeting": {"id": event.rtk_meeting_id},
     "recording": {
         "recordingId": "test-123",
         "status": "UPLOADED",
@@ -35,7 +35,7 @@ payload = {
 }
 
 view = RecordingWebhookView.as_view()
-request = factory.post('/webhook/dyte-recording/', json.dumps(payload), content_type='application/json')
+request = factory.post('/webhook/rtk-recording/', json.dumps(payload), content_type='application/json')
 response = view(request)
 
 print(f"\nWebhook response: {response.status_code}")

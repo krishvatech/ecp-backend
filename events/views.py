@@ -84,13 +84,12 @@ from .serializers import (
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
-    DYTE_API_BASE,
-    DYTE_AUTH_HEADER,
-    DYTE_PRESET_HOST,
-    DYTE_PRESET_PARTICIPANT,
-    _dyte_headers,
-    create_dyte_meeting,
-    add_dyte_participant,
+    RTK_API_BASE,
+    RTK_PRESET_HOST,
+    RTK_PRESET_PARTICIPANT,
+    _rtk_headers,
+    create_rtk_meeting,
+    add_rtk_participant,
     send_admission_status_changed,  # ✅ NEW: For real-time admission status updates
 )
 from asgiref.sync import async_to_sync
@@ -190,13 +189,13 @@ def _rtk_headers():
     }
 
 
-def _ensure_dyte_meeting_for_event(event: Event) -> str:
+def _ensure_rtk_meeting_for_event(event: Event) -> str:
     """
-    Ensure this Event has a Dyte meeting.
-    If not, create one via Dyte API and persist dyte_meeting_id.
+    Ensure this Event has a RTK meeting.
+    If not, create one via RTK API and persist rtk_meeting_id.
     """
-    if event.dyte_meeting_id:
-        return event.dyte_meeting_id
+    if event.rtk_meeting_id:
+        return event.rtk_meeting_id
 
     payload = {
         "title": event.title or f"Event {event.id}",
@@ -204,27 +203,27 @@ def _ensure_dyte_meeting_for_event(event: Event) -> str:
     }
     try:
         resp = requests.post(
-            f"{DYTE_API_BASE}/meetings",
-            headers=_dyte_headers(),
+            f"{RTK_API_BASE}/meetings",
+            headers=_rtk_headers(),
             json=payload,
             timeout=10,
         )
     except requests.RequestException as e:
-        logger.exception("❌ Dyte meeting create exception: %s", e)
+        logger.exception("❌ RTK meeting create exception: %s", e)
         raise RuntimeError(str(e))
 
     if resp.status_code not in (200, 201):
-        logger.error("❌ Dyte meeting create failed: %s", resp.text[:500])
-        raise RuntimeError(f"Dyte meeting create failed ({resp.status_code})")
+        logger.error("❌ RTK meeting create failed: %s", resp.text[:500])
+        raise RuntimeError(f"RTK meeting create failed ({resp.status_code})")
 
     data = (resp.json() or {}).get("data") or {}
     meeting_id = data.get("id")
     if not meeting_id:
-        raise RuntimeError("Dyte response missing meeting id")
+        raise RuntimeError("RTK response missing meeting id")
 
-    event.dyte_meeting_id = meeting_id
-    event.dyte_meeting_title = data.get("title", event.title)
-    event.save(update_fields=["dyte_meeting_id", "dyte_meeting_title", "updated_at"])
+    event.rtk_meeting_id = meeting_id
+    event.rtk_meeting_title = data.get("title", event.title)
+    event.save(update_fields=["rtk_meeting_id", "rtk_meeting_title", "updated_at"])
     return meeting_id
 
 def _start_rtk_recording_for_event(event: Event) -> None:
@@ -234,11 +233,11 @@ def _start_rtk_recording_for_event(event: Event) -> None:
     We do NOT raise errors to the caller; we just log, because
     live-status should still succeed even if recording fails.
     """
-    # Meeting id is the Dyte meeting id stored on the Event
-    meeting_id = event.dyte_meeting_id
+    # Meeting id is the RTK meeting id stored on the Event
+    meeting_id = event.rtk_meeting_id
     if not meeting_id:
         try:
-            meeting_id = _ensure_dyte_meeting_for_event(event)
+            meeting_id = _ensure_rtk_meeting_for_event(event)
         except Exception as exc:
             logger.exception(
                 "❌ Cannot start recording; failed to ensure meeting for event=%s: %s",
@@ -296,7 +295,7 @@ def _stop_rtk_recording_for_event(event: Event) -> None:
     We do NOT raise errors to the caller; we just log, because
     end-meeting should still succeed even if stop-recording fails.
     """
-    meeting_id = event.dyte_meeting_id
+    meeting_id = event.rtk_meeting_id
     if not meeting_id:
         logger.warning(
             "⚠️ Cannot stop recording; no meeting_id for event=%s",
@@ -388,10 +387,10 @@ def _stop_rtk_recording_for_event(event: Event) -> None:
 
 def _start_rtk_recording_for_event_manual(event: Event):
     """Start recording and return status tuple for API response."""
-    meeting_id = event.dyte_meeting_id
+    meeting_id = event.rtk_meeting_id
     if not meeting_id:
         try:
-            meeting_id = _ensure_dyte_meeting_for_event(event)
+            meeting_id = _ensure_rtk_meeting_for_event(event)
         except Exception as exc:
             logger.exception("❌ Cannot ensure meeting before start recording for event=%s: %s", event.id, exc)
             return False, "", "Failed to ensure meeting before starting recording."
@@ -1067,7 +1066,7 @@ class EventViewSet(viewsets.ModelViewSet):
     - Filter helpers (format, category, date range, price)
     - Utility endpoints (categories, formats, locations, max-price, mine)
     - Registration helpers (register, register-bulk)
-    - Dyte meeting join (/dyte/join) and live status (/live-status)
+    - RTK meeting join (/rtk/join) and live status (/live-status)
     """
     parser_classes = (MultiPartParser, FormParser, JSONParser)
     serializer_class = EventSerializer
@@ -1681,7 +1680,7 @@ class EventViewSet(viewsets.ModelViewSet):
         # - waiting_started_at is intentionally left NULL because they haven't JOINED yet
         #
         # Users are only added to the waiting room list when they actually JOIN the event
-        # via the dyte/join endpoint, which sets waiting_started_at=now()
+        # via the rtk/join endpoint, which sets waiting_started_at=now()
         initial_admission_status = "waiting" if event.waiting_room_enabled else "admitted"
 
         obj, was_created = EventRegistration.objects.get_or_create(
@@ -2139,7 +2138,7 @@ class EventViewSet(viewsets.ModelViewSet):
     )
     def active_speaker(self, request, pk=None):
         """
-        Update the `active_speaker` field on the Event whenever Dyte reports
+        Update the `active_speaker` field on the Event whenever RTK reports
         a new active speaker.
 
         Expected body:
@@ -2189,7 +2188,7 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         Mark this event's live meeting as ended.
 
-        We trust Dyte's own permissions: only the host can click
+        We trust RTK's own permissions: only the host can click
         "End meeting for all" in the UI. Here we just persist that state.
         Repeated calls from the host are harmless.
         """
@@ -3709,7 +3708,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "name": t.name,
                 "category": t.category,
                 "max_seats": t.max_seats,
-                "dyte_meeting_id": t.dyte_meeting_id,
+                "rtk_meeting_id": t.rtk_meeting_id,
                 "icon_url": icon_url,
                 "participants": participants
             })
@@ -3736,25 +3735,25 @@ class EventViewSet(viewsets.ModelViewSet):
         max_seats = int(request.data.get("max_seats", 4))
         icon_file = request.FILES.get("icon") if hasattr(request, "FILES") else None
 
-        # Create table with a unique Dyte meeting
+        # Create table with a unique RTK meeting
         payload = {
             "title": f"[{category}] {event.title} - {name}",
             "record_on_start": False,
         }
         try:
-            resp = requests.post(f"{DYTE_API_BASE}/meetings", headers=_dyte_headers(), json=payload, timeout=10)
+            resp = requests.post(f"{RTK_API_BASE}/meetings", headers=_rtk_headers(), json=payload, timeout=10)
             resp.raise_for_status()
-            dyte_id = resp.json().get("data", {}).get("id")
+            rtk_id = resp.json().get("data", {}).get("id")
         except Exception as e:
-            logger.error(f"Failed to create Dyte meeting for lounge table: {e}")
-            dyte_id = None
+            logger.error(f"Failed to create RTK meeting for lounge table: {e}")
+            rtk_id = None
 
         table = LoungeTable.objects.create(
             event=event,
             name=name,
             category=category,
             max_seats=max_seats,
-            dyte_meeting_id=dyte_id,
+            rtk_meeting_id=rtk_id,
             icon=icon_file,
         )
 
@@ -3768,7 +3767,7 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response({
             "id": table.id,
             "name": table.name,
-            "dyte_meeting_id": table.dyte_meeting_id,
+            "rtk_meeting_id": table.rtk_meeting_id,
             "icon_url": icon_url,
         }, status=201)
 
@@ -3865,7 +3864,7 @@ class EventViewSet(viewsets.ModelViewSet):
     def lounge_join_table(self, request, pk=None):
         print(f"DEBUG: lounge_join_table hit for event {pk}")
         """
-        Get a Dyte authToken for a specific Social Lounge or Breakout room table.
+        Get an RTK authToken for a specific Social Lounge or Breakout room table.
         - For BREAKOUT tables: Allow join during live events regardless of lounge settings
         - For LOUNGE tables: Validate that the lounge is currently open before allowing join
         - Supports both registered users and guest participants (via GuestJWTAuthentication)
@@ -3890,48 +3889,48 @@ class EventViewSet(viewsets.ModelViewSet):
 
             # Guests can join lounge/breakout tables with host preset (full permissions)
             try:
-                meeting_id = _ensure_dyte_meeting_for_event(event)
-                dyte_meeting_id = table.dyte_meeting_id if table.dyte_meeting_id else meeting_id
+                meeting_id = _ensure_rtk_meeting_for_event(event)
+                rtk_meeting_id = table.rtk_meeting_id if table.rtk_meeting_id else meeting_id
             except RuntimeError as e:
-                logger.error(f"Dyte meeting error for lounge table {table.id}: {str(e)}")
+                logger.error(f"RTK meeting error for lounge table {table.id}: {str(e)}")
                 return Response(
-                    {"error": "dyte_meeting_error", "detail": str(e)},
+                    {"error": "rtk_meeting_error", "detail": str(e)},
                     status=500,
                 )
 
             # Add guest as table participant (host preset for lounge tables)
-            dyte_participant_id = f"guest_{guest.id}"
-            dyte_resp = add_dyte_participant(
-                meeting_id=dyte_meeting_id,
-                user_id=dyte_participant_id,
+            rtk_participant_id = f"guest_{guest.id}"
+            rtk_resp = add_rtk_participant(
+                meeting_id=rtk_meeting_id,
+                user_id=rtk_participant_id,
                 name=guest.get_display_name(),
-                preset_name=DYTE_PRESET_HOST,  # Host preset for lounge tables
+                preset_name=RTK_PRESET_HOST,  # Host preset for lounge tables
             )
-            # add_dyte_participant() returns (token, error_message)
+            # add_rtk_participant() returns (token, error_message)
             auth_token = ""
-            participant_id = dyte_participant_id
-            if isinstance(dyte_resp, tuple):
-                auth_token, dyte_error = dyte_resp
-                if dyte_error or not auth_token:
+            participant_id = rtk_participant_id
+            if isinstance(rtk_resp, tuple):
+                auth_token, rtk_error = rtk_resp
+                if rtk_error or not auth_token:
                     return Response(
-                        {"error": "dyte_participant_error", "detail": dyte_error or "Dyte did not return auth token."},
+                        {"error": "rtk_participant_error", "detail": rtk_error or "RTK did not return auth token."},
                         status=500,
                     )
             else:
-                data = (dyte_resp or {}).get("data", {})
+                data = (rtk_resp or {}).get("data", {})
                 auth_token = data.get("token", "")
-                participant_id = data.get("id", dyte_participant_id)
+                participant_id = data.get("id", rtk_participant_id)
                 if not auth_token:
                     return Response(
-                        {"error": "dyte_token_missing", "detail": "Dyte did not return auth token."},
+                        {"error": "rtk_token_missing", "detail": "RTK did not return auth token."},
                         status=500,
                     )
 
             # Track guest lounge presence on GuestAttendee (LoungeParticipant has no guest FK)
             guest.current_location = "social_lounge" if table.category == "LOUNGE" else "breakout_room"
-            guest.dyte_participant_id = participant_id
+            guest.rtk_participant_id = participant_id
             guest.lounge_table = table
-            guest.save(update_fields=["current_location", "dyte_participant_id", "lounge_table"])
+            guest.save(update_fields=["current_location", "rtk_participant_id", "lounge_table"])
 
             logger.info(f"Guest {guest.email} joined lounge table {table.id}")
 
@@ -3940,8 +3939,8 @@ class EventViewSet(viewsets.ModelViewSet):
                 "token": auth_token,
                 "authToken": auth_token,
                 "participant_id": participant_id,
-                "meetingId": dyte_meeting_id,
-                "presetName": DYTE_PRESET_HOST,
+                "meetingId": rtk_meeting_id,
+                "presetName": RTK_PRESET_HOST,
                 "role": "publisher",
                 "isGuest": True,
                 "guestName": guest.get_display_name(),
@@ -4096,25 +4095,25 @@ class EventViewSet(viewsets.ModelViewSet):
                 event.save(update_fields=["is_live"])
 
         # Ensure meeting exists for this table
-        meeting_id = table.dyte_meeting_id
+        meeting_id = table.rtk_meeting_id
         if not meeting_id:
              # Try to create one if it somehow went missing
             payload = {"title": f"Table: {table.name}", "record_on_start": False}
             try:
-                resp = requests.post(f"{DYTE_API_BASE}/meetings", headers=_dyte_headers(), json=payload, timeout=10)
+                resp = requests.post(f"{RTK_API_BASE}/meetings", headers=_rtk_headers(), json=payload, timeout=10)
                 resp.raise_for_status()
                 meeting_id = resp.json().get("data", {}).get("id")
-                table.dyte_meeting_id = meeting_id
-                table.save(update_fields=["dyte_meeting_id"])
+                table.rtk_meeting_id = meeting_id
+                table.save(update_fields=["rtk_meeting_id"])
             except Exception as e:
-                return Response({"error": "dyte_creation_failed", "detail": str(e)}, status=500)
+                return Response({"error": "rtk_creation_failed", "detail": str(e)}, status=500)
 
         # Add participant to the table meeting
         user = request.user
 
         # ✅ CLEANUP: Remove any stale LoungeParticipant records before joining
         # This prevents 409 conflicts when a user rejoins after leaving
-        # NOTE: We only clean up Django DB records here, Dyte cleanup happens below if needed
+        # NOTE: We only clean up Django DB records here, RTK cleanup happens below if needed
         stale_records = LoungeParticipant.objects.filter(
             table__event_id=event.id,
             user=user
@@ -4122,25 +4121,25 @@ class EventViewSet(viewsets.ModelViewSet):
 
         for stale in stale_records:
             try:
-                # Store Dyte info before deleting the record
-                dyte_meeting_id = stale.table.dyte_meeting_id
-                dyte_participant_id = stale.dyte_participant_id
+                # Store RTK info before deleting the record
+                rtk_meeting_id = stale.table.rtk_meeting_id
+                rtk_participant_id = stale.rtk_participant_id
 
                 # Delete the stale DB record first (quick operation)
                 stale.delete()
                 logger.info(f"[LOUNGE_JOIN] Cleaned up stale LoungeParticipant record for user {user.id}")
 
-                # Try to remove from Dyte asynchronously (don't block if it fails)
-                if dyte_participant_id and dyte_meeting_id:
+                # Try to remove from RTK asynchronously (don't block if it fails)
+                if rtk_participant_id and rtk_meeting_id:
                     try:
                         requests.delete(
-                            f"{DYTE_API_BASE}/meetings/{dyte_meeting_id}/participants/{dyte_participant_id}",
-                            headers=_dyte_headers(),
+                            f"{RTK_API_BASE}/meetings/{rtk_meeting_id}/participants/{rtk_participant_id}",
+                            headers=_rtk_headers(),
                             timeout=5,  # Shorter timeout for cleanup, don't block
                         )
-                        logger.info(f"[LOUNGE_JOIN] Cleaned up stale Dyte participant {dyte_participant_id}")
+                        logger.info(f"[LOUNGE_JOIN] Cleaned up stale RTK participant {rtk_participant_id}")
                     except Exception as e:
-                        logger.warning(f"[LOUNGE_JOIN] Failed to remove stale Dyte participant (non-blocking): {e}")
+                        logger.warning(f"[LOUNGE_JOIN] Failed to remove stale RTK participant (non-blocking): {e}")
             except Exception as e:
                 logger.warning(f"[LOUNGE_JOIN] Error cleaning stale record: {e}")
 
@@ -4149,8 +4148,8 @@ class EventViewSet(viewsets.ModelViewSet):
         try:
             logger.info(f"[LOUNGE_JOIN] Checking for duplicates: user {user.id}")
             check_resp = requests.get(
-                f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
-                headers=_dyte_headers(),
+                f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
+                headers=_rtk_headers(),
                 params={"limit": 100},
                 timeout=8,
             )
@@ -4161,20 +4160,20 @@ class EventViewSet(viewsets.ModelViewSet):
                     if cid == str(user.id):
                         duplicate_found = True
                         logger.warning(f"[LOUNGE_JOIN] Duplicate detected: user {user.id}")
-                        # Try to remove them from Dyte and allow rejoin
+                        # Try to remove them from RTK and allow rejoin
                         try:
-                            dyte_id = p.get("id")
-                            if dyte_id:
+                            rtk_id = p.get("id")
+                            if rtk_id:
                                 requests.delete(
-                                    f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_id}",
-                                    headers=_dyte_headers(),
+                                    f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{rtk_id}",
+                                    headers=_rtk_headers(),
                                     timeout=5,
                                 )
-                                logger.info(f"[LOUNGE_JOIN] Removed stale participant {dyte_id} from Dyte, allowing rejoin")
+                                logger.info(f"[LOUNGE_JOIN] Removed stale participant {rtk_id} from RTK, allowing rejoin")
                                 duplicate_found = False  # Successfully removed, proceed with join
                                 break
                         except Exception as e:
-                            logger.warning(f"[LOUNGE_JOIN] Failed to remove stale Dyte participant: {e}")
+                            logger.warning(f"[LOUNGE_JOIN] Failed to remove stale RTK participant: {e}")
                             # Don't block, try to join anyway
                             duplicate_found = False
         except requests.exceptions.Timeout:
@@ -4222,7 +4221,7 @@ class EventViewSet(viewsets.ModelViewSet):
         # Participants get host preset in lounge to enable mic/camera toggle
         # This allows participants to have full media capabilities in social lounge/breakout rooms
         # while maintaining participant restrictions in the main stage meeting
-        preset = DYTE_PRESET_HOST  # Use host preset for all lounge participants for full media control
+        preset = RTK_PRESET_HOST  # Use host preset for all lounge participants for full media control
 
         body = {
             "name": name or f"User {user.id}",
@@ -4235,8 +4234,8 @@ class EventViewSet(viewsets.ModelViewSet):
         try:
             logger.info(f"[LOUNGE_JOIN] User {user.id} joining table {table_id} (meeting {meeting_id})")
             resp = requests.post(
-                f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
-                headers=_dyte_headers(),
+                f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
+                headers=_rtk_headers(),
                 json=body,
                 timeout=10,
             )
@@ -4248,34 +4247,34 @@ class EventViewSet(viewsets.ModelViewSet):
             participant_id = data.get("id")
 
             if not token:
-                logger.error(f"[LOUNGE_JOIN] No token in Dyte response for user {user.id}")
-                return Response({"error": "dyte_token_missing"}, status=500)
+                logger.error(f"[LOUNGE_JOIN] No token in RTK response for user {user.id}")
+                return Response({"error": "rtk_token_missing"}, status=500)
 
             if participant_id:
                 logger.info(f"[LOUNGE_JOIN] Success: user {user.id} -> participant {participant_id}")
 
-                # ✅ Store the Dyte participant ID for accurate cleanup on leave
+                # ✅ Store the RTK participant ID for accurate cleanup on leave
                 if lounge_participant:
                     try:
-                        lounge_participant.dyte_participant_id = participant_id
-                        lounge_participant.save(update_fields=["dyte_participant_id"])
-                        logger.info(f"[LOUNGE_JOIN] Stored Dyte participant ID {participant_id} for cleanup")
+                        lounge_participant.rtk_participant_id = participant_id
+                        lounge_participant.save(update_fields=["rtk_participant_id"])
+                        logger.info(f"[LOUNGE_JOIN] Stored RTK participant ID {participant_id} for cleanup")
                     except Exception as e:
-                        logger.warning(f"[LOUNGE_JOIN] Failed to store Dyte participant ID: {e}")
+                        logger.warning(f"[LOUNGE_JOIN] Failed to store RTK participant ID: {e}")
 
             return Response({"token": token, "participant_id": participant_id})
         except requests.exceptions.HTTPError as e:
-            logger.error(f"[LOUNGE_JOIN] Dyte API error: {e.response.status_code}")
-            return Response({"error": "dyte_api_error"}, status=500)
+            logger.error(f"[LOUNGE_JOIN] RTK API error: {e.response.status_code}")
+            return Response({"error": "rtk_api_error"}, status=500)
         except Exception as e:
             logger.error(f"[LOUNGE_JOIN] Exception: {str(e)}")
-            return Response({"error": "dyte_join_failed", "detail": str(e)}, status=500)
+            return Response({"error": "rtk_join_failed", "detail": str(e)}, status=500)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="lounge-leave-table")
     def lounge_leave_table(self, request, pk=None):
         """
         User leaves a lounge table.
-        Removes from both Django DB and Dyte meeting to prevent 409 conflicts on rejoin.
+        Removes from both Django DB and RTK meeting to prevent 409 conflicts on rejoin.
         """
         from .models import BreakoutJoiner
 
@@ -4285,24 +4284,24 @@ class EventViewSet(viewsets.ModelViewSet):
         if getattr(user, "is_guest", False):
             guest = user.guest
             table = guest.lounge_table
-            meeting_id = getattr(table, "dyte_meeting_id", None) if table else None
-            dyte_participant_id = guest.dyte_participant_id
+            meeting_id = getattr(table, "rtk_meeting_id", None) if table else None
+            rtk_participant_id = guest.rtk_participant_id
             try:
-                if meeting_id and dyte_participant_id:
+                if meeting_id and rtk_participant_id:
                     try:
                         requests.delete(
-                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_participant_id}",
-                            headers=_dyte_headers(),
+                            f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{rtk_participant_id}",
+                            headers=_rtk_headers(),
                             timeout=10,
                         )
                     except Exception as e:
-                        logger.warning(f"[LOUNGE_LEAVE][GUEST] Failed to remove from Dyte: {e}")
+                        logger.warning(f"[LOUNGE_LEAVE][GUEST] Failed to remove from RTK: {e}")
 
                 # Leaving a table from the live UI means returning to the main room context.
                 guest.current_location = "main_room"
                 guest.lounge_table = None
-                guest.dyte_participant_id = ""
-                guest.save(update_fields=["current_location", "lounge_table", "dyte_participant_id"])
+                guest.rtk_participant_id = ""
+                guest.save(update_fields=["current_location", "lounge_table", "rtk_participant_id"])
                 return Response({"ok": True, "left_table": getattr(table, "id", None)})
             except Exception as e:
                 logger.error(f"[LOUNGE_LEAVE][GUEST] Exception: {str(e)}")
@@ -4323,29 +4322,29 @@ class EventViewSet(viewsets.ModelViewSet):
                 }, status=404)
 
             table = lounge_record.table
-            meeting_id = table.dyte_meeting_id
-            dyte_participant_id = lounge_record.dyte_participant_id
+            meeting_id = table.rtk_meeting_id
+            rtk_participant_id = lounge_record.rtk_participant_id
 
-            # 2. Remove from Dyte meeting
+            # 2. Remove from RTK meeting
             if meeting_id:
                 try:
-                    # If we have the Dyte participant ID, use it directly for faster removal
-                    if dyte_participant_id:
+                    # If we have the RTK participant ID, use it directly for faster removal
+                    if rtk_participant_id:
                         delete_resp = requests.delete(
-                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_participant_id}",
-                            headers=_dyte_headers(),
+                            f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{rtk_participant_id}",
+                            headers=_rtk_headers(),
                             timeout=10,
                         )
                         if delete_resp.ok:
-                            logger.info(f"[LOUNGE_LEAVE] Removed user {user.id} from Dyte meeting {meeting_id} "
-                                      f"(participant_id: {dyte_participant_id})")
+                            logger.info(f"[LOUNGE_LEAVE] Removed user {user.id} from RTK meeting {meeting_id} "
+                                      f"(participant_id: {rtk_participant_id})")
                         else:
-                            logger.warning(f"[LOUNGE_LEAVE] Failed to remove user from Dyte: {delete_resp.status_code}")
+                            logger.warning(f"[LOUNGE_LEAVE] Failed to remove user from RTK: {delete_resp.status_code}")
                     else:
-                        # Fallback: Query Dyte to find the participant by client_specific_id
+                        # Fallback: Query RTK to find the participant by client_specific_id
                         resp = requests.get(
-                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
-                            headers=_dyte_headers(),
+                            f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
+                            headers=_rtk_headers(),
                             params={"limit": 100},
                             timeout=10,
                         )
@@ -4354,21 +4353,21 @@ class EventViewSet(viewsets.ModelViewSet):
                             for p in participants:
                                 cid = p.get("client_specific_id") or p.get("custom_participant_id")
                                 if cid == str(user.id):
-                                    # Found the user in Dyte, now remove them
+                                    # Found the user in RTK, now remove them
                                     participant_id = p.get("id")
                                     delete_resp = requests.delete(
-                                        f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{participant_id}",
-                                        headers=_dyte_headers(),
+                                        f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{participant_id}",
+                                        headers=_rtk_headers(),
                                         timeout=10,
                                     )
                                     if delete_resp.ok:
-                                        logger.info(f"[LOUNGE_LEAVE] Removed user {user.id} from Dyte meeting {meeting_id}")
+                                        logger.info(f"[LOUNGE_LEAVE] Removed user {user.id} from RTK meeting {meeting_id}")
                                     else:
-                                        logger.warning(f"[LOUNGE_LEAVE] Failed to remove user from Dyte: {delete_resp.status_code}")
+                                        logger.warning(f"[LOUNGE_LEAVE] Failed to remove user from RTK: {delete_resp.status_code}")
                                     break
                 except Exception as e:
-                    logger.warning(f"[LOUNGE_LEAVE] Error removing from Dyte: {e}")
-                    # Don't fail the entire leave operation if Dyte removal fails
+                    logger.warning(f"[LOUNGE_LEAVE] Error removing from RTK: {e}")
+                    # Don't fail the entire leave operation if RTK removal fails
 
             # 3. Delete from Django DB
             lounge_record.delete()
@@ -4410,7 +4409,7 @@ class EventViewSet(viewsets.ModelViewSet):
                                 "current_participants": current,
                                 "max_seats": breakout_table.max_seats,
                                 "available_seats": breakout_table.max_seats - current,
-                                "dyte_meeting_id": breakout_table.dyte_meeting_id,
+                                "rtk_meeting_id": breakout_table.rtk_meeting_id,
                             })
 
                     notification_data = {
@@ -4437,7 +4436,7 @@ class EventViewSet(viewsets.ModelViewSet):
                     )
 
             logger.info(f"[LOUNGE_LEAVE] User {user.id} successfully left table {table.id}. "
-                       f"Removed from both Django and Dyte. Location set to social_lounge.")
+                       f"Removed from both Django and RTK. Location set to social_lounge.")
 
             return Response({
                 "ok": True,
@@ -4458,7 +4457,7 @@ class EventViewSet(viewsets.ModelViewSet):
         This happens when the host disables the lounge settings.
 
         - Removes all users from all lounge tables for this event
-        - Removes all users from Dyte meetings
+        - Removes all users from RTK meetings
         - Returns list of removed user IDs for frontend notification
         """
         event = self.get_object()
@@ -4479,28 +4478,28 @@ class EventViewSet(viewsets.ModelViewSet):
 
             for lounge_record in all_participants:
                 table = lounge_record.table
-                meeting_id = table.dyte_meeting_id
-                dyte_participant_id = lounge_record.dyte_participant_id
+                meeting_id = table.rtk_meeting_id
+                rtk_participant_id = lounge_record.rtk_participant_id
                 user_id = lounge_record.user.id
                 username = lounge_record.user.username
 
                 try:
-                    # Remove from Dyte meeting if exists
+                    # Remove from RTK meeting if exists
                     if meeting_id:
                         try:
-                            if dyte_participant_id:
-                                # Use stored Dyte participant ID for direct removal
+                            if rtk_participant_id:
+                                # Use stored RTK participant ID for direct removal
                                 requests.delete(
-                                    f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_participant_id}",
-                                    headers=_dyte_headers(),
+                                    f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{rtk_participant_id}",
+                                    headers=_rtk_headers(),
                                     timeout=10,
                                 )
-                                logger.info(f"[LOUNGE_CLOSE] Removed user {user_id} from Dyte meeting {meeting_id}")
+                                logger.info(f"[LOUNGE_CLOSE] Removed user {user_id} from RTK meeting {meeting_id}")
                             else:
-                                # Fallback: Query Dyte to find the participant
+                                # Fallback: Query RTK to find the participant
                                 resp = requests.get(
-                                    f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
-                                    headers=_dyte_headers(),
+                                    f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
+                                    headers=_rtk_headers(),
                                     params={"limit": 100},
                                     timeout=10,
                                 )
@@ -4511,14 +4510,14 @@ class EventViewSet(viewsets.ModelViewSet):
                                         if cid == str(user_id):
                                             participant_id = p.get("id")
                                             requests.delete(
-                                                f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{participant_id}",
-                                                headers=_dyte_headers(),
+                                                f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{participant_id}",
+                                                headers=_rtk_headers(),
                                                 timeout=10,
                                             )
-                                            logger.info(f"[LOUNGE_CLOSE] Removed user {user_id} from Dyte meeting {meeting_id}")
+                                            logger.info(f"[LOUNGE_CLOSE] Removed user {user_id} from RTK meeting {meeting_id}")
                                             break
                         except Exception as e:
-                            logger.warning(f"[LOUNGE_CLOSE] Error removing user {user_id} from Dyte: {e}")
+                            logger.warning(f"[LOUNGE_CLOSE] Error removing user {user_id} from RTK: {e}")
                             # Don't fail, continue with DB removal
 
                     # Remove from Django DB
@@ -4680,14 +4679,14 @@ class EventViewSet(viewsets.ModelViewSet):
 
     
 
-    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="dyte/join")
-    def dyte_join(self, request, pk=None):
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="rtk/join")
+    def rtk_join(self, request, pk=None):
         """
-        Join this event's Dyte meeting.
+        Join this event's RTK meeting.
 
-        - Creates a Dyte meeting if one doesn't exist yet.
+        - Creates a RTK meeting if one doesn't exist yet.
         - Adds the current user as participant (host or normal member).
-        - Returns authToken for the frontend Dyte SDK.
+        - Returns authToken for the frontend RTK SDK.
         - Supports both registered users and guest participants (via GuestJWTAuthentication)
         """
         event = self.get_object()
@@ -4724,50 +4723,50 @@ class EventViewSet(viewsets.ModelViewSet):
 
             # 1) Ensure meeting exists
             try:
-                meeting_id = _ensure_dyte_meeting_for_event(event)
+                meeting_id = _ensure_rtk_meeting_for_event(event)
             except RuntimeError as e:
-                logger.error(f"Dyte meeting error for event {event.id}: {str(e)}")
+                logger.error(f"RTK meeting error for event {event.id}: {str(e)}")
                 return Response(
-                    {"error": "dyte_meeting_error", "detail": str(e)},
+                    {"error": "rtk_meeting_error", "detail": str(e)},
                     status=500,
                 )
 
             # 2) Add guest as participant (always audience preset, never host)
-            dyte_participant_id = f"guest_{guest.id}"
-            dyte_resp = add_dyte_participant(
+            rtk_participant_id = f"guest_{guest.id}"
+            rtk_resp = add_rtk_participant(
                 meeting_id=meeting_id,
-                user_id=dyte_participant_id,
+                user_id=rtk_participant_id,
                 name=guest.get_display_name(),
-                preset_name=DYTE_PRESET_PARTICIPANT,  # Guests never get host preset
+                preset_name=RTK_PRESET_PARTICIPANT,  # Guests never get host preset
             )
-            # add_dyte_participant() returns (token, error_message)
+            # add_rtk_participant() returns (token, error_message)
             auth_token = ""
-            participant_id = dyte_participant_id
-            if isinstance(dyte_resp, tuple):
-                auth_token, dyte_error = dyte_resp
-                if dyte_error or not auth_token:
+            participant_id = rtk_participant_id
+            if isinstance(rtk_resp, tuple):
+                auth_token, rtk_error = rtk_resp
+                if rtk_error or not auth_token:
                     return Response(
-                        {"error": "dyte_participant_error", "detail": dyte_error or "Dyte did not return auth token."},
+                        {"error": "rtk_participant_error", "detail": rtk_error or "RTK did not return auth token."},
                         status=500,
                     )
             else:
-                data = (dyte_resp or {}).get("data", {})
+                data = (rtk_resp or {}).get("data", {})
                 auth_token = data.get("token", "")
-                participant_id = data.get("id", dyte_participant_id)
+                participant_id = data.get("id", rtk_participant_id)
                 if not auth_token:
                     return Response(
-                        {"error": "dyte_token_missing", "detail": "Dyte did not return auth token."},
+                        {"error": "rtk_token_missing", "detail": "RTK did not return auth token."},
                         status=500,
                     )
 
             # 3) Update guest participation tracking
             guest.joined_live = True
             guest.joined_live_at = timezone.now()
-            guest.dyte_participant_id = participant_id
+            guest.rtk_participant_id = participant_id
             guest.current_location = "main_room"
             guest.lounge_table = None
             guest.save(update_fields=[
-                "joined_live", "joined_live_at", "dyte_participant_id", "current_location", "lounge_table"
+                "joined_live", "joined_live_at", "rtk_participant_id", "current_location", "lounge_table"
             ])
 
             logger.info(f"Guest {guest.email} joined meeting {meeting_id}")
@@ -4775,7 +4774,7 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response({
                 "authToken": auth_token,
                 "meetingId": meeting_id,
-                "presetName": DYTE_PRESET_PARTICIPANT,
+                "presetName": RTK_PRESET_PARTICIPANT,
                 "role": "audience",
                 "isGuest": True,
                 "guestName": guest.get_display_name(),
@@ -4784,11 +4783,11 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # 1) Ensure meeting exists
         try:
-            meeting_id = _ensure_dyte_meeting_for_event(event)
+            meeting_id = _ensure_rtk_meeting_for_event(event)
         except RuntimeError as e:
-            logger.error(f"Dyte meeting error for event {event.id}: {str(e)}")
+            logger.error(f"RTK meeting error for event {event.id}: {str(e)}")
             return Response(
-                {"error": "dyte_meeting_error", "detail": str(e)},
+                {"error": "rtk_meeting_error", "detail": str(e)},
                 status=500,
             )
 
@@ -4849,7 +4848,7 @@ class EventViewSet(viewsets.ModelViewSet):
             # Explicit role and allowed
             is_host = requested_is_host
 
-        preset_name = DYTE_PRESET_HOST if is_host else DYTE_PRESET_PARTICIPANT
+        preset_name = RTK_PRESET_HOST if is_host else RTK_PRESET_PARTICIPANT
         role_string = "publisher" if is_host else "audience"
         converted_guest = _get_converted_guest_for_event(user, event)
         converted_guest_was_admitted = bool(
@@ -4959,7 +4958,7 @@ class EventViewSet(viewsets.ModelViewSet):
                         logger.info(f"[WAITING_ROOM] Auto-readmitted user {user.id} to event {event.id}")
                     except Exception as e:
                         logger.warning(f"[WAITING_ROOM] Failed to log auto-readmission: {e}")
-                # Continue to Dyte token generation for previously admitted users
+                # Continue to RTK token generation for previously admitted users
 
             # Original grace period + waiting room logic
             elif not _created and not is_in_grace_period:
@@ -4981,7 +4980,7 @@ class EventViewSet(viewsets.ModelViewSet):
             if registration.admission_status != "admitted":
                 if not registration.waiting_started_at:
                     # ✅ CRITICAL: This is where users enter the waiting room queue!
-                    # Set waiting_started_at ONLY when user actively joins (via dyte/join)
+                    # Set waiting_started_at ONLY when user actively joins (via rtk/join)
                     # This ensures they don't appear in host's waiting room list until they actively join.
                     # Registration alone does NOT add them to the waiting room.
                     registration.waiting_started_at = timezone.now()
@@ -5029,25 +5028,25 @@ class EventViewSet(viewsets.ModelViewSet):
         if picture:
             body["picture"] = picture
 
-        # 4) Call Dyte Add Participant API
+        # 4) Call RTK Add Participant API
         try:
             resp = requests.post(
-                f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
-                headers=_dyte_headers(),
+                f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
+                headers=_rtk_headers(),
                 json=body,
                 timeout=10,
             )
         except requests.RequestException as e:
-            logger.exception("❌ Dyte add participant exception: %s", e)
+            logger.exception("❌ RTK add participant exception: %s", e)
             return Response(
-                {"error": "dyte_network_error", "detail": str(e)},
+                {"error": "rtk_network_error", "detail": str(e)},
                 status=500,
             )
 
         if resp.status_code not in (200, 201):
-            logger.error("❌ Dyte add participant failed: %s", resp.text[:500])
+            logger.error("❌ RTK add participant failed: %s", resp.text[:500])
             return Response(
-                {"error": "dyte_participant_error", "detail": resp.text[:500]},
+                {"error": "rtk_participant_error", "detail": resp.text[:500]},
                 status=500,
             )
 
@@ -5055,7 +5054,7 @@ class EventViewSet(viewsets.ModelViewSet):
         auth_token = data.get("token")
         if not auth_token:
             return Response(
-                {"error": "dyte_token_missing", "detail": "Dyte did not return auth token."},
+                {"error": "rtk_token_missing", "detail": "RTK did not return auth token."},
                 status=500,
             )
 
@@ -5074,9 +5073,9 @@ class EventViewSet(viewsets.ModelViewSet):
                 table__event=event
             ).delete()
             if deleted_count > 0:
-                logger.info(f"[DYTE_JOIN] Removed user {user.id} from lounge ({deleted_count} table(s)) when joining main meeting")
+                logger.info(f"[RTK_JOIN] Removed user {user.id} from lounge ({deleted_count} table(s)) when joining main meeting")
         except Exception as e:
-            logger.warning(f"[DYTE_JOIN] Failed to remove user from lounge: {e}")
+            logger.warning(f"[RTK_JOIN] Failed to remove user from lounge: {e}")
 
         # ✅ Check if user is within grace period (for frontend to trigger immediate refresh)
         is_grace_period_join = False
@@ -5105,12 +5104,12 @@ class EventViewSet(viewsets.ModelViewSet):
             }
         )
 
-    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="dyte/preview-token")
-    def dyte_preview_token(self, request, pk=None):
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="rtk/preview-token")
+    def rtk_preview_token(self, request, pk=None):
         """
-        Return a main-room Dyte token for preview only.
+        Return a main-room RTK token for preview only.
 
-        Unlike dyte/join, this endpoint does NOT:
+        Unlike rtk/join, this endpoint does NOT:
         - apply waiting-room admission flow,
         - move location to main room,
         - remove participant from social lounge.
@@ -5120,11 +5119,11 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # Ensure event meeting exists
         try:
-            meeting_id = _ensure_dyte_meeting_for_event(event)
+            meeting_id = _ensure_rtk_meeting_for_event(event)
         except RuntimeError as e:
-            logger.error(f"Dyte preview token meeting error for event {event.id}: {str(e)}")
+            logger.error(f"RTK preview token meeting error for event {event.id}: {str(e)}")
             return Response(
-                {"error": "dyte_meeting_error", "detail": str(e)},
+                {"error": "rtk_meeting_error", "detail": str(e)},
                 status=500,
             )
 
@@ -5142,7 +5141,7 @@ class EventViewSet(viewsets.ModelViewSet):
             )
 
         # Preview is always audience/participant
-        preset_name = DYTE_PRESET_PARTICIPANT
+        preset_name = RTK_PRESET_PARTICIPANT
 
         profile = getattr(user, "profile", None)
         name = (getattr(profile, "full_name", "") if profile else "") or getattr(user, "get_full_name", lambda: "")() or user.username
@@ -5163,24 +5162,24 @@ class EventViewSet(viewsets.ModelViewSet):
 
         try:
             resp = requests.post(
-                f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
-                headers=_dyte_headers(),
+                f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
+                headers=_rtk_headers(),
                 json=body,
                 timeout=10,
             )
         except requests.RequestException as e:
-            logger.exception("❌ Dyte preview add participant exception: %s", e)
-            return Response({"error": "dyte_network_error", "detail": str(e)}, status=500)
+            logger.exception("❌ RTK preview add participant exception: %s", e)
+            return Response({"error": "rtk_network_error", "detail": str(e)}, status=500)
 
         if resp.status_code not in (200, 201):
-            logger.error("❌ Dyte preview add participant failed: %s", resp.text[:500])
-            return Response({"error": "dyte_participant_error", "detail": resp.text[:500]}, status=500)
+            logger.error("❌ RTK preview add participant failed: %s", resp.text[:500])
+            return Response({"error": "rtk_participant_error", "detail": resp.text[:500]}, status=500)
 
         data = (resp.json() or {}).get("data") or {}
         auth_token = data.get("token")
         if not auth_token:
             return Response(
-                {"error": "dyte_token_missing", "detail": "Dyte did not return auth token."},
+                {"error": "rtk_token_missing", "detail": "RTK did not return auth token."},
                 status=500,
             )
 
@@ -6441,7 +6440,7 @@ class RecordingWebhookView(views.APIView):
 
         # 1) Find our Event that corresponds to this meeting
         try:
-            event = Event.objects.get(dyte_meeting_id=meeting_id)
+            event = Event.objects.get(rtk_meeting_id=meeting_id)
             logger.info(
                 "🔍 Webhook found event: id=%s, replay_publishing_mode=%s",
                 event.id,
@@ -6600,7 +6599,7 @@ class EventSessionViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
     def start_live(self, request, event_id=None, pk=None):
-        """Start a session live (create/use Dyte meeting)."""
+        """Start a session live (create/use RTK meeting)."""
         session = self.get_object()
         event = session.event
 
@@ -6610,23 +6609,23 @@ class EventSessionViewSet(viewsets.ModelViewSet):
         if session.is_live:
             return Response({'error': 'Session is already live'}, status=400)
 
-        # Create or use Dyte meeting
+        # Create or use RTK meeting
         if session.use_parent_meeting:
             # Use parent event's meeting
-            if not event.dyte_meeting_id:
+            if not event.rtk_meeting_id:
                 # Create meeting for event if doesn't exist
-                meeting = create_dyte_meeting(event.title)
-                event.dyte_meeting_id = meeting['id']
-                event.save(update_fields=['dyte_meeting_id'])
-            session.dyte_meeting_id = event.dyte_meeting_id
+                meeting = create_rtk_meeting(event.title)
+                event.rtk_meeting_id = meeting['id']
+                event.save(update_fields=['rtk_meeting_id'])
+            session.rtk_meeting_id = event.rtk_meeting_id
         else:
             # Create separate meeting for this session
-            meeting = create_dyte_meeting(session.title)
-            session.dyte_meeting_id = meeting['id']
+            meeting = create_rtk_meeting(session.title)
+            session.rtk_meeting_id = meeting['id']
 
         session.is_live = True
         session.live_started_at = timezone.now()
-        session.save(update_fields=['is_live', 'live_started_at', 'dyte_meeting_id'])
+        session.save(update_fields=['is_live', 'live_started_at', 'rtk_meeting_id'])
 
         return Response(EventSessionSerializer(session, context={'request': request}).data)
 
@@ -6757,7 +6756,7 @@ def _build_lounge_state_sync(event_id):
                 "name": t.name,
                 "category": t.category,
                 "max_seats": t.max_seats,
-                "dyte_meeting_id": t.dyte_meeting_id,
+                "rtk_meeting_id": t.rtk_meeting_id,
                 "icon_url": icon_url,
                 "participants": participants
             })

@@ -195,7 +195,7 @@ class EventSessionAdmin(admin.ModelAdmin):
     list_filter = ('session_type', 'is_live', 'use_parent_meeting')
     search_fields = ('title', 'event__title')
     raw_id_fields = ('event',)
-    readonly_fields = ('is_live', 'live_started_at', 'live_ended_at', 'dyte_meeting_id', 'created_at', 'updated_at')
+    readonly_fields = ('is_live', 'live_started_at', 'live_ended_at', 'rtk_meeting_id', 'created_at', 'updated_at')
     inlines = [SessionParticipantInline]
 
     fieldsets = (
@@ -208,8 +208,8 @@ class EventSessionAdmin(admin.ModelAdmin):
         ('Live Status', {
             'fields': ('is_live', 'live_started_at', 'live_ended_at')
         }),
-        ('Dyte Integration', {
-            'fields': ('use_parent_meeting', 'dyte_meeting_id', 'recording_url')
+        ('RTK Integration', {
+            'fields': ('use_parent_meeting', 'rtk_meeting_id', 'recording_url')
         }),
         ('Metadata', {
             'fields': ('created_at', 'updated_at'),

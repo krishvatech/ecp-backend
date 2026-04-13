@@ -39,11 +39,11 @@ from .serializers import (
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
-    create_dyte_meeting,
-    add_dyte_participant,
+    create_rtk_meeting,
+    add_rtk_participant,
     send_speed_networking_message,
     send_speed_networking_user_message,
-    DYTE_PRESET_PARTICIPANT
+    RTK_PRESET_PARTICIPANT
 )
 
 logger = logging.getLogger(__name__)
@@ -1455,34 +1455,34 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
     """
     permission_classes = [IsAuthenticated]
 
-    def _get_dyte_token_for_user(self, match, user):
-        if not match.dyte_room_name:
+    def _get_rtk_token_for_user(self, match, user):
+        if not match.rtk_room_name:
             return None
 
         display_name = f"{user.first_name} {user.last_name}".strip() or user.username
-        meeting_id = match.dyte_room_name
-        token, _ = add_dyte_participant(
+        meeting_id = match.rtk_room_name
+        token, _ = add_rtk_participant(
             meeting_id,
             user.id,
             display_name,
-            DYTE_PRESET_PARTICIPANT
+            RTK_PRESET_PARTICIPANT
         )
         if token:
             return token
 
-        # Fallback: if we only have a placeholder "match-..." value, create a real Dyte meeting
+        # Fallback: if we only have a placeholder "match-..." value, create a real RTK meeting
         # and persist it so future calls use the correct ID.
         if meeting_id.startswith("match-"):
-            real_meeting_id = create_dyte_meeting(meeting_id)
+            real_meeting_id = create_rtk_meeting(meeting_id)
             if real_meeting_id:
                 if real_meeting_id != meeting_id:
-                    match.dyte_room_name = real_meeting_id
-                    match.save(update_fields=["dyte_room_name"])
-                token, _ = add_dyte_participant(
+                    match.rtk_room_name = real_meeting_id
+                    match.save(update_fields=["rtk_room_name"])
+                token, _ = add_rtk_participant(
                     real_meeting_id,
                     user.id,
                     display_name,
-                    DYTE_PRESET_PARTICIPANT
+                    RTK_PRESET_PARTICIPANT
                 )
                 if token:
                     return token
@@ -1646,11 +1646,11 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                 serializer = SpeedNetworkingMatchSerializer(match)
                 data = serializer.data
 
-                # Add Dyte token
-                if match.dyte_room_name:
-                    token = self._get_dyte_token_for_user(match, user)
+                # Add RTK token
+                if match.rtk_room_name:
+                    token = self._get_rtk_token_for_user(match, user)
                     if token:
-                        data['dyte_token'] = token
+                        data['rtk_token'] = token
 
                 return Response({
                     'status': 'matched',
@@ -1780,11 +1780,11 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                     serializer = SpeedNetworkingMatchSerializer(current_match)
                     data = serializer.data
 
-                    # Add Dyte token for current user
-                    if current_match.dyte_room_name:
-                        token = self._get_dyte_token_for_user(current_match, request.user)
+                    # Add RTK token for current user
+                    if current_match.rtk_room_name:
+                        token = self._get_rtk_token_for_user(current_match, request.user)
                         if token:
-                            data['dyte_token'] = token
+                            data['rtk_token'] = token
 
                     logger.info(f"[MY_MATCH] ✅ Returning VALID active match {current_match.id} for user {request.user.id}")
                     return Response(data)
@@ -1817,10 +1817,10 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                 serializer = SpeedNetworkingMatchSerializer(new_match)
                 data = serializer.data
 
-                if new_match.dyte_room_name:
-                    token = self._get_dyte_token_for_user(new_match, request.user)
+                if new_match.rtk_room_name:
+                    token = self._get_rtk_token_for_user(new_match, request.user)
                     if token:
-                        data['dyte_token'] = token
+                        data['rtk_token'] = token
 
                 # Return match at root level (same structure as when match already exists)
                 logger.info(f"[MY_MATCH] Self-healing found new match {new_match.id} for user {request.user.id}")
@@ -1940,11 +1940,11 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                 serializer = SpeedNetworkingMatchSerializer(user_match)
                 data = serializer.data
 
-                # Add Dyte token (logic duplicated from serializer/utils but needed for immediate response)
-                if user_match.dyte_room_name:
-                    token = self._get_dyte_token_for_user(user_match, request.user)
+                # Add RTK token (logic duplicated from serializer/utils but needed for immediate response)
+                if user_match.rtk_room_name:
+                    token = self._get_rtk_token_for_user(user_match, request.user)
                     if token:
-                        data['dyte_token'] = token
+                        data['rtk_token'] = token
 
                 return Response({
                     'status': 'matched',
@@ -2373,8 +2373,8 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                     logger.debug(f"[BOTH_MATCH] Partner {partner.id} was claimed by another thread")
                     return None
 
-                # Create Dyte room ID
-                dyte_meeting_room = f"match-{session.id}-{uuid.uuid4().hex[:8]}"
+                # Create RTK room ID
+                rtk_meeting_room = f"match-{session.id}-{uuid.uuid4().hex[:8]}"
 
                 # Calculate probability from score
                 calculated_score = score if 'score' in locals() else 0
@@ -2386,7 +2386,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                     session=session,
                     participant_1=user,
                     participant_2=partner,
-                    dyte_room_name=dyte_meeting_room,
+                    rtk_room_name=rtk_meeting_room,
                     status='ACTIVE',
                     match_score=calculated_score,
                     match_breakdown=calculated_breakdown,
@@ -2412,54 +2412,54 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             return None
 
         # ===============================================================
-        # STEP 4: EXTERNAL API CALLS (Dyte)
+        # STEP 4: EXTERNAL API CALLS (RTK)
         # ===============================================================
 
         if match and match_data:
-            # Create Dyte meeting
-            meeting_id = create_dyte_meeting(match.dyte_room_name)
-            real_meeting_id = meeting_id or match.dyte_room_name
+            # Create RTK meeting
+            meeting_id = create_rtk_meeting(match.rtk_room_name)
+            real_meeting_id = meeting_id or match.rtk_room_name
 
-            if meeting_id and meeting_id != match.dyte_room_name:
-                match.dyte_room_name = meeting_id
-                match.save(update_fields=["dyte_room_name"])
+            if meeting_id and meeting_id != match.rtk_room_name:
+                match.rtk_room_name = meeting_id
+                match.save(update_fields=["rtk_room_name"])
 
-            # Add participants to Dyte
+            # Add participants to RTK
             p1_token = None
             p2_token = None
             p1_error = None
             p2_error = None
 
             try:
-                p1_token, p1_error = add_dyte_participant(
+                p1_token, p1_error = add_rtk_participant(
                     real_meeting_id,
                     user.id,
                     f"{user.first_name} {user.last_name}".strip() or user.username,
-                    DYTE_PRESET_PARTICIPANT
+                    RTK_PRESET_PARTICIPANT
                 )
                 if not p1_token:
                     logger.error(f"[BOTH_MATCH] Failed to get token for user {user.id}: {p1_error}")
             except Exception as e:
-                logger.error(f"[BOTH_MATCH] Dyte P1 exception: {e}")
+                logger.error(f"[BOTH_MATCH] RTK P1 exception: {e}")
                 p1_error = str(e)
 
             try:
-                p2_token, p2_error = add_dyte_participant(
+                p2_token, p2_error = add_rtk_participant(
                     real_meeting_id,
                     partner.id,
                     f"{partner.first_name} {partner.last_name}".strip() or partner.username,
-                    DYTE_PRESET_PARTICIPANT
+                    RTK_PRESET_PARTICIPANT
                 )
                 if not p2_token:
                     logger.error(f"[BOTH_MATCH] Failed to get token for partner {partner.id}: {p2_error}")
             except Exception as e:
-                logger.error(f"[BOTH_MATCH] Dyte P2 exception: {e}")
+                logger.error(f"[BOTH_MATCH] RTK P2 exception: {e}")
                 p2_error = str(e)
 
             # Notify both users
             p1_data = match_data.copy()
-            p1_data['dyte_token'] = p1_token
-            p1_data['dyte_error'] = p1_error
+            p1_data['rtk_token'] = p1_token
+            p1_data['rtk_error'] = p1_error
             p1_data['match_score'] = score if 'score' in locals() else 0
             p1_data['match_breakdown'] = breakdown if 'breakdown' in locals() else {}
 
@@ -2469,8 +2469,8 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             })
 
             p2_data = match_data.copy()
-            p2_data['dyte_token'] = p2_token
-            p2_data['dyte_error'] = p2_error
+            p2_data['rtk_token'] = p2_token
+            p2_data['rtk_error'] = p2_error
             p2_data['match_score'] = score if 'score' in locals() else 0
             p2_data['match_breakdown'] = breakdown if 'breakdown' in locals() else {}
 
@@ -2531,7 +2531,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             return None
 
         # Create match without criteria scoring
-        dyte_meeting_room = f"match-{session.id}-{uuid.uuid4().hex[:8]}"
+        rtk_meeting_room = f"match-{session.id}-{uuid.uuid4().hex[:8]}"
 
         try:
             with transaction.atomic():
@@ -2554,7 +2554,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                     session=session,
                     participant_1=user,
                     participant_2=candidate,
-                    dyte_room_name=dyte_meeting_room,
+                    rtk_room_name=rtk_meeting_room,
                     status='ACTIVE',
                     match_score=50,  # Default score when no criteria profile
                     match_breakdown={'skill': 50, 'experience': 50, 'location': 50, 'education': 50},
