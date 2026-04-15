@@ -532,11 +532,11 @@ class EventSessionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'event', 'session_date', 'title', 'description', 'start_time', 'end_time',
             'session_type', 'display_order', 'is_live', 'live_started_at', 'live_ended_at',
-            'use_parent_meeting', 'dyte_meeting_id', 'recording_url', 'session_image',
+            'use_parent_meeting', 'rtk_meeting_id', 'recording_url', 'session_image',
             'participants', 'session_participants', 'attendance_count',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['is_live', 'live_started_at', 'live_ended_at', 'dyte_meeting_id']
+        read_only_fields = ['is_live', 'live_started_at', 'live_ended_at', 'rtk_meeting_id']
 
     def validate(self, data):
         """Validate session times against event times."""
@@ -841,8 +841,8 @@ class EventSerializer(serializers.ModelSerializer):
             "rtk_recording_id",
             "is_recording",
             "recording_paused_at",
-            "dyte_meeting_id",    
-            "dyte_meeting_title",  
+            "rtk_meeting_id",    
+            "rtk_meeting_title",  
             "created_by_id",
             "created_at",
             "updated_at",
@@ -895,8 +895,8 @@ class EventSerializer(serializers.ModelSerializer):
             "public_registered_count",
             "live_started_at",
             "live_ended_at",
-            "dyte_meeting_id",
-            "dyte_meeting_title",
+            "rtk_meeting_id",
+            "rtk_meeting_title",
             "currency",  # Always SGD, read-only
         ]
         extra_kwargs = {
@@ -2264,12 +2264,12 @@ class SpeedNetworkingMatchSerializer(serializers.ModelSerializer):
         model = SpeedNetworkingMatch
         fields = [
             'id', 'session', 'participant_1', 'participant_2',
-            'status', 'dyte_room_name', 'match_score', 'match_breakdown', 'rule_compliance',
+            'status', 'rtk_room_name', 'match_score', 'match_breakdown', 'rule_compliance',
             'match_probability', 'config_version', 'last_recalculated_at',
             'created_at', 'ended_at',
             'extension_requested_p1', 'extension_requested_p2', 'extension_applied', 'extended_by_seconds'
         ]
-        read_only_fields = ['id', 'created_at', 'ended_at', 'status', 'dyte_room_name',
+        read_only_fields = ['id', 'created_at', 'ended_at', 'status', 'rtk_room_name',
                            'match_score', 'match_breakdown', 'rule_compliance',
                            'match_probability', 'config_version', 'last_recalculated_at',
                            'extension_requested_p1', 'extension_requested_p2', 'extension_applied', 'extended_by_seconds']

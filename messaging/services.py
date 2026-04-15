@@ -25,9 +25,9 @@ def _find_event_for_meeting(meeting_id: str) -> Optional[Event]:
     """
     Map RealtimeKit meetingId -> Event.
 
-    We use Event.dyte_meeting_id as the source of truth.
+    We use Event.rtk_meeting_id as the source of truth.
     """
-    return Event.objects.filter(dyte_meeting_id=meeting_id).first()
+    return Event.objects.filter(rtk_meeting_id=meeting_id).first()
 
 
 def _get_or_create_event_conversation(event: Event) -> Conversation:
@@ -68,7 +68,7 @@ def _resolve_sender(
     event: Optional[Event],
 ) -> User:
     """
-    Map Dyte participant -> Django User using displayName.
+    Map RTK participant -> Django User using displayName.
 
     Priority:
       1) EventRegistration for this event (best match).

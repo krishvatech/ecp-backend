@@ -185,9 +185,9 @@ class Event(models.Model):
         default="manual_review",
         help_text="Whether to auto-publish recording once available, or hold for host review."
     )
-    # Dyte live meeting fields
-    dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
-    dyte_meeting_title = models.CharField(max_length=255, blank=True, null=True)
+    # RTK live meeting fields
+    rtk_meeting_id = models.CharField(max_length=255, blank=True, null=True)
+    rtk_meeting_title = models.CharField(max_length=255, blank=True, null=True)
     # Cloudflare RealtimeKit recording control fields
     rtk_recording_id = models.CharField(max_length=255, blank=True, null=True)
     is_recording = models.BooleanField(default=False)
@@ -404,7 +404,7 @@ class LoungeTable(models.Model):
     name = models.CharField(max_length=255)
     category = models.CharField(max_length=20, choices=TABLE_CATEGORY_CHOICES, default="LOUNGE")
     max_seats = models.IntegerField(default=4)
-    dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
+    rtk_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     icon = models.ImageField(upload_to=lounge_table_icon_upload_to, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -418,12 +418,12 @@ class LoungeParticipant(models.Model):
     seat_index = models.IntegerField()
     joined_at = models.DateTimeField(auto_now_add=True)
 
-    # Track the Dyte participant ID for accurate removal
-    dyte_participant_id = models.CharField(
+    # Track the RTK participant ID for accurate removal
+    rtk_participant_id = models.CharField(
         max_length=255,
         blank=True,
         null=True,
-        help_text="ID of participant in Dyte meeting. Used for proper cleanup on leave."
+        help_text="ID of participant in RTK meeting. Used for proper cleanup on leave."
     )
 
     class Meta:
@@ -797,7 +797,7 @@ class SpeedNetworkingMatch(models.Model):
     participant_2 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='speed_networking_matches_as_p2')
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
-    dyte_room_name = models.CharField(max_length=255, blank=True, null=True, help_text="Dyte meeting ID for this match")
+    rtk_room_name = models.CharField(max_length=255, blank=True, null=True, help_text="RTK meeting ID for this match")
 
     # Match Quality Scores (NEW)
     match_score = models.FloatField(
@@ -1141,12 +1141,12 @@ class EventSession(models.Model):
     live_started_at = models.DateTimeField(null=True, blank=True)
     live_ended_at = models.DateTimeField(null=True, blank=True)
 
-    # Dyte integration
+    # RTK integration
     use_parent_meeting = models.BooleanField(
         default=True,
-        help_text="If True, use parent event's Dyte meeting. If False, create separate meeting."
+        help_text="If True, use parent event's RTK meeting. If False, create separate meeting."
     )
-    dyte_meeting_id = models.CharField(max_length=255, blank=True, null=True)
+    rtk_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     recording_url = models.URLField(blank=True)
 
     # Session image (portrait orientation)
@@ -1733,10 +1733,10 @@ class GuestAttendee(models.Model):
         related_name="guest_attendees",
         help_text="Current lounge/breakout table for this guest (if seated).",
     )
-    dyte_participant_id = models.CharField(
+    rtk_participant_id = models.CharField(
         max_length=64,
         blank=True,
-        help_text="Dyte SDK participant ID"
+        help_text="RTK SDK participant ID"
     )
 
     # Moderation

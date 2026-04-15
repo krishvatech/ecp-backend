@@ -10,7 +10,7 @@ import random
 import asyncio
 import requests
 import logging
-from .utils import create_dyte_meeting, DYTE_API_BASE, _dyte_headers
+from .utils import create_rtk_meeting, RTK_API_BASE, _rtk_headers
 
 logger = logging.getLogger(__name__)
 
@@ -81,15 +81,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         # Add to breakout group
                         await self.channel_layer.group_add(f"breakout_{table.id}", self.channel_name)
 
-                        # Notify user to join Dyte meeting
+                        # Notify user to join RTK meeting
                         # Include main room meeting ID so frontend can re-initialize the peek view
                         event = await database_sync_to_async(Event.objects.get)(id=self.event_id)
                         await self.send_json({
                             "type": "breakout_restored",
                             "table_id": table.id,
                             "table_name": table.name,
-                            "dyte_meeting_id": table.dyte_meeting_id,
-                            "main_room_meeting_id": event.dyte_meeting_id,
+                            "rtk_meeting_id": table.rtk_meeting_id,
+                            "main_room_meeting_id": event.rtk_meeting_id,
                         })
                         # 🔄 Broadcast lounge update so other participants see this user rejoined
                         # This ensures Christopher (and anyone else in the room) sees Ravikumar rejoin
@@ -166,12 +166,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 # when the client briefly reconnects during page transitions/reloads.
                 await self.leave_current_table()
 
-                # Cleanup Dyte participants
+                # Cleanup RTK participants
                 try:
-                    meeting_ids = await self.get_user_dyte_meetings()
+                    meeting_ids = await self.get_user_rtk_meetings()
                     if meeting_ids:
                         loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(None, self.cleanup_dyte_participants_sync, meeting_ids)
+                        await loop.run_in_executor(None, self.cleanup_rtk_participants_sync, meeting_ids)
                 except Exception as e:
                     logging.getLogger(__name__).error(f"[CLEANUP] Failed: {e}")
             else:
@@ -317,7 +317,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         "type": "late_joiner_assigned",
                         "room_id": table.id,
                         "room_name": table.name,
-                        "dyte_meeting_id": table.dyte_meeting_id,
+                        "rtk_meeting_id": table.rtk_meeting_id,
                         "method": "manual",
                     }
                 )
@@ -336,7 +336,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     {
                         "type": "refresh_breakout_participants",
                         "room_id": table.id,
-                        "dyte_meeting_id": table.dyte_meeting_id
+                        "rtk_meeting_id": table.rtk_meeting_id
                     }
                 )
 
@@ -1078,7 +1078,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "job_title": g.job_title or "",
             "lounge_table_id": g.lounge_table_id,
             "lounge_table_name": g.lounge_table.name if g.lounge_table_id and g.lounge_table else "",
-            "dyte_participant_id": g.dyte_participant_id or "",
+            "rtk_participant_id": g.rtk_participant_id or "",
         } for g in guests_qs]
 
         return users + guests
@@ -1431,24 +1431,24 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         )
 
     @database_sync_to_async
-    def get_user_dyte_meetings(self):
-        """Get all Dyte meeting IDs where this user might be."""
-        tables = LoungeTable.objects.filter(event_id=self.event_id).values_list('dyte_meeting_id', flat=True)
+    def get_user_rtk_meetings(self):
+        """Get all RTK meeting IDs where this user might be."""
+        tables = LoungeTable.objects.filter(event_id=self.event_id).values_list('rtk_meeting_id', flat=True)
         meeting_ids = [mid for mid in tables if mid]
 
         try:
             event = Event.objects.get(id=self.event_id)
-            if event.dyte_meeting_id:
-                meeting_ids.append(event.dyte_meeting_id)
+            if event.rtk_meeting_id:
+                meeting_ids.append(event.rtk_meeting_id)
         except Event.DoesNotExist:
             pass
 
         return meeting_ids
 
-    def cleanup_dyte_participants_sync(self, meeting_ids):
-        """Remove user from all Dyte meetings."""
+    def cleanup_rtk_participants_sync(self, meeting_ids):
+        """Remove user from all RTK meetings."""
         import requests
-        from .utils import DYTE_API_BASE, _dyte_headers
+        from .utils import RTK_API_BASE, _rtk_headers
         import logging
         logger = logging.getLogger(__name__)
 
@@ -1457,8 +1457,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             try:
                 logger.info(f"[CLEANUP] Checking meeting {mid} for user {self.user.id}")
                 resp = requests.get(
-                    f"{DYTE_API_BASE}/meetings/{mid}/participants",
-                    headers=_dyte_headers(),
+                    f"{RTK_API_BASE}/meetings/{mid}/participants",
+                    headers=_rtk_headers(),
                     params={"limit": 100},
                     timeout=10,
                 )
@@ -1474,8 +1474,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         if pid:
                             logger.info(f"[CLEANUP] Removing participant {pid}")
                             del_resp = requests.delete(
-                                f"{DYTE_API_BASE}/meetings/{mid}/participants/{pid}",
-                                headers=_dyte_headers(),
+                                f"{RTK_API_BASE}/meetings/{mid}/participants/{pid}",
+                                headers=_rtk_headers(),
                                 timeout=10,
                             )
                             if del_resp.ok:
@@ -1599,8 +1599,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             event_id=self.event_id,
             converted_at__isnull=True,
             joined_live=True,
-            dyte_participant_id__isnull=False,
-        ).exclude(dyte_participant_id="")
+            rtk_participant_id__isnull=False,
+        ).exclude(rtk_participant_id="")
         participant_entries.extend({"kind": "guest", "guest": guest} for guest in guest_rows)
 
         print(
@@ -1623,13 +1623,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             room_num = len(tables) + 1
             name = f"Breakout Room #{room_num}"
             print(f"[RANDOM_ASSIGN] Auto-creating {name}")
-            mid = create_dyte_meeting(f"Breakout {self.event_id} - {room_num}")
+            mid = create_rtk_meeting(f"Breakout {self.event_id} - {room_num}")
             t = LoungeTable.objects.create(
                 event_id=self.event_id,
                 name=name,
                 category='BREAKOUT',
                 max_seats=per_room, # ✅ Use the dynamic capacity
-                dyte_meeting_id=mid
+                rtk_meeting_id=mid
             )
             tables.append(t)
             
@@ -1684,11 +1684,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                             "target_type": "user",
                             "target_id": user.id,
                             "table_id": table.id,
-                            "meeting_id": table.dyte_meeting_id,
+                            "meeting_id": table.rtk_meeting_id,
                         })
 
                         print(f"[RANDOM_ASSIGN] ✅ Assigned user {user.id} to table {table.id} "
-                              f"(meeting {table.dyte_meeting_id}), seat_index={seat_index}")
+                              f"(meeting {table.rtk_meeting_id}), seat_index={seat_index}")
                     else:
                         guest = entry["guest"]
                         GuestAttendee.objects.filter(id=guest.id, event_id=self.event_id).update(
@@ -1700,11 +1700,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                             "target_type": "guest",
                             "target_id": guest.id,
                             "table_id": table.id,
-                            "meeting_id": table.dyte_meeting_id,
+                            "meeting_id": table.rtk_meeting_id,
                         })
 
                         print(f"[RANDOM_ASSIGN] ✅ Assigned guest_{guest.id} to table {table.id} "
-                              f"(meeting {table.dyte_meeting_id})")
+                              f"(meeting {table.rtk_meeting_id})")
 
                 # ✅ NEW: Validate all assignments were created
                 total_assigned = LoungeParticipant.objects.filter(
@@ -1939,7 +1939,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 "name": t.name,
                 "category": t.category,
                 "max_seats": t.max_seats,
-                "dyte_meeting_id": t.dyte_meeting_id,
+                "rtk_meeting_id": t.rtk_meeting_id,
                 "icon_url": icon_url,
                 "participants": participants
             })
@@ -2085,7 +2085,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     def leave_current_table(self):
         """
         Remove user from current lounge table.
-        Deletes from both Django DB AND Dyte meeting to prevent 409 conflicts on rejoin.
+        Deletes from both Django DB AND RTK meeting to prevent 409 conflicts on rejoin.
         """
         try:
             if self._is_guest_user():
@@ -2095,23 +2095,23 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     logger.info(f"[CONSUMER] No lounge record found for guest {guest.id}")
                     return 0, None
 
-                meeting_id = getattr(table, "dyte_meeting_id", None)
-                dyte_participant_id = guest.dyte_participant_id
-                if meeting_id and dyte_participant_id:
+                meeting_id = getattr(table, "rtk_meeting_id", None)
+                rtk_participant_id = guest.rtk_participant_id
+                if meeting_id and rtk_participant_id:
                     try:
                         requests.delete(
-                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_participant_id}",
-                            headers=_dyte_headers(),
+                            f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{rtk_participant_id}",
+                            headers=_rtk_headers(),
                             timeout=10,
                         )
                     except Exception as e:
-                        logger.warning(f"[CONSUMER] Error removing guest from Dyte: {e}")
+                        logger.warning(f"[CONSUMER] Error removing guest from RTK: {e}")
 
                 # Keep behavior consistent with REST endpoint: leaving table returns to main room context.
                 guest.current_location = "main_room"
                 guest.lounge_table = None
-                guest.dyte_participant_id = ""
-                guest.save(update_fields=["current_location", "lounge_table", "dyte_participant_id"])
+                guest.rtk_participant_id = ""
+                guest.save(update_fields=["current_location", "lounge_table", "rtk_participant_id"])
                 logger.info(f"[CONSUMER] Guest {guest.id} left table {table.id}; location=main_room")
                 return 1, table
 
@@ -2126,29 +2126,29 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 return 0, None
 
             table = lounge_record.table
-            meeting_id = table.dyte_meeting_id
-            dyte_participant_id = lounge_record.dyte_participant_id
+            meeting_id = table.rtk_meeting_id
+            rtk_participant_id = lounge_record.rtk_participant_id
 
-            # 2. Remove from Dyte meeting FIRST (before deleting DB record)
+            # 2. Remove from RTK meeting FIRST (before deleting DB record)
             if meeting_id:
                 try:
-                    # If we have the Dyte participant ID, use it directly for faster removal
-                    if dyte_participant_id:
+                    # If we have the RTK participant ID, use it directly for faster removal
+                    if rtk_participant_id:
                         delete_resp = requests.delete(
-                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{dyte_participant_id}",
-                            headers=_dyte_headers(),
+                            f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{rtk_participant_id}",
+                            headers=_rtk_headers(),
                             timeout=10,
                         )
                         if delete_resp.ok:
-                            logger.info(f"[CONSUMER] Removed user {self.user.id} from Dyte meeting {meeting_id} "
-                                      f"(participant_id: {dyte_participant_id})")
+                            logger.info(f"[CONSUMER] Removed user {self.user.id} from RTK meeting {meeting_id} "
+                                      f"(participant_id: {rtk_participant_id})")
                         else:
-                            logger.warning(f"[CONSUMER] Failed to remove user from Dyte: {delete_resp.status_code}")
+                            logger.warning(f"[CONSUMER] Failed to remove user from RTK: {delete_resp.status_code}")
                     else:
-                        # Fallback: Query Dyte to find the participant by client_specific_id
+                        # Fallback: Query RTK to find the participant by client_specific_id
                         resp = requests.get(
-                            f"{DYTE_API_BASE}/meetings/{meeting_id}/participants",
-                            headers=_dyte_headers(),
+                            f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
+                            headers=_rtk_headers(),
                             params={"limit": 100},
                             timeout=10,
                         )
@@ -2157,21 +2157,21 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                             for p in participants:
                                 cid = p.get("client_specific_id") or p.get("custom_participant_id")
                                 if cid == str(self.user.id):
-                                    # Found the user in Dyte, now remove them
+                                    # Found the user in RTK, now remove them
                                     participant_id = p.get("id")
                                     delete_resp = requests.delete(
-                                        f"{DYTE_API_BASE}/meetings/{meeting_id}/participants/{participant_id}",
-                                        headers=_dyte_headers(),
+                                        f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{participant_id}",
+                                        headers=_rtk_headers(),
                                         timeout=10,
                                     )
                                     if delete_resp.ok:
-                                        logger.info(f"[CONSUMER] Removed user {self.user.id} from Dyte meeting {meeting_id}")
+                                        logger.info(f"[CONSUMER] Removed user {self.user.id} from RTK meeting {meeting_id}")
                                     else:
-                                        logger.warning(f"[CONSUMER] Failed to remove user from Dyte: {delete_resp.status_code}")
+                                        logger.warning(f"[CONSUMER] Failed to remove user from RTK: {delete_resp.status_code}")
                                     break
                 except Exception as e:
-                    logger.warning(f"[CONSUMER] Error removing from Dyte: {e}")
-                    # Don't fail the entire leave operation if Dyte removal fails
+                    logger.warning(f"[CONSUMER] Error removing from RTK: {e}")
+                    # Don't fail the entire leave operation if RTK removal fails
 
             # 3. Delete from Django DB
             lounge_record.delete()
@@ -2192,7 +2192,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             reg.save(update_fields=["current_location"])
 
             logger.info(f"[CONSUMER] User {self.user.username} (ID:{self.user.id}) left table. "
-                       f"Removed from both Django and Dyte. Location updated to: {new_location}")
+                       f"Removed from both Django and RTK. Location updated to: {new_location}")
             return 1, table
 
         except Exception as e:
@@ -2389,7 +2389,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "type": "late_joiner_assigned",
             "room_id": event.get("room_id"),
             "room_name": event.get("room_name"),
-            "dyte_meeting_id": event.get("dyte_meeting_id"),
+            "rtk_meeting_id": event.get("rtk_meeting_id"),
             "method": event.get("method", "manual")
         })
         print(f"[HANDLER] ✅ Sent late_joiner_assigned to participant")
@@ -2416,7 +2416,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json({
             "type": "refresh_breakout_participants",
             "room_id": event.get("room_id"),
-            "dyte_meeting_id": event.get("dyte_meeting_id"),
+            "rtk_meeting_id": event.get("rtk_meeting_id"),
             "message": "A new participant has been assigned to this room. Refreshing participant list..."
         })
         print(f"[HANDLER] ✅ Sent refresh_breakout_participants notification")
@@ -2550,7 +2550,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         "type": "late_joiner_assigned",
                         "room_id": table.id,
                         "room_name": table.name,
-                        "dyte_meeting_id": table.dyte_meeting_id,
+                        "rtk_meeting_id": table.rtk_meeting_id,
                         "method": "auto",
                     }
                 )
@@ -2572,7 +2572,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     {
                         "type": "refresh_breakout_participants",
                         "room_id": table.id,
-                        "dyte_meeting_id": table.dyte_meeting_id
+                        "rtk_meeting_id": table.rtk_meeting_id
                     }
                 )
 
@@ -2635,7 +2635,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     'current_participants': current,
                     'max_seats': t.max_seats,
                     'available_seats': t.max_seats - current,
-                    'dyte_meeting_id': t.dyte_meeting_id,
+                    'rtk_meeting_id': t.rtk_meeting_id,
                 })
         return available
 
@@ -2725,7 +2725,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     "current_participants": current,
                     "max_seats": room.max_seats,
                     "available_seats": room.max_seats - current,
-                    "dyte_meeting_id": room.dyte_meeting_id,
+                    "rtk_meeting_id": room.rtk_meeting_id,
                 })
 
         notification_data = {

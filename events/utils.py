@@ -1,4 +1,5 @@
 import os
+import base64
 import requests
 import logging
 import hashlib
@@ -8,64 +9,78 @@ from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
-DYTE_API_BASE = os.getenv("DYTE_API_BASE", "https://api.dyte.io/v2")
-DYTE_AUTH_HEADER = os.getenv("DYTE_AUTH_HEADER", "")
-DYTE_PRESET_HOST = os.getenv("DYTE_PRESET_NAME_HOST", os.getenv("DYTE_PRESET_NAME", "group_call_host"))
-DYTE_PRESET_PARTICIPANT = os.getenv("DYTE_PRESET_NAME_MEMBER", "group_call_participant")
+RTK_API_BASE = os.getenv("RTK_API_BASE", "https://api.realtime.cloudflare.com/v2")
+# RTK_ORG_ID + RTK_ORG_API_KEY: the RTK org credentials (short hex key from RTK dashboard)
+RTK_ORG_ID = os.getenv("RTK_ORG_ID", "")
+RTK_ORG_API_KEY = os.getenv("RTK_ORG_API_KEY", "")
+# RTK_AUTH_HEADER: pre-encoded "Basic base64(org_id:api_key)" — used as fallback
+RTK_AUTH_HEADER = os.getenv("RTK_AUTH_HEADER", "")
+RTK_PRESET_HOST = os.getenv("RTK_PRESET_NAME_HOST", os.getenv("RTK_PRESET_NAME", "group_call_host"))
+RTK_PRESET_PARTICIPANT = os.getenv("RTK_PRESET_NAME_MEMBER", "group_call_participant")
 
-def _dyte_headers():
-    """HTTP headers for Dyte REST API."""
-    if not DYTE_AUTH_HEADER:
-        raise RuntimeError("DYTE_AUTH_HEADER is not configured")
+def _rtk_headers():
+    """HTTP headers for RTK REST API (Basic auth: org_id:api_key)."""
+    if RTK_ORG_ID and RTK_ORG_API_KEY:
+        credentials = f"{RTK_ORG_ID}:{RTK_ORG_API_KEY}"
+        auth = "Basic " + base64.b64encode(credentials.encode()).decode()
+        logger.error(f"[RTK_DEBUG] Using ORG_ID={RTK_ORG_ID[:8]}... KEY={RTK_ORG_API_KEY[:6]}... auth={auth[:40]}...")
+    elif RTK_AUTH_HEADER:
+        auth = RTK_AUTH_HEADER
+        logger.error(f"[RTK_DEBUG] Using RTK_AUTH_HEADER={RTK_AUTH_HEADER[:40]}...")
+    else:
+        logger.error(f"[RTK_DEBUG] NO CREDENTIALS FOUND — ORG_ID={repr(RTK_ORG_ID)} AUTH_HEADER={repr(RTK_AUTH_HEADER)}")
+        raise RuntimeError(
+            "RTK credentials not configured. Set RTK_ORG_ID + RTK_ORG_API_KEY in .env"
+        )
     return {
-        "Authorization": DYTE_AUTH_HEADER,
+        "Authorization": auth,
         "Content-Type": "application/json",
     }
 
-def create_dyte_meeting(title):
-    """Utility to create a Dyte meeting and return the meeting ID."""
+def create_rtk_meeting(title):
+    """Utility to create a RTK meeting and return the meeting ID."""
     payload = {
         "title": title,
         "record_on_start": False,
     }
     try:
-        resp = requests.post(f"{DYTE_API_BASE}/meetings", headers=_dyte_headers(), json=payload, timeout=30)
+        resp = requests.post(f"{RTK_API_BASE}/meetings", headers=_rtk_headers(), json=payload, timeout=30)
         if not resp.ok:
-            print(f"DYTE ERROR: Create Meeting {resp.status_code} - {resp.text}")
-            logger.error(f"DYTE ERROR: Create Meeting {resp.status_code} - {resp.text}")
+            print(f"RTK ERROR: Create Meeting {resp.status_code} - {resp.text}")
+            logger.error(f"RTK ERROR: Create Meeting {resp.status_code} - {resp.text}")
         resp.raise_for_status()
         return resp.json().get("data", {}).get("id")
     except Exception as e:
-        logger.error(f"Failed to create Dyte meeting: {e}")
-        print(f"DYTE EXCEPTION (Create Meeting): {e}")
+        logger.error(f"Failed to create RTK meeting: {e}")
+        print(f"RTK EXCEPTION (Create Meeting): {e}")
         return None
 
-def add_dyte_participant(meeting_id, user_id, name, preset_name):
+def add_rtk_participant(meeting_id, user_id, name, preset_name):
     """
-    Add a participant to a Dyte meeting.
+    Add a participant to a RTK meeting.
     Returns: (auth_token, error_message)
     """
-    url = f"{DYTE_API_BASE}/meetings/{meeting_id}/participants"
+    url = f"{RTK_API_BASE}/meetings/{meeting_id}/participants"
     payload = {
         "name": name,
         "preset_name": preset_name,
         "custom_participant_id": str(user_id),
     }
     try:
-        resp = requests.post(url, headers=_dyte_headers(), json=payload, timeout=30)
+        resp = requests.post(url, headers=_rtk_headers(), json=payload, timeout=30)
         if resp.status_code == 201:
             data = resp.json().get("data", {})
             token = data.get("token")
-            logger.info(f"[DYTE] Successfully added participant {user_id} to meeting {meeting_id}")
+            logger.info(f"[RTK] Successfully added participant {user_id} to meeting {meeting_id}")
             return token, None
         else:
-            error_msg = f"Dyte API Error: {resp.status_code} - {resp.text}"
-            logger.error(f"Dyte add participant failed: {error_msg}")
-            print(f"DYTE ERROR: Add Participant {error_msg}")
+            error_msg = f"RTK API Error: {resp.status_code} - {resp.text}"
+            logger.error(f"RTK add participant failed: {error_msg}")
+            print(f"RTK ERROR: Add Participant {error_msg}")
             return None, error_msg
     except Exception as e:
-        logger.error(f"Dyte add participant exception: {e}")
-        print(f"DYTE EXCEPTION: {e}")
+        logger.error(f"RTK add participant exception: {e}")
+        print(f"RTK EXCEPTION: {e}")
         return None, str(e)
 
 
