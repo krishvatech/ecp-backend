@@ -1,5 +1,9 @@
 from django.conf import settings
 from django.shortcuts import redirect
+from django.http import JsonResponse
+
+def health(request):
+    return JsonResponse({"status": "ok"})
 
 def index(request):
     # Logged in? send to your app home (dashboard)
