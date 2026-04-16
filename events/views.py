@@ -2670,6 +2670,82 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return Response(data)
 
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="assign-host")
+    def assign_host(self, request, pk=None):
+        """
+        Promote a registered participant to host during a live session.
+        Body: {"user_id": <integer user ID>}
+
+        - Creates/updates an EventParticipant record with role="host"
+        - Sends a WebSocket notification to the target user so their frontend
+          re-joins the RTK meeting with a publisher (host) preset
+        - Only callable by the current event host
+        """
+        event = self.get_object()
+        if not _is_event_host(request.user, event):
+            return Response({"detail": "Only the host can assign host roles."}, status=403)
+
+        user_id = request.data.get("user_id")
+        if not user_id:
+            return Response({"detail": "user_id is required."}, status=400)
+
+        User = get_user_model()
+        try:
+            target_user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return Response({"detail": f"User {user_id} not found."}, status=404)
+
+        # Prevent self-assignment (already the host)
+        if target_user.id == request.user.id:
+            return Response({"detail": "You are already the host."}, status=400)
+
+        # Create or update EventParticipant record for this user as host
+        EventParticipant.objects.update_or_create(
+            event=event,
+            user=target_user,
+            participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+            defaults={"role": EventParticipant.ROLE_HOST},
+        )
+
+        # Ensure the user has a registration (so they can join with host preset)
+        EventRegistration.objects.get_or_create(
+            event=event,
+            user=target_user,
+            defaults={"status": "registered", "admission_status": "admitted"},
+        )
+
+        # Build the assigning host's display name
+        assigning_host = request.user
+        host_profile = getattr(assigning_host, "profile", None)
+        host_name = (
+            getattr(host_profile, "full_name", "") if host_profile else ""
+        ) or assigning_host.get_full_name() or assigning_host.username
+
+        # Notify the target user via WebSocket so they re-join with publisher preset
+        try:
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"user_{target_user.id}",
+                {
+                    "type": "host_role_assigned",
+                    "assigned_by_user_id": request.user.id,
+                    "assigned_by_name": host_name,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"[ASSIGN_HOST] Failed to send WS notification to user {target_user.id}: {e}")
+            # Don't fail the API call if WS notification fails — DB record is the source of truth
+
+        logger.info(
+            f"[ASSIGN_HOST] User {request.user.id} promoted user {target_user.id} to host "
+            f"for event {event.id}"
+        )
+        return Response({
+            "ok": True,
+            "detail": f"{target_user.get_full_name() or target_user.username} has been assigned as host.",
+            "user_id": target_user.id,
+        })
+
     @action(
         detail=True,
         methods=["get"],

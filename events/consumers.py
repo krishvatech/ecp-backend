@@ -494,6 +494,19 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 {"type": "broadcast.message", "payload": content},
             )
 
+    # --- Host Role Assignment Handler ---
+    async def host_role_assigned(self, event):
+        """
+        ✅ Notify a user that they have been promoted to host during a live session.
+        Sent to the target user's personal group (user_<id>).
+        The frontend uses this to re-join with publisher (host) preset and get full host privileges.
+        """
+        await self.send_json({
+            "type": "host_role_assigned",
+            "assigned_by_user_id": event.get("assigned_by_user_id"),
+            "assigned_by_name": event.get("assigned_by_name", ""),
+        })
+
     # --- Admission Status Handlers ---
     async def admission_status_changed(self, event):
         """
@@ -1493,7 +1506,18 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         # A host is the creator OR any staff/superuser
         if self.user.is_superuser or self.user.is_staff:
             return True
-        return Event.objects.filter(id=self.event_id, created_by=self.user).exists()
+        if Event.objects.filter(id=self.event_id, created_by=self.user).exists():
+            return True
+        # ✅ FIX: Also recognize users explicitly promoted to host via EventParticipant
+        # When the meeting organizer assigns a participant as host during a live session,
+        # this record is created. The original check only looked at Event.created_by which
+        # caused "Action denied: Not a host" for legitimately promoted hosts.
+        return EventParticipant.objects.filter(
+            event_id=self.event_id,
+            user=self.user,
+            participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+            role__in=[EventParticipant.ROLE_HOST, EventParticipant.ROLE_MODERATOR],
+        ).exists()
 
     @database_sync_to_async
     def update_online_status(self, increment):
