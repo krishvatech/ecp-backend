@@ -238,6 +238,11 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 if event.qna_moderation_enabled:
                     qs = qs.filter(moderation_status="approved")
 
+        # Optional: filter to seed questions only (used by EditEventForm pre-event setup)
+        is_seed_filter = self.request.query_params.get("is_seed")
+        if is_seed_filter in ("1", "true"):
+            qs = qs.filter(is_seed=True)
+
         # Support sort parameter: newest, manual, hot/most_voted (default)
         sort = self.request.query_params.get("sort", "most_voted")
         if sort == "newest":
@@ -373,17 +378,22 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 reveal_anonymous_name=is_host,
             )
 
+            # Seed questions use attribution_label as the display name
+            display_user_name = asker_snapshot["asker_name"]
+            if q.is_seed and q.attribution_label:
+                display_user_name = q.attribution_label
+
             data.append({
                 "id": q.id,
                 "content": q.content,
                 "user_id": asker_snapshot["asker_id"],
-                "user_name": asker_snapshot["asker_name"],
+                "user_name": display_user_name,
                 "user_avatar_url": asker_snapshot["asker_avatar_url"],
                 "upvote_count": q.upvotes_count,  # annotated
                 "user_upvoted": q.user_upvoted,  # annotated boolean
-                "upvoters": upvoters_list,  # NEW: list of users who upvoted
+                "upvoters": upvoters_list,  # list of users who upvoted
                 "event_id": q.event_id,
-                "lounge_table_id": q.lounge_table_id, # Return to client
+                "lounge_table_id": q.lounge_table_id,
                 "created_at": q.created_at.isoformat(),
                 "is_answered": q.is_answered,
                 "answered_at": q.answered_at.isoformat() if q.answered_at else None,
@@ -393,6 +403,10 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "is_anonymous": q.is_anonymous,
                 "anonymized_by": q.anonymized_by_id,
                 "display_order": q.display_order,
+                "is_seed": q.is_seed,
+                "attribution_label": q.attribution_label,
+                # speaker_note is only returned to the host
+                "speaker_note": q.speaker_note if (q.is_seed and is_host) else "",
             })
         return Response(data)
 
@@ -409,6 +423,134 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         return Response(preview, status=status.HTTP_200_OK)
     
+
+    @action(detail=False, methods=["post"], url_path="seed")
+    def create_seed(self, request):
+        """
+        POST /questions/seed/
+        Create a seed (pre-arranged) question for an event. Host only.
+        Seed questions are always approved and shown with a custom attribution label
+        (e.g. "Event Team", "Dr. Smith") instead of the host's real name.
+        An optional speaker_note is stored privately and returned only to the host.
+        """
+        from rest_framework.exceptions import PermissionDenied
+        from events.models import Event
+
+        event_id = request.data.get("event")
+        if not event_id:
+            return Response({"detail": "event is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            event = Event.objects.get(pk=event_id)
+        except Event.DoesNotExist:
+            return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        is_host = (request.user == event.created_by or request.user.is_staff)
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can create seed questions.")
+
+        content = (request.data.get("content") or "").strip()
+        if not content:
+            return Response({"detail": "content is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        attribution_label = (request.data.get("attribution_label") or "").strip()
+        speaker_note = (request.data.get("speaker_note") or "").strip()
+
+        # Assign display_order at the end of the current list
+        count = Question.objects.filter(event_id=event_id, lounge_table__isnull=True).count()
+
+        question = Question.objects.create(
+            event=event,
+            user=request.user,
+            content=content,
+            is_seed=True,
+            attribution_label=attribution_label,
+            speaker_note=speaker_note,
+            moderation_status="approved",  # Seed questions skip moderation
+            display_order=count,
+        )
+
+        # Broadcast to main room WebSocket group so live attendees see it immediately
+        channel_layer = get_channel_layer()
+        group = f"event_qna_{event.id}_main"
+        display_name = attribution_label or "Event Team"
+
+        ws_payload = {
+            "type": "qna.question",
+            "event_id": event.id,
+            "lounge_table_id": None,
+            "question_id": question.id,
+            "user_id": request.user.id,
+            "uid": request.user.id,
+            "user": display_name,
+            "user_name": display_name,
+            "user_avatar_url": "",
+            "content": question.content,
+            "upvote_count": 0,
+            "created_at": question.created_at.isoformat(),
+            "moderation_status": "approved",
+            "is_anonymous": False,
+            "display_order": question.display_order,
+            "is_seed": True,
+            "attribution_label": attribution_label,
+        }
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.question", "payload": ws_payload},
+        )
+
+        return Response({
+            "id": question.id,
+            "content": question.content,
+            "event_id": question.event_id,
+            "is_seed": True,
+            "attribution_label": question.attribution_label,
+            "speaker_note": question.speaker_note,
+            "moderation_status": "approved",
+            "upvote_count": 0,
+            "user_name": display_name,
+            "is_pinned": False,
+            "is_answered": False,
+            "is_hidden": False,
+            "display_order": question.display_order,
+            "created_at": question.created_at.isoformat(),
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["patch"], url_path="seed")
+    def update_seed(self, request, pk=None):
+        """
+        PATCH /questions/{id}/seed/
+        Update content, attribution_label, or speaker_note of a seed question. Host only.
+        """
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        if not question.is_seed:
+            return Response({"detail": "This question is not a seed question."}, status=status.HTTP_400_BAD_REQUEST)
+
+        is_host = (request.user == question.event.created_by or request.user.is_staff)
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can edit seed questions.")
+
+        if "content" in request.data:
+            content = (request.data["content"] or "").strip()
+            if content:
+                question.content = content
+
+        if "attribution_label" in request.data:
+            question.attribution_label = (request.data["attribution_label"] or "").strip()
+
+        if "speaker_note" in request.data:
+            question.speaker_note = (request.data["speaker_note"] or "").strip()
+
+        question.save(update_fields=["content", "attribution_label", "speaker_note"])
+
+        return Response({
+            "id": question.id,
+            "content": question.content,
+            "attribution_label": question.attribution_label,
+            "speaker_note": question.speaker_note,
+        }, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"])
     def upvote(self, request, pk=None):

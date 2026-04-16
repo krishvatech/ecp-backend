@@ -203,6 +203,21 @@ class Question(models.Model):
         default=0,
         help_text="Manual sort order for host reorder. Lower = higher in list.",
     )
+    is_seed = models.BooleanField(
+        default=False,
+        help_text="True for host-created seed questions added before the event goes live.",
+    )
+    attribution_label = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Display attribution for seed questions, e.g. 'Host', 'Event Team', 'Dr. Smith'.",
+    )
+    speaker_note = models.TextField(
+        blank=True,
+        default="",
+        help_text="Private host/speaker note visible only to the host. Not shown to attendees.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -211,6 +226,7 @@ class Question(models.Model):
             models.Index(fields=["lounge_table", "-created_at"], name="qna_table_created_idx"),
             models.Index(fields=["event", "moderation_status"], name="qna_event_status_idx"),
             models.Index(fields=["event", "is_pinned"], name="qna_event_pinned_idx"),
+            models.Index(fields=["event", "is_seed"], name="qna_event_seed_idx"),
         ]
         constraints = [
             models.CheckConstraint(
