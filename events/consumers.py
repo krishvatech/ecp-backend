@@ -1644,16 +1644,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             return []
         random.shuffle(participant_entries)
 
-        # 2. Ensure we have enough BREAKOUT tables
-        # Recalculate needed tables based on updated per_room
+        # 2. Ensure we have exactly the right number of BREAKOUT tables
         num_rooms_needed = (len(participant_entries) + per_room - 1) // per_room if per_room > 0 else 1
-        
-        # Get existing breakout tables
-        tables = list(LoungeTable.objects.filter(event_id=self.event_id, category='BREAKOUT').order_by('id'))
-        
-        # Create more if needed
-        while len(tables) < num_rooms_needed:
-            room_num = len(tables) + 1
+
+        # Fetch ALL existing breakout tables so we can reuse them before creating new ones.
+        all_existing = list(LoungeTable.objects.filter(event_id=self.event_id, category='BREAKOUT').order_by('id'))
+
+        # Create new tables only when the existing pool is too small.
+        while len(all_existing) < num_rooms_needed:
+            room_num = len(all_existing) + 1
             name = f"Breakout Room #{room_num}"
             print(f"[RANDOM_ASSIGN] Auto-creating {name}")
             mid = create_rtk_meeting(f"Breakout {self.event_id} - {room_num}")
@@ -1661,12 +1660,23 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 event_id=self.event_id,
                 name=name,
                 category='BREAKOUT',
-                max_seats=per_room, # ✅ Use the dynamic capacity
+                max_seats=per_room,
                 rtk_meeting_id=mid
             )
-            tables.append(t)
-            
-        # Update existing tables max_seats if they differ (optional, but good for consistency)
+            all_existing.append(t)
+
+        # ✅ CRITICAL: Use ONLY the first num_rooms_needed tables for assignment.
+        # If a previous run left more tables than we need now (e.g., 3 tables from a
+        # prior 9-person run, but we only need 2 for 6 people at per_room=3), the
+        # excess tables must NOT participate in the round-robin.  Including them
+        # spreads participants too thin and produces fewer per room than requested
+        # (e.g., 2/room instead of 3/room — the reported bug).
+        tables = all_existing[:num_rooms_needed]
+
+        print(f"[RANDOM_ASSIGN] Using {len(tables)} table(s) "
+              f"(total existing: {len(all_existing)}, needed: {num_rooms_needed})")
+
+        # Update max_seats on the tables we will actually use.
         for t in tables:
             if t.max_seats != per_room:
                 t.max_seats = per_room
