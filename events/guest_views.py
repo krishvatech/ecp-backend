@@ -556,6 +556,19 @@ class GuestVerifyOTPView(APIView):
         secret = getattr(settings, "GUEST_JWT_SECRET", settings.SECRET_KEY)
         token = jwt.encode(payload, secret, algorithm="HS256")
 
+        # 8. Send acknowledgement email for open registration events
+        if event.registration_type == 'open':
+            from users.email_utils import send_guest_registration_acknowledgement_email
+            try:
+                send_guest_registration_acknowledgement_email(
+                    guest_name=guest.get_display_name(),
+                    email=guest.email,
+                    event=event
+                )
+                logger.info(f"Guest registration acknowledgement email sent to {guest.email} for event {event.id}")
+            except Exception as e:
+                logger.error(f"Failed to send guest registration acknowledgement email: {e}")
+
         return Response({
             "token": token,
             "guest_id": guest.id,

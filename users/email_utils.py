@@ -693,6 +693,132 @@ def send_replay_partial_email(user, event):
     )
 
 
+def send_user_registration_acknowledgement_email(user, event):
+    """
+    Send an acknowledgement email to an authenticated user when they register for an open event.
+
+    Confirms their registration and provides event details.
+
+    Args:
+        user: User instance
+        event: Event instance
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    if not user or not user.email or not event:
+        return False
+
+    app_name = "IMAA Connect"
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    event_url = f"{frontend_base}/events/{event.slug or event.id}/"
+
+    ctx = {
+        "app_name": app_name,
+        "first_name": user.first_name or user.username or "there",
+        "event_title": event.title,
+        "event_date": event.start_time,
+        "event_start": event.start_time,
+        "event_end": event.end_time,
+        "is_multi_day": event.is_multi_day,
+        "event_timezone": event.timezone,
+        "event_url": event_url,
+        "support_email": settings.DEFAULT_FROM_EMAIL,
+    }
+
+    return send_template_email(
+        template_key="user_registration_acknowledgement",
+        to_email=user.email,
+        context=ctx,
+        subject_override=f"Registration Confirmed – '{event.title}'",
+        fail_silently=True,
+    )
+
+
+def send_guest_registration_acknowledgement_email(guest_name, email, event):
+    """
+    Send an acknowledgement email to a guest when they register for an open registration event.
+
+    Confirms their registration and provides event details.
+
+    Args:
+        guest_name: Guest's display name (first_name last_name)
+        email: Guest's email address
+        event: Event instance
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    if not email or not event:
+        return False
+
+    app_name = "IMAA Connect"
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    event_url = f"{frontend_base}/events/{event.slug or event.id}/"
+
+    ctx = {
+        "app_name": app_name,
+        "guest_name": guest_name or "Guest",
+        "event_title": event.title,
+        "event_date": event.start_time,
+        "event_start": event.start_time,
+        "event_end": event.end_time,
+        "is_multi_day": event.is_multi_day,
+        "event_timezone": event.timezone,
+        "event_url": event_url,
+        "support_email": settings.DEFAULT_FROM_EMAIL,
+    }
+
+    return send_template_email(
+        template_key="guest_registration_acknowledgement",
+        to_email=email,
+        context=ctx,
+        subject_override=f"You're Registered for '{event.title}' ✅",
+        fail_silently=True,
+    )
+
+
+def send_application_acknowledgement_email(application):
+    """
+    Send an acknowledgement email to an applicant when their application is submitted.
+
+    Confirms receipt of application and sets expectations for review timeline.
+
+    Args:
+        application: EventApplication instance with pending status (newly created)
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    if not application or not application.email:
+        return False
+
+    app_name = "IMAA Connect"
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    event_url = f"{frontend_base}/events/{application.event.slug or application.event.id}/"
+
+    ctx = {
+        "app_name": app_name,
+        "applicant_name": f"{application.first_name} {application.last_name}",
+        "event_title": application.event.title,
+        "event_date": application.event.start_time,
+        "event_start": application.event.start_time,
+        "event_end": application.event.end_time,
+        "is_multi_day": application.event.is_multi_day,
+        "event_timezone": application.event.timezone,
+        "event_url": event_url,
+        "support_email": settings.DEFAULT_FROM_EMAIL,
+    }
+
+    return send_template_email(
+        template_key="application_acknowledgement",
+        to_email=application.email,
+        context=ctx,
+        subject_override=f"Application Received – '{application.event.title}'",
+        fail_silently=True,
+    )
+
+
 def send_application_approved_email(application):
     """
     Send an approval email to an applicant with magic login link for guests.

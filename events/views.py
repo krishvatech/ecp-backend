@@ -1699,7 +1699,16 @@ class EventViewSet(viewsets.ModelViewSet):
 
         if was_created:
              Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
-             
+
+        # Send acknowledgement email for first-time registration on open events
+        if was_created and event.registration_type == 'open':
+            from users.email_utils import send_user_registration_acknowledgement_email
+            try:
+                send_user_registration_acknowledgement_email(request.user, event)
+                logger.info(f"Registration acknowledgement email sent to {request.user.email} for event {event.id}")
+            except Exception as e:
+                logger.error(f"Failed to send registration acknowledgement email: {e}")
+
         return Response({"ok": True, "created": was_created, "event_id": event.id})
 
     @action(detail=True, methods=["post", "get"], permission_classes=[AllowAny], url_path="apply")
@@ -1754,6 +1763,14 @@ class EventViewSet(viewsets.ModelViewSet):
         # For guest applications: NO longer create GuestAttendee or JWT immediately
         # Guest will verify via OTP on event day when checking application status
         # GuestAttendee is created during guest-join (OTP) endpoint instead
+
+        # Send acknowledgement email to applicant
+        from users.email_utils import send_application_acknowledgement_email
+        try:
+            send_application_acknowledgement_email(app)
+            logger.info(f"Acknowledgement email sent for application {app.id}")
+        except Exception as e:
+            logger.error(f"Failed to send acknowledgement email for application {app.id}: {e}")
 
         # Return application without guest token
         response_data = EventApplicationSerializer(app).data

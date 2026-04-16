@@ -1,0 +1,25 @@
+You're Registered!
+
+Hello {{ guest_name }},
+
+Thank you for registering for:
+
+{{ event_title }}
+{% if event_start %}{% if is_multi_day %}Date: {{ event_start|date:"F j, Y" }} – {{ event_end|date:"F j, Y" }}{% else %}Date: {{ event_start|date:"F j, Y" }}
+Time: {{ event_start|time:"g:i A" }}{% if event_end %} - {{ event_end|time:"g:i A" }}{% endif %}{% endif %}
+{% if event_timezone %}Timezone: {{ event_timezone }}{% endif %}{% endif %}
+
+Your registration is confirmed and you're all set to join!
+
+Ready to go:
+✅ Your email has been verified
+✅ You're registered for the event
+✅ Join the event when it starts
+✅ Check your email for event reminders
+
+Registration Email: {{ email }}
+If you need help or have any questions, contact us at {{ support_email }}.
+
+View Event Details: {{ event_url }}
+
+{{ app_name }} © 2026 | All rights reserved

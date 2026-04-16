@@ -1,0 +1,25 @@
+Application Received
+
+Hello {{ applicant_name }},
+
+Thank you for submitting your application for:
+
+{{ event_title }}
+{% if event_start %}{% if is_multi_day %}Date: {{ event_start|date:"F j, Y" }} – {{ event_end|date:"F j, Y" }}{% else %}Date: {{ event_start|date:"F j, Y" }}
+Time: {{ event_start|time:"g:i A" }}{% if event_end %} - {{ event_end|time:"g:i A" }}{% endif %}{% endif %}
+{% if event_timezone %}Timezone: {{ event_timezone }}{% endif %}{% endif %}
+
+We've received your application and will review it carefully.
+
+What to expect:
+- Our team will review your application
+- We'll notify you by email of the decision
+- Check your email (including spam folder) for our response
+- Approved applicants will receive joining instructions
+
+Application Email: {{ email }}
+If you need to update your application or have questions, please contact our support team at {{ support_email }}.
+
+View Event Details: {{ event_url }}
+
+{{ app_name }} © 2026 | All rights reserved
