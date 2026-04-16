@@ -1282,5 +1282,61 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         async_to_sync(channel_layer.group_send)(
             group,
-            {"type": "qna.question", "payload": payload}, 
+            {"type": "qna.question", "payload": payload},
         )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Q&A Export  (host / staff only, event must be ended)
+    # GET /api/interactions/questions/export/?event_id=<id>&format=csv|pdf
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @action(detail=False, methods=["get"], url_path="export")
+    def export(self, request):
+        from rest_framework.exceptions import PermissionDenied, ValidationError
+        from django.shortcuts import get_object_or_404
+        from events.models import Event
+        from .exporters import build_export_rows, generate_csv_response, generate_pdf_response
+
+        # ── validate query params ─────────────────────────────────────────────
+        event_id = request.query_params.get("event_id", "").strip()
+        fmt = request.query_params.get("format", "").strip().lower()
+
+        if not event_id:
+            raise ValidationError({"event_id": "This parameter is required."})
+        if fmt not in ("csv", "pdf"):
+            raise ValidationError({"format": "Must be 'csv' or 'pdf'."})
+
+        # ── load event ────────────────────────────────────────────────────────
+        event = get_object_or_404(Event, pk=event_id)
+
+        # ── permission: host or staff only ────────────────────────────────────
+        user = request.user
+        is_host = (not self._is_guest_user(user)) and (user == event.created_by)
+        is_staff = (not self._is_guest_user(user)) and user.is_staff
+
+        if not (is_host or is_staff):
+            raise PermissionDenied("Only the event host or platform staff can export Q&A data.")
+
+        # ── event must be ended ───────────────────────────────────────────────
+        if event.status != "ended":
+            from rest_framework.response import Response
+            from rest_framework import status as http_status
+            return Response(
+                {"detail": "Q&A export is only available after the event has ended."},
+                status=http_status.HTTP_403_FORBIDDEN,
+            )
+
+        # ── build normalised rows (shared by both formats) ────────────────────
+        rows = build_export_rows(event)
+
+        # ── generate response ─────────────────────────────────────────────────
+        if fmt == "csv":
+            return generate_csv_response(rows, event)
+
+        exported_by = (
+            (getattr(user, "get_full_name", lambda: "")() or "").strip()
+            or user.username
+            or user.email
+            or f"User {user.pk}"
+        )
+        return generate_pdf_response(rows, event, exported_by=exported_by)

@@ -41,3 +41,6 @@ agora_token_builder
 wagtail>=7.1,<8
 wagtail-ai>=3.0,<4
 whitenoise==6.7.0
+
+# PDF generation
+reportlab>=4.2,<5
