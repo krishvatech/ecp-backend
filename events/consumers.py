@@ -1585,13 +1585,46 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             per_room = event.lounge_table_capacity or 4
             
         print(f"[RANDOM_ASSIGN] Starting: event={self.event_id}, per_room={per_room}")
-        # 1. Get all online participants (registered users + guests)
+
+        # Collect all host/moderator user IDs — these users should never be
+        # force-moved into a breakout room during random assignment.
+        # They can still join a room manually via "Join Breakout Room".
+        host_user_ids = set()
+        host_user_ids.add(self.user.id)  # triggering user (always exclude)
+        if event.created_by_id:
+            host_user_ids.add(event.created_by_id)
+        community_owner_id = getattr(getattr(event, "community", None), "owner_id", None)
+        if community_owner_id:
+            host_user_ids.add(community_owner_id)
+        # Any user explicitly assigned a host or moderator role for this event
+        assigned_host_ids = EventParticipant.objects.filter(
+            event_id=self.event_id,
+            participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+            role__in=[EventParticipant.ROLE_HOST, EventParticipant.ROLE_MODERATOR],
+            user__isnull=False,
+        ).values_list("user_id", flat=True)
+        host_user_ids.update(assigned_host_ids)
+        # Staff / superusers are always considered hosts on this platform
+        staff_superuser_ids = User.objects.filter(
+            is_active=True,
+        ).filter(
+            is_staff=True
+        ).values_list("id", flat=True)
+        host_user_ids.update(staff_superuser_ids)
+        superuser_ids = User.objects.filter(
+            is_active=True, is_superuser=True,
+        ).values_list("id", flat=True)
+        host_user_ids.update(superuser_ids)
+
+        print(f"[RANDOM_ASSIGN] Excluding {len(host_user_ids)} host/moderator user(s) from pool: {host_user_ids}")
+
+        # 1. Get all online participants (registered users + guests), excluding hosts
         registrations = EventRegistration.objects.filter(
             event_id=self.event_id,
             is_online=True,
             admission_status="admitted",
             joined_live=True,
-        ).exclude(user_id=self.user.id).select_related('user')
+        ).exclude(user_id__in=host_user_ids).select_related('user')
 
         participant_entries = [{"kind": "user", "user": reg.user} for reg in registrations]
 
