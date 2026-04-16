@@ -1,0 +1,25 @@
+Event Starting in 1 Hour!
+
+Hello {{ first_name }},
+
+This is your reminder that the event you're registered for is starting in approximately 1 hour. Get ready to join!
+
+{{ event_title }}
+
+{% if is_multi_day %}
+📅 Date: {{ event_start|date:"F j, Y" }} – {{ event_end|date:"F j, Y" }}
+{% else %}
+📅 Date: {{ event_start|date:"F j, Y" }}
+⏰ Time: {{ event_start|time:"g:i A" }} - {{ event_end|time:"g:i A" }}
+{% endif %}
+{% if event_timezone %}🌍 Timezone: {{ event_timezone }}{% endif %}
+
+Pro Tips:
+- Test your audio and video before joining
+- Find a quiet place to participate
+- Ensure you have a stable internet connection
+- Log in a few minutes early to get settled
+
+Join the event here: {{ event_url }}
+
+Questions? Contact us at {{ support_email }}

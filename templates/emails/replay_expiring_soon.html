@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Replay Expiring Soon</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div style="background-color: #f8f9fa; border-radius: 8px; padding: 30px; margin-bottom: 20px;">
+        <h1 style="color: #d9534f; margin-top: 0;">⚠️ Replay Expires Soon!</h1>
+
+        <p>Hello {{ first_name }},</p>
+
+        <p>The replay for <strong>{{ event_title }}</strong> will be expiring very soon. If you haven't watched it yet or want to review it, now is the time to access it!</p>
+
+        <div style="background-color: white; border-left: 4px solid #d9534f; padding: 20px; margin: 20px 0; border-radius: 5px;">
+            <h2 style="margin-top: 0; color: #2c3e50;">{{ event_title }}</h2>
+            <p style="margin: 5px 0;"><strong>🔴 Replay Expires:</strong> {{ expiration_date|date:"F j, Y" }} at {{ expiration_date|time:"g:i A" }}</p>
+            <p style="margin: 5px 0; color: #d9534f;"><strong>⏰ Time Remaining:</strong> Only 2 days left to watch!</p>
+        </div>
+
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{{ replay_url }}" style="background-color: #d9534f; color: white; padding: 14px 28px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Watch Replay Now →</a>
+        </div>
+
+        <div style="background-color: #fff3cd; border-radius: 5px; padding: 15px; margin: 20px 0;">
+            <h3 style="margin-top: 0; color: #856404;">📌 Don't Miss Out</h3>
+            <ul style="margin: 10px 0; padding-left: 20px; color: #856404;">
+                <li>Review key content you may have missed</li>
+                <li>Catch up on parts you left early from</li>
+                <li>Share insights with your team</li>
+                <li>Download the recording for offline viewing (if available)</li>
+            </ul>
+        </div>
+
+        <p style="color: #d9534f; margin: 20px 0; text-align: center; font-weight: bold;">
+            Once the replay expires, it will no longer be available. Please watch it before {{ expiration_date|date:"F j, Y" }}.
+        </p>
+
+        <div style="text-align: center; margin: 20px 0;">
+            <a href="{{ event_url }}" style="color: #007bff; text-decoration: none;">View Event Details</a>
+        </div>
+
+        <hr style="border: none; border-top: 1px solid #dee2e6; margin: 30px 0;">
+
+        <p style="color: #6c757d; font-size: 14px;">
+            Questions? Contact us at <a href="mailto:{{ support_email }}" style="color: #007bff;">{{ support_email }}</a>
+        </p>
+    </div>
+</body>
+</html>

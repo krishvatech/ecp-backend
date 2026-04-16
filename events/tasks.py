@@ -809,3 +809,273 @@ def send_guest_followup_task(event_id):
     except Exception as e:
         logger.error(f"[SendGuestFollowup] Task failed: {e}", exc_info=True)
         return {"status": "error", "error": str(e)}
+
+
+@shared_task(bind=True, max_retries=3)
+def send_event_starting_soon_task(self, event_id):
+    """
+    Celery task: Send "Event starts in 1 hour" reminders to all registered users.
+
+    Scheduled to run exactly 1 hour before event start time.
+    Idempotent: checks starting_soon_notifications_sent_at before sending.
+
+    Args:
+        event_id: ID of the event
+
+    Returns:
+        dict: {"status": "ok", "emails_sent": int} or {"status": "error", "error": str}
+    """
+    from .models import Event, EventRegistration
+    from users.email_utils import send_event_starting_soon_email
+
+    try:
+        event = Event.objects.get(id=event_id)
+    except Event.DoesNotExist:
+        logger.error(f"[EVENT_STARTING_SOON] Event {event_id} not found")
+        return {"error": "event_not_found"}
+
+    # Idempotency guard: do not resend if already sent
+    if event.starting_soon_notifications_sent_at is not None:
+        logger.info(f"[EVENT_STARTING_SOON] Skipping event {event_id}: already sent at {event.starting_soon_notifications_sent_at}")
+        return {"skipped": True, "reason": "already_sent"}
+
+    # Get all registered users
+    registrations = EventRegistration.objects.filter(
+        event=event,
+        status__in=["registered", "cancellation_requested"]
+    ).select_related("user")
+
+    emails_sent = 0
+
+    try:
+        with transaction.atomic():
+            for reg in registrations:
+                user = reg.user
+                if not user or not user.email:
+                    continue
+
+                if send_event_starting_soon_email(user, event):
+                    emails_sent += 1
+                    logger.info(f"[EVENT_STARTING_SOON] Sent reminder to {user.email} for event {event.id}")
+                else:
+                    logger.warning(f"[EVENT_STARTING_SOON] Failed to send email to {user.email}")
+
+            # Mark notifications as sent (prevents duplicate sends)
+            Event.objects.filter(pk=event_id).update(
+                starting_soon_notifications_sent_at=timezone.now()
+            )
+
+        logger.info(f"[EVENT_STARTING_SOON] Event {event_id}: sent {emails_sent} reminders")
+        return {"status": "ok", "emails_sent": emails_sent}
+
+    except Exception as exc:
+        logger.exception(f"[EVENT_STARTING_SOON] Task failed for event {event_id}: {exc}")
+        raise self.retry(exc=exc, countdown=60)
+
+
+@shared_task(bind=True, max_retries=3)
+def send_event_join_confirmation_task(self, event_id, user_id):
+    """
+    Celery task: Send "Thanks for joining" confirmation email when user joins live event.
+
+    Called immediately when user joins the live meeting via WebSocket connection.
+    Non-critical: fails silently if event/user not found.
+
+    Args:
+        event_id: ID of the event
+        user_id: ID of the user who joined
+
+    Returns:
+        dict: {"status": "ok"} or {"status": "skipped"}
+    """
+    from django.contrib.auth import get_user_model
+    from .models import Event
+    from users.email_utils import send_event_join_confirmation_email
+
+    User = get_user_model()
+
+    try:
+        event = Event.objects.get(id=event_id)
+        user = User.objects.get(id=user_id)
+    except (Event.DoesNotExist, User.DoesNotExist):
+        logger.warning(f"[JOIN_CONFIRMATION] Event {event_id} or User {user_id} not found")
+        return {"status": "skipped", "reason": "not_found"}
+
+    try:
+        if send_event_join_confirmation_email(user, event):
+            logger.info(f"[JOIN_CONFIRMATION] Sent confirmation to {user.email} for event {event.id}")
+            return {"status": "ok"}
+        else:
+            logger.warning(f"[JOIN_CONFIRMATION] Failed to send email to {user.email}")
+            return {"status": "failed", "reason": "email_send_failed"}
+    except Exception as exc:
+        logger.warning(f"[JOIN_CONFIRMATION] Error: {exc}")
+        # Don't retry for this non-critical task
+        return {"status": "error", "error": str(exc)}
+
+
+@shared_task(bind=True, max_retries=3)
+def send_replay_expiring_soon_task(self, event_id):
+    """
+    Celery task: Send "Replay expires in 2 days" alerts to all registered users.
+
+    Scheduled to run 2 days before replay expiration (when replay_availability_duration allows).
+    Idempotent: checks replay_expiring_notifications_sent_at before sending.
+
+    Args:
+        event_id: ID of the event
+
+    Returns:
+        dict: {"status": "ok", "emails_sent": int} or {"status": "error", "error": str}
+    """
+    from .models import Event, EventRegistration
+    from users.email_utils import send_replay_expiring_soon_email
+
+    try:
+        event = Event.objects.get(id=event_id)
+    except Event.DoesNotExist:
+        logger.error(f"[REPLAY_EXPIRING] Event {event_id} not found")
+        return {"error": "event_not_found"}
+
+    # Idempotency guard: do not resend if already sent
+    if event.replay_expiring_notifications_sent_at is not None:
+        logger.info(f"[REPLAY_EXPIRING] Skipping event {event_id}: already sent at {event.replay_expiring_notifications_sent_at}")
+        return {"skipped": True, "reason": "already_sent"}
+
+    # Check if replay is available and has expiration info
+    if not event.replay_available or not event.replay_availability_duration:
+        logger.warning(f"[REPLAY_EXPIRING] Event {event_id}: replay not available or no expiration info")
+        return {"skipped": True, "reason": "no_replay_expiration"}
+
+    # Get all registered users
+    registrations = EventRegistration.objects.filter(
+        event=event,
+        status__in=["registered", "cancellation_requested"]
+    ).select_related("user")
+
+    emails_sent = 0
+    expiration_date = timezone.now() + timedelta(days=2)
+
+    try:
+        with transaction.atomic():
+            for reg in registrations:
+                user = reg.user
+                if not user or not user.email:
+                    continue
+
+                if send_replay_expiring_soon_email(user, event, expiration_date):
+                    emails_sent += 1
+                    logger.info(f"[REPLAY_EXPIRING] Sent alert to {user.email} for event {event.id}")
+                else:
+                    logger.warning(f"[REPLAY_EXPIRING] Failed to send email to {user.email}")
+
+            # Mark notifications as sent (prevents duplicate sends)
+            Event.objects.filter(pk=event_id).update(
+                replay_expiring_notifications_sent_at=timezone.now()
+            )
+
+        logger.info(f"[REPLAY_EXPIRING] Event {event_id}: sent {emails_sent} expiration alerts")
+        return {"status": "ok", "emails_sent": emails_sent}
+
+    except Exception as exc:
+        logger.exception(f"[REPLAY_EXPIRING] Task failed for event {event_id}: {exc}")
+        raise self.retry(exc=exc, countdown=60)
+
+
+@shared_task(bind=True)
+def scheduled_send_event_starting_soon_reminders(self):
+    """
+    Scheduled task: Find all events starting within the next hour and send reminders.
+
+    Runs every 5 minutes via Celery Beat.
+    Finds events that:
+    - Start between now and 1 hour from now
+    - Haven't had reminders sent yet (starting_soon_notifications_sent_at is None)
+
+    Returns:
+        dict: {"status": "ok", "events_processed": int, "total_emails": int}
+    """
+    from .models import Event
+
+    now = timezone.now()
+    one_hour_later = now + timedelta(hours=1)
+
+    # Find events starting in the next hour that haven't sent reminders yet
+    events_needing_reminders = Event.objects.filter(
+        start_time__gte=now,
+        start_time__lte=one_hour_later,
+        starting_soon_notifications_sent_at__isnull=True,
+        status='published'
+    )
+
+    events_processed = 0
+    total_emails_sent = 0
+
+    for event in events_needing_reminders:
+        try:
+            result = send_event_starting_soon_task.apply(args=[event.id])
+            if result.successful():
+                data = result.get()
+                if data and data.get('status') == 'ok':
+                    emails_sent = data.get('emails_sent', 0)
+                    total_emails_sent += emails_sent
+                    events_processed += 1
+                    logger.info(f"[SCHEDULER] Processed event {event.id} ({event.title}): {emails_sent} emails")
+        except Exception as e:
+            logger.error(f"[SCHEDULER] Failed to process event {event.id}: {e}")
+
+    logger.info(f"[SCHEDULER] Scheduled reminder task complete: {events_processed} events, {total_emails_sent} emails sent")
+    return {"status": "ok", "events_processed": events_processed, "total_emails": total_emails_sent}
+
+
+@shared_task(bind=True)
+def scheduled_send_replay_expiring_alerts(self):
+    """
+    Scheduled task: Find all events with replays expiring within 2 days and send alerts.
+
+    Runs every 5 minutes via Celery Beat.
+    Finds events that:
+    - Have replay_available = True
+    - Replay expires within 2 days from now
+    - Haven't had expiration alerts sent yet (replay_expiring_notifications_sent_at is None)
+
+    Returns:
+        dict: {"status": "ok", "events_processed": int, "total_emails": int}
+    """
+    from .models import Event
+
+    now = timezone.now()
+    two_days_later = now + timedelta(days=2)
+
+    # Find events with replays expiring within 2 days that haven't sent alerts yet
+    events_with_expiring_replays = Event.objects.filter(
+        replay_available=True,
+        replay_availability_duration__isnull=False,
+        replay_expiring_notifications_sent_at__isnull=True,
+        status='published'
+    )
+
+    events_processed = 0
+    total_emails_sent = 0
+
+    for event in events_with_expiring_replays:
+        # Calculate replay expiration date
+        if event.end_time and event.replay_availability_duration:
+            replay_expiration = event.end_time + event.replay_availability_duration
+
+            # Check if replay expires within 2 days
+            if now <= replay_expiration <= two_days_later:
+                try:
+                    result = send_replay_expiring_soon_task.apply(args=[event.id])
+                    if result.successful():
+                        data = result.get()
+                        if data and data.get('status') == 'ok':
+                            emails_sent = data.get('emails_sent', 0)
+                            total_emails_sent += emails_sent
+                            events_processed += 1
+                            logger.info(f"[SCHEDULER] Processed replay expiration for event {event.id} ({event.title}): {emails_sent} emails")
+                except Exception as e:
+                    logger.error(f"[SCHEDULER] Failed to process replay expiration for event {event.id}: {e}")
+
+    logger.info(f"[SCHEDULER] Scheduled replay expiration task complete: {events_processed} events, {total_emails_sent} emails sent")
+    return {"status": "ok", "events_processed": events_processed, "total_emails": total_emails_sent}

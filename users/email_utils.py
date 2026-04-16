@@ -1035,3 +1035,119 @@ def link_guest_history_to_user(user, email):
         )
 
     return count
+
+
+def send_event_starting_soon_email(user, event):
+    """
+    Send "Event starts in 1 hour" reminder email to a registered user.
+    Called 1 hour before event start time.
+
+    Args:
+        user: User instance
+        event: Event instance
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    if not user or not user.email or not event:
+        return False
+
+    app_name = "IMAA Connect"
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    event_url = f"{frontend_base}/events/{event.slug or event.id}/"
+
+    ctx = {
+        "app_name": app_name,
+        "first_name": user.first_name or user.username or "there",
+        "event_title": event.title,
+        "event_start": event.start_time,
+        "event_end": event.end_time,
+        "is_multi_day": event.is_multi_day,
+        "event_timezone": event.timezone,
+        "event_url": event_url,
+        "support_email": settings.DEFAULT_FROM_EMAIL,
+    }
+
+    return send_template_email(
+        template_key="event_starting_soon",
+        to_email=user.email,
+        context=ctx,
+        subject_override=f"Reminder: '{event.title}' starts in 1 hour",
+        fail_silently=True,
+    )
+
+
+def send_event_join_confirmation_email(user, event):
+    """
+    Send "Thanks for joining" confirmation email when user joins live event.
+    Sent immediately upon joining the meeting.
+
+    Args:
+        user: User instance
+        event: Event instance
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    if not user or not user.email or not event:
+        return False
+
+    app_name = "IMAA Connect"
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    event_url = f"{frontend_base}/events/{event.slug or event.id}/"
+
+    ctx = {
+        "app_name": app_name,
+        "first_name": user.first_name or user.username or "there",
+        "event_title": event.title,
+        "event_url": event_url,
+        "support_email": settings.DEFAULT_FROM_EMAIL,
+    }
+
+    return send_template_email(
+        template_key="event_join_confirmation",
+        to_email=user.email,
+        context=ctx,
+        subject_override=f"You've joined '{event.title}'",
+        fail_silently=True,
+    )
+
+
+def send_replay_expiring_soon_email(user, event, expiration_date):
+    """
+    Send "Replay expires in 2 days" alert to registered users.
+    Reminds users to download/watch recording before it expires.
+
+    Args:
+        user: User instance
+        event: Event instance
+        expiration_date: DateTime when replay will expire
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    if not user or not user.email or not event:
+        return False
+
+    app_name = "IMAA Connect"
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    event_url = f"{frontend_base}/events/{event.slug or event.id}/"
+    replay_url = f"{frontend_base}/account/recordings"
+
+    ctx = {
+        "app_name": app_name,
+        "first_name": user.first_name or user.username or "there",
+        "event_title": event.title,
+        "expiration_date": expiration_date,
+        "event_url": event_url,
+        "replay_url": replay_url,
+        "support_email": settings.DEFAULT_FROM_EMAIL,
+    }
+
+    return send_template_email(
+        template_key="replay_expiring_soon",
+        to_email=user.email,
+        context=ctx,
+        subject_override=f"Reminder: Replay for '{event.title}' expires soon",
+        fail_silently=True,
+    )

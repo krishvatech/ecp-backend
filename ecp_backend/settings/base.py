@@ -543,6 +543,15 @@ CELERY_BEAT_SCHEDULE.update({
         "task": "courses.tasks.sync_all_user_moodle_enrollments",
         "schedule": crontab(minute="*/30"),  # Every 30 minutes
     },
+    # Email notifications (scheduled wrapper tasks that find events and process them)
+    "send-event-starting-soon-reminders": {
+        "task": "events.tasks.scheduled_send_event_starting_soon_reminders",
+        "schedule": crontab(minute="*/5"),  # Run every 5 minutes to find events starting within 1 hour
+    },
+    "send-replay-expiring-alerts": {
+        "task": "events.tasks.scheduled_send_replay_expiring_alerts",
+        "schedule": crontab(minute="*/5"),  # Run every 5 minutes to find replays expiring within 2 days
+    },
 })
 
 # Contact Request Quota Settings

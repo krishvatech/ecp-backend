@@ -172,6 +172,16 @@ class Event(models.Model):
         blank=True,
         help_text="Set when replay notifications are dispatched. Null = never sent."
     )
+    starting_soon_notifications_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when 1-hour-before-event emails are sent. Null = never sent."
+    )
+    replay_expiring_notifications_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when replay-expiring-soon emails are sent. Null = never sent."
+    )
     replay_visible_to_participants = models.BooleanField(
         default=False,
         help_text="If False, only host can download/see recording. If True, participants can access after notifications sent."

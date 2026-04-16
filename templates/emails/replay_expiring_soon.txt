@@ -1,0 +1,24 @@
+Replay Expires Soon!
+
+Hello {{ first_name }},
+
+The replay for {{ event_title }} will be expiring very soon. If you haven't watched it yet or want to review it, now is the time to access it!
+
+{{ event_title }}
+
+🔴 Replay Expires: {{ expiration_date|date:"F j, Y" }} at {{ expiration_date|time:"g:i A" }}
+⏰ Time Remaining: Only 2 days left to watch!
+
+Watch Replay Now: {{ replay_url }}
+
+Don't Miss Out:
+- Review key content you may have missed
+- Catch up on parts you left early from
+- Share insights with your team
+- Download the recording for offline viewing (if available)
+
+IMPORTANT: Once the replay expires, it will no longer be available. Please watch it before {{ expiration_date|date:"F j, Y" }}.
+
+View Event Details: {{ event_url }}
+
+Questions? Contact us at {{ support_email }}

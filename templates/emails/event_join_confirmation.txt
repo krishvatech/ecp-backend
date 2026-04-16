@@ -1,0 +1,20 @@
+Thanks for Joining!
+
+Hello {{ first_name }},
+
+Thank you for joining {{ event_title }}! We're excited to have you here. Your participation and engagement make our community stronger.
+
+You're all set! Your live session connection has been confirmed. You can now enjoy the event and connect with other participants.
+
+During the Event:
+- Engage in discussions with other participants
+- Use the networking lounge to make connections
+- Ask questions in the Q&A session
+- Take notes on key insights shared
+
+View Event Details: {{ event_url }}
+
+Feedback Welcome
+We'd love to hear about your experience! After the event ends, you'll have the opportunity to share your feedback and help us improve.
+
+Questions? Contact us at {{ support_email }}
