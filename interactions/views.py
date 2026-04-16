@@ -13,7 +13,14 @@ import re
 import socket
 from urllib.parse import urljoin, urlparse
 
-from .models import Question, QuestionGuestUpvote, QuestionUpvote
+from .models import (
+    Question,
+    QuestionGuestUpvote,
+    QuestionUpvote,
+    QnAEngagementPrompt,
+    QnAEngagementPromptReceipt,
+    QNA_PROMPT_MAX_PER_USER,
+)
 from .serializers import QuestionSerializer
 import requests
 
@@ -1014,7 +1021,187 @@ class QuestionViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
+    @action(detail=False, methods=["post"], url_path="engagement-prompt/trigger")
+    def engagement_prompt_trigger(self, request):
+        """
+        POST /interactions/questions/engagement-prompt/trigger/
+        Host/moderator only.
+
+        Creates a QnAEngagementPrompt for the given event and broadcasts
+        a 'qna.engagement_prompt' websocket event to all attendees in the
+        main room so they can call the ack endpoint.
+
+        Body: { event_id, message?, auto_hide_seconds? }
+        Returns: { prompt_id, event_id, message, auto_hide_seconds, created_at }
+        """
+        from rest_framework.exceptions import PermissionDenied
+        from events.models import Event
+
+        event_id = request.data.get("event_id")
+        if not event_id:
+            return Response({"detail": "event_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            event = Event.objects.get(pk=event_id)
+        except Event.DoesNotExist:
+            return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        is_host = (request.user == event.created_by or getattr(request.user, "is_staff", False))
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can send Q&A engagement prompts.")
+
+        # Allow host to override message/auto_hide_seconds
+        message = (
+            (request.data.get("message") or "").strip()
+            or "Have a question? Submit it in Q&A now."
+        )
+        try:
+            auto_hide_seconds = int(request.data.get("auto_hide_seconds") or 10)
+        except (TypeError, ValueError):
+            auto_hide_seconds = 10
+
+        prompt = QnAEngagementPrompt.objects.create(
+            event=event,
+            triggered_by=request.user,
+            message=message,
+            auto_hide_seconds=auto_hide_seconds,
+        )
+
+        # Broadcast to main room QnA group
+        channel_layer = get_channel_layer()
+        group = f"event_qna_{event.id}_main"
+        ws_payload = {
+            "type": "qna.engagement_prompt",
+            "prompt_id": prompt.id,
+            "event_id": event.id,
+            "created_at": prompt.created_at.isoformat(),
+        }
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.engagement_prompt", "payload": ws_payload},
+        )
+
+        return Response(
+            {
+                "prompt_id": prompt.id,
+                "event_id": event.id,
+                "message": prompt.message,
+                "auto_hide_seconds": prompt.auto_hide_seconds,
+                "created_at": prompt.created_at.isoformat(),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["post"], url_path=r"engagement-prompt/(?P<prompt_id>[0-9]+)/ack")
+    def engagement_prompt_ack(self, request, prompt_id=None):
+        """
+        POST /interactions/questions/engagement-prompt/{id}/ack/
+        Attendee (auth or guest) acknowledges receiving a prompt.
+
+        Checks whether this attendee has already reached QNA_PROMPT_MAX_PER_USER
+        receipts for this event. If under cap, creates a receipt and returns
+        show=true with banner payload. Otherwise returns show=false.
+
+        Returns: { show, prompt_id, message, auto_hide_seconds, max_reached }
+        """
+        try:
+            prompt = QnAEngagementPrompt.objects.select_related("event").get(pk=prompt_id)
+        except QnAEngagementPrompt.DoesNotExist:
+            return Response({"detail": "Prompt not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        user = request.user
+        is_guest = self._is_guest_user(user)
+        guest = getattr(user, "guest", None) if is_guest else None
+
+        # Count existing receipts for this attendee in this event
+        if is_guest and guest:
+            shown_count = QnAEngagementPromptReceipt.objects.filter(
+                event=prompt.event,
+                guest=guest,
+            ).count()
+        else:
+            shown_count = QnAEngagementPromptReceipt.objects.filter(
+                event=prompt.event,
+                user=user,
+            ).count()
+
+        if shown_count >= QNA_PROMPT_MAX_PER_USER:
+            return Response(
+                {
+                    "show": False,
+                    "prompt_id": prompt.id,
+                    "message": prompt.message,
+                    "auto_hide_seconds": prompt.auto_hide_seconds,
+                    "max_reached": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # Create the receipt (banner will be shown)
+        receipt_kwargs = {
+            "prompt": prompt,
+            "event": prompt.event,
+        }
+        if is_guest and guest:
+            receipt_kwargs["guest"] = guest
+        else:
+            receipt_kwargs["user"] = user
+
+        QnAEngagementPromptReceipt.objects.create(**receipt_kwargs)
+
+        return Response(
+            {
+                "show": True,
+                "prompt_id": prompt.id,
+                "message": prompt.message,
+                "auto_hide_seconds": prompt.auto_hide_seconds,
+                "max_reached": False,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["post"], url_path=r"engagement-prompt/(?P<prompt_id>[0-9]+)/dismiss")
+    def engagement_prompt_dismiss(self, request, prompt_id=None):
+        """
+        POST /interactions/questions/engagement-prompt/{id}/dismiss/
+        Attendee (auth or guest) manually dismissed the banner.
+
+        Finds the existing unacknowledged or shown receipt for this attendee
+        and sets dismissed_at. Used for analytics and future tuning.
+
+        Returns: { dismissed: true, prompt_id }
+        """
+        from django.utils import timezone as tz
+
+        try:
+            prompt = QnAEngagementPrompt.objects.get(pk=prompt_id)
+        except QnAEngagementPrompt.DoesNotExist:
+            return Response({"detail": "Prompt not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        user = request.user
+        is_guest = self._is_guest_user(user)
+        guest = getattr(user, "guest", None) if is_guest else None
+
+        if is_guest and guest:
+            receipt = QnAEngagementPromptReceipt.objects.filter(
+                prompt=prompt, guest=guest, dismissed_at__isnull=True
+            ).first()
+        else:
+            receipt = QnAEngagementPromptReceipt.objects.filter(
+                prompt=prompt, user=user, dismissed_at__isnull=True
+            ).first()
+
+        if receipt:
+            receipt.dismissed_at = tz.now()
+            receipt.save(update_fields=["dismissed_at"])
+
+        return Response(
+            {"dismissed": True, "prompt_id": prompt.id},
+            status=status.HTTP_200_OK,
+        )
+
     def perform_update(self, serializer):
+
         """
         Update a question.
         Permission: Owner OR Host (event.created_by).

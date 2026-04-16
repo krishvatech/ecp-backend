@@ -410,3 +410,18 @@ class QnAConsumer(BaseEventConsumer):
         Triggered when a host toggles the anonymous status of a question.
         """
         await self.send_json(event.get("payload", {}))
+
+    async def qna_engagement_prompt(self, event: Dict[str, Any]) -> None:
+        """
+        Called when group_send(type='qna.engagement_prompt', payload=...) is triggered.
+        Forward engagement prompt payload to all connected attendee clients.
+        Triggered when a host sends a Q&A engagement prompt.
+
+        Payload shape:
+            { type, prompt_id, event_id, created_at }
+
+        Attendee client should call the ack endpoint after receiving this;
+        the backend then decides whether to show the banner (cap enforcement).
+        """
+        await self.send_json(event.get("payload", {}))
+

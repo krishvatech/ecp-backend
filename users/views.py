@@ -765,7 +765,7 @@ class UserViewSet(
             context={"request": request},
         )
         serializer.is_valid(raise_exception=True)
-        name_req = serializer.save()
+        name_req = serializer.save(user=request.user)
 
         # --- Start Didit Session for this request ---
         try:

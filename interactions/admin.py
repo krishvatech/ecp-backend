@@ -6,7 +6,13 @@ Registers ChatMessage and Question models for basic moderation and review.
 
 from django.contrib import admin
 
-from .models import ChatMessage, Question,QuestionUpvote
+from .models import (
+    ChatMessage,
+    Question,
+    QuestionUpvote,
+    QnAEngagementPrompt,
+    QnAEngagementPromptReceipt,
+)
 
 
 @admin.register(ChatMessage)
@@ -49,3 +55,25 @@ class QuestionUpvoteAdmin(admin.ModelAdmin):
     list_filter = ("question__event",)
     search_fields = ("question__content", "user__username")
     readonly_fields = ("created_at",)
+
+
+@admin.register(QnAEngagementPrompt)
+class QnAEngagementPromptAdmin(admin.ModelAdmin):
+    list_display = ("id", "event", "triggered_by", "short_message", "auto_hide_seconds", "created_at")
+    list_filter = ("event",)
+    search_fields = ("message", "triggered_by__username", "event__title")
+    readonly_fields = ("created_at",)
+    date_hierarchy = "created_at"
+
+    @admin.display(description="message")
+    def short_message(self, obj: QnAEngagementPrompt) -> str:
+        return (obj.message or "")[:80]
+
+
+@admin.register(QnAEngagementPromptReceipt)
+class QnAEngagementPromptReceiptAdmin(admin.ModelAdmin):
+    list_display = ("id", "prompt", "event", "user", "guest", "shown_at", "dismissed_at")
+    list_filter = ("event",)
+    search_fields = ("user__username", "event__title")
+    readonly_fields = ("shown_at",)
+    date_hierarchy = "shown_at"

@@ -4,6 +4,8 @@ Database models for the interactions app.
 We persist:
 - ChatMessage: freeform chat lines by members during an event.
 - Question: Q&A entries; can later be answered and marked resolved.
+- QnAEngagementPrompt: Host-triggered prompt to encourage Q&A participation.
+- QnAEngagementPromptReceipt: Per-attendee delivery tracking for cap enforcement.
 
 Both models link to:
 - Event (events.Event)
@@ -15,6 +17,13 @@ Indexes + ordering are chosen for the most common queries (latest-first).
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
+
+# -----------------------------------------------------------------
+# Q&A Engagement Prompt constants
+# These defaults can later be moved to event-level settings.
+# -----------------------------------------------------------------
+QNA_PROMPT_MAX_PER_USER = 3          # max prompts shown per attendee per event
+QNA_PROMPT_AUTO_HIDE_SECONDS = 10    # seconds before banner auto-hides
 
 # Avoid circular import at module import time by referencing Event lazily through the app label.
 # However, for type clarity we import within typing context only.
@@ -285,3 +294,127 @@ class QuestionGuestUpvote(models.Model):
 
     def __str__(self) -> str:
         return f"Q{self.question_id} ▲ by G{self.guest_id}"
+
+
+# -----------------------------------------------------------------
+# Q&A Engagement Prompt Models
+# -----------------------------------------------------------------
+
+class QnAEngagementPrompt(models.Model):
+    """
+    One row per host-triggered Q&A engagement prompt.
+
+    Fields:
+        event: The event this prompt belongs to.
+        triggered_by: The host/moderator who sent the prompt.
+        message: Custom or default message shown in the banner.
+        auto_hide_seconds: Seconds before the banner auto-hides on the client.
+        created_at: Timestamp of dispatch.
+    """
+
+    event = models.ForeignKey(
+        "events.Event",
+        on_delete=models.CASCADE,
+        related_name="qna_engagement_prompts",
+        help_text="Event this prompt belongs to.",
+    )
+    triggered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="triggered_qna_prompts",
+        help_text="Host/moderator who triggered the prompt.",
+    )
+    message = models.TextField(
+        default="Have a question? Submit it in Q&A now.",
+        help_text="Banner message shown to attendees.",
+    )
+    auto_hide_seconds = models.PositiveIntegerField(
+        default=QNA_PROMPT_AUTO_HIDE_SECONDS,
+        help_text="Seconds before the banner auto-hides on the client.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, help_text="When this prompt was dispatched.")
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["event", "-created_at"], name="qna_prompt_event_created_idx"),
+        ]
+        verbose_name = "Q&A Engagement Prompt"
+        verbose_name_plural = "Q&A Engagement Prompts"
+
+    def __str__(self) -> str:
+        return f"[Event {self.event_id}] Prompt {self.id} by {self.triggered_by_id}"
+
+
+class QnAEngagementPromptReceipt(models.Model):
+    """
+    Tracks per-attendee delivery of a QnAEngagementPrompt.
+
+    Used to enforce the max-prompts-per-user-per-event cap server-side.
+    Either `user` or `guest` must be set (enforced by CheckConstraint).
+
+    Fields:
+        prompt: The prompt that was delivered.
+        event: Denormalized event FK for efficient cap counting.
+        user: Authenticated user (nullable).
+        guest: Guest attendee (nullable).
+        shown_at: When the receipt was created (i.e., banner was shown).
+        dismissed_at: When the attendee dismissed the banner (null = not dismissed).
+    """
+
+    prompt = models.ForeignKey(
+        QnAEngagementPrompt,
+        on_delete=models.CASCADE,
+        related_name="receipts",
+        help_text="The prompt this receipt belongs to.",
+    )
+    event = models.ForeignKey(
+        "events.Event",
+        on_delete=models.CASCADE,
+        related_name="qna_prompt_receipts",
+        help_text="Denormalized event FK for efficient cap counting.",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="qna_prompt_receipts",
+        help_text="Authenticated user (null for guests).",
+    )
+    guest = models.ForeignKey(
+        "events.GuestAttendee",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="qna_prompt_receipts",
+        help_text="Guest attendee (null for auth users).",
+    )
+    shown_at = models.DateTimeField(auto_now_add=True, help_text="When the banner was shown.")
+    dismissed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the attendee dismissed the banner (null = not dismissed or auto-hidden).",
+    )
+
+    class Meta:
+        ordering = ["-shown_at"]
+        indexes = [
+            models.Index(fields=["event", "user", "-shown_at"], name="qna_receipt_event_user_idx"),
+            models.Index(fields=["event", "guest", "-shown_at"], name="qna_receipt_event_guest_idx"),
+            models.Index(fields=["prompt", "user"], name="qna_receipt_prompt_user_idx"),
+            models.Index(fields=["prompt", "guest"], name="qna_receipt_prompt_guest_idx"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                name="qna_receipt_has_user_or_guest",
+                check=models.Q(user__isnull=False) | models.Q(guest__isnull=False),
+            ),
+        ]
+        verbose_name = "Q&A Engagement Prompt Receipt"
+        verbose_name_plural = "Q&A Engagement Prompt Receipts"
+
+    def __str__(self) -> str:
+        attendee = f"U{self.user_id}" if self.user_id else f"G{self.guest_id}"
+        return f"Prompt {self.prompt_id} → {attendee} @ event {self.event_id}"

@@ -285,7 +285,8 @@ ROOT_URLCONF = "ecp_backend.urls"
 ASGI_APPLICATION = "ecp_backend.asgi.application"
 WSGI_APPLICATION = None  # Channels-based; no WSGI application needed
 
-_DB_CONN_MAX_AGE = 600 if DEBUG else int(os.getenv("DB_CONN_MAX_AGE", "600"))
+_DB_CONN_MAX_AGE = 0 
+# if DEBUG else int(os.getenv("DB_CONN_MAX_AGE", "600"))
 
 DATABASES = {
     "default": {
