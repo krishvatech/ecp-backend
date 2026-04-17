@@ -25,9 +25,18 @@ from .models import (
     QnAReplyGuestUpvote,
 )
 from .serializers import QuestionSerializer, QnAReplySerializer
+from rest_framework.throttling import UserRateThrottle
 import requests
 
 User = get_user_model()
+
+
+class PolishQuestionRateThrottle(UserRateThrottle):
+    """
+    Separate throttle scope for the AI polish endpoint.
+    Default: 20 requests/minute per user (configurable via DRF_THROTTLE_POLISH env var).
+    """
+    scope = "polish_question"
 
 class QuestionViewSet(viewsets.ModelViewSet):
     """
@@ -692,6 +701,93 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "attribution_label": question.attribution_label,
             "speaker_note": question.speaker_note,
         }, status=status.HTTP_200_OK)
+
+    # ------------------------------------------------------------------
+    # AI draft polish
+    # ------------------------------------------------------------------
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="polish-draft",
+        throttle_classes=[PolishQuestionRateThrottle],
+    )
+    def polish_draft(self, request):
+        """
+        POST /api/interactions/questions/polish-draft/
+
+        Accepts a rough question draft and returns an AI-improved version.
+        Does NOT create, update, or persist any Question object.
+        Does NOT broadcast over WebSocket.
+
+        Request body:
+            { "event_id": 123, "content": "rough question text" }
+
+        Response (200):
+            { "original": "...", "improved": "...", "changed": true }
+
+        Errors:
+            400 — validation failure
+            503 — AI unavailable
+        """
+        from events.models import Event
+        from .ai_question_polish import polish_question
+
+        event_id = request.data.get("event_id")
+        content = (request.data.get("content") or "").strip()
+
+        # ── validation ──────────────────────────────────────────────────────────
+        if not event_id:
+            return Response(
+                {"detail": "event_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not content:
+            return Response(
+                {"detail": "content is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(content) < 5:
+            return Response(
+                {"detail": "content must be at least 5 characters."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(content) > 1000:
+            return Response(
+                {"detail": "content must be at most 1000 characters."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── event access check ───────────────────────────────────────────────────
+        event = get_object_or_404(Event, id=event_id)  # 404 if event not found
+
+        # Guests can only polish if they have a valid guest session for this event
+        user = request.user
+        if self._is_guest_user(user):
+            guest = getattr(user, "guest", None)
+            if not guest or guest.event_id != event.id:
+                return Response(
+                    {"detail": "You do not have access to this event's Q&A."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # ── call AI service ──────────────────────────────────────────────────────
+        try:
+            improved = polish_question(content)
+        except ValueError as exc:
+            return Response(
+                {"detail": "Could not polish the question right now. Please try again."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return Response(
+            {
+                "original": content,
+                "improved": improved,
+                "changed": improved != content,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=["post"])
     def upvote(self, request, pk=None):

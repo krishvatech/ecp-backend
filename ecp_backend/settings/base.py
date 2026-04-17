@@ -406,6 +406,7 @@ REST_FRAMEWORK = {
         "anon": os.getenv("DRF_THROTTLE_ANON", "10/min"),
         "user": os.getenv("DRF_THROTTLE_USER", "100/min"),
         "mood": os.getenv("DRF_THROTTLE_MOOD", "30/min"),
+        "polish_question": os.getenv("DRF_THROTTLE_POLISH", "20/min"),
     },
     
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
