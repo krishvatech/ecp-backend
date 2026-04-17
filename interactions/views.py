@@ -1821,3 +1821,266 @@ class QnAReplyViewSet(viewsets.GenericViewSet):
         })
 
         return Response({"reply_id": reply.id, "is_anonymous": reply.is_anonymous}, status=status.HTTP_200_OK)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# QnAQuestionGroupViewSet
+# ──────────────────────────────────────────────────────────────────────────────
+
+from .models import (
+    QnAQuestionGroup,
+    QnAQuestionGroupMembership,
+    QnAQuestionGroupSuggestion,
+)
+from .serializers import (
+    QnAQuestionGroupSerializer,
+    QnAQuestionGroupSuggestionSerializer,
+)
+
+class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = QnAQuestionGroupSerializer
+
+    def get_queryset(self):
+        event_id = self.request.query_params.get("event_id")
+        if not event_id:
+            return QnAQuestionGroup.objects.none()
+        return QnAQuestionGroup.objects.filter(event_id=event_id).prefetch_related("memberships")
+
+    def perform_create(self, serializer):
+        from rest_framework.exceptions import PermissionDenied
+        event = serializer.validated_data.get('event')
+        if not (self.request.user == event.created_by or getattr(self.request.user, "is_staff", False)):
+            raise PermissionDenied("Only event host/admin can create groups.")
+        group = serializer.save(created_by=self.request.user, source=QnAQuestionGroup.SOURCE_MANUAL)
+        
+        # Broadcast group_created
+        channel_layer = get_channel_layer()
+        group_name = f"event_qna_{group.event_id}_main"
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": "qna.group_created",
+                "payload": {"type": "qna.group_created", "group": QnAQuestionGroupSerializer(group).data}
+            }
+        )
+
+    def perform_update(self, serializer):
+        from rest_framework.exceptions import PermissionDenied
+        group = self.get_object()
+        if not (self.request.user == group.event.created_by or getattr(self.request.user, "is_staff", False)):
+            raise PermissionDenied("Only event host/admin can update groups.")
+        updated_group = serializer.save()
+        
+        # Broadcast group_updated
+        channel_layer = get_channel_layer()
+        group_name = f"event_qna_{updated_group.event_id}_main"
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": "qna.group_updated",
+                "payload": {"type": "qna.group_updated", "group": QnAQuestionGroupSerializer(updated_group).data}
+            }
+        )
+
+    def perform_destroy(self, instance):
+        from rest_framework.exceptions import PermissionDenied
+        if not (self.request.user == instance.event.created_by or getattr(self.request.user, "is_staff", False)):
+            raise PermissionDenied("Only event host/admin can delete groups.")
+        
+        event_id = instance.event_id
+        group_id = instance.id
+        instance.delete()
+        
+        # Broadcast group_deleted
+        channel_layer = get_channel_layer()
+        group_name = f"event_qna_{event_id}_main"
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": "qna.group_deleted",
+                "payload": {"type": "qna.group_deleted", "group_id": group_id, "event_id": event_id}
+            }
+        )
+
+    @action(detail=True, methods=["post"])
+    def add_questions(self, request, pk=None):
+        group = self.get_object()
+        question_ids = request.data.get("question_ids", [])
+        
+        added = []
+        for q_id in question_ids:
+            QnAQuestionGroupMembership.objects.filter(question_id=q_id).delete()
+            mem = QnAQuestionGroupMembership.objects.create(
+                group=group,
+                question_id=q_id,
+                added_by=request.user
+            )
+            added.append(q_id)
+            
+        # Broadcast
+        channel_layer = get_channel_layer()
+        group_name = f"event_qna_{group.event_id}_main"
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": "qna.group_membership_updated",
+                "payload": {
+                    "type": "qna.group_membership_updated", 
+                    "group_id": group.id, 
+                    "added": added,
+                    "event_id": group.event_id
+                }
+            }
+        )
+        return Response({"status": "questions added"}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"])
+    def remove_questions(self, request, pk=None):
+        group = self.get_object()
+        question_ids = request.data.get("question_ids", [])
+        QnAQuestionGroupMembership.objects.filter(group=group, question_id__in=question_ids).delete()
+        
+        # Broadcast
+        channel_layer = get_channel_layer()
+        group_name = f"event_qna_{group.event_id}_main"
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": "qna.group_membership_updated",
+                "payload": {
+                    "type": "qna.group_membership_updated", 
+                    "group_id": group.id, 
+                    "removed": question_ids,
+                    "event_id": group.event_id
+                }
+            }
+        )
+        return Response({"status": "questions removed"}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"])
+    def reorder_questions(self, request, pk=None):
+        group = self.get_object()
+        # expect [{"question_id": 1, "display_order": 0}, ...]
+        order_data = request.data.get("order", [])
+        for item in order_data:
+            QnAQuestionGroupMembership.objects.filter(group=group, question_id=item["question_id"]).update(display_order=item["display_order"])
+        
+        return Response({"status": "questions reordered"}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["post"], url_path="ai-suggest")
+    def ai_suggest(self, request):
+        event_id = request.data.get("event_id")
+        if not event_id:
+            return Response({"detail": "event_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        from .ai_grouping import suggest_groups
+        try:
+            suggestions = suggest_groups(event_id, request.user)
+            # Create a group suggestion notification?
+            # Actually, return all pending suggestions for the event
+            # Broadcast the creation of suggestions later? User will fetch them, or we can broadcast here.
+            # But we return the new suggestions.
+            return Response(
+                QnAQuestionGroupSuggestionSerializer(suggestions, many=True).data,
+                status=status.HTTP_201_CREATED
+            )
+        except Exception as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+class QnAQuestionGroupSuggestionViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = QnAQuestionGroupSuggestionSerializer
+
+    def get_queryset(self):
+        if self.action in ["approve", "reject", "retrieve"]:
+            return QnAQuestionGroupSuggestion.objects.all()
+            
+        event_id = self.request.query_params.get("event_id")
+        if not event_id:
+            return QnAQuestionGroupSuggestion.objects.none()
+        return QnAQuestionGroupSuggestion.objects.filter(event_id=event_id).order_by("-created_at")
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        from django.utils import timezone
+        suggestion = self.get_object()
+        if suggestion.status != "pending":
+            return Response({"detail": "Only pending suggestions can be approved."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Admin check
+        if not (request.user == suggestion.event.created_by or getattr(request.user, "is_staff", False)):
+            return Response({"detail": "Not authorized."}, status=status.HTTP_403_FORBIDDEN)
+            
+        suggestion.status = "approved"
+        suggestion.reviewed_at = timezone.now()
+        suggestion.reviewed_by = request.user
+        suggestion.save()
+        
+        # Allow editing info at approval time inside payload
+        title = request.data.get("title", suggestion.suggested_title)
+        summary = request.data.get("summary", suggestion.suggested_summary)
+        question_ids = request.data.get("question_ids", suggestion.suggested_question_ids)
+        
+        # Create group
+        group = QnAQuestionGroup.objects.create(
+            event=suggestion.event,
+            title=title,
+            summary=summary,
+            created_by=request.user,
+            source=QnAQuestionGroup.SOURCE_AI,
+            ai_suggestion=suggestion
+        )
+        
+        for q_id in question_ids:
+            QnAQuestionGroupMembership.objects.filter(question_id=q_id).delete()
+            QnAQuestionGroupMembership.objects.create(
+                group=group,
+                question_id=q_id,
+                added_by=request.user
+            )
+            
+        channel_layer = get_channel_layer()
+        group_name = f"event_qna_{suggestion.event_id}_main"
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": "qna.group_created",
+                "payload": {"type": "qna.group_created", "group": QnAQuestionGroupSerializer(group).data}
+            }
+        )
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": "qna.group_suggestion_reviewed",
+                "payload": {"type": "qna.group_suggestion_reviewed", "suggestion_id": suggestion.id, "status": "approved"}
+            }
+        )
+        
+        return Response({"status": "approved", "group_id": group.id}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        from django.utils import timezone
+        suggestion = self.get_object()
+        
+        # Admin check
+        if not (request.user == suggestion.event.created_by or getattr(request.user, "is_staff", False)):
+            return Response({"detail": "Not authorized."}, status=status.HTTP_403_FORBIDDEN)
+
+        suggestion.status = "rejected"
+        suggestion.reviewed_at = timezone.now()
+        suggestion.reviewed_by = request.user
+        suggestion.save()
+        
+        channel_layer = get_channel_layer()
+        group_name = f"event_qna_{suggestion.event_id}_main"
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": "qna.group_suggestion_reviewed",
+                "payload": {"type": "qna.group_suggestion_reviewed", "suggestion_id": suggestion.id, "status": "rejected"}
+            }
+        )
+
+        return Response({"status": "rejected"}, status=status.HTTP_200_OK)

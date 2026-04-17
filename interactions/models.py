@@ -609,3 +609,129 @@ class QnAEngagementPromptReceipt(models.Model):
     def __str__(self) -> str:
         attendee = f"U{self.user_id}" if self.user_id else f"G{self.guest_id}"
         return f"Prompt {self.prompt_id} → {attendee} @ event {self.event_id}"
+
+
+# -----------------------------------------------------------------
+# Q&A Grouping Models
+# -----------------------------------------------------------------
+
+class QnAQuestionGroupSuggestion(models.Model):
+    """
+    Stores AI-generated suggestions for grouping questions.
+    """
+    event = models.ForeignKey(
+        "events.Event",
+        on_delete=models.CASCADE,
+        related_name="qna_ai_group_suggestions"
+    )
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="generated_qna_group_suggestions"
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=[("pending", "Pending"), ("approved", "Approved"), ("rejected", "Rejected")],
+        default="pending"
+    )
+    raw_ai_response = models.JSONField(blank=True, null=True)
+    suggested_title = models.CharField(max_length=255)
+    suggested_summary = models.TextField(blank=True, null=True)
+    confidence_score = models.FloatField(default=0.0)
+    suggested_question_ids = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_qna_group_suggestions",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Q&A Group Suggestion"
+        verbose_name_plural = "Q&A Group Suggestions"
+
+    def __str__(self) -> str:
+        return f"Suggestion {self.id}: {self.status} - {self.suggested_title}"
+
+
+class QnAQuestionGroup(models.Model):
+    """
+    A grouping of Q&A questions by a host, manual or AI assisted.
+    """
+    event = models.ForeignKey(
+        "events.Event",
+        on_delete=models.CASCADE,
+        related_name="qna_question_groups"
+    )
+    title = models.CharField(max_length=255)
+    summary = models.TextField(blank=True, null=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="created_qna_question_groups"
+    )
+    
+    SOURCE_MANUAL = "manual"
+    SOURCE_AI = "ai"
+    SOURCE_CHOICES = [(SOURCE_MANUAL, "Manual"), (SOURCE_AI, "AI")]
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
+    
+    ai_suggestion = models.ForeignKey(
+        QnAQuestionGroupSuggestion,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="resulting_groups"
+    )
+    display_order = models.IntegerField(default=0)
+    is_visible_to_attendees = models.BooleanField(
+        default=False,
+        help_text="If true, attendees can see the group visually. Currently disabled by default."
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["display_order", "-created_at"]
+        verbose_name = "Q&A Question Group"
+        verbose_name_plural = "Q&A Question Groups"
+
+    def __str__(self) -> str:
+        return f"Group {self.id}: {self.title}"
+
+
+class QnAQuestionGroupMembership(models.Model):
+    """
+    Maps a question to a group. One question can be in at most one active group at a time.
+    """
+    group = models.ForeignKey(
+        QnAQuestionGroup,
+        on_delete=models.CASCADE,
+        related_name="memberships"
+    )
+    question = models.OneToOneField(
+        Question,
+        on_delete=models.CASCADE,
+        related_name="group_membership"
+    )
+    added_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="added_qna_group_memberships"
+    )
+    display_order = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["display_order", "created_at"]
+        verbose_name = "Q&A Question Group Membership"
+        verbose_name_plural = "Q&A Question Group Memberships"
+
+    def __str__(self) -> str:
+        return f"Question {self.question_id} in Group {self.group_id}"

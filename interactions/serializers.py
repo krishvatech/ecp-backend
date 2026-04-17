@@ -1,6 +1,12 @@
 # interactions/serializers.py
 from rest_framework import serializers
-from .models import Question, QnAReply
+from .models import (
+    Question,
+    QnAReply,
+    QnAQuestionGroup,
+    QnAQuestionGroupMembership,
+    QnAQuestionGroupSuggestion,
+)
 
 
 class QuestionSerializer(serializers.ModelSerializer):
@@ -73,5 +79,38 @@ class QnAReplySerializer(serializers.ModelSerializer):
         read_only_fields = [
             "user", "guest_asker", "event", "lounge_table", "created_at",
             "updated_at", "moderation_status", "rejection_reason",
-            "is_anonymous", "is_hidden", "hidden_by", "hidden_at", "anonymized_by",
         ]
+
+
+class QnAQuestionGroupSuggestionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QnAQuestionGroupSuggestion
+        fields = "__all__"
+        read_only_fields = [
+            "event",
+            "generated_by",
+            "created_at",
+            "reviewed_at",
+            "reviewed_by",
+            "status",
+            "raw_ai_response",
+            "confidence_score",
+            "suggested_question_ids"
+        ]
+
+
+class QnAQuestionGroupMembershipSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QnAQuestionGroupMembership
+        fields = "__all__"
+        read_only_fields = ["created_at", "added_by"]
+
+
+class QnAQuestionGroupSerializer(serializers.ModelSerializer):
+    memberships = QnAQuestionGroupMembershipSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = QnAQuestionGroup
+        fields = "__all__"
+        read_only_fields = ["event", "created_by", "source", "ai_suggestion", "created_at", "updated_at"]
+
