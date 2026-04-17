@@ -1842,17 +1842,31 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
     serializer_class = QnAQuestionGroupSerializer
 
     def get_queryset(self):
+        if self.action in ["retrieve", "update", "partial_update", "destroy", "add_questions", "remove_questions", "reorder_questions"]:
+            return QnAQuestionGroup.objects.all().prefetch_related("memberships")
+            
         event_id = self.request.query_params.get("event_id")
         if not event_id:
             return QnAQuestionGroup.objects.none()
         return QnAQuestionGroup.objects.filter(event_id=event_id).prefetch_related("memberships")
 
     def perform_create(self, serializer):
-        from rest_framework.exceptions import PermissionDenied
-        event = serializer.validated_data.get('event')
+        from rest_framework.exceptions import PermissionDenied, ValidationError
+        from events.models import Event
+        
+        event_id = self.request.data.get('event')
+        if not event_id:
+            raise ValidationError("event is required")
+            
+        try:
+            event = Event.objects.get(id=event_id)
+        except Event.DoesNotExist:
+            raise ValidationError("event not found")
+            
         if not (self.request.user == event.created_by or getattr(self.request.user, "is_staff", False)):
             raise PermissionDenied("Only event host/admin can create groups.")
-        group = serializer.save(created_by=self.request.user, source=QnAQuestionGroup.SOURCE_MANUAL)
+            
+        group = serializer.save(event=event, created_by=self.request.user, source=QnAQuestionGroup.SOURCE_MANUAL)
         
         # Broadcast group_created
         channel_layer = get_channel_layer()
@@ -2039,14 +2053,16 @@ class QnAQuestionGroupSuggestionViewSet(viewsets.ModelViewSet):
                 question_id=q_id,
                 added_by=request.user
             )
-            
+        # Refresh the group to include all the newly created memberships accurately in the WebSocket broadcast
+        group_refreshed = QnAQuestionGroup.objects.prefetch_related("memberships").get(id=group.id)
+        
         channel_layer = get_channel_layer()
         group_name = f"event_qna_{suggestion.event_id}_main"
         async_to_sync(channel_layer.group_send)(
             group_name,
             {
                 "type": "qna.group_created",
-                "payload": {"type": "qna.group_created", "group": QnAQuestionGroupSerializer(group).data}
+                "payload": {"type": "qna.group_created", "group": QnAQuestionGroupSerializer(group_refreshed).data}
             }
         )
         async_to_sync(channel_layer.group_send)(
