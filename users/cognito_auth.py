@@ -186,47 +186,76 @@ class CognitoJWTAuthentication(BaseAuthentication):
                 user = None
                 email_verified = _truthy(claims.get("email_verified"))
 
-                # ✅ 2) If verified email exists, reuse existing DB user (best merge path)
+                # ✅ 2) If verified email exists, reuse existing DB user ATOMICALLY
                 if email and email_verified:
-                    user = (
-                        User.objects.filter(email__iexact=email).order_by("id").first()
-                        or User.objects.filter(username__iexact=email).order_by("id").first()  # handles old callback users
+                    user, created = User.objects.get_or_create(
+                        email__iexact=email,
+                        defaults={
+                            "username": _unique_username(email.split("@")[0]),
+                            "email": email,
+                            "first_name": first_name,
+                            "last_name": last_name,
+                        }
                     )
+                    if created:
+                        logger.info(f"Created new user for verified email {email}")
 
                 # ✅ 3) Backward compatibility: if we previously stored provider_username as DB username
                 if not user and provider_username:
                     user = User.objects.filter(username__iexact=provider_username).order_by("id").first()
 
-                # ✅ 4) If still not found, create a new DB user
+                # ✅ 4) If still not found, create a new DB user (atomic)
                 if not user:
-                    # Final check: prevent email duplicates (even if email already exists, use existing user)
-                    if email:
-                        user = User.objects.filter(email__iexact=email).order_by("id").first()
+                    base = email.split("@")[0] if email else (provider_username or "user")
+                    username = _unique_username(base)
 
-                    if not user:
-                        base = email.split("@")[0] if email else (provider_username or "user")
-                        user = User.objects.create(
-                            username=_unique_username(base),
-                            email=email or "",
-                            first_name=first_name,
-                            last_name=last_name,
-                        )
+                    try:
+                        with transaction.atomic():
+                            # Double-check inside transaction to prevent race condition
+                            user = User.objects.filter(email__iexact=email).first() if email else None
+
+                            if not user:
+                                user = User.objects.create(
+                                    username=username,
+                                    email=email or "",
+                                    first_name=first_name,
+                                    last_name=last_name,
+                                )
+                                logger.info(f"Created new user {user.id} with email {email}")
+                    except Exception as e:
+                        logger.warning(f"Error creating user for {email}: {e}")
+                        # Final fallback: try to get existing user
+                        user = User.objects.filter(email__iexact=email).first() if email else None
+                        if not user:
+                            raise AuthenticationFailed(f"Failed to create user: {str(e)}")
 
                 # ✅ 5) Create mapping: sub -> user (prevents future duplicates)
-                try:
-                    with transaction.atomic():
-                        CognitoIdentity.objects.create(
-                            user=user,
-                            cognito_sub=sub,
-                            email=email or "",
-                            email_verified=email_verified,
-                            provider="cognito",
-                        )
-                except Exception:
-                    # If a concurrent request created it first, fetch it
-                    identity = CognitoIdentity.objects.select_related("user").filter(cognito_sub=sub).first()
-                    if identity:
-                        user = identity.user
+                if not identity:
+                    try:
+                        with transaction.atomic():
+                            # Use get_or_create to handle race condition
+                            identity, created = CognitoIdentity.objects.get_or_create(
+                                cognito_sub=sub,
+                                defaults={
+                                    "user": user,
+                                    "email": email or "",
+                                    "email_verified": email_verified,
+                                    "provider": "cognito",
+                                }
+                            )
+
+                            if created:
+                                logger.info(f"Created CognitoIdentity {sub} -> user {user.id}")
+                            else:
+                                if identity.user_id != user.id:
+                                    logger.warning(
+                                        f"CognitoIdentity {sub} linked to different user "
+                                        f"(expected {user.id}, got {identity.user_id})"
+                                    )
+                                    user = identity.user
+
+                    except Exception as e:
+                        logger.error(f"Error creating CognitoIdentity for {sub}: {e}")
 
             # --- Check suspension status before allowing authentication ---
             BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")

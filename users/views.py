@@ -953,6 +953,30 @@ class RegisterView(APIView):
         })
         return Response(payload, status=status.HTTP_201_CREATED)
 
+class CheckEmailExistsView(APIView):
+    """
+    Check if an email is already registered.
+    GET /auth/check-email/?email=user@example.com
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        email = request.query_params.get('email', '').strip().lower()
+
+        if not email:
+            return Response(
+                {'error': 'Email parameter required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check if email exists in auth_user
+        exists = User.objects.filter(email__iexact=email).exists()
+
+        return Response({
+            'email': email,
+            'exists': exists
+        })
+
 class EmailTokenObtainPairView(TokenObtainPairView):
     """
     Obtain JWT tokens using email + password.

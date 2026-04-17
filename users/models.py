@@ -8,7 +8,7 @@ instance is saved.
 """
 from django.conf import settings
 from django.db import models
-from django.db.models import Q, F
+from django.db.models import Q, F, UniqueConstraint
 from django.contrib.auth.models import User
 from django.utils.text import slugify
 from django.contrib.postgres.fields import ArrayField
@@ -1147,6 +1147,17 @@ class CognitoIdentity(models.Model):
 
     def __str__(self):
         return f"{self.provider}:{self.cognito_sub} -> user_id={self.user_id}"
+
+    class Meta:
+        constraints = [
+            # Prevent multiple verified emails per provider
+            # (unverified emails can be duplicated, as they're not trusted yet)
+            UniqueConstraint(
+                fields=['email', 'provider'],
+                condition=Q(email_verified=True),
+                name='unique_verified_email_per_provider'
+            )
+        ]
 
 
 class ProfileView(models.Model):
