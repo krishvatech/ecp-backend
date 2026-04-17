@@ -1184,7 +1184,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         if not is_host:
             raise PermissionDenied("Only event host/admin can send Q&A engagement prompts.")
 
-        # Allow host to override message/auto_hide_seconds
+        # Allow host to override message/auto_hide_seconds/prompt_type
         message = (
             (request.data.get("message") or "").strip()
             or "Have a question? Submit it in Q&A now."
@@ -1194,11 +1194,19 @@ class QuestionViewSet(viewsets.ModelViewSet):
         except (TypeError, ValueError):
             auto_hide_seconds = 10
 
+        prompt_type = request.data.get("prompt_type", "banner")
+        if prompt_type not in ("banner", "modal"):
+            return Response(
+                {"detail": "prompt_type must be 'banner' or 'modal'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         prompt = QnAEngagementPrompt.objects.create(
             event=event,
             triggered_by=request.user,
             message=message,
             auto_hide_seconds=auto_hide_seconds,
+            prompt_type=prompt_type,
         )
 
         # Broadcast to main room QnA group
@@ -1208,6 +1216,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "type": "qna.engagement_prompt",
             "prompt_id": prompt.id,
             "event_id": event.id,
+            "prompt_type": prompt.prompt_type,
             "created_at": prompt.created_at.isoformat(),
         }
         async_to_sync(channel_layer.group_send)(
@@ -1221,6 +1230,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "event_id": event.id,
                 "message": prompt.message,
                 "auto_hide_seconds": prompt.auto_hide_seconds,
+                "prompt_type": prompt.prompt_type,
                 "created_at": prompt.created_at.isoformat(),
             },
             status=status.HTTP_201_CREATED,
@@ -1266,12 +1276,13 @@ class QuestionViewSet(viewsets.ModelViewSet):
                     "prompt_id": prompt.id,
                     "message": prompt.message,
                     "auto_hide_seconds": prompt.auto_hide_seconds,
+                    "prompt_type": prompt.prompt_type,
                     "max_reached": True,
                 },
                 status=status.HTTP_200_OK,
             )
 
-        # Create the receipt (banner will be shown)
+        # Create the receipt (prompt will be shown)
         receipt_kwargs = {
             "prompt": prompt,
             "event": prompt.event,
@@ -1289,6 +1300,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "prompt_id": prompt.id,
                 "message": prompt.message,
                 "auto_hide_seconds": prompt.auto_hide_seconds,
+                "prompt_type": prompt.prompt_type,
                 "max_reached": False,
             },
             status=status.HTTP_200_OK,

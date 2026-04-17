@@ -258,3 +258,141 @@ def test_dismiss_no_receipt_is_safe(attendee_client, event, host_client):
     resp = attendee_client.post(dismiss_url(prompt_id), format="json")
     assert resp.status_code == 200, resp.data
     assert resp.data["dismissed"] is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: Feature #14 – Modal prompt_type
+# ---------------------------------------------------------------------------
+
+@pytest.mark.django_db
+def test_trigger_modal_prompt_type(host_client, event):
+    """Host can trigger a modal prompt; response and DB record reflect prompt_type='modal'."""
+    resp = host_client.post(
+        TRIGGER_URL,
+        {"event_id": event.id, "prompt_type": "modal"},
+        format="json",
+    )
+    assert resp.status_code == 201, resp.data
+    assert resp.data["prompt_type"] == "modal"
+    prompt = QnAEngagementPrompt.objects.get(pk=resp.data["prompt_id"])
+    assert prompt.prompt_type == "modal"
+
+
+@pytest.mark.django_db
+def test_trigger_banner_prompt_type_explicit(host_client, event):
+    """Explicitly passing prompt_type='banner' works and defaults correctly."""
+    resp = host_client.post(
+        TRIGGER_URL,
+        {"event_id": event.id, "prompt_type": "banner"},
+        format="json",
+    )
+    assert resp.status_code == 201, resp.data
+    assert resp.data["prompt_type"] == "banner"
+
+
+@pytest.mark.django_db
+def test_trigger_default_prompt_type_is_banner(host_client, event):
+    """Omitting prompt_type defaults to 'banner' (backward-compatible)."""
+    resp = host_client.post(TRIGGER_URL, {"event_id": event.id}, format="json")
+    assert resp.status_code == 201, resp.data
+    assert resp.data["prompt_type"] == "banner"
+    prompt = QnAEngagementPrompt.objects.get(pk=resp.data["prompt_id"])
+    assert prompt.prompt_type == "banner"
+
+
+@pytest.mark.django_db
+def test_trigger_invalid_prompt_type_rejected(host_client, event):
+    """Invalid prompt_type value returns 400."""
+    resp = host_client.post(
+        TRIGGER_URL,
+        {"event_id": event.id, "prompt_type": "toast"},
+        format="json",
+    )
+    assert resp.status_code == 400, resp.data
+
+
+@pytest.mark.django_db
+def test_ack_returns_prompt_type_modal(host_client, attendee_client, event):
+    """Ack response includes prompt_type='modal' when prompt was triggered as modal."""
+    trigger_resp = host_client.post(
+        TRIGGER_URL,
+        {"event_id": event.id, "prompt_type": "modal"},
+        format="json",
+    )
+    assert trigger_resp.status_code == 201
+    prompt_id = trigger_resp.data["prompt_id"]
+
+    resp = attendee_client.post(ack_url(prompt_id), format="json")
+    assert resp.status_code == 200, resp.data
+    assert resp.data["show"] is True
+    assert resp.data["prompt_type"] == "modal"
+
+
+@pytest.mark.django_db
+def test_ack_returns_prompt_type_banner(host_client, attendee_client, event):
+    """Ack response includes prompt_type='banner' for banner prompts."""
+    trigger_resp = host_client.post(TRIGGER_URL, {"event_id": event.id}, format="json")
+    prompt_id = trigger_resp.data["prompt_id"]
+
+    resp = attendee_client.post(ack_url(prompt_id), format="json")
+    assert resp.status_code == 200, resp.data
+    assert resp.data["prompt_type"] == "banner"
+
+
+@pytest.mark.django_db
+def test_modal_cap_shared_with_banner(host_client, attendee_client, event):
+    """Modal and banner prompts share the same per-user cap (no extra allowance for modal)."""
+    attendee_obj = User.objects.get(username="attendee1")
+
+    # Fill cap with banner receipts
+    for _ in range(QNA_PROMPT_MAX_PER_USER):
+        prompt = QnAEngagementPrompt.objects.create(
+            event=event,
+            triggered_by=event.created_by,
+            prompt_type="banner",
+        )
+        QnAEngagementPromptReceipt.objects.create(
+            prompt=prompt,
+            event=event,
+            user=attendee_obj,
+        )
+
+    # Trigger a modal prompt
+    trigger_resp = host_client.post(
+        TRIGGER_URL,
+        {"event_id": event.id, "prompt_type": "modal"},
+        format="json",
+    )
+    assert trigger_resp.status_code == 201
+    modal_prompt_id = trigger_resp.data["prompt_id"]
+
+    # Ack should be blocked by shared cap
+    resp = attendee_client.post(ack_url(modal_prompt_id), format="json")
+    assert resp.status_code == 200, resp.data
+    assert resp.data["show"] is False
+    assert resp.data["max_reached"] is True
+    assert resp.data["prompt_type"] == "modal"
+
+
+@pytest.mark.django_db
+def test_dismiss_works_for_modal(host_client, attendee_client, event):
+    """Dismiss endpoint works for modal prompts (same as banner)."""
+    trigger_resp = host_client.post(
+        TRIGGER_URL,
+        {"event_id": event.id, "prompt_type": "modal"},
+        format="json",
+    )
+    prompt_id = trigger_resp.data["prompt_id"]
+
+    # Ack first
+    ack_resp = attendee_client.post(ack_url(prompt_id), format="json")
+    assert ack_resp.data["show"] is True
+
+    # Dismiss
+    dismiss_resp = attendee_client.post(dismiss_url(prompt_id), format="json")
+    assert dismiss_resp.status_code == 200, dismiss_resp.data
+    assert dismiss_resp.data["dismissed"] is True
+
+    attendee_obj = User.objects.get(username="attendee1")
+    receipt = QnAEngagementPromptReceipt.objects.get(prompt_id=prompt_id, user=attendee_obj)
+    assert receipt.dismissed_at is not None

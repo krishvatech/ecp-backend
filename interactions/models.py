@@ -503,13 +503,26 @@ class QnAEngagementPrompt(models.Model):
         related_name="triggered_qna_prompts",
         help_text="Host/moderator who triggered the prompt.",
     )
+    PROMPT_TYPE_BANNER = "banner"
+    PROMPT_TYPE_MODAL = "modal"
+    PROMPT_TYPE_CHOICES = [
+        (PROMPT_TYPE_BANNER, "Banner"),
+        (PROMPT_TYPE_MODAL, "Modal"),
+    ]
+
+    prompt_type = models.CharField(
+        max_length=10,
+        choices=PROMPT_TYPE_CHOICES,
+        default=PROMPT_TYPE_BANNER,
+        help_text="UI type: banner (bottom bar) or modal (centered popup).",
+    )
     message = models.TextField(
         default="Have a question? Submit it in Q&A now.",
-        help_text="Banner message shown to attendees.",
+        help_text="Banner or modal message shown to attendees.",
     )
     auto_hide_seconds = models.PositiveIntegerField(
         default=QNA_PROMPT_AUTO_HIDE_SECONDS,
-        help_text="Seconds before the banner auto-hides on the client.",
+        help_text="Seconds before the prompt auto-hides on the client.",
     )
     created_at = models.DateTimeField(auto_now_add=True, help_text="When this prompt was dispatched.")
 
