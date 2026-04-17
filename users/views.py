@@ -2189,15 +2189,17 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         elif user_type_filter == "normal":
             qs = qs.filter(is_staff=False, is_superuser=False)
 
-        # Deduplicate by email: keep only the first user for each email
-        # (handles case where multiple User records exist with same email in DB)
-        qs = qs.annotate(
-            row_num=Window(
-                expression=RowNumber(),
-                partition_by=[F('email')],
-                order_by=F('id').asc()
-            )
-        ).filter(row_num=1)
+        # Skip deduplication if viewing duplicates tab
+        if user_type_filter != "duplicates":
+            # Deduplicate by email: keep only the first user for each email
+            # (handles case where multiple User records exist with same email in DB)
+            qs = qs.annotate(
+                row_num=Window(
+                    expression=RowNumber(),
+                    partition_by=[F('email')],
+                    order_by=F('id').asc()
+                )
+            ).filter(row_num=1)
 
         # Always apply distinct() to prevent duplicate user records
         # when select_related() is used with ManyToMany relationships
@@ -4305,4 +4307,173 @@ class RemoveEmailAliasView(APIView):
             return Response(
                 {"error": "Email alias not found."},
                 status=status.HTTP_404_NOT_FOUND
+            )
+
+
+class AdminMergeDuplicateUsersView(APIView):
+    """
+    POST /auth/admin/merge-users/
+
+    Merge a secondary user account into a primary user account.
+    This transfers all CognitoIdentity records and related data.
+
+    Requires authentication as a superuser/staff member.
+
+    Request body:
+    {
+        "primary_user_id": 78,
+        "secondary_user_id": 80,
+        "dry_run": false
+    }
+
+    Response (200 OK):
+    {
+        "status": "success",
+        "message": "Successfully merged user 80 into user 78",
+        "primary_user": {
+            "id": 78,
+            "email": "user@example.com",
+            "username": "user123"
+        },
+        "merged_user": {
+            "id": 80,
+            "email": "user@example.com",
+            "username": "user123_dup"
+        },
+        "cognito_identities_merged": 2,
+        "dry_run": false
+    }
+
+    Error responses:
+    - 403: User is not staff/superuser
+    - 400: Invalid request or same user IDs
+    - 404: User not found
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """Merge two user accounts."""
+        from django.db import transaction
+
+        # Check permissions
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only staff members can merge users."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Get request data
+        primary_id = request.data.get('primary_user_id')
+        secondary_id = request.data.get('secondary_user_id')
+        dry_run = request.data.get('dry_run', False)
+
+        # Validate input
+        if not primary_id or not secondary_id:
+            return Response(
+                {"error": "primary_user_id and secondary_user_id are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if primary_id == secondary_id:
+            return Response(
+                {"error": "Cannot merge user with itself"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            primary_user = User.objects.get(id=primary_id)
+        except User.DoesNotExist:
+            return Response(
+                {"error": f"Primary user with ID {primary_id} not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        try:
+            secondary_user = User.objects.get(id=secondary_id)
+        except User.DoesNotExist:
+            return Response(
+                {"error": f"Secondary user with ID {secondary_id} not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if dry_run:
+            # Just count what would be merged
+            cognito_count = CognitoIdentity.objects.filter(user=secondary_user).count()
+            return Response({
+                "status": "dry_run",
+                "message": "Dry run - no changes made",
+                "primary_user": {
+                    "id": primary_user.id,
+                    "email": primary_user.email,
+                    "username": primary_user.username
+                },
+                "merged_user": {
+                    "id": secondary_user.id,
+                    "email": secondary_user.email,
+                    "username": secondary_user.username
+                },
+                "cognito_identities_to_merge": cognito_count,
+                "dry_run": True
+            }, status=status.HTTP_200_OK)
+
+        # Perform actual merge
+        try:
+            with transaction.atomic():
+                merged_cognito_count = 0
+                skipped_cognito_count = 0
+
+                # Transfer CognitoIdentity records
+                cognito_records = CognitoIdentity.objects.filter(user=secondary_user)
+                for record in cognito_records:
+                    # Check if this cognito_sub already exists for primary user
+                    existing = CognitoIdentity.objects.filter(
+                        user=primary_user,
+                        cognito_sub=record.cognito_sub
+                    ).exists()
+
+                    if existing:
+                        # Skip duplicate cognito_sub
+                        record.delete()
+                        skipped_cognito_count += 1
+                    else:
+                        # Update to point to primary user
+                        record.user = primary_user
+                        record.save(update_fields=['user'])
+                        merged_cognito_count += 1
+
+                # Delete the secondary user (cascade will handle related models)
+                secondary_user.delete()
+
+                logger.info(
+                    f'Admin {request.user.id} merged user {secondary_id} '
+                    f'({secondary_user.username}) into user {primary_id} '
+                    f'({primary_user.username}). '
+                    f'Merged {merged_cognito_count} cognito identities, '
+                    f'skipped {skipped_cognito_count}'
+                )
+
+                return Response({
+                    "status": "success",
+                    "message": f"Successfully merged user {secondary_id} into user {primary_id}",
+                    "primary_user": {
+                        "id": primary_user.id,
+                        "email": primary_user.email,
+                        "username": primary_user.username
+                    },
+                    "merged_user": {
+                        "id": secondary_user.id,
+                        "email": secondary_user.email,
+                        "username": secondary_user.username
+                    },
+                    "cognito_identities_merged": merged_cognito_count,
+                    "cognito_identities_skipped": skipped_cognito_count,
+                    "dry_run": False
+                }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f'Error merging users: {str(e)}')
+            return Response(
+                {"error": f"Error during merge: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

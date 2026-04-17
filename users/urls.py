@@ -12,6 +12,7 @@ from .views import WagtailSessionFromCognitoView, WagtailLogoutView, SaleorDashb
 from .views import (
     RegisterView,
     CheckEmailExistsView,
+    AdminMergeDuplicateUsersView,
     ChangePasswordView,
     ForgotPasswordView,
     ResetPasswordView,
@@ -97,6 +98,7 @@ urlpatterns = [
     # Registration & password flows
     path("register/", RegisterView.as_view(), name="register"),
     path("check-email/", CheckEmailExistsView.as_view(), name="check-email"),
+    path("admin/merge-users/", AdminMergeDuplicateUsersView.as_view(), name="admin-merge-users"),
     path("cognito/bootstrap/", CognitoBootstrapView.as_view(), name="cognito-bootstrap"),
     path("password/change/", ChangePasswordView.as_view(), name="password_change"),
     path("password/forgot/", ForgotPasswordView.as_view(), name="password_forgot"),
