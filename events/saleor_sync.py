@@ -498,12 +498,60 @@ def _create_or_update_stock(event, url, headers, variant_id):
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
 
+def delete_event_from_saleor(event):
+    """
+    Deletes the Saleor product associated with the event.
+    Called when platform admin permanently deletes an event.
+    """
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+    saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
+
+    if not saleor_url or not saleor_token:
+        logger.warning(f"Skipping Saleor event deletion: Settings missing for event {event.id}")
+        return
+
+    if not event.saleor_product_id:
+        logger.info(f"Event {event.id} has no Saleor product, nothing to delete.")
+        return
+
+    headers = {
+        "Authorization": f"Bearer {saleor_token}",
+        "Content-Type": "application/json"
+    }
+
+    mutation = """
+    mutation DeleteProduct($id: ID!) {
+      productDelete(id: $id) {
+        errors { field message }
+      }
+    }
+    """
+    variables = {"id": event.saleor_product_id}
+
+    try:
+        logger.info(f"🗑️  Deleting Saleor product {event.saleor_product_id} for event {event.id}")
+        r = requests.post(saleor_url, json={"query": mutation, "variables": variables}, headers=headers)
+        response_data = r.json()
+
+        errors = response_data.get("data", {}).get("productDelete", {}).get("errors", [])
+        if errors:
+            logger.error(f"❌ Failed to delete Saleor product {event.saleor_product_id}: {errors}")
+        else:
+            logger.info(f"✅ Successfully deleted Saleor product {event.saleor_product_id} for event {event.id}")
+            # Clear the IDs so event deletion record doesn't reference old Saleor product
+            event.saleor_product_id = None
+            event.saleor_variant_id = None
+            event.save(update_fields=["saleor_product_id", "saleor_variant_id"])
+    except Exception as e:
+        logger.error(f"❌ Exception deleting Saleor product for event {event.id}: {e}")
+
+
 import json
 def json_description(text):
     # Saleor 3.x description is JSON (EditorJS style)
     # MUST return a string, not a dict object for the GraphQL variable if the schema expects JSONScalar
     # But usually ProductCreateInput description is JSONString.
-    
+
     data = {
         "time": 1600000000000,
         "blocks": [{"type": "paragraph", "data": {"text": text}}],

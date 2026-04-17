@@ -1,8 +1,8 @@
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, pre_delete
 from django.dispatch import receiver
 from django.db import transaction
 from .models import Event, EventParticipant
-from .saleor_sync import sync_event_to_saleor_sync
+from .saleor_sync import sync_event_to_saleor_sync, delete_event_from_saleor
 import threading
 
 @receiver(post_save, sender=Event)
@@ -67,3 +67,18 @@ def send_event_confirmation_on_create(sender, instance, created, **kwargs):
             )
 
     transaction.on_commit(queue_email)
+
+
+@receiver(pre_delete, sender=Event)
+def delete_event_from_saleor_signal(sender, instance, **kwargs):
+    """
+    Delete Saleor product when event is permanently deleted.
+    Only deletes from Saleor if the event has a saleor_product_id.
+    """
+    try:
+        delete_event_from_saleor(instance)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(
+            f"Error deleting event {instance.id} from Saleor: {e}"
+        )
