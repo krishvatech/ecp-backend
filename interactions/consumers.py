@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from asgiref.sync import async_to_sync
@@ -287,6 +288,32 @@ class QnAConsumer(BaseEventConsumer):
         question_id = content.get("question_id")
         text = content.get("content") or content.get("message")
 
+        # ---------- TYPING INDICATOR ----------
+        if content.get("type") == "qna.typing":
+            # Derive user identity from the authenticated socket — never trust client-sent user_id
+            is_guest = bool(getattr(self.user, "is_guest", False))
+            if is_guest and getattr(self.user, "guest", None):
+                user_id = f"guest_{self.user.guest.id}"
+            else:
+                user_id = str(self.user.id)
+
+            is_typing = bool(content.get("is_typing", False))
+
+            payload = {
+                "type": "qna.typing",
+                "event_id": self.event_id,
+                "lounge_table_id": self.lounge_table_id,
+                "user_id": user_id,
+                "user_name": _display_name(self.user),
+                "is_typing": is_typing,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            await self.channel_layer.group_send(
+                self.group_name,
+                {"type": "qna.typing", "payload": payload},
+            )
+            return
+
         # ---------- UPVOTE ----------
         if action == "upvote":
             if bool(getattr(self.user, "is_guest", False)):
@@ -460,5 +487,13 @@ class QnAConsumer(BaseEventConsumer):
 
     async def qna_reply_anonymized(self, event: Dict[str, Any]) -> None:
         """Host toggled anonymous on a reply. Payload: { type, event_id, question_id, reply_id, is_anonymous }"""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_typing(self, event: Dict[str, Any]) -> None:
+        """
+        Called when group_send(type='qna.typing', payload=...) is triggered.
+        Forward the typing indicator payload to all connected clients in this room.
+        Payload: { type, event_id, lounge_table_id, user_id, user_name, is_typing, timestamp }
+        """
         await self.send_json(event.get("payload", {}))
 
