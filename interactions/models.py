@@ -297,6 +297,184 @@ class QuestionGuestUpvote(models.Model):
 
 
 # -----------------------------------------------------------------
+# Q&A Reply Models (one-level threaded follow-ups under questions)
+# -----------------------------------------------------------------
+
+class QnAReply(models.Model):
+    """
+    A one-level reply posted under a Q&A question.
+
+    Replies cannot have child replies (one-level only).
+    Inherits event and lounge_table from the parent question.
+
+    Fields:
+        question: FK to the parent Question.
+        event: Denormalized event FK for efficient queries.
+        lounge_table: Denormalized table FK (nullable = Main Room).
+        user: FK to the authenticated author (null for guests).
+        guest_asker: FK to the GuestAttendee author (null for auth users).
+        content: The reply text.
+        created_at/updated_at: audit timestamps.
+        upvoters: M2M to User through QnAReplyUpvote.
+        moderation_status: pending/approved/rejected.
+        rejection_reason: Host reason when rejecting.
+        is_anonymous: Whether the reply is anonymous.
+        is_hidden/hidden_by/hidden_at: Soft-hide by host.
+        anonymized_by: Host who anonymized the reply.
+    """
+
+    question = models.ForeignKey(
+        Question,
+        on_delete=models.CASCADE,
+        related_name="replies",
+        help_text="The parent question this reply belongs to.",
+    )
+    event = models.ForeignKey(
+        "events.Event",
+        on_delete=models.CASCADE,
+        related_name="qna_replies",
+        help_text="Event this reply belongs to.",
+    )
+    lounge_table = models.ForeignKey(
+        "events.LoungeTable",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="qna_replies",
+        help_text="Lounge table (if applicable). Null means Main Room.",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="qna_replies",
+        null=True,
+        blank=True,
+        help_text="User who authored the reply.",
+    )
+    guest_asker = models.ForeignKey(
+        "events.GuestAttendee",
+        on_delete=models.SET_NULL,
+        related_name="qna_replies",
+        null=True,
+        blank=True,
+        help_text="Guest attendee who authored the reply.",
+    )
+    content = models.TextField(help_text="Reply text content.")
+    created_at = models.DateTimeField(auto_now_add=True, help_text="Creation timestamp.")
+    updated_at = models.DateTimeField(auto_now=True, help_text="Last update timestamp.")
+    upvoters = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        through="QnAReplyUpvote",
+        related_name="upvoted_replies",
+        blank=True,
+        help_text="Users who upvoted this reply.",
+    )
+    moderation_status = models.CharField(
+        max_length=20,
+        choices=[("pending", "Pending"), ("approved", "Approved"), ("rejected", "Rejected")],
+        default="approved",
+        help_text="Approval status for the reply.",
+    )
+    rejection_reason = models.TextField(
+        null=True,
+        blank=True,
+        help_text="Host-provided reason when rejecting a reply.",
+    )
+    is_anonymous = models.BooleanField(
+        default=False,
+        help_text="Whether the reply was submitted anonymously.",
+    )
+    is_hidden = models.BooleanField(
+        default=False,
+        help_text="Whether this reply is hidden from attendees.",
+    )
+    hidden_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hidden_replies",
+        help_text="User who hid this reply.",
+    )
+    hidden_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the reply was hidden.",
+    )
+    anonymized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="anonymized_replies",
+        help_text="Host who anonymized this reply.",
+    )
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["question", "created_at"], name="reply_q_created_idx"),
+            models.Index(fields=["event", "moderation_status"], name="reply_event_status_idx"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                name="reply_has_user_or_guest",
+                check=models.Q(user__isnull=False) | models.Q(guest_asker__isnull=False),
+            ),
+        ]
+        verbose_name = "Q&A Reply"
+        verbose_name_plural = "Q&A Replies"
+
+    def upvote_count(self) -> int:
+        return self.upvoters.count() + self.guest_upvotes.count()
+
+    def __str__(self) -> str:
+        return f"Reply {self.id} on Q{self.question_id}: {self.content[:50]}"
+
+
+class QnAReplyUpvote(models.Model):
+    """Through table for QnAReply <-> User upvotes."""
+
+    reply = models.ForeignKey(QnAReply, on_delete=models.CASCADE, related_name="upvote_links")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="qna_reply_upvotes",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("reply", "user")
+        indexes = [
+            models.Index(fields=["reply", "created_at"], name="reply_upvote_time_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Reply{self.reply_id} ▲ by U{self.user_id}"
+
+
+class QnAReplyGuestUpvote(models.Model):
+    """Through table for QnAReply <-> GuestAttendee upvotes."""
+
+    reply = models.ForeignKey(QnAReply, on_delete=models.CASCADE, related_name="guest_upvotes")
+    guest = models.ForeignKey(
+        "events.GuestAttendee",
+        on_delete=models.CASCADE,
+        related_name="qna_reply_upvotes",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("reply", "guest")
+        indexes = [
+            models.Index(fields=["reply", "created_at"], name="reply_guest_upvote_time_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Reply{self.reply_id} ▲ by G{self.guest_id}"
+
+
+# -----------------------------------------------------------------
 # Q&A Engagement Prompt Models
 # -----------------------------------------------------------------
 

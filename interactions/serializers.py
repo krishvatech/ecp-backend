@@ -1,6 +1,6 @@
 # interactions/serializers.py
 from rest_framework import serializers
-from .models import Question
+from .models import Question, QnAReply
 
 
 class QuestionSerializer(serializers.ModelSerializer):
@@ -47,3 +47,31 @@ class QuestionSerializer(serializers.ModelSerializer):
         if user.username:
             return user.username
         return user.email or f"User {user.id}"
+
+
+class QnAReplySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QnAReply
+        fields = [
+            "id",
+            "question",
+            "event",
+            "lounge_table",
+            "user",
+            "guest_asker",
+            "content",
+            "created_at",
+            "updated_at",
+            "moderation_status",
+            "rejection_reason",
+            "is_anonymous",
+            "is_hidden",
+            "hidden_by",
+            "hidden_at",
+            "anonymized_by",
+        ]
+        read_only_fields = [
+            "user", "guest_asker", "event", "lounge_table", "created_at",
+            "updated_at", "moderation_status", "rejection_reason",
+            "is_anonymous", "is_hidden", "hidden_by", "hidden_at", "anonymized_by",
+        ]

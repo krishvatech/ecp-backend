@@ -1,6 +1,6 @@
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.db.models import BooleanField, Count, Exists, OuterRef
+from django.db.models import BooleanField, Count, Exists, OuterRef, Prefetch
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -20,8 +20,11 @@ from .models import (
     QnAEngagementPrompt,
     QnAEngagementPromptReceipt,
     QNA_PROMPT_MAX_PER_USER,
+    QnAReply,
+    QnAReplyUpvote,
+    QnAReplyGuestUpvote,
 )
-from .serializers import QuestionSerializer
+from .serializers import QuestionSerializer, QnAReplySerializer
 import requests
 
 User = get_user_model()
@@ -39,6 +42,108 @@ class QuestionViewSet(viewsets.ModelViewSet):
     @staticmethod
     def _is_guest_user(user) -> bool:
         return bool(getattr(user, "is_guest", False))
+
+    # ------------------------------------------------------------------
+    # Reply helpers
+    # ------------------------------------------------------------------
+
+    def _get_reply_author_snapshot(self, reply, *, reveal_anonymous_name=True):
+        """Return author display info for a QnAReply."""
+        author_name = "Audience"
+        author_id = None
+        author_avatar_url = ""
+
+        guest_asker = getattr(reply, "guest_asker", None)
+        author = getattr(reply, "user", None)
+
+        if guest_asker:
+            author_name = guest_asker.get_display_name()
+            author_id = f"guest_{guest_asker.id}"
+        elif author:
+            author_name = (
+                (getattr(author, "get_full_name", lambda: "")() or "").strip()
+                or author.first_name
+                or author.username
+                or (author.email.split("@")[0] if author.email else f"User {author.id}")
+            )
+            author_id = reply.user_id
+
+            profile = getattr(author, "profile", None)
+            raw_avatar = (
+                getattr(profile, "user_image", None)
+                or getattr(author, "avatar", None)
+                or getattr(profile, "avatar", None)
+                or getattr(profile, "image", None)
+            )
+            if raw_avatar:
+                try:
+                    raw_avatar = raw_avatar.url
+                except Exception:
+                    raw_avatar = str(raw_avatar)
+                author_avatar_url = self._build_absolute_media_url(raw_avatar)
+
+        if reply.is_anonymous and not reveal_anonymous_name:
+            author_name = "Anonymous"
+            author_id = None
+            author_avatar_url = ""
+
+        return {
+            "author_id": author_id,
+            "author_name": author_name,
+            "author_avatar_url": author_avatar_url,
+        }
+
+    def _serialize_reply(self, reply, *, is_host, user):
+        """
+        Serialize a QnAReply to a dict.
+
+        Uses prefetch cache for upvoters/guest_upvotes — call this only
+        after the replies queryset has been prefetched with both.
+        """
+        author_snapshot = self._get_reply_author_snapshot(
+            reply, reveal_anonymous_name=is_host
+        )
+
+        # Determine upvote counts and whether current user voted.
+        # list() forces use of the prefetch cache (no extra DB hit).
+        upvoters_cached = list(reply.upvoters.all())
+        guest_upvotes_cached = list(reply.guest_upvotes.all())
+        upvote_count = len(upvoters_cached) + len(guest_upvotes_cached)
+
+        is_guest = self._is_guest_user(user)
+        if is_guest:
+            guest = getattr(user, "guest", None)
+            guest_id = guest.id if guest else None
+            user_upvoted = any(gu.guest_id == guest_id for gu in guest_upvotes_cached)
+        else:
+            user_upvoted = any(u.id == user.id for u in upvoters_cached)
+
+        # Build voter name list for host tooltip (same pattern as question upvoters)
+        upvoters_list = []
+        if is_host:
+            for u in upvoters_cached:
+                name = (f"{u.first_name} {u.last_name}".strip()) or getattr(u, "username", None) or f"User {u.id}"
+                upvoters_list.append({"id": u.id, "name": name})
+            for gu in guest_upvotes_cached:
+                upvoters_list.append({"id": f"guest_{gu.guest_id}", "name": f"Guest {gu.guest_id}"})
+
+        return {
+            "id": reply.id,
+            "question_id": reply.question_id,
+            "content": reply.content,
+            "author_id": author_snapshot["author_id"],
+            "author_name": author_snapshot["author_name"],
+            "author_avatar_url": author_snapshot["author_avatar_url"],
+            "upvote_count": upvote_count,
+            "user_upvoted": user_upvoted,
+            "upvoters": upvoters_list,
+            "created_at": reply.created_at.isoformat(),
+            "updated_at": reply.updated_at.isoformat(),
+            "is_anonymous": reply.is_anonymous,
+            # Only expose moderation/hidden status to hosts
+            "moderation_status": reply.moderation_status if is_host else None,
+            "is_hidden": reply.is_hidden if is_host else False,
+        }
 
     def _build_absolute_media_url(self, raw_url):
         if not raw_url:
@@ -340,19 +445,39 @@ class QuestionViewSet(viewsets.ModelViewSet):
         )
 
     def list(self, request, *args, **kwargs):
-        # Optimize query by selecting related user
-        queryset = self.get_queryset().select_related("user", "user__profile", "guest_asker", "anonymized_by")
-
-        # Determine if user is a host (for visibility of anonymous questions)
-        event_id = request.query_params.get("event_id")
         from events.models import Event
+
+        event_id = request.query_params.get("event_id")
+        user = request.user
+
+        # Determine host status once for the whole list
         is_host = False
+        event = None
         if event_id:
             try:
                 event = Event.objects.get(pk=event_id)
-                is_host = (request.user == event.created_by or request.user.is_staff)
+                is_host = (user == event.created_by or getattr(user, "is_staff", False))
             except Event.DoesNotExist:
                 pass
+
+        # Build replies prefetch: filter visibility for attendees
+        replies_qs = (
+            QnAReply.objects
+            .select_related("user", "user__profile", "guest_asker")
+            .prefetch_related("upvoters", "guest_upvotes")
+            .order_by("created_at")
+        )
+        if not is_host:
+            replies_qs = replies_qs.filter(is_hidden=False)
+            if event and event.qna_moderation_enabled:
+                replies_qs = replies_qs.filter(moderation_status="approved")
+
+        # Optimize query by selecting related user + prefetch replies
+        queryset = (
+            self.get_queryset()
+            .select_related("user", "user__profile", "guest_asker", "anonymized_by")
+            .prefetch_related(Prefetch("replies", queryset=replies_qs))
+        )
 
         data = []
         for q in queryset:
@@ -390,6 +515,12 @@ class QuestionViewSet(viewsets.ModelViewSet):
             if q.is_seed and q.attribution_label:
                 display_user_name = q.attribution_label
 
+            # Serialize prefetched replies (no N+1 — uses prefetch cache)
+            replies_data = [
+                self._serialize_reply(r, is_host=is_host, user=user)
+                for r in q.replies.all()
+            ]
+
             data.append({
                 "id": q.id,
                 "content": q.content,
@@ -414,6 +545,9 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "attribution_label": q.attribution_label,
                 # speaker_note is only returned to the host
                 "speaker_note": q.speaker_note if (q.is_seed and is_host) else "",
+                # threaded replies
+                "replies": replies_data,
+                "reply_count": len(replies_data),
             })
         return Response(data)
 
@@ -1286,6 +1420,104 @@ class QuestionViewSet(viewsets.ModelViewSet):
         )
 
     # ──────────────────────────────────────────────────────────────────────────
+    # Threaded Replies
+    # GET  /api/interactions/questions/{id}/replies/   – list replies
+    # POST /api/interactions/questions/{id}/replies/   – create reply
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @action(detail=True, methods=["get", "post"], url_path="replies")
+    def replies(self, request, pk=None):
+        from events.models import Event
+
+        question = get_object_or_404(
+            Question.objects.select_related("event"),
+            pk=pk,
+        )
+        event = question.event
+        user = request.user
+        is_host = (user == event.created_by or getattr(user, "is_staff", False))
+
+        # ── GET: list replies ────────────────────────────────────────────────
+        if request.method == "GET":
+            replies_qs = (
+                QnAReply.objects
+                .filter(question=question)
+                .select_related("user", "user__profile", "guest_asker")
+                .prefetch_related("upvoters", "guest_upvotes")
+                .order_by("created_at")
+            )
+            if not is_host:
+                replies_qs = replies_qs.filter(is_hidden=False)
+                if event.qna_moderation_enabled:
+                    replies_qs = replies_qs.filter(moderation_status="approved")
+
+            data = [
+                self._serialize_reply(r, is_host=is_host, user=user)
+                for r in replies_qs
+            ]
+            return Response(data, status=status.HTTP_200_OK)
+
+        # ── POST: create reply ───────────────────────────────────────────────
+        content = (request.data.get("content") or "").strip()
+        if not content:
+            return Response({"detail": "content is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        is_anonymous = bool(request.data.get("is_anonymous", False))
+        if event.qna_anonymous_mode:
+            is_anonymous = True
+
+        moderation_status = "pending" if event.qna_moderation_enabled else "approved"
+
+        create_kwargs = dict(
+            question=question,
+            event=event,
+            lounge_table=question.lounge_table,
+            content=content,
+            is_anonymous=is_anonymous,
+            moderation_status=moderation_status,
+        )
+        if self._is_guest_user(user):
+            guest = getattr(user, "guest", None)
+            if not guest:
+                return Response({"detail": "Invalid guest session."}, status=status.HTTP_401_UNAUTHORIZED)
+            create_kwargs["guest_asker"] = guest
+        else:
+            create_kwargs["user"] = user
+
+        reply = QnAReply.objects.create(**create_kwargs)
+
+        # Broadcast new reply to Q&A group
+        if question.lounge_table_id:
+            group = f"event_qna_{event.id}_table_{question.lounge_table_id}"
+        else:
+            group = f"event_qna_{event.id}_main"
+
+        author_snapshot = self._get_reply_author_snapshot(
+            reply, reveal_anonymous_name=not reply.is_anonymous
+        )
+
+        channel_layer = get_channel_layer()
+        ws_payload = {
+            "type": "qna.reply",
+            "event_id": event.id,
+            "question_id": question.id,
+            "reply_id": reply.id,
+            "author_id": author_snapshot["author_id"],
+            "author_name": author_snapshot["author_name"],
+            "author_avatar_url": author_snapshot["author_avatar_url"],
+            "content": reply.content,
+            "upvote_count": 0,
+            "created_at": reply.created_at.isoformat(),
+            "moderation_status": reply.moderation_status,
+            "is_anonymous": reply.is_anonymous,
+        }
+        async_to_sync(channel_layer.group_send)(
+            group, {"type": "qna.reply", "payload": ws_payload}
+        )
+
+        return Response(ws_payload, status=status.HTTP_201_CREATED)
+
+    # ──────────────────────────────────────────────────────────────────────────
     # Q&A Export  (host / staff only, event must be ended)
     # GET /api/interactions/questions/export/?event_id=<id>&format=csv|pdf
     # ──────────────────────────────────────────────────────────────────────────
@@ -1340,3 +1572,240 @@ class QuestionViewSet(viewsets.ModelViewSet):
             or f"User {user.pk}"
         )
         return generate_pdf_response(rows, event, exported_by=exported_by)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# QnAReplyViewSet
+# Handles individual reply operations:
+#   PATCH  /api/interactions/replies/{id}/
+#   DELETE /api/interactions/replies/{id}/
+#   POST   /api/interactions/replies/{id}/upvote/
+#   POST   /api/interactions/replies/{id}/approve/
+#   POST   /api/interactions/replies/{id}/reject/
+#   POST   /api/interactions/replies/{id}/anonymize/
+# ──────────────────────────────────────────────────────────────────────────────
+
+class QnAReplyViewSet(viewsets.GenericViewSet):
+    """
+    Individual reply CRUD + moderation operations.
+    List/create lives on QuestionViewSet.replies action.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = QnAReplySerializer
+    queryset = QnAReply.objects.select_related("question__event", "user", "guest_asker")
+
+    @staticmethod
+    def _is_guest_user(user) -> bool:
+        return bool(getattr(user, "is_guest", False))
+
+    def _is_host(self, reply, user) -> bool:
+        return user == reply.event.created_by or getattr(user, "is_staff", False)
+
+    def _is_owner(self, reply, user) -> bool:
+        if self._is_guest_user(user):
+            guest = getattr(user, "guest", None)
+            return reply.guest_asker_id is not None and guest is not None and reply.guest_asker_id == guest.id
+        return reply.user_id is not None and reply.user_id == user.id
+
+    def _broadcast(self, reply, msg_type: str, payload: dict) -> None:
+        if reply.question.lounge_table_id:
+            group = f"event_qna_{reply.event_id}_table_{reply.question.lounge_table_id}"
+        else:
+            group = f"event_qna_{reply.event_id}_main"
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            group, {"type": msg_type, "payload": payload}
+        )
+
+    def partial_update(self, request, pk=None):
+        """PATCH /api/interactions/replies/{id}/  – owner or host can edit content."""
+        from rest_framework.exceptions import PermissionDenied
+
+        reply = get_object_or_404(
+            QnAReply.objects.select_related("question__event", "user", "guest_asker"),
+            pk=pk,
+        )
+        user = request.user
+        if not (self._is_owner(reply, user) or self._is_host(reply, user)):
+            raise PermissionDenied("You do not have permission to edit this reply.")
+
+        content = (request.data.get("content") or "").strip()
+        if not content:
+            return Response({"detail": "content is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        reply.content = content
+        reply.save(update_fields=["content", "updated_at"])
+
+        self._broadcast(reply, "qna.reply_update", {
+            "type": "qna.reply_update",
+            "event_id": reply.event_id,
+            "question_id": reply.question_id,
+            "reply_id": reply.id,
+            "content": reply.content,
+        })
+
+        return Response({"reply_id": reply.id, "content": reply.content}, status=status.HTTP_200_OK)
+
+    def destroy(self, request, pk=None):
+        """DELETE /api/interactions/replies/{id}/  – owner or host can delete."""
+        from rest_framework.exceptions import PermissionDenied
+
+        reply = get_object_or_404(
+            QnAReply.objects.select_related("question__event", "user", "guest_asker"),
+            pk=pk,
+        )
+        user = request.user
+        if not (self._is_owner(reply, user) or self._is_host(reply, user)):
+            raise PermissionDenied("You do not have permission to delete this reply.")
+
+        event_id = reply.event_id
+        question_id = reply.question_id
+        reply_id = reply.id
+        lounge_table_id = reply.question.lounge_table_id
+        reply.delete()
+
+        if lounge_table_id:
+            group = f"event_qna_{event_id}_table_{lounge_table_id}"
+        else:
+            group = f"event_qna_{event_id}_main"
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {"type": "qna.reply_delete", "payload": {
+                "type": "qna.reply_delete",
+                "event_id": event_id,
+                "question_id": question_id,
+                "reply_id": reply_id,
+            }},
+        )
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"])
+    def upvote(self, request, pk=None):
+        """POST /api/interactions/replies/{id}/upvote/ – toggle upvote."""
+        reply = get_object_or_404(
+            QnAReply.objects.select_related("question__event"),
+            pk=pk,
+        )
+        user = request.user
+
+        if self._is_guest_user(user):
+            guest = getattr(user, "guest", None)
+            if not guest:
+                return Response({"detail": "Invalid guest session."}, status=status.HTTP_401_UNAUTHORIZED)
+            link_qs = QnAReplyGuestUpvote.objects.filter(reply=reply, guest=guest)
+            if link_qs.exists():
+                link_qs.delete()
+                upvoted = False
+            else:
+                QnAReplyGuestUpvote.objects.create(reply=reply, guest=guest)
+                upvoted = True
+            actor_id = f"guest_{guest.id}"
+        else:
+            if reply.upvoters.filter(id=user.id).exists():
+                reply.upvoters.remove(user)
+                upvoted = False
+            else:
+                reply.upvoters.add(user)
+                upvoted = True
+            actor_id = user.id
+
+        upvote_count = (
+            QnAReplyUpvote.objects.filter(reply=reply).count()
+            + QnAReplyGuestUpvote.objects.filter(reply=reply).count()
+        )
+
+        self._broadcast(reply, "qna.reply_upvote", {
+            "type": "qna.reply_upvote",
+            "event_id": reply.event_id,
+            "question_id": reply.question_id,
+            "reply_id": reply.id,
+            "upvote_count": upvote_count,
+            "upvoted": upvoted,
+            "user_id": actor_id,
+        })
+
+        return Response(
+            {"reply_id": reply.id, "upvoted": upvoted, "upvote_count": upvote_count},
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        """POST /api/interactions/replies/{id}/approve/ – host approves a pending reply."""
+        from rest_framework.exceptions import PermissionDenied
+
+        reply = get_object_or_404(
+            QnAReply.objects.select_related("question__event"),
+            pk=pk,
+        )
+        if not self._is_host(reply, request.user):
+            raise PermissionDenied("Only event host/admin can approve replies.")
+
+        reply.moderation_status = "approved"
+        reply.save(update_fields=["moderation_status"])
+
+        self._broadcast(reply, "qna.reply_approved", {
+            "type": "qna.reply_approved",
+            "event_id": reply.event_id,
+            "question_id": reply.question_id,
+            "reply_id": reply.id,
+            "content": reply.content,
+        })
+
+        return Response({"reply_id": reply.id, "moderation_status": "approved"}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        """POST /api/interactions/replies/{id}/reject/ – host rejects a reply."""
+        from rest_framework.exceptions import PermissionDenied
+
+        reply = get_object_or_404(
+            QnAReply.objects.select_related("question__event"),
+            pk=pk,
+        )
+        if not self._is_host(reply, request.user):
+            raise PermissionDenied("Only event host/admin can reject replies.")
+
+        reason = (request.data.get("reason") or "").strip()
+        reply.moderation_status = "rejected"
+        reply.rejection_reason = reason
+        reply.save(update_fields=["moderation_status", "rejection_reason"])
+
+        self._broadcast(reply, "qna.reply_rejected", {
+            "type": "qna.reply_rejected",
+            "event_id": reply.event_id,
+            "question_id": reply.question_id,
+            "reply_id": reply.id,
+            "reason": reason,
+        })
+
+        return Response({"reply_id": reply.id, "moderation_status": "rejected", "reason": reason}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"])
+    def anonymize(self, request, pk=None):
+        """POST /api/interactions/replies/{id}/anonymize/ – host toggles anonymous."""
+        from rest_framework.exceptions import PermissionDenied
+
+        reply = get_object_or_404(
+            QnAReply.objects.select_related("question__event"),
+            pk=pk,
+        )
+        if not self._is_host(reply, request.user):
+            raise PermissionDenied("Only event host/admin can anonymize replies.")
+
+        reply.is_anonymous = not reply.is_anonymous
+        reply.anonymized_by = request.user if reply.is_anonymous else None
+        reply.save(update_fields=["is_anonymous", "anonymized_by"])
+
+        self._broadcast(reply, "qna.reply_anonymized", {
+            "type": "qna.reply_anonymized",
+            "event_id": reply.event_id,
+            "question_id": reply.question_id,
+            "reply_id": reply.id,
+            "is_anonymous": reply.is_anonymous,
+        })
+
+        return Response({"reply_id": reply.id, "is_anonymous": reply.is_anonymous}, status=status.HTTP_200_OK)

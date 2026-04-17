@@ -12,6 +12,8 @@ from .models import (
     QuestionUpvote,
     QnAEngagementPrompt,
     QnAEngagementPromptReceipt,
+    QnAReply,
+    QnAReplyUpvote,
 )
 
 
@@ -77,3 +79,23 @@ class QnAEngagementPromptReceiptAdmin(admin.ModelAdmin):
     search_fields = ("user__username", "event__title")
     readonly_fields = ("shown_at",)
     date_hierarchy = "shown_at"
+
+
+@admin.register(QnAReply)
+class QnAReplyAdmin(admin.ModelAdmin):
+    list_display = ("id", "question", "event", "user", "guest_asker", "short_content", "moderation_status", "is_hidden", "created_at")
+    list_filter = ("event", "moderation_status", "is_hidden", "is_anonymous")
+    search_fields = ("content", "user__username", "event__title")
+    readonly_fields = ("created_at", "updated_at", "hidden_by", "hidden_at", "anonymized_by")
+    date_hierarchy = "created_at"
+
+    @admin.display(description="content")
+    def short_content(self, obj: QnAReply) -> str:
+        return (obj.content or "")[:80]
+
+
+@admin.register(QnAReplyUpvote)
+class QnAReplyUpvoteAdmin(admin.ModelAdmin):
+    list_display = ("id", "reply", "user", "created_at")
+    search_fields = ("reply__content", "user__username")
+    readonly_fields = ("created_at",)

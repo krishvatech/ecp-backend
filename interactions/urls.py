@@ -1,10 +1,11 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import QuestionViewSet
+from .views import QuestionViewSet, QnAReplyViewSet
 from .export_view import QnAExportView
 
 router = DefaultRouter()
 router.register(r'questions', QuestionViewSet, basename='question')
+router.register(r'replies', QnAReplyViewSet, basename='qna-reply')
 
 urlpatterns = [
     # Export endpoint — standalone view, listed before router include so it

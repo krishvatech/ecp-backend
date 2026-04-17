@@ -425,3 +425,40 @@ class QnAConsumer(BaseEventConsumer):
         """
         await self.send_json(event.get("payload", {}))
 
+    # ------------------------------------------------------------------
+    # Threaded reply handlers
+    # ------------------------------------------------------------------
+
+    async def qna_reply(self, event: Dict[str, Any]) -> None:
+        """
+        New reply created under a question.
+        Payload: { type, event_id, question_id, reply_id, author_id, author_name,
+                   author_avatar_url, content, upvote_count, created_at,
+                   moderation_status, is_anonymous }
+        """
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_reply_update(self, event: Dict[str, Any]) -> None:
+        """Reply content edited. Payload: { type, event_id, question_id, reply_id, content }"""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_reply_delete(self, event: Dict[str, Any]) -> None:
+        """Reply deleted. Payload: { type, event_id, question_id, reply_id }"""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_reply_upvote(self, event: Dict[str, Any]) -> None:
+        """Reply upvote toggled. Payload: { type, event_id, question_id, reply_id, upvote_count, upvoted, user_id }"""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_reply_approved(self, event: Dict[str, Any]) -> None:
+        """Host approved a pending reply. Payload: { type, event_id, question_id, reply_id, content }"""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_reply_rejected(self, event: Dict[str, Any]) -> None:
+        """Host rejected a reply. Payload: { type, event_id, question_id, reply_id, reason }"""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_reply_anonymized(self, event: Dict[str, Any]) -> None:
+        """Host toggled anonymous on a reply. Payload: { type, event_id, question_id, reply_id, is_anonymous }"""
+        await self.send_json(event.get("payload", {}))
+
