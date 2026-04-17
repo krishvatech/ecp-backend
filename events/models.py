@@ -73,6 +73,12 @@ class Event(models.Model):
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="recommended_from_cancelled"
     )
 
+    # Admin visibility control
+    is_hidden = models.BooleanField(
+        default=False,
+        help_text="When True, the event is hidden from the platform for all non-admin users."
+    )
+
     # New fields
     category = models.CharField(max_length=100, blank=True)
     format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default="in_person")

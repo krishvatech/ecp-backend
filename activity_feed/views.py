@@ -234,6 +234,11 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         """
         qs = Event.objects.all()
 
+        # Hide hidden events from non-superusers
+        is_platform_admin = getattr(request.user, "is_superuser", False)
+        if not is_platform_admin:
+            qs = qs.filter(is_hidden=False)
+
         # If you have publish/status flags:
         # qs = qs.filter(status__in=["scheduled", "live"])  # example
 
@@ -273,6 +278,11 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             .filter(is_published=True, event_id__isnull=False, event_id__in=reg_event_ids)
             .order_by("-created_at")
         )
+
+        # Exclude resources for hidden events (non-superusers only)
+        is_platform_admin = getattr(me, "is_superuser", False)
+        if not is_platform_admin:
+            qs = qs.exclude(event__is_hidden=True)
 
         cid = request.query_params.get("community_id")
         if cid:
@@ -457,6 +467,11 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         ).data
 
         event_qs = Event.objects.all()
+
+        # Hide hidden events from non-superusers
+        is_platform_admin = getattr(request.user, "is_superuser", False)
+        if not is_platform_admin:
+            event_qs = event_qs.filter(is_hidden=False)
 
         # Optional scope by community if you pass ?community_id=
         cid_param = request.query_params.get("community_id")

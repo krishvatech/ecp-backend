@@ -804,6 +804,7 @@ class EventSerializer(serializers.ModelSerializer):
             "cancellation_message",
             "recommended_event",
             "recommended_event_id",
+            "is_hidden",
             "replay_available",
             "replay_availability_duration",
             "replay_visible_to_participants",

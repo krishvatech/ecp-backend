@@ -1100,6 +1100,11 @@ class EventViewSet(viewsets.ModelViewSet):
         guest_event_id = getattr(getattr(user, "guest", None), "event_id", None) if is_guest_user else None
         qs = Event.objects.select_related("community").prefetch_related("sessions", "participants__user", "participants__user__profile")
 
+        # Hide admin-hidden events from all non-platform-admin users (superuser only)
+        is_platform_admin = getattr(user, "is_superuser", False)
+        if not is_platform_admin:
+            qs = qs.filter(is_hidden=False)
+
         # Base visibility
         if not user.is_authenticated:
             qs = qs.filter(status__in=["published", "live"])
@@ -1135,6 +1140,15 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # ---- Filters (applied only when provided) ----
         params = self.request.query_params
+
+        # Hidden filter (platform_admin only) - filter to show only hidden events
+        is_hidden_param = (params.get("is_hidden") or "").strip().lower()
+        if is_hidden_param in {"1", "true", "yes", "on"}:
+            if is_platform_admin:
+                qs = qs.filter(is_hidden=True)
+            else:
+                # Non-platform-admin users cannot see hidden events
+                return Event.objects.none()
 
         # Bucket filter (upcoming / live / past) - applies to both list & mine
         bucket = (params.get("bucket") or "").strip().lower()
@@ -1347,20 +1361,34 @@ class EventViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         """
         Allow hard deletion only if the event is a draft.
-        Otherwise, restrict deletion indicating soft cancellation should be used.
+        Platform admins (superuser only) may also permanently delete
+        any event status.  All related OrderItems are removed first to avoid
+        the ProtectedError raised by OrderItem.event (on_delete=PROTECT).
         """
         instance = self.get_object()
-        
-        # Superusers or staff can always delete
-        is_staff = getattr(request.user, "is_staff", False) or getattr(request.user, "is_superuser", False)
-        
-        if instance.status != "draft" and not is_staff:
-            from rest_framework import status
+
+        is_platform_admin = getattr(request.user, "is_superuser", False)
+
+        if instance.status != "draft" and not is_platform_admin:
             return Response(
                 {"detail": "Only draft events can be hard deleted. For published events, please use the cancel functionality."},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
-            
+
+        # Pre-delete OrderItems linked to this event so the CASCADE on the
+        # Event row is not blocked by the PROTECT FK on OrderItem.event.
+        if is_platform_admin:
+            try:
+                from orders.models import OrderItem, Order
+                affected_order_ids = list(
+                    OrderItem.objects.filter(event=instance).values_list("order_id", flat=True)
+                )
+                OrderItem.objects.filter(event=instance).delete()
+                for order in Order.objects.filter(id__in=affected_order_ids):
+                    order.recalc()
+            except Exception:
+                pass  # orders app may not be installed in all environments
+
         return super().destroy(request, *args, **kwargs)
 
     # ------------------ Dictionary Endpoints -----------------
@@ -4625,6 +4653,11 @@ class EventViewSet(viewsets.ModelViewSet):
             .annotate(registrations_count=Count('registrations', distinct=True))
             .order_by("-start_time")
         )
+
+        # Filter hidden events for non-platform-admin users (superuser only)
+        is_platform_admin = getattr(user, "is_superuser", False)
+        if not is_platform_admin:
+            qs = qs.filter(is_hidden=False)
 
         # Apply bucket filter here too if needed
         bucket = (request.query_params.get("bucket") or "").strip().lower()
