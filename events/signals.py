@@ -19,7 +19,10 @@ def sync_event_to_saleor_signal(sender, instance, created, **kwargs):
     """
     
     # Check if we are saving because of the sync itself
-    # A simple way is to check if update_fields only contains saleor_*
+    if getattr(instance, "skip_saleor_sync", False):
+        return
+
+    # Check if we are saving because of the sync itself (backwards compat/fallback)
     update_fields = kwargs.get("update_fields")
     if update_fields and ("saleor_product_id" in update_fields or "saleor_variant_id" in update_fields):
         return

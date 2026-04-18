@@ -1,6 +1,11 @@
 import requests
-from django.conf import settings
+import json
 import logging
+from django.conf import settings
+from django.contrib.auth.models import User
+from django.utils import timezone
+from .models import Event
+from community.models import Community
 
 logger = logging.getLogger(__name__)
 
@@ -546,7 +551,6 @@ def delete_event_from_saleor(event):
         logger.error(f"❌ Exception deleting Saleor product for event {event.id}: {e}")
 
 
-import json
 def json_description(text):
     # Saleor 3.x description is JSON (EditorJS style)
     # MUST return a string, not a dict object for the GraphQL variable if the schema expects JSONScalar
@@ -558,3 +562,130 @@ def json_description(text):
         "version": "2.18.0"
     }
     return json.dumps(data)
+
+
+def extract_text_from_json_description(json_desc):
+    """
+    Extracts plain text from Saleor's EditorJS-style JSON description.
+    """
+    if not json_desc:
+        return ""
+    
+    try:
+        if isinstance(json_desc, str):
+            data = json.loads(json_desc)
+        else:
+            data = json_desc
+            
+        blocks = data.get("blocks", [])
+        text_parts = []
+        for block in blocks:
+            if block.get("type") == "paragraph":
+                text = block.get("data", {}).get("text", "")
+                if text:
+                    text_parts.append(text)
+            # Add more block types if needed (header, list, etc.)
+            
+        return "\n".join(text_parts)
+    except Exception as e:
+        logger.warning(f"Failed to parse Saleor description JSON: {e}")
+        return str(json_desc)
+
+
+def sync_event_from_saleor_data(product_data):
+    """
+    Creates or updates an Event in ECP from Saleor product data.
+    """
+    if not isinstance(product_data, dict):
+        logger.error(f"Saleor product data is not a dict: {type(product_data)}")
+        return None, "error"
+
+    saleor_id = product_data.get("id")
+    if not saleor_id:
+        logger.error(f"Saleor product data missing ID. Data keys: {list(product_data.keys())}")
+        return None, "error"
+
+    name = product_data.get("name")
+    slug = product_data.get("slug")
+    description_json = product_data.get("description")
+    description_text = extract_text_from_json_description(description_json)
+
+    # Resolve variants and price
+    variants = product_data.get("variants", [])
+    variant_id = None
+    price = 0.0
+    max_participants = None
+
+    if variants:
+        # For simplicity, we take the first variant
+        variant = variants[0]
+        variant_id = variant.get("id")
+        
+        # Extract price from channel listings
+        channel_listings = variant.get("channelListings", [])
+        if channel_listings:
+            # 1. Try to find the exact configured channel
+            target_channel = getattr(settings, "SALEOR_CHANNEL_SLUG", "sgd-channel")
+            listing = next((l for l in channel_listings if l.get("channel", {}).get("slug") == target_channel), None)
+            
+            # 2. If not found, just take the first one that has a price
+            if not listing:
+                listing = next((l for l in channel_listings if l.get("price")), channel_listings[0])
+            
+            price_data = listing.get("price")
+            if price_data:
+                price = float(price_data.get("amount", 0.0))
+        
+        # Extract stock/max_participants
+        stocks = variant.get("stocks", [])
+        if stocks:
+            max_participants = stocks[0].get("quantity")
+
+    # Fetch or create event
+    try:
+        event = Event.objects.get(saleor_product_id=saleor_id)
+        is_new = False
+    except Event.DoesNotExist:
+        event = Event(saleor_product_id=saleor_id)
+        is_new = True
+
+    # Default associations
+    if is_new:
+        # Use default community (ID 1)
+        try:
+            community_id = getattr(settings, "WP_SYNC_DEFAULT_COMMUNITY_ID", 1)
+            event.community = Community.objects.get(id=community_id)
+        except Community.DoesNotExist:
+            logger.error(f"Default community {community_id} not found for Saleor sync")
+            return None, "error"
+
+        # Use first superuser as creator
+        creator = User.objects.filter(is_superuser=True).first()
+        if not creator:
+            logger.error("No superuser found to assign as creator for Saleor sync")
+            return None, "error"
+        event.created_by = creator
+        event.status = "published" # Synced events from Saleor are assumed published
+
+    # Update fields
+    event.title = name
+    if slug:
+        event.slug = slug
+    event.description = description_text
+    event.price = price
+    event.is_free = (price == 0.0)
+    event.max_participants = max_participants
+    event.saleor_variant_id = variant_id
+    
+    # Placeholder for timing if not provided by Saleor (Events in ECP need start/end)
+    if not event.start_time:
+        event.start_time = timezone.now() + timezone.timedelta(days=7)
+    if not event.end_time:
+        event.end_time = event.start_time + timezone.timedelta(hours=1)
+
+    event.skip_saleor_sync = True
+    event.save()
+    
+    action = "created" if is_new else "updated"
+    logger.info(f"{action.capitalize()} Event {event.id} from Saleor product {saleor_id}")
+    return event, action

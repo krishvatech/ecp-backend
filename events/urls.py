@@ -20,6 +20,7 @@ from .guest_views import (
 from .speed_networking_views import SpeedNetworkingSessionViewSet, SpeedNetworkingQueueViewSet
 from .webhooks import realtime_webhook
 from .wordpress_event_webhook import WordPressEventWebhookView
+from .saleor_webhooks import SaleorProductWebhookView
 
 router = DefaultRouter()
 router.register(r"events", EventViewSet, basename="event")
@@ -30,6 +31,9 @@ router.register(r"virtual-speakers", VirtualSpeakerViewSet, basename="virtual-sp
 urlpatterns = [
     # WordPress Events Calendar sync webhook
     path("events/wordpress/webhook/", WordPressEventWebhookView.as_view(), name="wp-event-webhook"),
+
+    # Saleor Product sync webhook
+    path("webhooks/saleor/product/", SaleorProductWebhookView.as_view(), name="saleor-product-webhook"),
 
     # Public event landing page endpoint
     path("events/public/<str:slug>/", PublicEventDetailView.as_view(), name="event-public-detail"),

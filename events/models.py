@@ -81,7 +81,7 @@ class Event(models.Model):
 
     # New fields
     category = models.CharField(max_length=100, blank=True)
-    format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default="in_person")
+    format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default="virtual")
     location = models.CharField(max_length=255, blank=True)
     location_city = models.CharField(max_length=255, blank=True)
     location_country = models.CharField(max_length=255, blank=True)
@@ -339,6 +339,7 @@ class Event(models.Model):
         default=False,
         help_text="Force all Q&A questions to be submitted anonymously."
     )
+
     qna_ai_public_suggestions_enabled = models.BooleanField(
         default=False,
         help_text="When True, host can generate and publish AI-driven question suggestions for all participants."
