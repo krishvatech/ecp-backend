@@ -735,3 +735,81 @@ class QnAQuestionGroupMembership(models.Model):
 
     def __str__(self) -> str:
         return f"Question {self.question_id} in Group {self.group_id}"
+
+
+# -----------------------------------------------------------------
+# Q&A Content Context (presentation grounding for AI suggestions)
+# -----------------------------------------------------------------
+
+class QnAContentContext(models.Model):
+    """
+    Stores normalized presentation content that grounds AI question suggestions.
+
+    A host or admin adds one or more context records for an event before or
+    during the session.  The AI suggestion service concatenates them and asks
+    the LLM to suggest thoughtful audience questions.
+
+    Supported source types mirror the migration choices:
+        event_description  – the event's own description field
+        session_agenda     – agenda text for a named session
+        slides             – extracted text from uploaded slide decks
+        transcript         – live or post-event transcript excerpts
+        host_notes         – freeform notes the host types in directly
+
+    Notes:
+        - Suggestions are never persisted; context is what persists.
+        - Table already created by migration 0012_qnacontentcontext.
+    """
+
+    SOURCE_EVENT_DESCRIPTION = "event_description"
+    SOURCE_SESSION_AGENDA = "session_agenda"
+    SOURCE_SLIDES = "slides"
+    SOURCE_TRANSCRIPT = "transcript"
+    SOURCE_HOST_NOTES = "host_notes"
+
+    SOURCE_TYPE_CHOICES = [
+        (SOURCE_EVENT_DESCRIPTION, "Event Description"),
+        (SOURCE_SESSION_AGENDA, "Session Agenda"),
+        (SOURCE_SLIDES, "Slides Content"),
+        (SOURCE_TRANSCRIPT, "Live/Post Transcript"),
+        (SOURCE_HOST_NOTES, "Host/Speaker Notes"),
+    ]
+
+    event = models.ForeignKey(
+        "events.Event",
+        on_delete=models.CASCADE,
+        related_name="qna_contexts",
+        help_text="The event this context belongs to.",
+    )
+    session = models.ForeignKey(
+        "events.EventSession",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="qna_contexts",
+        help_text="The optional session this context belongs to.",
+    )
+    source_type = models.CharField(
+        max_length=30,
+        choices=SOURCE_TYPE_CHOICES,
+        default=SOURCE_HOST_NOTES,
+    )
+    source_title = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Optional title of the source (e.g. 'Slide Deck 1', 'Session Agenda').",
+    )
+    content_text = models.TextField(
+        help_text="The normalized text content used for AI grounding.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Q&A Content Context"
+        verbose_name_plural = "Q&A Content Contexts"
+
+    def __str__(self) -> str:
+        return f"[Event {self.event_id}] {self.get_source_type_display()}: {self.source_title or self.content_text[:40]}"

@@ -14,6 +14,7 @@ from .models import (
     QnAEngagementPromptReceipt,
     QnAReply,
     QnAReplyUpvote,
+    QnAContentContext,
 )
 
 
@@ -99,3 +100,16 @@ class QnAReplyUpvoteAdmin(admin.ModelAdmin):
     list_display = ("id", "reply", "user", "created_at")
     search_fields = ("reply__content", "user__username")
     readonly_fields = ("created_at",)
+
+
+@admin.register(QnAContentContext)
+class QnAContentContextAdmin(admin.ModelAdmin):
+    list_display = ("id", "event", "source_type", "source_title", "short_content", "created_at")
+    list_filter = ("event", "source_type")
+    search_fields = ("content_text", "source_title", "event__title")
+    readonly_fields = ("created_at", "updated_at")
+    date_hierarchy = "created_at"
+
+    @admin.display(description="content preview")
+    def short_content(self, obj: QnAContentContext) -> str:
+        return (obj.content_text or "")[:80]

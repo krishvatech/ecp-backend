@@ -1,6 +1,6 @@
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.db.models import BooleanField, Count, Exists, OuterRef, Prefetch
+from django.db.models import BooleanField, Count, Exists, OuterRef, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -23,6 +23,7 @@ from .models import (
     QnAReply,
     QnAReplyUpvote,
     QnAReplyGuestUpvote,
+    QnAContentContext,
 )
 from .serializers import QuestionSerializer, QnAReplySerializer
 from rest_framework.throttling import UserRateThrottle
@@ -37,6 +38,15 @@ class PolishQuestionRateThrottle(UserRateThrottle):
     Default: 20 requests/minute per user (configurable via DRF_THROTTLE_POLISH env var).
     """
     scope = "polish_question"
+
+
+class AiSuggestionsRateThrottle(UserRateThrottle):
+    """
+    Separate throttle scope for the private AI question suggestions endpoint.
+    Default: 10/minute per user. Prevents abuse of expensive LLM calls.
+    Configure via REST_FRAMEWORK settings: THROTTLE_RATES = {'ai_suggestions': '3/10min'}
+    """
+    scope = "ai_suggestions"
 
 class QuestionViewSet(viewsets.ModelViewSet):
     """
@@ -788,6 +798,122 @@ class QuestionViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
+
+    # ------------------------------------------------------------------
+    # A2: Private AI question suggestions
+    # ------------------------------------------------------------------
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="ai-suggestions",
+        throttle_classes=[AiSuggestionsRateThrottle],
+    )
+    def ai_suggestions(self, request):
+        """
+        POST /api/interactions/questions/ai-suggestions/
+
+        Privately suggest 2–3 questions an attendee might want to ask,
+        grounded in the event's presentation context.
+
+        Request body:
+            {
+              "event_id": 123,
+              "session_id": 456,       # optional
+              "current_topic": "...",  # optional
+              "count": 3               # max 3
+            }
+
+        Response (200):
+            {
+              "suggestions": [
+                { "id": "uuid", "question": "...", "reason": "..." }
+              ]
+            }
+
+        Rules:
+            - Suggestions are private — no WebSocket broadcast.
+            - No Question record is created.
+            - Returns 404 if no context exists for the event.
+            - Rate-limited via AiSuggestionsRateThrottle.
+        """
+        from events.models import Event
+        from .ai_question_suggestions import suggest_questions
+
+        event_id = request.data.get("event_id")
+        session_id = request.data.get("session_id")
+        count = request.data.get("count", 3)
+
+        # ── validation ──────────────────────────────────────────────────────
+        if not event_id:
+            return Response(
+                {"detail": "event_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            count = max(1, min(3, int(count)))
+        except (TypeError, ValueError):
+            count = 3
+
+        # ── event access check ───────────────────────────────────────────────
+        event = get_object_or_404(Event, id=event_id)
+
+        user = request.user
+        if self._is_guest_user(user):
+            guest = getattr(user, "guest", None)
+            if not guest or guest.event_id != event.id:
+                return Response(
+                    {"detail": "You do not have access to this event's Q&A."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # ── load presentation context ────────────────────────────────────────
+        context_qs = QnAContentContext.objects.filter(event=event)
+        if session_id:
+            context_qs = context_qs.filter(
+                Q(session_id=session_id) | Q(session__isnull=True)
+            )
+
+        contexts = list(context_qs.order_by("-created_at"))
+        if not contexts:
+            return Response(
+                {"detail": "No presentation context available for this event."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Concatenate context records (newest first, up to 4000 chars total)
+        context_parts = []
+        for ctx in contexts:
+            label = ctx.source_title or ctx.get_source_type_display()
+            context_parts.append(f"[{label}]\n{ctx.content_text}")
+        combined_context = "\n\n".join(context_parts)
+
+        session_title = ""
+        if session_id:
+            try:
+                from events.models import EventSession
+                session_obj = EventSession.objects.get(pk=session_id, event=event)
+                session_title = session_obj.title or ""
+            except Exception:
+                pass
+
+        # ── call AI service ──────────────────────────────────────────────────
+        try:
+            suggestions = suggest_questions(
+                event_title=event.title or "",
+                session_title=session_title,
+                context_text=combined_context,
+                count=count,
+            )
+        except ValueError:
+            return Response(
+                {"detail": "Could not generate suggestions right now. Please try again."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        # Suggestions are ephemeral — no Question record created, no WS broadcast.
+        return Response({"suggestions": suggestions}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"])
     def upvote(self, request, pk=None):
@@ -2196,3 +2322,150 @@ class QnAQuestionGroupSuggestionViewSet(viewsets.ModelViewSet):
         )
 
         return Response({"status": "rejected"}, status=status.HTTP_200_OK)
+
+
+# -----------------------------------------------------------------
+# QnAContentContext ViewSet (host/admin context management)
+# -----------------------------------------------------------------
+
+class QnAContentContextViewSet(viewsets.ModelViewSet):
+    """
+    CRUD API for Q&A presentation context records.
+
+    Only event hosts and staff can create or view context for their events.
+    Attendees never call this endpoint directly; their AI suggestion requests
+    use the context internally server-side.
+
+    GET  /api/interactions/qna-context/?event_id=<id>  — list context for event
+    POST /api/interactions/qna-context/               — add a context record
+    """
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+
+    def get_queryset(self):
+        from events.models import Event
+
+        event_id = self.request.query_params.get("event_id")
+        if not event_id:
+            return QnAContentContext.objects.none()
+
+        event = get_object_or_404(Event, id=event_id)
+        user = self.request.user
+        is_host = (user == event.created_by or getattr(user, "is_staff", False))
+        if not is_host:
+            return QnAContentContext.objects.none()
+
+        return QnAContentContext.objects.filter(event=event).order_by("-created_at")
+
+    def _get_event_and_assert_host(self, event_id):
+        """Helper: resolve event and confirm requester is host/staff."""
+        from events.models import Event
+        from rest_framework.exceptions import PermissionDenied
+
+        event = get_object_or_404(Event, id=event_id)
+        user = self.request.user
+        if not (user == event.created_by or getattr(user, "is_staff", False)):
+            raise PermissionDenied("Only event hosts or admin can manage Q&A context.")
+        return event
+
+    def list(self, request, *args, **kwargs):
+        """GET /qna-context/?event_id=<id>"""
+        event_id = request.query_params.get("event_id")
+        if not event_id:
+            return Response(
+                {"detail": "event_id query parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        qs = self.get_queryset()
+        data = [
+            {
+                "id": c.id,
+                "event_id": c.event_id,
+                "session_id": c.session_id,
+                "source_type": c.source_type,
+                "source_title": c.source_title,
+                "content_text": c.content_text,
+                "created_at": c.created_at.isoformat(),
+                "updated_at": c.updated_at.isoformat(),
+            }
+            for c in qs
+        ]
+        return Response(data, status=status.HTTP_200_OK)
+
+    def create(self, request, *args, **kwargs):
+        """POST /qna-context/"""
+        event_id = request.data.get("event_id")
+        if not event_id:
+            return Response(
+                {"detail": "event_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        event = self._get_event_and_assert_host(event_id)
+
+        content_text = (request.data.get("content_text") or "").strip()
+        if not content_text:
+            return Response(
+                {"detail": "content_text is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        source_type = request.data.get("source_type", QnAContentContext.SOURCE_HOST_NOTES)
+        valid_types = [c[0] for c in QnAContentContext.SOURCE_TYPE_CHOICES]
+        if source_type not in valid_types:
+            return Response(
+                {"detail": f"source_type must be one of: {', '.join(valid_types)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ctx = QnAContentContext.objects.create(
+            event=event,
+            session_id=request.data.get("session_id") or None,
+            source_type=source_type,
+            source_title=(request.data.get("source_title") or "").strip(),
+            content_text=content_text,
+        )
+
+        return Response(
+            {
+                "id": ctx.id,
+                "event_id": ctx.event_id,
+                "session_id": ctx.session_id,
+                "source_type": ctx.source_type,
+                "source_title": ctx.source_title,
+                "content_text": ctx.content_text,
+                "created_at": ctx.created_at.isoformat(),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        """DELETE /qna-context/<id>/"""
+        ctx = get_object_or_404(QnAContentContext, pk=kwargs["pk"])
+        self._get_event_and_assert_host(ctx.event_id)
+        ctx.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def partial_update(self, request, *args, **kwargs):
+        """PATCH /qna-context/<id>/"""
+        ctx = get_object_or_404(QnAContentContext, pk=kwargs["pk"])
+        self._get_event_and_assert_host(ctx.event_id)
+
+        if "content_text" in request.data:
+            ctx.content_text = (request.data["content_text"] or "").strip()
+        if "source_title" in request.data:
+            ctx.source_title = (request.data["source_title"] or "").strip()
+        if "source_type" in request.data:
+            ctx.source_type = request.data["source_type"]
+        ctx.save()
+
+        return Response(
+            {
+                "id": ctx.id,
+                "source_type": ctx.source_type,
+                "source_title": ctx.source_title,
+                "content_text": ctx.content_text,
+                "updated_at": ctx.updated_at.isoformat(),
+            },
+            status=status.HTTP_200_OK,
+        )
