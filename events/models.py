@@ -339,6 +339,10 @@ class Event(models.Model):
         default=False,
         help_text="Force all Q&A questions to be submitted anonymously."
     )
+    qna_ai_public_suggestions_enabled = models.BooleanField(
+        default=False,
+        help_text="When True, host can generate and publish AI-driven question suggestions for all participants."
+    )
 
     # Multi-day Sessions Settings
     hours_calculation_session_types = models.JSONField(

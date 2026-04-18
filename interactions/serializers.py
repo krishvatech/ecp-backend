@@ -6,6 +6,8 @@ from .models import (
     QnAQuestionGroup,
     QnAQuestionGroupMembership,
     QnAQuestionGroupSuggestion,
+    QnAAIPublicSuggestion,
+    QnAAIPublicSuggestionAdoption,
 )
 
 
@@ -113,4 +115,18 @@ class QnAQuestionGroupSerializer(serializers.ModelSerializer):
         model = QnAQuestionGroup
         fields = "__all__"
         read_only_fields = ["event", "created_by", "source", "ai_suggestion", "created_at", "updated_at"]
+
+
+class QnAAIPublicSuggestionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QnAAIPublicSuggestion
+        fields = "__all__"
+        read_only_fields = ["created_by", "created_at", "updated_at", "reviewed_by", "published_at"]
+
+
+class QnAAIPublicSuggestionAdoptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QnAAIPublicSuggestionAdoption
+        fields = "__all__"
+        read_only_fields = ["adopted_at", "user", "guest"]
 

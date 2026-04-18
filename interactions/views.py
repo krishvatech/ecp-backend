@@ -24,8 +24,15 @@ from .models import (
     QnAReplyUpvote,
     QnAReplyGuestUpvote,
     QnAContentContext,
+    QnAAIPublicSuggestion,
+    QnAAIPublicSuggestionAdoption,
 )
-from .serializers import QuestionSerializer, QnAReplySerializer
+from .serializers import (
+    QuestionSerializer,
+    QnAReplySerializer,
+    QnAAIPublicSuggestionSerializer,
+    QnAAIPublicSuggestionAdoptionSerializer,
+)
 from rest_framework.throttling import UserRateThrottle
 import requests
 
@@ -395,10 +402,30 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         # Save with user and table info
         # If lounge_table_id is None/empty, it saves as NULL (Main Room)
+        adopted_suggestion_id = self.request.data.get("adopted_suggestion_id")
+        extra_kwargs = {"lounge_table_id": lounge_table_id or None}
+        if adopted_suggestion_id:
+            extra_kwargs["adopted_suggestion_id"] = adopted_suggestion_id
+
         if self._is_guest_user(self.request.user):
-            question = serializer.save(user=None, guest_asker=self.request.user.guest, lounge_table_id=lounge_table_id or None)
+            question = serializer.save(user=None, guest_asker=self.request.user.guest, **extra_kwargs)
         else:
-            question = serializer.save(user=self.request.user, guest_asker=None, lounge_table_id=lounge_table_id or None)
+            question = serializer.save(user=self.request.user, guest_asker=None, **extra_kwargs)
+
+        # Log adoption if applicable
+        if adopted_suggestion_id:
+            try:
+                suggestion = QnAAIPublicSuggestion.objects.get(pk=adopted_suggestion_id)
+                QnAAIPublicSuggestionAdoption.objects.create(
+                    suggestion=suggestion,
+                    event_id=question.event_id,
+                    user=self.request.user if not self._is_guest_user(self.request.user) else None,
+                    guest=self.request.user.guest if self._is_guest_user(self.request.user) else None,
+                    submitted_question=question,
+                    final_text=question.content,
+                )
+            except QnAAIPublicSuggestion.DoesNotExist:
+                pass
 
         # Check if event has moderation enabled and set status accordingly
         if question.event.qna_moderation_enabled:
@@ -2468,4 +2495,195 @@ class QnAContentContextViewSet(viewsets.ModelViewSet):
                 "updated_at": ctx.updated_at.isoformat(),
             },
             status=status.HTTP_200_OK,
+        )
+
+
+# -----------------------------------------------------------------
+# A3: Public AI Question Suggestions ViewSet
+# -----------------------------------------------------------------
+
+class AiPublicSuggestionViewSet(viewsets.ModelViewSet):
+    """
+    Host endpoints for generating and managing public candidate suggestions.
+    Participant endpoints for viewing and adopting published suggestions.
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = QnAAIPublicSuggestionSerializer
+    queryset = QnAAIPublicSuggestion.objects.all()
+
+    def _is_guest_user(self, user) -> bool:
+        return bool(getattr(user, "is_guest", False))
+
+    def _get_event_and_assert_host(self, event_id):
+        from events.models import Event
+        event = get_object_or_404(Event, id=event_id)
+        if self.request.user != event.created_by and not getattr(self.request.user, "is_staff", False):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Only event host/admin can perform this action.")
+        return event
+
+    def get_queryset(self):
+        # Allow retrieving by PK (detail actions) without event_id query param
+        if "pk" in self.kwargs:
+            return QnAAIPublicSuggestion.objects.all()
+
+        event_id = self.request.query_params.get("event_id")
+        if not event_id:
+            return QnAAIPublicSuggestion.objects.none()
+
+        user = self.request.user
+        from events.models import Event
+        event = get_object_or_404(Event, id=event_id)
+        is_host = user == event.created_by or getattr(user, "is_staff", False)
+
+        qs = QnAAIPublicSuggestion.objects.filter(event_id=event_id)
+        if not is_host:
+            # Attendees only see published suggestions
+            qs = qs.filter(status="published")
+        return qs
+
+    @action(detail=False, methods=["post"], throttle_classes=[AiSuggestionsRateThrottle])
+    def generate(self, request):
+        """
+        POST /api/interactions/ai-public-suggestions/generate/
+        Body: { event_id, session_id?, count? }
+        Host only. Generates candidate suggestions using AI.
+        """
+        from .ai_public_question_suggestions import generate_public_suggestions
+        from .models import QnAContentContext
+
+        event_id = request.data.get("event_id")
+        session_id = request.data.get("session_id")
+        count = int(request.data.get("count", 5))
+
+        event = self._get_event_and_assert_host(event_id)
+
+        # Load context
+        context_qs = QnAContentContext.objects.filter(event=event)
+        if session_id:
+            context_qs = context_qs.filter(
+                Q(session_id=session_id) | Q(session__isnull=True)
+            )
+
+        contexts = list(context_qs.order_by("-created_at"))
+        if not contexts:
+            return Response(
+                {"detail": "No presentation context available for this event."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        context_parts = []
+        for ctx in contexts:
+            label = ctx.source_title or ctx.get_source_type_display()
+            context_parts.append(f"[{label}]\n{ctx.content_text}")
+        combined_context = "\n\n".join(context_parts)
+
+        session_title = ""
+        if session_id:
+            try:
+                from events.models import EventSession
+                session_obj = EventSession.objects.get(pk=session_id, event=event)
+                session_title = session_obj.title or ""
+            except Exception:
+                pass
+
+        try:
+            suggestions = generate_public_suggestions(
+                event_title=event.title or "",
+                session_title=session_title,
+                context_text=combined_context,
+                count=count,
+            )
+        except ValueError as e:
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        # Create draft suggestions in DB
+        created_suggestions = []
+        for s in suggestions:
+            obj = QnAAIPublicSuggestion.objects.create(
+                event=event,
+                session_id=session_id if session_id else None,
+                question_text=s["question"],
+                rationale=s.get("rationale", ""),
+                status="draft",
+                source_type="ai",
+                created_by=request.user,
+                confidence_score=s.get("confidence_score", 0.0),
+            )
+            created_suggestions.append(obj)
+
+        serializer = self.get_serializer(created_suggestions, many=True)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def publish(self, request, pk=None):
+        """POST /api/interactions/ai-public-suggestions/{id}/publish/"""
+        suggestion = self.get_object()
+        self._get_event_and_assert_host(suggestion.event_id)
+
+        from django.utils import timezone
+        suggestion.status = "published"
+        suggestion.reviewed_by = request.user
+        suggestion.published_at = timezone.now()
+        suggestion.save(update_fields=["status", "reviewed_by", "published_at"])
+
+        # WebSocket broadcast to refresh suggestions for all participants
+        self._broadcast_refresh(suggestion.event_id)
+
+        return Response(self.get_serializer(suggestion).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        """POST /api/interactions/ai-public-suggestions/{id}/reject/"""
+        suggestion = self.get_object()
+        self._get_event_and_assert_host(suggestion.event_id)
+
+        suggestion.status = "rejected"
+        suggestion.reviewed_by = request.user
+        suggestion.save(update_fields=["status", "reviewed_by"])
+
+        return Response(self.get_serializer(suggestion).data)
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        """POST /api/interactions/ai-public-suggestions/{id}/archive/"""
+        suggestion = self.get_object()
+        self._get_event_and_assert_host(suggestion.event_id)
+
+        suggestion.status = "archived"
+        suggestion.save(update_fields=["status"])
+
+        # WebSocket broadcast to refresh suggestions for all participants
+        self._broadcast_refresh(suggestion.event_id)
+
+        return Response(self.get_serializer(suggestion).data)
+
+    @action(detail=True, methods=["patch"])
+    def reorder(self, request, pk=None):
+        """PATCH /api/interactions/ai-public-suggestions/{id}/reorder/"""
+        suggestion = self.get_object()
+        self._get_event_and_assert_host(suggestion.event_id)
+
+        new_order = request.data.get("display_order")
+        if new_order is not None:
+            suggestion.display_order = int(new_order)
+            suggestion.save(update_fields=["display_order"])
+
+        return Response(self.get_serializer(suggestion).data)
+
+    def _broadcast_refresh(self, event_id):
+        from channels.layers import get_channel_layer
+        from asgiref.sync import async_to_sync
+        channel_layer = get_channel_layer()
+        # Broadcast to main room Q&A group
+        group = f"event_qna_{event_id}_main"
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {
+                "type": "qna.ai_public_suggestions_refresh",
+                "payload": {"event_id": event_id}
+            }
         )

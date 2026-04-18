@@ -6,6 +6,7 @@ from .views import (
     QnAQuestionGroupViewSet,
     QnAQuestionGroupSuggestionViewSet,
     QnAContentContextViewSet,
+    AiPublicSuggestionViewSet,
 )
 from .export_view import QnAExportView
 
@@ -15,6 +16,7 @@ router.register(r'replies', QnAReplyViewSet, basename='qna-reply')
 router.register(r'qna-groups/ai-suggestions', QnAQuestionGroupSuggestionViewSet, basename='qna-group-suggestion')
 router.register(r'qna-groups', QnAQuestionGroupViewSet, basename='qna-group')
 router.register(r'qna-context', QnAContentContextViewSet, basename='qna-context')
+router.register(r'ai-public-suggestions', AiPublicSuggestionViewSet, basename='ai-public-suggestions')
 
 urlpatterns = [
     # Export endpoint — standalone view, listed before router include so it
