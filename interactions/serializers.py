@@ -33,6 +33,9 @@ class QuestionSerializer(serializers.ModelSerializer):
             "rejection_reason",
             "is_answered",
             "answered_at",
+            "answered_by",
+            "answer_text",
+            "answered_phase",
             "requires_followup",
             "is_anonymous",
             "anonymized_by",
@@ -40,7 +43,7 @@ class QuestionSerializer(serializers.ModelSerializer):
             "attribution_label",
             "submission_phase",
         ]
-        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at", "moderation_status", "rejection_reason", "is_answered", "answered_at", "requires_followup", "is_anonymous", "anonymized_by", "is_seed", "attribution_label", "submission_phase"]
+        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at", "moderation_status", "rejection_reason", "is_answered", "answered_at", "answered_by", "answer_text", "answered_phase", "requires_followup", "is_anonymous", "anonymized_by", "is_seed", "attribution_label", "submission_phase"]
 
     def get_user_display(self, obj):
         if getattr(obj, "guest_asker", None):
@@ -56,6 +59,28 @@ class QuestionSerializer(serializers.ModelSerializer):
         if user.username:
             return user.username
         return user.email or f"User {user.id}"
+
+
+class PostEventAnswerSerializer(serializers.Serializer):
+    """Serializer for the POST request body when publishing a post-event answer."""
+    answer_text = serializers.CharField(
+        max_length=5000,
+        allow_blank=False,
+        trim_whitespace=True,
+        help_text="The written answer to the question.",
+    )
+    notify_author = serializers.BooleanField(
+        default=True,
+        help_text="Whether to notify the question author.",
+    )
+    notify_interested_participants = serializers.BooleanField(
+        default=True,
+        help_text="Whether to notify users who upvoted the question.",
+    )
+    notify_all_participants = serializers.BooleanField(
+        default=False,
+        help_text="Whether to notify all event participants.",
+    )
 
 
 class QnAReplySerializer(serializers.ModelSerializer):

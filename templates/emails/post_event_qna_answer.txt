@@ -1,0 +1,20 @@
+Your Q&A Question Has Been Answered
+
+Hello {{ recipient_name }},
+
+Great news! An answer has been published to your question from the {{ event_name }} event.
+
+Your Question:
+{{ question_text }}
+
+Answer from {{ answering_user_name }}:
+{{ answer_text }}
+
+View the full Q&A discussion:
+{{ event_url }}
+
+If you have follow-up questions or would like to engage with the speaker, please reply to this email or visit the event platform.
+
+---
+
+You received this email because you asked a question during the event. If you no longer wish to receive notifications about this event, you can unsubscribe from your account settings.

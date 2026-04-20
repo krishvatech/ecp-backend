@@ -29,6 +29,7 @@ from .models import (
 )
 from .serializers import (
     QuestionSerializer,
+    PostEventAnswerSerializer,
     QnAReplySerializer,
     QnAAIPublicSuggestionSerializer,
     QnAAIPublicSuggestionAdoptionSerializer,
@@ -1441,6 +1442,165 @@ class QuestionViewSet(viewsets.ModelViewSet):
             {"question_id": question.id, "display_order": question.display_order},
             status=status.HTTP_200_OK
         )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Post-Event Q&A Answer Feature
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @action(detail=False, methods=["get"], url_path="unanswered")
+    def unanswered(self, request):
+        """
+        GET /api/interactions/questions/unanswered/?event_id=<id>
+        List all unanswered questions for an event. Host/staff only.
+        Returns questions ordered by upvote count (descending).
+        """
+        from rest_framework.exceptions import PermissionDenied
+        from events.models import Event
+
+        event_id = request.query_params.get("event_id")
+        if not event_id:
+            return Response(
+                {"detail": "event_id query parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            event = Event.objects.get(pk=event_id)
+        except Event.DoesNotExist:
+            return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Permission check
+        user = request.user
+        is_host = (user == event.created_by or user.is_staff)
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can access unanswered questions.")
+
+        # Get unanswered questions, ordered by upvote count (descending)
+        questions = (
+            Question.objects
+            .filter(event=event, is_answered=False)
+            .annotate(upvote_count=Count("upvoters") + Count("guest_upvotes"))
+            .order_by("-upvote_count", "-created_at")
+            .select_related("user", "guest_asker")
+            .prefetch_related("upvoters", "guest_upvotes")
+        )
+
+        serializer = self.get_serializer(questions, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], url_path="post_event_answered")
+    def post_event_answered(self, request):
+        """
+        GET /api/interactions/questions/post_event_answered/?event_id=<id>
+        List all questions answered in post-event phase. Host/staff only.
+        """
+        from rest_framework.exceptions import PermissionDenied
+        from events.models import Event
+
+        event_id = request.query_params.get("event_id")
+        if not event_id:
+            return Response(
+                {"detail": "event_id query parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            event = Event.objects.get(pk=event_id)
+        except Event.DoesNotExist:
+            return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Permission check
+        user = request.user
+        is_host = (user == event.created_by or user.is_staff)
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can access post-event answered questions.")
+
+        # Get post-event answered questions
+        questions = (
+            Question.objects
+            .filter(event=event, answered_phase="post_event")
+            .select_related("user", "guest_asker", "answered_by")
+            .prefetch_related("upvoters", "guest_upvotes")
+            .order_by("-answered_at")
+        )
+
+        serializer = self.get_serializer(questions, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="post_event_answer")
+    def post_event_answer(self, request, pk=None):
+        """
+        POST /api/interactions/questions/{id}/post_event_answer/
+        Publish a post-event answer to a question. Host/staff only.
+
+        Body: {
+            answer_text: string (required, max 5000 chars),
+            notify_author: boolean (default true),
+            notify_interested_participants: boolean (default true),
+            notify_all_participants: boolean (default false)
+        }
+
+        Validates:
+        - Event must be ended (status == "ended")
+        - User must be host/staff
+        - Question must belong to the event
+        - If question already answered live, returns 409
+        """
+        from rest_framework.exceptions import PermissionDenied
+        from .services.post_event_qna_service import (
+            publish_post_event_answer,
+            resolve_notification_recipients,
+            send_answer_notifications,
+        )
+
+        question = get_object_or_404(Question, pk=pk)
+        user = request.user
+
+        # Permission check
+        is_host = (user == question.event.created_by or user.is_staff)
+        if not is_host:
+            raise PermissionDenied("Only event host/admin can answer questions after event.")
+
+        # Validate event is ended
+        if question.event.status != "ended":
+            return Response(
+                {"detail": "Event must be ended before post-event answers can be published."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate question not already answered live
+        if question.is_answered and question.answered_phase == "live":
+            return Response(
+                {"detail": "This question was already answered during the live event."},
+                status=status.HTTP_409_CONFLICT
+            )
+
+        # Validate request body
+        serializer = PostEventAnswerSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # Publish answer
+        answer_text = serializer.validated_data["answer_text"]
+        notify_author = serializer.validated_data["notify_author"]
+        notify_interested = serializer.validated_data["notify_interested_participants"]
+        notify_all = serializer.validated_data["notify_all_participants"]
+
+        publish_post_event_answer(question, answer_text, user)
+
+        # Resolve and send notifications
+        recipient_ids = resolve_notification_recipients(
+            question=question,
+            notify_author=notify_author,
+            notify_interested=notify_interested,
+            notify_all_participants=notify_all,
+            answering_user=user,
+        )
+        if recipient_ids:
+            send_answer_notifications(question, user, recipient_ids)
+
+        serializer = self.get_serializer(question)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=["post"], url_path="engagement-prompt/trigger")
     def engagement_prompt_trigger(self, request):

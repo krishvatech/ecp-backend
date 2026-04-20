@@ -713,6 +713,9 @@ class EventSerializer(serializers.ModelSerializer):
     featured_participants = serializers.SerializerMethodField(read_only=True)
     featured_participants_total = serializers.SerializerMethodField(read_only=True)
 
+    # Q&A Questions (lazy import to avoid circular dependency)
+    questions = serializers.SerializerMethodField(read_only=True)
+
     # Session-related fields
     sessions = EventSessionSerializer(many=True, read_only=True)
     has_sessions = serializers.SerializerMethodField(read_only=True)
@@ -772,6 +775,12 @@ class EventSerializer(serializers.ModelSerializer):
 
         # Otherwise, hide the URL
         return None
+
+    def get_questions(self, obj):
+        """Return all questions for this event with serialized data."""
+        from interactions.serializers import QuestionSerializer
+        questions = obj.questions.all()
+        return QuestionSerializer(questions, many=True).data
 
     # Write-only field for sessions input during event creation (atomic with event)
     # Using custom field to handle JSON strings from FormData
@@ -875,6 +884,7 @@ class EventSerializer(serializers.ModelSerializer):
             "event_participants",
             "featured_participants",
             "featured_participants_total",
+            "questions",
             "sessions",
             "has_sessions",
             "main_sessions_count",

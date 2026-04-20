@@ -241,6 +241,18 @@ class Question(models.Model):
         default="live",
         help_text="The phase of the event during which the question was submitted.",
     )
+    answer_text = models.TextField(
+        null=True,
+        blank=True,
+        help_text="Written answer published by host/speaker (post-event or live).",
+    )
+    answered_phase = models.CharField(
+        max_length=20,
+        choices=[("live", "Live"), ("post_event", "Post-event")],
+        null=True,
+        blank=True,
+        help_text="Phase in which the answer was published.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -251,6 +263,7 @@ class Question(models.Model):
             models.Index(fields=["event", "is_pinned"], name="qna_event_pinned_idx"),
             models.Index(fields=["event", "is_seed"], name="qna_event_seed_idx"),
             models.Index(fields=["event", "submission_phase"], name="qna_event_phase_idx"),
+            models.Index(fields=["event", "answered_phase"], name="qna_event_answered_phase_idx"),
         ]
         constraints = [
             models.CheckConstraint(
