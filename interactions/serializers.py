@@ -83,6 +83,21 @@ class PostEventAnswerSerializer(serializers.Serializer):
     )
 
 
+class MarkAnsweredSerializer(serializers.Serializer):
+    """Serializer for marking a question as answered (live or post-event)."""
+    answer_text = serializers.CharField(
+        max_length=5000,
+        allow_blank=True,
+        trim_whitespace=True,
+        required=False,
+        help_text="Optional written answer provided during live session.",
+    )
+    requires_followup = serializers.BooleanField(
+        required=False,
+        help_text="Whether this question requires follow-up.",
+    )
+
+
 class QnAReplySerializer(serializers.ModelSerializer):
     class Meta:
         model = QnAReply

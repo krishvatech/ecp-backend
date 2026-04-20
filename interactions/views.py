@@ -30,6 +30,7 @@ from .models import (
 from .serializers import (
     QuestionSerializer,
     PostEventAnswerSerializer,
+    MarkAnsweredSerializer,
     QnAReplySerializer,
     QnAAIPublicSuggestionSerializer,
     QnAAIPublicSuggestionAdoptionSerializer,
@@ -619,6 +620,9 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "created_at": q.created_at.isoformat(),
                 "is_answered": q.is_answered,
                 "answered_at": q.answered_at.isoformat() if q.answered_at else None,
+                "answered_by": q.answered_by_id,
+                "answer_text": q.answer_text,
+                "answered_phase": q.answered_phase,
                 "requires_followup": q.requires_followup,
                 "is_pinned": q.is_pinned,
                 "pinned_at": q.pinned_at.isoformat() if q.pinned_at else None,
@@ -1243,7 +1247,17 @@ class QuestionViewSet(viewsets.ModelViewSet):
     def mark_answered(self, request, pk=None):
         """
         Toggle answered status for a question. Host only.
-        Broadcasts qna.answered when status changes.
+
+        Request body (optional):
+        {
+            "answer_text": "Optional answer text to provide during live session (max 5000 chars)",
+            "requires_followup": true/false (optional)
+        }
+
+        If answer_text is provided, sets answered_phase="live" and stores the answer text.
+        Broadcasts qna.answered with full question state when status changes.
+
+        Returns: Updated question with all fields.
         """
         from django.utils import timezone
         from rest_framework.exceptions import PermissionDenied
@@ -1256,20 +1270,44 @@ class QuestionViewSet(viewsets.ModelViewSet):
         if not is_host:
             raise PermissionDenied("Only event host/admin can mark questions as answered.")
 
+        # Validate request data
+        serializer = MarkAnsweredSerializer(data=request.data)
+        if not serializer.is_valid():
+            print(f"[DEBUG] MarkAnsweredSerializer errors: {serializer.errors}")
+            serializer.is_valid(raise_exception=True)
+
+        print(f"[DEBUG] mark_answered called - answer_text: {serializer.validated_data.get('answer_text')}")
+
         # Toggle answered status
         question.is_answered = not question.is_answered
+        update_fields = ["is_answered", "answered_by", "answered_at", "requires_followup"]
+
         if question.is_answered:
             question.answered_by = user
             question.answered_at = timezone.now()
+
+            # Handle optional answer_text (for live answers)
+            answer_text = serializer.validated_data.get("answer_text", "").strip()
+            print(f"[DEBUG] answer_text after strip: '{answer_text}' (length: {len(answer_text)})")
+            if answer_text:
+                question.answer_text = answer_text
+                question.answered_phase = "live"
+                update_fields.extend(["answer_text", "answered_phase"])
+                print(f"[DEBUG] Setting answer_text on question - will update fields: {update_fields}")
         else:
             question.answered_by = None
             question.answered_at = None
 
         # Handle requires_followup flag
-        requires_followup = request.data.get("requires_followup", question.requires_followup)
+        requires_followup = serializer.validated_data.get("requires_followup", question.requires_followup)
         question.requires_followup = requires_followup
 
-        question.save(update_fields=["is_answered", "answered_by", "answered_at", "requires_followup"])
+        question.save(update_fields=update_fields)
+        print(f"[DEBUG] Question saved - is_answered: {question.is_answered}, answer_text: {question.answer_text}, answered_phase: {question.answered_phase}")
+
+        # Verify by re-fetching from database
+        fresh_question = Question.objects.get(pk=question.pk)
+        print(f"[DEBUG] Fresh from DB - answer_text: {fresh_question.answer_text}, answered_phase: {fresh_question.answered_phase}")
 
         # Broadcast to WebSocket group
         if question.lounge_table_id:
@@ -1285,6 +1323,9 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "question_id": question.id,
             "is_answered": question.is_answered,
             "answered_at": question.answered_at.isoformat() if question.answered_at else None,
+            "answered_by": question.answered_by_id,
+            "answer_text": question.answer_text,
+            "answered_phase": question.answered_phase,
             "requires_followup": question.requires_followup,
         }
 
