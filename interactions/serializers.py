@@ -38,8 +38,9 @@ class QuestionSerializer(serializers.ModelSerializer):
             "anonymized_by",
             "is_seed",
             "attribution_label",
+            "submission_phase",
         ]
-        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at", "moderation_status", "rejection_reason", "is_answered", "answered_at", "requires_followup", "is_anonymous", "anonymized_by", "is_seed", "attribution_label"]
+        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at", "moderation_status", "rejection_reason", "is_answered", "answered_at", "requires_followup", "is_anonymous", "anonymized_by", "is_seed", "attribution_label", "submission_phase"]
 
     def get_user_display(self, obj):
         if getattr(obj, "guest_asker", None):

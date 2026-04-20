@@ -69,6 +69,18 @@ class QuestionViewSet(viewsets.ModelViewSet):
     def _is_guest_user(user) -> bool:
         return bool(getattr(user, "is_guest", False))
 
+    @staticmethod
+    def _get_active_registration(user, event):
+        """Return the active EventRegistration for this user+event, or None."""
+        from events.models import EventRegistration
+        if not user or not user.is_authenticated:
+            return None
+        return EventRegistration.objects.filter(
+            event=event,
+            user=user,
+            status='registered',
+        ).first()
+
     # ------------------------------------------------------------------
     # Reply helpers
     # ------------------------------------------------------------------
@@ -381,6 +393,17 @@ class QuestionViewSet(viewsets.ModelViewSet):
         if is_seed_filter in ("1", "true"):
             qs = qs.filter(is_seed=True)
 
+        # Optional: filter by submission_phase (pre_event or live) — host/admin only
+        if event_id:
+            event = event or get_object_or_404(
+                __import__('events.models', fromlist=['Event']).Event,
+                id=event_id
+            )
+            is_host = self.request.user == event.created_by or getattr(self.request.user, "is_staff", False)
+            phase_filter = self.request.query_params.get("submission_phase")
+            if phase_filter in ("pre_event", "live") and is_host:
+                qs = qs.filter(submission_phase=phase_filter)
+
         # Support sort parameter: newest, manual, hot/most_voted (default)
         sort = self.request.query_params.get("sort", "most_voted")
         if sort == "newest":
@@ -448,6 +471,19 @@ class QuestionViewSet(viewsets.ModelViewSet):
         question.display_order = count
         question.save(update_fields=["display_order"])
 
+        # Determine submission phase: pre-event vs live
+        from django.utils import timezone as tz
+        is_pre_event_eligible = (
+            not self._is_guest_user(self.request.user)
+            and question.event.pre_event_qna_enabled
+            and question.event.start_time is not None
+            and tz.now() < question.event.start_time
+            and self._get_active_registration(self.request.user, question.event) is not None
+        )
+        if is_pre_event_eligible:
+            question.submission_phase = "pre_event"
+            question.save(update_fields=["submission_phase"])
+
         # Broadcast to the same Channels group used by QnAConsumer
         from channels.layers import get_channel_layer
         from asgiref.sync import async_to_sync
@@ -483,6 +519,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
             "moderation_status": question.moderation_status,  # NEW: include status
             "is_anonymous": question.is_anonymous,  # Include anonymous status
             "display_order": question.display_order,  # Include sort order
+            "submission_phase": question.submission_phase,  # Pre-event vs live
         }
 
         async_to_sync(channel_layer.group_send)(
@@ -589,6 +626,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "display_order": q.display_order,
                 "is_seed": q.is_seed,
                 "attribution_label": q.attribution_label,
+                "submission_phase": q.submission_phase,
                 # speaker_note is only returned to the host
                 "speaker_note": q.speaker_note if (q.is_seed and is_host) else "",
                 # threaded replies

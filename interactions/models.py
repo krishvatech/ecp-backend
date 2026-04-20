@@ -235,6 +235,12 @@ class Question(models.Model):
         related_name="submitted_questions",
         help_text="Linked suggestion if this question was adopted from public suggestions.",
     )
+    submission_phase = models.CharField(
+        max_length=20,
+        choices=[("pre_event", "Pre-event"), ("live", "Live")],
+        default="live",
+        help_text="The phase of the event during which the question was submitted.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -244,6 +250,7 @@ class Question(models.Model):
             models.Index(fields=["event", "moderation_status"], name="qna_event_status_idx"),
             models.Index(fields=["event", "is_pinned"], name="qna_event_pinned_idx"),
             models.Index(fields=["event", "is_seed"], name="qna_event_seed_idx"),
+            models.Index(fields=["event", "submission_phase"], name="qna_event_phase_idx"),
         ]
         constraints = [
             models.CheckConstraint(

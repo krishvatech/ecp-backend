@@ -870,6 +870,7 @@ class EventSerializer(serializers.ModelSerializer):
             "qna_moderation_enabled",
             "qna_anonymous_mode",
             "qna_ai_public_suggestions_enabled",
+            "pre_event_qna_enabled",
             "participants",
             "event_participants",
             "featured_participants",

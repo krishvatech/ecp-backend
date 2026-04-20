@@ -344,6 +344,10 @@ class Event(models.Model):
         default=False,
         help_text="When True, host can generate and publish AI-driven question suggestions for all participants."
     )
+    pre_event_qna_enabled = models.BooleanField(
+        default=False,
+        help_text="When True, registered users can submit questions before the event starts.",
+    )
 
     # Multi-day Sessions Settings
     hours_calculation_session_types = models.JSONField(
