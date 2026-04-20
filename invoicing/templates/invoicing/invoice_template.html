@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            color: #333;
+            margin: 20px;
+        }
+        .invoice-container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .header {
+            margin-bottom: 40px;
+            border-bottom: 2px solid #333;
+            padding-bottom: 20px;
+        }
+        .company-info {
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .invoice-title {
+            font-size: 28px;
+            font-weight: bold;
+            margin: 20px 0;
+            text-align: right;
+        }
+        .invoice-number {
+            font-size: 12px;
+            text-align: right;
+            color: #666;
+        }
+        .section {
+            margin: 30px 0;
+        }
+        .section-title {
+            font-weight: bold;
+            font-size: 12px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 5px;
+        }
+        .section-content {
+            font-size: 12px;
+            line-height: 1.8;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 12px;
+        }
+        thead {
+            background-color: #f8f9fa;
+            border-bottom: 2px solid #333;
+        }
+        th {
+            padding: 12px;
+            text-align: left;
+            font-weight: bold;
+            border: 1px solid #ddd;
+        }
+        td {
+            padding: 12px;
+            border: 1px solid #ddd;
+        }
+        .text-right {
+            text-align: right;
+        }
+        .total-section {
+            float: right;
+            width: 40%;
+            margin-top: 20px;
+        }
+        .total-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #ddd;
+        }
+        .total-row.final {
+            border-bottom: none;
+            border-top: 2px solid #333;
+            font-weight: bold;
+            font-size: 14px;
+            padding-top: 12px;
+        }
+        .footer {
+            clear: both;
+            margin-top: 60px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            font-size: 10px;
+            color: #666;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="invoice-container">
+        <div class="header">
+            <div class="company-info">
+                <strong>{{ legal_entity.name }}</strong><br>
+                {{ legal_entity.address }}<br>
+                {% if legal_entity.vat_id %}VAT: {{ legal_entity.vat_id }}{% endif %}<br>
+            </div>
+            <div class="invoice-title">INVOICE</div>
+            <div class="invoice-number">
+                <strong>{{ invoice.number }}</strong><br>
+                Issued: {{ invoice.issue_date|date:"M d, Y" }}<br>
+                Due: {{ invoice.due_date|date:"M d, Y" }}
+            </div>
+        </div>
+
+        <div style="clear: both;"></div>
+
+        <div class="section">
+            <div class="section-title">Bill To</div>
+            <div class="section-content">
+                <strong>{{ customer.company_name|default:customer.user.get_full_name }}</strong><br>
+                {{ customer.user.email }}<br>
+                {% if customer.vat_id %}VAT: {{ customer.vat_id }}{% endif %}
+            </div>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th style="text-align: left;">Description</th>
+                    <th style="text-align: center;">Qty</th>
+                    <th class="text-right">Unit Price</th>
+                    <th class="text-right">Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for line in lines %}
+                <tr>
+                    <td>{{ line.description }}</td>
+                    <td style="text-align: center;">{{ line.quantity }}</td>
+                    <td class="text-right">{{ invoice.currency }} {{ line.unit_price }}</td>
+                    <td class="text-right">{{ invoice.currency }} {{ line.net_amount }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="total-section">
+            <div class="total-row">
+                <span>Subtotal</span>
+                <span>{{ invoice.currency }} {{ invoice.total_net }}</span>
+            </div>
+            {% if invoice.total_vat %}
+            <div class="total-row">
+                <span>VAT</span>
+                <span>{{ invoice.currency }} {{ invoice.total_vat }}</span>
+            </div>
+            {% endif %}
+            <div class="total-row final">
+                <span>TOTAL DUE</span>
+                <span>{{ invoice.currency }} {{ invoice.total_gross }}</span>
+            </div>
+        </div>
+
+        <div style="clear: both;"></div>
+
+        {% if payments %}
+        <div class="section" style="margin-top: 40px;">
+            <div class="section-title">Payment History</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Type</th>
+                        <th class="text-right">Amount</th>
+                        <th style="text-align: center;">Source</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for payment in payments %}
+                    <tr>
+                        <td>{{ payment.timestamp|date:"M d, Y" }}</td>
+                        <td>{{ payment.get_event_type_display }}</td>
+                        <td class="text-right">{{ invoice.currency }} {{ payment.amount }}</td>
+                        <td style="text-align: center;">{{ payment.get_source_display }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        <div class="footer">
+            <p>Thank you for your business!</p>
+            <p>For questions, contact invoices@imaa.org</p>
+        </div>
+    </div>
+</body>
+</html>

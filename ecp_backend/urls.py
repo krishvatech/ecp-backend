@@ -90,6 +90,9 @@ urlpatterns = [
     path("api/engagements/", include("engagements.urls")),
     path("api/moderation/", include("moderation.urls")),
 
+    # Invoicing
+    path("api/", include("invoicing.urls")),
+
     # LinkedIn OAuth
     path("api/auth/linkedin/url/", LinkedInAuthURL.as_view(), name="linkedin_auth_url"),
     path("api/auth/linkedin/callback/", LinkedInCallback.as_view(), name="linkedin_callback"),

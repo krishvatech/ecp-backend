@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            color: #333;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 20px;
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            color: #007bff;
+            margin: 0;
+        }
+        .invoice-details {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-left: 4px solid #007bff;
+        }
+        .invoice-details p {
+            margin: 5px 0;
+        }
+        .invoice-details strong {
+            display: inline-block;
+            width: 150px;
+        }
+        .amount {
+            font-size: 18px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            font-size: 12px;
+            color: #666;
+        }
+        .button {
+            display: inline-block;
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Invoice #{{ invoice.number }}</h1>
+        </div>
+
+        <p>Dear {{ invoice.customer.user.first_name|default:"Customer" }},</p>
+
+        <p>Thank you for your purchase! Your invoice is attached below.</p>
+
+        <div class="invoice-details">
+            <p><strong>Invoice Number:</strong> {{ invoice.number }}</p>
+            <p><strong>Date:</strong> {{ invoice.issue_date|date:"M d, Y" }}</p>
+            <p><strong>Due Date:</strong> {{ invoice.due_date|date:"M d, Y" }}</p>
+            <p><strong>Status:</strong> <span style="color: {% if invoice.state == 'paid' %}green{% elif invoice.state == 'overdue' %}red{% else %}orange{% endif %};">{{ invoice.state|upper }}</span></p>
+        </div>
+
+        <div class="invoice-details">
+            <p><strong>Amount Due:</strong> <span class="amount">{{ invoice.currency }} {{ invoice.total_gross }}</span></p>
+            {% if invoice.skonto_deadline %}
+            <p><strong>Early Payment Discount:</strong> {{ skonto_config.percentage }}% off until {{ invoice.skonto_deadline|date:"M d, Y" }}</p>
+            {% endif %}
+        </div>
+
+        <p>You can view and download your invoice from your customer portal.</p>
+
+        <a href="{{ portal_url }}/invoices/{{ invoice.id }}/" class="button">View Invoice in Portal</a>
+
+        <div class="footer">
+            <p>If you have any questions about this invoice, please contact us at invoices@imaa.org</p>
+            <p>&copy; {{ invoice.legal_entity.name }}. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

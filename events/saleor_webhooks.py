@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 class SaleorProductWebhookView(APIView):
     """
     Handle Saleor webhooks for product events (created, updated, deleted).
+
+    Channel & Currency Mapping:
+    - Saleor: global-events channel (USD)
+    - ECP: All events default to USD currency
+    - Prices are extracted from the configured SALEOR_CHANNEL_SLUG setting
     """
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -63,8 +68,8 @@ class SaleorProductWebhookView(APIView):
              pass
 
         logger.info(f"Received Saleor webhook: {event_type}")
-        # Log keys for debugging structure
-        logger.debug(f"Payload keys: {list(payload.keys())}")
+        # Log full payload for debugging
+        logger.debug(f"Full webhook payload: {json.dumps(payload, indent=2, default=str)}")
 
         if event_type in ("PRODUCT_CREATED", "PRODUCT_UPDATED"):
             # Saleor can send data directly or wrapped in a list/dict

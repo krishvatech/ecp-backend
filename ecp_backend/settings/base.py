@@ -241,6 +241,7 @@ INSTALLED_APPS = [
     'engagements',
     "moderation",
     "courses",
+    "invoicing",
 
     "drf_spectacular",
     "drf_spectacular_sidecar",
@@ -596,7 +597,7 @@ CSRF_COOKIE_SECURE = False     # Should be True in production
 SALEOR_DASHBOARD_URL = os.getenv("SALEOR_DASHBOARD_URL", "http://127.0.0.1:9001/")
 SALEOR_API_URL = os.getenv("SALEOR_API_URL", "http://localhost:8001/graphql/")
 SALEOR_APP_TOKEN = os.getenv("SALEOR_APP_TOKEN", "")
-SALEOR_CHANNEL_SLUG = os.getenv("SALEOR_CHANNEL_SLUG", "default-channel")  # SGD channel slug
+SALEOR_CHANNEL_SLUG = os.getenv("SALEOR_CHANNEL_SLUG", "default-channel")  # USD channel slug
 SALEOR_WEBHOOK_SECRET = os.getenv("SALEOR_WEBHOOK_SECRET", "")
 
 # Email Invite Limits
@@ -635,3 +636,44 @@ WP_SYNC_DEFAULT_COMMUNITY_ID = int(os.getenv("WP_SYNC_DEFAULT_COMMUNITY_ID", "1"
 WP_SYNC_SERVICE_ACCOUNT_ID = int(os.getenv("WP_SYNC_SERVICE_ACCOUNT_ID", "0")) or None
 WP_SYNC_ENABLED = os.getenv("WP_SYNC_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 WP_SYNC_IMAGE_DOWNLOAD = os.getenv("WP_SYNC_IMAGE_DOWNLOAD", "true").lower() in ("1", "true", "yes", "on")
+
+# ============================================================================
+# INVOICING CONFIGURATION (Phase 1: IMAA Switzerland)
+# ============================================================================
+
+INVOICE_CONFIG = {
+    'pdf_storage': 'storages.backends.s3boto3.S3Boto3Storage' if AWS_STORAGE_BUCKET_NAME else 'django.core.files.storage.FileSystemStorage',
+    'logo_path': 'static/images/imaa-logo.png',
+    'default_language': 'en',
+    'supported_languages': ['en', 'de'],
+    'retention_years': 10,
+}
+
+STRIPE_CONFIG = {
+    'CH': {
+        'secret_key': os.environ.get('STRIPE_SECRET_KEY_CH'),
+        'publishable_key': os.environ.get('STRIPE_PUBLISHABLE_KEY_CH'),
+        'webhook_secret': os.environ.get('STRIPE_WEBHOOK_SECRET_CH'),
+    },
+}
+
+SKONTO_CONFIG = {
+    'percentage': 10,
+    'days': 14,
+    'tolerance_amount': 2,
+}
+
+PAYMENT_TERMS = {
+    'card': 'immediate',
+    'bank_transfer': 'net_14',
+}
+
+LEGAL_ENTITIES = {
+    'CH': {
+        'name': 'IMAA Switzerland GmbH',
+        'legal_form': 'Swiss GmbH',
+        'country': 'CH',
+        'currency': 'USD',
+        'vat_exempt': True,
+    },
+}

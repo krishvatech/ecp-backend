@@ -12,12 +12,15 @@ logger = logging.getLogger(__name__)
 def sync_event_to_saleor_sync(event):
     """
     Synchronously creates/updates a Saleor Product for the given Event.
-    All prices are synced in SGD (Singapore Dollar).
+    All prices are synced in USD (US Dollar) via the global-events channel.
+
+    Channel Mapping:
+    - global-events → USD
     """
     saleor_url = getattr(settings, "SALEOR_API_URL", None)
     saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
-    # Use configured channel slug from settings (sgd-channel for SGD currency)
-    channel_slug = getattr(settings, "SALEOR_CHANNEL_SLUG", "default-channel") 
+    # Use configured channel slug from settings (global-events for USD currency)
+    channel_slug = getattr(settings, "SALEOR_CHANNEL_SLUG", "global-events") 
 
     if not saleor_url or not saleor_token:
         logger.warning("Skipping Saleor event sync: Settings missing.")
@@ -592,9 +595,69 @@ def extract_text_from_json_description(json_desc):
         return str(json_desc)
 
 
+def _fetch_full_product_from_saleor(product_id):
+    """
+    Fetch complete product details from Saleor API including variants, pricing, and stock.
+    Called when webhook payload has incomplete data.
+    """
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+    saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
+
+    if not saleor_url or not saleor_token:
+        logger.warning("Cannot fetch full product: Saleor settings missing")
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {saleor_token}",
+        "Content-Type": "application/json"
+    }
+
+    query = """
+    query GetProduct($id: ID!) {
+      product(id: $id) {
+        id
+        name
+        slug
+        description
+        variants {
+          id
+          sku
+          channelListings {
+            channel {
+              slug
+            }
+            price {
+              amount
+            }
+          }
+          stocks {
+            quantity
+          }
+        }
+      }
+    }
+    """
+
+    try:
+        r = requests.post(saleor_url, json={"query": query, "variables": {"id": product_id}}, headers=headers)
+        data = r.json()
+        product = data.get("data", {}).get("product")
+        if product:
+            logger.info(f"✅ Fetched full product data from Saleor for {product_id}")
+            return product
+        else:
+            errors = data.get("errors", [])
+            logger.error(f"❌ GraphQL error fetching product: {errors}")
+            return None
+    except Exception as e:
+        logger.error(f"❌ Exception fetching product from Saleor: {e}")
+        return None
+
+
 def sync_event_from_saleor_data(product_data):
     """
     Creates or updates an Event in ECP from Saleor product data.
+    If webhook data is incomplete (no channel listings), fetch full product from Saleor API.
     """
     if not isinstance(product_data, dict):
         logger.error(f"Saleor product data is not a dict: {type(product_data)}")
@@ -612,6 +675,21 @@ def sync_event_from_saleor_data(product_data):
 
     # Resolve variants and price
     variants = product_data.get("variants", [])
+
+    # If webhook has no variants or empty channel listings, fetch full product data
+    has_pricing = any(
+        v.get("channelListings")
+        for v in variants
+    ) if variants else False
+
+    if not has_pricing and variants:
+        logger.info(f"🔄 Webhook missing pricing data, fetching full product from Saleor...")
+        full_product = _fetch_full_product_from_saleor(saleor_id)
+        if full_product:
+            product_data = full_product
+            variants = product_data.get("variants", [])
+        else:
+            logger.warning(f"⚠️  Could not fetch full product, using incomplete webhook data")
     variant_id = None
     price = 0.0
     max_participants = None
@@ -620,26 +698,38 @@ def sync_event_from_saleor_data(product_data):
         # For simplicity, we take the first variant
         variant = variants[0]
         variant_id = variant.get("id")
-        
+        logger.info(f"DEBUG: Variant data keys: {list(variant.keys())}")
+
         # Extract price from channel listings
         channel_listings = variant.get("channelListings", [])
+        logger.info(f"DEBUG: Channel listings found: {len(channel_listings)}")
+
         if channel_listings:
-            # 1. Try to find the exact configured channel
-            target_channel = getattr(settings, "SALEOR_CHANNEL_SLUG", "sgd-channel")
+            # 1. Try to find the exact configured channel (global-events = USD)
+            target_channel = getattr(settings, "SALEOR_CHANNEL_SLUG", "global-events")
             listing = next((l for l in channel_listings if l.get("channel", {}).get("slug") == target_channel), None)
-            
+
             # 2. If not found, just take the first one that has a price
             if not listing:
-                listing = next((l for l in channel_listings if l.get("price")), channel_listings[0])
-            
-            price_data = listing.get("price")
-            if price_data:
-                price = float(price_data.get("amount", 0.0))
-        
+                listing = next((l for l in channel_listings if l.get("price")), channel_listings[0] if channel_listings else None)
+
+            if listing:
+                price_data = listing.get("price")
+                if price_data:
+                    price = float(price_data.get("amount", 0.0))
+                    logger.info(f"✅ PRICE EXTRACTED: ${price} from channel '{target_channel}'")
+                else:
+                    logger.warning(f"⚠️  No price data in listing: {listing}")
+            else:
+                logger.warning(f"⚠️  Channel '{target_channel}' not found in listings. Available channels: {[l.get('channel', {}).get('slug') for l in channel_listings]}")
+        else:
+            logger.warning(f"⚠️  No channel listings in variant. Webhook may not include pricing data.")
+
         # Extract stock/max_participants
         stocks = variant.get("stocks", [])
         if stocks:
             max_participants = stocks[0].get("quantity")
+            logger.info(f"DEBUG: Max participants set to: {max_participants}")
 
     # Fetch or create event
     try:
@@ -685,7 +775,7 @@ def sync_event_from_saleor_data(product_data):
 
     event.skip_saleor_sync = True
     event.save()
-    
+
     action = "created" if is_new else "updated"
-    logger.info(f"{action.capitalize()} Event {event.id} from Saleor product {saleor_id}")
+    logger.info(f"{'✅' if price > 0 else '⚠️ '} {action.capitalize()} Event {event.id} | Title: {event.title} | Price: ${event.price} {event.currency} | Max Participants: {event.max_participants} | Format: {event.format}")
     return event, action
