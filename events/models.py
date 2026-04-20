@@ -90,9 +90,9 @@ class Event(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     currency = models.CharField(
         max_length=3,
-        default="SGD",
+        default="USD",
         editable=False,
-        help_text="Currency code (ISO 4217). Always SGD (Singapore Dollar)"
+        help_text="Currency code (ISO 4217). Always USD (US Dollar)"
     )
     is_free = models.BooleanField(default=False)
     price_label = models.CharField(
