@@ -234,9 +234,16 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         """
         qs = Event.objects.all()
 
-        # Hide hidden events from non-superusers
-        is_platform_admin = getattr(request.user, "is_superuser", False)
-        if not is_platform_admin:
+        # Show non-hidden events OR hidden events where user is registered
+        user = request.user
+        is_platform_admin = getattr(user, "is_superuser", False)
+        if not is_platform_admin and user.is_authenticated:
+            qs = qs.filter(
+                Q(is_hidden=False) |
+                Q(is_hidden=True, registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'])
+            ).distinct()
+        elif not is_platform_admin:
+            # Unauthenticated users: only non-hidden events
             qs = qs.filter(is_hidden=False)
 
         # If you have publish/status flags:
@@ -279,10 +286,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             .order_by("-created_at")
         )
 
-        # Exclude resources for hidden events (non-superusers only)
-        is_platform_admin = getattr(me, "is_superuser", False)
-        if not is_platform_admin:
-            qs = qs.exclude(event__is_hidden=True)
+        # Resources for registered events are visible (even if event is hidden)
+        # since reg_event_ids already filters to user's registered events
 
         cid = request.query_params.get("community_id")
         if cid:
@@ -468,9 +473,16 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
 
         event_qs = Event.objects.all()
 
-        # Hide hidden events from non-superusers
-        is_platform_admin = getattr(request.user, "is_superuser", False)
-        if not is_platform_admin:
+        # Show non-hidden events OR hidden events where user is registered
+        user = request.user
+        is_platform_admin = getattr(user, "is_superuser", False)
+        if not is_platform_admin and user.is_authenticated:
+            event_qs = event_qs.filter(
+                Q(is_hidden=False) |
+                Q(is_hidden=True, registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'])
+            ).distinct()
+        elif not is_platform_admin:
+            # Unauthenticated users: only non-hidden events
             event_qs = event_qs.filter(is_hidden=False)
 
         # Optional scope by community if you pass ?community_id=

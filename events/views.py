@@ -1100,9 +1100,17 @@ class EventViewSet(viewsets.ModelViewSet):
         guest_event_id = getattr(getattr(user, "guest", None), "event_id", None) if is_guest_user else None
         qs = Event.objects.select_related("community").prefetch_related("sessions", "participants__user", "participants__user__profile")
 
-        # Hide admin-hidden events from all non-platform-admin users (superuser only)
+        # Handle hidden events: show to platform_admin + registered users
+        # Non-registered users cannot see hidden events
         is_platform_admin = getattr(user, "is_superuser", False)
-        if not is_platform_admin:
+        if not is_platform_admin and user.is_authenticated and not is_guest_user:
+            # Show non-hidden events OR hidden events where user is registered
+            qs = qs.filter(
+                Q(is_hidden=False) |
+                Q(is_hidden=True, registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'])
+            ).distinct()
+        elif not is_platform_admin:
+            # Non-authenticated or guest users: only non-hidden events
             qs = qs.filter(is_hidden=False)
 
         # Base visibility
@@ -4654,10 +4662,8 @@ class EventViewSet(viewsets.ModelViewSet):
             .order_by("-start_time")
         )
 
-        # Filter hidden events for non-platform-admin users (superuser only)
-        is_platform_admin = getattr(user, "is_superuser", False)
-        if not is_platform_admin:
-            qs = qs.filter(is_hidden=False)
+        # Note: mine endpoint already filters by user's registrations, so hidden events
+        # they're registered for are shown (platform_admin sees all, registered users see theirs)
 
         # Apply bucket filter here too if needed
         bucket = (request.query_params.get("bucket") or "").strip().lower()
