@@ -253,6 +253,18 @@ class Question(models.Model):
         blank=True,
         help_text="Phase in which the answer was published.",
     )
+    covered_by_group = models.BooleanField(
+        default=False,
+        help_text="True if this question is considered 'answered' because its group was answered.",
+    )
+    grouped_answer_parent = models.ForeignKey(
+        "QnAQuestionGroup",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="covered_questions",
+        help_text="If this question was covered by a grouped answer, this links to that group.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -695,7 +707,7 @@ class QnAQuestionGroup(models.Model):
         on_delete=models.CASCADE,
         related_name="qna_question_groups"
     )
-    title = models.CharField(max_length=255)
+    title = models.CharField(max_length=255, default='')
     summary = models.TextField(blank=True, null=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
