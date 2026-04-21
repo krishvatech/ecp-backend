@@ -458,7 +458,10 @@ class QuestionViewSet(viewsets.ModelViewSet):
             question.save(update_fields=["moderation_status"])
 
         # Check if anonymous mode is enabled (event-wide override) or user submitted with anonymous toggle
-        is_anonymous = bool(self.request.data.get("is_anonymous", False))
+        user_default = False
+        if self.request.user.is_authenticated and hasattr(self.request.user, "profile"):
+            user_default = self.request.user.profile.default_qna_anonymous
+        is_anonymous = bool(self.request.data.get("is_anonymous", user_default))
         if question.event.qna_anonymous_mode:
             is_anonymous = True  # Force all questions to be anonymous
 

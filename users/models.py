@@ -35,6 +35,7 @@ class UserProfile(models.Model):
     connections_hidden = models.BooleanField(default=False, help_text="Hide your connections list from other members")
     hide_from_others_connections = models.BooleanField(default=False, help_text="Hide this member from other users' visible connection lists")
     anonymous_profile_views = models.BooleanField(default=False, help_text="Don't disclose which profiles you have visited")
+    default_qna_anonymous = models.BooleanField(default=False, help_text="Default to anonymous when submitting Q&A questions")
     full_name = models.CharField(max_length=255, blank=True)
     middle_name = models.CharField(max_length=150, blank=True, default="")
     timezone = models.CharField(max_length=64, default="Asia/Kolkata")

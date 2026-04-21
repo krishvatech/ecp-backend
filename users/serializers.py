@@ -168,7 +168,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "kyc_status", "legal_name_locked", "legal_name_verified_at",
             "can_edit_profiles",
             "directory_hidden", "connections_hidden", "hide_from_others_connections",
-            "anonymous_profile_views",
+            "anonymous_profile_views", "default_qna_anonymous",
             "pending_verification_request", "profile_completion_percentage", "missing_sections",
         ]
         read_only_fields = ("last_activity_at", "is_online", "kyc_status",
