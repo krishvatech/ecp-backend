@@ -597,6 +597,8 @@ CSRF_COOKIE_SECURE = False     # Should be True in production
 SALEOR_DASHBOARD_URL = os.getenv("SALEOR_DASHBOARD_URL", "http://127.0.0.1:9001/")
 SALEOR_API_URL = os.getenv("SALEOR_API_URL", "http://localhost:8001/graphql/")
 SALEOR_APP_TOKEN = os.getenv("SALEOR_APP_TOKEN", "")
+SALEOR_STAFF_EMAIL = os.getenv("SALEOR_STAFF_EMAIL", "")
+SALEOR_STAFF_PASSWORD = os.getenv("SALEOR_STAFF_PASSWORD", "")
 SALEOR_CHANNEL_SLUG = os.getenv("SALEOR_CHANNEL_SLUG", "default-channel")  # USD channel slug
 SALEOR_WEBHOOK_SECRET = os.getenv("SALEOR_WEBHOOK_SECRET", "")
 

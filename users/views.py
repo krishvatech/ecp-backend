@@ -60,6 +60,7 @@ from .didit_client import (
 )
 from .cognito_groups import sync_staff_group
 from .wordpress_sync import get_profile_sync_service
+from .saleor_sync import sync_platform_admin_to_saleor, remove_platform_admin_from_saleor
 from .serializers import (
     UserSerializer,
     EmailTokenObtainPairSerializer,
@@ -2260,8 +2261,17 @@ class StaffUserViewSet(viewsets.ModelViewSet):
                 user.is_staff = True
                 user.save(update_fields=["is_staff"])
                 sync_staff_group(username=user.username, is_staff=True)
-            
+
             add_user_to_group(username=user.username, group_name="platform_admin")
+
+            # Sync to Saleor with Full Access using staff user credentials
+            sync_result = sync_platform_admin_to_saleor(
+                user_email=user.email,
+                first_name=user.first_name,
+                last_name=user.last_name,
+                is_platform_admin=True
+            )
+            logger.info(f"Saleor sync result for {user.email}: {sync_result}")
 
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
@@ -2291,9 +2301,22 @@ class StaffUserViewSet(viewsets.ModelViewSet):
                     updated_user.is_staff = True
                     updated_user.save(update_fields=["is_staff"])
                     sync_staff_group(username=updated_user.username, is_staff=True)
+
+                # Sync to Saleor with Full Access using staff user credentials
+                sync_result = sync_platform_admin_to_saleor(
+                    user_email=updated_user.email,
+                    first_name=updated_user.first_name,
+                    last_name=updated_user.last_name,
+                    is_platform_admin=True
+                )
+                logger.info(f"Saleor sync result for {updated_user.email}: {sync_result}")
             else:
                 # Demoted from superuser
                 remove_user_from_group(username=updated_user.username, group_name="platform_admin")
+
+                # Remove from Saleor
+                removal_result = remove_platform_admin_from_saleor(updated_user.email)
+                logger.info(f"Saleor removal result for {updated_user.email}: {removal_result}")
 
 
     @action(detail=False, methods=["post"], url_path="bulk-set-staff")
@@ -3865,10 +3888,9 @@ class SaleorDashboardSsoView(APIView):
             "scope": " ".join(scopes),
         }
 
-        # Be precise: Only add prompt if explicitly requested (e.g. 'login', 'consent').
-        # If 'none' or missing, we OMIT it so Cognito performs standard SSO (auto-login if session exists).
+        # Add prompt for silent authentication (auto-login if session exists)
         sso_prompt = getattr(settings, "SALEOR_SSO_PROMPT", None)
-        if sso_prompt and sso_prompt not in ("none", ""):
+        if sso_prompt and sso_prompt != "":
             params["prompt"] = sso_prompt
 
         url = f"{domain}/oauth2/authorize?{urlencode(params)}"

@@ -1,8 +1,676 @@
 import requests
 from django.conf import settings
 import logging
+import base64
 
 logger = logging.getLogger(__name__)
+
+
+def reactivate_staff_user(email, auth_token=None):
+    """Find a deactivated staff user and reactivate them."""
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+
+    if not saleor_url or not auth_token:
+        return None
+
+    # First, find the staff user by email
+    query = """
+    query($email: String!) {
+        staffUsers(first: 1, filter: {search: $email}) {
+            edges {
+                node {
+                    id
+                }
+            }
+        }
+    }
+    """
+
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(
+            saleor_url,
+            json={"query": query, "variables": {"email": email}},
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            logger.debug(f"Error finding staff user {email}: {data['errors']}")
+            return None
+
+        edges = data.get("data", {}).get("staffUsers", {}).get("edges", [])
+        if not edges:
+            logger.warning(f"Staff user {email} not found")
+            return None
+
+        staff_id = edges[0]["node"]["id"]
+        logger.info(f"Found deactivated staff user {email}, reactivating...")
+
+        # Now reactivate them
+        mutation = """
+        mutation($id: ID!) {
+            staffUpdate(id: $id, input: {isActive: true}) {
+                user {
+                    id
+                    email
+                }
+                errors {
+                    field
+                    message
+                }
+            }
+        }
+        """
+
+        response = requests.post(
+            saleor_url,
+            json={"query": mutation, "variables": {"id": staff_id}},
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            logger.error(f"Saleor error reactivating user: {data['errors']}")
+            return None
+
+        result = data.get("data", {}).get("staffUpdate", {})
+        if result.get("errors"):
+            logger.error(f"Failed to reactivate staff user: {result['errors']}")
+            return None
+
+        logger.info(f"Successfully reactivated {email}")
+        return staff_id
+
+    except Exception as e:
+        logger.error(f"Failed to reactivate staff user: {e}")
+        return None
+
+
+def get_existing_user_id(email, auth_token=None):
+    """Try to retrieve an existing user's ID by querying staff users.
+    Falls back to app token if user token fails."""
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+
+    if not saleor_url:
+        return None
+
+    # Try querying staff users by email (since we're creating staff users)
+    query = """
+    query($email: String!) {
+        staffUsers(first: 1, filter: {search: $email}) {
+            edges {
+                node {
+                    id
+                }
+            }
+        }
+    }
+    """
+
+    # Try with user token first, then fall back to app token
+    tokens_to_try = []
+    if auth_token:
+        tokens_to_try.append(auth_token)
+
+    app_token = getattr(settings, "SALEOR_APP_TOKEN", None)
+    if app_token:
+        tokens_to_try.append(app_token)
+
+    for token in tokens_to_try:
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            response = requests.post(
+                saleor_url,
+                json={"query": query, "variables": {"email": email}},
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if "errors" in data:
+                logger.debug(f"Error querying for user {email} with this token: {data['errors']}")
+                continue
+
+            edges = data.get("data", {}).get("users", {}).get("edges", [])
+            if edges:
+                logger.info(f"Found existing user {email} with ID {edges[0]['node']['id']}")
+                return edges[0]["node"]["id"]
+        except Exception as e:
+            logger.debug(f"Failed to get existing user ID for {email}: {e}")
+            continue
+
+    return None
+
+
+# ============= STAFF SYNC (Platform Admin) =============
+
+def get_saleor_user_token(email, password):
+    """
+    Get a Saleor user token using email and password.
+    This authenticates as the staff user and returns a token.
+    """
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+    if not saleor_url:
+        return None
+
+    mutation = """
+    mutation($email: String!, $password: String!) {
+        tokenCreate(email: $email, password: $password) {
+            token
+            user {
+                id
+                email
+            }
+            errors {
+                field
+                message
+            }
+        }
+    }
+    """
+
+    variables = {
+        "email": email,
+        "password": password
+    }
+
+    try:
+        response = requests.post(
+            saleor_url,
+            json={"query": mutation, "variables": variables},
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            logger.error(f"Saleor tokenCreate error: {data['errors']}")
+            return None
+
+        result = data.get("data", {}).get("tokenCreate", {})
+        if result.get("errors"):
+            logger.error(f"Failed to get user token: {result['errors']}")
+            return None
+
+        token = result.get("token")
+        if token:
+            logger.info(f"Successfully got user token for {email}")
+            return token
+        return None
+    except Exception as e:
+        logger.error(f"Failed to get Saleor user token: {e}")
+        return None
+
+
+def get_full_access_group_id(auth_token=None):
+    """Get the 'Full Access' permission group ID from Saleor"""
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+
+    if not saleor_url:
+        logger.warning("Saleor not configured: missing SALEOR_API_URL")
+        return None
+
+    if not auth_token:
+        logger.warning("No auth token provided to get Full Access group")
+        return None
+
+    query = """
+    query {
+        permissionGroups(first: 100) {
+            edges {
+                node {
+                    id
+                    name
+                }
+            }
+        }
+    }
+    """
+
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(
+            saleor_url,
+            json={"query": query},
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            logger.error(f"Saleor error getting groups: {data['errors']}")
+            return None
+
+        # Find "Full Access" group
+        for edge in data.get("data", {}).get("permissionGroups", {}).get("edges", []):
+            if edge["node"]["name"] == "Full Access":
+                return edge["node"]["id"]
+
+        logger.warning("'Full Access' permission group not found in Saleor")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to get Full Access group: {e}")
+        return None
+
+
+def get_saleor_staff_by_email(email, auth_token=None):
+    """Check if user exists as staff in Saleor"""
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+
+    if not saleor_url or not auth_token:
+        return None
+
+    query = """
+    query($email: String!) {
+        staffUsers(first: 1, filter: {search: $email}) {
+            edges {
+                node {
+                    id
+                    user {
+                        email
+                    }
+                }
+            }
+        }
+    }
+    """
+
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(
+            saleor_url,
+            json={"query": query, "variables": {"email": email}},
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            logger.error(f"Saleor error: {data['errors']}")
+            return None
+
+        edges = data.get("data", {}).get("staffMembers", {}).get("edges", [])
+        if edges:
+            return edges[0]["node"]["id"]
+
+        return None
+    except Exception as e:
+        logger.error(f"Failed to check Saleor staff user: {e}")
+        return None
+
+
+def create_saleor_staff_user(email, first_name="", last_name="", auth_token=None):
+    """Create a staff user in Saleor using user token.
+    If user already exists (inactive), reactivate them."""
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+
+    if not saleor_url or not auth_token:
+        return None
+
+    mutation = """
+    mutation($input: StaffCreateInput!) {
+        staffCreate(input: $input) {
+            user {
+                id
+                email
+            }
+            errors {
+                field
+                message
+            }
+        }
+    }
+    """
+
+    variables = {
+        "input": {
+            "email": email,
+            "firstName": first_name or "",
+            "lastName": last_name or "",
+            "isActive": True,
+        }
+    }
+
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(
+            saleor_url,
+            json={"query": mutation, "variables": variables},
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            logger.error(f"Saleor error: {data['errors']}")
+            return None
+
+        result = data.get("data", {}).get("staffCreate", {})
+        if result.get("errors"):
+            errors = result['errors']
+            # Check if user already exists
+            already_exists = any("already exists" in str(e.get("message", "")).lower() for e in errors)
+            if already_exists:
+                logger.info(f"User {email} already exists in Saleor. Attempting to reactivate.")
+                # Find the user and reactivate them
+                return reactivate_staff_user(email, auth_token)
+            else:
+                logger.error(f"Failed to create staff user: {errors}")
+                return None
+
+        return result.get("user", {}).get("id")
+    except Exception as e:
+        logger.error(f"Failed to create Saleor staff user: {e}")
+        return None
+
+
+def assign_user_to_group(staff_id, group_id, auth_token=None):
+    """Assign staff user to a permission group using user token"""
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+
+    if not saleor_url or not auth_token:
+        return False
+
+    mutation = """
+    mutation($id: ID!, $groupIds: [ID!]!) {
+        staffUpdate(id: $id, input: {addGroups: $groupIds}) {
+            user {
+                id
+                email
+            }
+            errors {
+                field
+                message
+            }
+        }
+    }
+    """
+
+    variables = {
+        "id": staff_id,
+        "groupIds": [group_id]
+    }
+
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        logger.debug(f"Assigning staff_id={staff_id} to group_id={group_id}")
+        response = requests.post(
+            saleor_url,
+            json={"query": mutation, "variables": variables},
+            headers=headers,
+            timeout=10
+        )
+        logger.debug(f"Response status: {response.status_code}")
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            logger.error(f"Saleor GraphQL error: {data['errors']}")
+            return False
+
+        result = data.get("data", {}).get("staffUpdate", {})
+        if result.get("errors"):
+            logger.error(f"Failed to assign group: {result['errors']}")
+            return False
+
+        logger.info(f"Successfully assigned user {staff_id} to group {group_id}")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request failed for staffUpdate: {e}")
+        if hasattr(e.response, 'text'):
+            logger.error(f"Response body: {e.response.text}")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to assign user to group: {e}")
+        return False
+
+
+def remove_platform_admin_from_saleor(user_email):
+    """
+    Remove a platform_admin user from Saleor by deactivating their staff account.
+
+    Args:
+        user_email: User's email
+
+    Returns:
+        dict: {"success": bool, "message": str}
+    """
+    logger.info(f"Attempting to remove {user_email} from Saleor...")
+
+    # Get staff user credentials
+    staff_email = getattr(settings, "SALEOR_STAFF_EMAIL", None)
+    staff_password = getattr(settings, "SALEOR_STAFF_PASSWORD", None)
+
+    if not staff_email or not staff_password:
+        logger.warning("Saleor staff credentials not configured. Skipping removal.")
+        return {
+            "success": False,
+            "message": "SALEOR_STAFF_EMAIL or SALEOR_STAFF_PASSWORD not configured"
+        }
+
+    # Get user token using staff credentials
+    user_token = get_saleor_user_token(staff_email, staff_password)
+    if not user_token:
+        return {
+            "success": False,
+            "message": "Failed to authenticate with Saleor staff credentials"
+        }
+
+    logger.info(f"Got Saleor user token for {staff_email}")
+
+    # Find the user by email
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+    if not saleor_url:
+        return {"success": False, "message": "SALEOR_API_URL not configured"}
+
+    query = """
+    query($email: String!) {
+        staffUsers(first: 1, filter: {search: $email}) {
+            edges {
+                node {
+                    id
+                }
+            }
+        }
+    }
+    """
+
+    headers = {
+        "Authorization": f"Bearer {user_token}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(
+            saleor_url,
+            json={"query": query, "variables": {"email": user_email}},
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            logger.warning(f"Saleor error finding user: {data['errors']}")
+            return {
+                "success": False,
+                "message": "User not found in Saleor"
+            }
+
+        edges = data.get("data", {}).get("staffUsers", {}).get("edges", [])
+        if not edges:
+            logger.info(f"User {user_email} not found in Saleor (already removed or never synced)")
+            return {
+                "success": True,
+                "message": "User not found in Saleor (already removed)"
+            }
+
+        staff_id = edges[0]["node"]["id"]
+        logger.info(f"Found staff user {user_email} in Saleor: {staff_id}")
+
+        # Deactivate the staff user
+        mutation = """
+        mutation($id: ID!) {
+            staffUpdate(id: $id, input: {isActive: false}) {
+                user {
+                    id
+                    email
+                }
+                errors {
+                    field
+                    message
+                }
+            }
+        }
+        """
+
+        response = requests.post(
+            saleor_url,
+            json={"query": mutation, "variables": {"id": staff_id}},
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            logger.error(f"Saleor error deactivating user: {data['errors']}")
+            return {
+                "success": False,
+                "message": "Failed to deactivate staff user"
+            }
+
+        result = data.get("data", {}).get("staffUpdate", {})
+        if result.get("errors"):
+            logger.error(f"Failed to deactivate staff user: {result['errors']}")
+            return {
+                "success": False,
+                "message": "Failed to deactivate staff user"
+            }
+
+        logger.info(f"Successfully deactivated {user_email} in Saleor")
+        return {
+            "success": True,
+            "message": f"Successfully removed {user_email} from Saleor"
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to remove user from Saleor: {e}")
+        return {
+            "success": False,
+            "message": f"Error: {str(e)}"
+        }
+
+
+def sync_platform_admin_to_saleor(user_email, first_name="", last_name="", is_platform_admin=False):
+    """
+    Sync platform_admin user to Saleor as staff with Full Access.
+    Uses staff user credentials to authenticate and create staff via staffCreate mutation.
+
+    Args:
+        user_email: User's email
+        first_name: User's first name
+        last_name: User's last name
+        is_platform_admin: Whether user should have Full Access
+
+    Returns:
+        dict: {"success": bool, "staff_id": str or None, "message": str}
+    """
+    if not is_platform_admin:
+        return {"success": True, "staff_id": None, "message": "User is not platform_admin"}
+
+    logger.info(f"Attempting to sync {user_email} to Saleor...")
+
+    # Get staff user credentials
+    staff_email = getattr(settings, "SALEOR_STAFF_EMAIL", None)
+    staff_password = getattr(settings, "SALEOR_STAFF_PASSWORD", None)
+
+    if not staff_email or not staff_password:
+        logger.warning("Saleor staff credentials not configured. Skipping sync.")
+        return {
+            "success": False,
+            "staff_id": None,
+            "message": "SALEOR_STAFF_EMAIL or SALEOR_STAFF_PASSWORD not configured"
+        }
+
+    # Get user token using staff credentials
+    user_token = get_saleor_user_token(staff_email, staff_password)
+    if not user_token:
+        return {
+            "success": False,
+            "staff_id": None,
+            "message": "Failed to authenticate with Saleor staff credentials"
+        }
+
+    logger.info(f"Got Saleor user token for {staff_email}")
+
+    # Try to create staff user with user token
+    # (Skip the check since staff users may not have query permissions for staffMembers)
+    staff_id = create_saleor_staff_user(user_email, first_name, last_name, auth_token=user_token)
+    if not staff_id:
+        return {
+            "success": False,
+            "staff_id": None,
+            "message": "Failed to create staff user in Saleor"
+        }
+
+    logger.info(f"Created staff user {user_email} in Saleor: {staff_id}")
+
+    # Get Full Access group ID
+    group_id = get_full_access_group_id(auth_token=user_token)
+    if not group_id:
+        return {
+            "success": False,
+            "staff_id": staff_id,
+            "message": "Failed to find 'Full Access' group in Saleor"
+        }
+
+    # Assign to Full Access group
+    if assign_user_to_group(staff_id, group_id, auth_token=user_token):
+        return {
+            "success": True,
+            "staff_id": staff_id,
+            "message": f"Successfully synced {user_email} to Saleor with Full Access"
+        }
+    else:
+        return {
+            "success": False,
+            "staff_id": staff_id,
+            "message": "Failed to assign Full Access permission group"
+        }
 
 def sync_user_to_saleor_sync(user):
     """
