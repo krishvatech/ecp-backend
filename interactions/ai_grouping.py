@@ -1,15 +1,28 @@
 import json
 import requests
 import os
+import logging
 from django.conf import settings
 from .models import Question, QnAQuestionGroupSuggestion
+
+logger = logging.getLogger(__name__)
 
 def suggest_groups(event_id, user):
     """
     Fetches questions for an event and uses an AI service to suggest groups.
+    Excludes seed questions and questions already in a group.
     """
-    questions = Question.objects.filter(event_id=event_id, is_hidden=False)
-    
+    logger.info(f"[AI-GROUPING] Starting suggest_groups for event {event_id}")
+
+    questions = Question.objects.filter(
+        event_id=event_id,
+        is_hidden=False,
+        is_seed=False,
+        moderation_status__in=["approved", "pending"],
+    ).exclude(group_membership__isnull=False)
+
+    logger.info(f"[AI-GROUPING] Found {questions.count()} questions to group")
+
     q_data = []
     for q in questions:
         q_data.append({
@@ -20,7 +33,7 @@ def suggest_groups(event_id, user):
             "is_answered": q.is_answered,
             "created_at": q.created_at.isoformat()
         })
-    
+
     if len(q_data) < 2:
         raise ValueError("Not enough questions to generate groups.")
 
@@ -49,7 +62,10 @@ def suggest_groups(event_id, user):
     
     api_key = getattr(settings, "OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
     if not api_key:
+        logger.error("[AI-GROUPING] OpenAI API key not configured")
         raise ValueError("OpenAI API key not configured on server.")
+
+    logger.info(f"[AI-GROUPING] API key found: {api_key[:10]}...")
 
     headers = {
         "Content-Type": "application/json",
@@ -64,13 +80,19 @@ def suggest_groups(event_id, user):
         ],
         "temperature": 0.2
     }
-    
+
+    logger.info(f"[AI-GROUPING] Calling OpenAI API with {len(q_data)} questions")
+
     try:
         response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data, timeout=30)
     except Exception as e:
+        logger.error(f"[AI-GROUPING] API connection failed: {str(e)}")
         raise ValueError(f"Failed to connect to AI service: {str(e)}")
 
+    logger.info(f"[AI-GROUPING] OpenAI API response status: {response.status_code}")
+
     if response.status_code != 200:
+        logger.error(f"[AI-GROUPING] API error: {response.text}")
         raise ValueError(f"AI service error: {response.text}")
 
     result_text = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -85,21 +107,27 @@ def suggest_groups(event_id, user):
         
     valid_ids = set(q["question_id"] for q in q_data)
     
+    logger.info(f"[AI-GROUPING] AI returned {len(groups)} groups")
+
     created_suggestions = []
-    
+
     for g in groups:
         suggested_ids = g.get("question_ids", [])
         if not isinstance(suggested_ids, list):
+            logger.info(f"[AI-GROUPING] Skipping group: question_ids not a list")
             continue
-            
+
         valid_suggested_ids = [qid for qid in suggested_ids if qid in valid_ids]
-        
+
         # Eliminate duplicates
         valid_suggested_ids = list(dict.fromkeys(valid_suggested_ids))
-        
+
         if len(valid_suggested_ids) < 2:
+            logger.info(f"[AI-GROUPING] Skipping group: only {len(valid_suggested_ids)} valid questions")
             continue # skip invalid group
-            
+
+        logger.info(f"[AI-GROUPING] Creating suggestion with title='{g.get('title')}', qids={valid_suggested_ids}")
+
         suggestion = QnAQuestionGroupSuggestion.objects.create(
             event_id=event_id,
             generated_by=user,
@@ -113,6 +141,8 @@ def suggest_groups(event_id, user):
         created_suggestions.append(suggestion)
 
     if not created_suggestions:
+        logger.error("[AI-GROUPING] No valid groups created from AI response")
         raise ValueError("AI returned no valid valid groups with at least 2 questions.")
 
+    logger.info(f"[AI-GROUPING] ✅ Created {len(created_suggestions)} suggestions")
     return created_suggestions

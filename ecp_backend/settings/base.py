@@ -109,6 +109,9 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100 MB
 WAGTAIL_SITE_NAME = "Events & Community - IMAA Connect - CMS"
 WAGTAILADMIN_BASE_URL = os.getenv("WAGTAILADMIN_BASE_URL", "http://localhost:8000")
 
+# OpenAI API Configuration (for Q&A grouping and other AI features)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
 # Wagtail AI Configuration
 WAGTAIL_AI = {
     "PROVIDERS": {

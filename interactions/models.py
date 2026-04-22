@@ -740,6 +740,13 @@ class QnAQuestionGroup(models.Model):
         verbose_name = "Q&A Question Group"
         verbose_name_plural = "Q&A Question Groups"
 
+    @property
+    def aggregated_vote_count(self) -> int:
+        return sum(
+            m.question.upvote_count()
+            for m in self.memberships.select_related("question").all()
+        )
+
     def __str__(self) -> str:
         return f"Group {self.id}: {self.title}"
 

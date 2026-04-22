@@ -532,6 +532,45 @@ class QuestionViewSet(viewsets.ModelViewSet):
             {"type": "qna.question", "payload": payload},
         )
 
+        # Check if auto-grouping should trigger
+        self._maybe_trigger_auto_grouping(question.event_id)
+
+    def _maybe_trigger_auto_grouping(self, event_id):
+        """
+        Check if auto-grouping threshold is reached and trigger Celery task if so.
+        Uses a cache key to throttle task invocations to once per 120 seconds.
+        """
+        import logging
+        from django.core.cache import cache
+        from django.conf import settings
+        from .tasks import auto_group_questions_task
+
+        logger = logging.getLogger(__name__)
+        threshold = getattr(settings, "QNA_AUTO_GROUP_THRESHOLD", 5)
+        cache_key = f"qna_autog_{event_id}"
+
+        logger.info(f"[AUTO-GROUP] Checking event {event_id}, threshold={threshold}")
+
+        if cache.get(cache_key):
+            logger.info(f"[AUTO-GROUP] Throttled (cache hit) for event {event_id}")
+            return  # Recently triggered, throttle
+
+        ungrouped_count = Question.objects.filter(
+            event_id=event_id,
+            is_hidden=False,
+            is_seed=False,
+            moderation_status__in=["approved", "pending"],
+        ).exclude(group_membership__isnull=False).count()
+
+        logger.info(f"[AUTO-GROUP] Event {event_id}: {ungrouped_count} ungrouped questions")
+
+        if ungrouped_count >= threshold:
+            logger.info(f"[AUTO-GROUP] ✅ Threshold reached! Dispatching task for event {event_id}")
+            cache.set(cache_key, True, timeout=120)
+            auto_group_questions_task.delay(event_id)
+        else:
+            logger.info(f"[AUTO-GROUP] Not enough questions ({ungrouped_count} < {threshold})")
+
     def list(self, request, *args, **kwargs):
         from events.models import Event
 
@@ -2370,13 +2409,45 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
             }
         )
 
-    def perform_update(self, serializer):
+    def update(self, request, pk=None, *args, **kwargs):
+        """Handle PATCH/PUT requests, including question_ids."""
         from rest_framework.exceptions import PermissionDenied
+        import logging
+
+        logger = logging.getLogger(__name__)
         group = self.get_object()
-        if not (self.request.user == group.event.created_by or getattr(self.request.user, "is_staff", False)):
+
+        if not (request.user == group.event.created_by or getattr(request.user, "is_staff", False)):
             raise PermissionDenied("Only event host/admin can update groups.")
+
+        # Extract question_ids if provided
+        question_ids = request.data.get("question_ids")
+
+        # Update group fields (title, summary, etc.)
+        serializer = self.get_serializer(group, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
         updated_group = serializer.save()
-        
+
+        # Handle question_ids update
+        if question_ids is not None:
+            logger.info(f"[GROUP-EDIT] Updating group {group.id} with question_ids: {question_ids}")
+
+            # Delete all existing memberships
+            QnAQuestionGroupMembership.objects.filter(group=group).delete()
+
+            # Create new memberships
+            for q_id in question_ids:
+                try:
+                    QnAQuestionGroupMembership.objects.create(
+                        group=group,
+                        question_id=q_id,
+                        added_by=request.user
+                    )
+                except Exception as e:
+                    logger.error(f"[GROUP-EDIT] Error adding question {q_id}: {str(e)}")
+
+            logger.info(f"[GROUP-EDIT] Successfully updated group {group.id} with {len(question_ids)} questions")
+
         # Broadcast group_updated
         channel_layer = get_channel_layer()
         group_name = f"event_qna_{updated_group.event_id}_main"
@@ -2387,6 +2458,16 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
                 "payload": {"type": "qna.group_updated", "group": QnAQuestionGroupSerializer(updated_group).data}
             }
         )
+
+        return Response(QnAQuestionGroupSerializer(updated_group).data)
+
+    def perform_update(self, serializer):
+        """Deprecated - use update() instead."""
+        from rest_framework.exceptions import PermissionDenied
+        group = self.get_object()
+        if not (self.request.user == group.event.created_by or getattr(self.request.user, "is_staff", False)):
+            raise PermissionDenied("Only event host/admin can update groups.")
+        serializer.save()
 
     def perform_destroy(self, instance):
         from rest_framework.exceptions import PermissionDenied

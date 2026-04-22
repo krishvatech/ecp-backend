@@ -489,6 +489,33 @@ class QnAConsumer(BaseEventConsumer):
         """Host toggled anonymous on a reply. Payload: { type, event_id, question_id, reply_id, is_anonymous }"""
         await self.send_json(event.get("payload", {}))
 
+    # Q&A Group handlers
+    # ------------------------------------------------------------------
+
+    async def qna_group_created(self, event: Dict[str, Any]) -> None:
+        """New question group created (AI or manual). Payload includes group object with aggregated_vote_count."""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_group_updated(self, event: Dict[str, Any]) -> None:
+        """Existing group updated (title/summary). Payload includes updated group object."""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_group_deleted(self, event: Dict[str, Any]) -> None:
+        """Group deleted. Payload: { type, group_id, event_id }"""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_group_membership_updated(self, event: Dict[str, Any]) -> None:
+        """Questions added/removed from a group. Payload: { type, group_id, event_id, added, removed }"""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_group_suggestion_reviewed(self, event: Dict[str, Any]) -> None:
+        """AI suggestion approved/rejected. Payload: { type, suggestion_id, status, event_id }"""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_group_suggestions_ready(self, event: Dict[str, Any]) -> None:
+        """New AI group suggestions pending host review. Payload: { type, count, event_id }"""
+        await self.send_json(event.get("payload", {}))
+
     async def qna_typing(self, event: Dict[str, Any]) -> None:
         """
         Called when group_send(type='qna.typing', payload=...) is triggered.

@@ -153,11 +153,15 @@ class QnAQuestionGroupMembershipSerializer(serializers.ModelSerializer):
 
 class QnAQuestionGroupSerializer(serializers.ModelSerializer):
     memberships = QnAQuestionGroupMembershipSerializer(many=True, read_only=True)
-    
+    aggregated_vote_count = serializers.SerializerMethodField()
+
     class Meta:
         model = QnAQuestionGroup
         fields = "__all__"
-        read_only_fields = ["event", "created_by", "source", "ai_suggestion", "created_at", "updated_at"]
+        read_only_fields = ["event", "created_by", "source", "ai_suggestion", "created_at", "updated_at", "aggregated_vote_count"]
+
+    def get_aggregated_vote_count(self, obj):
+        return obj.aggregated_vote_count
 
 
 class QnAAIPublicSuggestionSerializer(serializers.ModelSerializer):
