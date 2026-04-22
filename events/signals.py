@@ -33,10 +33,13 @@ def sync_event_to_saleor_signal(sender, instance, created, **kwargs):
     
     # User requested flow: "Create events --> sync to saleor DB".
     # Implementation:
-    try:
-        sync_event_to_saleor_sync(instance)
-    except Exception as e:
-        print(f"Error syncing event {instance.id} to Saleor: {e}")
+    def run_sync():
+        try:
+            sync_event_to_saleor_sync(instance)
+        except Exception as e:
+            print(f"Error syncing event {instance.id} to Saleor: {e}")
+
+    transaction.on_commit(run_sync)
 
 
 @receiver(post_save, sender=EventParticipant)

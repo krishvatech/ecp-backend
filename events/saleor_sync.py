@@ -691,7 +691,7 @@ def sync_event_from_saleor_data(product_data):
         else:
             logger.warning(f"⚠️  Could not fetch full product, using incomplete webhook data")
     variant_id = None
-    price = 0.0
+    price = None
     max_participants = None
 
     if variants:
@@ -736,8 +736,17 @@ def sync_event_from_saleor_data(product_data):
         event = Event.objects.get(saleor_product_id=saleor_id)
         is_new = False
     except Event.DoesNotExist:
-        event = Event(saleor_product_id=saleor_id)
-        is_new = True
+        event = None
+        if slug:
+            event = Event.objects.filter(slug=slug).first()
+            if event:
+                logger.info(f"🔗 Matched existing Event {event.id} by slug '{slug}' for Saleor product {saleor_id}")
+                event.saleor_product_id = saleor_id
+        if event is None:
+            event = Event(saleor_product_id=saleor_id)
+            is_new = True
+        else:
+            is_new = False
 
     # Default associations
     if is_new:
@@ -762,10 +771,18 @@ def sync_event_from_saleor_data(product_data):
     if slug:
         event.slug = slug
     event.description = description_text
-    event.price = price
-    event.is_free = (price == 0.0)
-    event.max_participants = max_participants
-    event.saleor_variant_id = variant_id
+    if price is not None:
+        event.price = price
+        event.is_free = (price == 0.0)
+    else:
+        logger.info(
+            f"ℹ️ No pricing found in Saleor webhook for product {saleor_id}; keeping existing price "
+            f"{event.price} and is_free={event.is_free}"
+        )
+    if max_participants is not None:
+        event.max_participants = max_participants
+    if variant_id:
+        event.saleor_variant_id = variant_id
     
     # Placeholder for timing if not provided by Saleor (Events in ECP need start/end)
     if not event.start_time:
@@ -777,5 +794,6 @@ def sync_event_from_saleor_data(product_data):
     event.save()
 
     action = "created" if is_new else "updated"
-    logger.info(f"{'✅' if price > 0 else '⚠️ '} {action.capitalize()} Event {event.id} | Title: {event.title} | Price: ${event.price} {event.currency} | Max Participants: {event.max_participants} | Format: {event.format}")
+    price_status = event.price if event.price is not None else 0
+    logger.info(f"{'✅' if price_status > 0 else '⚠️ '} {action.capitalize()} Event {event.id} | Title: {event.title} | Price: ${event.price} {event.currency} | Max Participants: {event.max_participants} | Format: {event.format}")
     return event, action
