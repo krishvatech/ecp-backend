@@ -1035,7 +1035,8 @@ class QuestionViewSet(viewsets.ModelViewSet):
     def upvote(self, request, pk=None):
         """
         Toggle upvote for a question. Broadcast the new count to the WebSocket group
-        so everyone sees it update in real time.
+        so everyone sees it update in real time. Also broadcast group updates if question
+        is part of a question group.
         """
         question = get_object_or_404(Question, pk=pk)
         user = request.user
@@ -1087,6 +1088,23 @@ class QuestionViewSet(viewsets.ModelViewSet):
         async_to_sync(channel_layer.group_send)(
             group, {"type": "qna.upvote", "payload": payload}
         )
+
+        # 🔊 If this question is part of a question group, also broadcast the updated group vote count
+        if question.grouped_answer_parent:
+            parent_group = question.grouped_answer_parent
+            group_vote_count = sum(
+                m.question.upvote_count()
+                for m in parent_group.memberships.select_related("question").all()
+            )
+            group_payload = {
+                "type": "qna.group_upvote",
+                "event_id": question.event_id,
+                "group_id": parent_group.id,
+                "group_vote_count": group_vote_count,
+            }
+            async_to_sync(channel_layer.group_send)(
+                group, {"type": "qna.group_upvote", "payload": group_payload}
+            )
 
         return Response(
             {
