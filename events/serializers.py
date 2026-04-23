@@ -1729,17 +1729,17 @@ class EventSerializer(serializers.ModelSerializer):
 
         # Privacy gate: only show venue_name and venue_address to registered/admitted members or host
         if request and request.user.is_authenticated:
-            from events.views import _is_event_host
+            from events.views import _is_event_manager
 
-            is_host = _is_event_host(request.user, instance)
+            is_manager = _is_event_manager(request.user, instance)
             is_registered = EventRegistration.objects.filter(
                 event=instance,
                 user=request.user,
                 status__in=["registered", "admitted", "cancellation_requested"]
             ).exists()
 
-            # If not host and not registered, remove venue details
-            if not is_host and not is_registered:
+            # If not manager and not registered, remove venue details
+            if not is_manager and not is_registered:
                 data.pop("venue_name", None)
                 data.pop("venue_address", None)
         else:
@@ -2092,7 +2092,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "lounge_enabled_before", "lounge_before_buffer",
             "lounge_enabled_after", "lounge_after_buffer",
             "is_multi_day", "sessions",  # ✅ Added for multi-day event support
-            "cancellation_message", "recommended_event",
+            "cancellation_message", "recommended_event", "created_by_id",
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):
@@ -2175,10 +2175,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
         if not event or not user_id:
             return False
 
-        if (
-            user_id == getattr(event, "created_by_id", None)
-            or user_id == getattr(getattr(event, "community", None), "owner_id", None)
-        ):
+        if user_id == getattr(event, "created_by_id", None):
             return True
 
         # Account for explicit Host role assignment in EventParticipant list.

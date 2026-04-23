@@ -777,9 +777,8 @@ class EventLimitOffsetPagination(LimitOffsetPagination):
 class IsCreatorOrReadOnly(BasePermission):
     """
     - SAFE_METHODS (GET/HEAD/OPTIONS) are open.
-    - Mutations allowed only for:
-        * the event creator (created_by)
-        * staff users
+    - Mutations allowed only for the actual event creator (created_by).
+    - Note: is_staff / is_superuser bypass is removed to enforce strict ownership.
     """
     def has_permission(self, request, view):
         # Anyone can read; must be authenticated to write
@@ -788,19 +787,33 @@ class IsCreatorOrReadOnly(BasePermission):
         return bool(request.user and request.user.is_authenticated)
 
     def has_object_permission(self, request, view, obj):
-        # Read is open; writes allowed to creator or staff
+        # Read is open; writes allowed only to creator
         if request.method in SAFE_METHODS:
             return True
         return bool(
             request.user
-            and (request.user.is_staff or obj.created_by_id == request.user.id)
+            and (obj.created_by_id == request.user.id)
         )
 
-def _is_event_host(user, event) -> bool:
+
+def _is_event_owner(user, event) -> bool:
+    """
+    Check if the user is the actual creator of the event.
+    Explicitly ignores staff/superuser status to enforce strict isolation.
+    """
+    if not (user and user.is_authenticated and event):
+        return False
+    return event.created_by_id == user.id
+
+
+def _is_event_manager(user, event) -> bool:
+    """
+    Administrative check: can this user manage the event?
+    Includes: creator, platform staff, superusers, and community owners.
+    """
     if not (user and user.is_authenticated and event):
         return False
 
-    # Creator / platform staff / community owner are always hosts.
     if (
         user.is_staff
         or getattr(user, "is_superuser", False)
@@ -809,7 +822,22 @@ def _is_event_host(user, event) -> bool:
     ):
         return True
 
-    # Event participants explicitly assigned Host role should also get host access.
+    return False
+
+
+def _is_event_host(user, event) -> bool:
+    """
+    Strict role check: is this user a Host for the live room?
+    Includes ONLY: actual creator OR explicitly assigned EventParticipant with role="host".
+    """
+    if not (user and user.is_authenticated and event):
+        return False
+
+    # 1. Event Creator is always a host
+    if event.created_by_id == user.id:
+        return True
+
+    # 2. Check for explicit Host role assignment in EventParticipant list.
     host_match = Q(participant_type="staff", user_id=user.id)
     user_email = (getattr(user, "email", "") or "").strip()
     if user_email:
@@ -1100,17 +1128,16 @@ class EventViewSet(viewsets.ModelViewSet):
         guest_event_id = getattr(getattr(user, "guest", None), "event_id", None) if is_guest_user else None
         qs = Event.objects.select_related("community").prefetch_related("sessions", "participants__user", "participants__user__profile")
 
-        # Handle hidden events: show to platform_admin + registered users
-        # Non-registered users cannot see hidden events
-        is_platform_admin = getattr(user, "is_superuser", False)
-        if not is_platform_admin and user.is_authenticated and not is_guest_user:
-            # Show non-hidden events OR hidden events where user is registered
+        # Handle hidden events: visible ONLY to creator OR registered users
+        if user.is_authenticated:
+            # Show non-hidden events OR (hidden events AND (user is creator OR user is registered))
             qs = qs.filter(
                 Q(is_hidden=False) |
+                Q(is_hidden=True, created_by=user) |
                 Q(is_hidden=True, registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'])
             ).distinct()
-        elif not is_platform_admin:
-            # Non-authenticated or guest users: only non-hidden events
+        else:
+            # Non-authenticated users: only non-hidden events
             qs = qs.filter(is_hidden=False)
 
         # Base visibility
@@ -1824,9 +1851,9 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         event = self.get_object()
 
-        # Permission: must be event owner or admin
-        if not (event.created_by == request.user or request.user.is_staff):
-            return Response({'detail': 'Forbidden.'}, status=403)
+        # Permission: must be actual event owner
+        if not _is_event_owner(request.user, event):
+            return Response({'detail': 'Forbidden. Only the event owner can manage applications.'}, status=403)
 
         status_filter = request.query_params.get('status')
         qs = event.applications.all()
@@ -1849,8 +1876,8 @@ class EventViewSet(viewsets.ModelViewSet):
         Approve an application and optionally auto-register the applicant.
         """
         event = self.get_object()
-        if not (event.created_by == request.user or request.user.is_staff):
-            return Response({'detail': 'Forbidden.'}, status=403)
+        if not _is_event_owner(request.user, event):
+            return Response({'detail': 'Forbidden. Only the event owner can approve applications.'}, status=403)
 
         app = get_object_or_404(EventApplication, id=app_id, event=event)
         app.status = 'approved'
@@ -1884,8 +1911,8 @@ class EventViewSet(viewsets.ModelViewSet):
         logger = logging.getLogger(__name__)
 
         event = self.get_object()
-        if not (event.created_by == request.user or request.user.is_staff):
-            return Response({'detail': 'Forbidden.'}, status=403)
+        if not _is_event_owner(request.user, event):
+            return Response({'detail': 'Forbidden. Only the event owner can decline applications.'}, status=403)
 
         app = get_object_or_404(EventApplication, id=app_id, event=event)
         rejection_message = request.data.get('rejection_message', '')
@@ -1935,8 +1962,8 @@ class EventViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             event = get_object_or_404(self.get_queryset().model.objects.select_for_update(), pk=pk)
 
-            if not _is_event_host(request.user, event):
-                return Response({"detail": "Only the host can update live status."}, status=403)
+            if not _is_event_manager(request.user, event):
+                return Response({"detail": "Only the host or admin can update live status."}, status=403)
 
             if action_type == "start":
                 if event.status == "ended":
@@ -2143,8 +2170,8 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         event = self.get_object()
 
-        if not _is_event_host(request.user, event):
-            return Response({"detail": "Only the host can end the meeting."}, status=403)
+        if not _is_event_manager(request.user, event):
+            return Response({"detail": "Only the host or admin can end the meeting."}, status=403)
 
         event.status = "ended"
         event.is_live = False
@@ -2214,7 +2241,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 Event.objects.select_for_update(), pk=pk
             )
 
-            if not _is_event_host(request.user, event):
+            if not _is_event_manager(request.user, event):
                 return Response({"detail": "Only the host can start a break."}, status=403)
 
             # Guard: event must be live
@@ -2319,7 +2346,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 Event.objects.select_for_update(), pk=pk
             )
 
-            if not _is_event_host(request.user, event):
+            if not _is_event_manager(request.user, event):
                 return Response({"detail": "Only the host can end a break."}, status=403)
 
             if not event.is_on_break:
@@ -2388,8 +2415,8 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="start-recording")
     def start_recording(self, request, pk=None):
         event = self.get_object()
-        if not _is_event_host(request.user, event):
-            return Response({"detail": "Only the host can control recording."}, status=403)
+        if not _is_event_manager(request.user, event):
+            return Response({"detail": "Only the host or admin can control recording."}, status=403)
         if not event.is_live:
             return Response({"error": "Event must be live to start recording."}, status=400)
         if event.is_recording:
@@ -2422,8 +2449,8 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="pause-recording")
     def pause_recording(self, request, pk=None):
         event = self.get_object()
-        if not _is_event_host(request.user, event):
-            return Response({"detail": "Only the host can control recording."}, status=403)
+        if not _is_event_manager(request.user, event):
+            return Response({"detail": "Only the host or admin can control recording."}, status=403)
         if not event.is_recording or not event.rtk_recording_id:
             return Response({"error": "No active recording to pause."}, status=400)
         if event.recording_paused_at:
@@ -2451,8 +2478,8 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="resume-recording")
     def resume_recording(self, request, pk=None):
         event = self.get_object()
-        if not _is_event_host(request.user, event):
-            return Response({"detail": "Only the host can control recording."}, status=403)
+        if not _is_event_manager(request.user, event):
+            return Response({"detail": "Only the host or admin can control recording."}, status=403)
         if not event.is_recording or not event.rtk_recording_id:
             return Response({"error": "No active recording to resume."}, status=400)
         if not event.recording_paused_at:
@@ -2480,8 +2507,8 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="stop-recording")
     def stop_recording(self, request, pk=None):
         event = self.get_object()
-        if not _is_event_host(request.user, event):
-            return Response({"detail": "Only the host can control recording."}, status=403)
+        if not _is_event_manager(request.user, event):
+            return Response({"detail": "Only the host or admin can control recording."}, status=403)
         if not event.is_recording or not event.rtk_recording_id:
             return Response({"error": "No active recording to stop."}, status=400)
         logger.info(
@@ -2509,7 +2536,7 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["delete"], permission_classes=[IsAuthenticated], url_path="cancel-recording")
     def cancel_recording(self, request, pk=None):
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"error": "Only the host can cancel recording."}, status=403)
         if not event.is_recording and not event.rtk_recording_id:
             return Response({"error": "No active recording to cancel."}, status=400)
@@ -2553,7 +2580,7 @@ class EventViewSet(viewsets.ModelViewSet):
         Body: {"user_id": <id or "guest_<id>"}>
         """
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host can kick participants."}, status=403)
 
         target_id = request.data.get("user_id")
@@ -2604,7 +2631,7 @@ class EventViewSet(viewsets.ModelViewSet):
         Body: {"user_id": <id or "guest_<id>"}>
         """
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host can ban participants."}, status=403)
 
         target_id = request.data.get("user_id")
@@ -2660,7 +2687,7 @@ class EventViewSet(viewsets.ModelViewSet):
         Body: {"user_id": <id or "guest_<id>"}>
         """
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host can unban participants."}, status=403)
 
         target_id = request.data.get("user_id")
@@ -2696,7 +2723,7 @@ class EventViewSet(viewsets.ModelViewSet):
         List all banned users (registered and guests) for this event.
         """
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host can view banned users."}, status=403)
 
         data = []
@@ -2735,7 +2762,7 @@ class EventViewSet(viewsets.ModelViewSet):
         - Only callable by the current event host
         """
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host can assign host roles."}, status=403)
 
         user_id = request.data.get("user_id")
@@ -2811,7 +2838,7 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         event = self.get_object()
 
-        is_host = _is_event_host(request.user, event)
+        is_host = _is_event_manager(request.user, event)
         requester_reg = EventRegistration.objects.filter(event=event, user=request.user).first()
         if not is_host and not requester_reg:
             return Response({"detail": "Not registered for this event."}, status=403)
@@ -2878,7 +2905,7 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         event = self.get_object()
         reg = EventRegistration.objects.filter(event=event, user=request.user, is_banned=False).first()
-        is_host = _is_event_host(request.user, event)
+        is_host = _is_event_manager(request.user, event)
 
         logger.info(
             f"[MOOD API] User {request.user.id} {request.method} mood for event {pk}. "
@@ -2969,7 +2996,7 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response({"error": "Recording not found"}, status=404)
 
         # Check access: host can always download, participants need replay_visible_to_participants
-        is_host = _is_event_host(request.user, event)
+        is_host = _is_event_manager(request.user, event)
         is_participant = EventRegistration.objects.filter(
             event=event,
             user=request.user,
@@ -3030,7 +3057,7 @@ class EventViewSet(viewsets.ModelViewSet):
         from botocore.config import Config
 
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"error": "Permission denied"}, status=403)
 
         filename = (request.data.get("filename") or "replay.mp4").strip()
@@ -3097,7 +3124,7 @@ class EventViewSet(viewsets.ModelViewSet):
         from .tasks import send_replay_notifications_task
 
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"error": "Permission denied"}, status=403)
 
         s3_key = (request.data.get("s3_key") or "").strip()
@@ -3149,7 +3176,7 @@ class EventViewSet(viewsets.ModelViewSet):
         Response: { "ok": true, "replay_visible_to_participants": true }
         """
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"error": "Permission denied"}, status=403)
 
         if not event.replay_available or not event.recording_url:
@@ -3185,7 +3212,7 @@ class EventViewSet(viewsets.ModelViewSet):
         from django.db.models import Sum
 
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"error": "Permission denied"}, status=403)
 
         # Shared: compute preview counts
@@ -3323,14 +3350,10 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         user = request.user
 
-        # allow only event creator, staff or superuser
-        if not (
-            user.is_staff
-            or getattr(user, "is_superuser", False)
-            or event.created_by_id == user.id
-        ):
+        # allow only event creator (strict ownership)
+        if not _is_event_owner(user, event):
             return Response(
-                {"detail": "You do not have permission to view registrations."},
+                {"detail": "You do not have permission to view registrations. Only the event owner can access this data."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -3377,7 +3400,7 @@ class EventViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Check if user is organizer/owner/admin
-        is_organizer = _is_event_host(user, event)
+        is_organizer = _is_event_manager(user, event)
 
         if not is_organizer:
             # Check visibility based on event timing
@@ -3522,8 +3545,8 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="guest-audit")
     def guest_audit(self, request, pk=None):
         event = self.get_object()
-        if not _is_event_host(request.user, event):
-            return Response({"detail": "Only the host can view guest audit records."}, status=403)
+        if not _is_event_owner(request.user, event):
+            return Response({"detail": "Only the event owner can view guest audit records."}, status=403)
 
         guests = (
             GuestAttendee.objects
@@ -3752,8 +3775,8 @@ class EventViewSet(viewsets.ModelViewSet):
         print(f"DEBUG: create_lounge_table hit for event {pk}")
         """Admin-only: Create a new table in the Social Lounge."""
         event = self.get_object()
-        if not (request.user.is_staff or event.created_by_id == request.user.id):
-            return Response({"detail": "Not authorized"}, status=403)
+        if not _is_event_owner(request.user, event):
+            return Response({"detail": "Not authorized. Only the event owner can create lounge tables."}, status=403)
 
         name = request.data.get("name", "New Table")
         category = request.data.get("category", "LOUNGE")
@@ -3800,8 +3823,8 @@ class EventViewSet(viewsets.ModelViewSet):
     def lounge_table_update(self, request, pk=None):
         """Admin-only: Update a lounge table (name, seats, icon)."""
         event = self.get_object()
-        if not (request.user.is_staff or event.created_by_id == request.user.id):
-            return Response({"detail": "Not authorized"}, status=403)
+        if not _is_event_owner(request.user, event):
+            return Response({"detail": "Not authorized. Only the event owner can update lounge tables."}, status=403)
 
         table_id = request.data.get("table_id")
         if not table_id:
@@ -3843,8 +3866,8 @@ class EventViewSet(viewsets.ModelViewSet):
     def lounge_table_delete(self, request, pk=None):
         """Admin-only: Delete a lounge table."""
         event = self.get_object()
-        if not (request.user.is_staff or event.created_by_id == request.user.id):
-            return Response({"detail": "Not authorized"}, status=403)
+        if not _is_event_owner(request.user, event):
+            return Response({"detail": "Not authorized. Only the event owner can delete lounge tables."}, status=403)
 
         table_id = request.data.get("table_id")
         if not table_id:
@@ -3864,8 +3887,8 @@ class EventViewSet(viewsets.ModelViewSet):
     def lounge_table_icon(self, request, pk=None):
         """Admin-only: Update a lounge table's icon."""
         event = self.get_object()
-        if not (request.user.is_staff or event.created_by_id == request.user.id):
-            return Response({"detail": "Not authorized"}, status=403)
+        if not _is_event_owner(request.user, event):
+            return Response({"detail": "Not authorized. Only the event owner can update lounge table icons."}, status=403)
 
         table_id = request.data.get("table_id")
         icon_file = request.FILES.get("icon") if hasattr(request, "FILES") else None
@@ -3974,7 +3997,7 @@ class EventViewSet(viewsets.ModelViewSet):
         # ──── END GUEST BRANCH ──────────────────────────────────────────────────
 
         # ✅ FIX #1: Check waiting room status and enforce access control
-        is_host = _is_event_host(user, event)
+        is_host = _is_event_manager(user, event)
 
         # Only enforce waiting room for non-hosts
         if not is_host and event.waiting_room_enabled:
@@ -4654,8 +4677,9 @@ class EventViewSet(viewsets.ModelViewSet):
         qs = (
             Event.objects
             .filter(
-                Q(registrations__user=user, registrations__status__in=['registered', 'cancellation_requested']) |
-                Q(guest_attendees__converted_user=user)  # Guest attendance linked to user
+                Q(created_by=user) |  # 1. Events created by the user (owner)
+                Q(registrations__user=user, registrations__status__in=['registered', 'cancellation_requested']) | # 2. Registered events
+                Q(guest_attendees__converted_user=user)  # 3. Converted guest attendance
             )
             .distinct()
             .annotate(registrations_count=Count('registrations', distinct=True))
@@ -4670,6 +4694,12 @@ class EventViewSet(viewsets.ModelViewSet):
         if bucket:
             qs = _apply_bucket_filter(qs, bucket)
 
+        # Tab 5: Hidden events support
+        is_hidden_param = request.query_params.get("is_hidden")
+        if is_hidden_param is not None:
+            is_hidden_bool = is_hidden_param.lower() == "true"
+            qs = qs.filter(is_hidden=is_hidden_bool)
+
         page = self.paginate_queryset(qs)
         events = page if page is not None else qs
         ser = EventLiteSerializer(events, many=True, context={"request": request})
@@ -4679,19 +4709,16 @@ class EventViewSet(viewsets.ModelViewSet):
         # Use the same narrow check as EventRegistrationSerializer.get_is_host():
         #   - event creator or community owner → always host
         #   - explicitly assigned in EventParticipant with role="host" → host
-        # We do NOT use _is_event_host() here because that grants all is_staff users
+        # We do NOT use _is_event_manager() here because that grants all is_staff users
         # host access on every event, which is a permissions helper, not a role label.
         result = []
         for event_obj, event_data in zip(events, data):
             d = dict(event_data)
 
-            # Is this user the creator or community owner?
-            is_creator_or_owner = (
-                event_obj.created_by_id == user.id
-                or getattr(getattr(event_obj, "community", None), "owner_id", None) == user.id
-            )
+            # Is this user the actual creator?
+            is_actual_owner = (event_obj.created_by_id == user.id)
 
-            if is_creator_or_owner:
+            if is_actual_owner:
                 d["is_host"] = True
             else:
                 # Check explicit EventParticipant assignment with role="host"
@@ -4841,10 +4868,10 @@ class EventViewSet(viewsets.ModelViewSet):
             )
 
         # 2) Decide host vs participant preset
-        is_creator_or_staff = _is_event_host(user, event)
+        is_event_host = _is_event_host(user, event)
 
         # Basic guard – hosts can always join; others only if live/published
-        if not is_creator_or_staff and event.status not in ("live", "published"):
+        if not is_event_host and event.status not in ("live", "published"):
             logger.warning(f"User {user.id} tried to join non-live event {event.id} (status: {event.status})")
             return Response(
                 {"error": "event_not_live", "detail": f"Event is currently {event.status}. Only hosts can join."},
@@ -4866,12 +4893,12 @@ class EventViewSet(viewsets.ModelViewSet):
         else:
             requested_is_host = None  # no explicit role sent
 
-        if requested_is_host is True and not is_creator_or_staff:
+        if requested_is_host is True and not is_event_host:
             # User asked for host but is not allowed → downgrade to audience
             is_host = False
         elif requested_is_host is None:
             # No explicit role → fall back to automatic rule
-            is_host = is_creator_or_staff
+            is_host = is_event_host
         else:
             # Explicit role and allowed
             is_host = requested_is_host
@@ -5162,7 +5189,7 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response({"error": "not_registered", "detail": "You are not registered for this event."}, status=403)
         if event.status == "cancelled":
             return Response({"error": "event_cancelled", "detail": "This event has been cancelled."}, status=400)
-        if (not _is_event_host(user, event)) and event.status not in ("live", "published"):
+        if (not _is_event_manager(user, event)) and event.status not in ("live", "published"):
             return Response(
                 {"error": "event_not_live", "detail": f"Event is currently {event.status}. Only hosts can join."},
                 status=400,
@@ -5291,7 +5318,7 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="waiting-room/queue")
     def waiting_room_queue(self, request, pk=None):
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host can view the waiting room."}, status=403)
 
         # Auto-admit anyone whose wait time has elapsed
@@ -5351,7 +5378,7 @@ class EventViewSet(viewsets.ModelViewSet):
     def lounge_participants(self, request, pk=None):
         """Host-only endpoint: Returns all participants currently in Social Lounge (at table or floating), excluding hosts."""
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Host only"}, status=403)
 
         # ✅ FIX: Query all participants whose current_location is social_lounge
@@ -5408,7 +5435,7 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="waiting-room/admit")
     def waiting_room_admit(self, request, pk=None):
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host can admit participants."}, status=403)
 
         user_ids = request.data.get("user_ids") or []
@@ -5523,7 +5550,7 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="waiting-room/reject")
     def waiting_room_reject(self, request, pk=None):
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host can reject participants."}, status=403)
 
         user_ids = request.data.get("user_ids") or []
@@ -5565,7 +5592,7 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
 
         # Only host can announce
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host can send announcements."}, status=403)
 
         message_text = (request.data.get("message") or "").strip()
@@ -5676,7 +5703,7 @@ class EventViewSet(viewsets.ModelViewSet):
         Body: { "message": "updated text" }
         """
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host can edit announcements."}, status=403)
 
         announcement = get_object_or_404(WaitingRoomAnnouncement, id=ann_id, event=event, is_deleted=False)
@@ -5726,7 +5753,7 @@ class EventViewSet(viewsets.ModelViewSet):
         Soft-deletes the announcement and broadcasts removal to waiting users.
         """
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host can delete announcements."}, status=403)
 
         announcement = get_object_or_404(WaitingRoomAnnouncement, id=ann_id, event=event, is_deleted=False)
@@ -5983,7 +6010,7 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         event = self.get_object()
         
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Only hosts can cancel this event."}, status=403)
             
         if event.status == "cancelled":
@@ -6023,7 +6050,7 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="invite-emails", parser_classes=[JSONParser])
     def invite_emails(self, request, pk=None):
         event = self.get_object()
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             return Response({"detail": "Forbidden"}, status=403)
             
         from django.core.validators import EmailValidator
@@ -6599,7 +6626,7 @@ class EventSessionViewSet(viewsets.ModelViewSet):
             raise NotFound("Event not found")
 
         # Check permission: must be event creator or staff
-        if not _is_event_host(self.request.user, event):
+        if not _is_event_manager(self.request.user, event):
             raise PermissionDenied("Only event creators/staff can add sessions")
 
         serializer.save(event=event)
@@ -6610,7 +6637,7 @@ class EventSessionViewSet(viewsets.ModelViewSet):
         event = session.event
 
         # Check permission: must be event creator or staff
-        if not _is_event_host(self.request.user, event):
+        if not _is_event_manager(self.request.user, event):
             raise PermissionDenied("Only event creators/staff can update sessions")
 
         serializer.save()
@@ -6620,7 +6647,7 @@ class EventSessionViewSet(viewsets.ModelViewSet):
         event = instance.event
 
         # Check permission: must be event creator or staff
-        if not _is_event_host(self.request.user, event):
+        if not _is_event_manager(self.request.user, event):
             raise PermissionDenied("Only event creators/staff can delete sessions")
 
         instance.delete()
@@ -6631,7 +6658,7 @@ class EventSessionViewSet(viewsets.ModelViewSet):
         session = self.get_object()
         event = session.event
 
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             raise PermissionDenied("Only event hosts can start sessions")
 
         if session.is_live:
@@ -6663,7 +6690,7 @@ class EventSessionViewSet(viewsets.ModelViewSet):
         session = self.get_object()
         event = session.event
 
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             raise PermissionDenied("Only event hosts can end sessions")
 
         if not session.is_live:
@@ -6711,7 +6738,7 @@ class EventSessionViewSet(viewsets.ModelViewSet):
         session = self.get_object()
         event = session.event
 
-        if not _is_event_host(request.user, event):
+        if not _is_event_manager(request.user, event):
             raise PermissionDenied("Only event hosts can view attendances")
 
         attendances = session.attendances.select_related('user').order_by('-joined_at')
