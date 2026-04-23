@@ -3858,12 +3858,103 @@ def _is_platform_admin_for_saleor(request):
 
     return is_platform_admin
 
+SALEOR_OIDC_PLUGIN_ID = "mirumee.authentication.openidconnect"
+
 
 class SaleorDashboardSsoView(APIView):
     """
+    Start Saleor's OIDC flow instead of building a raw Cognito URL directly.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not _is_platform_admin_for_saleor(request):
+            return Response(
+                {"detail": "Forbidden: Only platform_admin can access Saleor Dashboard."},
+                status=403,
+            )
+
+        saleor_api_url = getattr(settings, "SALEOR_API_URL", None)
+        redirect_uri = getattr(settings, "COGNITO_SALEOR_REDIRECT_URI", None)
+
+        if not saleor_api_url or not redirect_uri:
+            return Response(
+                {
+                    "detail": "Saleor SSO is not configured. Set SALEOR_API_URL and COGNITO_SALEOR_REDIRECT_URI."
+                },
+                status=503,
+            )
+
+        mutation = """
+        mutation GetExternalAuthUrl($pluginId: String!, $input: JSONString!) {
+          externalAuthenticationUrl(pluginId: $pluginId, input: $input) {
+            authenticationData
+            errors {
+              field
+              message
+              code
+            }
+          }
+        }
+        """
+
+        variables = {
+            "pluginId": SALEOR_OIDC_PLUGIN_ID,
+            "input": json.dumps({
+                "redirectUri": redirect_uri
+            }),
+        }
+
+        try:
+            r = requests.post(
+                saleor_api_url,
+                json={"query": mutation, "variables": variables},
+                headers={"Content-Type": "application/json"},
+                timeout=20,
+            )
+            r.raise_for_status()
+            data = r.json()
+        except Exception as exc:
+            return Response(
+                {"detail": f"Could not initiate Saleor SSO: {exc}"},
+                status=502,
+            )
+
+        payload = (data.get("data") or {}).get("externalAuthenticationUrl") or {}
+        errors = payload.get("errors") or []
+
+        if errors:
+            return Response(
+                {"detail": "Saleor OIDC init failed.", "errors": errors},
+                status=400,
+            )
+
+        raw_auth_data = payload.get("authenticationData")
+        if not raw_auth_data:
+            return Response(
+                {"detail": "Saleor did not return authenticationData."},
+                status=400,
+            )
+
+        try:
+            auth_data = json.loads(raw_auth_data)
+            authorization_url = auth_data["authorizationUrl"]
+        except Exception:
+            return Response(
+                {"detail": "Invalid authenticationData returned by Saleor.", "raw": raw_auth_data},
+                status=400,
+            )
+
+        if request.query_params.get("redirect") == "1":
+            return redirect(authorization_url)
+
+        return Response({"url": authorization_url}, status=200)
+
+"""class SaleorDashboardSsoView(APIView):
+    """"""
     Returns a Cognito Hosted UI authorize URL for Saleor Dashboard.
     Uses prompt=none for silent auth if the user already has a Cognito session.
-    """
+    """"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -3898,7 +3989,7 @@ class SaleorDashboardSsoView(APIView):
         if request.query_params.get("redirect") == "1":
             return redirect(url)
 
-        return Response({"url": url}, status=200)
+        return Response({"url": url}, status=200)"""
 
 
 class MagicLinkAuthView(APIView):
