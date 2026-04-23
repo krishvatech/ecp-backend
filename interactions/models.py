@@ -265,6 +265,18 @@ class Question(models.Model):
         related_name="covered_questions",
         help_text="If this question was covered by a grouped answer, this links to that group.",
     )
+    is_deleted = models.BooleanField(
+        default=False,
+        help_text=(
+            "Soft-delete flag. Set True when an attendee removes their own pre-event question. "
+            "Hard deletes are avoided so hosts can audit the submission log."
+        ),
+    )
+    deleted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the question was soft-deleted by the attendee.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -276,6 +288,7 @@ class Question(models.Model):
             models.Index(fields=["event", "is_seed"], name="qna_event_seed_idx"),
             models.Index(fields=["event", "submission_phase"], name="qna_event_phase_idx"),
             models.Index(fields=["event", "answered_phase"], name="qna_event_answered_phase_idx"),
+            models.Index(fields=["event", "user", "submission_phase"], name="qna_event_user_phase_idx"),
         ]
         constraints = [
             models.CheckConstraint(

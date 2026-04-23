@@ -897,10 +897,14 @@ class QuestionViewSet(viewsets.ModelViewSet):
         try:
             improved = polish_question(content)
         except ValueError as exc:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("polish_draft AI failure: %s", exc)
             return Response(
-                {"detail": "Could not polish the question right now. Please try again."},
+                {"detail": str(exc)},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+
 
         return Response(
             {
@@ -1609,6 +1613,336 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(questions, many=True)
         return Response(serializer.data)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Pre-Event Q&A Management (Attendee-Owned)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @action(detail=False, methods=["get"], url_path="my-pre-event")
+    def my_pre_event_questions(self, request):
+        """
+        GET /api/interactions/questions/my-pre-event/?event_id=<id>
+
+        Returns all non-deleted pre-event questions submitted by the currently
+        authenticated user for the given event.
+
+        Only available to authenticated (non-guest) users.
+
+        Response fields per question:
+          id, content, created_at, updated_at, moderation_status,
+          is_anonymous, submission_phase, is_deleted
+        """
+        from events.models import Event
+
+        event_id = request.query_params.get("event_id")
+        if not event_id:
+            return Response(
+                {"detail": "event_id query parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = request.user
+        if self._is_guest_user(user):
+            return Response(
+                {"detail": "Guest users cannot manage pre-event questions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        event = get_object_or_404(Event, id=event_id)
+
+        # Verify the user is registered
+        registration = self._get_active_registration(user, event)
+        if not registration:
+            return Response(
+                {"detail": "You are not registered for this event."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        questions = (
+            Question.objects
+            .filter(
+                event=event,
+                user=user,
+                submission_phase="pre_event",
+                is_deleted=False,
+            )
+            .order_by("-created_at")
+        )
+
+        data = [
+            {
+                "id": q.id,
+                "content": q.content,
+                "created_at": q.created_at.isoformat(),
+                "updated_at": q.updated_at.isoformat(),
+                "moderation_status": q.moderation_status,
+                "is_anonymous": q.is_anonymous,
+                "submission_phase": q.submission_phase,
+                "is_answered": q.is_answered,
+                "is_hidden": q.is_hidden,
+            }
+            for q in questions
+        ]
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["patch"], url_path="pre-event-edit")
+    def pre_event_edit(self, request, pk=None):
+        """
+        PATCH /api/interactions/questions/{id}/pre-event-edit/
+
+        Allows an attendee to edit their own pre-event question before the
+        event starts.
+
+        Body (all optional):
+          { "content": "new text", "is_anonymous": true/false }
+
+        Enforcement rules (all checked server-side):
+          - Must be authenticated (non-guest).
+          - Must be the owner of the question (question.user == request.user).
+          - question.submission_phase must be "pre_event".
+          - question must not be soft-deleted.
+          - Event must not have started yet (timezone.now() < event.start_time).
+
+        Moderation:
+          - If event.qna_moderation_enabled, editing resets moderation_status
+            to "pending" so the host re-reviews the updated content.
+          - If moderation is disabled, moderation_status remains unchanged.
+        """
+        from django.utils import timezone
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        user = request.user
+
+        if self._is_guest_user(user):
+            return Response(
+                {"detail": "Guest users cannot edit pre-event questions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Ownership check
+        if question.user_id != user.id:
+            raise PermissionDenied("You can only edit your own questions.")
+
+        # Phase check
+        if question.submission_phase != "pre_event":
+            return Response(
+                {"detail": "Only pre-event questions can be edited through this endpoint."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Soft-delete check
+        if question.is_deleted:
+            return Response(
+                {"detail": "This question has been deleted."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Time-gate: block editing after event has started
+        event = question.event
+        if event.start_time and timezone.now() >= event.start_time:
+            return Response(
+                {"detail": "The event has already started. Pre-event questions can no longer be edited."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Apply updates
+        update_fields = ["updated_at"]
+
+        new_content = (request.data.get("content") or "").strip()
+        if new_content:
+            if len(new_content) < 5:
+                return Response(
+                    {"detail": "Question must be at least 5 characters."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(new_content) > 1000:
+                return Response(
+                    {"detail": "Question must be at most 1000 characters."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            question.content = new_content
+            update_fields.append("content")
+
+        if "is_anonymous" in request.data:
+            # Respect event-level anonymous override
+            if event.qna_anonymous_mode:
+                # Force anonymous — attendee cannot turn it off
+                question.is_anonymous = True
+            else:
+                question.is_anonymous = bool(request.data["is_anonymous"])
+            update_fields.append("is_anonymous")
+
+        # Reset moderation if event has moderation enabled
+        if event.qna_moderation_enabled and "content" in update_fields:
+            question.moderation_status = "pending"
+            update_fields.append("moderation_status")
+
+        question.save(update_fields=update_fields)
+
+        return Response(
+            {
+                "id": question.id,
+                "content": question.content,
+                "moderation_status": question.moderation_status,
+                "is_anonymous": question.is_anonymous,
+                "updated_at": question.updated_at.isoformat(),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["delete"], url_path="pre-event-delete")
+    def pre_event_delete(self, request, pk=None):
+        """
+        DELETE /api/interactions/questions/{id}/pre-event-delete/
+
+        Soft-deletes an attendee's own pre-event question before the event starts.
+
+        Enforcement rules (server-side):
+          - Must be authenticated (non-guest).
+          - Must be the owner.
+          - submission_phase must be "pre_event".
+          - Must not already be deleted.
+          - Event must not have started.
+
+        No WebSocket broadcast is sent because the question was never in the
+        live Q&A stream.  Returns 204 No Content on success.
+        """
+        from django.utils import timezone
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        user = request.user
+
+        if self._is_guest_user(user):
+            return Response(
+                {"detail": "Guest users cannot delete pre-event questions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if question.user_id != user.id:
+            raise PermissionDenied("You can only delete your own questions.")
+
+        if question.submission_phase != "pre_event":
+            return Response(
+                {"detail": "Only pre-event questions can be deleted through this endpoint."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if question.is_deleted:
+            return Response(
+                {"detail": "This question has already been deleted."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        event = question.event
+        if event.start_time and timezone.now() >= event.start_time:
+            return Response(
+                {"detail": "The event has already started. Pre-event questions can no longer be deleted."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Soft-delete
+        question.is_deleted = True
+        question.deleted_at = timezone.now()
+        question.save(update_fields=["is_deleted", "deleted_at"])
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=False, methods=["post"], url_path="pre-event-duplicate-check",
+            throttle_classes=[PolishQuestionRateThrottle])
+    def pre_event_duplicate_check(self, request):
+        """
+        POST /api/interactions/questions/pre-event-duplicate-check/
+
+        Checks whether a draft question is semantically similar to the user's
+        existing pre-event questions for the same event.
+
+        Request body:
+            { "event_id": 123, "content": "draft text" }
+
+        Response (200):
+            {
+              "duplicates": [
+                {
+                  "question_id": <int>,
+                  "existing_text": "...",
+                  "similarity_reason": "...",
+                  "suggested_merge": "..." or null,
+                  "suggestions": ["keep both", "edit existing", "replace existing", "cancel"]
+                }
+              ],
+              "has_duplicates": <bool>
+            }
+
+        Safety rules:
+          - Never auto-merges or modifies anything.
+          - Returns 503 if the AI key is not configured.
+          - Returns a safe empty result {"duplicates": [], "has_duplicates": false}
+            on AI timeout/network error (soft failure) rather than crashing.
+          - Private to the requesting attendee only.
+        """
+        from events.models import Event
+        from .ai_pre_event_advisor import check_duplicate_questions
+
+        event_id = request.data.get("event_id")
+        content = (request.data.get("content") or "").strip()
+
+        if not event_id:
+            return Response(
+                {"detail": "event_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not content:
+            return Response(
+                {"detail": "content is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(content) < 5:
+            return Response(
+                {"detail": "content must be at least 5 characters."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = request.user
+        if self._is_guest_user(user):
+            return Response(
+                {"detail": "Guest users cannot use the duplicate checker."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        event = get_object_or_404(Event, id=event_id)
+
+        # Load user's existing pre-event questions for this event
+        existing_qs = (
+            Question.objects
+            .filter(
+                event=event,
+                user=user,
+                submission_phase="pre_event",
+                is_deleted=False,
+            )
+            .values("id", "content")
+        )
+        existing = list(existing_qs)
+
+        if not existing:
+            return Response(
+                {"duplicates": [], "has_duplicates": False},
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            result = check_duplicate_questions(draft=content, existing_questions=existing)
+        except ValueError as exc:
+            # Configuration error (no API key)
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return Response(result, status=status.HTTP_200_OK)
+
 
     @action(detail=True, methods=["post"], url_path="post_event_answer")
     def post_event_answer(self, request, pk=None):

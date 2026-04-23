@@ -84,7 +84,17 @@ def polish_question(content: str) -> str:
         raise ValueError(f"Failed to connect to AI service: {exc}")
 
     if response.status_code != 200:
-        raise ValueError(f"AI service returned error {response.status_code}.")
+        error_body = ""
+        try:
+            err_data = response.json()
+            error_body = err_data.get("error", {}).get("message", "") or str(err_data)
+        except Exception:
+            error_body = response.text[:200]
+        raise ValueError(
+            f"AI service returned error {response.status_code}"
+            + (f": {error_body}" if error_body else ".")
+        )
+
 
     raw = (
         response.json()
