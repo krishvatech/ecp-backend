@@ -5,7 +5,7 @@ Lightweight AI helper that rewrites a rough Q&A question into a clearer,
 more polite, and concise version — without changing its meaning or language.
 
 Rules:
-- Uses the same OpenAI provider already wired up in ai_grouping.py.
+- Uses the OpenAI API (gpt-4-turbo for superior quality).
 - Never persists the original or improved draft.
 - Preserves the user's original language.
 - Keeps the result as a question.
@@ -23,12 +23,18 @@ from django.conf import settings
 MAX_INPUT_CHARS = 1000
 
 _SYSTEM_PROMPT = (
-    "You improve draft webinar Q&A questions. "
-    "Rewrite only for clarity, grammar, concision, and politeness. "
-    "Preserve the original meaning and language exactly. "
-    "Do not add new facts, names, or details. "
-    "Keep it as a question. "
-    "Return strict JSON only: {\"improved\": \"...\"}"
+    "You are an expert professional editor specializing in business Q&A and webinar content. "
+    "Your task: transform draft webinar questions into polished, professional-grade questions that sound authoritative and well-articulated. "
+    "Guidelines:\n"
+    "- Rewrite for clarity, professional tone, proper grammar, and concision.\n"
+    "- Expand technical abbreviations (M&A → 'mergers and acquisitions').\n"
+    "- Restructure awkward phrasing into natural, flowing language.\n"
+    "- Ensure the question is complete and grammatically correct.\n"
+    "- Preserve the original intent, meaning, and core content.\n"
+    "- Do not add new facts, figures, or details beyond clarifying/professionalizing.\n"
+    "- Keep as a question (not a statement).\n"
+    "- Aim for meaningful, noticeable improvement — not trivial changes.\n"
+    "Return valid JSON only: {\"improved\": \"...\"}"
 )
 
 
@@ -49,7 +55,7 @@ def polish_question(content: str) -> str:
         raise ValueError("OpenAI API key not configured on server.")
 
     payload = {
-        "model": "gpt-3.5-turbo",
+        "model": "gpt-4o",
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -58,12 +64,12 @@ def polish_question(content: str) -> str:
                 "content": (
                     "Original question:\n"
                     f"{content[:MAX_INPUT_CHARS]}\n\n"
-                    'Return JSON: {"improved": "..."}'
+                    'Improve this question professionally. Return JSON: {"improved": "..."}'
                 ),
             },
         ],
-        "temperature": 0.3,
-        "max_tokens": 300,
+        "temperature": 0.5,
+        "max_tokens": 400,
     }
 
     headers = {
