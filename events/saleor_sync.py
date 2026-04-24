@@ -65,7 +65,28 @@ def sync_event_to_saleor_sync(event):
 
     logger.info(f"🔄 SALEOR SYNC START | Event: {event.title} | Price: {event.currency} {price_amount} | Channel: {channel_slug}")
 
-    # 3. Create or Update Product
+    # 3. Verify / Correct Linkage via SKU
+    # Saleor SKUs (EVENT-{id}) are our unique anchor. 
+    # If the local saleor_product_id is missing or out of sync, we fix it.
+    sku = f"EVENT-{event.id}"
+    existing_variant = _get_variant_by_sku(saleor_url, headers, sku)
+    
+    if existing_variant:
+        v_id = existing_variant["id"]
+        p_id = existing_variant["product"]["id"]
+        if event.saleor_product_id != p_id or event.saleor_variant_id != v_id:
+            logger.info(f"🔗 Re-linking Event {event.id} to existing Saleor Product {p_id} (Variant {v_id}) via SKU {sku}")
+            
+            # If we had a different product ID, it's likely a duplicate from a failed previous sync
+            if event.saleor_product_id and event.saleor_product_id != p_id:
+                logger.info(f"🗑️ Cleaning up redundant Saleor product {event.saleor_product_id}")
+                _delete_product_by_id(saleor_url, headers, event.saleor_product_id)
+
+            event.saleor_product_id = p_id
+            event.saleor_variant_id = v_id
+            event.save(update_fields=["saleor_product_id", "saleor_variant_id"])
+
+    # 4. Create or Update Product
     if not event.saleor_product_id:
         logger.info(f"➕ Creating NEW product for event {event.id} | Price: {event.currency} {price_amount}")
         _create_product_in_saleor(event, saleor_url, headers, category_id, product_type_id, channel_slug)
@@ -147,16 +168,20 @@ def _update_product_in_saleor(event, url, headers, channel):
     except Exception as e:
         logger.error(f"Exc updating product: {e}")
 
-    # For now, we prioritize price update on the variant
-    if event.saleor_variant_id:
+    # Ensure product is in channel
+    _update_product_channel_listing(url, headers, event.saleor_product_id, channel)
+
+    # Ensure variant exists
+    if not event.saleor_variant_id:
+        logger.info(f"➕ Variant missing for product {event.saleor_product_id}, creating one...")
+        _create_variant(event, url, headers, event.saleor_product_id, channel)
+    else:
         logger.info(f"💰 UPDATING Price on Variant: {event.saleor_variant_id} | Event: {event.title}")
         _update_variant_price(event, url, headers, event.saleor_variant_id, channel)
 
         # Also update stock if max_participants changed
         logger.info(f"📦 UPDATING Stock: {event.max_participants or 'Unlimited (999999)'} | Variant: {event.saleor_variant_id}")
         _create_or_update_stock(event, url, headers, event.saleor_variant_id)
-    else:
-        logger.warning(f"⚠️  No variant ID found for event {event.id}. Price and stock not updated.")
 
 def _create_variant(event, url, headers, product_id, channel):
     mutation = """
@@ -187,6 +212,25 @@ def _create_variant(event, url, headers, product_id, channel):
         var_data = data.get("data", {}).get("productVariantCreate", {})
         errors = var_data.get("errors", [])
         if errors:
+            # Check for SKU collision
+            is_sku_error = any(e.get('field') == 'sku' and 'already exists' in e.get('message', '').lower() for e in errors)
+            if is_sku_error:
+                logger.info(f"ℹ️ SKU {sku} already exists. Fetching existing variant...")
+                existing_variant = _get_variant_by_sku(url, headers, sku)
+                if existing_variant:
+                    v_id = existing_variant["id"]
+                    p_id = existing_variant["product"]["id"]
+                    
+                    if p_id == product_id:
+                        logger.info(f"✅ SKU belongs to CURRENT product. Using Variant {v_id}")
+                        event.saleor_variant_id = v_id
+                        event.save(update_fields=["saleor_variant_id"])
+                        _update_variant_channel_listing(event, url, headers, v_id, channel)
+                        _create_or_update_stock(event, url, headers, v_id)
+                        return
+                    else:
+                        logger.error(f"❌ SKU COLLISION: {sku} belongs to DIFFERENT product {p_id}")
+            
             logger.error(f"❌ Variant Create Errors: {errors}")
             return
 
@@ -236,9 +280,15 @@ def _update_product_channel_listing(url, headers, product_id, channel):
     variables["input"]["updateChannels"][0]["channelId"] = channel_id
 
     try:
-        requests.post(url, json={"query": mutation, "variables": variables}, headers=headers)
-    except:
-        pass
+        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers)
+        data = r.json()
+        errors = data.get("data", {}).get("productChannelListingUpdate", {}).get("errors", [])
+        if errors:
+            logger.error(f"❌ Product Channel Update Errors for {product_id}: {errors}")
+        else:
+            logger.info(f"✅ Product {product_id} listed in channel {channel}")
+    except Exception as e:
+        logger.error(f"❌ Exception in product channel update: {e}")
 
 def _update_variant_channel_listing(event, url, headers, variant_id, channel):
     channel_id = _get_channel_id(url, headers, channel)
@@ -299,9 +349,40 @@ def _get_channel_id(url, headers, slug):
             for ch in r.json().get("data", {}).get("channels", []):
                 if ch["slug"] == slug:
                     return ch["id"]
+        else:
+            logger.error(f"❌ Error fetching channels: {r.status_code} {r.text}")
+    except Exception as e:
+        logger.error(f"❌ Exception fetching channels: {e}")
+    return None
+
+def _get_variant_by_sku(url, headers, sku):
+    query = """
+    query GetVariantBySku($sku: String!) {
+      productVariant(sku: $sku) {
+        id
+        sku
+        product { id }
+      }
+    }
+    """
+    try:
+        r = requests.post(url, json={"query": query, "variables": {"sku": sku}}, headers=headers)
+        return r.json().get("data", {}).get("productVariant")
+    except:
+        return None
+
+def _delete_product_by_id(url, headers, product_id):
+    mutation = """
+    mutation DeleteProduct($id: ID!) {
+      productDelete(id: $id) {
+        errors { field message }
+      }
+    }
+    """
+    try:
+        requests.post(url, json={"query": mutation, "variables": {"id": product_id}}, headers=headers)
     except:
         pass
-    return None
 
 def _get_or_create_category(url, headers, name):
     # check existing

@@ -71,21 +71,35 @@ class SaleorProductWebhookView(APIView):
         # Log full payload for debugging
         logger.debug(f"Full webhook payload: {json.dumps(payload, indent=2, default=str)}")
 
-        if event_type in ("PRODUCT_CREATED", "PRODUCT_UPDATED"):
+        if event_type in (
+            "PRODUCT_CREATED", "PRODUCT_UPDATED", 
+            "PRODUCT_VARIANT_CREATED", "PRODUCT_VARIANT_UPDATED", 
+            "PRODUCT_VARIANT_DELETED", "PRODUCT_CHANNEL_LISTING_UPDATED",
+            "PRODUCT_VARIANT_STOCK_UPDATED"
+        ):
             # Saleor can send data directly or wrapped in a list/dict
             product_data = payload
             if isinstance(payload, list) and len(payload) > 0:
                 product_data = payload[0]
             elif isinstance(payload, dict):
-                if "event" in payload and "product" in payload["event"]:
-                    product_data = payload["event"]["product"]
-                elif "product" in payload:
+                # 1. Direct product key
+                if "product" in payload:
                     product_data = payload["product"]
+                # 2. Product Variant key (extract parent product)
+                elif "product_variant" in payload:
+                    product_data = payload["product_variant"].get("product") or payload["product_variant"]
+                elif "productVariant" in payload:
+                    product_data = payload["productVariant"].get("product") or payload["productVariant"]
+                # 3. Wrapped in event (older versions or App behavior)
+                elif "event" in payload:
+                    evt = payload["event"]
+                    product_data = evt.get("product") or evt.get("productVariant", {}).get("product") or evt
             
-            # If still missing ID, maybe it's under a different key or we need to look deeper
-            if not product_data.get("id") and isinstance(product_data, dict):
-                 # Try to find any key that looks like a product ID or the first key if it's a single-key dict
-                 pass
+            # If we only have an ID but not the full product data (common in variant updates),
+            # sync_event_from_saleor_data will automatically fetch the full product.
+            if not product_data or not isinstance(product_data, dict) or not product_data.get("id"):
+                logger.warning(f"⚠️ Could not resolve product ID from {event_type} webhook payload")
+                return Response({"status": "ignored", "reason": "no_product_id"}, status=status.HTTP_200_OK)
 
             event_instance, action = sync_event_from_saleor_data(product_data)
             if event_instance:
