@@ -2356,19 +2356,30 @@ class EventApplicationSubmitSerializer(serializers.Serializer):
 class SaleorChannelSerializer(serializers.ModelSerializer):
     class Meta:
         model = SaleorChannel
-        fields = ['id', 'saleor_id', 'name', 'slug', 'currency', 'is_active', 'synced_at']
+        fields = [
+            'id', 'saleor_id', 'name', 'slug', 'currency', 'is_active', 
+            'default_country', 'countries', 'warehouse_ids', 'synced_at'
+        ]
         read_only_fields = ['id', 'synced_at']
 
 
 class SaleorWarehouseSerializer(serializers.ModelSerializer):
     class Meta:
         model = SaleorWarehouse
-        fields = ['id', 'saleor_id', 'name', 'city', 'country', 'is_active', 'synced_at']
+        fields = [
+            'id', 'saleor_id', 'name', 'slug', 'email', 'external_reference',
+            'city', 'country', 'country_code', 'postal_code', 'country_area',
+            'click_and_collect', 'is_private', 'is_active', 'synced_at'
+        ]
         read_only_fields = ['id', 'synced_at']
 
 
 class SaleorShippingZoneSerializer(serializers.ModelSerializer):
     class Meta:
         model = SaleorShippingZone
-        fields = ['id', 'saleor_id', 'name', 'description', 'is_active', 'synced_at']
+        fields = [
+            'id', 'saleor_id', 'name', 'description', 'is_default', 
+            'countries', 'channel_ids', 'warehouse_ids', 'shipping_methods', 
+            'is_active', 'synced_at'
+        ]
         read_only_fields = ['id', 'synced_at']

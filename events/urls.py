@@ -9,10 +9,19 @@ from .views import (
     VirtualSpeakerViewSet,
     SaleorChannelListView,
     SaleorChannelSyncView,
+    SaleorChannelCreateView,
+    SaleorChannelUpdateView,
+    SaleorChannelDeleteView,
     SaleorWarehouseListView,
     SaleorWarehouseSyncView,
+    SaleorWarehouseCreateView,
+    SaleorWarehouseUpdateView,
+    SaleorWarehouseDeleteView,
     SaleorShippingZoneListView,
     SaleorShippingZoneSyncView,
+    SaleorShippingZoneCreateView,
+    SaleorShippingZoneUpdateView,
+    SaleorShippingZoneDeleteView,
 )
 from .guest_views import (
     GuestJoinView,
@@ -245,8 +254,13 @@ urlpatterns = [
     # Saleor Manager endpoints
     path("events/saleor/channels/", SaleorChannelListView.as_view(), name="saleor-channel-list"),
     path("events/saleor/channels/sync/", SaleorChannelSyncView.as_view(), name="saleor-channel-sync"),
+
     path("events/saleor/warehouses/", SaleorWarehouseListView.as_view(), name="saleor-warehouse-list"),
     path("events/saleor/warehouses/sync/", SaleorWarehouseSyncView.as_view(), name="saleor-warehouse-sync"),
+
     path("events/saleor/shipping-zones/", SaleorShippingZoneListView.as_view(), name="saleor-shipping-zone-list"),
     path("events/saleor/shipping-zones/sync/", SaleorShippingZoneSyncView.as_view(), name="saleor-shipping-zone-sync"),
+    path("events/saleor/shipping-zones/create/", SaleorShippingZoneCreateView.as_view(), name="saleor-shipping-zone-create"),
+    path("events/saleor/shipping-zones/<int:pk>/", SaleorShippingZoneUpdateView.as_view(), name="saleor-shipping-zone-update"),
+    path("events/saleor/shipping-zones/<int:pk>/delete/", SaleorShippingZoneDeleteView.as_view(), name="saleor-shipping-zone-delete"),
 ]

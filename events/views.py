@@ -97,6 +97,20 @@ from .utils import (
 )
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from .saleor_sync import (
+    sync_channels_from_saleor,
+    sync_warehouses_from_saleor,
+    sync_shipping_zones_from_saleor,
+    create_channel_in_saleor,
+    update_channel_in_saleor,
+    delete_channel_in_saleor,
+    create_warehouse_in_saleor,
+    update_warehouse_in_saleor,
+    delete_warehouse_in_saleor,
+    create_shipping_zone_in_saleor,
+    update_shipping_zone_in_saleor,
+    delete_shipping_zone_in_saleor,
+)
 
 # ============================================================
 # ================== Env / Settings Bootstrap ================
@@ -6866,46 +6880,105 @@ class SaleorChannelSyncView(views.APIView):
         if not _is_platform_admin(request):
             raise PermissionDenied("Only platform_admin can access this endpoint.")
 
-        saleor_url = getattr(settings, "SALEOR_API_URL", None)
-        saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
-
-        if not saleor_url or not saleor_token:
-            return Response({"error": "Saleor config missing"}, status=400)
-
         try:
-            query = """
-            query Channels {
-              channels {
-                id
-                name
-                slug
-                currencyCode
-                isActive
-              }
-            }
-            """
-            headers = {"Authorization": f"Bearer {saleor_token}"}
-            r = requests.post(saleor_url, json={"query": query}, headers=headers, timeout=10)
-            r.raise_for_status()
-
-            channels = r.json().get("data", {}).get("channels", [])
-            synced = []
-
-            for ch in channels:
-                obj, _ = SaleorChannel.objects.update_or_create(
-                    saleor_id=ch["id"],
-                    defaults={
-                        "name": ch["name"],
-                        "slug": ch["slug"],
-                        "currency": ch["currencyCode"],
-                        "is_active": ch["isActive"],
-                    }
-                )
-                synced.append(SaleorChannelSerializer(obj).data)
-
-            return Response({"channels": synced, "count": len(synced)})
+            synced_ids = sync_channels_from_saleor()
+            channels = SaleorChannel.objects.filter(saleor_id__in=synced_ids)
+            return Response({
+                "channels": SaleorChannelSerializer(channels, many=True).data,
+                "count": len(synced_ids)
+            })
         except Exception as e:
-            logger.error(f"Error syncing Saleor channels: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorChannelCreateView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        
+        try:
+            result = create_channel_in_saleor(request.data)
+            
+            if "errors" in result and not result.get("data"):
+                return Response({"errors": result["errors"]}, status=400)
+            
+            data = result.get("data", {}).get("channelCreate", {})
+            if not data:
+                return Response({"error": "No data returned from Saleor"}, status=500)
+
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+            
+            ch_node = data.get("channel")
+            if not ch_node or not ch_node.get("id"):
+                return Response({"error": "Channel created but no ID returned"}, status=500)
+
+            # Sync to update local DB
+            sync_channels_from_saleor()
+            
+            try:
+                obj = SaleorChannel.objects.get(saleor_id=ch_node["id"])
+                return Response(SaleorChannelSerializer(obj).data, status=201)
+            except SaleorChannel.DoesNotExist:
+                return Response({"error": "Channel created in Saleor but failed to sync locally"}, status=500)
+                
+        except Exception as e:
+            logger.exception(f"Error in SaleorChannelCreateView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorChannelUpdateView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        
+        obj = get_object_or_404(SaleorChannel, pk=pk)
+        try:
+            result = update_channel_in_saleor(obj.saleor_id, request.data)
+            
+            if "errors" in result and not result.get("data"):
+                return Response({"errors": result["errors"]}, status=400)
+
+            data = result.get("data", {}).get("channelUpdate", {})
+            if not data:
+                return Response({"error": "No data returned from Saleor"}, status=500)
+
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+            
+            # Sync to update local DB
+            sync_channels_from_saleor()
+            obj.refresh_from_db()
+            return Response(SaleorChannelSerializer(obj).data)
+        except Exception as e:
+            logger.exception(f"Error in SaleorChannelUpdateView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorChannelDeleteView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        
+        obj = get_object_or_404(SaleorChannel, pk=pk)
+        try:
+            result = delete_channel_in_saleor(obj.saleor_id)
+            data = result.get("data", {}).get("channelDelete", {})
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+            
+            obj.delete()
+            return Response(status=204)
+        except Exception as e:
             return Response({"error": str(e)}, status=500)
 
 
@@ -6929,58 +7002,105 @@ class SaleorWarehouseSyncView(views.APIView):
         if not _is_platform_admin(request):
             raise PermissionDenied("Only platform_admin can access this endpoint.")
 
-        saleor_url = getattr(settings, "SALEOR_API_URL", None)
-        saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
-
-        if not saleor_url or not saleor_token:
-            return Response({"error": "Saleor config missing"}, status=400)
-
         try:
-            query = """
-            query Warehouses {
-              warehouses(first: 100) {
-                edges {
-                  node {
-                    id
-                    name
-                    address {
-                      city
-                      country {
-                        country
-                      }
-                    }
-                    isPrivate
-                  }
-                }
-              }
-            }
-            """
-            headers = {"Authorization": f"Bearer {saleor_token}"}
-            r = requests.post(saleor_url, json={"query": query}, headers=headers, timeout=10)
-            r.raise_for_status()
-
-            warehouses = r.json().get("data", {}).get("warehouses", {}).get("edges", [])
-            synced = []
-
-            for edge in warehouses:
-                node = edge["node"]
-                address = node.get("address", {}) or {}
-                country_obj = address.get("country", {}) or {}
-
-                obj, _ = SaleorWarehouse.objects.update_or_create(
-                    saleor_id=node["id"],
-                    defaults={
-                        "name": node["name"],
-                        "city": address.get("city", ""),
-                        "country": country_obj.get("country", ""),
-                        "is_active": not node.get("isPrivate", False),
-                    }
-                )
-                synced.append(SaleorWarehouseSerializer(obj).data)
-
-            return Response({"warehouses": synced, "count": len(synced)})
+            synced_ids = sync_warehouses_from_saleor()
+            warehouses = SaleorWarehouse.objects.filter(saleor_id__in=synced_ids)
+            return Response({
+                "warehouses": SaleorWarehouseSerializer(warehouses, many=True).data,
+                "count": len(synced_ids)
+            })
         except Exception as e:
-            logger.error(f"Error syncing Saleor warehouses: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorWarehouseCreateView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        
+        try:
+            result = create_warehouse_in_saleor(request.data)
+            
+            if "errors" in result and not result.get("data"):
+                return Response({"errors": result["errors"]}, status=400)
+
+            data = result.get("data", {}).get("warehouseCreate", {})
+            if not data:
+                return Response({"error": "No data returned from Saleor"}, status=500)
+
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+            
+            wh_node = data.get("warehouse")
+            if not wh_node or not wh_node.get("id"):
+                return Response({"error": "Warehouse created but no ID returned"}, status=500)
+
+            # Sync to update local DB
+            sync_warehouses_from_saleor()
+            
+            try:
+                obj = SaleorWarehouse.objects.get(saleor_id=wh_node["id"])
+                return Response(SaleorWarehouseSerializer(obj).data, status=201)
+            except SaleorWarehouse.DoesNotExist:
+                return Response({"error": "Warehouse created in Saleor but failed to sync locally"}, status=500)
+
+        except Exception as e:
+            logger.exception(f"Error in SaleorWarehouseCreateView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorWarehouseUpdateView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        
+        obj = get_object_or_404(SaleorWarehouse, pk=pk)
+        try:
+            result = update_warehouse_in_saleor(obj.saleor_id, request.data)
+            
+            if "errors" in result and not result.get("data"):
+                return Response({"errors": result["errors"]}, status=400)
+
+            data = result.get("data", {}).get("warehouseUpdate", {})
+            if not data:
+                return Response({"error": "No data returned from Saleor"}, status=500)
+
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+            
+            # Sync to update local DB
+            sync_warehouses_from_saleor()
+            obj.refresh_from_db()
+            return Response(SaleorWarehouseSerializer(obj).data)
+        except Exception as e:
+            logger.exception(f"Error in SaleorWarehouseUpdateView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorWarehouseDeleteView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        
+        obj = get_object_or_404(SaleorWarehouse, pk=pk)
+        try:
+            result = delete_warehouse_in_saleor(obj.saleor_id)
+            data = result.get("data", {}).get("warehouseDelete", {})
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+            
+            obj.delete()
+            return Response(status=204)
+        except Exception as e:
             return Response({"error": str(e)}, status=500)
 
 
@@ -7004,46 +7124,103 @@ class SaleorShippingZoneSyncView(views.APIView):
         if not _is_platform_admin(request):
             raise PermissionDenied("Only platform_admin can access this endpoint.")
 
-        saleor_url = getattr(settings, "SALEOR_API_URL", None)
-        saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
-
-        if not saleor_url or not saleor_token:
-            return Response({"error": "Saleor config missing"}, status=400)
-
         try:
-            query = """
-            query ShippingZones {
-              shippingZones(first: 100) {
-                edges {
-                  node {
-                    id
-                    name
-                    description
-                  }
-                }
-              }
-            }
-            """
-            headers = {"Authorization": f"Bearer {saleor_token}"}
-            r = requests.post(saleor_url, json={"query": query}, headers=headers, timeout=10)
-            r.raise_for_status()
-
-            shipping_zones = r.json().get("data", {}).get("shippingZones", {}).get("edges", [])
-            synced = []
-
-            for edge in shipping_zones:
-                node = edge["node"]
-                obj, _ = SaleorShippingZone.objects.update_or_create(
-                    saleor_id=node["id"],
-                    defaults={
-                        "name": node["name"],
-                        "description": node.get("description", ""),
-                        "is_active": True,
-                    }
-                )
-                synced.append(SaleorShippingZoneSerializer(obj).data)
-
-            return Response({"shipping_zones": synced, "count": len(synced)})
+            synced_ids = sync_shipping_zones_from_saleor()
+            shipping_zones = SaleorShippingZone.objects.filter(saleor_id__in=synced_ids)
+            return Response({
+                "shipping_zones": SaleorShippingZoneSerializer(shipping_zones, many=True).data,
+                "count": len(synced_ids)
+            })
         except Exception as e:
-            logger.error(f"Error syncing Saleor shipping zones: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorShippingZoneCreateView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        
+        try:
+            result = create_shipping_zone_in_saleor(request.data)
+            
+            if "errors" in result and not result.get("data"):
+                return Response({"errors": result["errors"]}, status=400)
+
+            data = result.get("data", {}).get("shippingZoneCreate", {})
+            if not data:
+                return Response({"error": "No data returned from Saleor"}, status=500)
+
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+            
+            sz_node = data.get("shippingZone")
+            if not sz_node or not sz_node.get("id"):
+                return Response({"error": "Shipping zone created but no ID returned"}, status=500)
+
+            # Sync to update local DB
+            sync_shipping_zones_from_saleor()
+            
+            try:
+                obj = SaleorShippingZone.objects.get(saleor_id=sz_node["id"])
+                return Response(SaleorShippingZoneSerializer(obj).data, status=201)
+            except SaleorShippingZone.DoesNotExist:
+                return Response({"error": "Shipping zone created in Saleor but failed to sync locally"}, status=500)
+
+        except Exception as e:
+            logger.exception(f"Error in SaleorShippingZoneCreateView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorShippingZoneUpdateView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        
+        obj = get_object_or_404(SaleorShippingZone, pk=pk)
+        try:
+            result = update_shipping_zone_in_saleor(obj.saleor_id, request.data)
+            
+            if "errors" in result and not result.get("data"):
+                return Response({"errors": result["errors"]}, status=400)
+
+            data = result.get("data", {}).get("shippingZoneUpdate", {})
+            if not data:
+                return Response({"error": "No data returned from Saleor"}, status=500)
+
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+            
+            # Sync to update local DB
+            sync_shipping_zones_from_saleor()
+            obj.refresh_from_db()
+            return Response(SaleorShippingZoneSerializer(obj).data)
+        except Exception as e:
+            logger.exception(f"Error in SaleorShippingZoneUpdateView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorShippingZoneDeleteView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        
+        obj = get_object_or_404(SaleorShippingZone, pk=pk)
+        try:
+            result = delete_shipping_zone_in_saleor(obj.saleor_id)
+            data = result.get("data", {}).get("shippingZoneDelete", {})
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+            
+            obj.delete()
+            return Response(status=204)
+        except Exception as e:
             return Response({"error": str(e)}, status=500)

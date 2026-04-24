@@ -1975,6 +1975,9 @@ class SaleorChannel(models.Model):
     slug = models.CharField(max_length=255, unique=True)
     currency = models.CharField(max_length=10)
     is_active = models.BooleanField(default=True)
+    default_country = models.CharField(max_length=10, blank=True, null=True)
+    countries = models.JSONField(default=list, blank=True)
+    warehouse_ids = models.JSONField(default=list, blank=True)
     synced_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -2000,7 +2003,7 @@ class SaleorWarehouse(models.Model):
     # Address fields
     city = models.CharField(max_length=255, blank=True, null=True)
     country = models.CharField(max_length=100, blank=True, null=True)
-    country_code = models.CharField(max_length=2, blank=True, null=True)
+    country_code = models.CharField(max_length=10, blank=True, null=True)
     postal_code = models.CharField(max_length=20, blank=True, null=True)
     country_area = models.CharField(max_length=255, blank=True, null=True)
 
@@ -2026,6 +2029,11 @@ class SaleorShippingZone(models.Model):
     saleor_id = models.CharField(max_length=255, unique=True)
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    is_default = models.BooleanField(default=False)
+    countries = models.JSONField(default=list, blank=True)
+    channel_ids = models.JSONField(default=list, blank=True)
+    warehouse_ids = models.JSONField(default=list, blank=True)
+    shipping_methods = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
     synced_at = models.DateTimeField(auto_now=True)
 
