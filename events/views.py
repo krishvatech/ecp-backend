@@ -58,7 +58,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone
 from .permissions import IsSuperuserOnly
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -81,6 +81,9 @@ from .serializers import (
     EventApplicationSubmitSerializer,
     VirtualSpeakerSerializer,
     VirtualSpeakerConvertSerializer,
+    SaleorChannelSerializer,
+    SaleorWarehouseSerializer,
+    SaleorShippingZoneSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -6819,3 +6822,228 @@ def _build_lounge_state_sync(event_id):
     except Exception as e:
         logger.warning(f"[LOUNGE_STATE] Failed to build lounge state for event {event_id}: {e}")
         return []
+
+
+# ============================================================
+# ================== Saleor Manager Views ====================
+# ============================================================
+
+def _is_platform_admin(request):
+    """Check if user is platform_admin."""
+    claims = getattr(request, "cognito_claims", {}) or {}
+    raw_groups = claims.get("cognito:groups") or []
+    if isinstance(raw_groups, str):
+        groups_set = {g.strip().lower() for g in raw_groups.split(",")}
+    else:
+        groups_set = {str(g).strip().lower() for g in raw_groups}
+
+    is_platform_admin = "platform_admin" in groups_set
+    if not is_platform_admin:
+        is_platform_admin = request.user.groups.filter(name="platform_admin").exists()
+    if not is_platform_admin:
+        is_platform_admin = (request.user.is_staff and request.user.is_superuser)
+
+    return is_platform_admin
+
+
+class SaleorChannelListView(generics.ListAPIView):
+    """GET /api/events/saleor/channels/ - List cached Saleor channels."""
+    queryset = SaleorChannel.objects.all()
+    serializer_class = SaleorChannelSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        return super().get(request, *args, **kwargs)
+
+
+class SaleorChannelSyncView(views.APIView):
+    """POST /api/events/saleor/channels/sync/ - Sync channels from Saleor API."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+
+        saleor_url = getattr(settings, "SALEOR_API_URL", None)
+        saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
+
+        if not saleor_url or not saleor_token:
+            return Response({"error": "Saleor config missing"}, status=400)
+
+        try:
+            query = """
+            query Channels {
+              channels {
+                id
+                name
+                slug
+                currencyCode
+                isActive
+              }
+            }
+            """
+            headers = {"Authorization": f"Bearer {saleor_token}"}
+            r = requests.post(saleor_url, json={"query": query}, headers=headers, timeout=10)
+            r.raise_for_status()
+
+            channels = r.json().get("data", {}).get("channels", [])
+            synced = []
+
+            for ch in channels:
+                obj, _ = SaleorChannel.objects.update_or_create(
+                    saleor_id=ch["id"],
+                    defaults={
+                        "name": ch["name"],
+                        "slug": ch["slug"],
+                        "currency": ch["currencyCode"],
+                        "is_active": ch["isActive"],
+                    }
+                )
+                synced.append(SaleorChannelSerializer(obj).data)
+
+            return Response({"channels": synced, "count": len(synced)})
+        except Exception as e:
+            logger.error(f"Error syncing Saleor channels: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorWarehouseListView(generics.ListAPIView):
+    """GET /api/events/saleor/warehouses/ - List cached Saleor warehouses."""
+    queryset = SaleorWarehouse.objects.all()
+    serializer_class = SaleorWarehouseSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        return super().get(request, *args, **kwargs)
+
+
+class SaleorWarehouseSyncView(views.APIView):
+    """POST /api/events/saleor/warehouses/sync/ - Sync warehouses from Saleor API."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+
+        saleor_url = getattr(settings, "SALEOR_API_URL", None)
+        saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
+
+        if not saleor_url or not saleor_token:
+            return Response({"error": "Saleor config missing"}, status=400)
+
+        try:
+            query = """
+            query Warehouses {
+              warehouses(first: 100) {
+                edges {
+                  node {
+                    id
+                    name
+                    address {
+                      city
+                      country {
+                        country
+                      }
+                    }
+                    isPrivate
+                  }
+                }
+              }
+            }
+            """
+            headers = {"Authorization": f"Bearer {saleor_token}"}
+            r = requests.post(saleor_url, json={"query": query}, headers=headers, timeout=10)
+            r.raise_for_status()
+
+            warehouses = r.json().get("data", {}).get("warehouses", {}).get("edges", [])
+            synced = []
+
+            for edge in warehouses:
+                node = edge["node"]
+                address = node.get("address", {}) or {}
+                country_obj = address.get("country", {}) or {}
+
+                obj, _ = SaleorWarehouse.objects.update_or_create(
+                    saleor_id=node["id"],
+                    defaults={
+                        "name": node["name"],
+                        "city": address.get("city", ""),
+                        "country": country_obj.get("country", ""),
+                        "is_active": not node.get("isPrivate", False),
+                    }
+                )
+                synced.append(SaleorWarehouseSerializer(obj).data)
+
+            return Response({"warehouses": synced, "count": len(synced)})
+        except Exception as e:
+            logger.error(f"Error syncing Saleor warehouses: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorShippingZoneListView(generics.ListAPIView):
+    """GET /api/events/saleor/shipping-zones/ - List cached Saleor shipping zones."""
+    queryset = SaleorShippingZone.objects.all()
+    serializer_class = SaleorShippingZoneSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        return super().get(request, *args, **kwargs)
+
+
+class SaleorShippingZoneSyncView(views.APIView):
+    """POST /api/events/saleor/shipping-zones/sync/ - Sync shipping zones from Saleor API."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+
+        saleor_url = getattr(settings, "SALEOR_API_URL", None)
+        saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
+
+        if not saleor_url or not saleor_token:
+            return Response({"error": "Saleor config missing"}, status=400)
+
+        try:
+            query = """
+            query ShippingZones {
+              shippingZones(first: 100) {
+                edges {
+                  node {
+                    id
+                    name
+                    description
+                  }
+                }
+              }
+            }
+            """
+            headers = {"Authorization": f"Bearer {saleor_token}"}
+            r = requests.post(saleor_url, json={"query": query}, headers=headers, timeout=10)
+            r.raise_for_status()
+
+            shipping_zones = r.json().get("data", {}).get("shippingZones", {}).get("edges", [])
+            synced = []
+
+            for edge in shipping_zones:
+                node = edge["node"]
+                obj, _ = SaleorShippingZone.objects.update_or_create(
+                    saleor_id=node["id"],
+                    defaults={
+                        "name": node["name"],
+                        "description": node.get("description", ""),
+                        "is_active": True,
+                    }
+                )
+                synced.append(SaleorShippingZoneSerializer(obj).data)
+
+            return Response({"shipping_zones": synced, "count": len(synced)})
+        except Exception as e:
+            logger.error(f"Error syncing Saleor shipping zones: {e}")
+            return Response({"error": str(e)}, status=500)

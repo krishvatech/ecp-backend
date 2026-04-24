@@ -21,7 +21,8 @@ from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
 from .models import (
     Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
-    EventSession, SessionParticipant, SessionAttendance, EventApplication, VirtualSpeaker
+    EventSession, SessionParticipant, SessionAttendance, EventApplication, VirtualSpeaker,
+    SaleorChannel, SaleorWarehouse, SaleorShippingZone
 )
 from community.models import Community
 from content.models import Resource
@@ -2350,3 +2351,24 @@ class EventApplicationSubmitSerializer(serializers.Serializer):
     job_title = serializers.CharField(max_length=200, allow_blank=True, default='')
     company_name = serializers.CharField(max_length=200, allow_blank=True, default='')
     linkedin_url = serializers.URLField(required=False, allow_blank=True, default='')
+
+
+class SaleorChannelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SaleorChannel
+        fields = ['id', 'saleor_id', 'name', 'slug', 'currency', 'is_active', 'synced_at']
+        read_only_fields = ['id', 'synced_at']
+
+
+class SaleorWarehouseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SaleorWarehouse
+        fields = ['id', 'saleor_id', 'name', 'city', 'country', 'is_active', 'synced_at']
+        read_only_fields = ['id', 'synced_at']
+
+
+class SaleorShippingZoneSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SaleorShippingZone
+        fields = ['id', 'saleor_id', 'name', 'description', 'is_active', 'synced_at']
+        read_only_fields = ['id', 'synced_at']

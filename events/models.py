@@ -1967,3 +1967,70 @@ class EventApplication(models.Model):
 
     def __str__(self):
         return f"{self.first_name} {self.last_name} → {self.event.title} ({self.status})"
+
+
+class SaleorChannel(models.Model):
+    saleor_id = models.CharField(max_length=255, unique=True)
+    name = models.CharField(max_length=255)
+    slug = models.CharField(max_length=255, unique=True)
+    currency = models.CharField(max_length=10)
+    is_active = models.BooleanField(default=True)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"{self.name} ({self.currency})"
+
+
+class SaleorWarehouse(models.Model):
+    CLICK_AND_COLLECT_CHOICES = [
+        ("local", "Local"),
+        ("all", "All"),
+        ("disabled", "Disabled"),
+    ]
+
+    saleor_id = models.CharField(max_length=255, unique=True)
+    name = models.CharField(max_length=255)
+    slug = models.CharField(max_length=255, blank=True, null=True)
+    email = models.EmailField(blank=True, null=True)
+    external_reference = models.CharField(max_length=255, blank=True, null=True)
+
+    # Address fields
+    city = models.CharField(max_length=255, blank=True, null=True)
+    country = models.CharField(max_length=100, blank=True, null=True)
+    country_code = models.CharField(max_length=2, blank=True, null=True)
+    postal_code = models.CharField(max_length=20, blank=True, null=True)
+    country_area = models.CharField(max_length=255, blank=True, null=True)
+
+    # Settings
+    click_and_collect = models.CharField(
+        max_length=20,
+        choices=CLICK_AND_COLLECT_CHOICES,
+        default="disabled"
+    )
+    is_private = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class SaleorShippingZone(models.Model):
+    saleor_id = models.CharField(max_length=255, unique=True)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name

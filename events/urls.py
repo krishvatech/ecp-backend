@@ -7,6 +7,12 @@ from .views import (
     RecordingWebhookView,
     EventSessionViewSet,
     VirtualSpeakerViewSet,
+    SaleorChannelListView,
+    SaleorChannelSyncView,
+    SaleorWarehouseListView,
+    SaleorWarehouseSyncView,
+    SaleorShippingZoneListView,
+    SaleorShippingZoneSyncView,
 )
 from .guest_views import (
     GuestJoinView,
@@ -235,4 +241,12 @@ urlpatterns = [
         EventSessionViewSet.as_view({'get': 'list_attendances'}),
         name='event-session-attendances'
     ),
+
+    # Saleor Manager endpoints
+    path("events/saleor/channels/", SaleorChannelListView.as_view(), name="saleor-channel-list"),
+    path("events/saleor/channels/sync/", SaleorChannelSyncView.as_view(), name="saleor-channel-sync"),
+    path("events/saleor/warehouses/", SaleorWarehouseListView.as_view(), name="saleor-warehouse-list"),
+    path("events/saleor/warehouses/sync/", SaleorWarehouseSyncView.as_view(), name="saleor-warehouse-sync"),
+    path("events/saleor/shipping-zones/", SaleorShippingZoneListView.as_view(), name="saleor-shipping-zone-list"),
+    path("events/saleor/shipping-zones/sync/", SaleorShippingZoneSyncView.as_view(), name="saleor-shipping-zone-sync"),
 ]
