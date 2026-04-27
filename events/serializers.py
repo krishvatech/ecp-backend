@@ -2367,9 +2367,10 @@ class SaleorWarehouseSerializer(serializers.ModelSerializer):
     class Meta:
         model = SaleorWarehouse
         fields = [
-            'id', 'saleor_id', 'name', 'slug', 'email', 'external_reference',
-            'city', 'country', 'country_code', 'postal_code', 'country_area',
-            'click_and_collect', 'is_private', 'is_active', 'synced_at'
+            'id', 'saleor_id', 'name', 'slug', 'email',
+            'company_name', 'street_address_1', 'street_address_2',
+            'city', 'country', 'country_code', 'postal_code', 'country_area', 'phone',
+            'click_and_collect', 'is_private', 'is_active', 'shipping_zone_ids', 'synced_at'
         ]
         read_only_fields = ['id', 'synced_at']
 

@@ -18,6 +18,7 @@ from .views import (
     SaleorWarehouseCreateView,
     SaleorWarehouseUpdateView,
     SaleorWarehouseDeleteView,
+    SaleorWarehouseOptionsView,
     SaleorShippingZoneListView,
     SaleorShippingZoneSyncView,
     SaleorShippingZoneCreateView,
@@ -262,6 +263,10 @@ urlpatterns = [
 
     path("events/saleor/warehouses/", SaleorWarehouseListView.as_view(), name="saleor-warehouse-list"),
     path("events/saleor/warehouses/sync/", SaleorWarehouseSyncView.as_view(), name="saleor-warehouse-sync"),
+    path("events/saleor/warehouses/create/", SaleorWarehouseCreateView.as_view(), name="saleor-warehouse-create"),
+    path("events/saleor/warehouses/<int:pk>/", SaleorWarehouseUpdateView.as_view(), name="saleor-warehouse-update"),
+    path("events/saleor/warehouses/<int:pk>/delete/", SaleorWarehouseDeleteView.as_view(), name="saleor-warehouse-delete"),
+    path("events/saleor/warehouse-options/", SaleorWarehouseOptionsView.as_view(), name="saleor-warehouse-options"),
 
     path("events/saleor/shipping-zones/", SaleorShippingZoneListView.as_view(), name="saleor-shipping-zone-list"),
     path("events/saleor/shipping-zones/sync/", SaleorShippingZoneSyncView.as_view(), name="saleor-shipping-zone-sync"),

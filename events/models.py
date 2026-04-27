@@ -2009,14 +2009,17 @@ class SaleorWarehouse(models.Model):
     name = models.CharField(max_length=255)
     slug = models.CharField(max_length=255, blank=True, null=True)
     email = models.EmailField(blank=True, null=True)
-    external_reference = models.CharField(max_length=255, blank=True, null=True)
 
     # Address fields
+    company_name = models.CharField(max_length=255, blank=True, null=True)
+    street_address_1 = models.CharField(max_length=255, blank=True, null=True)
+    street_address_2 = models.CharField(max_length=255, blank=True, null=True)
     city = models.CharField(max_length=255, blank=True, null=True)
     country = models.CharField(max_length=100, blank=True, null=True)
     country_code = models.CharField(max_length=10, blank=True, null=True)
     postal_code = models.CharField(max_length=20, blank=True, null=True)
     country_area = models.CharField(max_length=255, blank=True, null=True)
+    phone = models.CharField(max_length=50, blank=True, null=True)
 
     # Settings
     click_and_collect = models.CharField(
@@ -2026,6 +2029,7 @@ class SaleorWarehouse(models.Model):
     )
     is_private = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
+    shipping_zone_ids = models.JSONField(default=list, blank=True)
 
     synced_at = models.DateTimeField(auto_now=True)
 

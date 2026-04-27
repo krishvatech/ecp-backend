@@ -950,6 +950,34 @@ def get_saleor_channel_options():
         "shipping_zones": shipping_zones,
     }
 
+def get_warehouse_options():
+    """Fetch shop countries from Saleor and combine with local shipping zones for warehouse creation."""
+    query = """
+    query SaleorWarehouseOptions {
+      shop {
+        countries {
+          code
+          country
+        }
+      }
+    }
+    """
+    try:
+        data = call_saleor_gql(query)
+        shop = data.get("data", {}).get("shop", {})
+        countries = [{"code": c["code"], "country": c["country"]} for c in shop.get("countries", [])]
+
+        from .models import SaleorShippingZone
+        shipping_zones = list(SaleorShippingZone.objects.values("id", "saleor_id", "name", "warehouse_ids"))
+
+        return {
+            "countries": countries,
+            "shipping_zones": shipping_zones,
+        }
+    except Exception as e:
+        logger.error(f"Error fetching warehouse options: {e}")
+        raise
+
 def sync_channels_from_saleor():
     """Fetch all channels from Saleor and update local DB."""
     query = """
@@ -1022,16 +1050,26 @@ def sync_warehouses_from_saleor():
             name
             slug
             email
-            externalReference
             isPrivate
             clickAndCollectOption
             address {
+              companyName
+              streetAddress1
+              streetAddress2
               city
               postalCode
               countryArea
+              phone
               country {
                 code
                 country
+              }
+            }
+            shippingZones(first: 100) {
+              edges {
+                node {
+                  id
+                }
               }
             }
           }
@@ -1043,33 +1081,37 @@ def sync_warehouses_from_saleor():
         synced_ids = []
         has_next = True
         after = None
-        
+
         from .models import SaleorWarehouse
         while has_next:
             data = call_saleor_gql(query, {"after": after})
             wh_data = data.get("data", {}).get("warehouses", {})
             edges = wh_data.get("edges", [])
-            
+
             for edge in edges:
                 node = edge["node"]
                 addr = node.get("address") or {}
                 country = addr.get("country") or {}
-                
+
                 obj, _ = SaleorWarehouse.objects.update_or_create(
                     saleor_id=node["id"],
                     defaults={
                         "name": node["name"],
                         "slug": node["slug"],
                         "email": node.get("email"),
-                        "external_reference": node.get("externalReference"),
+                        "company_name": addr.get("companyName"),
+                        "street_address_1": addr.get("streetAddress1"),
+                        "street_address_2": addr.get("streetAddress2"),
                         "city": addr.get("city"),
                         "country": country.get("country"),
                         "country_code": country.get("code"),
                         "postal_code": addr.get("postalCode"),
                         "country_area": addr.get("countryArea"),
+                        "phone": addr.get("phone"),
                         "click_and_collect": node.get("clickAndCollectOption", "disabled").lower(),
                         "is_private": node.get("isPrivate", False),
                         "is_active": True,
+                        "shipping_zone_ids": [edge["node"]["id"] for edge in node.get("shippingZones", {}).get("edges", [])],
                     }
                 )
                 synced_ids.append(obj.saleor_id)
@@ -1250,12 +1292,29 @@ def delete_shipping_zone_in_saleor(saleor_id):
     """
     return call_saleor_gql(mutation, {"id": saleor_id})
 
-def create_warehouse_in_saleor(data):
+def create_warehouse_in_saleor(request_data):
     mutation = """
     mutation WarehouseCreate($input: WarehouseCreateInput!) {
       warehouseCreate: createWarehouse(input: $input) {
         warehouse {
           id
+          name
+          slug
+          email
+          externalReference
+          address {
+            companyName
+            streetAddress1
+            streetAddress2
+            city
+            postalCode
+            countryArea
+            phone
+            country {
+              code
+              country
+            }
+          }
         }
         errors {
           field
@@ -1265,40 +1324,62 @@ def create_warehouse_in_saleor(data):
       }
     }
     """
-    # WarehouseCreateInput in Saleor does NOT support isPrivate or clickAndCollectOption
-    # They must be set via updateWarehouse after creation.
-    input_data = {
-        "name": data.get("name") or "New Warehouse",
-        "slug": data.get("slug") or f"warehouse-{int(time.time())}",
-        "email": data.get("email") or "",
-        "externalReference": data.get("external_reference"),
-        "address": {
-            "city": data.get("city") or "N/A",
-            "postalCode": data.get("postal_code") or "",
-            "country": (data.get("country_code") or "US").upper()[:2], # Ensure 2-letter code
-            "countryArea": data.get("country_area") or "",
-            "streetAddress1": data.get("street_address_1") or "N/A",
-            "streetAddress2": data.get("street_address_2") or "",
-        },
+    # Build WarehouseCreateInput (does NOT support isPrivate, clickAndCollectOption, or shippingZones)
+    address_input = {
+        "country": (request_data.get("country_code") or "US").upper()[:2],
+        "streetAddress1": request_data.get("street_address_1"),
+        "city": request_data.get("city"),
     }
+    if request_data.get("company_name"):
+        address_input["companyName"] = request_data["company_name"]
+    if request_data.get("street_address_2"):
+        address_input["streetAddress2"] = request_data["street_address_2"]
+    if request_data.get("postal_code"):
+        address_input["postalCode"] = request_data["postal_code"]
+    if request_data.get("country_area"):
+        address_input["countryArea"] = request_data["country_area"]
+    if request_data.get("phone"):
+        address_input["phone"] = request_data["phone"]
+
+    # Add skipValidation to address
+    address_input["skipValidation"] = True
+
+    input_data = {
+        "name": request_data.get("name"),
+        "slug": request_data.get("slug"),
+        "email": request_data.get("email") or "",
+        "address": address_input,
+    }
+
     result = call_saleor_gql(mutation, {"input": input_data})
-    
-    # Safely extract warehouse ID if creation succeeded
-    data = result.get("data", {}) or {}
-    create_result = data.get("warehouseCreate", {}) or {}
+
+    # Extract warehouse ID if creation succeeded
+    result_data = result.get("data", {}) or {}
+    create_result = result_data.get("warehouseCreate", {}) or {}
     wh_node = create_result.get("warehouse") or {}
     wh_id = wh_node.get("id")
 
     if wh_id:
-        extra_data = {
-            "isPrivate": data.get("is_private", False),
-            "clickAndCollectOption": data.get("click_and_collect", "DISABLED").upper(),
-        }
-        try:
-            update_warehouse_in_saleor(wh_id, extra_data)
-        except:
-            pass # Even if update fails, we already created the warehouse
-        
+        # Step 2: Update isPrivate and clickAndCollectOption
+        update_data = {}
+        if "is_private" in request_data:
+            update_data["is_private"] = request_data["is_private"]
+        if "click_and_collect" in request_data:
+            update_data["click_and_collect"] = request_data["click_and_collect"]
+        if update_data:
+            try:
+                update_warehouse_in_saleor(wh_id, update_data)
+            except Exception as e:
+                logger.warning(f"Failed to update warehouse settings after creation: {e}")
+
+        # Step 3: Assign shipping zones if provided
+        shipping_zone_ids = request_data.get("shipping_zone_ids", [])
+        if shipping_zone_ids:
+            try:
+                assign_warehouse_shipping_zones(wh_id, shipping_zone_ids)
+            except Exception as e:
+                logger.warning(f"Failed to assign shipping zones to warehouse: {e}")
+
     return result
 
 def update_warehouse_in_saleor(saleor_id, data):
@@ -1307,6 +1388,23 @@ def update_warehouse_in_saleor(saleor_id, data):
       warehouseUpdate: updateWarehouse(id: $id, input: $input) {
         warehouse {
           id
+          name
+          slug
+          email
+          isPrivate
+          clickAndCollectOption
+          address {
+            companyName
+            streetAddress1
+            streetAddress2
+            city
+            postalCode
+            phone
+            country {
+              code
+              country
+            }
+          }
         }
         errors {
           field
@@ -1316,20 +1414,44 @@ def update_warehouse_in_saleor(saleor_id, data):
       }
     }
     """
-    input_data = {
-        "name": data.get("name"),
-        "slug": data.get("slug"),
-        "email": data.get("email"),
-        "externalReference": data.get("external_reference"),
-        "address": {
-            "city": data.get("city"),
-            "postalCode": data.get("postal_code"),
-            "country": data.get("country_code"),
-            "countryArea": data.get("country_area"),
-        },
-        "isPrivate": data.get("is_private", False),
-        "clickAndCollectOption": data.get("click_and_collect", "DISABLED").upper(),
-    }
+    input_data = {}
+
+    # Only include non-null fields
+    if "name" in data and data["name"] is not None:
+        input_data["name"] = data["name"]
+    if "slug" in data and data["slug"] is not None:
+        input_data["slug"] = data["slug"]
+    if "email" in data and data["email"] is not None:
+        input_data["email"] = data["email"]
+
+    # Build address only if any address fields are present
+    address_input = {}
+    if "company_name" in data and data["company_name"] is not None:
+        address_input["companyName"] = data["company_name"]
+    if "street_address_1" in data and data["street_address_1"] is not None:
+        address_input["streetAddress1"] = data["street_address_1"]
+    if "street_address_2" in data and data["street_address_2"] is not None:
+        address_input["streetAddress2"] = data["street_address_2"]
+    if "city" in data and data["city"] is not None:
+        address_input["city"] = data["city"]
+    if "postal_code" in data and data["postal_code"] is not None:
+        address_input["postalCode"] = data["postal_code"]
+    if "country_area" in data and data["country_area"] is not None:
+        address_input["countryArea"] = data["country_area"]
+    if "country_code" in data and data["country_code"] is not None:
+        address_input["country"] = data["country_code"].upper()[:2]
+    if "phone" in data and data["phone"] is not None:
+        address_input["phone"] = data["phone"]
+
+    if address_input:
+        address_input["skipValidation"] = True
+        input_data["address"] = address_input
+
+    if "is_private" in data:
+        input_data["isPrivate"] = data["is_private"]
+    if "click_and_collect" in data:
+        input_data["clickAndCollectOption"] = data["click_and_collect"].upper()
+
     return call_saleor_gql(mutation, {"id": saleor_id, "input": input_data})
 
 def delete_warehouse_in_saleor(saleor_id):
@@ -1345,6 +1467,42 @@ def delete_warehouse_in_saleor(saleor_id):
     }
     """
     return call_saleor_gql(mutation, {"id": saleor_id})
+
+def assign_warehouse_shipping_zones(saleor_id, shipping_zone_ids):
+    """Assign shipping zones to a warehouse."""
+    mutation = """
+    mutation AssignWarehouseShippingZone($id: ID!, $shippingZoneIds: [ID!]!) {
+      assignWarehouseShippingZone(id: $id, shippingZoneIds: $shippingZoneIds) {
+        warehouse {
+          id
+        }
+        errors {
+          field
+          code
+          message
+        }
+      }
+    }
+    """
+    return call_saleor_gql(mutation, {"id": saleor_id, "shippingZoneIds": shipping_zone_ids})
+
+def unassign_warehouse_shipping_zones(saleor_id, shipping_zone_ids):
+    """Unassign shipping zones from a warehouse."""
+    mutation = """
+    mutation UnassignWarehouseShippingZone($id: ID!, $shippingZoneIds: [ID!]!) {
+      unassignWarehouseShippingZone(id: $id, shippingZoneIds: $shippingZoneIds) {
+        warehouse {
+          id
+        }
+        errors {
+          field
+          code
+          message
+        }
+      }
+    }
+    """
+    return call_saleor_gql(mutation, {"id": saleor_id, "shippingZoneIds": shipping_zone_ids})
 
 def create_channel_in_saleor(data):
     mutation = """

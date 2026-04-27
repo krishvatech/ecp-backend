@@ -7030,6 +7030,22 @@ class SaleorWarehouseSyncView(views.APIView):
             return Response({"error": str(e)}, status=500)
 
 
+class SaleorWarehouseOptionsView(views.APIView):
+    """GET /api/events/saleor/warehouse-options/ - Return countries and shipping zones for warehouse creation."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        try:
+            from .saleor_sync import get_warehouse_options
+            options = get_warehouse_options()
+            return Response(options)
+        except Exception as e:
+            logger.exception(f"Error fetching warehouse options: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
 class SaleorWarehouseCreateView(views.APIView):
     permission_classes = [IsAuthenticated]
 
@@ -7075,11 +7091,20 @@ class SaleorWarehouseUpdateView(views.APIView):
     def patch(self, request, pk):
         if not _is_platform_admin(request):
             raise PermissionDenied("Only platform_admin can access this endpoint.")
-        
+
         obj = get_object_or_404(SaleorWarehouse, pk=pk)
         try:
-            result = update_warehouse_in_saleor(obj.saleor_id, request.data)
-            
+            # Extract shipping zone operations
+            add_shipping_zone_ids = request.data.get("add_shipping_zone_ids", [])
+            remove_shipping_zone_ids = request.data.get("remove_shipping_zone_ids", [])
+
+            # Prepare update data (exclude shipping zone fields)
+            update_data = {k: v for k, v in request.data.items()
+                          if k not in ["add_shipping_zone_ids", "remove_shipping_zone_ids"]}
+
+            # Update warehouse
+            result = update_warehouse_in_saleor(obj.saleor_id, update_data)
+
             if "errors" in result and not result.get("data"):
                 return Response({"errors": result["errors"]}, status=400)
 
@@ -7090,7 +7115,34 @@ class SaleorWarehouseUpdateView(views.APIView):
             errors = data.get("errors", [])
             if errors:
                 return Response({"errors": errors}, status=400)
-            
+
+            # Handle shipping zone assignments
+            all_errors = []
+            if add_shipping_zone_ids:
+                try:
+                    from .saleor_sync import assign_warehouse_shipping_zones
+                    sz_result = assign_warehouse_shipping_zones(obj.saleor_id, add_shipping_zone_ids)
+                    sz_data = sz_result.get("data", {}).get("assignWarehouseShippingZone", {})
+                    sz_errors = sz_data.get("errors", [])
+                    if sz_errors:
+                        all_errors.extend(sz_errors)
+                except Exception as e:
+                    all_errors.append({"message": f"Failed to assign shipping zones: {str(e)}"})
+
+            if remove_shipping_zone_ids:
+                try:
+                    from .saleor_sync import unassign_warehouse_shipping_zones
+                    sz_result = unassign_warehouse_shipping_zones(obj.saleor_id, remove_shipping_zone_ids)
+                    sz_data = sz_result.get("data", {}).get("unassignWarehouseShippingZone", {})
+                    sz_errors = sz_data.get("errors", [])
+                    if sz_errors:
+                        all_errors.extend(sz_errors)
+                except Exception as e:
+                    all_errors.append({"message": f"Failed to unassign shipping zones: {str(e)}"})
+
+            if all_errors:
+                return Response({"errors": all_errors}, status=400)
+
             # Sync to update local DB
             sync_warehouses_from_saleor()
             obj.refresh_from_db()
