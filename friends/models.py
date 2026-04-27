@@ -255,3 +255,39 @@ def notify_friend_request_created(fr: FriendRequest):
         state="pending",
         data={"friend_request_id": fr.id, "from_user_id": fr.from_user_id},
     )
+
+
+def notify_event_registration(user, event):
+    """
+    Create a registration-confirmation notification for the user.
+    Guarded against duplicates so re-registrations don't create extras.
+    """
+    already_exists = Notification.objects.filter(
+        recipient=user,
+        kind="event",
+        data__event_id=event.id,
+        data__action="registered",
+    ).exists()
+    if already_exists:
+        return
+
+    event_date = None
+    if hasattr(event, 'start_datetime') and event.start_datetime:
+        event_date = event.start_datetime.isoformat()
+    elif hasattr(event, 'date') and event.date:
+        event_date = str(event.date)
+
+    Notification.objects.create(
+        recipient=user,
+        actor=None,
+        kind="event",
+        title="successfully registered for",
+        description=f'You have successfully registered for "{event.title}".',
+        state="confirmed",
+        data={
+            "event_id": event.id,
+            "event_title": event.title,
+            "action": "registered",
+            "event_date": event_date,
+        },
+    )

@@ -1796,6 +1796,14 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 logger.error(f"Failed to send registration acknowledgement email: {e}")
 
+        # Create in-app notification for all successful registrations
+        if was_created:
+            from friends.models import notify_event_registration
+            try:
+                notify_event_registration(request.user, event)
+            except Exception as e:
+                logger.error(f"Failed to create registration notification: {e}")
+
         return Response({"ok": True, "created": was_created, "event_id": event.id})
 
     @action(detail=True, methods=["post", "get"], permission_classes=[AllowAny], url_path="apply")
