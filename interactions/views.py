@@ -1089,28 +1089,60 @@ class QuestionViewSet(viewsets.ModelViewSet):
             group, {"type": "qna.upvote", "payload": payload}
         )
 
-        # 🔊 If this question is part of a question group, also broadcast the updated group vote count
-        if question.grouped_answer_parent:
-            parent_group = question.grouped_answer_parent
-            group_vote_count = sum(
-                m.question.upvote_count()
-                for m in parent_group.memberships.select_related("question").all()
+        # 🔊 If this question is part of a question group, broadcast the updated
+        # group vote count using the CORRECT OneToOne group_membership relation.
+        # The old code used `grouped_answer_parent` which is only set when a
+        # question is "covered" by a group answer — it is NOT the membership FK.
+        parent_group = None
+        group_vote_count = None
+        actor_has_voted_in_group = None
+        try:
+            membership = question.group_membership       # raises if not in a group
+            parent_group = membership.group
+            # Use the deduplicated aggregated_vote_count (fixed in models.py)
+            group_vote_count = parent_group.aggregated_vote_count
+
+            # Determine whether the current actor has ANY upvote among all
+            # sub-questions in this group (after the toggle above).
+            sibling_ids = list(
+                parent_group.memberships.values_list("question_id", flat=True)
             )
+            if self._is_guest_user(user):
+                guest_obj = getattr(user, "guest", None)
+                actor_has_voted_in_group = (
+                    QuestionGuestUpvote.objects.filter(
+                        question_id__in=sibling_ids, guest=guest_obj
+                    ).exists()
+                ) if guest_obj else False
+            else:
+                actor_has_voted_in_group = QuestionUpvote.objects.filter(
+                    question_id__in=sibling_ids, user=user
+                ).exists()
+
             group_payload = {
                 "type": "qna.group_upvote",
                 "event_id": question.event_id,
                 "group_id": parent_group.id,
                 "group_vote_count": group_vote_count,
+                "user_has_voted_in_group": actor_has_voted_in_group,
+                "actor_id": str(actor_id),
             }
             async_to_sync(channel_layer.group_send)(
                 group, {"type": "qna.group_upvote", "payload": group_payload}
             )
+        except Exception:
+            # Question is not in a group — no group broadcast needed.
+            pass
 
         return Response(
             {
                 "question_id": question.id,
                 "upvoted": upvoted,
                 "upvote_count": upvote_count,
+                # Group context — null when the question is not in a group
+                "group_id": parent_group.id if parent_group else None,
+                "group_vote_count": group_vote_count,
+                "user_has_voted_in_group": actor_has_voted_in_group,
             },
             status=status.HTTP_200_OK,
         )

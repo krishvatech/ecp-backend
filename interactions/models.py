@@ -755,10 +755,31 @@ class QnAQuestionGroup(models.Model):
 
     @property
     def aggregated_vote_count(self) -> int:
-        return sum(
-            m.question.upvote_count()
-            for m in self.memberships.select_related("question").all()
+        """
+        Return the number of DISTINCT users/guests who have upvoted any
+        sub-question in this group.  A user who upvoted multiple sub-questions
+        counts only once, preventing duplicate-vote inflation.
+        """
+        question_ids = list(
+            self.memberships.values_list("question_id", flat=True)
         )
+        if not question_ids:
+            return 0
+        unique_user_votes = (
+            QuestionUpvote.objects
+            .filter(question_id__in=question_ids)
+            .values("user_id")
+            .distinct()
+            .count()
+        )
+        unique_guest_votes = (
+            QuestionGuestUpvote.objects
+            .filter(question_id__in=question_ids)
+            .values("guest_id")
+            .distinct()
+            .count()
+        )
+        return unique_user_votes + unique_guest_votes
 
     def __str__(self) -> str:
         return f"Group {self.id}: {self.title}"
