@@ -2057,3 +2057,24 @@ class SaleorShippingZone(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class SaleorProductType(models.Model):
+    saleor_id = models.CharField(max_length=255, unique=True)
+    name = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255)
+    kind = models.CharField(max_length=50, default="NORMAL")
+    is_shipping_required = models.BooleanField(default=False)
+    tax_class_id = models.CharField(max_length=255, blank=True, null=True)
+    tax_class_name = models.CharField(max_length=255, blank=True, null=True)
+    product_attribute_ids = models.JSONField(default=list, blank=True)
+    variant_attribute_ids = models.JSONField(default=list, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    private_metadata = models.JSONField(default=dict, blank=True)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name

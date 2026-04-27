@@ -439,21 +439,11 @@ def _get_or_create_product_type(url, headers, name):
             return edges[0]["node"]["id"]
     except:
         pass
-        
-    # create (Requires knowing 'kind'. assume NORMAL)
+
+    # create using modern Saleor schema (no hasVariants, use kind instead)
     mutation = """
     mutation CreateType($name: String!) {
-      productTypeCreate(input: {name: $name, slug: $name, hasVariants: false, isShippingRequired: false}) {
-        productType { id }
-      }
-    }
-    """
-    # Note: If hasVariants=True, slightly more complex, but we set false logic above to simplify, 
-    # actually we need variants for price. set hasVariants=True.
-    
-    mutation = """
-    mutation CreateType($name: String!) {
-      productTypeCreate(input: {name: $name, slug: $name, hasVariants: true, isShippingRequired: false}) {
+      productTypeCreate(input: {name: $name, slug: $name, kind: NORMAL, isShippingRequired: false}) {
         productType { id }
       }
     }
@@ -467,7 +457,7 @@ def _get_or_create_product_type(url, headers, name):
         if errors:
             logger.error(f"Error creating ProductType '{name}': {errors}")
             return None
-            
+
         return data.get("productType", {}).get("id")
     except Exception as e:
         logger.error(f"Exception creating ProductType '{name}': {e}")
@@ -1220,6 +1210,209 @@ def sync_shipping_zones_from_saleor():
     except Exception as e:
         logger.error(f"Error syncing Saleor shipping zones: {e}")
         raise
+
+def sync_product_types_from_saleor():
+    """Fetch all product types from Saleor and update local DB."""
+    query = """
+    query ProductTypes {
+      productTypes(first: 100, sortBy: { field: NAME, direction: ASC }) {
+        edges {
+          node {
+            id
+            name
+            slug
+            kind
+            isShippingRequired
+            taxClass {
+              id
+              name
+            }
+            productAttributes {
+              id
+              name
+              slug
+            }
+            assignedVariantAttributes {
+              attribute {
+                id
+                name
+                slug
+              }
+            }
+            metadata {
+              key
+              value
+            }
+            privateMetadata {
+              key
+              value
+            }
+          }
+        }
+      }
+    }
+    """
+    try:
+        data = call_saleor_gql(query)
+        product_types_data = data.get("data", {}).get("productTypes", {}).get("edges", [])
+        synced_ids = []
+
+        from .models import SaleorProductType
+        for edge in product_types_data:
+            node = edge["node"]
+            tax_class = node.get("taxClass") or {}
+
+            obj, _ = SaleorProductType.objects.update_or_create(
+                saleor_id=node["id"],
+                defaults={
+                    "name": node["name"],
+                    "slug": node["slug"],
+                    "kind": node["kind"],
+                    "is_shipping_required": node.get("isShippingRequired", False),
+                    "tax_class_id": tax_class.get("id"),
+                    "tax_class_name": tax_class.get("name"),
+                    "product_attribute_ids": [a["id"] for a in node.get("productAttributes", [])],
+                    "variant_attribute_ids": [a["attribute"]["id"] for a in node.get("assignedVariantAttributes", [])],
+                    "metadata": {m["key"]: m["value"] for m in node.get("metadata", [])},
+                    "private_metadata": {m["key"]: m["value"] for m in node.get("privateMetadata", [])},
+                }
+            )
+            synced_ids.append(obj.saleor_id)
+
+        SaleorProductType.objects.exclude(saleor_id__in=synced_ids).delete()
+        return synced_ids
+    except Exception as e:
+        logger.error(f"Error syncing Saleor product types: {e}")
+        raise
+
+
+def create_product_type_in_saleor(data):
+    """Create a product type in Saleor."""
+    mutation = """
+    mutation ProductTypeCreate($input: ProductTypeInput!) {
+      productTypeCreate(input: $input) {
+        productType {
+          id
+          name
+          slug
+          kind
+          isShippingRequired
+          taxClass {
+            id
+            name
+          }
+        }
+        errors {
+          field
+          code
+          message
+        }
+      }
+    }
+    """
+    input_data = {
+        "name": data.get("name"),
+        "slug": data.get("slug"),
+        "kind": data.get("kind", "NORMAL"),
+        "isShippingRequired": data.get("is_shipping_required", False),
+    }
+    if data.get("tax_class_id"):
+        input_data["taxClass"] = data.get("tax_class_id")
+
+    return call_saleor_gql(mutation, {"input": input_data})
+
+
+def update_product_type_in_saleor(saleor_id, data):
+    """Update a product type in Saleor."""
+    mutation = """
+    mutation ProductTypeUpdate($id: ID!, $input: ProductTypeInput!) {
+      productTypeUpdate(id: $id, input: $input) {
+        productType {
+          id
+          name
+          slug
+          kind
+          isShippingRequired
+          taxClass {
+            id
+            name
+          }
+        }
+        errors {
+          field
+          code
+          message
+        }
+      }
+    }
+    """
+    input_data = {}
+    if "name" in data:
+        input_data["name"] = data["name"]
+    if "slug" in data:
+        input_data["slug"] = data["slug"]
+    if "kind" in data:
+        input_data["kind"] = data["kind"]
+    if "is_shipping_required" in data:
+        input_data["isShippingRequired"] = data["is_shipping_required"]
+    if "tax_class_id" in data and data["tax_class_id"]:
+        input_data["taxClass"] = data["tax_class_id"]
+
+    return call_saleor_gql(mutation, {"id": saleor_id, "input": input_data})
+
+
+def delete_product_type_in_saleor(saleor_id):
+    """Delete a product type from Saleor."""
+    mutation = """
+    mutation ProductTypeDelete($id: ID!) {
+      productTypeDelete(id: $id) {
+        productType {
+          id
+          name
+        }
+        errors {
+          field
+          code
+          message
+        }
+      }
+    }
+    """
+    return call_saleor_gql(mutation, {"id": saleor_id})
+
+
+def get_product_type_options():
+    """Fetch tax classes from Saleor and return with product type kinds."""
+    query = """
+    query ProductTypeOptions {
+      taxClasses(first: 100) {
+        edges {
+          node {
+            id
+            name
+          }
+        }
+      }
+    }
+    """
+    try:
+        data = call_saleor_gql(query)
+        tax_classes_data = data.get("data", {}).get("taxClasses", {}).get("edges", [])
+        tax_classes = [
+            {"id": edge["node"]["id"], "name": edge["node"]["name"]}
+            for edge in tax_classes_data
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching tax classes: {e}")
+        tax_classes = []
+
+    return {
+        "tax_classes": tax_classes,
+        "product_type_kinds": [
+            {"value": "NORMAL", "label": "Regular product type"},
+            {"value": "GIFT_CARD", "label": "Gift card product type"},
+        ],
+    }
 
 # Mutations
 

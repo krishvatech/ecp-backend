@@ -22,7 +22,7 @@ from users.serializers import UserMiniSerializer
 from .models import (
     Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
     EventSession, SessionParticipant, SessionAttendance, EventApplication, VirtualSpeaker,
-    SaleorChannel, SaleorWarehouse, SaleorShippingZone
+    SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType
 )
 from community.models import Community
 from content.models import Resource
@@ -2379,8 +2379,20 @@ class SaleorShippingZoneSerializer(serializers.ModelSerializer):
     class Meta:
         model = SaleorShippingZone
         fields = [
-            'id', 'saleor_id', 'name', 'description', 'is_default', 
-            'countries', 'channel_ids', 'warehouse_ids', 'shipping_methods', 
+            'id', 'saleor_id', 'name', 'description', 'is_default',
+            'countries', 'channel_ids', 'warehouse_ids', 'shipping_methods',
             'is_active', 'synced_at'
+        ]
+        read_only_fields = ['id', 'synced_at']
+
+
+class SaleorProductTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SaleorProductType
+        fields = [
+            'id', 'saleor_id', 'name', 'slug', 'kind',
+            'is_shipping_required', 'tax_class_id', 'tax_class_name',
+            'product_attribute_ids', 'variant_attribute_ids',
+            'metadata', 'private_metadata', 'synced_at',
         ]
         read_only_fields = ['id', 'synced_at']

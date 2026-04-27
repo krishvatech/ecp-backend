@@ -58,7 +58,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType
 from .permissions import IsSuperuserOnly
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -82,6 +82,7 @@ from .serializers import (
     VirtualSpeakerSerializer,
     VirtualSpeakerConvertSerializer,
     SaleorChannelSerializer,
+    SaleorProductTypeSerializer,
     SaleorWarehouseSerializer,
     SaleorShippingZoneSerializer,
 )
@@ -101,6 +102,7 @@ from .saleor_sync import (
     sync_channels_from_saleor,
     sync_warehouses_from_saleor,
     sync_shipping_zones_from_saleor,
+    sync_product_types_from_saleor,
     create_channel_in_saleor,
     update_channel_in_saleor,
     delete_channel_in_saleor,
@@ -110,7 +112,11 @@ from .saleor_sync import (
     create_shipping_zone_in_saleor,
     update_shipping_zone_in_saleor,
     delete_shipping_zone_in_saleor,
+    create_product_type_in_saleor,
+    update_product_type_in_saleor,
+    delete_product_type_in_saleor,
     get_shipping_zone_options,
+    get_product_type_options,
 )
 
 # ============================================================
@@ -7315,4 +7321,143 @@ class SaleorShippingZoneOptionsView(views.APIView):
             return Response(options)
         except Exception as e:
             logger.exception(f"Error in SaleorShippingZoneOptionsView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorProductTypeListView(generics.ListAPIView):
+    """GET /api/events/saleor/product-types/ - List cached Saleor product types."""
+    queryset = SaleorProductType.objects.all()
+    serializer_class = SaleorProductTypeSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        return super().get(request, *args, **kwargs)
+
+
+class SaleorProductTypeSyncView(views.APIView):
+    """POST /api/events/saleor/product-types/sync/ - Sync product types from Saleor API."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+
+        try:
+            synced_ids = sync_product_types_from_saleor()
+            product_types = SaleorProductType.objects.filter(saleor_id__in=synced_ids)
+            return Response({
+                "product_types": SaleorProductTypeSerializer(product_types, many=True).data,
+                "count": len(synced_ids)
+            })
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorProductTypeCreateView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+
+        try:
+            result = create_product_type_in_saleor(request.data)
+
+            if "errors" in result and not result.get("data"):
+                return Response({"errors": result["errors"]}, status=400)
+
+            data = result.get("data", {}).get("productTypeCreate", {})
+            if not data:
+                return Response({"error": "No data returned from Saleor"}, status=500)
+
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+
+            pt_node = data.get("productType")
+            if not pt_node or not pt_node.get("id"):
+                return Response({"error": "Product type created but no ID returned"}, status=500)
+
+            sync_product_types_from_saleor()
+
+            try:
+                obj = SaleorProductType.objects.get(saleor_id=pt_node["id"])
+                return Response(SaleorProductTypeSerializer(obj).data, status=201)
+            except SaleorProductType.DoesNotExist:
+                return Response({"error": "Product type created in Saleor but failed to sync locally"}, status=500)
+
+        except Exception as e:
+            logger.exception(f"Error in SaleorProductTypeCreateView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorProductTypeUpdateView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+
+        obj = get_object_or_404(SaleorProductType, pk=pk)
+        try:
+            result = update_product_type_in_saleor(obj.saleor_id, request.data)
+
+            if "errors" in result and not result.get("data"):
+                return Response({"errors": result["errors"]}, status=400)
+
+            data = result.get("data", {}).get("productTypeUpdate", {})
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+
+            sync_product_types_from_saleor()
+
+            obj.refresh_from_db()
+            return Response(SaleorProductTypeSerializer(obj).data)
+        except Exception as e:
+            logger.exception(f"Error in SaleorProductTypeUpdateView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorProductTypeDeleteView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+
+        obj = get_object_or_404(SaleorProductType, pk=pk)
+        try:
+            result = delete_product_type_in_saleor(obj.saleor_id)
+
+            if "errors" in result and not result.get("data"):
+                return Response({"errors": result["errors"]}, status=400)
+
+            data = result.get("data", {}).get("productTypeDelete", {})
+            errors = data.get("errors", [])
+            if errors:
+                return Response({"errors": errors}, status=400)
+
+            obj.delete()
+            return Response(status=204)
+        except Exception as e:
+            logger.exception(f"Error in SaleorProductTypeDeleteView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorProductTypeOptionsView(views.APIView):
+    """GET /api/events/saleor/product-type-options/ - Get tax classes and product type kinds."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+
+        try:
+            options = get_product_type_options()
+            return Response(options)
+        except Exception as e:
+            logger.exception(f"Error in SaleorProductTypeOptionsView: {e}")
             return Response({"error": str(e)}, status=500)
