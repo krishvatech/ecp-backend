@@ -6967,18 +6967,35 @@ class SaleorChannelDeleteView(views.APIView):
     def delete(self, request, pk):
         if not _is_platform_admin(request):
             raise PermissionDenied("Only platform_admin can access this endpoint.")
-        
+
         obj = get_object_or_404(SaleorChannel, pk=pk)
+        destination_channel_id = request.data.get("destination_channel_id") if request.data else None
         try:
-            result = delete_channel_in_saleor(obj.saleor_id)
+            result = delete_channel_in_saleor(obj.saleor_id, destination_channel_id)
             data = result.get("data", {}).get("channelDelete", {})
             errors = data.get("errors", [])
             if errors:
                 return Response({"errors": errors}, status=400)
-            
+
             obj.delete()
             return Response(status=204)
         except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorChannelOptionsView(views.APIView):
+    """GET /api/events/saleor/channel-options/ - Return countries, currencies, warehouses, shipping zones for channel creation."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        try:
+            from .saleor_sync import get_saleor_channel_options
+            options = get_saleor_channel_options()
+            return Response(options)
+        except Exception as e:
+            logger.exception(f"Error fetching channel options: {e}")
             return Response({"error": str(e)}, status=500)
 
 

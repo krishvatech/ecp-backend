@@ -12,6 +12,7 @@ from .views import (
     SaleorChannelCreateView,
     SaleorChannelUpdateView,
     SaleorChannelDeleteView,
+    SaleorChannelOptionsView,
     SaleorWarehouseListView,
     SaleorWarehouseSyncView,
     SaleorWarehouseCreateView,
@@ -254,6 +255,10 @@ urlpatterns = [
     # Saleor Manager endpoints
     path("events/saleor/channels/", SaleorChannelListView.as_view(), name="saleor-channel-list"),
     path("events/saleor/channels/sync/", SaleorChannelSyncView.as_view(), name="saleor-channel-sync"),
+    path("events/saleor/channels/create/", SaleorChannelCreateView.as_view(), name="saleor-channel-create"),
+    path("events/saleor/channels/<int:pk>/", SaleorChannelUpdateView.as_view(), name="saleor-channel-update"),
+    path("events/saleor/channels/<int:pk>/delete/", SaleorChannelDeleteView.as_view(), name="saleor-channel-delete"),
+    path("events/saleor/channel-options/", SaleorChannelOptionsView.as_view(), name="saleor-channel-options"),
 
     path("events/saleor/warehouses/", SaleorWarehouseListView.as_view(), name="saleor-warehouse-list"),
     path("events/saleor/warehouses/sync/", SaleorWarehouseSyncView.as_view(), name="saleor-warehouse-sync"),

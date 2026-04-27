@@ -2357,8 +2357,8 @@ class SaleorChannelSerializer(serializers.ModelSerializer):
     class Meta:
         model = SaleorChannel
         fields = [
-            'id', 'saleor_id', 'name', 'slug', 'currency', 'is_active', 
-            'default_country', 'countries', 'warehouse_ids', 'synced_at'
+            'id', 'saleor_id', 'name', 'slug', 'currency', 'is_active',
+            'default_country', 'countries', 'warehouse_ids', 'allocation_strategy', 'synced_at'
         ]
         read_only_fields = ['id', 'synced_at']
 

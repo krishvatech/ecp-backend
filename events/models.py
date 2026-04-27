@@ -1970,6 +1970,11 @@ class EventApplication(models.Model):
 
 
 class SaleorChannel(models.Model):
+    ALLOCATION_STRATEGY_CHOICES = [
+        ("PRIORITIZE_SORTING_ORDER", "Prioritize Sorting Order"),
+        ("PRIORITIZE_HIGH_STOCK", "Prioritize High Stock"),
+    ]
+
     saleor_id = models.CharField(max_length=255, unique=True)
     name = models.CharField(max_length=255)
     slug = models.CharField(max_length=255, unique=True)
@@ -1978,6 +1983,12 @@ class SaleorChannel(models.Model):
     default_country = models.CharField(max_length=10, blank=True, null=True)
     countries = models.JSONField(default=list, blank=True)
     warehouse_ids = models.JSONField(default=list, blank=True)
+    allocation_strategy = models.CharField(
+        max_length=50,
+        choices=ALLOCATION_STRATEGY_CHOICES,
+        default="PRIORITIZE_SORTING_ORDER",
+        blank=True,
+    )
     synced_at = models.DateTimeField(auto_now=True)
 
     class Meta:

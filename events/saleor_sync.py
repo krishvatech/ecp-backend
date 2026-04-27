@@ -10,6 +10,13 @@ from community.models import Community
 
 logger = logging.getLogger(__name__)
 
+CURRENCY_NAMES = {
+    "USD": "US Dollar", "EUR": "Euro", "GBP": "British Pound",
+    "CHF": "Swiss Franc", "INR": "Indian Rupee", "AED": "UAE Dirham",
+    "SGD": "Singapore Dollar", "AUD": "Australian Dollar", "CAD": "Canadian Dollar",
+}
+COMMON_CURRENCIES = ["USD", "EUR", "GBP", "CHF", "INR", "AED", "SGD", "AUD", "CAD"]
+
 def sync_event_to_saleor_sync(event):
     """
     Synchronously creates/updates a Saleor Product for the given Event.
@@ -910,6 +917,39 @@ def call_saleor_gql(query, variables=None):
         logger.error(f"Error calling Saleor GQL: {e}")
         raise
 
+def get_saleor_channel_options():
+    """Fetch shop options (countries, currencies) from Saleor and combine with local warehouses/shipping zones."""
+    query = """
+    query SaleorShopOptions {
+      shop {
+        countries {
+          code
+          country
+        }
+        channelCurrencies
+      }
+    }
+    """
+    data = call_saleor_gql(query)
+    shop = data.get("data", {}).get("shop", {})
+
+    countries = [{"code": c["code"], "country": c["country"]} for c in shop.get("countries", [])]
+
+    saleor_currencies = shop.get("channelCurrencies", [])
+    all_codes = list(dict.fromkeys(saleor_currencies + COMMON_CURRENCIES))
+    currencies = [{"code": c, "label": f"{c} - {CURRENCY_NAMES.get(c, c)}"} for c in all_codes]
+
+    from .models import SaleorWarehouse, SaleorShippingZone
+    warehouses = list(SaleorWarehouse.objects.values("id", "saleor_id", "name", "slug"))
+    shipping_zones = list(SaleorShippingZone.objects.values("id", "saleor_id", "name", "channel_ids"))
+
+    return {
+        "countries": countries,
+        "currencies": currencies,
+        "warehouses": warehouses,
+        "shipping_zones": shipping_zones,
+    }
+
 def sync_channels_from_saleor():
     """Fetch all channels from Saleor and update local DB."""
     query = """
@@ -929,6 +969,9 @@ def sync_channels_from_saleor():
         warehouses {
           id
         }
+        stockSettings {
+          allocationStrategy
+        }
       }
     }
     """
@@ -939,6 +982,9 @@ def sync_channels_from_saleor():
 
         from .models import SaleorChannel
         for ch in channels:
+            stock_settings = ch.get("stockSettings", {}) or {}
+            allocation_strategy = stock_settings.get("allocationStrategy", "PRIORITIZE_SORTING_ORDER")
+
             obj, _ = SaleorChannel.objects.update_or_create(
                 saleor_id=ch["id"],
                 defaults={
@@ -949,6 +995,7 @@ def sync_channels_from_saleor():
                     "default_country": ch.get("defaultCountry", {}).get("code") if ch.get("defaultCountry") else None,
                     "countries": [c["code"] for c in ch.get("countries", [])],
                     "warehouse_ids": [w["id"] for w in ch.get("warehouses", [])],
+                    "allocation_strategy": allocation_strategy,
                 }
             )
             synced_ids.append(obj.saleor_id)
@@ -1305,6 +1352,19 @@ def create_channel_in_saleor(data):
       channelCreate(input: $input) {
         channel {
           id
+          name
+          slug
+          isActive
+          currencyCode
+          defaultCountry {
+            code
+            country
+          }
+          warehouses {
+            id
+            name
+            slug
+          }
         }
         errors {
           field
@@ -1321,7 +1381,12 @@ def create_channel_in_saleor(data):
         "isActive": data.get("is_active", True),
         "defaultCountry": data.get("default_country"),
         "addWarehouses": data.get("warehouse_ids", []),
+        "addShippingZones": data.get("shipping_zone_ids", []),
     }
+    if data.get("allocation_strategy"):
+        input_data["stockSettings"] = {
+            "allocationStrategy": data.get("allocation_strategy")
+        }
     return call_saleor_gql(mutation, {"input": input_data})
 
 def update_channel_in_saleor(saleor_id, data):
@@ -1330,6 +1395,18 @@ def update_channel_in_saleor(saleor_id, data):
       channelUpdate(id: $id, input: $input) {
         channel {
           id
+          name
+          slug
+          isActive
+          defaultCountry {
+            code
+            country
+          }
+          warehouses {
+            id
+            name
+            slug
+          }
         }
         errors {
           field
@@ -1345,12 +1422,28 @@ def update_channel_in_saleor(saleor_id, data):
         "isActive": data.get("is_active", True),
         "defaultCountry": data.get("default_country"),
     }
+    if data.get("add_warehouse_ids"):
+        input_data["addWarehouses"] = data["add_warehouse_ids"]
+    if data.get("remove_warehouse_ids"):
+        input_data["removeWarehouses"] = data["remove_warehouse_ids"]
+    if data.get("add_shipping_zone_ids"):
+        input_data["addShippingZones"] = data["add_shipping_zone_ids"]
+    if data.get("remove_shipping_zone_ids"):
+        input_data["removeShippingZones"] = data["remove_shipping_zone_ids"]
+    if data.get("allocation_strategy"):
+        input_data["stockSettings"] = {
+            "allocationStrategy": data["allocation_strategy"]
+        }
     return call_saleor_gql(mutation, {"id": saleor_id, "input": input_data})
 
-def delete_channel_in_saleor(saleor_id):
+def delete_channel_in_saleor(saleor_id, destination_channel_id=None):
     mutation = """
-    mutation ChannelDelete($id: ID!) {
-      channelDelete(id: $id) {
+    mutation ChannelDelete($id: ID!, $input: ChannelDeleteInput) {
+      channelDelete(id: $id, input: $input) {
+        channel {
+          id
+          name
+        }
         errors {
           field
           code
@@ -1359,4 +1452,7 @@ def delete_channel_in_saleor(saleor_id):
       }
     }
     """
-    return call_saleor_gql(mutation, {"id": saleor_id})
+    variables = {"id": saleor_id, "input": None}
+    if destination_channel_id:
+        variables["input"] = {"channelId": destination_channel_id}
+    return call_saleor_gql(mutation, variables)
