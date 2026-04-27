@@ -420,7 +420,9 @@ class QnAConsumer(BaseEventConsumer):
         Forward answered question payload to all connected clients.
         Triggered when a host marks a question as answered.
         """
-        await self.send_json(event.get("payload", {}))
+        payload = event.get("payload", {})
+        payload["type"] = "qna.answered"
+        await self.send_json(payload)
 
     async def qna_pinned(self, event: Dict[str, Any]) -> None:
         """

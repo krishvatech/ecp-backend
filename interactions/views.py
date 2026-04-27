@@ -1326,52 +1326,84 @@ class QuestionViewSet(viewsets.ModelViewSet):
         from django.utils import timezone
         from rest_framework.exceptions import PermissionDenied
 
+        print(f"\n[DEBUG mark_answered] ===== START =====")
+        print(f"[DEBUG mark_answered] pk={pk}")
+        print(f"[DEBUG mark_answered] user={request.user}")
+        print(f"[DEBUG mark_answered] user.id={request.user.id if request.user else 'ANONYMOUS'}")
+        print(f"[DEBUG mark_answered] user.is_authenticated={request.user.is_authenticated}")
+
         question = get_object_or_404(Question, pk=pk)
+        print(f"[DEBUG mark_answered] Question found: id={question.id}, event_id={question.event_id}")
+
         user = request.user
 
         # Permission check: Only host/admin can mark answered
         is_host = (user == question.event.created_by or user.is_staff)
+        print(f"[DEBUG mark_answered] Host check:")
+        print(f"  - user.id={user.id}")
+        print(f"  - created_by_id={question.event.created_by_id}")
+        print(f"  - is_staff={user.is_staff}")
+        print(f"  - is_host={is_host}")
+
         if not is_host:
+            print(f"[DEBUG mark_answered] PERMISSION DENIED - returning 403")
             raise PermissionDenied("Only event host/admin can mark questions as answered.")
 
         # Validate request data
         serializer = MarkAnsweredSerializer(data=request.data)
         if not serializer.is_valid():
-            print(f"[DEBUG] MarkAnsweredSerializer errors: {serializer.errors}")
+            print(f"[DEBUG mark_answered] Serializer errors: {serializer.errors}")
             serializer.is_valid(raise_exception=True)
 
-        print(f"[DEBUG] mark_answered called - answer_text: {serializer.validated_data.get('answer_text')}")
+        print(f"[DEBUG mark_answered] Validated data: {serializer.validated_data}")
 
         # Toggle answered status
         question.is_answered = not question.is_answered
-        update_fields = ["is_answered", "answered_by", "answered_at", "requires_followup"]
 
         if question.is_answered:
             question.answered_by = user
             question.answered_at = timezone.now()
+            question.answered_phase = "live"
 
             # Handle optional answer_text (for live answers)
             answer_text = serializer.validated_data.get("answer_text", "").strip()
-            print(f"[DEBUG] answer_text after strip: '{answer_text}' (length: {len(answer_text)})")
+            print(f"[DEBUG mark_answered] answer_text: '{answer_text}' (length: {len(answer_text)})")
             if answer_text:
                 question.answer_text = answer_text
-                question.answered_phase = "live"
-                update_fields.extend(["answer_text", "answered_phase"])
-                print(f"[DEBUG] Setting answer_text on question - will update fields: {update_fields}")
         else:
             question.answered_by = None
             question.answered_at = None
+            question.answered_phase = None
 
         # Handle requires_followup flag
         requires_followup = serializer.validated_data.get("requires_followup", question.requires_followup)
         question.requires_followup = requires_followup
 
-        question.save(update_fields=update_fields)
-        print(f"[DEBUG] Question saved - is_answered: {question.is_answered}, answer_text: {question.answer_text}, answered_phase: {question.answered_phase}")
+        print(f"[DEBUG mark_answered] Before save:")
+        print(f"  - is_answered={question.is_answered}")
+        print(f"  - answered_phase={question.answered_phase}")
+        print(f"  - answered_by_id={question.answered_by_id}")
+        print(f"  - answer_text={question.answer_text[:50] if question.answer_text else 'None'}")
+
+        try:
+            question.save()
+            print(f"[DEBUG mark_answered] Save successful!")
+        except Exception as e:
+            print(f"[DEBUG mark_answered] Save FAILED with exception: {type(e).__name__}: {str(e)}")
+            raise
+
+        print(f"[DEBUG mark_answered] After save - is_answered: {question.is_answered}, answered_phase: {question.answered_phase}")
 
         # Verify by re-fetching from database
-        fresh_question = Question.objects.get(pk=question.pk)
-        print(f"[DEBUG] Fresh from DB - answer_text: {fresh_question.answer_text}, answered_phase: {fresh_question.answered_phase}")
+        try:
+            fresh_question = Question.objects.get(pk=question.pk)
+            print(f"[DEBUG mark_answered] Verified in DB:")
+            print(f"  - is_answered={fresh_question.is_answered}")
+            print(f"  - answered_phase={fresh_question.answered_phase}")
+            print(f"  - answered_by_id={fresh_question.answered_by_id}")
+            print(f"  - answer_text={fresh_question.answer_text[:50] if fresh_question.answer_text else 'None'}")
+        except Exception as e:
+            print(f"[DEBUG mark_answered] Re-fetch FAILED: {type(e).__name__}: {str(e)}")
 
         # Broadcast to WebSocket group
         if question.lounge_table_id:
@@ -1382,8 +1414,6 @@ class QuestionViewSet(viewsets.ModelViewSet):
         channel_layer = get_channel_layer()
 
         payload = {
-            "type": "qna.answered",
-            "event_id": question.event_id,
             "question_id": question.id,
             "is_answered": question.is_answered,
             "answered_at": question.answered_at.isoformat() if question.answered_at else None,
@@ -1399,7 +1429,13 @@ class QuestionViewSet(viewsets.ModelViewSet):
         )
 
         serializer = self.get_serializer(question)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        response_data = serializer.data
+        print(f"[DEBUG mark_answered] Returning response:")
+        print(f"  - is_answered={response_data.get('is_answered')}")
+        print(f"  - answered_phase={response_data.get('answered_phase')}")
+        print(f"  - answer_text={response_data.get('answer_text', '')[:50] if response_data.get('answer_text') else 'None'}")
+        print(f"[DEBUG mark_answered] ===== END =====\n")
+        return Response(response_data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"])
     def pin(self, request, pk=None):

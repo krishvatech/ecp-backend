@@ -38,17 +38,22 @@ def publish_post_event_answer(question, answer_text, answered_by):
 
 
 def _broadcast_answer_update(question):
-    """Broadcast the answered question update to WebSocket clients."""
+    """Broadcast the answered question update to Q&A WebSocket clients."""
     try:
         channel_layer = get_channel_layer()
-        group_name = f"event_{question.event_id}"
+        # Determine the correct Q&A group based on lounge table
+        if question.lounge_table_id:
+            group_name = f"event_qna_{question.event_id}_table_{question.lounge_table_id}"
+        else:
+            group_name = f"event_qna_{question.event_id}_main"
         payload = {
-            "id": question.id,
+            "question_id": question.id,
             "is_answered": question.is_answered,
             "answered_at": question.answered_at.isoformat(),
             "answered_by": question.answered_by_id,
             "answer_text": question.answer_text,
             "answered_phase": question.answered_phase,
+            "requires_followup": question.requires_followup,
         }
         async_to_sync(channel_layer.group_send)(
             group_name,
