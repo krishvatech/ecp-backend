@@ -110,6 +110,7 @@ from .saleor_sync import (
     create_shipping_zone_in_saleor,
     update_shipping_zone_in_saleor,
     delete_shipping_zone_in_saleor,
+    get_shipping_zone_options,
 )
 
 # ============================================================
@@ -7292,4 +7293,26 @@ class SaleorShippingZoneDeleteView(views.APIView):
             obj.delete()
             return Response(status=204)
         except Exception as e:
+            logger.exception(f"Error in SaleorShippingZoneDeleteView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorShippingZoneOptionsView(views.APIView):
+    """
+    GET /api/events/saleor/shipping-zone-options/
+    Returns countries (from Saleor GQL), channels, and warehouses (from local DB)
+    for populating the shipping zone create/edit form.
+    Only accessible by platform admin / superuser.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+
+        try:
+            options = get_shipping_zone_options()
+            return Response(options)
+        except Exception as e:
+            logger.exception(f"Error in SaleorShippingZoneOptionsView: {e}")
             return Response({"error": str(e)}, status=500)

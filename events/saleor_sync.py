@@ -1223,65 +1223,156 @@ def sync_shipping_zones_from_saleor():
 
 # Mutations
 
+def get_shipping_zone_options():
+    """
+    Fetch countries from Saleor GraphQL and combine with local channels/warehouses.
+    Used by the shipping zone create/edit form.
+    """
+    query = """
+    query SaleorShippingZoneOptions {
+      shop {
+        countries {
+          code
+          country
+        }
+      }
+    }
+    """
+    try:
+        data = call_saleor_gql(query)
+        shop = data.get("data", {}).get("shop", {})
+        countries = [{"code": c["code"], "country": c["country"]} for c in shop.get("countries", [])]
+    except Exception as e:
+        logger.error(f"Error fetching countries from Saleor: {e}")
+        countries = []
+
+    from .models import SaleorChannel, SaleorWarehouse
+    channels = list(SaleorChannel.objects.values("id", "saleor_id", "name", "slug", "currency", "is_active"))
+    warehouses = list(SaleorWarehouse.objects.values("id", "saleor_id", "name", "slug", "is_active"))
+
+    return {
+        "countries": countries,
+        "channels": channels,
+        "warehouses": warehouses,
+    }
+
+
 def create_shipping_zone_in_saleor(data):
+    """Create a shipping zone in Saleor with full field support."""
     mutation = """
     mutation ShippingZoneCreate($input: ShippingZoneCreateInput!) {
       shippingZoneCreate(input: $input) {
         shippingZone {
           id
+          name
+          description
+          default
+          countries {
+            code
+          }
+          warehouses {
+            id
+            name
+          }
+          channels {
+            id
+            slug
+          }
         }
         errors {
           field
           code
           message
+          channels
+          warehouses
         }
       }
     }
     """
-    # map frontend fields to Saleor input
+    is_default = data.get("is_default", False)
+    # If default zone, countries can be empty
+    countries = [] if is_default else data.get("countries", [])
+
     input_data = {
         "name": data.get("name"),
-        "description": data.get("description"),
-        "countries": data.get("countries", []),
-        "default": data.get("is_default", False),
-        "addWarehouses": data.get("warehouse_ids", []),
+        "description": data.get("description", ""),
+        "countries": countries,
+        "default": is_default,
         "addChannels": data.get("channel_ids", []),
+        "addWarehouses": data.get("warehouse_ids", []),
     }
+    # Remove None values to avoid sending nulls
+    input_data = {k: v for k, v in input_data.items() if v is not None}
     return call_saleor_gql(mutation, {"input": input_data})
 
+
 def update_shipping_zone_in_saleor(saleor_id, data):
+    """Update a shipping zone in Saleor with add/remove channels and warehouses support."""
     mutation = """
     mutation ShippingZoneUpdate($id: ID!, $input: ShippingZoneUpdateInput!) {
       shippingZoneUpdate(id: $id, input: $input) {
         shippingZone {
           id
+          name
+          description
+          default
+          countries {
+            code
+          }
+          warehouses {
+            id
+            name
+          }
+          channels {
+            id
+            slug
+          }
         }
         errors {
           field
           code
           message
+          channels
+          warehouses
         }
       }
     }
     """
+    is_default = data.get("is_default", False)
+    # If default zone, countries should be empty
+    countries = [] if is_default else data.get("countries", [])
+
     input_data = {
         "name": data.get("name"),
-        "description": data.get("description"),
-        "countries": data.get("countries", []),
-        "default": data.get("is_default", False),
+        "description": data.get("description", ""),
+        "countries": countries,
+        "default": is_default,
     }
-    if "warehouse_ids" in data:
-        # For simplicity in this task, we replace. Saleor uses addWarehouses/removeWarehouses.
-        # This implementation might need to be more sophisticated if we want diffing.
-        # But for now let's just use what's provided or skip if not handled.
-        pass
 
+    # Only include add/remove if explicitly provided in the payload
+    if "add_channel_ids" in data and data["add_channel_ids"] is not None:
+        input_data["addChannels"] = data["add_channel_ids"]
+    if "remove_channel_ids" in data and data["remove_channel_ids"] is not None:
+        input_data["removeChannels"] = data["remove_channel_ids"]
+    if "add_warehouse_ids" in data and data["add_warehouse_ids"] is not None:
+        input_data["addWarehouses"] = data["add_warehouse_ids"]
+    if "remove_warehouse_ids" in data and data["remove_warehouse_ids"] is not None:
+        input_data["removeWarehouses"] = data["remove_warehouse_ids"]
+
+    # Remove None values
+    input_data = {k: v for k, v in input_data.items() if v is not None}
     return call_saleor_gql(mutation, {"id": saleor_id, "input": input_data})
 
+
 def delete_shipping_zone_in_saleor(saleor_id):
+    """Delete a shipping zone from Saleor."""
     mutation = """
     mutation ShippingZoneDelete($id: ID!) {
       shippingZoneDelete(id: $id) {
+        shippingZone {
+          id
+          name
+        }
         errors {
           field
           code

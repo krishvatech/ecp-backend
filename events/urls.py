@@ -24,6 +24,7 @@ from .views import (
     SaleorShippingZoneCreateView,
     SaleorShippingZoneUpdateView,
     SaleorShippingZoneDeleteView,
+    SaleorShippingZoneOptionsView,
 )
 from .guest_views import (
     GuestJoinView,
@@ -273,4 +274,5 @@ urlpatterns = [
     path("events/saleor/shipping-zones/create/", SaleorShippingZoneCreateView.as_view(), name="saleor-shipping-zone-create"),
     path("events/saleor/shipping-zones/<int:pk>/", SaleorShippingZoneUpdateView.as_view(), name="saleor-shipping-zone-update"),
     path("events/saleor/shipping-zones/<int:pk>/delete/", SaleorShippingZoneDeleteView.as_view(), name="saleor-shipping-zone-delete"),
+    path("events/saleor/shipping-zone-options/", SaleorShippingZoneOptionsView.as_view(), name="saleor-shipping-zone-options"),
 ]
