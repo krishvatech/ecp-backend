@@ -38,23 +38,42 @@ def suggest_groups(event_id, user):
         raise ValueError("Not enough questions to generate groups.")
 
     prompt_content = f"""
-    You are an AI assistant designed to group related Q&A questions for an event.
-    Here are the current questions in JSON format:
+    You are an AI assistant helping moderate a live event Q&A session.
+    Below are questions submitted by attendees, in JSON format:
     {json.dumps(q_data, indent=2)}
-    
-    Group related questions together.
+
+    Your task is to identify groups of questions that are asking about the same topic,
+    and for each group produce a single synthesized representative question that captures
+    the intent of ALL questions in that group.
+
     Rules:
-    - A group must have at least 2 questions.
+    - A group must contain at least 2 questions.
     - Create a maximum of 10 groups.
-    - Do not group unrelated questions just to hit the max.
-    - Output MUST be strictly valid JSON in this exact structure:
+    - Do not force unrelated questions into a group just to reach the maximum.
+    - The "summary" field MUST be a complete, well-formed question (ending with "?") that
+      synthesizes and represents all sub-questions in the group. It should read naturally
+      as a standalone question a moderator could ask the speaker. Do NOT write a sentence
+      like "Questions about X and Y." — write an actual question.
+    - The "title" field must be a short 2–5 word category label (e.g. "Pricing & Access").
+    - The "confidence" field is a float between 0 and 1 representing how confident you are
+      that these questions belong together.
+
+    Example of correct output for a group about ticket pricing:
+    {{
+      "title": "Ticket Pricing",
+      "summary": "What are the ticket pricing tiers, are there any early-bird or group discounts, and is there a free access option for students or community members?",
+      "question_ids": [12, 18, 21],
+      "confidence": 0.88
+    }}
+
+    Output MUST be strictly valid JSON in this exact structure:
     {{
       "groups": [
         {{
-          "title": "Pricing and Access",
-          "summary": "Questions about ticket pricing, access rules, and joining options.",
-          "question_ids": [12, 18, 21],
-          "confidence": 0.86
+          "title": "Short Category Label",
+          "summary": "A complete synthesized question that represents all sub-questions in this group?",
+          "question_ids": [1, 2, 3],
+          "confidence": 0.85
         }}
       ]
     }}
