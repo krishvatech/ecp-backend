@@ -801,8 +801,10 @@ class EventLimitOffsetPagination(LimitOffsetPagination):
 class IsCreatorOrReadOnly(BasePermission):
     """
     - SAFE_METHODS (GET/HEAD/OPTIONS) are open.
-    - Mutations allowed only for the actual event creator (created_by).
-    - Note: is_staff / is_superuser bypass is removed to enforce strict ownership.
+    - Mutations allowed for:
+      1) the actual event creator (created_by), or
+      2) platform superusers.
+    - Non-superuser lower roles retain creator-bound restrictions.
     """
     def has_permission(self, request, view):
         # Anyone can read; must be authenticated to write
@@ -816,18 +818,21 @@ class IsCreatorOrReadOnly(BasePermission):
             return True
         return bool(
             request.user
-            and (obj.created_by_id == request.user.id)
+            and (
+                obj.created_by_id == request.user.id
+                or getattr(request.user, "is_superuser", False)
+            )
         )
 
 
 def _is_event_owner(user, event) -> bool:
     """
-    Check if the user is the actual creator of the event.
-    Explicitly ignores staff/superuser status to enforce strict isolation.
+    Check if user can be treated as event owner for owner-level management paths.
+    Platform superusers are considered owners for all events.
     """
     if not (user and user.is_authenticated and event):
         return False
-    return event.created_by_id == user.id
+    return bool(event.created_by_id == user.id or getattr(user, "is_superuser", False))
 
 
 def _is_event_manager(user, event) -> bool:
@@ -852,10 +857,17 @@ def _is_event_manager(user, event) -> bool:
 def _is_event_host(user, event) -> bool:
     """
     Strict role check: is this user a Host for the live room?
-    Includes ONLY: actual creator OR explicitly assigned EventParticipant with role="host".
+    Includes:
+      1) platform superusers,
+      2) actual creator,
+      3) explicitly assigned EventParticipant with role="host".
     """
     if not (user and user.is_authenticated and event):
         return False
+
+    # Platform superusers are always hosts across events.
+    if getattr(user, "is_superuser", False):
+        return True
 
     # 1. Event Creator is always a host
     if event.created_by_id == user.id:
@@ -1148,18 +1160,23 @@ class EventViewSet(viewsets.ModelViewSet):
           - bucket (?bucket=upcoming|live|past)
         """
         user = self.request.user
+        is_platform_admin = bool(getattr(user, "is_superuser", False))
         is_guest_user = bool(getattr(user, "is_guest", False))
         guest_event_id = getattr(getattr(user, "guest", None), "event_id", None) if is_guest_user else None
         qs = Event.objects.select_related("community").prefetch_related("sessions", "participants__user", "participants__user__profile")
 
         # Handle hidden events: visible ONLY to creator OR registered users
         if user.is_authenticated:
-            # Show non-hidden events OR (hidden events AND (user is creator OR user is registered))
-            qs = qs.filter(
-                Q(is_hidden=False) |
-                Q(is_hidden=True, created_by=user) |
-                Q(is_hidden=True, registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'])
-            ).distinct()
+            if is_platform_admin:
+                # Platform superusers can access all events, including hidden.
+                pass
+            else:
+                # Show non-hidden events OR (hidden events AND (user is creator OR user is registered))
+                qs = qs.filter(
+                    Q(is_hidden=False) |
+                    Q(is_hidden=True, created_by=user) |
+                    Q(is_hidden=True, registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'])
+                ).distinct()
         else:
             # Non-authenticated users: only non-hidden events
             qs = qs.filter(is_hidden=False)
@@ -1173,13 +1190,17 @@ class EventViewSet(viewsets.ModelViewSet):
                 return Event.objects.none()
             qs = qs.filter(id=guest_event_id, status__in=["published", "live"])
         else:
-            qs = qs.filter(
-                Q(status__in=["published", "live"]) |
-                Q(community__members=user) |
-                Q(created_by_id=user.id) |
-                Q(community__owner_id=user.id) |  # owner can see all events in their community
-                Q(registrations__user_id=user.id, registrations__status="registered")  # registered participants can see event even after it ends (for post-event lounge)
-            ).distinct()
+            if is_platform_admin:
+                # Full visibility for superusers regardless of creator/community membership.
+                pass
+            else:
+                qs = qs.filter(
+                    Q(status__in=["published", "live"]) |
+                    Q(community__members=user) |
+                    Q(created_by_id=user.id) |
+                    Q(community__owner_id=user.id) |  # owner can see all events in their community
+                    Q(registrations__user_id=user.id, registrations__status="registered")  # registered participants can see event even after it ends (for post-event lounge)
+                ).distinct()
 
             # ✅ Hide unpublished recordings from regular participants
             # Exclude events with unpublished recordings, BUT only from users who are
@@ -1190,12 +1211,13 @@ class EventViewSet(viewsets.ModelViewSet):
             user_is_host_or_admin = Q(created_by_id=user.id) | Q(community__owner_id=user.id) | Q(community__members=user)
 
             # Hide unpublished recordings from non-host participants
-            qs = qs.exclude(
-                Q(recording_url__isnull=False, recording_url__gt='') &  # has recording URL
-                Q(replay_visible_to_participants=False) &  # recording NOT published
-                Q(registrations__user_id=user.id, registrations__status="registered") &  # user is registered
-                ~user_is_host_or_admin  # BUT user is NOT host/owner/admin
-            ).distinct()
+            if not is_platform_admin:
+                qs = qs.exclude(
+                    Q(recording_url__isnull=False, recording_url__gt='') &  # has recording URL
+                    Q(replay_visible_to_participants=False) &  # recording NOT published
+                    Q(registrations__user_id=user.id, registrations__status="registered") &  # user is registered
+                    ~user_is_host_or_admin  # BUT user is NOT host/owner/admin
+                ).distinct()
 
         # ---- Filters (applied only when provided) ----
         params = self.request.query_params
@@ -1369,7 +1391,31 @@ class EventViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("You must be a member of the community to create events.")
         # Attach creator automatically, wrapped in transaction for atomicity
         with transaction.atomic():
-            serializer.save(created_by=self.request.user, status="published")
+            event = serializer.save(created_by=self.request.user, status="published")
+
+            # Auto-register all platform super users on every newly created event
+            # so they are visible in "Registered Members" by default.
+            super_user_ids = list(
+                User.objects.filter(
+                    Q(groups__name="platform_admin")
+                    | Q(is_superuser=True, is_staff=True)
+                )
+                .filter(is_active=True)
+                .values_list("id", flat=True)
+                .distinct()
+            )
+            if super_user_ids:
+                existing_ids = set(
+                    EventRegistration.objects.filter(event=event, user_id__in=super_user_ids)
+                    .values_list("user_id", flat=True)
+                )
+                to_create = [
+                    EventRegistration(event=event, user_id=user_id, status="registered")
+                    for user_id in super_user_ids
+                    if user_id not in existing_ids
+                ]
+                if to_create:
+                    EventRegistration.objects.bulk_create(to_create)
 
     def perform_update(self, serializer):
         """
