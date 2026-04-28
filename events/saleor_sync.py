@@ -1898,3 +1898,110 @@ def delete_channel_in_saleor(saleor_id, destination_channel_id=None):
     if destination_channel_id:
         variables["input"] = {"channelId": destination_channel_id}
     return call_saleor_gql(mutation, variables)
+
+
+def sync_staff_users_from_saleor():
+    """Fetch all staff users from Saleor and update local DB."""
+    query = """
+    query StaffUsers {
+      staffUsers(first: 100, sortBy: { field: FIRST_NAME, direction: ASC }) {
+        edges {
+          node {
+            id
+            firstName
+            lastName
+            email
+            isStaff
+            isActive
+            userPermissions {
+              code
+              name
+            }
+            metadata {
+              key
+              value
+            }
+          }
+        }
+      }
+    }
+    """
+    try:
+        data = call_saleor_gql(query)
+        staff_users_data = data.get("data", {}).get("staffUsers", {}).get("edges", [])
+        synced_ids = []
+
+        from .models import SaleorStaffUser
+        for edge in staff_users_data:
+            node = edge["node"]
+
+            obj, _ = SaleorStaffUser.objects.update_or_create(
+                saleor_id=node["id"],
+                defaults={
+                    "first_name": node.get("firstName", ""),
+                    "last_name": node.get("lastName", ""),
+                    "email": node.get("email", ""),
+                    "is_staff": node.get("isStaff", False),
+                    "is_active": node.get("isActive", False),
+                    "permissions": [p["code"] for p in node.get("userPermissions", [])],
+                    "metadata": {m["key"]: m["value"] for m in node.get("metadata", [])},
+                }
+            )
+            synced_ids.append(obj.saleor_id)
+
+        SaleorStaffUser.objects.exclude(saleor_id__in=synced_ids).delete()
+        return synced_ids
+    except Exception as e:
+        logger.error(f"Error syncing Saleor staff users: {e}")
+        raise
+
+
+def sync_permission_groups_from_saleor():
+    """Fetch all permission groups from Saleor and update local DB."""
+    query = """
+    query PermissionGroups {
+      permissionGroups(first: 100, sortBy: { field: NAME, direction: ASC }) {
+        edges {
+          node {
+            id
+            name
+            userCanManage
+            permissions {
+              code
+              name
+            }
+            users {
+              id
+            }
+          }
+        }
+      }
+    }
+    """
+    try:
+        data = call_saleor_gql(query)
+        permission_groups_data = data.get("data", {}).get("permissionGroups", {}).get("edges", [])
+        synced_ids = []
+
+        from .models import SaleorPermissionGroup
+        for edge in permission_groups_data:
+            node = edge["node"]
+
+            obj, _ = SaleorPermissionGroup.objects.update_or_create(
+                saleor_id=node["id"],
+                defaults={
+                    "name": node.get("name", ""),
+                    "permissions": [p["code"] for p in node.get("permissions", [])],
+                    "user_count": len(node.get("users", [])),
+                    "metadata": {},
+                }
+            )
+            synced_ids.append(obj.saleor_id)
+
+        SaleorPermissionGroup.objects.exclude(saleor_id__in=synced_ids).delete()
+        return synced_ids
+    except Exception as e:
+        logger.error(f"Error syncing Saleor permission groups: {e}")
+        raise
+
+

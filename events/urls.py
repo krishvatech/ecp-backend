@@ -31,6 +31,10 @@ from .views import (
     SaleorProductTypeUpdateView,
     SaleorProductTypeDeleteView,
     SaleorProductTypeOptionsView,
+    SaleorStaffUserListView,
+    SaleorStaffUserSyncView,
+    SaleorPermissionGroupListView,
+    SaleorPermissionGroupSyncView,
 )
 from .guest_views import (
     GuestJoinView,
@@ -288,4 +292,10 @@ urlpatterns = [
     path("events/saleor/product-types/<int:pk>/", SaleorProductTypeUpdateView.as_view(), name="saleor-product-type-update"),
     path("events/saleor/product-types/<int:pk>/delete/", SaleorProductTypeDeleteView.as_view(), name="saleor-product-type-delete"),
     path("events/saleor/product-type-options/", SaleorProductTypeOptionsView.as_view(), name="saleor-product-type-options"),
+
+    path("events/saleor/staff-users/", SaleorStaffUserListView.as_view(), name="saleor-staff-user-list"),
+    path("events/saleor/staff-users/sync/", SaleorStaffUserSyncView.as_view(), name="saleor-staff-user-sync"),
+
+    path("events/saleor/permission-groups/", SaleorPermissionGroupListView.as_view(), name="saleor-permission-group-list"),
+    path("events/saleor/permission-groups/sync/", SaleorPermissionGroupSyncView.as_view(), name="saleor-permission-group-sync"),
 ]

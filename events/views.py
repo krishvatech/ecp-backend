@@ -58,7 +58,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup
 from .permissions import IsSuperuserOnly
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -85,6 +85,8 @@ from .serializers import (
     SaleorProductTypeSerializer,
     SaleorWarehouseSerializer,
     SaleorShippingZoneSerializer,
+    SaleorStaffUserSerializer,
+    SaleorPermissionGroupSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -103,6 +105,8 @@ from .saleor_sync import (
     sync_warehouses_from_saleor,
     sync_shipping_zones_from_saleor,
     sync_product_types_from_saleor,
+    sync_staff_users_from_saleor,
+    sync_permission_groups_from_saleor,
     create_channel_in_saleor,
     update_channel_in_saleor,
     delete_channel_in_saleor,
@@ -7514,4 +7518,66 @@ class SaleorProductTypeOptionsView(views.APIView):
             return Response(options)
         except Exception as e:
             logger.exception(f"Error in SaleorProductTypeOptionsView: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorStaffUserListView(generics.ListAPIView):
+    """GET /api/events/saleor/staff-users/ - List cached Saleor staff users."""
+    queryset = SaleorStaffUser.objects.all()
+    serializer_class = SaleorStaffUserSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        return super().get(request, *args, **kwargs)
+
+
+class SaleorStaffUserSyncView(views.APIView):
+    """POST /api/events/saleor/staff-users/sync/ - Sync staff users from Saleor API."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+
+        try:
+            synced_ids = sync_staff_users_from_saleor()
+            staff_users = SaleorStaffUser.objects.filter(saleor_id__in=synced_ids)
+            return Response({
+                "staff_users": SaleorStaffUserSerializer(staff_users, many=True).data,
+                "count": len(synced_ids)
+            })
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorPermissionGroupListView(generics.ListAPIView):
+    """GET /api/events/saleor/permission-groups/ - List cached Saleor permission groups."""
+    queryset = SaleorPermissionGroup.objects.all()
+    serializer_class = SaleorPermissionGroupSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        return super().get(request, *args, **kwargs)
+
+
+class SaleorPermissionGroupSyncView(views.APIView):
+    """POST /api/events/saleor/permission-groups/sync/ - Sync permission groups from Saleor API."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _is_platform_admin(request):
+            raise PermissionDenied("Only platform_admin can access this endpoint.")
+
+        try:
+            synced_ids = sync_permission_groups_from_saleor()
+            permission_groups = SaleorPermissionGroup.objects.filter(saleor_id__in=synced_ids)
+            return Response({
+                "permission_groups": SaleorPermissionGroupSerializer(permission_groups, many=True).data,
+                "count": len(synced_ids)
+            })
+        except Exception as e:
             return Response({"error": str(e)}, status=500)

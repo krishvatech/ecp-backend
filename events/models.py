@@ -2078,3 +2078,36 @@ class SaleorProductType(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class SaleorStaffUser(models.Model):
+    saleor_id = models.CharField(max_length=255, unique=True)
+    first_name = models.CharField(max_length=255)
+    last_name = models.CharField(max_length=255)
+    email = models.EmailField()
+    is_staff = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    permissions = models.JSONField(default=list, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["first_name", "last_name"]
+
+    def __str__(self):
+        return f"{self.first_name} {self.last_name}"
+
+
+class SaleorPermissionGroup(models.Model):
+    saleor_id = models.CharField(max_length=255, unique=True)
+    name = models.CharField(max_length=255)
+    permissions = models.JSONField(default=list, blank=True)
+    user_count = models.IntegerField(default=0)
+    metadata = models.JSONField(default=dict, blank=True)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name

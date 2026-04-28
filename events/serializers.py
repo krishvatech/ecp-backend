@@ -22,7 +22,7 @@ from users.serializers import UserMiniSerializer
 from .models import (
     Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
     EventSession, SessionParticipant, SessionAttendance, EventApplication, VirtualSpeaker,
-    SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType
+    SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup
 )
 from community.models import Community
 from content.models import Resource
@@ -2394,5 +2394,24 @@ class SaleorProductTypeSerializer(serializers.ModelSerializer):
             'is_shipping_required', 'tax_class_id', 'tax_class_name',
             'product_attribute_ids', 'variant_attribute_ids',
             'metadata', 'private_metadata', 'synced_at',
+        ]
+        read_only_fields = ['id', 'synced_at']
+
+
+class SaleorStaffUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SaleorStaffUser
+        fields = [
+            'id', 'saleor_id', 'first_name', 'last_name', 'email',
+            'is_staff', 'is_active', 'permissions', 'metadata', 'synced_at',
+        ]
+        read_only_fields = ['id', 'synced_at']
+
+
+class SaleorPermissionGroupSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SaleorPermissionGroup
+        fields = [
+            'id', 'saleor_id', 'name', 'permissions', 'user_count', 'metadata', 'synced_at',
         ]
         read_only_fields = ['id', 'synced_at']
