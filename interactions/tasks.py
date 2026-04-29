@@ -106,7 +106,7 @@ def auto_group_questions_task(self, event_id):
 
         # Broadcast notification to host
         channel_layer = get_channel_layer()
-        group_name = f"event_qna_{event_id}_main"
+        group_name = f"event_qna_{event_id}_shared"
         logger.info(f"[CELERY-AUTO-GROUP] Broadcasting to group {group_name}")
         async_to_sync(channel_layer.group_send)(
             group_name,

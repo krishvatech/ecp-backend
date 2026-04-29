@@ -281,6 +281,10 @@ class QnAConsumer(BaseEventConsumer):
             self.group_name = f"{self.group_name_prefix}_{self.event_id}_main"
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
+        # Join the event-wide shared group so every user receives group broadcasts
+        # regardless of whether they are in the main room or a lounge table.
+        self.shared_group_name = f"{self.group_name_prefix}_{self.event_id}_shared"
+        await self.channel_layer.group_add(self.shared_group_name, self.channel_name)
         await self.accept()
 
     async def receive_json(self, content: Dict[str, Any], **kwargs: Any) -> None:
@@ -518,6 +522,14 @@ class QnAConsumer(BaseEventConsumer):
         """New AI group suggestions pending host review. Payload: { type, count, event_id }"""
         await self.send_json(event.get("payload", {}))
 
+    async def qna_group_upvote(self, event: Dict[str, Any]) -> None:
+        """Group upvote count updated. Payload: { type, event_id, group_id, aggregated_vote_count }"""
+        await self.send_json(event.get("payload", {}))
+
+    async def qna_ai_public_suggestions_refresh(self, event: Dict[str, Any]) -> None:
+        """Public AI suggestions refreshed. Payload: { event_id }"""
+        await self.send_json(event.get("payload", {}))
+
     async def qna_typing(self, event: Dict[str, Any]) -> None:
         """
         Called when group_send(type='qna.typing', payload=...) is triggered.
@@ -525,4 +537,11 @@ class QnAConsumer(BaseEventConsumer):
         Payload: { type, event_id, lounge_table_id, user_id, user_name, is_typing, timestamp }
         """
         await self.send_json(event.get("payload", {}))
+
+    async def disconnect(self, code: int) -> None:
+        try:
+            await self.channel_layer.group_discard(self.shared_group_name, self.channel_name)
+        except Exception:
+            pass
+        await super().disconnect(code)
 

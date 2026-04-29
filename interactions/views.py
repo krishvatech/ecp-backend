@@ -1127,8 +1127,9 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "user_has_voted_in_group": actor_has_voted_in_group,
                 "actor_id": str(actor_id),
             }
+            shared_group = f"event_qna_{question.event_id}_shared"
             async_to_sync(channel_layer.group_send)(
-                group, {"type": "qna.group_upvote", "payload": group_payload}
+                shared_group, {"type": "qna.group_upvote", "payload": group_payload}
             )
         except Exception:
             # Question is not in a group — no group broadcast needed.
@@ -2820,7 +2821,7 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
         
         # Broadcast group_created
         channel_layer = get_channel_layer()
-        group_name = f"event_qna_{group.event_id}_main"
+        group_name = f"event_qna_{group.event_id}_shared"
         async_to_sync(channel_layer.group_send)(
             group_name,
             {
@@ -2870,7 +2871,7 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
 
         # Broadcast group_updated
         channel_layer = get_channel_layer()
-        group_name = f"event_qna_{updated_group.event_id}_main"
+        group_name = f"event_qna_{updated_group.event_id}_shared"
         async_to_sync(channel_layer.group_send)(
             group_name,
             {
@@ -2900,7 +2901,7 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
         
         # Broadcast group_deleted
         channel_layer = get_channel_layer()
-        group_name = f"event_qna_{event_id}_main"
+        group_name = f"event_qna_{event_id}_shared"
         async_to_sync(channel_layer.group_send)(
             group_name,
             {
@@ -2926,7 +2927,7 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
             
         # Broadcast
         channel_layer = get_channel_layer()
-        group_name = f"event_qna_{group.event_id}_main"
+        group_name = f"event_qna_{group.event_id}_shared"
         async_to_sync(channel_layer.group_send)(
             group_name,
             {
@@ -2949,7 +2950,7 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
         
         # Broadcast
         channel_layer = get_channel_layer()
-        group_name = f"event_qna_{group.event_id}_main"
+        group_name = f"event_qna_{group.event_id}_shared"
         async_to_sync(channel_layer.group_send)(
             group_name,
             {
@@ -2987,6 +2988,19 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
             # Actually, return all pending suggestions for the event
             # Broadcast the creation of suggestions later? User will fetch them, or we can broadcast here.
             # But we return the new suggestions.
+            # Broadcast so hosts see new suggestions immediately without waiting for the 5s poll
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"event_qna_{event_id}_shared",
+                {
+                    "type": "qna.group_suggestions_ready",
+                    "payload": {
+                        "type": "qna.group_suggestions_ready",
+                        "count": len(suggestions),
+                        "event_id": event_id,
+                    }
+                }
+            )
             return Response(
                 QnAQuestionGroupSuggestionSerializer(suggestions, many=True).data,
                 status=status.HTTP_201_CREATED
@@ -3049,7 +3063,7 @@ class QnAQuestionGroupSuggestionViewSet(viewsets.ModelViewSet):
         group_refreshed = QnAQuestionGroup.objects.prefetch_related("memberships").get(id=group.id)
         
         channel_layer = get_channel_layer()
-        group_name = f"event_qna_{suggestion.event_id}_main"
+        group_name = f"event_qna_{suggestion.event_id}_shared"
         async_to_sync(channel_layer.group_send)(
             group_name,
             {
@@ -3082,7 +3096,7 @@ class QnAQuestionGroupSuggestionViewSet(viewsets.ModelViewSet):
         suggestion.save()
         
         channel_layer = get_channel_layer()
-        group_name = f"event_qna_{suggestion.event_id}_main"
+        group_name = f"event_qna_{suggestion.event_id}_shared"
         async_to_sync(channel_layer.group_send)(
             group_name,
             {
@@ -3421,8 +3435,8 @@ class AiPublicSuggestionViewSet(viewsets.ModelViewSet):
         from channels.layers import get_channel_layer
         from asgiref.sync import async_to_sync
         channel_layer = get_channel_layer()
-        # Broadcast to main room Q&A group
-        group = f"event_qna_{event_id}_main"
+        # Broadcast to shared event-wide Q&A group
+        group = f"event_qna_{event_id}_shared"
         async_to_sync(channel_layer.group_send)(
             group,
             {
