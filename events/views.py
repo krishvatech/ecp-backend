@@ -7610,6 +7610,172 @@ class SaleorStaffUserActiveView(views.APIView):
             return Response({"error": str(e)}, status=500)
 
 
+class SaleorStaffUserPermissionGroupsView(views.APIView):
+    """GET/PATCH /api/events/saleor/staff-users/<id>/permission-groups/."""
+    permission_classes = [IsAuthenticated]
+
+    def _saleor_token(self, request):
+        from users.saleor_connection import get_valid_saleor_token_for_user
+        saleor_token = get_valid_saleor_token_for_user(request.user, required_permissions=["MANAGE_STAFF"])
+        if not saleor_token:
+            raise PermissionDenied("Connect Saleor SSO first.")
+        return saleor_token
+
+    def _fetch_staff_groups(self, saleor_user_id, saleor_token):
+        query = """
+        query StaffPermissionGroups($id: ID!) {
+          user(id: $id) {
+            id
+            isActive
+            userPermissions {
+              code
+            }
+            permissionGroups {
+              id
+              name
+              permissions {
+                code
+              }
+            }
+          }
+        }
+        """
+        response = requests.post(
+            settings.SALEOR_API_URL,
+            json={"query": query, "variables": {"id": saleor_user_id}},
+            headers={"Authorization": f"Bearer {saleor_token}", "Content-Type": "application/json"},
+            timeout=20,
+        )
+        if response.status_code >= 400:
+            raise ValueError(response.text)
+        data = response.json()
+        if data.get("errors"):
+            raise ValueError(data["errors"])
+        user_data = (data.get("data") or {}).get("user")
+        if not user_data:
+            raise ValueError("Saleor staff user was not found.")
+        return user_data
+
+    def get(self, request, pk):
+        _require_saleor_manager_access(request)
+        obj = get_object_or_404(SaleorStaffUser, pk=pk)
+        saleor_token = self._saleor_token(request)
+
+        try:
+            user_data = self._fetch_staff_groups(obj.saleor_id, saleor_token)
+            groups = user_data.get("permissionGroups") or []
+            selected_ids = [group["id"] for group in groups]
+            obj.is_active = user_data.get("isActive", obj.is_active)
+            obj.permissions = [p["code"] for p in user_data.get("userPermissions", []) if p.get("code")]
+            obj.metadata = {
+                **(obj.metadata or {}),
+                "permission_group_ids": selected_ids,
+                "permission_group_names": [group.get("name", "") for group in groups],
+            }
+            obj.save()
+            return Response(
+                {
+                    "staff_user": SaleorStaffUserSerializer(obj).data,
+                    "selected_saleor_group_ids": selected_ids,
+                    "available_groups": SaleorPermissionGroupSerializer(SaleorPermissionGroup.objects.all(), many=True).data,
+                }
+            )
+        except Exception as e:
+            logger.exception(f"Error fetching Saleor staff user permission groups: {e}")
+            return Response({"error": str(e)}, status=500)
+
+    def patch(self, request, pk):
+        _require_saleor_manager_access(request)
+        obj = get_object_or_404(SaleorStaffUser, pk=pk)
+        if not obj.is_active:
+            return Response({"detail": "Activate this staff user before managing permissions."}, status=400)
+
+        selected_ids = request.data.get("saleor_group_ids")
+        if not isinstance(selected_ids, list):
+            return Response({"detail": "Provide saleor_group_ids as a list."}, status=400)
+
+        allowed_ids = set(SaleorPermissionGroup.objects.values_list("saleor_id", flat=True))
+        selected_ids = [str(group_id) for group_id in selected_ids if str(group_id) in allowed_ids]
+        saleor_token = self._saleor_token(request)
+
+        mutation = """
+        mutation StaffUpdateGroups($id: ID!, $input: StaffUpdateInput!) {
+          staffUpdate(id: $id, input: $input) {
+            user {
+              id
+              firstName
+              lastName
+              email
+              isStaff
+              isActive
+              userPermissions {
+                code
+              }
+              permissionGroups {
+                id
+                name
+              }
+              metadata {
+                key
+                value
+              }
+            }
+            errors {
+              field
+              code
+              message
+            }
+          }
+        }
+        """
+        try:
+            user_data = self._fetch_staff_groups(obj.saleor_id, saleor_token)
+            current_ids = {group["id"] for group in user_data.get("permissionGroups") or []}
+            selected_id_set = set(selected_ids)
+            input_payload = {
+                "addGroups": sorted(selected_id_set - current_ids),
+                "removeGroups": sorted(current_ids - selected_id_set),
+            }
+            response = requests.post(
+                settings.SALEOR_API_URL,
+                json={"query": mutation, "variables": {"id": obj.saleor_id, "input": input_payload}},
+                headers={"Authorization": f"Bearer {saleor_token}", "Content-Type": "application/json"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get("errors"):
+                return Response({"errors": data["errors"]}, status=400)
+
+            payload = (data.get("data") or {}).get("staffUpdate") or {}
+            if payload.get("errors"):
+                return Response({"errors": payload["errors"]}, status=400)
+
+            updated = payload.get("user") or {}
+            groups = updated.get("permissionGroups") or []
+            obj.first_name = updated.get("firstName") or ""
+            obj.last_name = updated.get("lastName") or ""
+            obj.email = updated.get("email") or obj.email
+            obj.is_staff = updated.get("isStaff", obj.is_staff)
+            obj.is_active = updated.get("isActive", obj.is_active)
+            obj.permissions = [p["code"] for p in updated.get("userPermissions", []) if p.get("code")]
+            obj.metadata = {
+                **(obj.metadata or {}),
+                "permission_group_ids": [group["id"] for group in groups],
+                "permission_group_names": [group.get("name", "") for group in groups],
+            }
+            obj.save()
+            return Response(
+                {
+                    "staff_user": SaleorStaffUserSerializer(obj).data,
+                    "selected_saleor_group_ids": [group["id"] for group in groups],
+                }
+            )
+        except Exception as e:
+            logger.exception(f"Error updating Saleor staff user permission groups: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
 class SaleorPermissionGroupListView(generics.ListAPIView):
     """GET /api/events/saleor/permission-groups/ - List cached Saleor permission groups."""
     queryset = SaleorPermissionGroup.objects.all()
@@ -7636,4 +7802,158 @@ class SaleorPermissionGroupSyncView(views.APIView):
                 "count": len(synced_ids)
             })
         except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorPermissionGroupCreateView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        _require_saleor_manager_access(request)
+        name = (request.data.get("name") or "").strip()
+        permissions = request.data.get("permissions") or []
+        if not name:
+            return Response({"detail": "Name is required."}, status=400)
+        if not isinstance(permissions, list):
+            return Response({"detail": "Permissions must be a list."}, status=400)
+
+        from users.saleor_connection import get_valid_saleor_token_for_user
+        saleor_token = get_valid_saleor_token_for_user(request.user, required_permissions=["MANAGE_STAFF"])
+        mutation = """
+        mutation PermissionGroupCreate($input: PermissionGroupCreateInput!) {
+          permissionGroupCreate(input: $input) {
+            group {
+              id
+              name
+              permissions { code }
+              users { id }
+            }
+            errors { field code message permissions users channels }
+          }
+        }
+        """
+        try:
+            response = requests.post(
+                settings.SALEOR_API_URL,
+                json={"query": mutation, "variables": {"input": {"name": name, "addPermissions": permissions}}},
+                headers={"Authorization": f"Bearer {saleor_token}", "Content-Type": "application/json"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get("errors"):
+                return Response({"errors": data["errors"]}, status=400)
+            payload = (data.get("data") or {}).get("permissionGroupCreate") or {}
+            if payload.get("errors"):
+                return Response({"errors": payload["errors"]}, status=400)
+            group = payload.get("group") or {}
+            obj, _ = SaleorPermissionGroup.objects.update_or_create(
+                saleor_id=group["id"],
+                defaults={
+                    "name": group.get("name", ""),
+                    "permissions": [p["code"] for p in group.get("permissions", [])],
+                    "user_count": len(group.get("users", [])),
+                    "metadata": {},
+                },
+            )
+            return Response(SaleorPermissionGroupSerializer(obj).data, status=201)
+        except Exception as e:
+            logger.exception(f"Error creating Saleor permission group: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorPermissionGroupUpdateView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        _require_saleor_manager_access(request)
+        obj = get_object_or_404(SaleorPermissionGroup, pk=pk)
+        name = (request.data.get("name") or "").strip()
+        permissions = request.data.get("permissions") or []
+        if not name:
+            return Response({"detail": "Name is required."}, status=400)
+        if not isinstance(permissions, list):
+            return Response({"detail": "Permissions must be a list."}, status=400)
+
+        from users.saleor_connection import get_valid_saleor_token_for_user
+        saleor_token = get_valid_saleor_token_for_user(request.user, required_permissions=["MANAGE_STAFF"])
+        current = set(obj.permissions or [])
+        requested = set(str(p) for p in permissions)
+        mutation = """
+        mutation PermissionGroupUpdate($id: ID!, $input: PermissionGroupUpdateInput!) {
+          permissionGroupUpdate(id: $id, input: $input) {
+            group {
+              id
+              name
+              permissions { code }
+              users { id }
+            }
+            errors { field code message permissions users channels }
+          }
+        }
+        """
+        input_payload = {
+            "name": name,
+            "addPermissions": sorted(requested - current),
+            "removePermissions": sorted(current - requested),
+        }
+        try:
+            response = requests.post(
+                settings.SALEOR_API_URL,
+                json={"query": mutation, "variables": {"id": obj.saleor_id, "input": input_payload}},
+                headers={"Authorization": f"Bearer {saleor_token}", "Content-Type": "application/json"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get("errors"):
+                return Response({"errors": data["errors"]}, status=400)
+            payload = (data.get("data") or {}).get("permissionGroupUpdate") or {}
+            if payload.get("errors"):
+                return Response({"errors": payload["errors"]}, status=400)
+            group = payload.get("group") or {}
+            obj.name = group.get("name", obj.name)
+            obj.permissions = [p["code"] for p in group.get("permissions", [])]
+            obj.user_count = len(group.get("users", []))
+            obj.save()
+            return Response(SaleorPermissionGroupSerializer(obj).data)
+        except Exception as e:
+            logger.exception(f"Error updating Saleor permission group: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
+class SaleorPermissionGroupDeleteView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        _require_saleor_manager_access(request)
+        obj = get_object_or_404(SaleorPermissionGroup, pk=pk)
+        from users.saleor_connection import get_valid_saleor_token_for_user
+        saleor_token = get_valid_saleor_token_for_user(request.user, required_permissions=["MANAGE_STAFF"])
+        mutation = """
+        mutation PermissionGroupDelete($id: ID!) {
+          permissionGroupDelete(id: $id) {
+            group { id name }
+            errors { field code message permissions users channels }
+          }
+        }
+        """
+        try:
+            response = requests.post(
+                settings.SALEOR_API_URL,
+                json={"query": mutation, "variables": {"id": obj.saleor_id}},
+                headers={"Authorization": f"Bearer {saleor_token}", "Content-Type": "application/json"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get("errors"):
+                return Response({"errors": data["errors"]}, status=400)
+            payload = (data.get("data") or {}).get("permissionGroupDelete") or {}
+            if payload.get("errors"):
+                return Response({"errors": payload["errors"]}, status=400)
+            obj.delete()
+            return Response(status=204)
+        except Exception as e:
+            logger.exception(f"Error deleting Saleor permission group: {e}")
             return Response({"error": str(e)}, status=500)
