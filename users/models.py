@@ -26,6 +26,24 @@ def user_profile_image(instance, filename):
     base = slugify(name) or "avatar"
     return f"avatars/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
 
+
+class SaleorUserConnection(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="saleor_connection")
+    saleor_user_id = models.CharField(max_length=255, blank=True, db_index=True)
+    saleor_email = models.EmailField(blank=True)
+    access_token_encrypted = models.TextField(blank=True)
+    refresh_token_encrypted = models.TextField(blank=True)
+    csrf_token_encrypted = models.TextField(blank=True)
+    permissions = models.JSONField(default=list, blank=True)
+    is_valid = models.BooleanField(default=False)
+    connected_at = models.DateTimeField(null=True, blank=True)
+    last_verified_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default="")
+
+    def __str__(self):
+        return f"Saleor connection for {self.user_id}"
+
+
 class UserProfile(models.Model):
     """Extension of Django's built-in User model."""
 

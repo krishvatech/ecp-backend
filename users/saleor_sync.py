@@ -458,7 +458,7 @@ def assign_user_to_group(staff_id, group_id, auth_token=None):
         return False
 
 
-def remove_platform_admin_from_saleor(user_email):
+def remove_platform_admin_from_saleor(user_email, auth_token=None):
     """
     Remove a platform_admin user from Saleor by deactivating their staff account.
 
@@ -470,26 +470,12 @@ def remove_platform_admin_from_saleor(user_email):
     """
     logger.info(f"Attempting to remove {user_email} from Saleor...")
 
-    # Get staff user credentials
-    staff_email = getattr(settings, "SALEOR_STAFF_EMAIL", None)
-    staff_password = getattr(settings, "SALEOR_STAFF_PASSWORD", None)
-
-    if not staff_email or not staff_password:
-        logger.warning("Saleor staff credentials not configured. Skipping removal.")
+    if not auth_token:
+        logger.warning("No Saleor auth token provided. Skipping removal.")
         return {
             "success": False,
-            "message": "SALEOR_STAFF_EMAIL or SALEOR_STAFF_PASSWORD not configured"
+            "message": "Saleor SSO connection with MANAGE_STAFF is required"
         }
-
-    # Get user token using staff credentials
-    user_token = get_saleor_user_token(staff_email, staff_password)
-    if not user_token:
-        return {
-            "success": False,
-            "message": "Failed to authenticate with Saleor staff credentials"
-        }
-
-    logger.info(f"Got Saleor user token for {staff_email}")
 
     # Find the user by email
     saleor_url = getattr(settings, "SALEOR_API_URL", None)
@@ -509,7 +495,7 @@ def remove_platform_admin_from_saleor(user_email):
     """
 
     headers = {
-        "Authorization": f"Bearer {user_token}",
+        "Authorization": f"Bearer {auth_token}",
         "Content-Type": "application/json"
     }
 
@@ -595,10 +581,10 @@ def remove_platform_admin_from_saleor(user_email):
         }
 
 
-def sync_platform_admin_to_saleor(user_email, first_name="", last_name="", is_platform_admin=False):
+def sync_platform_admin_to_saleor(user_email, first_name="", last_name="", is_platform_admin=False, auth_token=None):
     """
     Sync platform_admin user to Saleor as staff with Full Access.
-    Uses staff user credentials to authenticate and create staff via staffCreate mutation.
+    Uses the connected Saleor staff user's token to create staff via staffCreate mutation.
 
     Args:
         user_email: User's email
@@ -614,32 +600,17 @@ def sync_platform_admin_to_saleor(user_email, first_name="", last_name="", is_pl
 
     logger.info(f"Attempting to sync {user_email} to Saleor...")
 
-    # Get staff user credentials
-    staff_email = getattr(settings, "SALEOR_STAFF_EMAIL", None)
-    staff_password = getattr(settings, "SALEOR_STAFF_PASSWORD", None)
-
-    if not staff_email or not staff_password:
-        logger.warning("Saleor staff credentials not configured. Skipping sync.")
+    if not auth_token:
+        logger.warning("No Saleor auth token provided. Skipping sync.")
         return {
             "success": False,
             "staff_id": None,
-            "message": "SALEOR_STAFF_EMAIL or SALEOR_STAFF_PASSWORD not configured"
+            "message": "Saleor SSO connection with MANAGE_STAFF is required"
         }
 
-    # Get user token using staff credentials
-    user_token = get_saleor_user_token(staff_email, staff_password)
-    if not user_token:
-        return {
-            "success": False,
-            "staff_id": None,
-            "message": "Failed to authenticate with Saleor staff credentials"
-        }
-
-    logger.info(f"Got Saleor user token for {staff_email}")
-
-    # Try to create staff user with user token
+    # Try to create staff user with connected Saleor user token
     # (Skip the check since staff users may not have query permissions for staffMembers)
-    staff_id = create_saleor_staff_user(user_email, first_name, last_name, auth_token=user_token)
+    staff_id = create_saleor_staff_user(user_email, first_name, last_name, auth_token=auth_token)
     if not staff_id:
         return {
             "success": False,
@@ -650,7 +621,7 @@ def sync_platform_admin_to_saleor(user_email, first_name="", last_name="", is_pl
     logger.info(f"Created staff user {user_email} in Saleor: {staff_id}")
 
     # Get Full Access group ID
-    group_id = get_full_access_group_id(auth_token=user_token)
+    group_id = get_full_access_group_id(auth_token=auth_token)
     if not group_id:
         return {
             "success": False,
@@ -659,7 +630,7 @@ def sync_platform_admin_to_saleor(user_email, first_name="", last_name="", is_pl
         }
 
     # Assign to Full Access group
-    if assign_user_to_group(staff_id, group_id, auth_token=user_token):
+    if assign_user_to_group(staff_id, group_id, auth_token=auth_token):
         return {
             "success": True,
             "staff_id": staff_id,

@@ -6925,6 +6925,14 @@ def _is_platform_admin(request):
     return is_platform_admin
 
 
+def _require_saleor_manager_access(request):
+    if not _is_platform_admin(request):
+        raise PermissionDenied("Only platform_admin can access this endpoint.")
+    from users.saleor_connection import get_valid_saleor_token_for_user
+    if not get_valid_saleor_token_for_user(request.user, required_permissions=["MANAGE_STAFF"]):
+        raise PermissionDenied("Connect Saleor SSO first.")
+
+
 class SaleorChannelListView(generics.ListAPIView):
     """GET /api/events/saleor/channels/ - List cached Saleor channels."""
     queryset = SaleorChannel.objects.all()
@@ -6932,8 +6940,7 @@ class SaleorChannelListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         return super().get(request, *args, **kwargs)
 
 
@@ -6942,8 +6949,7 @@ class SaleorChannelSyncView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         try:
             synced_ids = sync_channels_from_saleor()
@@ -6960,8 +6966,7 @@ class SaleorChannelCreateView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         
         try:
             result = create_channel_in_saleor(request.data)
@@ -6999,8 +7004,7 @@ class SaleorChannelUpdateView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         
         obj = get_object_or_404(SaleorChannel, pk=pk)
         try:
@@ -7030,8 +7034,7 @@ class SaleorChannelDeleteView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, pk):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         obj = get_object_or_404(SaleorChannel, pk=pk)
         destination_channel_id = request.data.get("destination_channel_id") if request.data else None
@@ -7053,8 +7056,7 @@ class SaleorChannelOptionsView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         try:
             from .saleor_sync import get_saleor_channel_options
             options = get_saleor_channel_options()
@@ -7071,8 +7073,7 @@ class SaleorWarehouseListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         return super().get(request, *args, **kwargs)
 
 
@@ -7081,8 +7082,7 @@ class SaleorWarehouseSyncView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         try:
             synced_ids = sync_warehouses_from_saleor()
@@ -7100,8 +7100,7 @@ class SaleorWarehouseOptionsView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         try:
             from .saleor_sync import get_warehouse_options
             options = get_warehouse_options()
@@ -7115,8 +7114,7 @@ class SaleorWarehouseCreateView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         
         try:
             result = create_warehouse_in_saleor(request.data)
@@ -7154,8 +7152,7 @@ class SaleorWarehouseUpdateView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         obj = get_object_or_404(SaleorWarehouse, pk=pk)
         try:
@@ -7221,8 +7218,7 @@ class SaleorWarehouseDeleteView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, pk):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         
         obj = get_object_or_404(SaleorWarehouse, pk=pk)
         try:
@@ -7245,8 +7241,7 @@ class SaleorShippingZoneListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         return super().get(request, *args, **kwargs)
 
 
@@ -7255,8 +7250,7 @@ class SaleorShippingZoneSyncView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         try:
             synced_ids = sync_shipping_zones_from_saleor()
@@ -7273,8 +7267,7 @@ class SaleorShippingZoneCreateView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         
         try:
             result = create_shipping_zone_in_saleor(request.data)
@@ -7312,8 +7305,7 @@ class SaleorShippingZoneUpdateView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         
         obj = get_object_or_404(SaleorShippingZone, pk=pk)
         try:
@@ -7343,8 +7335,7 @@ class SaleorShippingZoneDeleteView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, pk):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         
         obj = get_object_or_404(SaleorShippingZone, pk=pk)
         try:
@@ -7371,8 +7362,7 @@ class SaleorShippingZoneOptionsView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         try:
             options = get_shipping_zone_options()
@@ -7389,8 +7379,7 @@ class SaleorProductTypeListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         return super().get(request, *args, **kwargs)
 
 
@@ -7399,8 +7388,7 @@ class SaleorProductTypeSyncView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         try:
             synced_ids = sync_product_types_from_saleor()
@@ -7417,8 +7405,7 @@ class SaleorProductTypeCreateView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         try:
             result = create_product_type_in_saleor(request.data)
@@ -7455,8 +7442,7 @@ class SaleorProductTypeUpdateView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         obj = get_object_or_404(SaleorProductType, pk=pk)
         try:
@@ -7483,8 +7469,7 @@ class SaleorProductTypeDeleteView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, pk):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         obj = get_object_or_404(SaleorProductType, pk=pk)
         try:
@@ -7510,8 +7495,7 @@ class SaleorProductTypeOptionsView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         try:
             options = get_product_type_options()
@@ -7528,8 +7512,7 @@ class SaleorStaffUserListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         return super().get(request, *args, **kwargs)
 
 
@@ -7538,8 +7521,7 @@ class SaleorStaffUserSyncView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         try:
             synced_ids = sync_staff_users_from_saleor()
@@ -7559,8 +7541,7 @@ class SaleorPermissionGroupListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
         return super().get(request, *args, **kwargs)
 
 
@@ -7569,8 +7550,7 @@ class SaleorPermissionGroupSyncView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not _is_platform_admin(request):
-            raise PermissionDenied("Only platform_admin can access this endpoint.")
+        _require_saleor_manager_access(request)
 
         try:
             synced_ids = sync_permission_groups_from_saleor()

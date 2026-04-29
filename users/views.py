@@ -31,7 +31,7 @@ from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 import os, time, json, base64, secrets, requests, boto3
 from datetime import datetime, timezone, timedelta
 from django.utils import timezone as django_timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from django.shortcuts import get_object_or_404, redirect
 from django.utils.crypto import get_random_string
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -61,6 +61,12 @@ from .didit_client import (
 from .cognito_groups import sync_staff_group
 from .wordpress_sync import get_profile_sync_service
 from .saleor_sync import sync_platform_admin_to_saleor, remove_platform_admin_from_saleor
+from .saleor_connection import (
+    build_saleor_sso_url,
+    disconnect_saleor_user,
+    get_valid_saleor_token_for_user,
+    handle_saleor_callback,
+)
 from .serializers import (
     UserSerializer,
     EmailTokenObtainPairSerializer,
@@ -2162,6 +2168,15 @@ class StaffUserViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["username", "first_name", "last_name", "email"]
     ordering_fields = ["date_joined", "last_login", "username", "email"]
+
+    def _saleor_staff_token_or_response(self):
+        saleor_token = get_valid_saleor_token_for_user(self.request.user, required_permissions=["MANAGE_STAFF"])
+        if not saleor_token:
+            return None, Response(
+                {"detail": "Connect Saleor SSO first.", "code": "SALEOR_SSO_REQUIRED"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return saleor_token, None
     
     def get_queryset(self):
         from django.db.models import Window
@@ -2217,6 +2232,12 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        saleor_token = None
+        if serializer.validated_data.get("is_superuser"):
+            saleor_token, saleor_error = self._saleor_staff_token_or_response()
+            if saleor_error:
+                return saleor_error
         
         email = serializer.validated_data.get("email")
         if User.objects.filter(email__iexact=email).exists():
@@ -2264,12 +2285,13 @@ class StaffUserViewSet(viewsets.ModelViewSet):
 
             add_user_to_group(username=user.username, group_name="platform_admin")
 
-            # Sync to Saleor with Full Access using staff user credentials
+            # Sync to Saleor with Full Access using the connected Saleor SSO user token
             sync_result = sync_platform_admin_to_saleor(
                 user_email=user.email,
                 first_name=user.first_name,
                 last_name=user.last_name,
-                is_platform_admin=True
+                is_platform_admin=True,
+                auth_token=saleor_token,
             )
             logger.info(f"Saleor sync result for {user.email}: {sync_result}")
 
@@ -2280,6 +2302,13 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         user = self.get_object()
         old_is_staff = user.is_staff
         old_is_superuser = user.is_superuser
+        new_is_superuser = serializer.validated_data.get("is_superuser", old_is_superuser)
+        saleor_token = None
+
+        if new_is_superuser != old_is_superuser:
+            saleor_token = get_valid_saleor_token_for_user(self.request.user, required_permissions=["MANAGE_STAFF"])
+            if not saleor_token:
+                raise PermissionDenied({"detail": "Connect Saleor SSO first.", "code": "SALEOR_SSO_REQUIRED"})
         
         # Prevent non-superusers from editing superusers
         if user.is_superuser and not self.request.user.is_superuser:
@@ -2302,12 +2331,13 @@ class StaffUserViewSet(viewsets.ModelViewSet):
                     updated_user.save(update_fields=["is_staff"])
                     sync_staff_group(username=updated_user.username, is_staff=True)
 
-                # Sync to Saleor with Full Access using staff user credentials
+                # Sync to Saleor with Full Access using the connected Saleor SSO user token
                 sync_result = sync_platform_admin_to_saleor(
                     user_email=updated_user.email,
                     first_name=updated_user.first_name,
                     last_name=updated_user.last_name,
-                    is_platform_admin=True
+                    is_platform_admin=True,
+                    auth_token=saleor_token,
                 )
                 logger.info(f"Saleor sync result for {updated_user.email}: {sync_result}")
             else:
@@ -2315,7 +2345,7 @@ class StaffUserViewSet(viewsets.ModelViewSet):
                 remove_user_from_group(username=updated_user.username, group_name="platform_admin")
 
                 # Remove from Saleor
-                removal_result = remove_platform_admin_from_saleor(updated_user.email)
+                removal_result = remove_platform_admin_from_saleor(updated_user.email, auth_token=saleor_token)
                 logger.info(f"Saleor removal result for {updated_user.email}: {removal_result}")
 
 
@@ -2362,6 +2392,12 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        saleor_token = None
+        if serializer.validated_data.get("is_superuser"):
+            saleor_token, saleor_error = self._saleor_staff_token_or_response()
+            if saleor_error:
+                return saleor_error
 
         email = serializer.validated_data.get("email")
         password = request.data.get("password")
@@ -2418,6 +2454,14 @@ class StaffUserViewSet(viewsets.ModelViewSet):
                 user.save(update_fields=["is_staff"])
                 sync_staff_group(username=user.username, is_staff=True)
             add_user_to_group(username=user.username, group_name="platform_admin")
+            sync_result = sync_platform_admin_to_saleor(
+                user_email=user.email,
+                first_name=user.first_name,
+                last_name=user.last_name,
+                is_platform_admin=True,
+                auth_token=saleor_token,
+            )
+            logger.info(f"Saleor sync result for {user.email}: {sync_result}")
 
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
@@ -3839,6 +3883,13 @@ class SaleorDashboardAuthorizeView(APIView):
         if not is_platform_admin:
             return Response({"detail": "Forbidden: Only platform_admin can access Saleor Dashboard."}, status=403)
 
+        saleor_token = get_valid_saleor_token_for_user(request.user, required_permissions=["MANAGE_STAFF"])
+        if not saleor_token:
+            return Response(
+                {"detail": "Connect Saleor SSO first.", "code": "SALEOR_SSO_REQUIRED"},
+                status=403,
+            )
+
         return Response({"url": settings.SALEOR_DASHBOARD_URL}, status=200)
 
 
@@ -3859,6 +3910,64 @@ def _is_platform_admin_for_saleor(request):
     return is_platform_admin
 
 SALEOR_OIDC_PLUGIN_ID = "mirumee.authentication.openidconnect"
+
+
+class SaleorConnectionStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        saleor_token = get_valid_saleor_token_for_user(request.user)
+        if not saleor_token:
+            return Response({"connected": False}, status=200)
+
+        connection = request.user.saleor_connection
+        permissions = connection.permissions or []
+        return Response(
+            {
+                "connected": True,
+                "saleor_email": connection.saleor_email,
+                "permissions": permissions,
+                "can_manage_staff": "MANAGE_STAFF" in permissions,
+                "dashboard_url": getattr(settings, "SALEOR_DASHBOARD_URL", ""),
+            },
+            status=200,
+        )
+
+
+class SaleorConnectionStartView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not _is_platform_admin_for_saleor(request):
+            return Response(
+                {"detail": "Forbidden: Only platform_admin can connect Saleor SSO."},
+                status=403,
+            )
+
+        try:
+            return Response({"url": build_saleor_sso_url(request.user, request)}, status=200)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=502)
+
+
+class SaleorConnectionCallbackView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        frontend_url = getattr(settings, "FRONTEND_SALEOR_MANAGER_URL", "").rstrip("/")
+        try:
+            handle_saleor_callback(request)
+            return redirect(f"{frontend_url}?saleor_connected=1")
+        except Exception as exc:
+            return redirect(f"{frontend_url}?saleor_error={quote(str(exc))}")
+
+
+class SaleorConnectionDisconnectView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        disconnect_saleor_user(request.user)
+        return Response({"connected": False}, status=200)
 
 
 class SaleorDashboardSsoView(APIView):

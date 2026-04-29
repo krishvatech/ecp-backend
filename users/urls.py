@@ -45,6 +45,10 @@ from .views import (
     VerifyEmailAliasView,
     ListEmailAliasView,
     RemoveEmailAliasView,
+    SaleorConnectionStatusView,
+    SaleorConnectionStartView,
+    SaleorConnectionCallbackView,
+    SaleorConnectionDisconnectView,
 
 )
 from .wordpress_webhook import WordPressWebhookView, WordPressUserSyncView, WordPressProfileSyncAuthenticatedView
@@ -90,6 +94,10 @@ urlpatterns = [
     path("wagtail/logout/", WagtailLogoutView.as_view(), name="wagtail-logout"),
     path("saleor/dashboard/", SaleorDashboardAuthorizeView.as_view(), name="saleor-dashboard"),
     path("saleor/sso/", SaleorDashboardSsoView.as_view(), name="saleor-sso"),
+    path("saleor/status/", SaleorConnectionStatusView.as_view(), name="saleor-status"),
+    path("saleor/connect/", SaleorConnectionStartView.as_view(), name="saleor-connect"),
+    path("saleor/callback/", SaleorConnectionCallbackView.as_view(), name="saleor-callback"),
+    path("saleor/disconnect/", SaleorConnectionDisconnectView.as_view(), name="saleor-disconnect"),
 
     # Also allow obtaining tokens at /token/
     # path("token/", EmailTokenObtainPairView.as_view(), name="token_obtain_pair_email"),
