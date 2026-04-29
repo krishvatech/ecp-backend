@@ -22,7 +22,8 @@ from users.serializers import UserMiniSerializer
 from .models import (
     Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
     EventSession, SessionParticipant, SessionAttendance, EventApplication, VirtualSpeaker,
-    SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup
+    SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup,
+    EventPreApprovalCode, EventPreApprovalAllowlist
 )
 from community.models import Community
 from content.models import Resource
@@ -831,6 +832,10 @@ class EventSerializer(serializers.ModelSerializer):
             "currency",
             "is_free",
             "registration_type",
+            "preapproval_code_enabled",
+            "preapproval_allowlist_enabled",
+            "attendee_marker_enabled",
+            "attendee_marker_label",
             "max_participants",
             "saleor_product_id",
             "saleor_variant_id",
@@ -2089,6 +2094,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
             "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type",
+            "preapproval_code_enabled", "preapproval_allowlist_enabled", "attendee_marker_enabled", "attendee_marker_label",
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer",
             "lounge_enabled_after", "lounge_after_buffer",
@@ -2335,8 +2341,10 @@ class EventApplicationSerializer(serializers.ModelSerializer):
             'id', 'event_id', 'user_id', 'applicant_name',
             'first_name', 'last_name', 'email',
             'job_title', 'company_name', 'linkedin_url',
+            'attendee_marker_value', 'comments',
             'status', 'applied_at', 'reviewed_at',
             'reviewed_by_id', 'rejection_message',
+            'is_preapproved', 'preapproval_source', 'preapproved_at',
         ]
         read_only_fields = [
             'id', 'applied_at', 'reviewed_at', 'reviewed_by_id', 'status'
@@ -2351,6 +2359,47 @@ class EventApplicationSubmitSerializer(serializers.Serializer):
     job_title = serializers.CharField(max_length=200, allow_blank=True, default='')
     company_name = serializers.CharField(max_length=200, allow_blank=True, default='')
     linkedin_url = serializers.URLField(required=False, allow_blank=True, default='')
+    attendee_marker_value = serializers.BooleanField(required=False, default=False)
+    comments = serializers.CharField(required=False, allow_blank=True, default='')
+    preapproved_code = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class EventPreApprovalCodeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EventPreApprovalCode
+        fields = [
+            "id",
+            "event_id",
+            "code",
+            "status",
+            "used_by_email",
+            "used_at",
+            "created_by_id",
+            "created_at",
+            "revoked_by_id",
+            "revoked_at",
+            "notes",
+        ]
+        read_only_fields = ["id", "event_id", "status", "used_by_email", "used_at", "created_by_id", "created_at", "revoked_by_id", "revoked_at"]
+
+
+class EventPreApprovalAllowlistSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EventPreApprovalAllowlist
+        fields = [
+            "id",
+            "event_id",
+            "first_name",
+            "last_name",
+            "email",
+            "is_active",
+            "created_by_id",
+            "created_at",
+            "removed_by_id",
+            "removed_at",
+            "notes",
+        ]
+        read_only_fields = ["id", "event_id", "is_active", "created_by_id", "created_at", "removed_by_id", "removed_at"]
 
 
 class SaleorChannelSerializer(serializers.ModelSerializer):

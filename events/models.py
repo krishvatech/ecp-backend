@@ -111,6 +111,10 @@ class Event(models.Model):
         default='open',
         help_text="Registration flow: 'open' for instant registration, 'apply' for application review"
     )
+    preapproval_code_enabled = models.BooleanField(default=False)
+    preapproval_allowlist_enabled = models.BooleanField(default=False)
+    attendee_marker_enabled = models.BooleanField(default=False)
+    attendee_marker_label = models.CharField(max_length=255, blank=True, default="")
     attending_count = models.PositiveIntegerField(default=0)
     max_participants = models.PositiveIntegerField(
         null=True, 
@@ -1938,6 +1942,8 @@ class EventApplication(models.Model):
     job_title = models.CharField(max_length=200, blank=True, default='')
     company_name = models.CharField(max_length=200, blank=True, default='')
     linkedin_url = models.URLField(blank=True, default='')
+    attendee_marker_value = models.BooleanField(default=False)
+    comments = models.TextField(blank=True, default='')
 
     # Application status
     status = models.CharField(
@@ -1955,6 +1961,36 @@ class EventApplication(models.Model):
         related_name='reviewed_applications'
     )
     rejection_message = models.TextField(blank=True, default='')
+    is_preapproved = models.BooleanField(default=False, db_index=True)
+    PREAPPROVAL_SOURCE_NONE = "none"
+    PREAPPROVAL_SOURCE_CODE = "code"
+    PREAPPROVAL_SOURCE_EMAIL = "email"
+    PREAPPROVAL_SOURCE_CHOICES = [
+        (PREAPPROVAL_SOURCE_NONE, "None"),
+        (PREAPPROVAL_SOURCE_CODE, "Code"),
+        (PREAPPROVAL_SOURCE_EMAIL, "Email"),
+    ]
+    preapproval_source = models.CharField(
+        max_length=20,
+        choices=PREAPPROVAL_SOURCE_CHOICES,
+        default=PREAPPROVAL_SOURCE_NONE,
+        db_index=True,
+    )
+    preapproval_code = models.ForeignKey(
+        "events.EventPreApprovalCode",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="applications",
+    )
+    preapproval_allowlist_entry = models.ForeignKey(
+        "events.EventPreApprovalAllowlist",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="applications",
+    )
+    preapproved_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = 'event_applications'
@@ -1967,6 +2003,128 @@ class EventApplication(models.Model):
 
     def __str__(self):
         return f"{self.first_name} {self.last_name} → {self.event.title} ({self.status})"
+
+
+class EventPreApprovalCode(models.Model):
+    STATUS_ACTIVE = "active"
+    STATUS_USED = "used"
+    STATUS_REVOKED = "revoked"
+
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_USED, "Used"),
+        (STATUS_REVOKED, "Revoked"),
+    ]
+
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="preapproval_codes",
+    )
+    code = models.CharField(max_length=100)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_ACTIVE,
+        db_index=True,
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_preapproval_codes",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    used_by_application = models.ForeignKey(
+        "events.EventApplication",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="used_preapproval_codes",
+    )
+    used_by_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="used_preapproval_codes",
+    )
+    used_by_email = models.EmailField(blank=True, default="")
+    used_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="revoked_preapproval_codes",
+    )
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "code"],
+                name="unique_preapproval_code_per_event",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["event", "status"]),
+            models.Index(fields=["event", "code"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.code:
+            self.code = self.code.strip()
+        super().save(*args, **kwargs)
+
+
+class EventPreApprovalAllowlist(models.Model):
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="preapproval_allowlist",
+    )
+    first_name = models.CharField(max_length=150)
+    last_name = models.CharField(max_length=150)
+    email = models.EmailField(db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_preapproval_allowlist_entries",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    removed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="removed_preapproval_allowlist_entries",
+    )
+    removed_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "email"],
+                condition=models.Q(is_active=True),
+                name="unique_active_allowlist_email_per_event",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["event", "email"]),
+            models.Index(fields=["event", "is_active"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.email:
+            self.email = self.email.strip().lower()
+        super().save(*args, **kwargs)
 
 
 class SaleorChannel(models.Model):

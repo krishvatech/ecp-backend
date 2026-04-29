@@ -3,7 +3,8 @@ from django.contrib.auth.models import User
 from django import forms
 from .models import (
     Event, EventParticipant, LoungeTable, LoungeParticipant, EventRegistration,
-    EventSession, SessionParticipant, SessionAttendance
+    EventSession, SessionParticipant, SessionAttendance, EventApplication,
+    EventPreApprovalCode, EventPreApprovalAllowlist
 )
 
 
@@ -70,6 +71,15 @@ class EventAdmin(admin.ModelAdmin):
     inlines = [EventParticipantInline, EventSessionInline]
     fieldsets = (
         (None, {"fields": ("community", "title", "slug", "description", "start_time", "end_time", "timezone", "status", "is_live", "is_on_break")}),
+        ("Application Pre-Approval", {
+            "fields": (
+                "registration_type",
+                "preapproval_code_enabled",
+                "preapproval_allowlist_enabled",
+                "attendee_marker_enabled",
+                "attendee_marker_label",
+            )
+        }),
         ("Lounge Timing Settings", {
             "fields": (
                 "lounge_enabled_before", "lounge_before_buffer",
@@ -226,3 +236,24 @@ class SessionAttendanceAdmin(admin.ModelAdmin):
     search_fields = ('user__username', 'session__title')
     readonly_fields = ('joined_at', 'created_at', 'updated_at')
     raw_id_fields = ('session', 'user')
+
+
+@admin.register(EventApplication)
+class EventApplicationAdmin(admin.ModelAdmin):
+    list_display = ("id", "event", "email", "status", "is_preapproved", "preapproval_source", "applied_at")
+    list_filter = ("status", "is_preapproved", "preapproval_source", "event")
+    search_fields = ("email", "first_name", "last_name", "event__title")
+
+
+@admin.register(EventPreApprovalCode)
+class EventPreApprovalCodeAdmin(admin.ModelAdmin):
+    list_display = ("id", "event", "code", "status", "used_by_email", "used_at", "created_at")
+    list_filter = ("status", "event")
+    search_fields = ("code", "used_by_email", "event__title")
+
+
+@admin.register(EventPreApprovalAllowlist)
+class EventPreApprovalAllowlistAdmin(admin.ModelAdmin):
+    list_display = ("id", "event", "email", "first_name", "last_name", "is_active", "created_at")
+    list_filter = ("is_active", "event")
+    search_fields = ("email", "first_name", "last_name", "event__title")

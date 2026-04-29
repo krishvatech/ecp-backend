@@ -58,7 +58,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist
 from .permissions import IsSuperuserOnly
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -79,6 +79,8 @@ from .serializers import (
     resolve_registration_roles,
     EventApplicationSerializer,
     EventApplicationSubmitSerializer,
+    EventPreApprovalCodeSerializer,
+    EventPreApprovalAllowlistSerializer,
     VirtualSpeakerSerializer,
     VirtualSpeakerConvertSerializer,
     SaleorChannelSerializer,
@@ -1893,35 +1895,148 @@ class EventViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        email = data['email']
+        email = (data.get('email') or '').strip().lower()
+        submitted_code = (data.get('preapproved_code') or '').strip()
+        attendee_marker_value = bool(data.get("attendee_marker_value", False))
+        comments = (data.get("comments") or "").strip()
 
-        # Check for duplicate
-        if EventApplication.objects.filter(event=event, email=email).exists():
-            return Response({'detail': 'An application with this email already exists.'}, status=409)
+        with transaction.atomic():
+            locked_event = Event.objects.select_for_update().get(pk=event.pk)
+            if EventApplication.objects.filter(event=locked_event, email=email).exists():
+                return Response({'detail': 'An application with this email already exists.'}, status=409)
 
-        app = EventApplication.objects.create(
-            event=event,
-            user=request.user if request.user.is_authenticated else None,
-            **data
-        )
+            preapproval_source = EventApplication.PREAPPROVAL_SOURCE_NONE
+            code_obj = None
+            allowlist_entry = None
+
+            if locked_event.preapproval_code_enabled and submitted_code:
+                code_obj = (
+                    EventPreApprovalCode.objects
+                    .select_for_update()
+                    .filter(
+                        event=locked_event,
+                        code=submitted_code,
+                        status=EventPreApprovalCode.STATUS_ACTIVE,
+                    )
+                    .first()
+                )
+                if code_obj:
+                    preapproval_source = EventApplication.PREAPPROVAL_SOURCE_CODE
+
+            if (
+                preapproval_source == EventApplication.PREAPPROVAL_SOURCE_NONE
+                and locked_event.preapproval_allowlist_enabled
+                and email
+            ):
+                allowlist_entry = (
+                    EventPreApprovalAllowlist.objects
+                    .filter(event=locked_event, email=email, is_active=True)
+                    .first()
+                )
+                if allowlist_entry:
+                    preapproval_source = EventApplication.PREAPPROVAL_SOURCE_EMAIL
+
+            is_preapproved = preapproval_source != EventApplication.PREAPPROVAL_SOURCE_NONE
+            now = timezone.now()
+            status_value = "approved" if is_preapproved else "pending"
+            reviewed_at = now if is_preapproved else None
+            reviewed_by = request.user if is_preapproved and request.user.is_authenticated else None
+
+            app = EventApplication.objects.create(
+                event=locked_event,
+                user=request.user if request.user.is_authenticated else None,
+                first_name=(data.get("first_name") or "").strip(),
+                last_name=(data.get("last_name") or "").strip(),
+                email=email,
+                job_title=(data.get("job_title") or "").strip(),
+                company_name=(data.get("company_name") or "").strip(),
+                linkedin_url=(data.get("linkedin_url") or "").strip(),
+                attendee_marker_value=attendee_marker_value,
+                comments=comments,
+                status=status_value,
+                reviewed_at=reviewed_at,
+                reviewed_by=reviewed_by,
+                is_preapproved=is_preapproved,
+                preapproval_source=preapproval_source,
+                preapproval_code=code_obj,
+                preapproval_allowlist_entry=allowlist_entry,
+                preapproved_at=now if is_preapproved else None,
+            )
+
+            if code_obj and is_preapproved:
+                code_obj.status = EventPreApprovalCode.STATUS_USED
+                code_obj.used_by_application = app
+                code_obj.used_by_user = request.user if request.user.is_authenticated else None
+                code_obj.used_by_email = email
+                code_obj.used_at = now
+                code_obj.save(update_fields=["status", "used_by_application", "used_by_user", "used_by_email", "used_at"])
+
+            if is_preapproved and request.user.is_authenticated:
+                EventRegistration.objects.get_or_create(
+                    event=locked_event,
+                    user=request.user,
+                    defaults={"status": "registered"},
+                )
 
         # For guest applications: NO longer create GuestAttendee or JWT immediately
         # Guest will verify via OTP on event day when checking application status
         # GuestAttendee is created during guest-join (OTP) endpoint instead
 
-        # Send acknowledgement email to applicant
-        from users.email_utils import send_application_acknowledgement_email
-        try:
-            send_application_acknowledgement_email(app)
-            logger.info(f"Acknowledgement email sent for application {app.id}")
-        except Exception as e:
-            logger.error(f"Failed to send acknowledgement email for application {app.id}: {e}")
+        if app.status == "pending":
+            from users.email_utils import send_application_acknowledgement_email
+            try:
+                send_application_acknowledgement_email(app)
+                logger.info(f"Acknowledgement email sent for application {app.id}")
+            except Exception as e:
+                logger.error(f"Failed to send acknowledgement email for application {app.id}: {e}")
 
         # Return application without guest token
         response_data = EventApplicationSerializer(app).data
         logger.info(f"Guest application {app.id} created. Guest will verify via OTP on event day.")
 
         return Response(response_data, status=201)
+
+    @action(detail=True, methods=["post"], permission_classes=[AllowAny], url_path="preapproval/check-code")
+    def check_preapproval_code(self, request, pk=None):
+        event = self.get_object()
+        if not event.preapproval_code_enabled:
+            return Response({"preapproved": False, "reason": "disabled", "message": "Pre-approved codes are not enabled for this event."})
+
+        code = (request.data.get("code") or "").strip()
+        if not code:
+            return Response({"preapproved": False, "reason": "invalid", "message": "This code is not valid."})
+
+        code_obj = EventPreApprovalCode.objects.filter(event=event, code=code).first()
+        if not code_obj:
+            return Response({"preapproved": False, "reason": "invalid", "message": "This code is not valid."})
+        if code_obj.status == EventPreApprovalCode.STATUS_USED:
+            return Response({"preapproved": False, "reason": "used", "message": "This code has already been used."})
+        if code_obj.status == EventPreApprovalCode.STATUS_REVOKED:
+            return Response({"preapproved": False, "reason": "revoked", "message": "This code is no longer active."})
+        return Response({"preapproved": True, "source": "code", "message": "Valid pre-approved code."})
+
+    @action(detail=True, methods=["post"], permission_classes=[AllowAny], url_path="preapproval/check-email")
+    def check_preapproval_email(self, request, pk=None):
+        event = self.get_object()
+        if not event.preapproval_allowlist_enabled:
+            return Response({"preapproved": False, "reason": "disabled"})
+
+        email = (request.data.get("email") or "").strip().lower()
+        if not email:
+            return Response({"preapproved": False, "reason": "not_found"})
+
+        entry = EventPreApprovalAllowlist.objects.filter(event=event, email=email, is_active=True).first()
+        if not entry:
+            return Response({"preapproved": False, "reason": "not_found"})
+        return Response(
+            {
+                "preapproved": True,
+                "source": "email",
+                "first_name": entry.first_name,
+                "last_name": entry.last_name,
+                "message": "Email is pre-approved.",
+            }
+        )
 
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="applications")
     def applications(self, request, pk=None):
@@ -1949,8 +2064,166 @@ class EventViewSet(viewsets.ModelViewSet):
                 Q(last_name__icontains=search) |
                 Q(email__icontains=search)
             )
+        attendee_marker = request.query_params.get("attendee_marker")
+        if attendee_marker in {"true", "false"}:
+            qs = qs.filter(attendee_marker_value=(attendee_marker == "true"))
+
+        preapproved = request.query_params.get("preapproved")
+        if preapproved in {"true", "false"}:
+            qs = qs.filter(is_preapproved=(preapproved == "true"))
+
+        source = request.query_params.get("preapproval_source")
+        if source in {"none", "code", "email"}:
+            qs = qs.filter(preapproval_source=source)
+
+        has_comments = request.query_params.get("has_comments")
+        if has_comments == "true":
+            qs = qs.exclude(comments__exact="")
+        elif has_comments == "false":
+            qs = qs.filter(comments__exact="")
 
         return Response(EventApplicationSerializer(qs, many=True).data)
+
+    @action(detail=True, methods=["get", "post"], permission_classes=[IsAuthenticated], url_path="preapproval/codes")
+    def preapproval_codes(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can manage pre-approval.'}, status=403)
+
+        if request.method == "GET":
+            status_filter = request.query_params.get("status", "").strip()
+            qs = event.preapproval_codes.all().order_by("-created_at")
+            if status_filter in {EventPreApprovalCode.STATUS_ACTIVE, EventPreApprovalCode.STATUS_USED, EventPreApprovalCode.STATUS_REVOKED}:
+                qs = qs.filter(status=status_filter)
+            return Response(EventPreApprovalCodeSerializer(qs, many=True).data)
+
+        code = (request.data.get("code") or "").strip()
+        notes = (request.data.get("notes") or "").strip()
+        if not code:
+            code = secrets.token_urlsafe(8).replace("-", "").replace("_", "").upper()[:10]
+        obj = EventPreApprovalCode.objects.create(
+            event=event,
+            code=code,
+            notes=notes,
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        return Response(EventPreApprovalCodeSerializer(obj).data, status=201)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="preapproval/codes/batch")
+    def preapproval_codes_batch(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can manage pre-approval.'}, status=403)
+        count = int(request.data.get("count") or 0)
+        prefix = (request.data.get("prefix") or "").strip()
+        if count <= 0 or count > 1000:
+            return Response({"detail": "count must be between 1 and 1000."}, status=400)
+        created = []
+        for i in range(1, count + 1):
+            code = f"{prefix}-{i:03d}" if prefix else secrets.token_urlsafe(8).replace("-", "").replace("_", "").upper()[:10]
+            if EventPreApprovalCode.objects.filter(event=event, code=code).exists():
+                code = f"{prefix}-{secrets.token_hex(3).upper()}" if prefix else f"PA-{secrets.token_hex(4).upper()}"
+            created.append(
+                EventPreApprovalCode(
+                    event=event,
+                    code=code,
+                    created_by=request.user if request.user.is_authenticated else None,
+                )
+            )
+        EventPreApprovalCode.objects.bulk_create(created)
+        qs = event.preapproval_codes.filter(id__in=[obj.id for obj in created])
+        return Response(EventPreApprovalCodeSerializer(qs, many=True).data, status=201)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path=r"preapproval/codes/(?P<code_id>\d+)/revoke")
+    def preapproval_code_revoke(self, request, pk=None, code_id=None):
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can manage pre-approval.'}, status=403)
+        code = get_object_or_404(EventPreApprovalCode, id=code_id, event=event)
+        code.status = EventPreApprovalCode.STATUS_REVOKED
+        code.revoked_by = request.user if request.user.is_authenticated else None
+        code.revoked_at = timezone.now()
+        code.save(update_fields=["status", "revoked_by", "revoked_at"])
+        return Response(EventPreApprovalCodeSerializer(code).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path=r"preapproval/codes/(?P<code_id>\d+)/mark-used")
+    def preapproval_code_mark_used(self, request, pk=None, code_id=None):
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can manage pre-approval.'}, status=403)
+        code = get_object_or_404(EventPreApprovalCode, id=code_id, event=event)
+        code.status = EventPreApprovalCode.STATUS_USED
+        code.used_by_email = (request.data.get("email") or code.used_by_email or "").strip().lower()
+        code.used_at = timezone.now()
+        code.save(update_fields=["status", "used_by_email", "used_at"])
+        return Response(EventPreApprovalCodeSerializer(code).data)
+
+    @action(detail=True, methods=["get", "post"], permission_classes=[IsAuthenticated], url_path="preapproval/allowlist")
+    def preapproval_allowlist(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can manage pre-approval.'}, status=403)
+        if request.method == "GET":
+            qs = event.preapproval_allowlist.all().order_by("-created_at")
+            return Response(EventPreApprovalAllowlistSerializer(qs, many=True).data)
+        payload = {
+            "first_name": (request.data.get("first_name") or "").strip(),
+            "last_name": (request.data.get("last_name") or "").strip(),
+            "email": (request.data.get("email") or "").strip().lower(),
+            "notes": (request.data.get("notes") or "").strip(),
+            "created_by": request.user if request.user.is_authenticated else None,
+            "event": event,
+        }
+        obj = EventPreApprovalAllowlist.objects.create(**payload)
+        return Response(EventPreApprovalAllowlistSerializer(obj).data, status=201)
+
+    @action(detail=True, methods=["delete"], permission_classes=[IsAuthenticated], url_path=r"preapproval/allowlist/(?P<entry_id>\d+)")
+    def preapproval_allowlist_remove(self, request, pk=None, entry_id=None):
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can manage pre-approval.'}, status=403)
+        entry = get_object_or_404(EventPreApprovalAllowlist, id=entry_id, event=event)
+        entry.is_active = False
+        entry.removed_by = request.user if request.user.is_authenticated else None
+        entry.removed_at = timezone.now()
+        entry.save(update_fields=["is_active", "removed_by", "removed_at"])
+        return Response({"ok": True})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="preapproval/allowlist/import-csv")
+    def preapproval_allowlist_import_csv(self, request, pk=None):
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can manage pre-approval.'}, status=403)
+
+        file_obj = request.FILES.get("file")
+        if not file_obj:
+            return Response({"detail": "CSV file is required under 'file'."}, status=400)
+
+        decoded = file_obj.read().decode("utf-8-sig", errors="ignore")
+        reader = csv.DictReader(decoded.splitlines())
+        created = 0
+        skipped = 0
+        errors = []
+        for idx, row in enumerate(reader, start=2):
+            first_name = (row.get("first_name") or "").strip()
+            last_name = (row.get("last_name") or "").strip()
+            email = (row.get("email") or "").strip().lower()
+            if not email or "@" not in email:
+                skipped += 1
+                errors.append({"row": idx, "email": email, "error": "Invalid email"})
+                continue
+            if EventPreApprovalAllowlist.objects.filter(event=event, email=email, is_active=True).exists():
+                skipped += 1
+                continue
+            EventPreApprovalAllowlist.objects.create(
+                event=event,
+                first_name=first_name,
+                last_name=last_name,
+                email=email,
+                created_by=request.user if request.user.is_authenticated else None,
+            )
+            created += 1
+        return Response({"created": created, "skipped": skipped, "errors": errors})
 
     @action(detail=True, methods=["post"], url_path=r"applications/(?P<app_id>\d+)/approve", permission_classes=[IsAuthenticated])
     def approve_application(self, request, pk=None, app_id=None):
