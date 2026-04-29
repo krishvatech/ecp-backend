@@ -7534,6 +7534,82 @@ class SaleorStaffUserSyncView(views.APIView):
             return Response({"error": str(e)}, status=500)
 
 
+class SaleorStaffUserActiveView(views.APIView):
+    """PATCH /api/events/saleor/staff-users/<id>/active/ - Activate/deactivate a Saleor staff user."""
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        _require_saleor_manager_access(request)
+        obj = get_object_or_404(SaleorStaffUser, pk=pk)
+        is_active = request.data.get("is_active")
+        if not isinstance(is_active, bool):
+            return Response({"detail": "Provide boolean is_active."}, status=400)
+
+        from users.saleor_connection import get_valid_saleor_token_for_user
+        saleor_token = get_valid_saleor_token_for_user(request.user, required_permissions=["MANAGE_STAFF"])
+        if not saleor_token:
+            raise PermissionDenied("Connect Saleor SSO first.")
+
+        mutation = """
+        mutation StaffUpdateActive($id: ID!, $input: StaffUpdateInput!) {
+          staffUpdate(id: $id, input: $input) {
+            user {
+              id
+              firstName
+              lastName
+              email
+              isStaff
+              isActive
+              userPermissions {
+                code
+              }
+              metadata {
+                key
+                value
+              }
+            }
+            errors {
+              field
+              code
+              message
+            }
+          }
+        }
+        """
+        try:
+            response = requests.post(
+                settings.SALEOR_API_URL,
+                json={"query": mutation, "variables": {"id": obj.saleor_id, "input": {"isActive": is_active}}},
+                headers={"Authorization": f"Bearer {saleor_token}", "Content-Type": "application/json"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get("errors"):
+                return Response({"errors": data["errors"]}, status=400)
+
+            payload = (data.get("data") or {}).get("staffUpdate") or {}
+            if payload.get("errors"):
+                return Response({"errors": payload["errors"]}, status=400)
+
+            user_data = payload.get("user") or {}
+            if not user_data:
+                return Response({"detail": "Saleor did not return updated staff user."}, status=502)
+
+            obj.first_name = user_data.get("firstName") or ""
+            obj.last_name = user_data.get("lastName") or ""
+            obj.email = user_data.get("email") or obj.email
+            obj.is_staff = user_data.get("isStaff", obj.is_staff)
+            obj.is_active = user_data.get("isActive", is_active)
+            obj.permissions = [p["code"] for p in user_data.get("userPermissions", []) if p.get("code")]
+            obj.metadata = {m["key"]: m["value"] for m in user_data.get("metadata", [])}
+            obj.save()
+            return Response(SaleorStaffUserSerializer(obj).data)
+        except Exception as e:
+            logger.exception(f"Error updating Saleor staff user active status: {e}")
+            return Response({"error": str(e)}, status=500)
+
+
 class SaleorPermissionGroupListView(generics.ListAPIView):
     """GET /api/events/saleor/permission-groups/ - List cached Saleor permission groups."""
     queryset = SaleorPermissionGroup.objects.all()

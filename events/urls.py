@@ -33,6 +33,7 @@ from .views import (
     SaleorProductTypeOptionsView,
     SaleorStaffUserListView,
     SaleorStaffUserSyncView,
+    SaleorStaffUserActiveView,
     SaleorPermissionGroupListView,
     SaleorPermissionGroupSyncView,
 )
@@ -295,6 +296,7 @@ urlpatterns = [
 
     path("events/saleor/staff-users/", SaleorStaffUserListView.as_view(), name="saleor-staff-user-list"),
     path("events/saleor/staff-users/sync/", SaleorStaffUserSyncView.as_view(), name="saleor-staff-user-sync"),
+    path("events/saleor/staff-users/<int:pk>/active/", SaleorStaffUserActiveView.as_view(), name="saleor-staff-user-active"),
 
     path("events/saleor/permission-groups/", SaleorPermissionGroupListView.as_view(), name="saleor-permission-group-list"),
     path("events/saleor/permission-groups/sync/", SaleorPermissionGroupSyncView.as_view(), name="saleor-permission-group-sync"),
