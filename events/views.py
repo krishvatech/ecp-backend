@@ -3823,6 +3823,14 @@ class EventViewSet(viewsets.ModelViewSet):
             mini_user = UserMiniSerializer(registration.user, context={"request": request}).data
             avatar_url = mini_user.get("avatar_url") or ""
 
+            # Get display_order and participant_id from matched EventParticipant records
+            display_order = None
+            participant_id = None
+            if _matched_participants:
+                # Use the first matched participant's display_order
+                display_order = _matched_participants[0].display_order
+                participant_id = _matched_participants[0].id
+
             rows.append(
                 {
                     "registration_id": registration.id,
@@ -3839,6 +3847,8 @@ class EventViewSet(viewsets.ModelViewSet):
                     "is_public_role_visible": public_role_visible,
                     "is_hidden_from_public_role_display": hidden_from_public,
                     "registered_at": registration.registered_at,
+                    "participant_id": participant_id,
+                    "display_order": display_order,
                 }
             )
 
@@ -3867,11 +3877,14 @@ class EventViewSet(viewsets.ModelViewSet):
                         "is_public_role_visible": is_public_role_visible(event, participant.role) if participant.role else True,
                         "is_hidden_from_public_role_display": False,
                         "registered_at": None,
+                        "participant_id": participant.id,
+                        "display_order": participant.display_order,
                     }
                 )
 
         rows.sort(
             key=lambda row: (
+                row.get("display_order") if row.get("display_order") is not None else 9999,
                 role_priority(row["primary_role"]),
                 row["display_name"].lower(),
                 row.get("registration_id"),
@@ -6326,6 +6339,52 @@ class EventViewSet(viewsets.ModelViewSet):
         # Optionally update attending count immediately if you want them counted strictly
         Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
         return Response({"ok": True, "detail": f"User {target_user.username} added successfully."})
+
+    @action(detail=True, methods=["patch"], permission_classes=[IsAuthenticated], url_path="reorder-speakers")
+    def reorder_speakers(self, request, pk=None):
+        """
+        Reorder speakers/hosts/moderators by updating their display_order.
+        Only for Event Owners and Staff.
+
+        Expects a list of dicts: [{"id": participant_id, "display_order": 0}, ...]
+        """
+        event = self.get_object()
+        user = request.user
+
+        # Permission check: only owner or staff can reorder
+        if not (user.is_staff or getattr(user, "is_superuser", False) or event.created_by_id == user.id):
+            return Response({"detail": "Permission denied."}, status=403)
+
+        items = request.data
+        if not isinstance(items, list):
+            return Response({"detail": "Expected a list of items."}, status=400)
+
+        try:
+            with transaction.atomic():
+                for item in items:
+                    participant_id = item.get("id")
+                    display_order = item.get("display_order")
+
+                    if participant_id is None or display_order is None:
+                        return Response(
+                            {"detail": "Each item must have 'id' and 'display_order' fields."},
+                            status=400
+                        )
+
+                    # Update only if the participant belongs to this event
+                    updated = EventParticipant.objects.filter(
+                        id=participant_id, event=event
+                    ).update(display_order=display_order)
+
+                    if updated == 0:
+                        return Response(
+                            {"detail": f"Participant with id {participant_id} not found in this event."},
+                            status=404
+                        )
+
+            return Response({"status": "ok"})
+        except Exception as e:
+            return Response({"detail": str(e)}, status=400)
 
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="hosted")
     def hosted(self, request):

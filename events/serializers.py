@@ -400,6 +400,8 @@ class EventParticipantListItemSerializer(serializers.Serializer):
     is_public_role_visible = serializers.BooleanField()
     is_hidden_from_public_role_display = serializers.BooleanField()
     registered_at = serializers.DateTimeField(allow_null=True)
+    participant_id = serializers.IntegerField(allow_null=True)
+    display_order = serializers.IntegerField(allow_null=True)
 
 
 class SessionParticipantSerializer(serializers.ModelSerializer):
@@ -1075,12 +1077,24 @@ class EventSerializer(serializers.ModelSerializer):
                 # Participant was removed
                 ep.delete()
             else:
-                # Participant still exists; check if role changed
-                new_role, _ = new_by_identity[identity_key]
+                # Participant still exists; check if role or display_order changed
+                new_role, p_data = new_by_identity[identity_key]
+                new_display_order = p_data.get('display_order', 0)
+
+                # Track what needs updating
+                update_fields = []
                 if new_role != old_role:
-                    # Update role without triggering new email
                     ep.role = new_role
-                    ep.save(update_fields=['role'])
+                    update_fields.append('role')
+
+                # Always update display_order based on the new order
+                if ep.display_order != new_display_order:
+                    ep.display_order = new_display_order
+                    update_fields.append('display_order')
+
+                # Save only if there are changes
+                if update_fields:
+                    ep.save(update_fields=update_fields)
 
         # Create only new participants (those not in existing_by_identity)
         new_participants_data = []
@@ -1627,7 +1641,7 @@ class EventSerializer(serializers.ModelSerializer):
         ]
 
     def get_event_participants(self, obj):
-        """Return all participants grouped by role."""
+        """Return all participants grouped by role, sorted by display_order within each role."""
         qs = getattr(obj, 'participants', None)
         if not qs:
             return {
@@ -1636,8 +1650,8 @@ class EventSerializer(serializers.ModelSerializer):
                 'hosts': [],
             }
 
-        # Prefetch related user profiles for efficiency
-        participants = qs.select_related('user', 'user__profile').all()
+        # Prefetch related user profiles for efficiency and sort by display_order
+        participants = qs.select_related('user', 'user__profile').order_by('display_order').all()
 
         serializer = EventParticipantSerializer(
             participants,
@@ -1645,7 +1659,7 @@ class EventSerializer(serializers.ModelSerializer):
             context=self.context
         )
 
-        # Group by role for easier frontend consumption
+        # Group by role for easier frontend consumption (order preserved by display_order from query)
         grouped = {
             'speakers': [],
             'moderators': [],
