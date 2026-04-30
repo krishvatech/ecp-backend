@@ -1,4 +1,4 @@
-﻿"""
+"""
 Views for the users app.
 
 Provides endpoints to list and retrieve user information, update the
@@ -947,6 +947,7 @@ class RegisterView(APIView):
                 html_message=html_body,
                 fail_silently=False,
             )
+            logger.info(f"Welcome email sent successfully to {user.email}")
         except Exception as e:
             logger.warning(f"Welcome email failed for {getattr(user,'email',None)}: {e}")
 
@@ -2370,10 +2371,7 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         return Response({"updated": updated})
 
     def perform_destroy(self, instance):
-        username = instance.username
-        # Delete from Cognito first
-        delete_cognito_user(username)
-        # Then delete from Django
+        # The pre_delete signal 'remove_user_from_cognito' handles Cognito cleanup
         instance.delete()
 
     @action(detail=False, methods=["post"], url_path="create-with-password")

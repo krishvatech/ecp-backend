@@ -1151,3 +1151,31 @@ def send_replay_expiring_soon_email(user, event, expiration_date):
         subject_override=f"Reminder: Replay for '{event.title}' expires soon",
         fail_silently=True,
     )
+
+
+def send_welcome_email(user, login_url=None):
+    """
+    Send a welcome email to a newly registered user.
+    """
+    if not user or not user.email:
+        return False
+
+    app_name = "IMAA Connect"
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    login_url = login_url or f"{frontend_base}/login"
+
+    ctx = {
+        "app_name": app_name,
+        "first_name": user.first_name or user.username or "there",
+        "email": user.email,
+        "login_url": login_url,
+        "support_email": settings.DEFAULT_FROM_EMAIL,
+    }
+
+    return send_template_email(
+        template_key="welcome",
+        to_email=user.email,
+        context=ctx,
+        subject_override=f"Welcome to {app_name}!",
+        fail_silently=True,
+    )

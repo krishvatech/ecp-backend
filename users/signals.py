@@ -36,7 +36,7 @@ def ensure_profile(sender, instance, created, **kwargs):
             profile.last_activity_at = timezone.now()
             profile.save(update_fields=["last_activity_at"])
 
-        # 2) Only on brand-new users, add to default community
+        # 2) Only on brand-new users, add to default community and send welcome email
         if was_created:
             try:
                 Community = apps.get_model("community", "Community")
@@ -48,11 +48,18 @@ def ensure_profile(sender, instance, created, **kwargs):
                 default_comm = Community.objects.get(pk=1)  # your default community
             except Community.DoesNotExist:
                 # default community not created yet – just skip
-                return
+                pass
+            else:
+                # Use the ManyToMany manager, creates a row in
+                # public.community_community_members (community_id=1, user_id=<user.id>)
+                default_comm.members.add(instance)
 
-            # Use the ManyToMany manager, creates a row in
-            # public.community_community_members (community_id=1, user_id=<user.id>)
-            default_comm.members.add(instance)
+            # Send welcome email
+            from users.email_utils import send_welcome_email
+            try:
+                send_welcome_email(instance)
+            except Exception as e:
+                logger.warning(f"Failed to send welcome email to {instance.email}: {e}")
 
     # Run after the transaction commits so IDs are available
     transaction.on_commit(_create)
@@ -95,23 +102,38 @@ def sync_cognito_status(sender, instance, created, **kwargs):
     #    For simplicity/reliability here we do it immediately but inside a try/except.
     #    Ideally this would be a Celery task to avoid blocking the request.
     import boto3
+    cognito_username = "unknown"
     try:
         client = boto3.client("cognito-idp", region_name=region)
-        username = instance.user.username  # Assuming username matches Cognito username
+        
+        # 1. Try to find the Cognito Username (usually the 'sub')
+        # Check if the user has a linked CognitoIdentity
+        # Using a fresh query to bypass cached relations in the same transaction
+        from .models import CognitoIdentity
+        cognito_id = CognitoIdentity.objects.filter(user=instance.user).first()
+        
+        if cognito_id:
+            cognito_username = cognito_id.cognito_sub
+        else:
+            # Fallback to email if no identity linked yet
+            cognito_username = instance.user.email or instance.user.username
 
         if should_be_enabled:
             client.admin_enable_user(
                 UserPoolId=pool_id,
-                Username=username
+                Username=cognito_username
             )
         else:
             client.admin_disable_user(
                 UserPoolId=pool_id,
-                Username=username
+                Username=cognito_username
             )
     except Exception as e:
+        # Ignore if user doesn't exist in Cognito yet
+        if "UserNotFoundException" in str(e):
+            return
         # Log failure but don't crash the app
-        print(f"Failed to sync Cognito status for {instance.user.username}: {e}")
+        logger.warning(f"Failed to sync Cognito status for {instance.user.username} (CognitoID: {cognito_username}): {e}")
 
 
 @receiver(pre_delete, sender=User)
@@ -128,14 +150,20 @@ def remove_user_from_cognito(sender, instance, **kwargs):
     try:
         import boto3
         client = boto3.client("cognito-idp", region_name=region)
-        username = instance.username
+        
+        # Try to get Cognito sub if available
+        cognito_id = getattr(instance, "cognito_identity", None)
+        cognito_username = cognito_id.cognito_sub if cognito_id else (instance.email or instance.username)
 
         client.admin_delete_user(
             UserPoolId=pool_id,
-            Username=username
+            Username=cognito_username
         )
-        logger.info(f"Removed user {username} (ID: {instance.id}) from Cognito")
+        logger.info(f"Removed user {instance.username} (CognitoID: {cognito_username}) from Cognito")
     except Exception as e:
+        # Ignore if user already deleted from Cognito or never existed
+        if "UserNotFoundException" in str(e):
+            return
         logger.error(f"Failed to remove {instance.username} from Cognito: {e}")
 
 

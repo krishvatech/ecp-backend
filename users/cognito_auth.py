@@ -313,7 +313,10 @@ class CognitoJWTAuthentication(BaseAuthentication):
                 full_name = f"{user.first_name} {user.last_name}".strip()
                 if full_name and profile.full_name != full_name:
                     profile.full_name = full_name
-                    profile.save(update_fields=["full_name"])
+                    if profile.pk:
+                        profile.save(update_fields=["full_name"])
+                    else:
+                        profile.save()
 
             # --- ECP <-> Saleor Sync (Synchronous) ---
             from .saleor_sync import sync_user_to_saleor_sync

@@ -23,7 +23,9 @@ class LastActivityMiddleware:
                     or (now - profile.last_activity_at).total_seconds() > 60
                 ):
                     profile.last_activity_at = now
-                    profile.save(update_fields=["last_activity_at"])
+                    # Only save if the profile has been persisted to the DB
+                    if profile.pk:
+                        profile.save(update_fields=["last_activity_at"])
 
         return response
 
