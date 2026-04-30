@@ -1345,6 +1345,7 @@ class EventSerializer(serializers.ModelSerializer):
                 user_id=user_id,
                 defaults={
                     "status": "registered",
+                    "attendee_status": "confirmed",
                     "admission_status": "admitted",
                     "was_ever_admitted": True,
                 },
@@ -1418,7 +1419,11 @@ class EventSerializer(serializers.ModelSerializer):
             EventRegistration.objects.get_or_create(
                 event=event,
                 user=creator,
-                defaults={"status": "registered", "admission_status": "admitted"}
+                defaults={
+                    "status": "registered",
+                    "attendee_status": "confirmed",
+                    "admission_status": "admitted",
+                }
             )
 
             # ----- read "Attach Resources" metadata coming from the form -----

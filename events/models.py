@@ -474,6 +474,17 @@ class EventRegistration(models.Model):
         ('deregistered', 'Deregistered'),
     ]
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='registered')
+    attendee_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("confirmed", "Confirmed"),
+            ("payment_pending", "Payment Pending"),
+            ("cancelled", "Cancelled"),
+        ],
+        default="confirmed",
+        db_index=True,
+        help_text="Application/payment state: confirmed, payment_pending, or cancelled",
+    )
     registered_at = models.DateTimeField(auto_now_add=True)
     joined_live = models.BooleanField(default=False)
     watched_replay = models.BooleanField(default=False)
