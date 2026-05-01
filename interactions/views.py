@@ -83,6 +83,26 @@ class QuestionViewSet(viewsets.ModelViewSet):
             status='registered',
         ).first()
 
+    @staticmethod
+    def _can_manage_event_qna(user, event) -> bool:
+        if not user or not user.is_authenticated:
+            return False
+        if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
+            return True
+        if event.created_by_id == user.id:
+            return True
+        if getattr(getattr(event, "community", None), "owner_id", None) == user.id:
+            return True
+        try:
+            from events.models import EventParticipant
+            return EventParticipant.objects.filter(
+                event=event,
+                user_id=user.id,
+                role__in=["host", "moderator"],
+            ).exists()
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------
     # Reply helpers
     # ------------------------------------------------------------------
@@ -366,6 +386,8 @@ class QuestionViewSet(viewsets.ModelViewSet):
             )
         if event_id:
             qs = qs.filter(event_id=event_id)
+        # Soft-deleted pre-event questions should never appear in generic Q&A feeds/counts.
+        qs = qs.filter(is_deleted=False)
 
         # Room Isolation Logic
         if lounge_table_id:
@@ -681,6 +703,116 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "reply_count": len(replies_data),
             })
         return Response(data)
+
+    @action(detail=False, methods=["get"], url_path="admin-pre-event")
+    def admin_pre_event_questions(self, request):
+        from events.models import Event
+        from rest_framework.exceptions import PermissionDenied
+
+        event_id = request.query_params.get("event_id")
+        if not event_id:
+            return Response({"detail": "event_id query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        event = get_object_or_404(Event, id=event_id)
+        if not self._can_manage_event_qna(request.user, event):
+            raise PermissionDenied("Only event owner/host/moderator/staff/superuser can manage Q&A.")
+
+        include_deleted = str(request.query_params.get("include_deleted", "false")).lower() in ("1", "true")
+        qs = Question.objects.filter(event=event, submission_phase="pre_event").select_related("user", "guest_asker", "feedback_by")
+        if not include_deleted:
+            qs = qs.filter(is_deleted=False)
+        qs = qs.order_by("-created_at")
+        return Response(QuestionSerializer(qs, many=True).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["patch"], url_path="admin-pre-event")
+    def admin_pre_event_edit(self, request, pk=None):
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        if question.submission_phase != "pre_event":
+            return Response({"detail": "Only pre-event questions can be edited through this endpoint."}, status=status.HTTP_400_BAD_REQUEST)
+        if not self._can_manage_event_qna(request.user, question.event):
+            raise PermissionDenied("Only event owner/host/moderator/staff/superuser can manage Q&A.")
+
+        fields = []
+        if "content" in request.data:
+            content = (request.data.get("content") or "").strip()
+            if not content:
+                return Response({"detail": "content cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+            question.content = content
+            fields.append("content")
+        if "is_anonymous" in request.data:
+            question.is_anonymous = bool(request.data.get("is_anonymous"))
+            fields.append("is_anonymous")
+        if fields:
+            question.save(update_fields=fields + ["updated_at"])
+        return Response(QuestionSerializer(question).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="set-visibility")
+    def set_visibility(self, request, pk=None):
+        from django.utils import timezone
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        if not self._can_manage_event_qna(request.user, question.event):
+            raise PermissionDenied("Only event owner/host/moderator/staff/superuser can manage Q&A.")
+
+        is_hidden = bool(request.data.get("is_hidden", False))
+        question.is_hidden = is_hidden
+        question.hidden_by = request.user if is_hidden else None
+        question.hidden_at = timezone.now() if is_hidden else None
+        question.save(update_fields=["is_hidden", "hidden_by", "hidden_at"])
+        return Response(QuestionSerializer(question).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="admin-soft-delete")
+    def admin_soft_delete(self, request, pk=None):
+        from django.utils import timezone
+        from rest_framework.exceptions import PermissionDenied
+
+        question = get_object_or_404(Question, pk=pk)
+        if question.submission_phase != "pre_event":
+            return Response({"detail": "Only pre-event questions can be deleted through this endpoint."}, status=status.HTTP_400_BAD_REQUEST)
+        if not self._can_manage_event_qna(request.user, question.event):
+            raise PermissionDenied("Only event owner/host/moderator/staff/superuser can manage Q&A.")
+
+        question.is_deleted = True
+        question.deleted_at = timezone.now()
+        question.save(update_fields=["is_deleted", "deleted_at"])
+        return Response({"status": "deleted", "question_id": question.id}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="feedback")
+    def add_feedback(self, request, pk=None):
+        from django.utils import timezone
+        from rest_framework.exceptions import PermissionDenied
+        from friends.models import Notification
+
+        question = get_object_or_404(Question, pk=pk)
+        if not self._can_manage_event_qna(request.user, question.event):
+            raise PermissionDenied("Only event owner/host/moderator/staff/superuser can manage Q&A.")
+
+        message = (request.data.get("feedback_message") or "").strip()
+        if not message:
+            return Response({"detail": "feedback_message is required."}, status=status.HTTP_400_BAD_REQUEST)
+        question.feedback_message = message
+        question.feedback_by = request.user
+        question.feedback_at = timezone.now()
+        question.save(update_fields=["feedback_message", "feedback_by", "feedback_at"])
+
+        # Notify the question author in-app (no email) when host/admin adds feedback.
+        if question.user_id and question.user_id != request.user.id:
+            Notification.objects.create(
+                recipient_id=question.user_id,
+                actor=request.user,
+                kind="event",
+                title="Host feedback on your pre-event question",
+                description=f"{question.event.title}: {message[:140]}",
+                data={
+                    "event_id": question.event_id,
+                    "event_slug": getattr(question.event, "slug", ""),
+                    "notification_type": "pre_event_qna_feedback",
+                    "question_id": question.id,
+                },
+            )
+        return Response(QuestionSerializer(question).data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["get"], url_path="link-preview")
     def link_preview(self, request):
@@ -1652,7 +1784,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         # Get unanswered questions, ordered by upvote count (descending)
         questions = (
             Question.objects
-            .filter(event=event, is_answered=False)
+            .filter(event=event, is_answered=False, is_deleted=False)
             .annotate(upvote_count=Count("upvoters") + Count("guest_upvotes"))
             .order_by("-upvote_count", "-created_at")
             .select_related("user", "guest_asker")
@@ -1767,6 +1899,9 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "submission_phase": q.submission_phase,
                 "is_answered": q.is_answered,
                 "is_hidden": q.is_hidden,
+                "feedback_message": q.feedback_message or "",
+                "feedback_by": q.feedback_by_id,
+                "feedback_at": q.feedback_at.isoformat() if q.feedback_at else None,
             }
             for q in questions
         ]

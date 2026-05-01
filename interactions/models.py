@@ -277,6 +277,24 @@ class Question(models.Model):
         blank=True,
         help_text="Timestamp when the question was soft-deleted by the attendee.",
     )
+    feedback_message = models.TextField(
+        blank=True,
+        default="",
+        help_text="Admin/host feedback message for this question.",
+    )
+    feedback_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="qna_feedback_given",
+        help_text="User who provided feedback.",
+    )
+    feedback_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when feedback was provided.",
+    )
 
     class Meta:
         ordering = ["-created_at"]

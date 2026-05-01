@@ -32,6 +32,14 @@ def event_participant_image_upload_to(instance, filename):
     base = slugify(name) or "participant"
     return f"events/participants/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
 
+
+# Backward-compatibility for historical migrations (e.g. events.0115) that
+# import this symbol from events.models at import time.
+def series_cover_upload_to(instance, filename):
+    name, ext = os.path.splitext(filename or "")
+    base = slugify(name) or "series-cover"
+    return f"previews/series/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
+
 class Event(models.Model):
     """Represents an event within an community."""
     STATUS_CHOICES = [
