@@ -2012,3 +2012,142 @@ def sync_permission_groups_from_saleor():
         raise
 
 
+def fetch_event_saleor_product_details(product_id):
+    """
+    Fetch full details for a product, including channel listings, prices, and stock.
+    """
+    query = """
+    query GetProductDetails($id: ID!) {
+      product(id: $id) {
+        id
+        name
+        slug
+        description
+        category { id name }
+        productType { id name }
+        variants {
+          id
+          sku
+          name
+          channelListings {
+            channel {
+              id
+              name
+              slug
+              currencyCode
+            }
+            price {
+              amount
+              currency
+            }
+          }
+          stocks {
+            id
+            warehouse {
+              id
+              name
+              slug
+            }
+            quantity
+          }
+        }
+      }
+      channels {
+        id
+        name
+        slug
+        currencyCode
+      }
+      warehouses(first: 100) {
+        edges {
+          node {
+            id
+            name
+            slug
+          }
+        }
+      }
+    }
+    """
+    try:
+        return call_saleor_gql(query, {"id": product_id})
+    except Exception as e:
+        logger.error(f"Error fetching product details from Saleor: {e}")
+        return {"error": str(e)}
+
+
+def update_event_saleor_product_details(product_id, variant_id, data):
+    """
+    Update product details (name, description), channel listings (price) and stock for a variant.
+    data: {
+      'name': '...',
+      'description': '...',
+      'channel_listings': [{'channel_id': '...', 'price': 10.0}, ...],
+      'stocks': [{'warehouse_id': '...', 'quantity': 100}, ...]
+    }
+    """
+    results = {}
+
+    if 'name' in data or 'description' in data:
+        mutation = """
+        mutation UpdateProduct($id: ID!, $input: ProductInput!) {
+          productUpdate(id: $id, input: $input) {
+            product { id name description }
+            errors { field message }
+          }
+        }
+        """
+        input_data = {}
+        if 'name' in data:
+            input_data['name'] = data['name']
+        if 'description' in data:
+            input_data['description'] = json_description(data['description'])
+        
+        try:
+            results['product'] = call_saleor_gql(mutation, {"id": product_id, "input": input_data})
+        except Exception as e:
+            results['product_error'] = str(e)
+
+    if 'channel_listings' in data:
+        mutation = """
+        mutation UpdateVariantChannel($id: ID!, $input: [ProductVariantChannelListingAddInput!]!) {
+          productVariantChannelListingUpdate(id: $id, input: $input) {
+            errors { field message }
+          }
+        }
+        """
+        inputs = []
+        for cl in data['channel_listings']:
+            inputs.append({
+                "channelId": cl['channel_id'],
+                "price": float(cl['price'])
+            })
+
+        try:
+            results['channel_listings'] = call_saleor_gql(mutation, {"id": variant_id, "input": inputs})
+        except Exception as e:
+            results['channel_listings_error'] = str(e)
+
+    if 'stocks' in data:
+        mutation = """
+        mutation UpdateVariantStocks($variantId: ID!, $stocks: [StockInput!]!) {
+          productVariantStocksUpdate(variantId: $variantId, stocks: $stocks) {
+            errors { field message }
+          }
+        }
+        """
+        inputs = []
+        for s in data['stocks']:
+            inputs.append({
+                "warehouse": s['warehouse_id'],
+                "quantity": int(s['quantity'])
+            })
+
+        try:
+            results['stocks'] = call_saleor_gql(mutation, {"variantId": variant_id, "stocks": inputs})
+        except Exception as e:
+            results['stocks_error'] = str(e)
+
+    return results
+
+

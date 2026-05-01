@@ -124,6 +124,8 @@ from .saleor_sync import (
     delete_product_type_in_saleor,
     get_shipping_zone_options,
     get_product_type_options,
+    fetch_event_saleor_product_details,
+    update_event_saleor_product_details,
 )
 
 # ============================================================
@@ -1798,6 +1800,43 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         })
 
+
+    # GET/PATCH /api/events/{id}/saleor-product/
+    @action(detail=True, methods=["get", "patch"], permission_classes=[IsCreatorOrReadOnly], url_path="saleor-product")
+    def saleor_product(self, request, pk=None):
+        """
+        Fetch or update Saleor product details (price, stock, channels) for a paid event.
+        GET: Fetch current product data from Saleor.
+        PATCH: Update product pricing or inventory in Saleor.
+        """
+        event = self.get_object()
+
+        # Superuser check (platform_admin) or Creator
+        if not (request.user.is_superuser or event.created_by_id == request.user.id):
+            raise PermissionDenied("You do not have permission to manage this product.")
+
+        if not event.saleor_product_id:
+            return Response({"error": "No Saleor product linked to this event."}, status=400)
+
+        if request.method == "GET":
+            details = fetch_event_saleor_product_details(event.saleor_product_id)
+            return Response(details)
+
+        elif request.method == "PATCH":
+            variant_id = event.saleor_variant_id
+            if not variant_id:
+                # Try to get it from Saleor if missing locally
+                details = fetch_event_saleor_product_details(event.saleor_product_id)
+                product = details.get("data", {}).get("product")
+                if product and product.get("variants"):
+                    variant_id = product["variants"][0]["id"]
+                    event.saleor_variant_id = variant_id
+                    event.save(update_fields=["saleor_variant_id"])
+                else:
+                    return Response({"error": "No variant found for this product in Saleor."}, status=400)
+
+            result = update_event_saleor_product_details(event.saleor_product_id, variant_id, request.data)
+            return Response(result)
 
     # POST /api/events/{id}/register/
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="register")
