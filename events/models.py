@@ -383,6 +383,14 @@ class Event(models.Model):
         blank=True,
         help_text="List of session types to include in hours calculation. Valid values: 'main', 'breakout', 'workshop', 'networking'. Defaults to ['main', 'breakout', 'workshop']"
     )
+    total_hours_override_minutes = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Host-set total hours in minutes; overrides automatic session sum when has_total_hours_override is True"
+    )
+    has_total_hours_override = models.BooleanField(
+        default=False,
+        help_text="If True, use total_hours_override_minutes instead of calculated session total"
+    )
 
     # Speed Networking Match History Visibility Settings
     show_speed_networking_match_history = models.BooleanField(
@@ -445,6 +453,19 @@ class Event(models.Model):
     def is_any_session_live(self):
         """Check if any session is currently live."""
         return self.sessions.filter(is_live=True).exists()
+
+    def calculate_total_hours(self):
+        """
+        Calculate total event hours from sessions minus breaks.
+        Returns minutes. If has_total_hours_override is True, returns the override value.
+        """
+        if self.has_total_hours_override and self.total_hours_override_minutes is not None:
+            return self.total_hours_override_minutes
+        session_types = self.hours_calculation_session_types or ["main", "breakout", "workshop"]
+        return sum(
+            s.effective_duration_minutes()
+            for s in self.sessions.filter(session_type__in=session_types)
+        )
 
 
 class LoungeTable(models.Model):
@@ -1213,6 +1234,16 @@ class EventSession(models.Model):
     rtk_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     recording_url = models.URLField(blank=True)
 
+    # Duration override fields
+    duration_minutes_override = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Manually set session duration in minutes; overrides (end_time - start_time)"
+    )
+    has_duration_override = models.BooleanField(
+        default=False,
+        help_text="If True, use duration_minutes_override instead of computed duration"
+    )
+
     # Session image (portrait orientation)
     session_image = models.ImageField(
         upload_to='session_images/',
@@ -1231,6 +1262,16 @@ class EventSession(models.Model):
             models.Index(fields=['event', 'is_live']),
         ]
 
+    def computed_duration_minutes(self):
+        if self.end_time and self.start_time:
+            return int((self.end_time - self.start_time).total_seconds() / 60)
+        return 0
+
+    def effective_duration_minutes(self):
+        base = self.duration_minutes_override if self.has_duration_override else self.computed_duration_minutes()
+        total_breaks = sum(b.duration_minutes for b in self.session_breaks.all())
+        return max(0, base - total_breaks)
+
     def save(self, *args, **kwargs):
         # Auto-populate session_date from start_time if not explicitly set
         if self.start_time and not self.session_date:
@@ -1242,6 +1283,29 @@ class EventSession(models.Model):
 
     def __str__(self):
         return f"{self.title} - {self.event.title}"
+
+
+class SessionBreak(models.Model):
+    BREAK_TYPE_CHOICES = [
+        ("lunch", "Lunch Break"),
+        ("coffee", "Coffee Break"),
+        ("networking", "Networking Break"),
+        ("other", "Other"),
+    ]
+    session = models.ForeignKey(
+        EventSession, on_delete=models.CASCADE, related_name="session_breaks"
+    )
+    label = models.CharField(max_length=100, blank=True, default="")
+    break_type = models.CharField(max_length=20, choices=BREAK_TYPE_CHOICES, default="other")
+    duration_minutes = models.PositiveIntegerField(help_text="Break length in minutes")
+    break_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["break_order", "created_at"]
+
+    def __str__(self):
+        return f"{self.label or self.break_type} - {self.duration_minutes}m"
 
 
 class SessionParticipant(models.Model):

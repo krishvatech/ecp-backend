@@ -71,6 +71,7 @@ from .serializers import (
     EventSessionSerializer,
     SessionAttendanceSerializer,
     EventParticipantListItemSerializer,
+    SessionBreakSerializer,
     build_event_participant_lookup,
     build_profile_url,
     is_public_role_visible,
@@ -7254,6 +7255,51 @@ def _build_lounge_state_sync(event_id):
 
 # ============================================================
 # ================== Saleor Manager Views ====================
+class SessionBreakViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing session breaks."""
+
+    serializer_class = SessionBreakSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """Filter breaks by session_id from URL."""
+        session_id = self.kwargs.get('session_pk')
+        return SessionBreak.objects.filter(session_id=session_id)
+
+    def perform_create(self, serializer):
+        """Create break with permission check."""
+        session_id = self.kwargs.get('session_pk')
+        try:
+            session = EventSession.objects.get(id=session_id)
+        except EventSession.DoesNotExist:
+            raise NotFound("Session not found")
+
+        event = session.event
+        if not _is_event_manager(self.request.user, event):
+            raise PermissionDenied("Only event creators/staff can add breaks")
+
+        serializer.save(session=session)
+
+    def perform_update(self, serializer):
+        """Update break with permission check."""
+        break_obj = self.get_object()
+        event = break_obj.session.event
+
+        if not _is_event_manager(self.request.user, event):
+            raise PermissionDenied("Only event creators/staff can update breaks")
+
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        """Delete break with permission check."""
+        event = instance.session.event
+
+        if not _is_event_manager(self.request.user, event):
+            raise PermissionDenied("Only event creators/staff can delete breaks")
+
+        instance.delete()
+
+
 # ============================================================
 
 def _is_platform_admin(request):

@@ -21,7 +21,7 @@ from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
 from .models import (
     Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
-    EventSession, SessionParticipant, SessionAttendance, EventApplication, VirtualSpeaker,
+    EventSession, SessionParticipant, SessionAttendance, SessionBreak, EventApplication, VirtualSpeaker,
     SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup,
     EventPreApprovalCode, EventPreApprovalAllowlist
 )
@@ -510,6 +510,14 @@ class VirtualSpeakerConvertSerializer(serializers.Serializer):
     send_invite = serializers.BooleanField(default=True, required=False)
 
 
+class SessionBreakSerializer(serializers.ModelSerializer):
+    """Serializer for session breaks."""
+
+    class Meta:
+        model = SessionBreak
+        fields = ['id', 'label', 'break_type', 'duration_minutes', 'break_order', 'created_at']
+
+
 class EventSessionSerializer(serializers.ModelSerializer):
     """Serializer for event sessions with nested participant support."""
 
@@ -531,16 +539,28 @@ class EventSessionSerializer(serializers.ModelSerializer):
     session_participants = serializers.SerializerMethodField()
     attendance_count = serializers.SerializerMethodField()
 
+    # Hours calculation fields
+    session_breaks = SessionBreakSerializer(many=True, read_only=True)
+    duration_minutes_override = serializers.IntegerField(required=False, allow_null=True)
+    has_duration_override = serializers.BooleanField(required=False)
+    computed_duration_minutes = serializers.SerializerMethodField()
+    effective_duration_minutes = serializers.SerializerMethodField()
+    day_label = serializers.SerializerMethodField()
+
     class Meta:
         model = EventSession
         fields = [
             'id', 'event', 'session_date', 'title', 'description', 'start_time', 'end_time',
             'session_type', 'display_order', 'is_live', 'live_started_at', 'live_ended_at',
             'use_parent_meeting', 'rtk_meeting_id', 'recording_url', 'session_image',
+            'duration_minutes_override', 'has_duration_override', 'computed_duration_minutes',
+            'effective_duration_minutes', 'session_breaks', 'day_label',
             'participants', 'session_participants', 'attendance_count',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['is_live', 'live_started_at', 'live_ended_at', 'rtk_meeting_id']
+        read_only_fields = ['is_live', 'live_started_at', 'live_ended_at', 'rtk_meeting_id',
+                            'computed_duration_minutes', 'effective_duration_minutes', 'day_label',
+                            'session_breaks']
 
     def validate(self, data):
         """Validate session times against event times."""
@@ -583,6 +603,28 @@ class EventSessionSerializer(serializers.ModelSerializer):
     def get_attendance_count(self, obj):
         """Return count of users who attended/are attending."""
         return obj.attendances.count()
+
+    def get_computed_duration_minutes(self, obj):
+        """Return computed session duration from start/end times."""
+        return obj.computed_duration_minutes()
+
+    def get_effective_duration_minutes(self, obj):
+        """Return effective duration (computed or override) minus breaks."""
+        return obj.effective_duration_minutes()
+
+    def get_day_label(self, obj):
+        """Return day label (Day 1, Day 2, etc.) based on session position."""
+        if not obj.session_date or not obj.event:
+            return None
+        sessions = obj.event.sessions.filter(
+            session_date__isnull=False
+        ).order_by('session_date', 'display_order', 'start_time').distinct('session_date')
+        unique_dates = sorted(set(s.session_date for s in sessions))
+        try:
+            day_num = unique_dates.index(obj.session_date) + 1
+            return f"Day {day_num}"
+        except (ValueError, IndexError):
+            return None
 
     def create(self, validated_data):
         """Create session and associated participants."""
@@ -732,6 +774,10 @@ class EventSerializer(serializers.ModelSerializer):
     cpd_cpe_credits = serializers.SerializerMethodField(read_only=True)
     cpd_cpe_minutes = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     cpd_cpe_minutes_per_credit = serializers.IntegerField(required=False, allow_null=True, min_value=1, default=60)
+
+    # Total hours override fields
+    total_hours_override_minutes = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    has_total_hours_override = serializers.BooleanField(required=False, default=False)
 
     # Cancellation fields
     recommended_event_id = serializers.PrimaryKeyRelatedField(
@@ -908,6 +954,8 @@ class EventSerializer(serializers.ModelSerializer):
             "calculated_hours_minutes",
             "calculated_hours_display",
             "hours_calculation_session_types",
+            "total_hours_override_minutes",
+            "has_total_hours_override",
             "sessions_input",
         ]
         
@@ -1718,22 +1766,8 @@ class EventSerializer(serializers.ModelSerializer):
         return obj.sessions.filter(session_type="networking").count()
 
     def get_calculated_hours_minutes(self, obj):
-        """Calculate total hours in minutes based on selected session types."""
-        # Get the default: ['main', 'breakout', 'workshop']
-        selected_types = obj.hours_calculation_session_types
-        if not selected_types:
-            selected_types = ["main", "breakout", "workshop"]
-
-        # Query sessions matching selected types
-        sessions = obj.sessions.filter(session_type__in=selected_types)
-
-        total_minutes = 0
-        for session in sessions:
-            if session.start_time and session.end_time:
-                duration = session.end_time - session.start_time
-                total_minutes += duration.total_seconds() / 60
-
-        return int(total_minutes)
+        """Calculate total hours in minutes based on selected session types, respecting breaks and overrides."""
+        return obj.calculate_total_hours()
 
     def get_calculated_hours_display(self, obj):
         """Return formatted hours:minutes display."""

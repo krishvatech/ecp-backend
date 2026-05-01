@@ -6,6 +6,7 @@ from .views import (
     EventRegistrationViewSet,
     RecordingWebhookView,
     EventSessionViewSet,
+    SessionBreakViewSet,
     VirtualSpeakerViewSet,
     SaleorChannelListView,
     SaleorChannelSyncView,
@@ -267,6 +268,18 @@ urlpatterns = [
         "events/<int:event_id>/sessions/<int:pk>/attendances/",
         EventSessionViewSet.as_view({'get': 'list_attendances'}),
         name='event-session-attendances'
+    ),
+
+    # --- Session Breaks ---
+    path(
+        "events/<int:event_id>/sessions/<int:session_pk>/breaks/",
+        SessionBreakViewSet.as_view({'get': 'list', 'post': 'create'}),
+        name='session-break-list'
+    ),
+    path(
+        "events/<int:event_id>/sessions/<int:session_pk>/breaks/<int:pk>/",
+        SessionBreakViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}),
+        name='session-break-detail'
     ),
 
     # Saleor Manager endpoints
