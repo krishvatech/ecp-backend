@@ -1336,10 +1336,22 @@ class EventViewSet(viewsets.ModelViewSet):
         # Price bounds
         min_price = params.get("min_price")
         max_price = params.get("max_price")
-        if min_price:
-            qs = qs.filter(price__gte=min_price)
-        if max_price:
-            qs = qs.filter(price__lte=max_price)
+        if min_price or max_price:
+            # Build price Q object
+            price_filter = Q()
+            if min_price:
+                price_filter &= Q(price__gte=min_price)
+            if max_price:
+                price_filter &= Q(price__lte=max_price)
+            
+            # Include NULL price events (Paid events waiting for setup) 
+            # if the filter includes 0 (the starting price)
+            if not min_price or str(min_price) == "0":
+                qs = qs.filter(price_filter | Q(price__isnull=True))
+            else:
+                qs = qs.filter(price_filter)
+
+
 
         qs = qs.annotate(
             registrations_count=Count(
@@ -1397,7 +1409,12 @@ class EventViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("You must be a member of the community to create events.")
         # Attach creator automatically, wrapped in transaction for atomicity
         with transaction.atomic():
-            event = serializer.save(created_by=self.request.user, status="published")
+            # Paid events start as DRAFT — admin must set price in Product Management tab then publish.
+            # Free events are published immediately.
+            is_free = serializer.validated_data.get("is_free", True)
+            initial_status = "published" if is_free else "draft"
+            event = serializer.save(created_by=self.request.user, status=initial_status)
+
 
             # Auto-register all platform super users on every newly created event
             # so they are visible in "Registered Members" by default.
