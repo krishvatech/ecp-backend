@@ -19,7 +19,7 @@ from realtime.urls import urlpatterns as realtime_urls
 from users.views import UserViewSet, RegisterView, LinkedInAuthURL, LinkedInCallback, GoogleAuthURL, GoogleCallback
 from community.views import CommunityViewSet
 from events.views import EventViewSet
-from ecp_backend.views import index, health
+from ecp_backend.views import index, health, public_event_meta
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenVerifyView,
@@ -51,6 +51,7 @@ def cms_login_sso_redirect(request):
 
 urlpatterns = [
     path("", index, name="index"),
+    path("public/<slug:slug>/", public_event_meta, name="public-event-meta"),
     path("api/health/", health, name="health"),
     path("admin/", admin.site.urls),
 

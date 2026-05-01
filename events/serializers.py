@@ -2118,6 +2118,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
     """
     speakers = serializers.SerializerMethodField()
     preview_image = serializers.SerializerMethodField()
+    cover_image = serializers.SerializerMethodField()
     sessions = EventSessionSerializer(many=True, read_only=True)
     featured_participants = serializers.SerializerMethodField()
     featured_participants_total = serializers.SerializerMethodField()
@@ -2131,7 +2132,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "status", "is_live", "category", "format",
             "location", "location_city", "location_country",
             "price", "price_label", "currency", "is_free",
-            "preview_image", "attending_count",
+            "preview_image", "cover_image", "attending_count",
             "created_at", "sessions", "speakers",
             "featured_participants", "featured_participants_total",
             "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "cpd_cpe_credits",
@@ -2179,6 +2180,18 @@ class PublicEventSerializer(serializers.ModelSerializer):
             return str(obj.preview_image.url)
         except Exception:
             return str(obj.preview_image)
+
+    def get_cover_image(self, obj):
+        """Return absolute URL for cover image."""
+        if not obj.cover_image:
+            return None
+        req = self.context.get('request')
+        try:
+            if req:
+                return req.build_absolute_uri(obj.cover_image.url)
+            return str(obj.cover_image.url)
+        except Exception:
+            return str(obj.cover_image)
 
     def get_featured_participants(self, obj):
         request = self.context.get("request")
