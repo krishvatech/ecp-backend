@@ -95,7 +95,14 @@ class Event(models.Model):
     location_country = models.CharField(max_length=255, blank=True)
     venue_name = models.CharField(max_length=255, blank=True, help_text="Venue name (e.g., Hotel, Office building)")
     venue_address = models.CharField(max_length=500, blank=True, help_text="Exact venue address - only shown to registered/accepted members")
-    price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        default=None,
+        help_text="Null for paid events (price managed in Product Management). 0.00 for free events."
+    )
     currency = models.CharField(
         max_length=3,
         default="USD",

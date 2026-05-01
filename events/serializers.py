@@ -1790,9 +1790,24 @@ class EventSerializer(serializers.ModelSerializer):
         return data
 
     def validate_price(self, value):
-        if value is not None and value < 0:
+        # Allow None/null for paid events (price managed in Product Management tab)
+        if value is None:
+            return None
+        if value < 0:
             raise serializers.ValidationError("Price cannot be negative.")
         return value
+
+    def to_internal_value(self, data):
+        """
+        Override to coerce empty string price → None, so paid events can be saved with null price.
+        FormData always sends strings; empty string must become None for DecimalField(null=True).
+        """
+        mutable_data = data.copy() if hasattr(data, 'copy') else dict(data)
+        if 'price' in mutable_data and mutable_data['price'] in ('', None, 'null', 'undefined'):
+            mutable_data['price'] = None
+        if 'max_participants' in mutable_data and mutable_data['max_participants'] in ('', None, 'null', 'undefined'):
+            mutable_data['max_participants'] = None
+        return super().to_internal_value(mutable_data)
 
     def validate_cpd_cpe_minutes(self, value):
         if value is None:
