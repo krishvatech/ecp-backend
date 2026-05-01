@@ -729,6 +729,9 @@ class EventSerializer(serializers.ModelSerializer):
     networking_count = serializers.SerializerMethodField(read_only=True)
     calculated_hours_minutes = serializers.SerializerMethodField(read_only=True)
     calculated_hours_display = serializers.SerializerMethodField(read_only=True)
+    cpd_cpe_credits = serializers.SerializerMethodField(read_only=True)
+    cpd_cpe_minutes = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    cpd_cpe_minutes_per_credit = serializers.IntegerField(required=False, allow_null=True, min_value=1, default=60)
 
     # Cancellation fields
     recommended_event_id = serializers.PrimaryKeyRelatedField(
@@ -839,6 +842,9 @@ class EventSerializer(serializers.ModelSerializer):
             "attendee_marker_enabled",
             "attendee_marker_label",
             "max_participants",
+            "cpd_cpe_minutes",
+            "cpd_cpe_minutes_per_credit",
+            "cpd_cpe_credits",
             "saleor_product_id",
             "saleor_variant_id",
             "attending_count",
@@ -1736,6 +1742,15 @@ class EventSerializer(serializers.ModelSerializer):
         minutes = total_minutes % 60
         return f"{hours}h {minutes}m" if hours > 0 or minutes > 0 else "0h"
 
+    def get_cpd_cpe_credits(self, obj):
+        minutes = obj.cpd_cpe_minutes
+        if not minutes:
+            return None
+        per_credit = obj.cpd_cpe_minutes_per_credit or 60
+        if per_credit <= 0:
+            return None
+        return round(minutes / per_credit, 4)
+
     # ---------- Field-level validations ----------
     
     def to_representation(self, instance):
@@ -1777,6 +1792,20 @@ class EventSerializer(serializers.ModelSerializer):
     def validate_price(self, value):
         if value is not None and value < 0:
             raise serializers.ValidationError("Price cannot be negative.")
+        return value
+
+    def validate_cpd_cpe_minutes(self, value):
+        if value is None:
+            return value
+        if value <= 0:
+            raise serializers.ValidationError("CPD/CPE minutes must be greater than 0.")
+        return value
+
+    def validate_cpd_cpe_minutes_per_credit(self, value):
+        if value in (None, ""):
+            return 60
+        if value <= 0:
+            raise serializers.ValidationError("Minutes per credit must be greater than 0.")
         return value
 
     def validate_title(self, value: str) -> str:
@@ -2020,6 +2049,16 @@ class EventSerializer(serializers.ModelSerializer):
             data['location'] = location_country
         # Otherwise, keep the location value as provided or blank
 
+        cpd_minutes = data.get("cpd_cpe_minutes", getattr(self.instance, "cpd_cpe_minutes", None))
+        per_credit = data.get("cpd_cpe_minutes_per_credit", getattr(self.instance, "cpd_cpe_minutes_per_credit", 60))
+        if per_credit in (None, ""):
+            data["cpd_cpe_minutes_per_credit"] = 60
+            per_credit = 60
+        if cpd_minutes is not None and cpd_minutes <= 0:
+            raise serializers.ValidationError({"cpd_cpe_minutes": "CPD/CPE minutes must be greater than 0."})
+        if per_credit <= 0:
+            raise serializers.ValidationError({"cpd_cpe_minutes_per_credit": "Minutes per credit must be greater than 0."})
+
         return data
 
 
@@ -2033,6 +2072,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
     sessions = EventSessionSerializer(many=True, read_only=True)
     featured_participants = serializers.SerializerMethodField()
     featured_participants_total = serializers.SerializerMethodField()
+    cpd_cpe_credits = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Event
@@ -2045,9 +2085,19 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "preview_image", "attending_count",
             "created_at", "sessions", "speakers",
             "featured_participants", "featured_participants_total",
+            "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "cpd_cpe_credits",
             "is_multi_day",
         ]
         read_only_fields = fields
+
+    def get_cpd_cpe_credits(self, obj):
+        minutes = obj.cpd_cpe_minutes
+        if not minutes:
+            return None
+        per_credit = obj.cpd_cpe_minutes_per_credit or 60
+        if per_credit <= 0:
+            return None
+        return round(minutes / per_credit, 4)
 
     def get_speakers(self, obj):
         """Fetch speaker cards from EventParticipant entries."""
@@ -2097,6 +2147,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
     # Session-related fields for multi-day events
     sessions = EventSessionSerializer(many=True, read_only=True)
     recommended_event = serializers.SerializerMethodField(read_only=True)
+    cpd_cpe_credits = serializers.SerializerMethodField(read_only=True)
 
     def get_recommended_event(self, obj):
         if obj.recommended_event_id:
@@ -2108,6 +2159,15 @@ class EventLiteSerializer(serializers.ModelSerializer):
             }
         return None
 
+    def get_cpd_cpe_credits(self, obj):
+        minutes = obj.cpd_cpe_minutes
+        if not minutes:
+            return None
+        per_credit = obj.cpd_cpe_minutes_per_credit or 60
+        if per_credit <= 0:
+            return None
+        return round(minutes / per_credit, 4)
+
     class Meta:
         model = Event
         fields = (
@@ -2118,6 +2178,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "lounge_enabled_before", "lounge_before_buffer",
             "lounge_enabled_after", "lounge_after_buffer",
             "is_multi_day", "sessions",  # ✅ Added for multi-day event support
+            "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "cpd_cpe_credits",
             "cancellation_message", "recommended_event", "created_by_id",
         )
 

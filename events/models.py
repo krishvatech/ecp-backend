@@ -129,6 +129,15 @@ class Event(models.Model):
         blank=True, 
         help_text="Maximum number of participants allowed (null for unlimited)"
     )
+    cpd_cpe_minutes = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Total eligible learning minutes for CPD/CPE credit calculation",
+    )
+    cpd_cpe_minutes_per_credit = models.PositiveIntegerField(
+        default=60,
+        help_text="How many minutes equal 1 CPD/CPE credit",
+    )
     preview_image = models.ImageField(
         upload_to=event_preview_upload_to,
         blank=True,
