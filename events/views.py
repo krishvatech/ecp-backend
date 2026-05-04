@@ -43,6 +43,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, NotFound
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.pagination import LimitOffsetPagination
+from django_filters.rest_framework import DjangoFilterBackend
 
 from rest_framework.permissions import (
     AllowAny,
@@ -58,7 +59,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration
 from .permissions import IsSuperuserOnly
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -90,6 +91,11 @@ from .serializers import (
     SaleorShippingZoneSerializer,
     SaleorStaffUserSerializer,
     SaleorPermissionGroupSerializer,
+    EventSeriesListSerializer,
+    EventSeriesDetailSerializer,
+    EventSeriesCreateUpdateSerializer,
+    SeriesRegistrationSerializer,
+    PublicEventSeriesSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -8391,3 +8397,323 @@ class SaleorPermissionGroupDeleteView(views.APIView):
         except Exception as e:
             logger.exception(f"Error deleting Saleor permission group: {e}")
             return Response({"error": str(e)}, status=500)
+
+
+# WebinarSeries ViewSet
+
+class SeriesViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsCreatorOrReadOnly]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['status', 'visibility', 'community']
+    search_fields = ['title', 'description']
+    ordering_fields = ['created_at', 'updated_at', '-created_at']
+    ordering = ['-created_at']
+    lookup_field = 'pk'
+
+    def get_queryset(self):
+        user = self.request.user
+        request_action = self.action
+        
+        if request_action == 'public_detail':
+            return EventSeries.objects.filter(status='published', visibility='public')
+        
+        if not user.is_authenticated:
+            return EventSeries.objects.filter(status='published', visibility='public')
+        
+        if user.is_superuser:
+            return EventSeries.objects.all()
+        
+        return EventSeries.objects.filter(
+            Q(status='published', visibility='public') |
+            Q(created_by=user) |
+            Q(community__in=user.community.all())
+        ).distinct()
+
+    def get_serializer_class(self):
+        if self.action == 'create' or self.action == 'update' or self.action == 'partial_update':
+            return EventSeriesCreateUpdateSerializer
+        elif self.action == 'retrieve':
+            return EventSeriesDetailSerializer
+        elif self.action == 'public_detail':
+            return PublicEventSeriesSerializer
+        else:
+            return EventSeriesListSerializer
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve', 'public_detail']:
+            return [AllowAny()]
+        if self.action in ['registrations', 'analytics']:
+            return [IsAuthenticated()]
+        return super().get_permissions()
+
+    def perform_create(self, serializer):
+        org = serializer.validated_data.get('community')
+        if not org:
+            raise PermissionDenied("community_id is required.")
+        if not self.request.user.community.filter(id=org.id).exists():
+            raise PermissionDenied("You must be a member of the community to create series.")
+        initial_status = 'published' if serializer.validated_data.get('is_free', True) else 'draft'
+        serializer.save(
+            created_by=self.request.user,
+            status=initial_status
+        )
+
+    def perform_update(self, serializer):
+        if not self._is_owner(self.get_object()):
+            raise PermissionDenied("Only the series creator or superuser can update this series.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if not self._is_owner(instance):
+            raise PermissionDenied("Only the series creator or superuser can delete this series.")
+        instance.delete()
+
+    def _is_owner(self, obj):
+        return bool(
+            self.request.user
+            and (
+                obj.created_by_id == self.request.user.id
+                or getattr(self.request.user, 'is_superuser', False)
+            )
+        )
+
+    @action(detail=True, methods=['post'])
+    def publish(self, request, pk=None):
+        series = self.get_object()
+        if not self._is_owner(series):
+            raise PermissionDenied("Only the series creator can publish this series.")
+        
+        if series.child_events.count() < 1:
+            return Response(
+                {'error': 'Series must have at least one event to publish.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        series.status = 'published'
+        series.save()
+        serializer = self.get_serializer(series)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def archive(self, request, pk=None):
+        series = self.get_object()
+        if not self._is_owner(series):
+            raise PermissionDenied("Only the series creator can archive this series.")
+        
+        series.status = 'archived'
+        series.save()
+        serializer = self.get_serializer(series)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'])
+    def registrations(self, request, pk=None):
+        series = self.get_object()
+        if not self._is_owner(series):
+            raise PermissionDenied("Only the series creator can view registrations.")
+        
+        registrations = series.series_registrations.all().order_by('-registered_at')
+        
+        page = self.paginate_queryset(registrations)
+        if page is not None:
+            serializer = SeriesRegistrationSerializer(page, many=True, context={'request': request})
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = SeriesRegistrationSerializer(registrations, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def analytics(self, request, pk=None):
+        series = self.get_object()
+        if not self._is_owner(series):
+            raise PermissionDenied("Only the series creator can view analytics.")
+        
+        from django.db.models import Count
+        from events.models import EventRegistration
+        
+        total_registrations = series.series_registrations.filter(status='registered').count()
+        child_events = series.child_events.all()
+        
+        event_attendance = []
+        for event in child_events:
+            attended = event.registrations.filter(joined_live=True).count()
+            registered = event.registrations.filter(status='registered').count()
+            event_attendance.append({
+                'event_id': event.id,
+                'event_title': event.title,
+                'registered': registered,
+                'attended': attended,
+                'attendance_rate': (attended / registered * 100) if registered > 0 else 0
+            })
+        
+        return Response({
+            'total_registrations': total_registrations,
+            'total_events': child_events.count(),
+            'event_attendance': event_attendance
+        })
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    def register(self, request, pk=None):
+        series = self.get_object()
+        if series.status != 'published':
+            return Response(
+                {'error': 'Cannot register for unpublished series.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not request.user.is_authenticated:
+            return Response(
+                {'error': 'Authentication required to register.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        registration, created = SeriesRegistration.objects.get_or_create(
+            series=series,
+            user=request.user,
+            defaults={'status': 'registered'}
+        )
+        
+        if not created and registration.status == 'cancelled':
+            registration.status = 'registered'
+            registration.save()
+        
+        # Auto-register user for all child events (per design decision)
+        from events.models import EventRegistration
+        for event in series.child_events.all():
+            EventRegistration.objects.get_or_create(
+                event=event,
+                user=request.user,
+                defaults={'status': 'registered'}
+            )
+        
+        serializer = SeriesRegistrationSerializer(registration, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    def unregister(self, request, pk=None):
+        series = self.get_object()
+        
+        if not request.user.is_authenticated:
+            return Response(
+                {'error': 'Authentication required.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        try:
+            registration = SeriesRegistration.objects.get(series=series, user=request.user)
+            registration.status = 'cancelled'
+            registration.save()
+            return Response({'message': 'Successfully unregistered from series.'}, status=status.HTTP_200_OK)
+        except SeriesRegistration.DoesNotExist:
+            return Response(
+                {'error': 'Not registered for this series.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    @action(detail=False, methods=['get'], url_path=r'public/(?P<slug>[-\w]+)')
+    def public_detail(self, request, slug=None):
+        try:
+            series = EventSeries.objects.get(slug=slug, status='published', visibility='public')
+            serializer = PublicEventSeriesSerializer(series, context={'request': request})
+            return Response(serializer.data)
+        except EventSeries.DoesNotExist:
+            return Response(
+                {'error': 'Series not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    @action(detail=True, methods=['post', 'patch', 'delete'], url_path=r'events(?:/(?P<event_id>\d+))?')
+    def events(self, request, pk=None, event_id=None):
+        """Add, update, or remove events in a series"""
+        series = self.get_object()
+
+        # Check permission - only creator can manage events
+        if not self._is_owner(series):
+            return Response(
+                {'detail': 'You do not have permission to manage events in this series.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # GET, POST for adding events or LIST of events
+        if request.method == 'POST':
+            event_id = request.data.get('event_id')
+            series_order = request.data.get('series_order')
+            series_session_label = request.data.get('series_session_label', '')
+
+            if not event_id:
+                return Response(
+                    {'error': 'event_id is required'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                event = Event.objects.get(id=event_id)
+                event.series = series
+                event.series_order = series_order
+                event.series_session_label = series_session_label
+                event.save()
+
+                return Response(
+                    {'success': True, 'message': 'Event added to series'},
+                    status=status.HTTP_201_CREATED
+                )
+            except Event.DoesNotExist:
+                return Response(
+                    {'error': 'Event not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        # PATCH - Update event in series
+        elif request.method == 'PATCH':
+            if not event_id:
+                return Response(
+                    {'error': 'event_id is required'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                event = Event.objects.get(id=event_id, series=series)
+
+                # Update series_order if provided
+                if 'series_order' in request.data:
+                    event.series_order = request.data.get('series_order')
+
+                # Update series_session_label if provided
+                if 'series_session_label' in request.data:
+                    event.series_session_label = request.data.get('series_session_label')
+
+                event.save()
+
+                return Response(
+                    {'success': True, 'message': 'Event updated in series'},
+                    status=status.HTTP_200_OK
+                )
+            except Event.DoesNotExist:
+                return Response(
+                    {'error': 'Event not found in this series'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        # DELETE - Remove event from series
+        elif request.method == 'DELETE':
+            if not event_id:
+                return Response(
+                    {'error': 'event_id is required'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                event = Event.objects.get(id=event_id, series=series)
+                event.series = None
+                event.series_order = None
+                event.series_session_label = ''
+                event.save()
+
+                return Response(
+                    {'success': True, 'message': 'Event removed from series'},
+                    status=status.HTTP_200_OK
+                )
+            except Event.DoesNotExist:
+                return Response(
+                    {'error': 'Event not found in this series'},
+                    status=status.HTTP_404_NOT_FOUND
+                )

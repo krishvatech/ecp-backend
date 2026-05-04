@@ -8,6 +8,7 @@ from .views import (
     EventSessionViewSet,
     SessionBreakViewSet,
     VirtualSpeakerViewSet,
+    SeriesViewSet,
     SaleorChannelListView,
     SaleorChannelSyncView,
     SaleorChannelCreateView,
@@ -59,6 +60,7 @@ from .saleor_webhooks import SaleorProductWebhookView
 router = DefaultRouter()
 router.register(r"events", EventViewSet, basename="event")
 router.register(r"event-registrations", EventRegistrationViewSet, basename="eventregistration")
+router.register(r"series", SeriesViewSet, basename="series")
 router.register(r"virtual-speakers", VirtualSpeakerViewSet, basename="virtual-speaker")
 
 

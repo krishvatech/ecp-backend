@@ -284,6 +284,26 @@ class Event(models.Model):
     idle_started_at = models.DateTimeField(null=True, blank=True)
     ended_by_host = models.BooleanField(default=False)
 
+    # WebinarSeries association
+    series = models.ForeignKey(
+        'EventSeries',
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="child_events",
+        help_text="Parent series if this event is part of a webinar series"
+    )
+    series_order = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="1-indexed position of this event within its series"
+    )
+    series_session_label = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Display label like 'Session 1: Introduction' for this event"
+    )
+
     # Lounge Settings
     lounge_enabled_before = models.BooleanField(default=False)
     lounge_before_buffer = models.PositiveIntegerField(default=30)  # minutes
@@ -2368,3 +2388,139 @@ class SaleorPermissionGroup(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class EventSeries(models.Model):
+    STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("published", "Published"),
+        ("archived", "Archived"),
+    ]
+    REGISTRATION_MODE_CHOICES = [
+        ("full_series_only", "Full Series Only"),
+        ("per_session_only", "Per Session Only"),
+        ("both", "Both Series and Per-Session"),
+    ]
+    VISIBILITY_CHOICES = [
+        ("public", "Public"),
+        ("private", "Private"),
+    ]
+
+    community = models.ForeignKey(
+        Community,
+        on_delete=models.CASCADE,
+        related_name="event_series"
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="created_series"
+    )
+    title = models.CharField(max_length=255)
+    slug = models.CharField(
+        max_length=255,
+        unique=True,
+        blank=True,
+        help_text="Auto-generated from title + year with collision detection"
+    )
+    description = models.TextField(blank=True)
+    cover_image = models.ImageField(
+        upload_to=series_cover_upload_to,
+        blank=True,
+        null=True
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=STATUS_CHOICES,
+        default="draft",
+        db_index=True
+    )
+    registration_mode = models.CharField(
+        max_length=30,
+        choices=REGISTRATION_MODE_CHOICES,
+        default="both",
+        help_text="Control whether users can register for full series, individual events, or both"
+    )
+    price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0.0,
+        help_text="Series-level price (currently used for free series only)"
+    )
+    currency = models.CharField(
+        max_length=3,
+        default="USD",
+        editable=False
+    )
+    is_free = models.BooleanField(default=True)
+    visibility = models.CharField(
+        max_length=16,
+        choices=VISIBILITY_CHOICES,
+        default="public"
+    )
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Custom metadata for series (JSON)"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["community", "status"]),
+            models.Index(fields=["slug"]),
+        ]
+
+    def __str__(self):
+        return self.title
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            from datetime import datetime
+            year = datetime.now().year
+            base_slug = f"{slugify(self.title)}-{year}"
+            slug = base_slug
+            counter = 1
+            while EventSeries.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
+
+
+class SeriesRegistration(models.Model):
+    STATUS_CHOICES = [
+        ("registered", "Registered"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    series = models.ForeignKey(
+        EventSeries,
+        on_delete=models.CASCADE,
+        related_name="series_registrations"
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="series_registrations"
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="registered",
+        db_index=True
+    )
+    registered_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("series", "user")
+        ordering = ["-registered_at"]
+        indexes = [
+            models.Index(fields=["series", "status"]),
+            models.Index(fields=["user"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} - {self.series.title}"
