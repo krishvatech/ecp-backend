@@ -6,7 +6,7 @@ import logging
 import boto3
 import secrets
 from django.conf import settings
-from django.core.mail import send_mail
+from django.core.mail import EmailMultiAlternatives
 from django.template import Template as DjangoTemplate, Context
 from django.template.loader import render_to_string
 from django.utils.crypto import get_random_string
@@ -16,6 +16,68 @@ from botocore.exceptions import ClientError
 from .cognito_groups import add_user_to_speaker_group
 
 logger = logging.getLogger(__name__)
+
+
+def get_reply_to_list():
+    """
+    Return Reply-To email list for platform emails.
+    Returns None if DEFAULT_REPLY_TO_EMAIL is not configured.
+    """
+    reply_to_email = getattr(settings, "DEFAULT_REPLY_TO_EMAIL", "").strip()
+    return [reply_to_email] if reply_to_email else None
+
+
+def get_support_email():
+    """
+    Return the support email address to display in templates.
+    Fallback: DEFAULT_REPLY_TO_EMAIL -> DEFAULT_FROM_EMAIL
+    """
+    return getattr(
+        settings,
+        "SUPPORT_EMAIL",
+        getattr(settings, "DEFAULT_REPLY_TO_EMAIL", "") or settings.DEFAULT_FROM_EMAIL,
+    )
+
+
+def send_platform_email(
+    *,
+    subject,
+    message,
+    recipient_list,
+    html_message=None,
+    from_email=None,
+    fail_silently=False,
+):
+    """
+    Central email sending helper for platform emails.
+    Automatically includes Reply-To header based on DEFAULT_REPLY_TO_EMAIL.
+
+    Args:
+        subject: Email subject line
+        message: Plain text message body
+        recipient_list: List of recipient email addresses
+        html_message: Optional HTML body
+        from_email: Sender email (defaults to DEFAULT_FROM_EMAIL)
+        fail_silently: Whether to suppress exceptions
+
+    Returns:
+        int: Number of emails sent successfully
+    """
+    if isinstance(recipient_list, str):
+        recipient_list = [recipient_list]
+
+    email = EmailMultiAlternatives(
+        subject=subject,
+        body=message or "",
+        from_email=from_email or settings.DEFAULT_FROM_EMAIL,
+        to=recipient_list,
+        reply_to=get_reply_to_list(),
+    )
+
+    if html_message:
+        email.attach_alternative(html_message, "text/html")
+
+    return email.send(fail_silently=fail_silently)
 
 
 def generate_magic_login_token(user, event=None, expires_in_hours=24):
@@ -107,7 +169,7 @@ def send_template_email(template_key, to_email, context, subject_override=None, 
 
     # --- Step 2: Send ---
     try:
-        send_mail(
+        send_platform_email(
             subject=subject,
             message=text_body,
             from_email=settings.DEFAULT_FROM_EMAIL,
@@ -394,7 +456,7 @@ def send_speaker_credentials_email(user, frontend_url=None):
         "email": user.email,
         "temporary_password": temp_password,
         "login_url": login_url,
-        "support_email": settings.DEFAULT_FROM_EMAIL,
+        "support_email": get_support_email(),
     }
 
     # Send email via template helper
@@ -441,7 +503,7 @@ def send_event_confirmation_email(participant):
         "event_url": event_url,
         "profile_url": f"{frontend_base}/profile/{user.username}",
         "login_url": f"{frontend_base}/login",
-        "support_email": settings.DEFAULT_FROM_EMAIL,
+        "support_email": get_support_email(),
     }
 
     # Send email via template helper
@@ -503,7 +565,7 @@ def send_admin_credentials_email(user, frontend_url=None):
         "email": user.email,
         "temporary_password": temp_password,
         "login_url": login_url,
-        "support_email": settings.DEFAULT_FROM_EMAIL,
+        "support_email": get_support_email(),
     }
 
     # 5. Send email via template helper
@@ -723,7 +785,7 @@ def send_user_registration_acknowledgement_email(user, event):
         "is_multi_day": event.is_multi_day,
         "event_timezone": event.timezone,
         "event_url": event_url,
-        "support_email": settings.DEFAULT_FROM_EMAIL,
+        "support_email": get_support_email(),
     }
 
     return send_template_email(
@@ -766,7 +828,7 @@ def send_guest_registration_acknowledgement_email(guest_name, email, event):
         "is_multi_day": event.is_multi_day,
         "event_timezone": event.timezone,
         "event_url": event_url,
-        "support_email": settings.DEFAULT_FROM_EMAIL,
+        "support_email": get_support_email(),
     }
 
     return send_template_email(
@@ -807,7 +869,7 @@ def send_application_acknowledgement_email(application):
         "is_multi_day": application.event.is_multi_day,
         "event_timezone": application.event.timezone,
         "event_url": event_url,
-        "support_email": settings.DEFAULT_FROM_EMAIL,
+        "support_email": get_support_email(),
     }
 
     return send_template_email(
@@ -1065,7 +1127,7 @@ def send_event_starting_soon_email(user, event):
         "is_multi_day": event.is_multi_day,
         "event_timezone": event.timezone,
         "event_url": event_url,
-        "support_email": settings.DEFAULT_FROM_EMAIL,
+        "support_email": get_support_email(),
     }
 
     return send_template_email(
@@ -1101,7 +1163,7 @@ def send_event_join_confirmation_email(user, event):
         "first_name": user.first_name or user.username or "there",
         "event_title": event.title,
         "event_url": event_url,
-        "support_email": settings.DEFAULT_FROM_EMAIL,
+        "support_email": get_support_email(),
     }
 
     return send_template_email(
@@ -1141,7 +1203,7 @@ def send_replay_expiring_soon_email(user, event, expiration_date):
         "expiration_date": expiration_date,
         "event_url": event_url,
         "replay_url": replay_url,
-        "support_email": settings.DEFAULT_FROM_EMAIL,
+        "support_email": get_support_email(),
     }
 
     return send_template_email(
@@ -1169,7 +1231,7 @@ def send_welcome_email(user, login_url=None):
         "first_name": user.first_name or user.username or "there",
         "email": user.email,
         "login_url": login_url,
-        "support_email": settings.DEFAULT_FROM_EMAIL,
+        "support_email": get_support_email(),
     }
 
     return send_template_email(

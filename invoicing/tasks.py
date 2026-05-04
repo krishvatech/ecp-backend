@@ -141,6 +141,7 @@ def send_invoice_email(invoice_id):
             body=render_to_string('invoicing/invoice_email.html', context),
             from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'invoices@imaa.org'),
             to=[invoice.customer.user.email],
+            reply_to=[settings.DEFAULT_REPLY_TO_EMAIL] if getattr(settings, "DEFAULT_REPLY_TO_EMAIL", "") else None,
         )
         email.content_subtype = 'html'
 
@@ -178,6 +179,7 @@ def send_payment_confirmation_email(invoice_id):
             body=render_to_string('invoicing/payment_confirmation_email.html', context),
             from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'invoices@imaa.org'),
             to=[invoice.customer.user.email],
+            reply_to=[settings.DEFAULT_REPLY_TO_EMAIL] if getattr(settings, "DEFAULT_REPLY_TO_EMAIL", "") else None,
         )
         email.content_subtype = 'html'
         email.send()
@@ -231,6 +233,7 @@ def send_payment_reminder_email(invoice_id):
             body=render_to_string('invoicing/payment_reminder_email.html', context),
             from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'invoices@imaa.org'),
             to=[invoice.customer.user.email],
+            reply_to=[settings.DEFAULT_REPLY_TO_EMAIL] if getattr(settings, "DEFAULT_REPLY_TO_EMAIL", "") else None,
         )
         email.content_subtype = 'html'
         email.send()

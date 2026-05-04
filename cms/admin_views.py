@@ -9,7 +9,7 @@ from django.shortcuts import get_object_or_404
 from django.template import Template as DjangoTemplate, Context
 from django.utils.timezone import now
 from django.conf import settings
-from django.core.mail import send_mail
+from users.email_utils import send_platform_email
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +232,7 @@ def email_template_test_send(request, pk):
         return JsonResponse({"error": f"Render error: {e}"}, status=500)
 
     try:
-        send_mail(
+        send_platform_email(
             subject=f"[TEST] {subject}",
             message=text_body,
             from_email=settings.DEFAULT_FROM_EMAIL,

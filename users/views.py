@@ -18,7 +18,7 @@ from rest_framework.views import APIView
 from django.contrib.auth import update_session_auth_hash
 from django.http import HttpResponse
 from django.conf import settings
-from django.core.mail import send_mail
+from users.email_utils import send_platform_email
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
@@ -401,9 +401,9 @@ class UserViewSet(
             verification_code=code,
         )
 
-        # Send Email (Mocked for now, or use send_mail)
+        # Send Email (Mocked for now, or use send_platform_email)
         try:
-            send_mail(
+            send_platform_email(
                 subject="Verify your new email address",
                 message=f"Your verification code is: {code}\n\nThis code is valid for 10 minutes.",
                 from_email=settings.DEFAULT_FROM_EMAIL,
@@ -939,7 +939,7 @@ class RegisterView(APIView):
             text_body = render_to_string("emails/welcome.txt", ctx)
             html_body = render_to_string("emails/welcome.html", ctx)
 
-            send_mail(
+            send_platform_email(
                 subject=f"Welcome to {ctx['app_name']}",
                 message=text_body,
                 from_email=settings.DEFAULT_FROM_EMAIL,  # same sender as forgot password
@@ -1116,7 +1116,7 @@ class ForgotPasswordView(generics.GenericAPIView):
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             token = PasswordResetTokenGenerator().make_token(user)
             reset_link = f"{settings.FRONTEND_RESET_PASSWORD_URL}?uid={uid}&token={token}"
-            send_mail(
+            send_platform_email(
                 subject="Reset your password",
                 message=f"Open this link to set a new password:\n{reset_link}",
                 from_email=settings.DEFAULT_FROM_EMAIL,
@@ -3131,15 +3131,6 @@ class DiditWebhookView(APIView):
 
             else:
                 return
-
-            send_mail(
-                subject=subject,
-                message=text_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-                html_message=html_body,
-                fail_silently=False,
-            )
         except Exception as e:
             logger.warning(f"Name-change email failed for {getattr(user,'email',None)}: {e}")
 
@@ -3194,15 +3185,6 @@ class DiditWebhookView(APIView):
                 subject = None  # Not used
             else:
                 return  # no email for pending/review
-
-            send_mail(
-                subject=subject,
-                message=text_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-                html_message=html_body,
-                fail_silently=False,
-            )
         except Exception as e:
             logger.warning(f"KYC email failed for {getattr(user,'email',None)}: {e}")
 
@@ -4280,7 +4262,6 @@ class AddEmailAliasView(APIView):
     def post(self, request):
         """Add a new email alias and send OTP."""
         from .models import UserEmailAlias
-        from users.email_utils import send_mail
 
         # Extract email
         new_email = request.data.get("email", "").strip().lower()
@@ -4324,9 +4305,8 @@ class AddEmailAliasView(APIView):
 
         # Send OTP email
         try:
-            from django.core.mail import send_mail as django_send_mail
             message = f"Your email verification code: {otp_code}\n\nThis code expires in 10 minutes."
-            django_send_mail(
+            send_platform_email(
                 subject="Verify your email address",
                 message=message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
