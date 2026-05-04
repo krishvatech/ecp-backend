@@ -2524,3 +2524,80 @@ class SeriesRegistration(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - {self.series.title}"
+
+
+class EventSaleorDiscount(models.Model):
+    REWARD_VALUE_TYPE_CHOICES = [
+        ("PERCENTAGE", "Percentage"),
+        ("FIXED", "Fixed Amount"),
+    ]
+
+    BADGE_LABEL_CHOICES = [
+        ("early_bird", "Early Bird"),
+        ("bundle_price", "Bundle Price"),
+    ]
+
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="saleor_discounts"
+    )
+    saleor_promotion_id = models.CharField(
+        max_length=255,
+        unique=True,
+        help_text="Saleor Promotion GraphQL ID"
+    )
+    saleor_rule_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Saleor Promotion Rule ID"
+    )
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    discount_type = models.CharField(
+        max_length=30,
+        default="CATALOGUE",
+        editable=False,
+        help_text="Discount type (always CATALOGUE)"
+    )
+    channel_id = models.CharField(
+        max_length=255,
+        help_text="Saleor GraphQL channel ID"
+    )
+    channel_name = models.CharField(max_length=255, blank=True)
+    channel_slug = models.CharField(max_length=255, blank=True)
+    currency = models.CharField(max_length=10, blank=True)
+    reward_value_type = models.CharField(
+        max_length=20,
+        choices=REWARD_VALUE_TYPE_CHOICES
+    )
+    reward_value = models.DecimalField(max_digits=10, decimal_places=2)
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    badge_label = models.CharField(
+        max_length=20,
+        choices=BADGE_LABEL_CHOICES
+    )
+    created_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_saleor_discounts"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_sync_error = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["event"]),
+            models.Index(fields=["saleor_promotion_id"]),
+            models.Index(fields=["channel_id"]),
+            models.Index(fields=["badge_label"]),
+        ]
+
+    def __str__(self):
+        return f"{self.name} - {self.event.title}"

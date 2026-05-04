@@ -23,7 +23,7 @@ from .models import (
     Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
     EventSession, SessionParticipant, SessionAttendance, SessionBreak, EventApplication, VirtualSpeaker,
     SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup,
-    EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration
+    EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount
 )
 from community.models import Community
 from content.models import Resource
@@ -2828,3 +2828,71 @@ class PublicEventSeriesSerializer(serializers.ModelSerializer):
                 return request.build_absolute_uri(obj.cover_image.url)
             return obj.cover_image.url
         return None
+
+
+class EventSaleorDiscountSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
+
+    class Meta:
+        model = EventSaleorDiscount
+        fields = [
+            'id', 'event', 'saleor_promotion_id', 'saleor_rule_id',
+            'name', 'description', 'discount_type',
+            'channel_id', 'channel_name', 'channel_slug', 'currency',
+            'reward_value_type', 'reward_value',
+            'start_date', 'end_date', 'badge_label',
+            'created_by', 'created_by_name', 'created_at', 'updated_at', 'last_sync_error'
+        ]
+        read_only_fields = [
+            'id', 'event', 'saleor_promotion_id', 'saleor_rule_id',
+            'discount_type', 'channel_name', 'channel_slug', 'currency',
+            'created_by', 'created_by_name', 'created_at', 'updated_at', 'last_sync_error'
+        ]
+
+    def validate_name(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Name is required.")
+        return value
+
+    def validate_channel_id(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Channel is required.")
+        return value
+
+    def validate_reward_value_type(self, value):
+        if value not in ['PERCENTAGE', 'FIXED']:
+            raise serializers.ValidationError("Reward type must be PERCENTAGE or FIXED.")
+        return value
+
+    def validate_reward_value(self, value):
+        try:
+            val = float(value) if isinstance(value, str) else value
+            if val <= 0:
+                raise serializers.ValidationError("Reward value must be greater than 0.")
+        except (ValueError, TypeError):
+            raise serializers.ValidationError("Reward value must be a valid number.")
+        return value
+
+    def validate_badge_label(self, value):
+        if not value or value not in ['early_bird', 'bundle_price']:
+            raise serializers.ValidationError("Badge label must be early_bird or bundle_price.")
+        return value
+
+    def validate(self, data):
+        reward_value = data.get('reward_value')
+        reward_value_type = data.get('reward_value_type')
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+
+        if reward_value and reward_value_type:
+            try:
+                val = float(reward_value) if isinstance(reward_value, str) else reward_value
+                if reward_value_type == 'PERCENTAGE' and val > 100:
+                    raise serializers.ValidationError("Percentage reward value must be <= 100.")
+            except (ValueError, TypeError):
+                raise serializers.ValidationError("Reward value must be a valid number.")
+
+        if start_date and end_date and end_date < start_date:
+            raise serializers.ValidationError("End date must be same as or after start date.")
+
+        return data

@@ -653,6 +653,22 @@ def json_description(text):
     return json.dumps(data)
 
 
+def json_description_dict(text):
+    """Returns EditorJS-style description as a dict for GraphQL JSON field input.
+
+    For Saleor Promotions GraphQL mutations, pass the dict directly.
+    The requests library will serialize it properly as JSON.
+    Do NOT use json.dumps() as that creates a double-encoded string.
+    """
+    if not text:
+        return None
+    return {
+        "time": 1600000000000,
+        "blocks": [{"type": "paragraph", "data": {"text": text}}],
+        "version": "2.18.0"
+    }
+
+
 def extract_text_from_json_description(json_desc):
     """
     Extracts plain text from Saleor's EditorJS-style JSON description.
@@ -2151,3 +2167,429 @@ def update_event_saleor_product_details(product_id, variant_id, data):
     return results
 
 
+
+
+# ─── Discount Management (Promotions) ────────────────────────────────────
+
+from datetime import datetime, time, timedelta, timezone as tz_module
+
+def saleor_start_datetime(date_obj):
+    """Convert date to ISO: YYYY-MM-DDTHH:MM:SS+00:00 (start of day UTC)."""
+    if not date_obj:
+        return None
+    if isinstance(date_obj, str):
+        date_obj = datetime.strptime(date_obj, "%Y-%m-%d").date()
+    dt = datetime.combine(date_obj, time(0, 0, 0), tzinfo=tz_module.utc)
+    return dt.isoformat()
+
+
+def saleor_end_datetime_last_timezone(date_obj):
+    """Convert date to ISO: YYYY-MM-DDTHH:MM:SS-12:00 (end of day in UTC-12)."""
+    if not date_obj:
+        return None
+    if isinstance(date_obj, str):
+        date_obj = datetime.strptime(date_obj, "%Y-%m-%d").date()
+    tz_minus_12 = tz_module(timedelta(hours=-12))
+    dt = datetime.combine(date_obj, time(23, 59, 59), tzinfo=tz_minus_12)
+    return dt.isoformat()
+
+
+def _parse_saleor_errors(errors_list):
+    """Parse Saleor GraphQL errors into readable message."""
+    if not errors_list:
+        return None
+    messages = []
+    for err in errors_list:
+        msg = err.get('message', 'Unknown error')
+        messages.append(msg)
+    return "; ".join(messages)
+
+
+def create_event_saleor_discount(event, validated_data, user=None):
+    """Create Saleor Promotion + Rule for event discount."""
+    from .models import EventSaleorDiscount, SaleorChannel
+
+    name = validated_data['name']
+    description = validated_data.get('description', '')
+    channel_id = validated_data['channel_id']
+    reward_value_type = validated_data['reward_value_type']
+    reward_value = validated_data['reward_value']
+    start_date = validated_data.get('start_date')
+    end_date = validated_data.get('end_date')
+    badge_label = validated_data['badge_label']
+
+    if not event.saleor_product_id:
+        raise ValueError("Event must have saleor_product_id")
+
+    # Get channel info
+    try:
+        channel = SaleorChannel.objects.get(saleor_id=channel_id)
+        channel_name = channel.name
+        channel_slug = channel.slug
+        currency = channel.currency
+    except SaleorChannel.DoesNotExist:
+        channel_name = ""
+        channel_slug = ""
+        currency = ""
+
+    # Convert dates
+    start_dt = saleor_start_datetime(start_date)
+    end_dt = saleor_end_datetime_last_timezone(end_date)
+
+    # Create Saleor Promotion
+    mutation = """
+    mutation CreatePromotion($input: PromotionCreateInput!) {
+      promotionCreate(input: $input) {
+        errors { field message code }
+        promotion {
+          id
+          name
+          type
+          startDate
+          endDate
+          rules { id name }
+        }
+      }
+    }
+    """
+
+    variables = {
+        "input": {
+            "name": name,
+            "type": "CATALOGUE",
+            "description": json_description_dict(description),
+            "startDate": start_dt,
+            "endDate": end_dt,
+            "rules": [
+                {
+                    "name": name,
+                    "description": json_description_dict(description),
+                    "cataloguePredicate": {
+                        "productPredicate": {"ids": [event.saleor_product_id]}
+                    },
+                    "rewardValueType": reward_value_type,
+                    "rewardValue": str(reward_value),
+                    "channels": [channel_id]
+                }
+            ]
+        }
+    }
+
+    result = call_saleor_gql(mutation, variables)
+    
+    # Check for errors
+    if result.get('errors'):
+        error_msg = _parse_saleor_errors(result['errors'])
+        raise ValueError(f"Saleor error: {error_msg}")
+
+    response = result.get('data', {}).get('promotionCreate', {})
+    if response.get('errors'):
+        error_msg = _parse_saleor_errors(response['errors'])
+        raise ValueError(f"Failed to create promotion: {error_msg}")
+
+    promotion = response.get('promotion', {})
+    promotion_id = promotion.get('id')
+    if not promotion_id:
+        raise ValueError("No promotion ID returned from Saleor")
+
+    rule_id = None
+    if promotion.get('rules'):
+        rule_id = promotion['rules'][0].get('id')
+
+    # Save metadata
+    metadata_mutation = """
+    mutation UpdateMetadata($id: ID!, $input: [MetadataInput!]!) {
+      updateMetadata(id: $id, input: $input) {
+        errors { field message code }
+        item { ... on Promotion { id metadata { key value } } }
+      }
+    }
+    """
+
+    metadata_vars = {
+        "id": promotion_id,
+        "input": [
+            {"key": "badge_label", "value": badge_label},
+            {"key": "ecp_event_id", "value": str(event.id)},
+            {"key": "ecp_product_id", "value": event.saleor_product_id}
+        ]
+    }
+
+    try:
+        call_saleor_gql(metadata_mutation, metadata_vars)
+    except Exception as e:
+        logger.warning(f"Failed to set metadata: {e}")
+
+    # Save locally
+    discount = EventSaleorDiscount.objects.create(
+        event=event,
+        saleor_promotion_id=promotion_id,
+        saleor_rule_id=rule_id,
+        name=name,
+        description=description,
+        discount_type="CATALOGUE",
+        channel_id=channel_id,
+        channel_name=channel_name,
+        channel_slug=channel_slug,
+        currency=currency,
+        reward_value_type=reward_value_type,
+        reward_value=reward_value,
+        start_date=start_date,
+        end_date=end_date,
+        badge_label=badge_label,
+        created_by=user
+    )
+
+    return discount
+
+
+def update_event_saleor_discount(discount, validated_data):
+    """Update Saleor Promotion + Rule."""
+    promotion_id = discount.saleor_promotion_id
+    rule_id = discount.saleor_rule_id
+
+    name = validated_data.get('name', discount.name)
+    description = validated_data.get('description', discount.description)
+    channel_id = validated_data.get('channel_id', discount.channel_id)
+    reward_value_type = validated_data.get('reward_value_type', discount.reward_value_type)
+    reward_value = validated_data.get('reward_value', discount.reward_value)
+    start_date = validated_data.get('start_date', discount.start_date)
+    end_date = validated_data.get('end_date', discount.end_date)
+    badge_label = validated_data.get('badge_label', discount.badge_label)
+
+    # Get channel info
+    from .models import SaleorChannel
+    try:
+        channel = SaleorChannel.objects.get(saleor_id=channel_id)
+        channel_name = channel.name
+        channel_slug = channel.slug
+        currency = channel.currency
+    except SaleorChannel.DoesNotExist:
+        channel_name = discount.channel_name
+        channel_slug = discount.channel_slug
+        currency = discount.currency
+
+    start_dt = saleor_start_datetime(start_date)
+    end_dt = saleor_end_datetime_last_timezone(end_date)
+
+    # Update Promotion
+    promo_mutation = """
+    mutation UpdatePromotion($id: ID!, $input: PromotionUpdateInput!) {
+      promotionUpdate(id: $id, input: $input) {
+        errors { field message code }
+        promotion { id name startDate endDate }
+      }
+    }
+    """
+
+    promo_vars = {
+        "id": promotion_id,
+        "input": {
+            "name": name,
+            "description": json_description_dict(description),
+            "startDate": start_dt,
+            "endDate": end_dt
+        }
+    }
+
+    result = call_saleor_gql(promo_mutation, promo_vars)
+    response = result.get('data', {}).get('promotionUpdate', {})
+    if response.get('errors'):
+        error_msg = _parse_saleor_errors(response['errors'])
+        raise ValueError(f"Failed to update promotion: {error_msg}")
+
+    # Update Rule
+    if rule_id:
+        rule_mutation = """
+        mutation UpdatePromotionRule($id: ID!, $input: PromotionRuleUpdateInput!) {
+          promotionRuleUpdate(id: $id, input: $input) {
+            errors { field message code }
+            promotionRule { id name }
+          }
+        }
+        """
+
+        rule_vars = {
+            "id": rule_id,
+            "input": {
+                "name": name,
+                "description": json_description_dict(description),
+                "cataloguePredicate": {
+                    "productPredicate": {"ids": [discount.event.saleor_product_id]}
+                },
+                "rewardValueType": reward_value_type,
+                "rewardValue": str(reward_value)
+            }
+        }
+
+        result = call_saleor_gql(rule_mutation, rule_vars)
+        response = result.get('data', {}).get('promotionRuleUpdate', {})
+        if response.get('errors'):
+            error_msg = _parse_saleor_errors(response['errors'])
+            raise ValueError(f"Failed to update rule: {error_msg}")
+
+    # Update metadata
+    metadata_mutation = """
+    mutation UpdateMetadata($id: ID!, $input: [MetadataInput!]!) {
+      updateMetadata(id: $id, input: $input) {
+        errors { field message code }
+        item { ... on Promotion { id metadata { key value } } }
+      }
+    }
+    """
+
+    metadata_vars = {
+        "id": promotion_id,
+        "input": [{"key": "badge_label", "value": badge_label}]
+    }
+
+    try:
+        call_saleor_gql(metadata_mutation, metadata_vars)
+    except Exception as e:
+        logger.warning(f"Failed to update metadata: {e}")
+
+    # Update local record
+    discount.name = name
+    discount.description = description
+    discount.channel_id = channel_id
+    discount.channel_name = channel_name
+    discount.channel_slug = channel_slug
+    discount.currency = currency
+    discount.reward_value_type = reward_value_type
+    discount.reward_value = reward_value
+    discount.start_date = start_date
+    discount.end_date = end_date
+    discount.badge_label = badge_label
+    discount.save()
+
+    return discount
+
+
+def delete_event_saleor_discount(discount):
+    """Delete Saleor Promotion and local record."""
+    promotion_id = discount.saleor_promotion_id
+
+    mutation = """
+    mutation DeletePromotion($id: ID!) {
+      promotionDelete(id: $id) {
+        errors { field message code }
+        promotion { id }
+      }
+    }
+    """
+
+    try:
+        result = call_saleor_gql(mutation, {"id": promotion_id})
+        response = result.get('data', {}).get('promotionDelete', {})
+        if response.get('errors'):
+            error_msg = _parse_saleor_errors(response['errors'])
+            if 'not found' not in error_msg.lower():
+                logger.warning(f"Saleor delete error: {error_msg}")
+    except Exception as e:
+        logger.warning(f"Error deleting from Saleor: {e}")
+
+    # Delete local record
+    discount.delete()
+
+
+def sync_event_saleor_discount(discount):
+    """Fetch latest promotion data from Saleor and sync to local record.
+
+    Use this to pull changes made directly in Saleor back to ECP.
+    """
+    promotion_id = discount.saleor_promotion_id
+
+    query = """
+    query GetPromotion($id: ID!) {
+      promotion(id: $id) {
+        id
+        name
+        description
+        startDate
+        endDate
+        metadata { key value }
+        rules {
+          id
+          name
+          rewardValue
+          rewardValueType
+          channels { id slug name currencyCode }
+        }
+      }
+    }
+    """
+
+    try:
+        result = call_saleor_gql(query, {"id": promotion_id})
+        response = result.get('data', {}).get('promotion')
+
+        if not response:
+            raise ValueError("Promotion not found in Saleor")
+
+        # Extract data from promotion
+        name = response.get('name', '')
+        description = response.get('description') or ''
+        start_date_str = response.get('startDate', '')
+        end_date_str = response.get('endDate', '')
+
+        # Parse dates (format: YYYY-MM-DD)
+        from datetime import datetime
+        start_date = datetime.fromisoformat(start_date_str.split('T')[0]).date() if start_date_str else None
+        end_date = datetime.fromisoformat(end_date_str.split('T')[0]).date() if end_date_str else None
+
+        # Extract rule data (get first/main rule)
+        rules = response.get('rules', [])
+        if rules:
+            rule = rules[0]
+            reward_value = float(rule.get('rewardValue', 0))
+            reward_value_type = rule.get('rewardValueType', 'PERCENTAGE')
+
+            # Extract channel data
+            channels = rule.get('channels', [])
+            if channels:
+                channel = channels[0]
+                channel_id = channel.get('id', '')
+                channel_name = channel.get('name', '')
+                channel_slug = channel.get('slug', '')
+                currency = channel.get('currencyCode', '')
+            else:
+                channel_id = discount.channel_id
+                channel_name = discount.channel_name
+                channel_slug = discount.channel_slug
+                currency = discount.currency
+        else:
+            raise ValueError("No rules found in promotion")
+
+        # Extract badge_label from metadata
+        badge_label = discount.badge_label  # Default to current value
+        metadata = response.get('metadata', [])
+        if metadata:
+            for item in metadata:
+                if item.get('key') == 'badge_label':
+                    badge_label = item.get('value', discount.badge_label)
+                    break
+
+        # Update local record
+        discount.name = name
+        discount.description = description
+        discount.start_date = start_date
+        discount.end_date = end_date
+        discount.reward_value = reward_value
+        discount.reward_value_type = reward_value_type
+        discount.channel_id = channel_id
+        discount.channel_name = channel_name
+        discount.channel_slug = channel_slug
+        discount.currency = currency
+        discount.badge_label = badge_label
+        discount.last_sync_error = ""
+        discount.save()
+
+        logger.info(f"Synced discount {discount.id} from Saleor")
+        return discount
+
+    except Exception as e:
+        error_msg = str(e)
+        discount.last_sync_error = error_msg
+        discount.save()
+        logger.error(f"Error syncing discount from Saleor: {error_msg}")
+        raise ValueError(f"Failed to sync discount: {error_msg}")

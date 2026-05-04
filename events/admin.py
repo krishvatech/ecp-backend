@@ -4,7 +4,7 @@ from django import forms
 from .models import (
     Event, EventParticipant, LoungeTable, LoungeParticipant, EventRegistration,
     EventSession, SessionParticipant, SessionAttendance, EventApplication,
-    EventPreApprovalCode, EventPreApprovalAllowlist
+    EventPreApprovalCode, EventPreApprovalAllowlist, EventSaleorDiscount
 )
 
 
@@ -257,3 +257,31 @@ class EventPreApprovalAllowlistAdmin(admin.ModelAdmin):
     list_display = ("id", "event", "email", "first_name", "last_name", "is_active", "created_at")
     list_filter = ("is_active", "event")
     search_fields = ("email", "first_name", "last_name", "event__title")
+
+
+@admin.register(EventSaleorDiscount)
+class EventSaleorDiscountAdmin(admin.ModelAdmin):
+    list_display = ("id", "event", "name", "channel_name", "reward_value_type", "reward_value", "badge_label", "start_date", "end_date", "saleor_promotion_id", "created_at")
+    list_filter = ("badge_label", "reward_value_type", "event", "created_at")
+    search_fields = ("name", "event__title", "saleor_promotion_id")
+    readonly_fields = ("saleor_promotion_id", "saleor_rule_id", "discount_type", "channel_name", "channel_slug", "currency", "created_by", "created_at", "updated_at", "last_sync_error")
+    raw_id_fields = ("event", "created_by")
+
+    fieldsets = (
+        ("Basic Info", {
+            "fields": ("event", "name", "description", "discount_type", "badge_label")
+        }),
+        ("Channel & Reward", {
+            "fields": ("channel_id", "channel_name", "channel_slug", "currency", "reward_value_type", "reward_value")
+        }),
+        ("Dates", {
+            "fields": ("start_date", "end_date")
+        }),
+        ("Saleor Integration", {
+            "fields": ("saleor_promotion_id", "saleor_rule_id", "last_sync_error")
+        }),
+        ("Metadata", {
+            "fields": ("created_by", "created_at", "updated_at"),
+            "classes": ("collapse",)
+        }),
+    )

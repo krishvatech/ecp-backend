@@ -59,7 +59,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount
 from .permissions import IsSuperuserOnly
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -96,6 +96,7 @@ from .serializers import (
     EventSeriesCreateUpdateSerializer,
     SeriesRegistrationSerializer,
     PublicEventSeriesSerializer,
+    EventSaleorDiscountSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -132,6 +133,9 @@ from .saleor_sync import (
     get_product_type_options,
     fetch_event_saleor_product_details,
     update_event_saleor_product_details,
+    create_event_saleor_discount,
+    update_event_saleor_discount,
+    delete_event_saleor_discount,
 )
 
 # ============================================================
@@ -1843,6 +1847,116 @@ class EventViewSet(viewsets.ModelViewSet):
 
             result = update_event_saleor_product_details(event.saleor_product_id, variant_id, request.data)
             return Response(result)
+
+    # GET/POST /api/events/{id}/saleor-discounts/
+    @action(detail=True, methods=["get", "post"], permission_classes=[IsCreatorOrReadOnly], url_path="saleor-discounts")
+    def saleor_discounts(self, request, pk=None):
+        """
+        GET: Fetch all discounts for this event.
+        POST: Create a new discount for this event (paid events only).
+        """
+        event = self.get_object()
+
+        # Permission check
+        if not (request.user.is_superuser or event.created_by_id == request.user.id):
+            raise PermissionDenied("You do not have permission to manage discounts for this event.")
+
+        if request.method == "GET":
+            discounts = event.saleor_discounts.all().order_by('-created_at')
+            serializer = EventSaleorDiscountSerializer(discounts, many=True)
+            return Response({"discounts": serializer.data})
+
+        elif request.method == "POST":
+            # Only allow for paid events
+            if event.is_free:
+                logger.warning(f"Discount creation attempt on free event {event.id}")
+                return Response(
+                    {"error": "Discounts are only available for paid events."},
+                    status=400
+                )
+
+            # Require saleor_product_id
+            if not event.saleor_product_id:
+                logger.warning(f"Discount creation attempt on event {event.id} without saleor_product_id")
+                return Response(
+                    {"error": "Save/sync Saleor product before creating discounts."},
+                    status=400
+                )
+
+            logger.info(f"Creating discount for event {event.id} with data: {request.data}")
+            serializer = EventSaleorDiscountSerializer(data=request.data)
+            if not serializer.is_valid():
+                logger.warning(f"Discount serializer validation failed for event {event.id}: {serializer.errors}")
+                return Response({"errors": serializer.errors}, status=400)
+
+            try:
+                discount = create_event_saleor_discount(event, serializer.validated_data, user=request.user)
+                response_serializer = EventSaleorDiscountSerializer(discount)
+                return Response(response_serializer.data, status=201)
+            except Exception as e:
+                logger.exception(f"Error creating discount for event {event.id}")
+                return Response({"error": str(e)}, status=400)
+
+    # PATCH/DELETE /api/events/{id}/saleor-discounts/{discount_id}/
+    @action(detail=True, methods=["patch", "delete"], permission_classes=[IsCreatorOrReadOnly], url_path=r"saleor-discounts/(?P<discount_id>[^/.]+)")
+    def saleor_discount_detail(self, request, pk=None, discount_id=None):
+        """
+        PATCH: Update an existing discount.
+        DELETE: Delete a discount.
+        """
+        event = self.get_object()
+
+        # Permission check
+        if not (request.user.is_superuser or event.created_by_id == request.user.id):
+            raise PermissionDenied("You do not have permission to manage discounts for this event.")
+
+        try:
+            discount = EventSaleorDiscount.objects.get(id=discount_id, event=event)
+        except EventSaleorDiscount.DoesNotExist:
+            return Response({"error": "Discount not found."}, status=404)
+
+        if request.method == "PATCH":
+            serializer = EventSaleorDiscountSerializer(discount, data=request.data, partial=True)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=400)
+
+            try:
+                discount = update_event_saleor_discount(discount, serializer.validated_data)
+                response_serializer = EventSaleorDiscountSerializer(discount)
+                return Response(response_serializer.data)
+            except Exception as e:
+                return Response({"error": str(e)}, status=400)
+
+        elif request.method == "DELETE":
+            try:
+                delete_event_saleor_discount(discount)
+                return Response(status=204)
+            except Exception as e:
+                return Response({"error": str(e)}, status=400)
+
+    # POST /api/events/{id}/saleor-discounts/{discount_id}/sync/
+    @action(detail=True, methods=["post"], permission_classes=[IsCreatorOrReadOnly], url_path=r"saleor-discounts/(?P<discount_id>[^/.]+)/sync")
+    def sync_saleor_discount(self, request, pk=None, discount_id=None):
+        """Sync discount data from Saleor back to ECP."""
+        from events.saleor_sync import sync_event_saleor_discount
+
+        event = self.get_object()
+
+        # Permission check
+        if not (request.user.is_superuser or event.created_by_id == request.user.id):
+            raise PermissionDenied("You do not have permission to manage discounts for this event.")
+
+        try:
+            discount = EventSaleorDiscount.objects.get(id=discount_id, event=event)
+        except EventSaleorDiscount.DoesNotExist:
+            return Response({"error": "Discount not found."}, status=404)
+
+        try:
+            discount = sync_event_saleor_discount(discount)
+            response_serializer = EventSaleorDiscountSerializer(discount)
+            return Response(response_serializer.data)
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)
 
     # POST /api/events/{id}/register/
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="register")
