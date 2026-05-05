@@ -1846,7 +1846,116 @@ class EventViewSet(viewsets.ModelViewSet):
                     return Response({"error": "No variant found for this product in Saleor."}, status=400)
 
             result = update_event_saleor_product_details(event.saleor_product_id, variant_id, request.data)
+
+            # After successful Saleor update, sync price and stock back to ECP DB
+            if "error" not in result:
+                fresh = fetch_event_saleor_product_details(event.saleor_product_id)
+                fresh_product = fresh.get("data", {}).get("product")
+                if fresh_product and fresh_product.get("variants"):
+                    variant = fresh_product["variants"][0]
+                    target_slug = getattr(settings, "SALEOR_CHANNEL_SLUG", "default-channel")
+                    for cl in variant.get("channelListings", []):
+                        if cl.get("channel", {}).get("slug") == target_slug:
+                            amt = cl.get("price", {}).get("amount")
+                            if amt is not None and float(amt) > 0:
+                                event.price = float(amt)
+                            break
+                    event.max_participants = sum(s.get("quantity", 0) for s in variant.get("stocks", []))
+                    event.save(update_fields=["price", "max_participants"])
+
             return Response(result)
+
+    # POST /api/events/{id}/publish/
+    @action(detail=True, methods=["post"], permission_classes=[IsCreatorOrReadOnly], url_path="publish")
+    def publish_event(self, request, pk=None):
+        """
+        Publish a draft paid event.
+        Validates that price and stock are configured in Saleor, then updates event.status to 'published'.
+        """
+        event = self.get_object()
+
+        # Permission check (same pattern as saleor_product)
+        if not (request.user.is_superuser or event.created_by_id == request.user.id):
+            raise PermissionDenied("You do not have permission to publish this event.")
+
+        if event.status != "draft":
+            return Response({"error": f"Event is already '{event.status}'."}, status=400)
+        if event.is_free:
+            return Response({"error": "Free events are published automatically on creation."}, status=400)
+        if not event.saleor_product_id:
+            return Response({"error": "No Saleor product linked to this event."}, status=400)
+
+        # Fetch Saleor product
+        details = fetch_event_saleor_product_details(event.saleor_product_id)
+        if "error" in details:
+            return Response({"error": f"Failed to fetch Saleor product: {details['error']}"}, status=502)
+
+        product = details.get("data", {}).get("product")
+        if not product or not product.get("variants"):
+            return Response({"error": "No product variant found in Saleor."}, status=400)
+
+        variant = product["variants"][0]
+        target_slug = getattr(settings, "SALEOR_CHANNEL_SLUG", "default-channel")
+
+        # Extract default-channel price
+        channel_price = None
+        for cl in variant.get("channelListings", []):
+            if cl.get("channel", {}).get("slug") == target_slug:
+                channel_price = cl.get("price", {}).get("amount")
+                break
+
+        total_stock = sum(s.get("quantity", 0) for s in variant.get("stocks", []))
+
+        validation = {
+            "channel_slug": target_slug,
+            "channel_price": channel_price,
+            "has_valid_price": channel_price is not None and float(channel_price) > 0,
+            "total_stock": total_stock,
+            "has_valid_stock": total_stock > 0,
+        }
+
+        if not validation["has_valid_price"]:
+            return Response(
+                {"error": f"Channel '{target_slug}' price must be greater than 0.", "validation": validation},
+                status=400,
+            )
+        if not validation["has_valid_stock"]:
+            return Response({"error": "Total warehouse stock must be greater than 0.", "validation": validation}, status=400)
+
+        # Publish
+        event.price = float(channel_price)
+        event.max_participants = total_stock
+        event.is_free = False
+        event.status = "published"
+        event.save(update_fields=["price", "max_participants", "is_free", "status"])
+
+        serializer = self.get_serializer(event)
+        return Response({"event": serializer.data, "validation": validation}, status=200)
+
+    # POST /api/events/{id}/unpublish/
+    @action(detail=True, methods=["post"], permission_classes=[IsCreatorOrReadOnly], url_path="unpublish")
+    def unpublish_event(self, request, pk=None):
+        """
+        Unpublish a published paid event, reverting it to draft status.
+        This allows editing pricing, inventory, or other product details.
+        """
+        event = self.get_object()
+
+        # Permission check
+        if not (request.user.is_superuser or event.created_by_id == request.user.id):
+            raise PermissionDenied("You do not have permission to unpublish this event.")
+
+        if event.status != "published":
+            return Response({"error": f"Only published events can be unpublished. Current status: '{event.status}'."}, status=400)
+        if event.is_free:
+            return Response({"error": "Free events cannot be unpublished."}, status=400)
+
+        # Unpublish
+        event.status = "draft"
+        event.save(update_fields=["status"])
+
+        serializer = self.get_serializer(event)
+        return Response({"event": serializer.data, "message": "Event unpublished successfully."}, status=200)
 
     # GET/POST /api/events/{id}/saleor-discounts/
     @action(detail=True, methods=["get", "post"], permission_classes=[IsCreatorOrReadOnly], url_path="saleor-discounts")
