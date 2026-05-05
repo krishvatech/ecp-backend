@@ -21,7 +21,7 @@ from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
 from .models import (
     Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
-    EventSession, SessionParticipant, SessionAttendance, SessionBreak, EventApplication, VirtualSpeaker,
+    EventSession, SessionParticipant, SessionAttendance, SessionBreak, EventApplication, VirtualSpeaker, GuestAttendee,
     SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup,
     EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount
 )
@@ -244,6 +244,25 @@ def compute_public_registered_count(event, registrations_qs=None):
         visible_count += 1
 
     return visible_count
+
+
+def compute_public_guest_count(event, guest_qs=None):
+    """
+    Count active guest registrations shown publicly on event cards.
+    Excludes:
+    - banned guests
+    - converted guests (already moved to registered users)
+    - unverified guest records
+    """
+    qs = guest_qs
+    if qs is None:
+        qs = GuestAttendee.objects.filter(event=event)
+
+    return qs.filter(
+        is_banned=False,
+        converted_user__isnull=True,
+        email_verified=True,
+    ).count()
 
 
 class ParticipantsField(serializers.ListField):
@@ -740,6 +759,7 @@ class EventSerializer(serializers.ModelSerializer):
     attending_count = serializers.IntegerField(read_only=True)
     registrations_count = serializers.IntegerField(read_only=True)
     public_registered_count = serializers.SerializerMethodField(read_only=True)
+    public_guest_count = serializers.SerializerMethodField(read_only=True)
 
     # Access-controlled recording_url (host can always see, participants only if visible)
     recording_url = serializers.SerializerMethodField(read_only=True)
@@ -897,6 +917,7 @@ class EventSerializer(serializers.ModelSerializer):
             "attending_count",
             "registrations_count",
             "public_registered_count",
+            "public_guest_count",
             "preview_image",
             "cover_image",
             "waiting_room_image",
@@ -933,6 +954,7 @@ class EventSerializer(serializers.ModelSerializer):
             "show_participants_before_event",
             "show_participants_after_event",
             "show_registered_participant_count",
+            "show_guest_participant_count",
             "show_public_hosts",
             "show_public_speakers",
             "show_public_moderators",
@@ -972,6 +994,7 @@ class EventSerializer(serializers.ModelSerializer):
             "attending_count",
             "registrations_count",
             "public_registered_count",
+            "public_guest_count",
             "live_started_at",
             "live_ended_at",
             "rtk_meeting_id",
@@ -1751,6 +1774,9 @@ class EventSerializer(serializers.ModelSerializer):
 
     def get_public_registered_count(self, obj):
         return compute_public_registered_count(obj)
+
+    def get_public_guest_count(self, obj):
+        return compute_public_guest_count(obj)
 
     def get_has_sessions(self, obj):
         """Check if event has sessions."""
