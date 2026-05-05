@@ -2587,6 +2587,10 @@ class EventSaleorDiscount(models.Model):
         max_length=20,
         choices=BADGE_LABEL_CHOICES
     )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this discount is currently active"
+    )
     created_by = models.ForeignKey(
         User,
         null=True,

@@ -2868,7 +2868,7 @@ class EventSaleorDiscountSerializer(serializers.ModelSerializer):
             'name', 'description', 'discount_type',
             'channel_id', 'channel_name', 'channel_slug', 'currency',
             'reward_value_type', 'reward_value',
-            'start_date', 'end_date', 'badge_label',
+            'start_date', 'end_date', 'badge_label', 'is_active',
             'created_by', 'created_by_name', 'created_at', 'updated_at', 'last_sync_error'
         ]
         read_only_fields = [

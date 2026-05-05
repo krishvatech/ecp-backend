@@ -2194,6 +2194,45 @@ def saleor_end_datetime_last_timezone(date_obj):
     return dt.isoformat()
 
 
+def parse_saleor_start_date_to_ecp_date(value):
+    """
+    Parse Saleor startDate to ECP date.
+    Saleor returns: 2026-05-10T00:00:00+00:00 or 2026-05-10T00:00:00Z
+    ECP needs: date object 2026-05-10
+    """
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            return dt.date()
+        except (ValueError, AttributeError):
+            return None
+    return value
+
+
+def parse_saleor_end_date_to_ecp_date(value):
+    """
+    Parse Saleor endDate to ECP date.
+    Saleor returns: 2026-05-21T11:59:59+00:00 (UTC)
+    This represents: 2026-05-20T23:59:59-12:00 (end of 2026-05-20 in UTC-12)
+    ECP needs: date object 2026-05-20
+
+    Convert Saleor UTC to UTC-12, then extract date.
+    """
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            tz_minus_12 = tz_module(timedelta(hours=-12))
+            dt_utc_minus_12 = dt.astimezone(tz_minus_12)
+            return dt_utc_minus_12.date()
+        except (ValueError, AttributeError):
+            return None
+    return value
+
+
 def _parse_saleor_errors(errors_list):
     """Parse Saleor GraphQL errors into readable message."""
     if not errors_list:
@@ -2209,6 +2248,12 @@ def create_event_saleor_discount(event, validated_data, user=None):
     """Create Saleor Promotion + Rule for event discount."""
     from .models import EventSaleorDiscount, SaleorChannel
 
+    if event.is_free:
+        raise ValueError("Discounts cannot be created for free events")
+
+    if not event.saleor_product_id:
+        raise ValueError("Event must have saleor_product_id")
+
     name = validated_data['name']
     description = validated_data.get('description', '')
     channel_id = validated_data['channel_id']
@@ -2217,9 +2262,6 @@ def create_event_saleor_discount(event, validated_data, user=None):
     start_date = validated_data.get('start_date')
     end_date = validated_data.get('end_date')
     badge_label = validated_data['badge_label']
-
-    if not event.saleor_product_id:
-        raise ValueError("Event must have saleor_product_id")
 
     # Get channel info
     try:
@@ -2345,6 +2387,9 @@ def create_event_saleor_discount(event, validated_data, user=None):
 
 def update_event_saleor_discount(discount, validated_data):
     """Update Saleor Promotion + Rule."""
+    if discount.event.is_free:
+        raise ValueError("Discounts cannot be updated for free events")
+
     promotion_id = discount.saleor_promotion_id
     rule_id = discount.saleor_rule_id
 
@@ -2404,7 +2449,7 @@ def update_event_saleor_discount(discount, validated_data):
         mutation UpdatePromotionRule($id: ID!, $input: PromotionRuleUpdateInput!) {
           promotionRuleUpdate(id: $id, input: $input) {
             errors { field message code }
-            promotionRule { id name }
+            promotionRule { id name channels { id } }
           }
         }
         """
@@ -2418,7 +2463,8 @@ def update_event_saleor_discount(discount, validated_data):
                     "productPredicate": {"ids": [discount.event.saleor_product_id]}
                 },
                 "rewardValueType": reward_value_type,
-                "rewardValue": str(reward_value)
+                "rewardValue": str(reward_value),
+                "channels": [channel_id]
             }
         }
 
@@ -2467,6 +2513,9 @@ def update_event_saleor_discount(discount, validated_data):
 
 def delete_event_saleor_discount(discount):
     """Delete Saleor Promotion and local record."""
+    if discount.event.is_free:
+        raise ValueError("Discounts cannot be deleted for free events")
+
     promotion_id = discount.saleor_promotion_id
 
     mutation = """
@@ -2497,6 +2546,9 @@ def sync_event_saleor_discount(discount):
 
     Use this to pull changes made directly in Saleor back to ECP.
     """
+    if discount.event.is_free:
+        raise ValueError("Discounts cannot be synced for free events")
+
     promotion_id = discount.saleor_promotion_id
 
     query = """
@@ -2532,10 +2584,9 @@ def sync_event_saleor_discount(discount):
         start_date_str = response.get('startDate', '')
         end_date_str = response.get('endDate', '')
 
-        # Parse dates (format: YYYY-MM-DD)
-        from datetime import datetime
-        start_date = datetime.fromisoformat(start_date_str.split('T')[0]).date() if start_date_str else None
-        end_date = datetime.fromisoformat(end_date_str.split('T')[0]).date() if end_date_str else None
+        # Parse dates using proper timezone conversion
+        start_date = parse_saleor_start_date_to_ecp_date(start_date_str)
+        end_date = parse_saleor_end_date_to_ecp_date(end_date_str)
 
         # Extract rule data (get first/main rule)
         rules = response.get('rules', [])

@@ -2019,6 +2019,14 @@ class EventViewSet(viewsets.ModelViewSet):
         if not (request.user.is_superuser or event.created_by_id == request.user.id):
             raise PermissionDenied("You do not have permission to manage discounts for this event.")
 
+        # Only allow for paid events
+        if event.is_free:
+            logger.warning(f"Discount operation attempt on free event {event.id}")
+            return Response(
+                {"error": "Discounts are only available for paid events."},
+                status=400
+            )
+
         try:
             discount = EventSaleorDiscount.objects.get(id=discount_id, event=event)
         except EventSaleorDiscount.DoesNotExist:
@@ -2054,6 +2062,14 @@ class EventViewSet(viewsets.ModelViewSet):
         # Permission check
         if not (request.user.is_superuser or event.created_by_id == request.user.id):
             raise PermissionDenied("You do not have permission to manage discounts for this event.")
+
+        # Only allow for paid events
+        if event.is_free:
+            logger.warning(f"Discount sync attempt on free event {event.id}")
+            return Response(
+                {"error": "Discounts are only available for paid events."},
+                status=400
+            )
 
         try:
             discount = EventSaleorDiscount.objects.get(id=discount_id, event=event)
