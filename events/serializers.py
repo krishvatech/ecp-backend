@@ -794,6 +794,7 @@ class EventSerializer(serializers.ModelSerializer):
     cpd_cpe_credits = serializers.SerializerMethodField(read_only=True)
     cpd_cpe_minutes = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     cpd_cpe_minutes_per_credit = serializers.IntegerField(required=False, allow_null=True, min_value=1, default=60)
+    show_cpd_cpe = serializers.BooleanField(required=False, default=True)
 
     # Total hours override fields
     total_hours_override_minutes = serializers.IntegerField(required=False, allow_null=True, min_value=0)
@@ -911,6 +912,7 @@ class EventSerializer(serializers.ModelSerializer):
             "max_participants",
             "cpd_cpe_minutes",
             "cpd_cpe_minutes_per_credit",
+            "show_cpd_cpe",
             "cpd_cpe_credits",
             "saleor_product_id",
             "saleor_variant_id",
@@ -2168,7 +2170,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "preview_image", "cover_image", "attending_count",
             "created_at", "sessions", "speakers",
             "featured_participants", "featured_participants_total",
-            "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "cpd_cpe_credits",
+            "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
             "is_multi_day",
         ]
         read_only_fields = fields
@@ -2273,7 +2275,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "lounge_enabled_before", "lounge_before_buffer",
             "lounge_enabled_after", "lounge_after_buffer",
             "is_multi_day", "sessions",  # ✅ Added for multi-day event support
-            "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "cpd_cpe_credits",
+            "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
             "cancellation_message", "recommended_event", "created_by_id",
         )
 

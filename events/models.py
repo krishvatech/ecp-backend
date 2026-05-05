@@ -145,6 +145,10 @@ class Event(models.Model):
         default=60,
         help_text="How many minutes equal 1 CPD/CPE credit",
     )
+    show_cpd_cpe = models.BooleanField(
+        default=True,
+        help_text="Whether to display CPD/CPE credits on event details and cards",
+    )
     preview_image = models.ImageField(
         upload_to=event_preview_upload_to,
         blank=True,
