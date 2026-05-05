@@ -136,6 +136,8 @@ from .saleor_sync import (
     create_event_saleor_discount,
     update_event_saleor_discount,
     delete_event_saleor_discount,
+    sync_event_saleor_discounts,
+    sync_event_saleor_discount,
 )
 
 # ============================================================
@@ -1971,7 +1973,14 @@ class EventViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("You do not have permission to manage discounts for this event.")
 
         if request.method == "GET":
-            discounts = event.saleor_discounts.all().order_by('-created_at')
+            if not event.is_free:
+                try:
+                    discounts = sync_event_saleor_discounts(event)
+                except Exception as e:
+                    logger.error(f"Bulk sync failed for event {event.id}: {e}")
+                    discounts = event.saleor_discounts.filter(is_active=True).order_by('-created_at')
+            else:
+                discounts = event.saleor_discounts.filter(is_active=True).order_by('-created_at')
             serializer = EventSaleorDiscountSerializer(discounts, many=True)
             return Response({"discounts": serializer.data})
 
@@ -2055,8 +2064,6 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsCreatorOrReadOnly], url_path=r"saleor-discounts/(?P<discount_id>[^/.]+)/sync")
     def sync_saleor_discount(self, request, pk=None, discount_id=None):
         """Sync discount data from Saleor back to ECP."""
-        from events.saleor_sync import sync_event_saleor_discount
-
         event = self.get_object()
 
         # Permission check

@@ -2576,7 +2576,11 @@ def sync_event_saleor_discount(discount):
         response = result.get('data', {}).get('promotion')
 
         if not response:
-            raise ValueError("Promotion not found in Saleor")
+            discount.is_active = False
+            discount.last_sync_error = "Deleted in Saleor"
+            discount.save()
+            logger.info(f"Discount {discount.id} marked inactive — not found in Saleor")
+            return discount
 
         # Extract data from promotion
         name = response.get('name', '')
@@ -2644,3 +2648,23 @@ def sync_event_saleor_discount(discount):
         discount.save()
         logger.error(f"Error syncing discount from Saleor: {error_msg}")
         raise ValueError(f"Failed to sync discount: {error_msg}")
+
+def sync_event_saleor_discounts(event):
+    """Sync all active local discounts for an event from Saleor before returning to UI.
+
+    Loops through all active discounts, syncs each from Saleor, and returns the
+    refreshed list of active discounts. Handles per-discount sync failures gracefully.
+    """
+    from .models import EventSaleorDiscount
+
+    if event.is_free:
+        return event.saleor_discounts.filter(is_active=True).order_by('-created_at')
+
+    discounts = EventSaleorDiscount.objects.filter(event=event, is_active=True)
+    for discount in discounts:
+        try:
+            sync_event_saleor_discount(discount)
+        except Exception as e:
+            logger.error(f"Failed to sync discount {discount.id}: {e}")
+
+    return EventSaleorDiscount.objects.filter(event=event, is_active=True).order_by('-created_at')
