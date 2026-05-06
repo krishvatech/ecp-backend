@@ -265,6 +265,15 @@ def compute_public_guest_count(event, guest_qs=None):
     ).count()
 
 
+def safe_int(value, default=0):
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class ParticipantsField(serializers.ListField):
     """Custom field to handle participants sent as JSON string from FormData."""
 
@@ -760,6 +769,7 @@ class EventSerializer(serializers.ModelSerializer):
     registrations_count = serializers.IntegerField(read_only=True)
     public_registered_count = serializers.SerializerMethodField(read_only=True)
     public_guest_count = serializers.SerializerMethodField(read_only=True)
+    total_registered = serializers.SerializerMethodField(read_only=True)
 
     # Access-controlled recording_url (host can always see, participants only if visible)
     recording_url = serializers.SerializerMethodField(read_only=True)
@@ -920,6 +930,7 @@ class EventSerializer(serializers.ModelSerializer):
             "registrations_count",
             "public_registered_count",
             "public_guest_count",
+            "total_registered",
             "preview_image",
             "cover_image",
             "waiting_room_image",
@@ -997,6 +1008,7 @@ class EventSerializer(serializers.ModelSerializer):
             "registrations_count",
             "public_registered_count",
             "public_guest_count",
+            "total_registered",
             "live_started_at",
             "live_ended_at",
             "rtk_meeting_id",
@@ -1775,10 +1787,25 @@ class EventSerializer(serializers.ModelSerializer):
         return len(serialize_featured_participants(obj, self.context, skip_visibility_filter=skip_visibility))
 
     def get_public_registered_count(self, obj):
-        return compute_public_registered_count(obj)
+        cached = getattr(obj, "_cached_public_registered_count", None)
+        if cached is not None:
+            return cached
+        value = compute_public_registered_count(obj)
+        setattr(obj, "_cached_public_registered_count", value)
+        return value
 
     def get_public_guest_count(self, obj):
-        return compute_public_guest_count(obj)
+        cached = getattr(obj, "_cached_public_guest_count", None)
+        if cached is not None:
+            return cached
+        value = compute_public_guest_count(obj)
+        setattr(obj, "_cached_public_guest_count", value)
+        return value
+
+    def get_total_registered(self, obj):
+        registered_users = self.get_public_registered_count(obj)
+        guest_users = self.get_public_guest_count(obj)
+        return max(0, safe_int(registered_users) + safe_int(guest_users))
 
     def get_has_sessions(self, obj):
         """Check if event has sessions."""

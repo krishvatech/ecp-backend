@@ -372,7 +372,7 @@ class Event(models.Model):
         help_text="Show the number of registered participants on event cards"
     )
     show_guest_participant_count = models.BooleanField(
-        default=True,
+        default=False,
         help_text="Show the number of guest participants on event cards"
     )
     show_public_hosts = models.BooleanField(
