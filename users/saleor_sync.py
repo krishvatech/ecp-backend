@@ -20,6 +20,7 @@ def reactivate_staff_user(email, auth_token=None):
             edges {
                 node {
                     id
+                    email
                 }
             }
         }
@@ -285,9 +286,8 @@ def get_saleor_staff_by_email(email, auth_token=None):
             edges {
                 node {
                     id
-                    user {
-                        email
-                    }
+                    email
+                    isActive
                 }
             }
         }
@@ -310,13 +310,30 @@ def get_saleor_staff_by_email(email, auth_token=None):
         data = response.json()
 
         if "errors" in data:
-            logger.error(f"Saleor error: {data['errors']}")
+            logger.error(f"Saleor error checking {email}: {data['errors']}")
             return None
 
-        edges = data.get("data", {}).get("staffMembers", {}).get("edges", [])
+        edges = data.get("data", {}).get("staffUsers", {}).get("edges", [])
+        logger.debug(f"Saleor staffUsers response for {email}: {len(edges)} results")
         if edges:
-            return edges[0]["node"]["id"]
+            node = edges[0]["node"]
+            staff_id = node["id"]
+            is_active = node.get("isActive", False)
+            if not is_active:
+                logger.debug(f"Staff user {email} found but is inactive")
+                return None
+            logger.info(f"Found active staff user {email} in Saleor: {staff_id}")
+            return staff_id
 
+        logger.debug(f"User {email} not found in Saleor staff")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to check Saleor staff user: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                logger.error(f"Saleor response body: {e.response.text}")
+            except:
+                pass
         return None
     except Exception as e:
         logger.error(f"Failed to check Saleor staff user: {e}")
@@ -488,6 +505,7 @@ def remove_platform_admin_from_saleor(user_email, auth_token=None):
             edges {
                 node {
                     id
+                    email
                 }
             }
         }
@@ -527,10 +545,10 @@ def remove_platform_admin_from_saleor(user_email, auth_token=None):
         staff_id = edges[0]["node"]["id"]
         logger.info(f"Found staff user {user_email} in Saleor: {staff_id}")
 
-        # Deactivate the staff user
+        # Delete the staff user from Saleor
         mutation = """
         mutation($id: ID!) {
-            staffUpdate(id: $id, input: {isActive: false}) {
+            staffDelete(id: $id) {
                 user {
                     id
                     email
@@ -553,21 +571,21 @@ def remove_platform_admin_from_saleor(user_email, auth_token=None):
         data = response.json()
 
         if "errors" in data:
-            logger.error(f"Saleor error deactivating user: {data['errors']}")
+            logger.error(f"Saleor error deleting user: {data['errors']}")
             return {
                 "success": False,
-                "message": "Failed to deactivate staff user"
+                "message": "Failed to delete staff user"
             }
 
-        result = data.get("data", {}).get("staffUpdate", {})
+        result = data.get("data", {}).get("staffDelete", {})
         if result.get("errors"):
-            logger.error(f"Failed to deactivate staff user: {result['errors']}")
+            logger.error(f"Failed to delete staff user: {result['errors']}")
             return {
                 "success": False,
-                "message": "Failed to deactivate staff user"
+                "message": "Failed to delete staff user"
             }
 
-        logger.info(f"Successfully deactivated {user_email} in Saleor")
+        logger.info(f"Successfully deleted {user_email} from Saleor")
         return {
             "success": True,
             "message": f"Successfully removed {user_email} from Saleor"

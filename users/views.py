@@ -60,7 +60,7 @@ from .didit_client import (
 )
 from .cognito_groups import sync_staff_group
 from .wordpress_sync import get_profile_sync_service
-from .saleor_sync import sync_platform_admin_to_saleor, remove_platform_admin_from_saleor
+from .saleor_sync import sync_platform_admin_to_saleor, remove_platform_admin_from_saleor, get_saleor_staff_by_email
 from .saleor_connection import (
     build_saleor_sso_url,
     disconnect_saleor_user,
@@ -2286,15 +2286,8 @@ class StaffUserViewSet(viewsets.ModelViewSet):
 
             add_user_to_group(username=user.username, group_name="platform_admin")
 
-            # Sync to Saleor with Full Access using the connected Saleor SSO user token
-            sync_result = sync_platform_admin_to_saleor(
-                user_email=user.email,
-                first_name=user.first_name,
-                last_name=user.last_name,
-                is_platform_admin=True,
-                auth_token=saleor_token,
-            )
-            logger.info(f"Saleor sync result for {user.email}: {sync_result}")
+            # Note: Saleor staff syncing is now managed only via SALEOR STAFF tab (add-to-saleor-staff action)
+            logger.info(f"User {user.email} created as superuser. Use SALEOR STAFF tab to add to Saleor.")
 
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
@@ -2332,20 +2325,13 @@ class StaffUserViewSet(viewsets.ModelViewSet):
                     updated_user.save(update_fields=["is_staff"])
                     sync_staff_group(username=updated_user.username, is_staff=True)
 
-                # Sync to Saleor with Full Access using the connected Saleor SSO user token
-                sync_result = sync_platform_admin_to_saleor(
-                    user_email=updated_user.email,
-                    first_name=updated_user.first_name,
-                    last_name=updated_user.last_name,
-                    is_platform_admin=True,
-                    auth_token=saleor_token,
-                )
-                logger.info(f"Saleor sync result for {updated_user.email}: {sync_result}")
+                # Note: Saleor staff syncing is now managed only via SALEOR STAFF tab (add-to-saleor-staff action)
+                logger.info(f"User {updated_user.email} promoted to superuser. Use SALEOR STAFF tab to add to Saleor.")
             else:
                 # Demoted from superuser
                 remove_user_from_group(username=updated_user.username, group_name="platform_admin")
 
-                # Remove from Saleor
+                # Automatically remove from Saleor when demoting from superuser
                 removal_result = remove_platform_admin_from_saleor(updated_user.email, auth_token=saleor_token)
                 logger.info(f"Saleor removal result for {updated_user.email}: {removal_result}")
 
@@ -2464,8 +2450,162 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
+    @action(detail=False, methods=["get"], url_path="saleor-staff")
+    def saleor_staff_list(self, request):
+        """
+        GET /api/admin/users/saleor-staff/
+        List all superusers with their Saleor staff status.
+        Only accessible to superusers.
+        """
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Only superusers can access Saleor staff management."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
-    
+        # Check Saleor connection
+        saleor_token = get_valid_saleor_token_for_user(request.user, required_permissions=["MANAGE_STAFF"])
+
+        # Get all superusers
+        superusers = User.objects.filter(is_superuser=True).select_related("profile").order_by("email")
+
+        results = []
+        for user in superusers:
+            # Check if user is in Saleor
+            in_saleor = False
+            if saleor_token:
+                saleor_id = get_saleor_staff_by_email(user.email, auth_token=saleor_token)
+                in_saleor = bool(saleor_id)
+                logger.info(f"Saleor check for {user.email}: saleor_id={saleor_id}, in_saleor={in_saleor}")
+
+            results.append({
+                "id": user.id,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "username": user.username,
+                "is_superuser": user.is_superuser,
+                "is_staff": user.is_staff,
+                "date_joined": user.date_joined,
+                "in_saleor": in_saleor,
+                "saleor_connected": bool(saleor_token),
+            })
+
+        return Response({
+            "count": len(results),
+            "results": results,
+            "saleor_connected": bool(saleor_token)
+        })
+
+    @action(detail=True, methods=["post"], url_path="add-to-saleor-staff")
+    def add_to_saleor_staff(self, request, pk=None):
+        """
+        POST /api/admin/users/{id}/add-to-saleor-staff/
+        Add a superuser to Saleor staff with Full Access.
+        Only superusers can perform this action.
+        """
+        # Check if requester is superuser
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Only superusers can add users to Saleor staff."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Get target user
+        target_user = self.get_object()
+
+        # Prevent self-management
+        if request.user.id == target_user.id:
+            return Response(
+                {"detail": "You cannot manage your own Saleor staff status."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check if target user is superuser
+        if not target_user.is_superuser:
+            return Response(
+                {"detail": "Only superusers can be added to Saleor staff."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get Saleor token
+        saleor_token = get_valid_saleor_token_for_user(request.user, required_permissions=["MANAGE_STAFF"])
+        if not saleor_token:
+            return Response(
+                {"detail": "Connect Saleor SSO first.", "code": "SALEOR_SSO_REQUIRED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Sync to Saleor
+        sync_result = sync_platform_admin_to_saleor(
+            user_email=target_user.email,
+            first_name=target_user.first_name or target_user.username,
+            last_name=target_user.last_name or "",
+            is_platform_admin=True,
+            auth_token=saleor_token
+        )
+
+        if not sync_result.get("success"):
+            return Response(
+                {"detail": sync_result.get("message", "Failed to add to Saleor staff.")},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        logger.info(f"Added {target_user.email} to Saleor staff. Result: {sync_result}")
+        return Response({
+            "success": True,
+            "message": f"Added {target_user.email} to Saleor staff with Full Access",
+            "saleor_staff_id": sync_result.get("staff_id")
+        })
+
+    @action(detail=True, methods=["post"], url_path="remove-from-saleor-staff")
+    def remove_from_saleor_staff(self, request, pk=None):
+        """
+        POST /api/admin/users/{id}/remove-from-saleor-staff/
+        Remove a superuser from Saleor staff (deactivate them).
+        Only superusers can perform this action.
+        """
+        # Check if requester is superuser
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Only superusers can remove users from Saleor staff."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Get target user
+        target_user = self.get_object()
+
+        # Prevent self-management
+        if request.user.id == target_user.id:
+            return Response(
+                {"detail": "You cannot manage your own Saleor staff status."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get Saleor token
+        saleor_token = get_valid_saleor_token_for_user(request.user, required_permissions=["MANAGE_STAFF"])
+        if not saleor_token:
+            return Response(
+                {"detail": "Connect Saleor SSO first.", "code": "SALEOR_SSO_REQUIRED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Remove from Saleor
+        removal_result = remove_platform_admin_from_saleor(target_user.email, auth_token=saleor_token)
+
+        if not removal_result.get("success"):
+            return Response(
+                {"detail": removal_result.get("message", "Failed to remove from Saleor staff.")},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        logger.info(f"Removed {target_user.email} from Saleor staff. Result: {removal_result}")
+        return Response({
+            "success": True,
+            "message": f"Removed {target_user.email} from Saleor staff"
+        })
+
+
 class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
     """
     Admin endpoint to list all requests and approve/reject them.
