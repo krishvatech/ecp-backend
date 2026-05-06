@@ -1217,10 +1217,10 @@ class EventViewSet(viewsets.ModelViewSet):
             else:
                 qs = qs.filter(
                     Q(status__in=["published", "live"]) |
-                    Q(community__members=user) |
+                    Q(status__in=["published", "live"], community__members=user) |
                     Q(created_by_id=user.id) |
                     Q(community__owner_id=user.id) |  # owner can see all events in their community
-                    Q(registrations__user_id=user.id, registrations__status="registered")  # registered participants can see event even after it ends (for post-event lounge)
+                    Q(status__in=["published", "live"], registrations__user_id=user.id, registrations__status="registered")  # registered participants can see event even after it ends (for post-event lounge), but only published/live events
                 ).distinct()
 
             # ✅ Hide unpublished recordings from regular participants

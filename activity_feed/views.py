@@ -147,13 +147,15 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     pass
 
             # Base: community posts only (no group, no event), same shape you already produce
+            # Also exclude draft event posts (only show published/live event posts)
             comm_posts = FeedItem.objects.filter(
-                group__isnull=True,
-                event__isnull=True,
+                Q(group__isnull=True, event__isnull=True) |  # Community posts (no event)
+                Q(event__status__in=["published", "live"])    # OR published/live event posts
+            ).filter(
                 community_id__in=my_comm_ids,
                 metadata__type__in=["text", "image", "link", "poll"],
             ).filter(
-                Q(verb="posted") | Q(verb="created_poll")   
+                Q(verb="posted") | Q(verb="created_poll")
             )
 
             # --- NEW: Filter suspended/fake/deceased users here too ---
@@ -206,6 +208,12 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     Q(metadata__groupId__in=member_group_ids_str) |
                     Q(metadata__group__id__in=member_group_ids) |
                     Q(metadata__group__id__in=member_group_ids_str)
+                )
+
+                # Exclude draft event posts from group feed
+                group_feed = group_feed.filter(
+                    Q(event__isnull=True) |  # Posts without events
+                    Q(event__status__in=["published", "live"])  # OR published/live event posts
                 )
 
                 # --- NEW: Filter suspended users from group feed too ---
@@ -493,8 +501,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             except ValueError:
                 pass
 
-        # If you have publish/status flags, apply them here, e.g.:
-        # event_qs = event_qs.filter(status__in=["scheduled", "live"])
+        # Only show published or live events (exclude draft events)
+        event_qs = event_qs.filter(status__in=["published", "live"])
 
         event_qs = event_qs.order_by("-created_at", "-start_time")[:workset_size]
 
