@@ -3997,6 +3997,63 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return Response({**preview, "queued": True})
 
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="resend-registration-emails")
+    def resend_registration_emails(self, request, pk=None):
+        """
+        Resend registration confirmation emails to all confirmed registered members.
+        Only the event owner/manager can trigger this.
+        - Excludes the event creator
+        - Sends role-specific emails: speakers/hosts/moderators get event_confirmation email,
+          regular participants get registration acknowledgement email
+        Returns count of successfully sent and failed emails.
+        """
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({"error": "Permission denied"}, status=403)
+
+        from users.email_utils import send_user_registration_acknowledgement_email, send_event_confirmation_email
+        from events.models import EventParticipant
+
+        registrations = EventRegistration.objects.filter(
+            event=event,
+            status="registered",
+            attendee_status="confirmed",
+        ).exclude(
+            user_id=event.created_by_id
+        ).select_related("user")
+
+        success_count = 0
+        failed_count = 0
+
+        for reg in registrations:
+            if not reg.user or not reg.user.email:
+                failed_count += 1
+                continue
+            try:
+                participants = EventParticipant.objects.filter(event=event, user=reg.user)
+
+                if participants.exists():
+                    for participant in participants:
+                        sent = send_event_confirmation_email(participant)
+                        if sent:
+                            success_count += 1
+                        else:
+                            failed_count += 1
+                else:
+                    sent = send_user_registration_acknowledgement_email(reg.user, event)
+                    if sent:
+                        success_count += 1
+                    else:
+                        failed_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to send registration email to {reg.user.email}: {e}")
+                failed_count += 1
+
+        return Response({
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "total_count": success_count + failed_count,
+        })
 
     @action(detail=True, methods=["post"], permission_classes=[AllowAny], url_path="attending")
     def attending(self, request, pk=None):
