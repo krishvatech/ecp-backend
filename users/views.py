@@ -2357,7 +2357,9 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         return Response({"updated": updated})
 
     def perform_destroy(self, instance):
-        # The pre_delete signal 'remove_user_from_cognito' handles Cognito cleanup
+        # The pre_delete signal 'remove_user_from_cognito' handles cleanup for:
+        # - Cognito: Deletes user account so they cannot login
+        # - Saleor: Removes user from Saleor as a customer account
         instance.delete()
 
     @action(detail=False, methods=["post"], url_path="create-with-password")

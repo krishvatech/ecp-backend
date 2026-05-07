@@ -475,6 +475,129 @@ def assign_user_to_group(staff_id, group_id, auth_token=None):
         return False
 
 
+def remove_user_from_saleor_customer(user_email):
+    """
+    Remove a user from Saleor as a customer.
+    Uses app token (no user auth required) to delete customer account.
+
+    Args:
+        user_email: User's email
+
+    Returns:
+        dict: {"success": bool, "message": str}
+    """
+    logger.info(f"Attempting to remove {user_email} from Saleor as customer...")
+
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+    saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
+
+    if not saleor_url or not saleor_token:
+        logger.warning(f"Saleor not configured. Skipping customer removal for {user_email}")
+        return {
+            "success": True,
+            "message": "Saleor not configured, skipping"
+        }
+
+    query = """
+    query($email: String!) {
+        customers(first: 1, filter: {search: $email}) {
+            edges {
+                node {
+                    id
+                    email
+                }
+            }
+        }
+    }
+    """
+
+    headers = {
+        "Authorization": f"Bearer {saleor_token}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(
+            saleor_url,
+            json={"query": query, "variables": {"email": user_email}},
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            logger.warning(f"Saleor error finding customer {user_email}: {data['errors']}")
+            return {
+                "success": True,
+                "message": "Customer not found in Saleor"
+            }
+
+        edges = data.get("data", {}).get("customers", {}).get("edges", [])
+        if not edges:
+            logger.info(f"Customer {user_email} not found in Saleor (already removed or never created)")
+            return {
+                "success": True,
+                "message": "Customer not found in Saleor"
+            }
+
+        customer_id = edges[0]["node"]["id"]
+        logger.info(f"Found customer {user_email} in Saleor: {customer_id}")
+
+        # Delete the customer from Saleor
+        mutation = """
+        mutation($id: ID!) {
+            customerDelete(id: $id) {
+                user {
+                    id
+                    email
+                }
+                errors {
+                    field
+                    message
+                }
+            }
+        }
+        """
+
+        response = requests.post(
+            saleor_url,
+            json={"query": mutation, "variables": {"id": customer_id}},
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            logger.error(f"Saleor error deleting customer: {data['errors']}")
+            return {
+                "success": False,
+                "message": "Failed to delete customer from Saleor"
+            }
+
+        result = data.get("data", {}).get("customerDelete", {})
+        if result.get("errors"):
+            logger.error(f"Failed to delete customer: {result['errors']}")
+            return {
+                "success": False,
+                "message": "Failed to delete customer from Saleor"
+            }
+
+        logger.info(f"Successfully deleted customer {user_email} from Saleor")
+        return {
+            "success": True,
+            "message": f"Successfully removed customer {user_email} from Saleor"
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to remove customer from Saleor: {e}")
+        return {
+            "success": False,
+            "message": f"Error: {str(e)}"
+        }
+
+
 def remove_platform_admin_from_saleor(user_email, auth_token=None):
     """
     Remove a platform_admin user from Saleor by deactivating their staff account.

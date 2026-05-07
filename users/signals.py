@@ -139,32 +139,49 @@ def sync_cognito_status(sender, instance, created, **kwargs):
 @receiver(pre_delete, sender=User)
 def remove_user_from_cognito(sender, instance, **kwargs):
     """
-    Remove user from Cognito when deleted from Django.
-    This ensures deleted/merged users can no longer login.
+    Remove user from Cognito and Saleor when deleted from Django.
+    This ensures deleted/merged users can no longer login and are cleaned up from external services.
     """
     region = getattr(settings, "COGNITO_REGION", "")
     pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "")
     if not region or not pool_id:
-        return
+        cognito_available = False
+    else:
+        cognito_available = True
 
-    try:
-        import boto3
-        client = boto3.client("cognito-idp", region_name=region)
-        
-        # Try to get Cognito sub if available
-        cognito_id = getattr(instance, "cognito_identity", None)
-        cognito_username = cognito_id.cognito_sub if cognito_id else (instance.email or instance.username)
+    # 1. Remove from Cognito
+    if cognito_available:
+        try:
+            import boto3
+            client = boto3.client("cognito-idp", region_name=region)
 
-        client.admin_delete_user(
-            UserPoolId=pool_id,
-            Username=cognito_username
-        )
-        logger.info(f"Removed user {instance.username} (CognitoID: {cognito_username}) from Cognito")
-    except Exception as e:
-        # Ignore if user already deleted from Cognito or never existed
-        if "UserNotFoundException" in str(e):
-            return
-        logger.error(f"Failed to remove {instance.username} from Cognito: {e}")
+            # Try to get Cognito sub if available
+            cognito_id = getattr(instance, "cognito_identity", None)
+            cognito_username = cognito_id.cognito_sub if cognito_id else (instance.email or instance.username)
+
+            client.admin_delete_user(
+                UserPoolId=pool_id,
+                Username=cognito_username
+            )
+            logger.info(f"Removed user {instance.username} (CognitoID: {cognito_username}) from Cognito")
+        except Exception as e:
+            # Ignore if user already deleted from Cognito or never existed
+            if "UserNotFoundException" in str(e):
+                pass
+            else:
+                logger.error(f"Failed to remove {instance.username} from Cognito: {e}")
+
+    # 2. Remove from Saleor (as customer)
+    if instance.email:
+        try:
+            from .saleor_sync import remove_user_from_saleor_customer
+            result = remove_user_from_saleor_customer(instance.email)
+            if result.get("success"):
+                logger.info(f"Cleaned up Saleor customer for {instance.username}: {result.get('message')}")
+            else:
+                logger.warning(f"Failed to clean up Saleor customer for {instance.username}: {result.get('message')}")
+        except Exception as e:
+            logger.error(f"Error cleaning up Saleor for {instance.username}: {e}")
 
 
 def create_profile_view_notification(sender, instance, created, **kwargs):
