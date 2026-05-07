@@ -15,6 +15,7 @@ from rest_framework import permissions, viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.filters import SearchFilter, OrderingFilter
 from django_filters.rest_framework import DjangoFilterBackend, FilterSet, CharFilter
 from .models import Resource
 from django.utils import timezone
@@ -44,8 +45,11 @@ class ResourceViewSet(viewsets.ModelViewSet):
     """
     serializer_class = ResourceSerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = ResourceFilter
+    search_fields = ['title', 'description', 'tags']
+    ordering_fields = ['created_at', 'title']
+    ordering = ['-created_at']
     # content/views.py (inside ResourceViewSet)
     def _paid_event_ids(self, user):
         """

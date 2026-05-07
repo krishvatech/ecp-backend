@@ -192,7 +192,18 @@ class CommunityViewSet(viewsets.ModelViewSet):
         # optional simple search on text
         q = (request.query_params.get("search") or "").strip()
         if q:
-            qs = qs.filter(metadata__text__icontains=q)
+            qs = qs.filter(
+                Q(metadata__text__icontains=q) |           # Text posts
+                Q(metadata__caption__icontains=q) |        # Image posts
+                Q(metadata__title__icontains=q) |          # Link posts
+                Q(metadata__description__icontains=q) |    # Link posts
+                Q(metadata__question__icontains=q) |       # Poll posts
+                Q(metadata__tags__icontains=q) |
+                Q(actor__username__icontains=q) |
+                Q(actor__first_name__icontains=q) |
+                Q(actor__last_name__icontains=q) |
+                Q(community__name__icontains=q)
+            )
 
         results = []
         for fi in qs:

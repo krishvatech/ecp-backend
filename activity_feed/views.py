@@ -1,5 +1,6 @@
 # activity_feed/view.py
-from django.db.models import Q
+from django.db.models import Q, CharField
+from django.db.models.functions import Cast
 from rest_framework.viewsets import ReadOnlyModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -53,13 +54,33 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             return int(a)
         except (TypeError, ValueError):
             return None
+
+    def _feed_search_q(self, term):
+        return (
+            Q(metadata__text__icontains=term) |
+            Q(metadata__caption__icontains=term) |
+            Q(metadata__title__icontains=term) |
+            Q(metadata__description__icontains=term) |
+            Q(metadata__question__icontains=term) |
+            Q(metadata__tags__icontains=term) |
+            Q(metadata__event_title__icontains=term) |
+            Q(metadata__resource_title__icontains=term) |
+            Q(actor__username__icontains=term) |
+            Q(actor__first_name__icontains=term) |
+            Q(actor__last_name__icontains=term) |
+            Q(community__name__icontains=term) |
+            Q(group__name__icontains=term)
+        )
         
     def get_queryset(self):
         qs = super().get_queryset()
         req = self.request
         me = req.user
-        actor_id = self._parse_actor_id(req) 
+        actor_id = self._parse_actor_id(req)
         pk = self.kwargs.get(getattr(self, "lookup_field", "pk"))
+
+        # Extract search query for use in filtering below
+        search_q = (req.query_params.get("search") or req.query_params.get("q") or "").strip()
         if pk is not None:
             try:
                 qs = qs.select_related("actor", "actor__profile").filter(pk=int(pk))
@@ -127,8 +148,13 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                         Q(metadata__groupId=str(gid_num)) |
                         Q(metadata__group__id=gid_num) |
                         Q(metadata__group__id=str(gid_num))
-                        
+
                     )
+
+            # Apply search filter if provided
+            if search_q:
+                qs = qs.filter(self._feed_search_q(search_q))
+
             return qs.select_related("actor", "actor__profile").order_by("-created_at")
 
         if scope in ("community", "home", "friends_and_public"):
@@ -189,6 +215,9 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             comm_posts = comm_posts.filter(vis_public | vis_missing | vis_community | vis_friends | own_posts)
 
             if scope == "community":
+                # Apply search filter if provided
+                if search_q:
+                    comm_posts = comm_posts.filter(self._feed_search_q(search_q))
                 return comm_posts.select_related("actor", "actor__profile").order_by("-created_at")
 
             if scope in ("home", "friends_and_public"):
@@ -221,17 +250,28 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     Q(actor_id=me.id) | ~Q(actor__profile__profile_status__in=BLOCKED)
                 )
 
+                # Combine both feeds
+                combined = (group_feed | comm_posts)
+
+                # Apply search filter if provided
+                if search_q:
+                    combined = combined.filter(self._feed_search_q(search_q))
+
                 # Return union of both
-                return (group_feed | comm_posts).select_related("actor", "actor__profile").order_by("-created_at")
+                return combined.select_related("actor", "actor__profile").order_by("-created_at")
         
         # Fallback (unchanged)
         if actor_id:  # <-- NEW
             qs = qs.filter(actor_id=actor_id)
-        
+
         # Safety catch-all for default flow
         BLOCKED = ("suspended", "fake", "deceased")
         qs = qs.filter(Q(actor_id=me.id) | ~Q(actor__profile__profile_status__in=BLOCKED))
-        
+
+        # Apply search filter if provided
+        if search_q:
+            qs = qs.filter(self._feed_search_q(search_q))
+
         return qs
 
     
@@ -273,29 +313,28 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         )
 
     # --- NEW: Resource queryset restricted to viewer's registrations ---
-    def _visible_resources_qs(self, request, workset_size: int):
+    def _visible_resources_qs(self, request, workset_size: int, search_q: str = ""):
         """
-        Only Resources that are (a) published, (b) attached to an event,
-        and (c) that event is one the current user registered for.
-        Optional ?community_id filter is respected.
+        Resources visible in live feed.
+        Search supports resource title, description, tags, event title, community name, and uploader.
         """
         me = request.user
         if not me.is_authenticated:
             return Resource.objects.none()
 
-        reg_event_ids = self._registered_event_ids(me.id)
-        if not reg_event_ids:
-            return Resource.objects.none()
-
         qs = (
             Resource.objects
             .select_related("uploaded_by", "community", "event")
-            .filter(is_published=True, event_id__isnull=False, event_id__in=reg_event_ids)
-            .order_by("-created_at")
+            .filter(is_published=True, event_id__isnull=False)
         )
 
-        # Resources for registered events are visible (even if event is hidden)
-        # since reg_event_ids already filters to user's registered events
+        # Admin/staff can see all published resources.
+        # Normal users see only resources for registered events.
+        if not (me.is_staff or me.is_superuser):
+            reg_event_ids = self._registered_event_ids(me.id)
+            if not reg_event_ids:
+                return Resource.objects.none()
+            qs = qs.filter(event_id__in=reg_event_ids)
 
         cid = request.query_params.get("community_id")
         if cid:
@@ -304,7 +343,23 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             except ValueError:
                 pass
 
-        return qs[:workset_size]
+        if search_q:
+            # Search across title, description, and related fields
+            # Note: ArrayField tags search happens in Python due to database compatibility
+            qs = qs.filter(
+                Q(title__icontains=search_q) |
+                Q(description__icontains=search_q) |
+                Q(link_url__icontains=search_q) |
+                Q(video_url__icontains=search_q) |
+                Q(event__title__icontains=search_q) |
+                Q(event__description__icontains=search_q) |
+                Q(community__name__icontains=search_q) |
+                Q(uploaded_by__username__icontains=search_q) |
+                Q(uploaded_by__first_name__icontains=search_q) |
+                Q(uploaded_by__last_name__icontains=search_q)
+            )
+
+        return qs.order_by("-created_at")[:workset_size]
 
     # --- NEW: Convert a Resource to the same API row shape you use for events ---
     def _resource_to_api_row(self, r: Resource, request):
@@ -337,6 +392,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             "created_at": _iso(getattr(r, "created_at", None)),
             "actor_id": getattr(actor, "id", None),
             "actor_name": actor_name,
+            "actor_username": getattr(actor, "username", None),
             "community_id": r.community_id,
             "metadata": {
                 "type": "resource",
@@ -405,6 +461,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
 
         # Build base queryset with your existing filters
         qs = self.filter_queryset(self.get_queryset())
+        search_q = (request.query_params.get("search") or request.query_params.get("q") or "").strip()
 
         # ---- figure out requested page size to build a reasonable working set ----
         try:
@@ -503,6 +560,20 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
 
         # Only show published or live events (exclude draft events)
         event_qs = event_qs.filter(status__in=["published", "live"])
+        if search_q:
+            event_qs = event_qs.filter(
+                Q(title__icontains=search_q) |
+                Q(description__icontains=search_q) |
+                Q(location__icontains=search_q) |
+                Q(venue_name__icontains=search_q) |
+                Q(venue_address__icontains=search_q) |
+                Q(location_city__icontains=search_q) |
+                Q(location_country__icontains=search_q) |
+                Q(created_by__username__icontains=search_q) |
+                Q(created_by__first_name__icontains=search_q) |
+                Q(created_by__last_name__icontains=search_q) |
+                Q(community__name__icontains=search_q)
+            )
 
         event_qs = event_qs.order_by("-created_at", "-start_time")[:workset_size]
 
@@ -541,6 +612,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 "created_at": created_iso,
                 "actor_id": getattr(creator, "id", None),
                 "actor_name": actor_name,
+                "actor_username": getattr(creator, "username", None),
                 "community_id": getattr(e, "community_id", None),
                 "metadata": {
                     "type": "event",  # your FE checks this to render an event card
@@ -557,7 +629,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 },
             })
 
-        resource_qs = self._visible_resources_qs(request, workset_size)
+        resource_limit = max(workset_size, 500) if search_q else workset_size
+        resource_qs = self._visible_resources_qs(request, resource_limit, search_q)
         resource_rows = [self._resource_to_api_row(r, request) for r in resource_qs]
             
         # ---- merge & sort by timestamp (created_at or event start_time) ----
