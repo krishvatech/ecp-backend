@@ -23,7 +23,7 @@ from .models import (
     Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
     EventSession, SessionParticipant, SessionAttendance, SessionBreak, EventApplication, VirtualSpeaker, GuestAttendee,
     SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup,
-    EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount
+    EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate
 )
 from community.models import Community
 from content.models import Resource
@@ -2951,3 +2951,16 @@ class EventSaleorDiscountSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("End date must be same as or after start date.")
 
         return data
+
+
+class EventEmailTemplateSerializer(serializers.ModelSerializer):
+    """Serializer for per-event email template overrides."""
+    updated_by_name = serializers.CharField(source='updated_by.get_full_name', read_only=True)
+
+    class Meta:
+        model = EventEmailTemplate
+        fields = [
+            'id', 'event', 'template_key', 'subject', 'html_body', 'text_body',
+            'is_active', 'updated_by', 'updated_by_name', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'event', 'created_at', 'updated_at', 'updated_by_name']

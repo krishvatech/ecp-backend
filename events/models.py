@@ -496,6 +496,39 @@ class Event(models.Model):
         )
 
 
+class EventEmailTemplate(models.Model):
+    """Per-event customizable email templates for registration confirmations."""
+    TEMPLATE_KEY_CHOICES = [
+        ("user_registration_acknowledgement", "User Registration Acknowledgement"),
+        ("guest_registration_acknowledgement", "Guest Registration Acknowledgement"),
+        ("event_confirmation", "Event Confirmation (Speaker/Host)"),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="email_template_overrides")
+    template_key = models.CharField(max_length=80, choices=TEMPLATE_KEY_CHOICES)
+    subject = models.CharField(max_length=250)
+    html_body = models.TextField()
+    text_body = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="event_email_templates_updated"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [['event', 'template_key']]
+        verbose_name = "Event Email Template"
+        verbose_name_plural = "Event Email Templates"
+
+    def __str__(self):
+        return f"{self.get_template_key_display()} - {self.event.title}"
+
+
 class LoungeTable(models.Model):
     """Represents a virtual table in the Social Lounge."""
     TABLE_CATEGORY_CHOICES = [

@@ -33,6 +33,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
+from django.template import Template as DjangoTemplate, Context
 
 # ============================================================
 # ================= DRF (Django REST Framework) ==============
@@ -59,7 +60,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount
+from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate
 from .permissions import IsSuperuserOnly
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -97,6 +98,7 @@ from .serializers import (
     SeriesRegistrationSerializer,
     PublicEventSeriesSerializer,
     EventSaleorDiscountSerializer,
+    EventEmailTemplateSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -6952,6 +6954,168 @@ class EventViewSet(viewsets.ModelViewSet):
             "status": status_msg,
             "event_id": event.id,
             "registration_status": registration.status
+        })
+
+    # ========== Email Template Endpoints ==========
+    @action(detail=True, methods=["get", "patch", "delete"], permission_classes=[IsAuthenticated], url_path=r"email-templates/(?P<template_key>[^/]+)")
+    def email_templates(self, request, pk=None, template_key=None):
+        """Handle GET, PATCH, DELETE for email templates."""
+        event = self.get_object()
+        if not (request.user.is_superuser or event.created_by_id == request.user.id):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+
+        if request.method == "GET":
+            try:
+                event_template = EventEmailTemplate.objects.get(event=event, template_key=template_key)
+                serializer = EventEmailTemplateSerializer(event_template)
+                return Response({
+                    **serializer.data,
+                    "source": "event_specific"
+                })
+            except EventEmailTemplate.DoesNotExist:
+                # Return global/default template
+                try:
+                    from cms.models import EmailTemplate
+                    global_template = EmailTemplate.objects.get(template_key=template_key, is_active=True)
+                    return Response({
+                        "id": None,
+                        "event": event.id,
+                        "template_key": template_key,
+                        "subject": global_template.subject,
+                        "html_body": global_template.html_body,
+                        "text_body": global_template.text_body,
+                        "is_active": True,
+                        "updated_by": None,
+                        "updated_by_name": None,
+                        "created_at": str(global_template.created_at),
+                        "updated_at": str(global_template.last_updated),
+                        "source": "global_default"
+                    })
+                except Exception:
+                    return Response({"detail": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        elif request.method == "PATCH":
+            event_template, created = EventEmailTemplate.objects.get_or_create(
+                event=event,
+                template_key=template_key
+            )
+            serializer = EventEmailTemplateSerializer(event_template, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save(updated_by=request.user)
+                return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        elif request.method == "DELETE":
+            try:
+                event_template = EventEmailTemplate.objects.get(event=event, template_key=template_key)
+                event_template.delete()
+                return Response({"detail": "Template deleted."}, status=status.HTTP_204_NO_CONTENT)
+            except EventEmailTemplate.DoesNotExist:
+                return Response({"detail": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path=r"email-templates/(?P<template_key>[^/]+)/preview")
+    def preview_email_template(self, request, pk=None, template_key=None):
+        """Preview rendered email template with sample data."""
+        event = self.get_object()
+        if not (request.user.is_superuser or event.created_by_id == request.user.id):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Get event-specific or global template
+        try:
+            event_template = EventEmailTemplate.objects.get(event=event, template_key=template_key)
+            subject = event_template.subject
+            html_body = event_template.html_body
+            text_body = event_template.text_body
+        except EventEmailTemplate.DoesNotExist:
+            try:
+                from cms.models import EmailTemplate
+                global_template = EmailTemplate.objects.get(template_key=template_key, is_active=True)
+                subject = global_template.subject
+                html_body = global_template.html_body
+                text_body = global_template.text_body
+            except Exception:
+                return Response({"detail": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Build sample context data
+        from users.email_utils import format_event_time_for_email
+        time_info = format_event_time_for_email(event)
+
+        if template_key == "user_registration_acknowledgement":
+            sample_user = request.user
+            context = {
+                "app_name": "IMAA Connect",
+                "first_name": sample_user.first_name or sample_user.username or "John",
+                "email": sample_user.email,
+                "event_title": event.title,
+                "event_date": time_info["start_time_in_tz"],
+                "event_start": time_info["start_time_in_tz"],
+                "event_end": time_info["end_time_in_tz"],
+                "event_start_str": time_info["event_start_str"],
+                "event_end_str": time_info["event_end_str"],
+                "event_date_str": time_info["event_date_str"],
+                "event_date_range_str": time_info["event_date_range_str"],
+                "is_multi_day": event.is_multi_day,
+                "event_timezone": event.timezone,
+                "event_url": f"{getattr(settings, 'FRONTEND_URL', '')}/events/{event.slug or event.id}/",
+                "support_email": getattr(settings, 'SUPPORT_EMAIL', getattr(settings, 'DEFAULT_FROM_EMAIL', '')),
+            }
+        elif template_key == "guest_registration_acknowledgement":
+            context = {
+                "app_name": "IMAA Connect",
+                "guest_name": "Jane Doe",
+                "email": "jane@example.com",
+                "event_title": event.title,
+                "event_date": time_info["start_time_in_tz"],
+                "event_start": time_info["start_time_in_tz"],
+                "event_end": time_info["end_time_in_tz"],
+                "event_start_str": time_info["event_start_str"],
+                "event_end_str": time_info["event_end_str"],
+                "event_date_str": time_info["event_date_str"],
+                "event_date_range_str": time_info["event_date_range_str"],
+                "is_multi_day": event.is_multi_day,
+                "event_timezone": event.timezone,
+                "event_url": f"{getattr(settings, 'FRONTEND_URL', '')}/events/{event.slug or event.id}/",
+                "support_email": getattr(settings, 'SUPPORT_EMAIL', getattr(settings, 'DEFAULT_FROM_EMAIL', '')),
+            }
+        elif template_key == "event_confirmation":
+            sample_user = request.user
+            context = {
+                "app_name": "IMAA Connect",
+                "first_name": sample_user.first_name or sample_user.username or "John",
+                "last_name": sample_user.last_name or "",
+                "email": sample_user.email,
+                "role": "Speaker",
+                "event_title": event.title,
+                "event_description": event.description or "",
+                "event_start": time_info["start_time_in_tz"],
+                "event_end": time_info["end_time_in_tz"],
+                "event_start_str": time_info["event_start_str"],
+                "event_end_str": time_info["event_end_str"],
+                "event_date_str": time_info["event_date_str"],
+                "event_date_range_str": time_info["event_date_range_str"],
+                "is_multi_day": event.is_multi_day,
+                "event_timezone": event.timezone,
+                "event_url": f"{getattr(settings, 'FRONTEND_URL', '')}/events/{event.slug or event.id}/",
+                "profile_url": f"{getattr(settings, 'FRONTEND_URL', '')}/profile/{sample_user.username}",
+                "login_url": f"{getattr(settings, 'FRONTEND_URL', '')}/login",
+                "support_email": getattr(settings, 'SUPPORT_EMAIL', getattr(settings, 'DEFAULT_FROM_EMAIL', '')),
+            }
+        else:
+            context = {}
+
+        # Render template
+        try:
+            ctx = Context(context)
+            rendered_subject = DjangoTemplate(subject).render(ctx)
+            rendered_html = DjangoTemplate(html_body).render(ctx)
+            rendered_text = DjangoTemplate(text_body).render(ctx)
+        except Exception as e:
+            return Response({"detail": f"Template rendering failed: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "subject": rendered_subject,
+            "html_body": rendered_html,
+            "text_body": rendered_text,
         })
 
 

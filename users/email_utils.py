@@ -153,13 +153,15 @@ def generate_magic_login_token(user, event=None, expires_in_hours=24):
     return token
 
 
-def send_template_email(template_key, to_email, context, subject_override=None, fail_silently=False):
+def send_template_email(template_key, to_email, context, subject_override=None, fail_silently=False, event=None):
     """
-    Central email sending helper with DB-first and file fallback logic.
+    Central email sending helper with event-specific, DB-first, and file fallback logic.
 
-    Attempts to load email template from DB (EmailTemplate model).
-    If found and is_active=True: renders html_body/text_body using Django Template engine.
-    If not found or is_active=False: falls back to file-based templates (emails/<key>.html/.txt).
+    Template resolution priority:
+    1. Event-specific EventEmailTemplate if event is passed and active
+    2. Global cms.EmailTemplate if exists and active
+    3. File-based template (emails/<key>.html/.txt)
+    4. Hardcoded fallback
 
     All template fields support full Django template syntax:
     - Variables: {{ variable }}
@@ -167,29 +169,48 @@ def send_template_email(template_key, to_email, context, subject_override=None, 
     - Filters: |date:"F j, Y", |truncatewords:30, etc.
 
     Args:
-        template_key: One of the 17 EmailTemplate.TEMPLATE_KEY_CHOICES values
+        template_key: One of the EmailTemplate.TEMPLATE_KEY_CHOICES values
         to_email: Recipient email address
         context: Dict of template variables
-        subject_override: If provided, overrides the DB/default subject
+        subject_override: Fallback-only, does not override DB subjects
         fail_silently: Passed to send_mail (False blocks errors, True logs silently)
+        event: Optional Event instance for event-specific template lookup
 
     Returns:
         bool: True if email sent successfully, False otherwise
     """
     db_template = None
-    try:
-        from cms.models import EmailTemplate
-        db_template = EmailTemplate.objects.get(template_key=template_key, is_active=True)
-    except Exception:
-        # DoesNotExist, ImportError, or DB error — fallback to files
-        pass
+    template_source = "fallback"
 
-    # --- Step 1: Render subject, html_body, text_body ---
+    # Step 1: Try event-specific template if event is provided
+    if event:
+        try:
+            from events.models import EventEmailTemplate
+            db_template = EventEmailTemplate.objects.get(
+                event=event,
+                template_key=template_key,
+                is_active=True
+            )
+            template_source = "event_specific"
+            logger.info(f"send_template_email: Using event-specific template for '{template_key}' on event {event.id}")
+        except Exception:
+            pass
+
+    # Step 2: Try global template if event-specific not found
+    if not db_template:
+        try:
+            from cms.models import EmailTemplate
+            db_template = EmailTemplate.objects.get(template_key=template_key, is_active=True)
+            template_source = "global_db"
+        except Exception:
+            pass
+
+    # --- Step 3: Render subject, html_body, text_body ---
     try:
         if db_template:
             # Render DB-stored template strings through Django template engine
             ctx = Context(context)
-            subject = subject_override or DjangoTemplate(db_template.subject).render(ctx)
+            subject = DjangoTemplate(db_template.subject).render(ctx)
             html_body = DjangoTemplate(db_template.html_body).render(ctx)
             text_body = DjangoTemplate(db_template.text_body).render(ctx)
         else:
@@ -207,10 +228,10 @@ def send_template_email(template_key, to_email, context, subject_override=None, 
                 text_body = ""
 
     except Exception as e:
-        logger.error(f"send_template_email: Failed to render template '{template_key}': {e}")
+        logger.error(f"send_template_email: Failed to render template '{template_key}' (source={template_source}): {e}")
         return False
 
-    # --- Step 2: Send ---
+    # --- Step 4: Send ---
     try:
         send_platform_email(
             subject=subject,
@@ -220,7 +241,7 @@ def send_template_email(template_key, to_email, context, subject_override=None, 
             html_message=html_body or None,
             fail_silently=fail_silently,
         )
-        logger.info(f"send_template_email: Sent '{template_key}' to {to_email}")
+        logger.info(f"send_template_email: Sent '{template_key}' to {to_email} (source={template_source})")
         return True
     except Exception as e:
         logger.error(f"send_template_email: Failed to send '{template_key}' to {to_email}: {e}")
@@ -515,6 +536,7 @@ def send_speaker_credentials_email(user, frontend_url=None):
 def send_event_confirmation_email(participant):
     """
     Send email to speaker confirming they've been added to an event.
+    Uses event-specific email template if configured, otherwise falls back to global template.
 
     Args:
         participant: EventParticipant instance
@@ -539,6 +561,7 @@ def send_event_confirmation_email(participant):
         "app_name": "IMAA Connect",
         "first_name": user.first_name or user.username or "there",
         "last_name": user.last_name or "",
+        "email": user.email,
         "role": participant.get_role_display(),
         "event_title": event.title,
         "event_description": event.description or "",
@@ -547,6 +570,7 @@ def send_event_confirmation_email(participant):
         "event_start_str": time_info["event_start_str"],
         "event_end_str": time_info["event_end_str"],
         "event_date_str": time_info["event_date_str"],
+        "event_date_range_str": time_info["event_date_range_str"],
         "is_multi_day": event.is_multi_day,
         "event_timezone": event.timezone,
         "event_url": event_url,
@@ -560,8 +584,8 @@ def send_event_confirmation_email(participant):
         template_key="event_confirmation",
         to_email=user.email,
         context=ctx,
-        subject_override=f"You're Confirmed as {ctx['role']} - {event.title}",
         fail_silently=False,
+        event=event,
     )
 
 
@@ -834,6 +858,7 @@ def send_user_registration_acknowledgement_email(user, event):
     Send an acknowledgement email to an authenticated user when they register for an open event.
 
     Confirms their registration and provides event details.
+    Uses event-specific email template if configured, otherwise falls back to global template.
 
     Args:
         user: User instance
@@ -855,6 +880,7 @@ def send_user_registration_acknowledgement_email(user, event):
     ctx = {
         "app_name": app_name,
         "first_name": user.first_name or user.username or "there",
+        "email": user.email,
         "event_title": event.title,
         "event_date": time_info["start_time_in_tz"],
         "event_start": time_info["start_time_in_tz"],
@@ -862,6 +888,7 @@ def send_user_registration_acknowledgement_email(user, event):
         "event_start_str": time_info["event_start_str"],
         "event_end_str": time_info["event_end_str"],
         "event_date_str": time_info["event_date_str"],
+        "event_date_range_str": time_info["event_date_range_str"],
         "is_multi_day": event.is_multi_day,
         "event_timezone": event.timezone,
         "event_url": event_url,
@@ -872,8 +899,8 @@ def send_user_registration_acknowledgement_email(user, event):
         template_key="user_registration_acknowledgement",
         to_email=user.email,
         context=ctx,
-        subject_override=f"Registration Confirmed – '{event.title}'",
         fail_silently=True,
+        event=event,
     )
 
 
@@ -882,6 +909,7 @@ def send_guest_registration_acknowledgement_email(guest_name, email, event):
     Send an acknowledgement email to a guest when they register for an open registration event.
 
     Confirms their registration and provides event details.
+    Uses event-specific email template if configured, otherwise falls back to global template.
 
     Args:
         guest_name: Guest's display name (first_name last_name)
@@ -904,6 +932,7 @@ def send_guest_registration_acknowledgement_email(guest_name, email, event):
     ctx = {
         "app_name": app_name,
         "guest_name": guest_name or "Guest",
+        "email": email,
         "event_title": event.title,
         "event_date": time_info["start_time_in_tz"],
         "event_start": time_info["start_time_in_tz"],
@@ -911,6 +940,7 @@ def send_guest_registration_acknowledgement_email(guest_name, email, event):
         "event_start_str": time_info["event_start_str"],
         "event_end_str": time_info["event_end_str"],
         "event_date_str": time_info["event_date_str"],
+        "event_date_range_str": time_info["event_date_range_str"],
         "is_multi_day": event.is_multi_day,
         "event_timezone": event.timezone,
         "event_url": event_url,
@@ -921,8 +951,8 @@ def send_guest_registration_acknowledgement_email(guest_name, email, event):
         template_key="guest_registration_acknowledgement",
         to_email=email,
         context=ctx,
-        subject_override=f"You're Registered for '{event.title}' ✅",
         fail_silently=True,
+        event=event,
     )
 
 
