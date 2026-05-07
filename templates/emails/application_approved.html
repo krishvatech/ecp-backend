@@ -17,10 +17,10 @@
             <h2 style="margin-top: 0; color: #2c3e50;">{{ event_title }}</h2>
             {% if event_start %}
             {% if is_multi_day %}
-            <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_start|date:"F j, Y" }} – {{ event_end|date:"F j, Y" }}</p>
+            <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_date_range_str }}</p>
             {% else %}
-            <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_start|date:"F j, Y" }}</p>
-            <p style="margin: 5px 0;"><strong>⏰ Time:</strong> {{ event_start|time:"g:i A" }}{% if event_end %} - {{ event_end|time:"g:i A" }}{% endif %}</p>
+            <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_date_str }}</p>
+            <p style="margin: 5px 0;"><strong>⏰ Time:</strong> {{ event_start_str }}{% if event_end %} - {{ event_end_str }} ({{ event_timezone }}){% endif %}</p>
             {% endif %}
             {% if event_timezone %}<p style="margin: 5px 0;"><strong>🌍 Timezone:</strong> {{ event_timezone }}</p>{% endif %}
             {% endif %}

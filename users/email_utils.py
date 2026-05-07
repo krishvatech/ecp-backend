@@ -39,6 +39,49 @@ def get_support_email():
     )
 
 
+def format_event_time_for_email(event):
+    """
+    Format event start/end times and date in the event's timezone.
+    Returns dict with pre-formatted strings to prevent template re-conversion.
+
+    Args:
+        event: Event instance with start_time, end_time, timezone, is_multi_day
+
+    Returns:
+        dict: Contains event_start_str, event_end_str, event_date_str, event_date_range_str
+    """
+    import pytz
+    from django.utils import timezone as dj_timezone
+
+    if not event.start_time:
+        return {
+            "event_start_str": "",
+            "event_end_str": "",
+            "event_date_str": "",
+            "event_date_range_str": "",
+        }
+
+    # Convert to event's timezone
+    event_tz = pytz.timezone(event.timezone) if event.timezone else dj_timezone.get_default_timezone()
+    start_time_in_tz = event.start_time.astimezone(event_tz)
+    end_time_in_tz = event.end_time.astimezone(event_tz) if event.end_time else start_time_in_tz
+
+    # Format as strings
+    event_start_str = start_time_in_tz.strftime("%I:%M %p").lstrip('0')
+    event_end_str = end_time_in_tz.strftime("%I:%M %p").lstrip('0')
+    event_date_str = start_time_in_tz.strftime("%B %d, %Y")
+    event_date_range_str = f"{start_time_in_tz.strftime('%B %d, %Y')} – {end_time_in_tz.strftime('%B %d, %Y')}"
+
+    return {
+        "event_start_str": event_start_str,
+        "event_end_str": event_end_str,
+        "event_date_str": event_date_str,
+        "event_date_range_str": event_date_range_str,
+        "start_time_in_tz": start_time_in_tz,
+        "end_time_in_tz": end_time_in_tz,
+    }
+
+
 def send_platform_email(
     *,
     subject,
@@ -488,6 +531,9 @@ def send_event_confirmation_email(participant):
     frontend_base = getattr(settings, 'FRONTEND_URL', '')
     event_url = f"{frontend_base}/events/{event.slug}/"
 
+    # Format event times in event's timezone
+    time_info = format_event_time_for_email(event)
+
     # Prepare email context
     ctx = {
         "app_name": "IMAA Connect",
@@ -496,8 +542,11 @@ def send_event_confirmation_email(participant):
         "role": participant.get_role_display(),
         "event_title": event.title,
         "event_description": event.description or "",
-        "event_start": event.start_time,
-        "event_end": event.end_time,
+        "event_start": time_info["start_time_in_tz"],
+        "event_end": time_info["end_time_in_tz"],
+        "event_start_str": time_info["event_start_str"],
+        "event_end_str": time_info["event_end_str"],
+        "event_date_str": time_info["event_date_str"],
         "is_multi_day": event.is_multi_day,
         "event_timezone": event.timezone,
         "event_url": event_url,
@@ -582,21 +631,24 @@ def send_event_cancelled_email(event):
     Send email to all participants (registered, cancellation_requested) when an event is cancelled.
     """
     from events.models import EventRegistration
-    
+
     frontend_base = getattr(settings, 'FRONTEND_URL', '')
     event_url = f"{frontend_base}/events/{event.slug}/"
     recommended_event_url = ""
     if getattr(event, 'recommended_event', None):
         recommended_event_url = f"{frontend_base}/events/{event.recommended_event.slug}/"
-        
+
+    # Format event times in event's timezone
+    time_info = format_event_time_for_email(event)
+
     registrations = EventRegistration.objects.filter(
         event=event,
         status__in=["registered", "cancellation_requested"]
     ).select_related("user")
-    
+
     success_count = 0
     support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
-    
+
     for reg in registrations:
         user = reg.user
         if not user or not user.email:
@@ -606,8 +658,12 @@ def send_event_cancelled_email(event):
             "app_name": "IMAA Connect",
             "first_name": user.first_name or user.username or "there",
             "event_title": event.title,
-            "event_start": event.start_time,
-            "event_end": event.end_time,
+            "event_start": time_info["start_time_in_tz"],
+            "event_end": time_info["end_time_in_tz"],
+            "event_start_str": time_info["event_start_str"],
+            "event_end_str": time_info["event_end_str"],
+            "event_date_str": time_info["event_date_str"],
+            "event_date_range_str": time_info["event_date_range_str"],
             "is_multi_day": event.is_multi_day,
             "event_timezone": event.timezone,
             "cancellation_message": event.cancellation_message or "",
@@ -626,7 +682,7 @@ def send_event_cancelled_email(event):
             fail_silently=True,
         ):
             success_count += 1
-            
+
     logger.info(f"Sent {success_count} cancellation emails for event {event.id}")
     return success_count
 
@@ -664,12 +720,18 @@ def send_event_invite_email(to_email, event, inviter, invite_url):
     inviter_name = inviter.get_full_name() or inviter.username or inviter.email
     support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
 
+    # Format event times in event's timezone
+    time_info = format_event_time_for_email(event)
+
     ctx = {
         "app_name": app_name,
         "inviter_name": inviter_name,
         "event_title": event.title,
-        "event_start": event.start_time,
-        "event_end": event.end_time,
+        "event_start": time_info["start_time_in_tz"],
+        "event_end": time_info["end_time_in_tz"],
+        "event_start_str": time_info["event_start_str"],
+        "event_end_str": time_info["event_end_str"],
+        "event_date_str": time_info["event_date_str"],
         "is_multi_day": event.is_multi_day,
         "event_timezone": event.timezone,
         "invite_url": invite_url,
@@ -699,12 +761,18 @@ def send_replay_noshow_email(user, event):
     replay_url = f"{frontend_base}/account/recordings"
     support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
 
+    # Format event times in event's timezone
+    time_info = format_event_time_for_email(event)
+
     ctx = {
         "app_name": app_name,
         "first_name": user.first_name or user.username or "there",
         "event_title": event.title,
-        "event_start": event.start_time,
-        "event_end": event.end_time,
+        "event_start": time_info["start_time_in_tz"],
+        "event_end": time_info["end_time_in_tz"],
+        "event_start_str": time_info["event_start_str"],
+        "event_end_str": time_info["event_end_str"],
+        "event_date_str": time_info["event_date_str"],
         "event_timezone": event.timezone,
         "event_url": event_url,
         "replay_url": replay_url,
@@ -734,12 +802,18 @@ def send_replay_partial_email(user, event):
     replay_url = f"{frontend_base}/account/recordings"
     support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
 
+    # Format event times in event's timezone
+    time_info = format_event_time_for_email(event)
+
     ctx = {
         "app_name": app_name,
         "first_name": user.first_name or user.username or "there",
         "event_title": event.title,
-        "event_start": event.start_time,
-        "event_end": event.end_time,
+        "event_start": time_info["start_time_in_tz"],
+        "event_end": time_info["end_time_in_tz"],
+        "event_start_str": time_info["event_start_str"],
+        "event_end_str": time_info["event_end_str"],
+        "event_date_str": time_info["event_date_str"],
         "event_timezone": event.timezone,
         "event_url": event_url,
         "replay_url": replay_url,
@@ -775,13 +849,19 @@ def send_user_registration_acknowledgement_email(user, event):
     frontend_base = getattr(settings, 'FRONTEND_URL', '')
     event_url = f"{frontend_base}/events/{event.slug or event.id}/"
 
+    # Format event times in event's timezone
+    time_info = format_event_time_for_email(event)
+
     ctx = {
         "app_name": app_name,
         "first_name": user.first_name or user.username or "there",
         "event_title": event.title,
-        "event_date": event.start_time,
-        "event_start": event.start_time,
-        "event_end": event.end_time,
+        "event_date": time_info["start_time_in_tz"],
+        "event_start": time_info["start_time_in_tz"],
+        "event_end": time_info["end_time_in_tz"],
+        "event_start_str": time_info["event_start_str"],
+        "event_end_str": time_info["event_end_str"],
+        "event_date_str": time_info["event_date_str"],
         "is_multi_day": event.is_multi_day,
         "event_timezone": event.timezone,
         "event_url": event_url,
@@ -818,13 +898,19 @@ def send_guest_registration_acknowledgement_email(guest_name, email, event):
     frontend_base = getattr(settings, 'FRONTEND_URL', '')
     event_url = f"{frontend_base}/events/{event.slug or event.id}/"
 
+    # Format event times in event's timezone
+    time_info = format_event_time_for_email(event)
+
     ctx = {
         "app_name": app_name,
         "guest_name": guest_name or "Guest",
         "event_title": event.title,
-        "event_date": event.start_time,
-        "event_start": event.start_time,
-        "event_end": event.end_time,
+        "event_date": time_info["start_time_in_tz"],
+        "event_start": time_info["start_time_in_tz"],
+        "event_end": time_info["end_time_in_tz"],
+        "event_start_str": time_info["event_start_str"],
+        "event_end_str": time_info["event_end_str"],
+        "event_date_str": time_info["event_date_str"],
         "is_multi_day": event.is_multi_day,
         "event_timezone": event.timezone,
         "event_url": event_url,
@@ -859,13 +945,19 @@ def send_application_acknowledgement_email(application):
     frontend_base = getattr(settings, 'FRONTEND_URL', '')
     event_url = f"{frontend_base}/events/{application.event.slug or application.event.id}/"
 
+    # Format event times in event's timezone
+    time_info = format_event_time_for_email(application.event)
+
     ctx = {
         "app_name": app_name,
         "applicant_name": f"{application.first_name} {application.last_name}",
         "event_title": application.event.title,
-        "event_date": application.event.start_time,
-        "event_start": application.event.start_time,
-        "event_end": application.event.end_time,
+        "event_date": time_info["start_time_in_tz"],
+        "event_start": time_info["start_time_in_tz"],
+        "event_end": time_info["end_time_in_tz"],
+        "event_start_str": time_info["event_start_str"],
+        "event_end_str": time_info["event_end_str"],
+        "event_date_str": time_info["event_date_str"],
         "is_multi_day": application.event.is_multi_day,
         "event_timezone": application.event.timezone,
         "event_url": event_url,
@@ -899,6 +991,9 @@ def send_application_approved_email(application):
     event_url = f"{frontend_base}/events/{application.event.slug}/"
     magic_link = None
 
+    # Format event times in event's timezone
+    time_info = format_event_time_for_email(application.event)
+
     # For guest applications (no linked user yet), generate magic login token
     # Backend already created user during approval, so application.user should exist
     if application.user:
@@ -920,9 +1015,12 @@ def send_application_approved_email(application):
         "app_name": app_name,
         "applicant_name": f"{application.first_name} {application.last_name}",
         "event_title": application.event.title,
-        "event_date": application.event.start_time,
-        "event_start": application.event.start_time,
-        "event_end": application.event.end_time,
+        "event_date": time_info["start_time_in_tz"],
+        "event_start": time_info["start_time_in_tz"],
+        "event_end": time_info["end_time_in_tz"],
+        "event_start_str": time_info["event_start_str"],
+        "event_end_str": time_info["event_end_str"],
+        "event_date_str": time_info["event_date_str"],
         "is_multi_day": application.event.is_multi_day,
         "event_timezone": application.event.timezone,
         "event_url": event_url,
@@ -954,12 +1052,18 @@ def send_application_declined_email(application, custom_message=''):
 
     app_name = "IMAA Connect"
 
+    # Format event times in event's timezone
+    time_info = format_event_time_for_email(application.event)
+
     ctx = {
         "app_name": app_name,
         "applicant_name": f"{application.first_name} {application.last_name}",
         "event_title": application.event.title,
-        "event_start": application.event.start_time,
-        "event_end": application.event.end_time,
+        "event_start": time_info["start_time_in_tz"],
+        "event_end": time_info["end_time_in_tz"],
+        "event_start_str": time_info["event_start_str"],
+        "event_end_str": time_info["event_end_str"],
+        "event_date_str": time_info["event_date_str"],
         "is_multi_day": application.event.is_multi_day,
         "event_timezone": application.event.timezone,
         "custom_message": custom_message or '',
@@ -1118,12 +1222,18 @@ def send_event_starting_soon_email(user, event):
     frontend_base = getattr(settings, 'FRONTEND_URL', '')
     event_url = f"{frontend_base}/events/{event.slug or event.id}/"
 
+    # Format event times in event's timezone
+    time_info = format_event_time_for_email(event)
+
     ctx = {
         "app_name": app_name,
         "first_name": user.first_name or user.username or "there",
         "event_title": event.title,
-        "event_start": event.start_time,
-        "event_end": event.end_time,
+        "event_start": time_info["start_time_in_tz"],
+        "event_end": time_info["end_time_in_tz"],
+        "event_start_str": time_info["event_start_str"],
+        "event_end_str": time_info["event_end_str"],
+        "event_date_str": time_info["event_date_str"],
         "is_multi_day": event.is_multi_day,
         "event_timezone": event.timezone,
         "event_url": event_url,

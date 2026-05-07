@@ -7,10 +7,10 @@ This is your reminder that the event you're registered for is starting in approx
 {{ event_title }}
 
 {% if is_multi_day %}
-📅 Date: {{ event_start|date:"F j, Y" }} – {{ event_end|date:"F j, Y" }}
+📅 Date: {{ event_date_range_str }}
 {% else %}
-📅 Date: {{ event_start|date:"F j, Y" }}
-⏰ Time: {{ event_start|time:"g:i A" }} - {{ event_end|time:"g:i A" }}
+📅 Date: {{ event_date_str }}
+⏰ Time: {{ event_start_str }} - {{ event_end_str }} ({{ event_timezone }})
 {% endif %}
 {% if event_timezone %}🌍 Timezone: {{ event_timezone }}{% endif %}
 
