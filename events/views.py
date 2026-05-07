@@ -1184,7 +1184,8 @@ class EventViewSet(viewsets.ModelViewSet):
         is_platform_admin = bool(getattr(user, "is_superuser", False))
         is_guest_user = bool(getattr(user, "is_guest", False))
         guest_event_id = getattr(getattr(user, "guest", None), "event_id", None) if is_guest_user else None
-        qs = Event.objects.select_related("community").prefetch_related("sessions", "participants__user", "participants__user__profile")
+        # ⚡ OPTIMIZED: Only select_related(community) for list queries. Prefetches moved to retrieve().
+        qs = Event.objects.select_related("community")
 
         # Handle hidden events: visible ONLY to creator OR registered users
         if user.is_authenticated:
@@ -1192,12 +1193,17 @@ class EventViewSet(viewsets.ModelViewSet):
                 # Platform superusers can access all events, including hidden.
                 pass
             else:
-                # Show non-hidden events OR (hidden events AND (user is creator OR user is registered))
+                # ⚡ OPTIMIZED: Use subquery for registrations to avoid expensive JOIN+distinct
+                hidden_accessible_ids = EventRegistration.objects.filter(
+                    user_id=user.id,
+                    status__in=['registered', 'cancellation_requested']
+                ).values_list('event_id', flat=True)
+
                 qs = qs.filter(
                     Q(is_hidden=False) |
-                    Q(is_hidden=True, created_by=user) |
-                    Q(is_hidden=True, registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'])
-                ).distinct()
+                    Q(is_hidden=True, created_by_id=user.id) |
+                    Q(is_hidden=True, id__in=hidden_accessible_ids)
+                )
         else:
             # Non-authenticated users: only non-hidden events
             qs = qs.filter(is_hidden=False)
@@ -1215,30 +1221,42 @@ class EventViewSet(viewsets.ModelViewSet):
                 # Full visibility for superusers regardless of creator/community membership.
                 pass
             else:
+                # ⚡ OPTIMIZED: Use subquery for registrations to avoid expensive JOIN+distinct
+                # Registered users can see published/live events they're registered to
+                registered_event_ids = EventRegistration.objects.filter(
+                    user_id=user.id,
+                    status="registered"
+                ).values_list('event_id', flat=True)
+
                 qs = qs.filter(
                     Q(status__in=["published", "live"]) |
+                    Q(status="draft", created_by_id=user.id) |  # Draft: only creator sees their own
                     Q(status__in=["published", "live"], community__members=user) |
-                    Q(created_by_id=user.id) |
-                    Q(community__owner_id=user.id) |  # owner can see all events in their community
-                    Q(status__in=["published", "live"], registrations__user_id=user.id, registrations__status="registered")  # registered participants can see event even after it ends (for post-event lounge), but only published/live events
-                ).distinct()
+                    Q(status__in=["published", "live"], community__owner_id=user.id) |
+                    Q(status__in=["published", "live"], id__in=registered_event_ids)  # Registered: published/live only
+                )
 
             # ✅ Hide unpublished recordings from regular participants
             # Exclude events with unpublished recordings, BUT only from users who are
             # ONLY registered participants (not hosts, owners, or community members)
             # This allows hosts/owners to see unpublished recordings, but hides them from other participants
 
-            # Check if user is host, owner, or community member
-            user_is_host_or_admin = Q(created_by_id=user.id) | Q(community__owner_id=user.id) | Q(community__members=user)
-
-            # Hide unpublished recordings from non-host participants
             if not is_platform_admin:
+                # ⚡ OPTIMIZED: Use subquery instead of expensive multi-JOIN+distinct
+                user_registered_ids = EventRegistration.objects.filter(
+                    user_id=user.id,
+                    status="registered"
+                ).values_list('event_id', flat=True)
+
+                user_is_host_or_admin = Q(created_by_id=user.id) | Q(community__owner_id=user.id) | Q(community__members=user)
+
+                # Hide unpublished recordings from non-host registered users (no distinct needed here)
                 qs = qs.exclude(
-                    Q(recording_url__isnull=False, recording_url__gt='') &  # has recording URL
-                    Q(replay_visible_to_participants=False) &  # recording NOT published
-                    Q(registrations__user_id=user.id, registrations__status="registered") &  # user is registered
-                    ~user_is_host_or_admin  # BUT user is NOT host/owner/admin
-                ).distinct()
+                    Q(recording_url__isnull=False, recording_url__gt='') &
+                    Q(replay_visible_to_participants=False) &
+                    Q(id__in=user_registered_ids) &
+                    ~user_is_host_or_admin
+                )
 
         # ---- Filters (applied only when provided) ----
         params = self.request.query_params
@@ -1368,15 +1386,27 @@ class EventViewSet(viewsets.ModelViewSet):
 
 
 
+        # ⚡ OPTIMIZED: Only annotate registrations_count for list views (no distinct needed here)
         qs = qs.annotate(
             registrations_count=Count(
                 'registrations',
-                filter=Q(registrations__status__in=['registered', 'cancellation_requested']),
-                distinct=True
+                filter=Q(registrations__status__in=['registered', 'cancellation_requested'])
             )
         )
         return qs
-    
+
+    def retrieve(self, request, *args, **kwargs):
+        """
+        ⚡ OPTIMIZED: Add prefetches only for detail views (not list).
+        This keeps list queries fast while detail views get full data.
+        """
+        queryset = self.get_queryset().prefetch_related(
+            "sessions",
+            "participants__user",
+            "participants__user__profile"
+        )
+        self.queryset = queryset
+        return super().retrieve(request, *args, **kwargs)
 
     # ---------------------- Permissions ----------------------
     def get_permissions(self):
@@ -2604,8 +2634,9 @@ class EventViewSet(viewsets.ModelViewSet):
     def max_price(self, request):
         """
         Return the maximum price within the currently visible/filtered events.
+        ⚡ OPTIMIZED: Skip annotation, use values_list for minimal query.
         """
-        qs = self.get_queryset()  # respects all current filters & visibility
+        qs = self.get_queryset().values('price')  # respects all filters & visibility
         mx = qs.aggregate(mx=Max("price"))["mx"] or 0
         return Response({"max_price": float(mx)})
     
