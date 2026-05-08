@@ -246,7 +246,7 @@ def _ensure_rtk_meeting_for_event(event: Event) -> str:
 
     payload = {
         "title": event.title or f"Event {event.id}",
-        "record_on_start": True,
+        "record_on_start": bool(event.replay_available),
     }
     try:
         resp = requests.post(
@@ -1835,7 +1835,7 @@ class EventViewSet(viewsets.ModelViewSet):
             Message.objects.bulk_create(direct_messages_to_create)
 
         return Response({
-            "ok": True, 
+            "ok": True,
             "invited_count": len(invited_users),
             "messaged_count": len(direct_messages_to_create),
             "message": (
@@ -3116,6 +3116,8 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Only the host or admin can control recording."}, status=403)
         if not event.is_live:
             return Response({"error": "Event must be live to start recording."}, status=400)
+        if not event.replay_available:
+            return Response({"error": "Replay is disabled for this event. Recording cannot be started."}, status=400)
         if event.is_recording:
             return Response({"error": "Recording already active."}, status=400)
         logger.info(
