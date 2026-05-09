@@ -7134,6 +7134,99 @@ class EventViewSet(viewsets.ModelViewSet):
             "registration_status": registration.status
         })
 
+    # ========== Pinning/Promotion Endpoints ==========
+    @action(detail=True, methods=["post"], permission_classes=[IsSuperuserOnly], url_path="pin")
+    def pin_event(self, request, pk=None):
+        """Pin an event to promote it. Superuser-only."""
+        from django.utils import timezone
+        event = self.get_object()
+        pin_priority = int(request.data.get("pin_priority", 100))
+        event.is_pinned = True
+        event.pin_priority = pin_priority
+        event.pinned_at = timezone.now()
+        event.pinned_by = request.user
+        event.save(update_fields=["is_pinned", "pin_priority", "pinned_at", "pinned_by", "updated_at"])
+        return Response(EventSerializer(event, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsSuperuserOnly], url_path="unpin")
+    def unpin_event(self, request, pk=None):
+        """Unpin an event. Superuser-only."""
+        event = self.get_object()
+        event.is_pinned = False
+        event.pin_priority = 100
+        event.pinned_at = None
+        event.pinned_by = None
+        event.save(update_fields=["is_pinned", "pin_priority", "pinned_at", "pinned_by", "updated_at"])
+        return Response(EventSerializer(event, context={"request": request}).data)
+
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="pinned")
+    def pinned_events(self, request):
+        """Get public pinned events. Reuses visibility logic from main queryset."""
+        from django.utils import timezone
+        now = timezone.now()
+
+        qs = self.get_queryset().filter(is_pinned=True)
+
+        params = request.query_params
+        include_ended = (params.get("include_ended") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+        if not include_ended:
+            qs = qs.exclude(status="ended").exclude(end_time__lt=now)
+
+        topicsToSend = params.getlist("category")
+        if topicsToSend:
+            qs = qs.filter(category__in=topicsToSend)
+
+        location = params.get("location")
+        if location:
+            qs = qs.filter(location_city=location) | qs.filter(location=location)
+
+        event_format = params.getlist("event_format")
+        if event_format:
+            qs = qs.filter(format__in=event_format)
+
+        start_date = params.get("start_date")
+        if start_date:
+            qs = qs.filter(start_time__gte=start_date)
+
+        end_date = params.get("end_date")
+        if end_date:
+            qs = qs.filter(start_time__lte=end_date)
+
+        min_price = params.get("min_price")
+        if min_price is not None:
+            try:
+                qs = qs.filter(price__gte=float(min_price))
+            except (ValueError, TypeError):
+                pass
+
+        max_price = params.get("max_price")
+        if max_price is not None:
+            try:
+                qs = qs.filter(price__lte=float(max_price))
+            except (ValueError, TypeError):
+                pass
+
+        search = params.get("search")
+        if search:
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(title__icontains=search) |
+                Q(location__icontains=search) |
+                Q(category__icontains=search) |
+                Q(description__icontains=search)
+            )
+
+        qs = qs.order_by("pin_priority", "-pinned_at", "start_time")
+
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = EventSerializer(page, many=True, context={"request": request})
+            return self.get_paginated_response(serializer.data)
+
+        serializer = EventSerializer(qs, many=True, context={"request": request})
+        return Response(serializer.data)
+
     # ========== Email Template Endpoints ==========
     @action(detail=True, methods=["get", "patch", "delete"], permission_classes=[IsAuthenticated], url_path=r"email-templates/(?P<template_key>[^/]+)")
     def email_templates(self, request, pk=None, template_key=None):

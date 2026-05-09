@@ -1003,6 +1003,10 @@ class EventSerializer(serializers.ModelSerializer):
             "series",
             "series_order",
             "series_session_label",
+            "is_pinned",
+            "pin_priority",
+            "pinned_at",
+            "pinned_by_id",
         ]
 
         read_only_fields = [
@@ -1024,6 +1028,10 @@ class EventSerializer(serializers.ModelSerializer):
             "series",
             "series_order",
             "series_session_label",
+            "is_pinned",
+            "pin_priority",
+            "pinned_at",
+            "pinned_by_id",
         ]
         extra_kwargs = {
             # Let custom validate_slug() handle uniqueness so create can auto-suffix collisions.

@@ -467,6 +467,22 @@ class Event(models.Model):
         help_text="Separate host/moderator join link for the external platform"
     )
 
+    # Pinning/Promotion fields
+    is_pinned = models.BooleanField(default=False, db_index=True)
+    pin_priority = models.PositiveIntegerField(
+        default=100,
+        db_index=True,
+        help_text="Lower number appears first among pinned events."
+    )
+    pinned_at = models.DateTimeField(null=True, blank=True)
+    pinned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="pinned_events",
+    )
+
     class Meta:
         ordering = ["-created_at"]
 
