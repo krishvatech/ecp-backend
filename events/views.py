@@ -1489,10 +1489,28 @@ class EventViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         """
-        Custom update to broadcast lounge settings changes.
+        Custom update to broadcast lounge settings changes and validate external streaming.
         """
         instance = serializer.instance
-        
+
+        # Validate external streaming configuration
+        validated_data = serializer.validated_data
+        use_external = validated_data.get('use_external_streaming', instance.use_external_streaming)
+        platform = validated_data.get('external_streaming_platform', instance.external_streaming_platform)
+        url = validated_data.get('external_streaming_url', instance.external_streaming_url)
+
+        if use_external and not url:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({
+                'external_streaming_url': 'Direct join URL is required when using external streaming.'
+            })
+
+        if use_external and platform == 'native':
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({
+                'external_streaming_platform': 'Must select an external platform when use_external_streaming is True.'
+            })
+
         # Capture old values
         old_settings = {
             "lounge_enabled_before": instance.lounge_enabled_before,
@@ -2668,6 +2686,9 @@ class EventViewSet(viewsets.ModelViewSet):
                         {"detail": "Meeting already ended. Cannot restart via live-status."},
                         status=409,
                     )
+
+                # Event can go live with or without external streaming
+                # RTK interface is hidden in frontend when external_streaming=True
                 event.status = "live"
                 event.is_live = True
                 event.live_started_at = timezone.now()
@@ -2802,7 +2823,50 @@ class EventViewSet(viewsets.ModelViewSet):
             "live_started_at": event.live_started_at,
             "live_ended_at": event.live_ended_at,
         })
-        
+
+    @action(
+        detail=True,
+        methods=["get"],
+        permission_classes=[AllowAny],
+        url_path="streaming-link",
+    )
+    def streaming_link(self, request, pk=None):
+        """
+        Get streaming configuration for the event.
+        Returns external platform details if use_external_streaming=True, otherwise native RTK info.
+        Passwords/sensitive details only shown to event managers/hosts.
+        """
+        event = self.get_object()
+        is_manager = _is_event_manager(request.user, event)
+
+        if event.use_external_streaming:
+            response = {
+                "type": "external",
+                "platform": event.external_streaming_platform,
+                "platform_name": dict(event.STREAMING_PLATFORM_CHOICES).get(event.external_streaming_platform, "Unknown"),
+                "join_url": event.external_streaming_url,
+                "meeting_id": event.external_streaming_meeting_id or None,
+                "instructions": event.external_streaming_other_details or None,
+                "host_link": event.external_streaming_host_link or None,
+            }
+
+            # Only managers see password
+            if is_manager:
+                response["password"] = event.external_streaming_password or None
+            else:
+                response["password"] = None
+
+            return Response(response)
+        else:
+            # Native RTK streaming
+            response = {
+                "type": "native",
+                "platform": "native",
+                "platform_name": "Our Platform (RTK)",
+                "meeting_id": event.rtk_meeting_id or None,
+            }
+            return Response(response)
+
     @action(
         detail=True,
         methods=["post"],

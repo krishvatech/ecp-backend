@@ -1,0 +1,18 @@
+services:
+  web-image-test:
+    build: .
+    command: daphne -b 0.0.0.0 -p 8000 ecp_backend.asgi:application
+    env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: ecp_backend.settings.dev
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      DATABASE_URL: postgresql://ecp:ecp_password@db:5432/ecp
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8002:8000"

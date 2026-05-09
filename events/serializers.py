@@ -946,8 +946,15 @@ class EventSerializer(serializers.ModelSerializer):
             "rtk_recording_id",
             "is_recording",
             "recording_paused_at",
-            "rtk_meeting_id",    
-            "rtk_meeting_title",  
+            "rtk_meeting_id",
+            "rtk_meeting_title",
+            "use_external_streaming",
+            "external_streaming_platform",
+            "external_streaming_url",
+            "external_streaming_meeting_id",
+            "external_streaming_password",
+            "external_streaming_other_details",
+            "external_streaming_host_link",
             "created_by_id",
             "created_at",
             "updated_at",
@@ -2199,6 +2206,9 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "featured_participants", "featured_participants_total",
             "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
             "is_multi_day",
+            "use_external_streaming", "external_streaming_platform", "external_streaming_url",
+            "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
+            "external_streaming_host_link",
         ]
         read_only_fields = fields
 
@@ -2304,6 +2314,10 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "is_multi_day", "sessions",  # ✅ Added for multi-day event support
             "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
             "cancellation_message", "recommended_event", "created_by_id",
+            # ✅ External streaming fields
+            "use_external_streaming", "external_streaming_platform", "external_streaming_url",
+            "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
+            "external_streaming_host_link",
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):

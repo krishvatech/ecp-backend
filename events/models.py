@@ -426,6 +426,47 @@ class Event(models.Model):
         help_text="Allow participants to view their speed networking match list after the event ends"
     )
 
+    # ===== External Streaming Platform Configuration =====
+    STREAMING_PLATFORM_CHOICES = [
+        ('native', 'Our Platform (RTK)'),
+        ('zoom', 'Zoom'),
+        ('google_meet', 'Google Meet'),
+        ('microsoft_teams', 'Microsoft Teams'),
+    ]
+
+    use_external_streaming = models.BooleanField(
+        default=False,
+        help_text="If True, use external streaming platform instead of native RTK"
+    )
+    external_streaming_platform = models.CharField(
+        max_length=20,
+        choices=STREAMING_PLATFORM_CHOICES,
+        default='native',
+        help_text="Which external platform to use (only used if use_external_streaming=True)"
+    )
+    external_streaming_url = models.URLField(
+        blank=True,
+        help_text="Direct join URL for the external streaming platform"
+    )
+    external_streaming_meeting_id = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Meeting ID for the external platform (e.g., Zoom meeting ID)"
+    )
+    external_streaming_password = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Password to access the external meeting (stored as plaintext - consider encryption)"
+    )
+    external_streaming_other_details = models.TextField(
+        blank=True,
+        help_text="Additional login instructions or details for attendees"
+    )
+    external_streaming_host_link = models.URLField(
+        blank=True,
+        help_text="Separate host/moderator join link for the external platform"
+    )
+
     class Meta:
         ordering = ["-created_at"]
 
