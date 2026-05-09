@@ -584,6 +584,7 @@ def send_event_confirmation_email(participant):
         template_key="event_confirmation",
         to_email=user.email,
         context=ctx,
+        subject_override=f"Added to Event: {event.title}",
         fail_silently=False,
         event=event,
     )
@@ -899,6 +900,7 @@ def send_user_registration_acknowledgement_email(user, event):
         template_key="user_registration_acknowledgement",
         to_email=user.email,
         context=ctx,
+        subject_override=f"Registration Confirmed: {event.title}",
         fail_silently=True,
         event=event,
     )
@@ -951,6 +953,7 @@ def send_guest_registration_acknowledgement_email(guest_name, email, event):
         template_key="guest_registration_acknowledgement",
         to_email=email,
         context=ctx,
+        subject_override=f"Registration Confirmed: {event.title}",
         fail_silently=True,
         event=event,
     )

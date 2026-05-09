@@ -377,6 +377,7 @@ TEMPLATE_KEY_CHOICES = [
     ("name_change_verification_failed", "Name Change Verification Failed"),
     ("name_change_rejected", "Name Change Rejected"),
     ("admin_name_change_review", "Admin Name Change Review"),
+    ("post_event_qna_answer", "Post-Event Q&A Answer"),
 ]
 
 # Per-template-key required placeholders — used in clean() validation
@@ -405,6 +406,7 @@ REQUIRED_PLACEHOLDERS = {
     "name_change_verification_failed": ["{{ first_name }}"],
     "name_change_rejected": ["{{ first_name }}"],
     "admin_name_change_review": ["{{ user_email }}", "{{ request_id }}"],
+    "post_event_qna_answer": ["{{ recipient_name }}", "{{ event_name }}", "{{ answer_text }}"],
 }
 
 
