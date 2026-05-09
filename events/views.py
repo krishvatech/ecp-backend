@@ -1183,7 +1183,8 @@ class EventViewSet(viewsets.ModelViewSet):
           - bucket (?bucket=upcoming|live|past)
         """
         user = self.request.user
-        is_platform_admin = bool(getattr(user, "is_superuser", False))
+        is_platform_admin = bool(getattr(user, "is_superuser", False)) or bool(getattr(user, "is_staff", False))
+
         is_guest_user = bool(getattr(user, "is_guest", False))
         guest_event_id = getattr(getattr(user, "guest", None), "event_id", None) if is_guest_user else None
         # ⚡ OPTIMIZED: Only select_related(community) for list queries. Prefetches moved to retrieve().
@@ -1210,58 +1211,104 @@ class EventViewSet(viewsets.ModelViewSet):
             # Non-authenticated users: only non-hidden events
             qs = qs.filter(is_hidden=False)
 
-        # Base visibility
-        if not user.is_authenticated:
-            qs = qs.filter(status__in=["published", "live"])
-        elif is_guest_user:
-            # Guest tokens are scoped to a single event. Avoid ORM joins that expect a Django User.
-            if guest_event_id is None:
-                return Event.objects.none()
-            qs = qs.filter(id=guest_event_id, status__in=["published", "live"])
+        # ✅ Hide unpublished recordings from regular participants
+        # Exclude events with unpublished recordings, BUT only from users who are
+        # ONLY registered participants (not hosts, owners, or community members)
+        # This allows hosts/owners to see unpublished recordings, but hides them from other participants
+
+        if user.is_authenticated and not is_platform_admin and not is_guest_user:
+            # ⚡ OPTIMIZED: Use subquery instead of expensive multi-JOIN+distinct
+            user_registered_ids = EventRegistration.objects.filter(
+                user_id=user.id,
+                status="registered"
+            ).values_list('event_id', flat=True)
+
+            user_is_host_or_admin = Q(created_by_id=user.id) | Q(community__owner_id=user.id) | Q(community__members=user)
+
+            # Hide unpublished recordings from non-host registered users (no distinct needed here)
+            qs = qs.exclude(
+                Q(recording_url__isnull=False, recording_url__gt='') &
+                Q(replay_visible_to_participants=False) &
+                Q(id__in=user_registered_ids) &
+                ~user_is_host_or_admin
+            )
+
+        # ---- Filters (applied only when provided) ----
+        params = self.request.query_params
+
+        # Include ended events flag (?include_ended=true)
+        include_ended = (params.get("include_ended") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+        # ✅ FOR DETAIL VIEWS: default to including ended/past events so hosts/participants don't 404
+        if self.action in ["retrieve", "update", "partial_update", "destroy"]:
+            include_ended = True
+
+        # ✅ DRAFT EVENTS: Always visible to creator, regardless of include_ended
+        if user.is_authenticated and not is_guest_user:
+            # Creator can always see their draft events
+            draft_creator_filter = Q(status="draft", created_by_id=user.id)
         else:
-            if is_platform_admin:
-                # Full visibility for superusers regardless of creator/community membership.
+            draft_creator_filter = Q()  # Empty Q object
+
+        # Base visibility filters (only apply if include_ended is NOT requested)
+        if not include_ended:
+            if not user.is_authenticated:
+                qs = qs.filter(status__in=["published", "live"])
+            elif is_guest_user:
+                # Guest tokens are scoped to a single event. Avoid ORM joins that expect a Django User.
+                if guest_event_id is None:
+                    return Event.objects.none()
+                qs = qs.filter(id=guest_event_id, status__in=["published", "live"])
+            else:
+                if is_platform_admin:
+                    # Full visibility for superusers regardless of creator/community membership.
+                    pass
+                else:
+                    # ⚡ OPTIMIZED: Use subquery for registrations to avoid expensive JOIN+distinct
+                    # Registered users can see published/live events they're registered to
+                    registered_event_ids = EventRegistration.objects.filter(
+                        user_id=user.id,
+                        status="registered"
+                    ).values_list('event_id', flat=True)
+
+                    qs = qs.filter(
+                        Q(status__in=["published", "live"]) |
+                        draft_creator_filter |
+                        Q(status__in=["published", "live"], community__members=user) |
+                        Q(status__in=["published", "live"], community__owner_id=user.id) |
+                        Q(status__in=["published", "live"], id__in=registered_event_ids)  # Registered: published/live only
+                    )
+        else:
+            # When include_ended=true, apply proper visibility rules with ended events included
+            if not user.is_authenticated:
+                # Non-authenticated users: only published & live (NO ended events)
+                qs = qs.filter(status__in=["published", "live"])
+            elif is_guest_user:
+                # Guest tokens scoped to single event: only published & live
+                if guest_event_id is None:
+                    return Event.objects.none()
+                qs = qs.filter(id=guest_event_id, status__in=["published", "live"])
+            elif is_platform_admin:
+                # Platform admin: full visibility (no filter)
                 pass
             else:
-                # ⚡ OPTIMIZED: Use subquery for registrations to avoid expensive JOIN+distinct
-                # Registered users can see published/live events they're registered to
+                # Authenticated users: can see published/live, but PAST events only if registered/creator/owner
+                now = timezone.now()
                 registered_event_ids = EventRegistration.objects.filter(
                     user_id=user.id,
                     status="registered"
                 ).values_list('event_id', flat=True)
 
                 qs = qs.filter(
-                    Q(status__in=["published", "live"]) |
-                    Q(status="draft", created_by_id=user.id) |  # Draft: only creator sees their own
-                    Q(status__in=["published", "live"], community__members=user) |
-                    Q(status__in=["published", "live"], community__owner_id=user.id) |
-                    Q(status__in=["published", "live"], id__in=registered_event_ids)  # Registered: published/live only
+                    # ✅ Published/Live events (not yet past)
+                    Q(status__in=["published", "live"], end_time__isnull=True) |  # No end time
+                    Q(status__in=["published", "live"], end_time__gte=now) |  # Still ongoing
+                    draft_creator_filter |  # ✅ Creator sees own draft
+                    # ✅ PAST events (status ended OR end_time passed): only to registered/creator/owner
+                    Q(Q(status="ended") | Q(end_time__lt=now), created_by_id=user.id) |  # Event creator
+                    Q(Q(status="ended") | Q(end_time__lt=now), community__owner_id=user.id) |  # Community owner
+                    Q(Q(status="ended") | Q(end_time__lt=now), id__in=registered_event_ids)  # Registered users ONLY
                 )
-
-            # ✅ Hide unpublished recordings from regular participants
-            # Exclude events with unpublished recordings, BUT only from users who are
-            # ONLY registered participants (not hosts, owners, or community members)
-            # This allows hosts/owners to see unpublished recordings, but hides them from other participants
-
-            if not is_platform_admin:
-                # ⚡ OPTIMIZED: Use subquery instead of expensive multi-JOIN+distinct
-                user_registered_ids = EventRegistration.objects.filter(
-                    user_id=user.id,
-                    status="registered"
-                ).values_list('event_id', flat=True)
-
-                user_is_host_or_admin = Q(created_by_id=user.id) | Q(community__owner_id=user.id) | Q(community__members=user)
-
-                # Hide unpublished recordings from non-host registered users (no distinct needed here)
-                qs = qs.exclude(
-                    Q(recording_url__isnull=False, recording_url__gt='') &
-                    Q(replay_visible_to_participants=False) &
-                    Q(id__in=user_registered_ids) &
-                    ~user_is_host_or_admin
-                )
-
-        # ---- Filters (applied only when provided) ----
-        params = self.request.query_params
 
         # Hidden filter (platform_admin only) - filter to show only hidden events
         is_hidden_param = (params.get("is_hidden") or "").strip().lower()
@@ -5507,12 +5554,20 @@ class EventViewSet(viewsets.ModelViewSet):
         user_email = (getattr(user, "email", "") or "").strip()
 
         # Include both registered events AND events where user is a converted guest
+        # ✅ DRAFT Visibility: Drafts are ONLY visible in 'mine' to the creator or platform admin.
+        # Assigned hosts (registered users) will NOT see drafts here to avoid 404s in detail view.
+        is_platform_admin = bool(getattr(user, "is_superuser", False))
+
+        visibility_q = Q(created_by=user)
+        if is_platform_admin:
+            visibility_q |= Q(status="draft")
+
         qs = (
             Event.objects
             .filter(
-                Q(created_by=user) |  # 1. Events created by the user (owner)
-                Q(registrations__user=user, registrations__status__in=['registered', 'cancellation_requested']) | # 2. Registered events
-                Q(guest_attendees__converted_user=user)  # 3. Converted guest attendance
+                visibility_q |
+                Q(registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'], status__in=['published', 'live', 'ended', 'cancelled']) |
+                Q(guest_attendees__converted_user=user, status__in=['published', 'live', 'ended', 'cancelled'])
             )
             .distinct()
             .annotate(registrations_count=Count('registrations', distinct=True))
