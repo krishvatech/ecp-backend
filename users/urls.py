@@ -16,6 +16,8 @@ from .views import (
     ChangePasswordView,
     ForgotPasswordView,
     ResetPasswordView,
+    ForgotCognitoPasswordView,
+    ResetCognitoPasswordView,
     EmailTokenObtainPairView,
     LogoutView,
     SessionLoginView, SessionLogoutView, SessionMeView, CSRFCookieView,
@@ -111,6 +113,8 @@ urlpatterns = [
     path("password/change/", ChangePasswordView.as_view(), name="password_change"),
     path("password/forgot/", ForgotPasswordView.as_view(), name="password_forgot"),
     path("password/reset/", ResetPasswordView.as_view(), name="password_reset"),
+    path("password/forgot-cognito/", ForgotCognitoPasswordView.as_view(), name="password_forgot_cognito"),
+    path("password/reset-cognito/", ResetCognitoPasswordView.as_view(), name="password_reset_cognito"),
 
     # Session auth helpers
     path("session/csrf/", CSRFCookieView.as_view(), name="session_csrf"),

@@ -74,6 +74,8 @@ from .serializers import (
     ChangePasswordSerializer,
     ForgotPasswordSerializer,
     ResetPasswordSerializer,
+    ForgotCognitoPasswordSerializer,
+    ResetCognitoPasswordSerializer,
     UserSkillSerializer,
     LanguageCertificateSerializer,
     UserLanguageSerializer
@@ -1127,6 +1129,10 @@ class ForgotPasswordView(generics.GenericAPIView):
         return Response(
             {"detail": "If that email exists, we've sent a reset link."},
             status=status.HTTP_200_OK,
+            headers={
+                "Deprecation": "true",
+                "Sunset": "2026-12-31",
+            },
         )
 
 
@@ -1167,9 +1173,160 @@ class ResetPasswordView(generics.GenericAPIView):
         except Exception as e:
             logger.warning(f"Password-changed alert email failed for {getattr(user,'email',None)}: {e}")
 
+        return Response(
+            {"detail": "Password has been reset successfully."},
+            status=status.HTTP_200_OK,
+            headers={
+                "Deprecation": "true",
+                "Sunset": "2026-12-31",
+            },
+        )
+    
+    
+def _cognito_client():
+    import boto3
+    region = getattr(settings, "COGNITO_REGION", "") or ""
+    return boto3.client("cognito-idp", region_name=region) if region else boto3.client("cognito-idp")
+
+
+def _cognito_find_username_by_email(email):
+    """
+    Best-effort resolution: email -> Cognito Username.
+    Returns (username|None, user_count:int).
+    Never raise user-not-found to callers (avoid account existence leaks).
+    """
+    pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
+    if not pool_id:
+        raise RuntimeError("Cognito is not configured (missing COGNITO_USER_POOL_ID).")
+
+    client = _cognito_client()
+    resp = client.list_users(
+        UserPoolId=pool_id,
+        Filter=f'email = "{email}"',
+        Limit=2,
+    )
+    users = resp.get("Users") or []
+    if not users:
+        return None, 0
+    # If duplicates exist (shouldn't), pick the first but return count for logging.
+    username = users[0].get("Username")
+    return username, len(users)
+
+
+def _cognito_secret_hash(username):
+    """
+    Compute Cognito SecretHash if the app client has a secret.
+    Needed for ConfirmForgotPassword when client secret is enabled.
+    """
+    client_id = getattr(settings, "COGNITO_APP_CLIENT_ID", "") or getattr(settings, "COGNITO_CLIENT_ID", "") or ""
+    client_secret = getattr(settings, "COGNITO_APP_CLIENT_SECRET", "") or ""
+    if not client_id or not client_secret:
+        return None
+    import hmac
+    import hashlib
+    import base64
+
+    msg = (username + client_id).encode("utf-8")
+    key = client_secret.encode("utf-8")
+    digest = hmac.new(key, msg, hashlib.sha256).digest()
+    return base64.b64encode(digest).decode("utf-8")
+
+
+class ForgotCognitoPasswordView(generics.GenericAPIView):
+    """
+    POST { "email": "user@example.com" }
+
+    Backend resolves Cognito Username by email (works for Google_... usernames),
+    then triggers Cognito password reset code delivery.
+
+    Always returns a generic success message (do not leak existence).
+    """
+
+    permission_classes = [permissions.AllowAny]
+    serializer_class = ForgotCognitoPasswordSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+
+        delivery_hint = {"medium": "EMAIL_OR_SMS"}
+        try:
+            username, count = _cognito_find_username_by_email(email)
+            if count > 1:
+                logger.warning(f"[AUTH] Multiple Cognito users matched email={email}; using first username={username}")
+            if username:
+                pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
+                client = _cognito_client()
+                resp = client.admin_reset_user_password(UserPoolId=pool_id, Username=username) or {}
+                # Cognito does not always return delivery details here; include if present.
+                code_details = resp.get("CodeDeliveryDetails") or {}
+                medium = code_details.get("DeliveryMedium")
+                if medium:
+                    # Do NOT return destination to avoid leaking account existence.
+                    delivery_hint = {"medium": str(medium)}
+        except Exception as e:
+            # Avoid leaking config/user existence; log for operators.
+            logger.warning(f"[AUTH] ForgotCognitoPassword failed for email={email}: {e}")
+
+        return Response(
+            {
+                "detail": "If that email exists, we've sent a reset code.",
+                "delivery": delivery_hint,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ResetCognitoPasswordView(generics.GenericAPIView):
+    """
+    POST { "email": "...", "code": "...", "new_password": "...", "confirm_new_password": "..." }
+
+    Backend resolves Cognito Username by email and confirms the reset.
+    Returns generic success on both unknown-email and success to avoid leaks.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    serializer_class = ResetCognitoPasswordSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+        code = serializer.validated_data["code"]
+        new_password = serializer.validated_data["new_password"]
+
+        username = None
+        try:
+            username, count = _cognito_find_username_by_email(email)
+            if count > 1:
+                logger.warning(f"[AUTH] Multiple Cognito users matched email={email}; using first username={username}")
+            if username:
+                client_id = getattr(settings, "COGNITO_APP_CLIENT_ID", "") or getattr(settings, "COGNITO_CLIENT_ID", "") or ""
+                if not client_id:
+                    raise RuntimeError("Cognito is not configured (missing COGNITO_APP_CLIENT_ID/COGNITO_CLIENT_ID).")
+                client = _cognito_client()
+                payload = {
+                    "ClientId": client_id,
+                    "Username": username,
+                    "ConfirmationCode": code,
+                    "Password": new_password,
+                }
+                secret_hash = _cognito_secret_hash(username)
+                if secret_hash:
+                    payload["SecretHash"] = secret_hash
+                client.confirm_forgot_password(**payload)
+        except Exception as e:
+            # If we had a resolved user and confirm failed, return a safe 400 (frontend shows message).
+            # If we could not resolve user, keep generic success to avoid leaks.
+            if username:
+                logger.warning(f"[AUTH] ResetCognitoPassword failed for email={email} username={username}: {e}")
+                return Response({"detail": "Invalid or expired code."}, status=status.HTTP_400_BAD_REQUEST)
+            logger.warning(f"[AUTH] ResetCognitoPassword no-user or config issue for email={email}: {e}")
+
         return Response({"detail": "Password has been reset successfully."}, status=status.HTTP_200_OK)
-    
-    
+
+
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 

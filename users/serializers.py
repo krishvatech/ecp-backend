@@ -558,6 +558,38 @@ class ResetPasswordSerializer(serializers.Serializer):
         attrs["user"] = user
         return attrs
 
+
+class ForgotCognitoPasswordSerializer(serializers.Serializer):
+    """
+    Cognito password reset step 1.
+    Accepts only an email (do not leak account existence).
+    """
+
+    email = serializers.EmailField()
+
+    def validate(self, attrs):
+        attrs["email"] = (attrs["email"] or "").strip().lower()
+        return attrs
+
+
+class ResetCognitoPasswordSerializer(serializers.Serializer):
+    """
+    Cognito password reset step 2.
+    Uses ConfirmationCode + new password.
+    """
+
+    email = serializers.EmailField()
+    code = serializers.CharField()
+    new_password = serializers.CharField(write_only=True, trim_whitespace=False)
+    confirm_new_password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate(self, attrs):
+        attrs["email"] = (attrs["email"] or "").strip().lower()
+        attrs["code"] = (attrs.get("code") or "").strip()
+        if attrs["new_password"] != attrs["confirm_new_password"]:
+            raise serializers.ValidationError({"confirm_new_password": "Passwords do not match."})
+        return attrs
+
 class UserRosterSerializer(serializers.ModelSerializer):
     profile = UserProfileMiniSerializer(read_only=True)
     avatar_url = serializers.SerializerMethodField()
