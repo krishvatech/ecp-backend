@@ -52,6 +52,7 @@ def cms_login_sso_redirect(request):
 urlpatterns = [
     path("", index, name="index"),
     path("public/<slug:slug>/", public_event_meta, name="public-event-meta"),
+    path("events/<slug:slug>/", public_event_meta, name="event-meta"),
     path("api/health/", health, name="health"),
     path("admin/", admin.site.urls),
 

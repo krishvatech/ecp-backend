@@ -1,6 +1,8 @@
 import json
 import time
 import logging
+import re
+import boto3
 from urllib.request import urlopen
 
 from django.conf import settings
@@ -8,6 +10,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.authentication import BaseAuthentication, get_authorization_header
 from rest_framework.exceptions import AuthenticationFailed
 from django.db import transaction
+from django.db import IntegrityError
 from django.utils.crypto import get_random_string
 
 from .models import CognitoIdentity
@@ -21,6 +24,7 @@ User = get_user_model()
 
 _JWKS_CACHE = {"keys": None, "fetched_at": 0}
 _JWKS_TTL = 60 * 60  # 1 hour
+_FEDERATED_PASSWORD_SYNCED_SUBS = set()
 
 def _unique_username(base: str):
     base = (base or "user").strip().lower()
@@ -79,6 +83,71 @@ def _truthy(v):
             return v != 0
         if isinstance(v, str):
             return v.strip().lower() in {"true", "1", "yes"}
+        return False
+
+
+def _provider_from_claims(claims: dict, provider_username: str) -> str:
+    """
+    Infer identity provider for CognitoIdentity.provider.
+    - Native Cognito users -> "cognito"
+    - Federated users -> normalized provider key (e.g. "google", "linkedin")
+    """
+    identities = claims.get("identities")
+    if isinstance(identities, str):
+        try:
+            identities = json.loads(identities)
+        except Exception:
+            identities = None
+
+    if isinstance(identities, list) and identities:
+        first = identities[0] or {}
+        provider_name = str(first.get("providerName") or "").strip().lower()
+        if provider_name:
+            return re.sub(r"[^a-z0-9_\-]", "", provider_name) or "cognito"
+
+    # Fallback: cognito usernames for federated users often look like "Google_xxx"
+    raw = str(provider_username or "")
+    if "_" in raw:
+        prefix = raw.split("_", 1)[0].strip().lower()
+        if prefix and prefix not in {"cognito", "username"}:
+            return re.sub(r"[^a-z0-9_\-]", "", prefix) or "cognito"
+
+    return "cognito"
+
+
+def _random_cognito_password(length: int = 20) -> str:
+    """Generate a strong random password compatible with common Cognito policies."""
+    # Ensure upper/lower/digit/special are present.
+    core = get_random_string(max(8, length - 4))
+    return f"Aa1!{core}"
+
+
+def _enable_federated_user_password(provider_username: str) -> bool:
+    """
+    For federated Cognito users (e.g. Google_xxx), set a permanent local password.
+    This enables Cognito ForgotPassword OTP delivery for that account.
+    """
+    region = getattr(settings, "COGNITO_REGION", "") or ""
+    pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
+    if not region or not pool_id or not provider_username:
+        return False
+
+    try:
+        client = boto3.client("cognito-idp", region_name=region)
+        client.admin_set_user_password(
+            UserPoolId=pool_id,
+            Username=provider_username,
+            Password=_random_cognito_password(),
+            Permanent=True,
+        )
+        logger.info("Enabled local password for federated Cognito user: %s", provider_username)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Could not enable local password for federated user %s: %s",
+            provider_username,
+            exc,
+        )
         return False
 
 class CognitoJWTAuthentication(BaseAuthentication):
@@ -158,6 +227,7 @@ class CognitoJWTAuthentication(BaseAuthentication):
             # Access token usually has "username"
             # ID token usually has "cognito:username"
             provider_username = claims.get("cognito:username") or claims.get("username") or ""
+            provider = _provider_from_claims(claims, provider_username)
             sub = (claims.get("sub") or "").strip()
 
             email = (claims.get("email") or "").lower().strip()
@@ -182,6 +252,9 @@ class CognitoJWTAuthentication(BaseAuthentication):
             identity = CognitoIdentity.objects.select_related("user", "user__profile").filter(cognito_sub=sub).first()
             if identity:
                 user = identity.user
+                if identity.provider != "cognito" and sub not in _FEDERATED_PASSWORD_SYNCED_SUBS:
+                    if _enable_federated_user_password(provider_username):
+                        _FEDERATED_PASSWORD_SYNCED_SUBS.add(sub)
             else:
                 user = None
                 email_verified = _truthy(claims.get("email_verified"))
@@ -240,12 +313,15 @@ class CognitoJWTAuthentication(BaseAuthentication):
                                     "user": user,
                                     "email": email or "",
                                     "email_verified": email_verified,
-                                    "provider": "cognito",
+                                    "provider": provider,
                                 }
                             )
 
                             if created:
                                 logger.info(f"Created CognitoIdentity {sub} -> user {user.id}")
+                                if provider != "cognito":
+                                    if _enable_federated_user_password(provider_username):
+                                        _FEDERATED_PASSWORD_SYNCED_SUBS.add(sub)
                             else:
                                 if identity.user_id != user.id:
                                     logger.warning(
@@ -254,6 +330,45 @@ class CognitoJWTAuthentication(BaseAuthentication):
                                     )
                                     user = identity.user
 
+                    except IntegrityError as e:
+                        # Common recovery path:
+                        # same verified (email, provider) already exists with an older/different sub.
+                        recovered = None
+                        if email and email_verified:
+                            recovered = (
+                                CognitoIdentity.objects
+                                .select_related("user")
+                                .filter(email__iexact=email, provider=provider, email_verified=True)
+                                .order_by("id")
+                                .first()
+                            )
+
+                        if recovered:
+                            old_sub = recovered.cognito_sub
+                            recovered.cognito_sub = sub
+                            recovered.user = user
+                            recovered.email = email or recovered.email
+                            recovered.email_verified = email_verified
+                            recovered.provider = provider or recovered.provider
+                            recovered.save(update_fields=[
+                                "cognito_sub",
+                                "user",
+                                "email",
+                                "email_verified",
+                                "provider",
+                                "updated_at",
+                            ])
+                            identity = recovered
+                            user = recovered.user
+                            logger.info(
+                                "Re-linked CognitoIdentity by email/provider (%s, %s): %s -> %s",
+                                email,
+                                provider,
+                                old_sub,
+                                sub,
+                            )
+                        else:
+                            logger.error(f"Error creating CognitoIdentity for {sub}: {e}")
                     except Exception as e:
                         logger.error(f"Error creating CognitoIdentity for {sub}: {e}")
 

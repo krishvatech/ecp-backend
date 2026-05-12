@@ -20,6 +20,8 @@ def index(request):
 def public_event_meta(request, slug):
     """
     Server-rendered public page containing OG/Twitter tags for social crawlers.
+    Handles both /public/<slug>/ and /events/<slug>/ routes.
+    Crawlers see meta tags, users redirect to React app.
     """
     event = (
         Event.objects.filter(slug=slug, status__in=["published", "live"])
@@ -45,7 +47,7 @@ def public_event_meta(request, slug):
             image_url = ""
 
     frontend_base = (settings.FRONTEND_URL or "").rstrip("/")
-    event_url = f"{frontend_base}/public/{slug}/" if frontend_base else request.build_absolute_uri(request.path)
+    event_url = f"{frontend_base}/events/{slug}/" if frontend_base else request.build_absolute_uri(request.path)
 
     context = {
         "title": title,
