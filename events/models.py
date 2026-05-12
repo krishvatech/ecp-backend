@@ -483,6 +483,30 @@ class Event(models.Model):
         related_name="pinned_events",
     )
 
+    # Post-event Replay Access
+    replay_enabled = models.BooleanField(
+        default=False,
+        help_text="When True, non-registered users can sign up for replay access after event ends."
+    )
+    replay_video_url = models.URLField(
+        blank=True, null=True,
+        help_text="Full replay video URL (admin-set). Only shown to registered users."
+    )
+    youtube_summary_url = models.URLField(
+        blank=True, null=True,
+        help_text="Optional YouTube teaser/summary video URL. Shown publicly."
+    )
+    linkedin_summary_url = models.URLField(
+        blank=True, null=True,
+        help_text="Optional LinkedIn teaser/summary video URL. Shown publicly."
+    )
+    replay_cta_text = models.CharField(
+        max_length=255,
+        blank=True,
+        default="Sign up to watch full replay",
+        help_text="CTA text shown to non-registered users on replay-enabled past event page."
+    )
+
     class Meta:
         ordering = ["-created_at"]
 

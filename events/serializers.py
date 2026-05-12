@@ -1007,6 +1007,11 @@ class EventSerializer(serializers.ModelSerializer):
             "pin_priority",
             "pinned_at",
             "pinned_by_id",
+            "replay_enabled",
+            "replay_video_url",
+            "youtube_summary_url",
+            "linkedin_summary_url",
+            "replay_cta_text",
         ]
 
         read_only_fields = [
@@ -2200,6 +2205,11 @@ class PublicEventSerializer(serializers.ModelSerializer):
     featured_participants = serializers.SerializerMethodField()
     featured_participants_total = serializers.SerializerMethodField()
     cpd_cpe_credits = serializers.SerializerMethodField(read_only=True)
+    replay_video_url = serializers.SerializerMethodField()
+    is_registered_for_event = serializers.SerializerMethodField()
+    replay_signup_enabled = serializers.SerializerMethodField()
+    can_signup_for_replay = serializers.SerializerMethodField()
+    has_replay_access = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -2217,6 +2227,8 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "use_external_streaming", "external_streaming_platform", "external_streaming_url",
             "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
             "external_streaming_host_link",
+            "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
+            "is_registered_for_event", "replay_signup_enabled", "can_signup_for_replay", "has_replay_access",
         ]
         read_only_fields = fields
 
@@ -2284,6 +2296,72 @@ class PublicEventSerializer(serializers.ModelSerializer):
         skip_visibility = request and request.query_params.get("featured_all") == "true" if request else False
         return len(serialize_featured_participants(obj, self.context, skip_visibility_filter=skip_visibility))
 
+    def get_replay_video_url(self, obj):
+        from events.views import _is_event_host
+        from events.models import EventRegistration
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return None
+        if _is_event_host(request.user, obj):
+            return obj.replay_video_url
+        is_registered = EventRegistration.objects.filter(
+            event=obj, user=request.user,
+            status__in=["registered", "cancellation_requested"]
+        ).exists()
+        return obj.replay_video_url if is_registered else None
+
+    def get_is_registered_for_event(self, obj):
+        """Check if the current user is registered for this event."""
+        from events.models import EventRegistration
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        return EventRegistration.objects.filter(
+            event=obj, user=request.user,
+            status__in=["registered", "cancellation_requested"]
+        ).exists()
+
+    def get_replay_signup_enabled(self, obj):
+        """Return whether replay signup is enabled for this event."""
+        return bool(obj.replay_enabled)
+
+    def get_can_signup_for_replay(self, obj):
+        """
+        Check if user can signup for replay.
+        True only when:
+        - replay is enabled
+        - event is ended/past
+        - replay recording is published/ready
+        - user is not registered
+        """
+        from django.utils import timezone
+        request = self.context.get('request')
+
+        # Check if event is ended
+        now = timezone.now()
+        is_ended = obj.status == "ended" or (obj.end_time and obj.end_time < now)
+
+        # Check if replay is enabled
+        replay_enabled = bool(obj.replay_enabled)
+
+        # Check if replay is published/ready to participants
+        replay_ready = bool(obj.replay_visible_to_participants)
+
+        # Check registration status
+        if not request or not request.user.is_authenticated:
+            # Anonymous users: can signup if ended, replay enabled, and recording is ready
+            return is_ended and replay_enabled and replay_ready
+
+        # Authenticated users: can signup only if not already registered
+        is_registered = self.get_is_registered_for_event(obj)
+        return is_ended and replay_enabled and replay_ready and not is_registered
+
+    def get_has_replay_access(self, obj):
+        """
+        Check if user has replay access (is registered for the event).
+        """
+        return self.get_is_registered_for_event(obj)
+
 
 class EventLiteSerializer(serializers.ModelSerializer):
     # Session-related fields for multi-day events
@@ -2326,6 +2404,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "use_external_streaming", "external_streaming_platform", "external_streaming_url",
             "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
             "external_streaming_host_link",
+            "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
         )
 
 class EventRegistrationSerializer(serializers.ModelSerializer):

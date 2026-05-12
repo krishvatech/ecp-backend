@@ -2198,6 +2198,13 @@ class EventViewSet(viewsets.ModelViewSet):
         if event.status == "cancelled":
             return Response({"detail": "Cannot register for a cancelled event."}, status=400)
 
+        # Check if event is ended and replay access is not enabled
+        if event.status == "ended":
+            if not event.replay_enabled:
+                return Response({"detail": "Replay sign-up is not enabled for this event."}, status=400)
+            if not event.replay_visible_to_participants:
+                return Response({"detail": "Replay is not available yet."}, status=400)
+
         # Check capactity limit
         if event.max_participants is not None:
             # We check if strict count >= max (note: race condition possible without lock, but acceptable for MVP)
@@ -7227,6 +7234,112 @@ class EventViewSet(viewsets.ModelViewSet):
         serializer = EventSerializer(qs, many=True, context={"request": request})
         return Response(serializer.data)
 
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="replays")
+    def replay_events(self, request):
+        """Get past events with replay enabled. Safe for anonymous users."""
+        from django.utils import timezone
+        now = timezone.now()
+
+        # Build queryset from scratch to allow replay events for all users
+        # (bypass standard visibility filters that hide ended events from non-auth users)
+        qs = Event.objects.select_related("community")
+
+        # Check if user is platform admin
+        user = request.user
+        is_platform_admin = bool(getattr(user, "is_superuser", False)) or bool(getattr(user, "is_staff", False)) if user.is_authenticated else False
+
+        # Hide non-hidden events unless user is authenticated & authorized
+        if user.is_authenticated:
+            # Authenticated user can see hidden events if they're the creator/registered
+            if not is_platform_admin:
+                hidden_accessible_ids = EventRegistration.objects.filter(
+                    user_id=user.id,
+                    status__in=['registered', 'cancellation_requested']
+                ).values_list('event_id', flat=True)
+                qs = qs.filter(
+                    Q(is_hidden=False) |
+                    Q(is_hidden=True, created_by_id=user.id) |
+                    Q(is_hidden=True, id__in=hidden_accessible_ids)
+                )
+        else:
+            # Non-authenticated users: only non-hidden, published events
+            qs = qs.filter(is_hidden=False)
+
+        # Core replay filter: must be ended/past, have replay enabled, and recording must be published
+        qs = qs.filter(
+            replay_enabled=True,
+            replay_visible_to_participants=True,
+            status__in=["published", "ended"]
+        ).filter(
+            Q(status="ended") | Q(end_time__lt=now)
+        )
+
+        # For authenticated users: exclude events they're already registered for
+        # (they have recording/replay access already, no need for signup)
+        if user.is_authenticated and not is_platform_admin:
+            registered_event_ids = EventRegistration.objects.filter(
+                user_id=user.id,
+                status__in=['registered', 'cancellation_requested']
+            ).values_list('event_id', flat=True)
+            qs = qs.exclude(id__in=registered_event_ids)
+
+        params = request.query_params
+
+        # Apply the same filters as regular events
+        topicsToSend = params.getlist("category")
+        if topicsToSend:
+            qs = qs.filter(category__in=topicsToSend)
+
+        location = params.get("location")
+        if location:
+            qs = qs.filter(location_city=location) | qs.filter(location=location)
+
+        event_format = params.getlist("event_format")
+        if event_format:
+            qs = qs.filter(format__in=event_format)
+
+        start_date = params.get("start_date")
+        if start_date:
+            qs = qs.filter(start_time__gte=start_date)
+
+        end_date = params.get("end_date")
+        if end_date:
+            qs = qs.filter(start_time__lte=end_date)
+
+        min_price = params.get("min_price")
+        if min_price is not None:
+            try:
+                qs = qs.filter(price__gte=float(min_price))
+            except (ValueError, TypeError):
+                pass
+
+        max_price = params.get("max_price")
+        if max_price is not None:
+            try:
+                qs = qs.filter(price__lte=float(max_price))
+            except (ValueError, TypeError):
+                pass
+
+        search = params.get("search")
+        if search:
+            qs = qs.filter(
+                Q(title__icontains=search) |
+                Q(location__icontains=search) |
+                Q(category__icontains=search) |
+                Q(description__icontains=search)
+            )
+
+        # Order by most recent first
+        qs = qs.order_by("-end_time", "-start_time")
+
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = PublicEventSerializer(page, many=True, context={"request": request})
+            return self.get_paginated_response(serializer.data)
+
+        serializer = PublicEventSerializer(qs, many=True, context={"request": request})
+        return Response(serializer.data)
+
     # ========== Email Template Endpoints ==========
     @action(detail=True, methods=["get", "patch", "delete"], permission_classes=[IsAuthenticated], url_path=r"email-templates/(?P<template_key>[^/]+)")
     def email_templates(self, request, pk=None, template_key=None):
@@ -7398,15 +7511,24 @@ class PublicEventDetailView(generics.RetrieveAPIView):
     Public-facing endpoint for event landing pages.
     - No authentication required
     - Only returns public event data (no sensitive fields)
-    - Only available for published/live events
+    - Available for published/live events, or ended events with replay_enabled=True
     """
     permission_classes = [AllowAny]
     serializer_class = PublicEventSerializer
-    queryset = Event.objects.filter(
-        status__in=["published", "live"]
-    ).select_related("community").prefetch_related("sessions", "participants__user", "participants__user__profile")
     lookup_field = "slug"
     lookup_url_kwarg = "slug"
+
+    def get_queryset(self):
+        from django.db.models import Q
+        return (
+            Event.objects
+            .filter(
+                Q(status__in=["published", "live"]) |
+                Q(status="ended", replay_enabled=True)
+            )
+            .select_related("community")
+            .prefetch_related("sessions", "participants__user", "participants__user__profile")
+        )
 
 
 # ============================================================
