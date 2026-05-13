@@ -4431,6 +4431,188 @@ class EventViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="companion-directory",
+        permission_classes=[IsAuthenticated],
+    )
+    def companion_directory(self, request, pk=None):
+        """
+        Event Companion V1: Participant Directory for registered attendees.
+
+        Only registered attendees and event managers can view this directory.
+        Supports search (name, job_title, company) and role filtering.
+
+        Response includes:
+        - event: basic event info
+        - filters: available role filters
+        - participants: filtered participant data with badge labels
+        - count: total participants
+        """
+        event = self.get_object()
+        user = request.user
+
+        # Check permissions: must be registered OR manager/admin
+        is_manager = _is_event_manager(user, event)
+        is_registered = EventRegistration.objects.filter(
+            event=event, user=user, status='registered'
+        ).exists()
+
+        if not is_registered and not is_manager:
+            return Response(
+                {"detail": "Only registered attendees can view this directory."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Fetch registrations (only registered status, exclude superusers)
+        qs = (
+            EventRegistration.objects
+            .filter(event=event, status='registered')
+            .exclude(user__is_superuser=True)
+            .select_related("user", "user__profile")
+            .order_by("-registered_at")
+        )
+
+        participant_lookup = build_event_participant_lookup(event)
+        rows = []
+
+        # Process registered users as participants
+        for registration in qs:
+            _matched_participants, roles, primary_role = resolve_registration_roles(
+                registration,
+                participant_lookup,
+                event=event,
+            )
+
+            try:
+                profile = registration.user.profile
+            except Exception:
+                profile = None
+
+            mini_user = UserMiniSerializer(registration.user, context={"request": request}).data
+            avatar_url = mini_user.get("avatar_url") or ""
+
+            display_name = mini_user.get("full_name") or registration.user.get_full_name().strip() or registration.user.username or registration.user.email or "Unknown User"
+
+            # Get job_title and company from profile or latest experience
+            job_title = ""
+            company = ""
+            if profile:
+                job_title = profile.job_title or ""
+                company = profile.company or ""
+
+            # If not in profile, try to get from latest experience
+            if not job_title or not company:
+                try:
+                    from users.models import Experience
+                    latest_exp = Experience.objects.filter(
+                        user=registration.user
+                    ).order_by(
+                        '-currently_work_here', '-end_date', '-start_date', '-id'
+                    ).first()
+
+                    if latest_exp:
+                        if not job_title:
+                            job_title = latest_exp.position or ""
+                        if not company:
+                            company = latest_exp.community_name or ""
+                except Exception:
+                    pass
+
+            # Badge logic: use primary role if speaker/moderator/host, else "attendee"
+            badge_key = primary_role.lower() if primary_role in ['speaker', 'moderator', 'host'] else 'attendee'
+            badge_label = role_label(badge_key)
+
+            rows.append({
+                "registration_id": registration.id,
+                "user_id": registration.user_id,
+                "display_name": display_name,
+                "job_title": job_title,
+                "company": company,
+                "avatar_url": avatar_url or None,
+                "profile_url": build_profile_url(registration.user_id),
+                "badge_key": badge_key,
+                "badge_label": badge_label,
+                "roles": roles,
+                "registered_at": registration.registered_at,
+            })
+
+        # Add virtual speakers to participants
+        virtual_speakers = EventParticipant.objects.filter(
+            event=event,
+            participant_type=EventParticipant.PARTICIPANT_TYPE_VIRTUAL
+        ).select_related("virtual_speaker").order_by("display_order")
+
+        for participant in virtual_speakers:
+            if participant.virtual_speaker:
+                vs = participant.virtual_speaker
+                badge_key = participant.role.lower() if participant.role in ['speaker', 'moderator', 'host'] else 'speaker'
+                badge_label = role_label(badge_key)
+
+                rows.append({
+                    "registration_id": None,
+                    "user_id": None,
+                    "display_name": vs.name,
+                    "job_title": vs.job_title or "",
+                    "company": vs.company or "",
+                    "avatar_url": vs.profile_image.url if vs.profile_image else None,
+                    "profile_url": None,
+                    "badge_key": badge_key,
+                    "badge_label": badge_label,
+                    "roles": [participant.role] if participant.role else [],
+                    "registered_at": None,
+                })
+
+        # Apply search filter
+        search_query = request.query_params.get('q', '').lower().strip()
+        if search_query:
+            rows = [
+                row for row in rows
+                if any(
+                    search_query in str(getattr(row, field, '') or row.get(field, '')).lower()
+                    for field in ['display_name', 'job_title', 'company', 'badge_label']
+                )
+            ]
+
+        # Apply role filter
+        role_filter = request.query_params.get('role', 'all').lower().strip()
+        if role_filter and role_filter != 'all':
+            rows = [
+                row for row in rows
+                if role_filter in [r.lower() for r in row.get('roles', [])] or (
+                    role_filter == 'attendee' and not row.get('roles')
+                )
+            ]
+
+        # Sort by role priority, display_order (if set), then name
+        rows.sort(
+            key=lambda row: (
+                role_priority(row.get("badge_key", "attendee")),
+                row.get("display_name", "").lower(),
+            )
+        )
+
+        # Build filters list
+        filters = [
+            {"key": "all", "label": "All"},
+            {"key": "speaker", "label": "Speaker"},
+            {"key": "host", "label": "Host"},
+            {"key": "moderator", "label": "Moderator"},
+            {"key": "attendee", "label": "Attendee"},
+        ]
+
+        return Response({
+            "event": {
+                "id": event.id,
+                "title": event.title,
+                "slug": event.slug,
+            },
+            "count": len(rows),
+            "filters": filters,
+            "participants": rows,
+        })
+
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="guest-audit")
     def guest_audit(self, request, pk=None):
         event = self.get_object()
