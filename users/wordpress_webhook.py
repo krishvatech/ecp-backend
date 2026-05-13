@@ -185,7 +185,22 @@ class WordPressUserSyncView(APIView):
             created = False
             original_email = request.data.get("email")  # Preserve the original email from login
 
+            # Security: If syncing by wp_user_id, require a valid webhook signature or admin auth
             if "wp_user_id" in request.data:
+                signature = request.headers.get("X-Webhook-Signature", "")
+                payload_str = request.body.decode('utf-8')
+                wp_client = get_wordpress_client()
+                
+                is_authorized = wp_client.validate_webhook_secret(payload_str, signature) or \
+                                (request.user and request.user.is_staff)
+
+                if not is_authorized:
+                    logger.warning("Unauthorized attempt to sync WordPress user by ID")
+                    return Response(
+                        {"error": "Unauthorized"},
+                        status=status.HTTP_401_UNAUTHORIZED
+                    )
+
                 wp_user_id = request.data.get("wp_user_id")
                 logger.info(f"Syncing WordPress user by ID: {wp_user_id}")
                 wp_user_data = sync_service.wp_client.get_user_by_id(wp_user_id)
@@ -228,7 +243,7 @@ class WordPressUserSyncView(APIView):
                 if not wp_user_data:
                     logger.warning(f"WordPress authentication failed for email: {email}")
                     return Response(
-                        {"error": "Incorrect username or password."},
+                        {"error": "Invalid email or password."},
                         status=status.HTTP_401_UNAUTHORIZED
                     )
                 user, created = sync_service.sync_user_from_wordpress(wp_user_data, override_email=original_email)
