@@ -1240,7 +1240,8 @@ class EventViewSet(viewsets.ModelViewSet):
         include_ended = (params.get("include_ended") or "").strip().lower() in {"1", "true", "yes", "on"}
 
         # ✅ FOR DETAIL VIEWS: default to including ended/past events so hosts/participants don't 404
-        if self.action in ["retrieve", "update", "partial_update", "destroy"]:
+        # Also include "register" and "apply" so users can register/apply for replay events (which are "ended")
+        if self.action in ["retrieve", "update", "partial_update", "destroy", "register", "apply"]:
             include_ended = True
 
         # ✅ DRAFT EVENTS: Always visible to creator, regardless of include_ended
@@ -1292,7 +1293,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 # Platform admin: full visibility (no filter)
                 pass
             else:
-                # Authenticated users: can see published/live, but PAST events only if registered/creator/owner
+                # Authenticated users: can see published/live, but PAST events only if registered/creator/owner/replay-enabled
                 now = timezone.now()
                 registered_event_ids = EventRegistration.objects.filter(
                     user_id=user.id,
@@ -1304,10 +1305,11 @@ class EventViewSet(viewsets.ModelViewSet):
                     Q(status__in=["published", "live"], end_time__isnull=True) |  # No end time
                     Q(status__in=["published", "live"], end_time__gte=now) |  # Still ongoing
                     draft_creator_filter |  # ✅ Creator sees own draft
-                    # ✅ PAST events (status ended OR end_time passed): only to registered/creator/owner
+                    # ✅ PAST events (status ended OR end_time passed): visible to registered/creator/owner/replay-enabled
                     Q(Q(status="ended") | Q(end_time__lt=now), created_by_id=user.id) |  # Event creator
                     Q(Q(status="ended") | Q(end_time__lt=now), community__owner_id=user.id) |  # Community owner
-                    Q(Q(status="ended") | Q(end_time__lt=now), id__in=registered_event_ids)  # Registered users ONLY
+                    Q(Q(status="ended") | Q(end_time__lt=now), id__in=registered_event_ids) |  # Registered users
+                    Q(status="ended", replay_enabled=True, replay_visible_to_participants=True)  # Replay-enabled events
                 )
 
         # Hidden filter (platform_admin only) - filter to show only hidden events
