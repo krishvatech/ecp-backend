@@ -2016,22 +2016,27 @@ class EventSerializer(serializers.ModelSerializer):
         URL normalization + validation (non-fatal for links/videos), then existing time rules.
         """
 
-        # ---- recording_url: allow blank/placeholder; normalize if valid; else set "" ----
-        ru = data.get("recording_url")
-        if ru is None or str(ru).strip() == "" or str(ru).strip().lower() in {"string","null","none"}:
-            data["recording_url"] = ""
-        else:
-            candidate = self._normalize_url(str(ru))
-            validator = URLValidator(schemes=["http","https","s3"])
-            try:
-                validator(candidate)
-                parsed = urlparse(candidate)
-                if parsed.scheme in ("http","https"):
-                    if not parsed.netloc or "." not in parsed.netloc:
-                        candidate = ""
-            except DjangoValidationError:
-                candidate = ""
-            data["recording_url"] = candidate
+        # ---- recording_url: only process if explicitly provided in request ----
+        # For PATCH requests, preserve instance.recording_url if not in incoming data
+        if "recording_url" in data:
+            ru = data.get("recording_url")
+            if ru is None or str(ru).strip() == "" or str(ru).strip().lower() in {"string","null","none"}:
+                data["recording_url"] = ""
+            else:
+                candidate = self._normalize_url(str(ru))
+                validator = URLValidator(schemes=["http","https","s3"])
+                try:
+                    validator(candidate)
+                    parsed = urlparse(candidate)
+                    if parsed.scheme in ("http","https"):
+                        if not parsed.netloc or "." not in parsed.netloc:
+                            candidate = ""
+                except DjangoValidationError:
+                    candidate = ""
+                data["recording_url"] = candidate
+        elif self.instance:
+            # Preserve existing recording_url for PATCH/update requests
+            data["recording_url"] = self.instance.recording_url
 
         # ---- optional arrays: coerce and filter; never raise on links/videos ----
         data["resource_links"]  = self._filter_urls(data.get("resource_links", []))
@@ -2218,7 +2223,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "start_time", "end_time", "timezone",
             "status", "is_live", "category", "format",
             "location", "location_city", "location_country",
-            "price", "price_label", "currency", "is_free",
+            "price", "price_label", "price_display_label", "allow_manual_price_display", "currency", "is_free",
             "preview_image", "cover_image", "attending_count",
             "created_at", "sessions", "speakers",
             "featured_participants", "featured_participants_total",
@@ -2303,12 +2308,17 @@ class PublicEventSerializer(serializers.ModelSerializer):
         if not request or not request.user.is_authenticated:
             return None
         if _is_event_host(request.user, obj):
-            return obj.replay_video_url
+            # Host can view replay if replay_visible_to_participants is True or if they have direct access
+            if not obj.replay_visible_to_participants:
+                return None
+            return obj.replay_video_url or obj.recording_url
         is_registered = EventRegistration.objects.filter(
             event=obj, user=request.user,
             status__in=["registered", "cancellation_requested"]
         ).exists()
-        return obj.replay_video_url if is_registered else None
+        if is_registered and obj.replay_visible_to_participants:
+            return obj.replay_video_url or obj.recording_url
+        return None
 
     def get_is_registered_for_event(self, obj):
         """Check if the current user is registered for this event."""
@@ -2331,7 +2341,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
         True only when:
         - replay is enabled
         - event is ended/past
-        - replay recording is published/ready
+        - replay recording is published/ready (has replay_visible_to_participants and recording)
         - user is not registered
         """
         from django.utils import timezone
@@ -2345,7 +2355,8 @@ class PublicEventSerializer(serializers.ModelSerializer):
         replay_enabled = bool(obj.replay_enabled)
 
         # Check if replay is published/ready to participants
-        replay_ready = bool(obj.replay_visible_to_participants)
+        # Must have replay_visible_to_participants=True AND either replay_video_url or recording_url
+        replay_ready = bool(obj.replay_visible_to_participants) and bool(obj.replay_video_url or obj.recording_url)
 
         # Check registration status
         if not request or not request.user.is_authenticated:
