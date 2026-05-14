@@ -1327,6 +1327,10 @@ class EventViewSet(viewsets.ModelViewSet):
         if bucket:
             qs = _apply_bucket_filter(qs, bucket)
 
+        exclude_pinned = (params.get("exclude_pinned") or "").strip().lower() in {"1", "true", "yes", "on"}
+        if exclude_pinned:
+            qs = qs.filter(is_pinned=False)
+
         created_by_param = params.get("created_by")
         if created_by_param:
             if created_by_param == "me":
@@ -7409,50 +7413,6 @@ class EventViewSet(viewsets.ModelViewSet):
 
         if not include_ended:
             qs = qs.exclude(status="ended").exclude(end_time__lt=now)
-
-        topicsToSend = params.getlist("category")
-        if topicsToSend:
-            qs = qs.filter(category__in=topicsToSend)
-
-        location = params.get("location")
-        if location:
-            qs = qs.filter(location_city=location) | qs.filter(location=location)
-
-        event_format = params.getlist("event_format")
-        if event_format:
-            qs = qs.filter(format__in=event_format)
-
-        start_date = params.get("start_date")
-        if start_date:
-            qs = qs.filter(start_time__gte=start_date)
-
-        end_date = params.get("end_date")
-        if end_date:
-            qs = qs.filter(start_time__lte=end_date)
-
-        min_price = params.get("min_price")
-        if min_price is not None:
-            try:
-                qs = qs.filter(price__gte=float(min_price))
-            except (ValueError, TypeError):
-                pass
-
-        max_price = params.get("max_price")
-        if max_price is not None:
-            try:
-                qs = qs.filter(price__lte=float(max_price))
-            except (ValueError, TypeError):
-                pass
-
-        search = params.get("search")
-        if search:
-            from django.db.models import Q
-            qs = qs.filter(
-                Q(title__icontains=search) |
-                Q(location__icontains=search) |
-                Q(category__icontains=search) |
-                Q(description__icontains=search)
-            )
 
         qs = qs.order_by("pin_priority", "-pinned_at", "start_time")
 
