@@ -20,7 +20,7 @@ from django.db.models import Q
 from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
 from .models import (
-    Event, EventRegistration, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
+    Event, EventRegistration, EventBadgeLabel, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
     EventSession, SessionParticipant, SessionAttendance, SessionBreak, EventApplication, VirtualSpeaker, GuestAttendee,
     SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup,
     EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate
@@ -2438,6 +2438,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
     is_host = serializers.SerializerMethodField()
     attendance_duration_seconds = serializers.SerializerMethodField()
     attendance_category = serializers.SerializerMethodField()
+    badge_labels = serializers.SerializerMethodField()
 
     class Meta:
         model = EventRegistration
@@ -2468,6 +2469,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "current_location",
             "attendance_duration_seconds",
             "attendance_category",
+            "badge_labels",
         )
         read_only_fields = (
             "id",
@@ -2490,7 +2492,11 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "status",
             "is_host",
             "current_location",
+            "badge_labels",
         )
+
+    def get_badge_labels(self, obj):
+        return [{'id': bl.id, 'name': bl.name, 'color': bl.color} for bl in obj.badge_labels.all()]
 
     def get_is_host(self, obj):
         event = obj.event
@@ -3076,3 +3082,21 @@ class EventEmailTemplateSerializer(serializers.ModelSerializer):
             'is_active', 'updated_by', 'updated_by_name', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'event', 'created_at', 'updated_at', 'updated_by_name']
+
+
+class EventBadgeLabelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EventBadgeLabel
+        fields = ['id', 'event', 'name', 'color', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'event', 'created_at', 'updated_at']
+
+    def validate_name(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Label name is required.")
+        return value.strip()
+
+    def validate_color(self, value):
+        import re
+        if not re.match(r'^#[0-9A-Fa-f]{6}$', value):
+            raise serializers.ValidationError("Color must be a valid 6-digit hex, e.g. #6366f1.")
+        return value.lower()

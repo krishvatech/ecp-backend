@@ -60,7 +60,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate
+from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate
 from .permissions import IsSuperuserOnly
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -99,6 +99,7 @@ from .serializers import (
     PublicEventSeriesSerializer,
     EventSaleorDiscountSerializer,
     EventEmailTemplateSerializer,
+    EventBadgeLabelSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -4562,6 +4563,12 @@ class EventViewSet(viewsets.ModelViewSet):
             badge_key = primary_role.lower() if primary_role in ['speaker', 'moderator', 'host'] else 'attendee'
             badge_label = role_label(badge_key)
 
+            # Fetch custom badge labels
+            custom_badges = [
+                {'id': bl.id, 'name': bl.name, 'color': bl.color}
+                for bl in registration.badge_labels.all()
+            ]
+
             rows.append({
                 "registration_id": registration.id,
                 "user_id": registration.user_id,
@@ -4572,6 +4579,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "profile_url": build_profile_url(registration.user_id),
                 "badge_key": badge_key,
                 "badge_label": badge_label,
+                "badge_labels": custom_badges,
                 "roles": roles,
                 "registered_at": registration.registered_at,
             })
@@ -7979,8 +7987,103 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         Event.objects.filter(pk=reg.event_id).update(attending_count=F("attending_count") + 1)
         
         return Response({"ok": True, "status": reg.status})
-    
-    
+
+    @action(detail=True, methods=["post"], url_path="assign-labels")
+    def assign_labels(self, request, pk=None):
+        reg = self.get_object()
+        is_admin = request.user.is_staff or getattr(request.user, 'is_superuser', False)
+        is_owner = (reg.event.created_by_id == request.user.id)
+        if not (is_admin or is_owner):
+            return Response({"error": "permission_denied"}, status=403)
+        label_ids = request.data.get('label_ids', [])
+        if not isinstance(label_ids, list):
+            return Response({"error": "label_ids must be a list"}, status=400)
+        labels = EventBadgeLabel.objects.filter(id__in=label_ids, event=reg.event)
+        if labels.count() != len(label_ids):
+            return Response({"error": "One or more label IDs are invalid or belong to a different event."}, status=400)
+        reg.badge_labels.set(labels)
+        return Response({"ok": True, "label_ids": list(reg.badge_labels.values_list('id', flat=True))})
+
+    @action(detail=False, methods=["post"], url_path="bulk-assign-labels")
+    def bulk_assign_labels(self, request):
+        is_admin = request.user.is_staff or getattr(request.user, 'is_superuser', False)
+        registration_ids = request.data.get('registration_ids', [])
+        label_ids = request.data.get('label_ids', [])
+        mode = request.data.get('mode', 'add')
+        if not isinstance(registration_ids, list) or not registration_ids:
+            return Response({"error": "registration_ids must be a non-empty list"}, status=400)
+        if not isinstance(label_ids, list):
+            return Response({"error": "label_ids must be a list"}, status=400)
+        if mode not in ('set', 'add', 'remove'):
+            return Response({"error": "mode must be 'set', 'add', or 'remove'"}, status=400)
+        regs_qs = EventRegistration.objects.filter(id__in=registration_ids)
+        if not is_admin:
+            regs_qs = regs_qs.filter(event__created_by=request.user)
+        regs = list(regs_qs.select_related('event'))
+        if len(regs) != len(registration_ids):
+            return Response({"error": "Some registration IDs are invalid or not authorized."}, status=403)
+        event_ids = {r.event_id for r in regs}
+        labels = list(EventBadgeLabel.objects.filter(id__in=label_ids, event_id__in=event_ids))
+        updated = 0
+        for reg in regs:
+            event_labels = [l for l in labels if l.event_id == reg.event_id]
+            if mode == 'set':
+                reg.badge_labels.set(event_labels)
+            elif mode == 'add':
+                reg.badge_labels.add(*event_labels)
+            elif mode == 'remove':
+                reg.badge_labels.remove(*event_labels)
+            updated += 1
+        return Response({"ok": True, "updated": updated})
+
+
+class EventBadgeLabelViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = EventBadgeLabelSerializer
+    http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = EventBadgeLabel.objects.select_related('event')
+        event_id = self.request.query_params.get('event_id') or self.request.query_params.get('event')
+        if event_id:
+            qs = qs.filter(event_id=event_id)
+        if not (getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False)):
+            qs = qs.filter(event__created_by=user)
+        return qs
+
+    def _check_permission(self, event):
+        user = self.request.user
+        if not (user.is_staff or getattr(user, 'is_superuser', False) or event.created_by_id == user.id):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Only the event owner can manage badge labels.")
+
+    def create(self, request, *args, **kwargs):
+        from django.shortcuts import get_object_or_404
+        event_id = request.data.get('event_id') or request.data.get('event')
+        if not event_id:
+            return Response({'detail': 'event_id is required.'}, status=400)
+        event = get_object_or_404(Event, pk=event_id)
+        self._check_permission(event)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(event=event)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request, *args, **kwargs):
+        label = self.get_object()
+        self._check_permission(label.event)
+        serializer = self.get_serializer(label, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def destroy(self, request, *args, **kwargs):
+        label = self.get_object()
+        self._check_permission(label.event)
+        label.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class RecordingWebhookView(views.APIView):
     """

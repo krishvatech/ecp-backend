@@ -4,6 +4,7 @@ from .views import (
     EventViewSet,
     PublicEventDetailView,
     EventRegistrationViewSet,
+    EventBadgeLabelViewSet,
     RecordingWebhookView,
     EventSessionViewSet,
     SessionBreakViewSet,
@@ -60,6 +61,7 @@ from .saleor_webhooks import SaleorProductWebhookView
 router = DefaultRouter()
 router.register(r"events", EventViewSet, basename="event")
 router.register(r"event-registrations", EventRegistrationViewSet, basename="eventregistration")
+router.register(r"event-badge-labels", EventBadgeLabelViewSet, basename="eventbadgelabel")
 router.register(r"series", SeriesViewSet, basename="series")
 router.register(r"virtual-speakers", VirtualSpeakerViewSet, basename="virtual-speaker")
 

@@ -782,6 +782,11 @@ class EventRegistration(models.Model):
         db_index=True,
         help_text="Participant's current location within the event ecosystem",
     )
+    badge_labels = models.ManyToManyField(
+        'EventBadgeLabel',
+        blank=True,
+        related_name='registrations',
+    )
 
     class Meta:
         db_table = 'event_registrations'
@@ -792,6 +797,21 @@ class EventRegistration(models.Model):
         ]
     def __str__(self):
         return f'{self.user_id} -> {self.event_id}'
+
+
+class EventBadgeLabel(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='badge_labels')
+    name = models.CharField(max_length=100)
+    color = models.CharField(max_length=7, default='#6366f1', help_text='Hex color code e.g. #6366f1')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('event', 'name')
+        ordering = ['name']
+
+    def __str__(self):
+        return f"{self.name} ({self.event_id})"
 
 
 class WaitingRoomAuditLog(models.Model):
