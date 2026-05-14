@@ -116,6 +116,16 @@ class Event(models.Model):
         default="",
         help_text="Optional display label (e.g. 'By application only', 'GBP 500'). Informational only — does not trigger payment."
     )
+    price_display_label = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text="Fallback label shown when Saleor is unavailable (e.g. 'From £500'). Used if allow_manual_price_display is True or as last resort."
+    )
+    allow_manual_price_display = models.BooleanField(
+        default=False,
+        help_text="When True, always show price_display_label instead of fetching from Saleor."
+    )
     REGISTRATION_TYPE_CHOICES = [
         ('open', 'Open Registration'),
         ('apply', 'Application Required'),

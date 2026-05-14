@@ -1931,6 +1931,8 @@ class EventViewSet(viewsets.ModelViewSet):
 
         if request.method == "GET":
             details = fetch_event_saleor_product_details(event.saleor_product_id)
+            details["target_channel_slug"] = getattr(settings, "SALEOR_CHANNEL_SLUG", "default-channel")
+            details["event_price_label"] = event.price_label
             return Response(details)
 
         elif request.method == "PATCH":
@@ -1962,9 +1964,45 @@ class EventViewSet(viewsets.ModelViewSet):
                                 event.price = float(amt)
                             break
                     event.max_participants = sum(s.get("quantity", 0) for s in variant.get("stocks", []))
-                    event.save(update_fields=["price", "max_participants"])
+
+                # Save price_label if provided
+                update_fields = ["price", "max_participants"]
+                if "price_label" in request.data:
+                    event.price_label = request.data.get("price_label", "").strip()
+                    update_fields.append("price_label")
+
+                event.save(update_fields=update_fields)
 
             return Response(result)
+
+    # POST /api/events/{id}/sync-saleor-product/
+    @action(detail=True, methods=["post"], permission_classes=[IsCreatorOrReadOnly], url_path="sync-saleor-product")
+    def sync_saleor_product(self, request, pk=None):
+        """
+        Create or re-sync Saleor product for a paid event.
+        Calls sync_event_to_saleor_sync(event) to create/update the Saleor product.
+        Returns updated saleor_product_id and saleor_variant_id.
+        """
+        event = self.get_object()
+
+        # Permission check
+        if not (request.user.is_superuser or event.created_by_id == request.user.id):
+            raise PermissionDenied("You do not have permission to sync this product.")
+
+        if event.is_free:
+            return Response({"error": "Free events do not need Saleor products."}, status=400)
+
+        try:
+            from .saleor_sync import sync_event_to_saleor_sync
+            sync_event_to_saleor_sync(event)
+            event.refresh_from_db()
+            return Response({
+                "saleor_product_id": event.saleor_product_id,
+                "saleor_variant_id": event.saleor_variant_id,
+            })
+        except Exception as e:
+            logger.error(f"Error syncing event {event.id} to Saleor: {e}")
+            return Response({"error": f"Sync failed: {str(e)}"}, status=500)
 
     # POST /api/events/{id}/publish/
     @action(detail=True, methods=["post"], permission_classes=[IsCreatorOrReadOnly], url_path="publish")
