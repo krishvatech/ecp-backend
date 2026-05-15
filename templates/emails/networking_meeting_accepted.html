@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+</head>
+
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <h2>{{ app_name }} – Meeting Accepted ✓</h2>
+    <p>Hello {{ first_name }},</p>
+    <p><strong>{{ other_party_name }}</strong> has accepted your 1:1 meeting request at <strong>{{ event_title }}</strong>.</p>
+
+    <div style="background-color: #f0f8f0; padding: 15px; margin: 20px 0; border-left: 4px solid #4CAF50;">
+        <p style="margin: 5px 0;"><strong>✓ Status:</strong> Confirmed</p>
+        <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ meeting_date }}</p>
+        <p style="margin: 5px 0;"><strong>⏰ Time:</strong> {{ meeting_time }}</p>
+        <p style="margin: 5px 0;"><strong>⏱️ Duration:</strong> {{ duration_minutes }} minutes</p>
+        {% if table_number %}<p style="margin: 5px 0;"><strong>🎯 Table:</strong> {{ table_number }}</p>{% endif %}
+    </div>
+
+    <p style="margin: 20px 0; font-size: 14px; color: #666;">
+        {% if reminder_minutes %}This is a reminder to mark your calendar. You'll receive a reminder {{ reminder_minutes }} minutes before the meeting starts.{% endif %}
+    </p>
+
+    <p style="text-align: center; margin: 25px 0;">
+        <a href="{{ meeting_url }}"
+            style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">View Meeting Details</a>
+    </p>
+
+    <p>If you need to reschedule or cancel, you can do so in your Event Companion page until 24 hours before the meeting.</p>
+
+    <p>If you have any questions, please reply to this email or contact us at {{ support_email }}.</p>
+
+    <p>Best regards,<br>The {{ app_name }} Team</p>
+</body>
+
+</html>

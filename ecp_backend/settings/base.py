@@ -561,6 +561,10 @@ CELERY_BEAT_SCHEDULE.update({
         "task": "events.tasks.scheduled_send_replay_expiring_alerts",
         "schedule": crontab(minute="*/5"),  # Run every 5 minutes to find replays expiring within 2 days
     },
+    "schedule-networking-meeting-reminders": {
+        "task": "events.tasks.schedule_networking_meeting_reminders",
+        "schedule": crontab(minute="*/1"),  # Run every minute to check for upcoming 1:1 meetings
+    },
 })
 
 # Contact Request Quota Settings

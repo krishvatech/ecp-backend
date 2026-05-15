@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+</head>
+
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <h2>{{ app_name }} – 1:1 Meeting Request</h2>
+    <p>Hello {{ first_name }},</p>
+    <p><strong>{{ requester_name }}</strong> has requested a 1:1 meeting with you at <strong>{{ event_title }}</strong>.</p>
+
+    <div style="background-color: #f9f9f9; padding: 15px; margin: 20px 0; border-left: 4px solid #0066cc;">
+        <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ meeting_date }}</p>
+        <p style="margin: 5px 0;"><strong>⏰ Time:</strong> {{ meeting_time }}</p>
+        <p style="margin: 5px 0;"><strong>⏱️ Duration:</strong> {{ duration_minutes }} minutes</p>
+        {% if requester_company %}<p style="margin: 5px 0;"><strong>🏢 Company:</strong> {{ requester_company }}</p>{% endif %}
+        {% if requester_job_title %}<p style="margin: 5px 0;"><strong>💼 Role:</strong> {{ requester_job_title }}</p>{% endif %}
+    </div>
+
+    {% if message %}
+    <div style="background-color: #fafafa; padding: 15px; margin: 20px 0; border-left: 4px solid #999; font-style: italic;">
+        <p style="margin: 0;">{{ message }}</p>
+    </div>
+    {% endif %}
+
+    <p style="text-align: center; margin: 25px 0;">
+        <a href="{{ meeting_url }}"
+            style="background-color: #0066cc; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">View Request & Respond</a>
+    </p>
+
+    <p>You can accept, decline, or suggest a different time in your Event Companion page.</p>
+
+    <p>If you have any questions, please reply to this email or contact us at {{ support_email }}.</p>
+
+    <p>Best regards,<br>The {{ app_name }} Team</p>
+</body>
+
+</html>

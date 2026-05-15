@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <h2>{{ app_name }} – Meeting Reminder</h2>
+    <p>Hello {{ first_name }},</p>
+    <p style="font-size: 18px; color: #FF6B00; font-weight: bold;">Your 1:1 meeting is starting in {{ reminder_minutes }} minutes!</p>
+
+    <div style="background-color: #fff8e1; padding: 15px; margin: 20px 0; border-left: 4px solid #FF9800;">
+        <p style="margin: 5px 0;"><strong>👤 Meeting with:</strong> {{ other_party_name }}</p>
+        <p style="margin: 5px 0;"><strong>📅 Date & Time:</strong> {{ meeting_date }} at {{ meeting_time }}</p>
+        <p style="margin: 5px 0;"><strong>⏱️ Duration:</strong> {{ duration_minutes }} minutes</p>
+        {% if table_number %}<p style="margin: 5px 0;"><strong>🎯 Table:</strong> {{ table_number }}</p>{% endif %}
+        {% if location %}<p style="margin: 5px 0;"><strong>📍 Location:</strong> {{ location }}</p>{% endif %}
+    </div>
+
+    <p style="text-align: center; margin: 25px 0;">
+        <a href="{{ event_url }}" style="background-color: #FF6B00; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">Join Meeting</a>
+    </p>
+
+    <p>Head over to the Event Companion page to find your meeting location and details.</p>
+
+    <p>If you need to reschedule or cancel before the meeting starts, please do so immediately in your Event Companion page.</p>
+
+    <p>If you have any questions, please reply to this email or contact us at {{ support_email }}.</p>
+
+    <p>Best regards,<br>The {{ app_name }} Team</p>
+</body>
+</html>

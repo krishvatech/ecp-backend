@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <h2>{{ app_name }} – Alternative Time Suggested</h2>
+    <p>Hello {{ first_name }},</p>
+    <p><strong>{{ other_party_name }}</strong> has suggested a different time for your 1:1 meeting at <strong>{{ event_title }}</strong>.</p>
+    <div style="background-color: #e3f2fd; padding: 15px; margin: 20px 0; border-left: 4px solid #2196F3;">
+        <p style="margin: 5px 0;"><strong>💬 Suggested Time:</strong> {{ suggested_date }} at {{ suggested_time }}</p>
+        <p style="margin: 5px 0;"><strong>⏱️ Duration:</strong> {{ duration_minutes }} minutes</p>
+    </div>
+    {% if suggestion_message %}
+    <div style="background-color: #fafafa; padding: 15px; margin: 20px 0; border-left: 4px solid #999;">
+        <p style="margin: 0; font-style: italic;">{{ suggestion_message }}</p>
+    </div>
+    {% endif %}
+    <p>Please review the suggested time and either accept it, decline it, or suggest another alternative.</p>
+    <p style="text-align: center; margin: 25px 0;">
+        <a href="{{ meeting_url }}" style="background-color: #2196F3; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">Respond to Suggestion</a>
+    </p>
+    <p>If you have any questions, please reply to this email or contact us at {{ support_email }}.</p>
+    <p>Best regards,<br>The {{ app_name }} Team</p>
+</body>
+</html>

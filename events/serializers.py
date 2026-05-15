@@ -16,14 +16,15 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.db import transaction
 
 from django.utils.dateparse import parse_datetime
-from django.db.models import Q
+from django.db.models import Q, Max
 from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
 from .models import (
     Event, EventRegistration, EventBadgeLabel, EventParticipant, SpeedNetworkingSession, SpeedNetworkingMatch, SpeedNetworkingQueue,
     EventSession, SessionParticipant, SessionAttendance, SessionBreak, EventApplication, VirtualSpeaker, GuestAttendee,
     SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup,
-    EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate
+    EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate,
+    EventNetworkingSettings, NetworkingTable, NetworkingMeeting
 )
 from community.models import Community
 from content.models import Resource
@@ -3100,3 +3101,185 @@ class EventBadgeLabelSerializer(serializers.ModelSerializer):
         if not re.match(r'^#[0-9A-Fa-f]{6}$', value):
             raise serializers.ValidationError("Color must be a valid 6-digit hex, e.g. #6366f1.")
         return value.lower()
+
+
+class EventNetworkingSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EventNetworkingSettings
+        fields = [
+            'id', 'event', 'enabled', 'duration_options_minutes', 'allowed_windows',
+            'reminder_minutes_before', 'sms_enabled', 'max_meetings_per_attendee_per_day',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'event', 'created_at', 'updated_at']
+
+    def validate_duration_options_minutes(self, value):
+        if not isinstance(value, list) or not value:
+            raise serializers.ValidationError("Duration options must be a non-empty list.")
+        if not all(isinstance(v, int) and v > 0 for v in value):
+            raise serializers.ValidationError("All durations must be positive integers.")
+        return value
+
+    def validate_allowed_windows(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Allowed windows must be a list.")
+        for window in value:
+            if not isinstance(window, dict):
+                raise serializers.ValidationError("Each window must be a dict.")
+            required = ['date', 'start', 'end']
+            if not all(k in window for k in required):
+                raise serializers.ValidationError(f"Each window must have {required} keys.")
+        return value
+
+    def validate_reminder_minutes_before(self, value):
+        if value < 0:
+            raise serializers.ValidationError("Reminder minutes must be non-negative.")
+        return value
+
+    def validate_max_meetings_per_attendee_per_day(self, value):
+        if value is not None and value <= 0:
+            raise serializers.ValidationError("Max meetings per day must be positive or null.")
+        return value
+
+
+class NetworkingTableSerializer(serializers.ModelSerializer):
+    table_number = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = NetworkingTable
+        fields = [
+            'id', 'event', 'table_number', 'name', 'location_note', 'is_active',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'event', 'table_number', 'created_at', 'updated_at']
+
+    def validate_name(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Table name cannot be empty.")
+        if len(value) > 255:
+            raise serializers.ValidationError("Table name must be 255 characters or less.")
+        return value
+
+    def create(self, validated_data):
+        event = self.context.get("event")
+        if event is None:
+            raise serializers.ValidationError({"event": "Event context is required."})
+
+        # Remove read-only fields from validated_data to avoid conflicts
+        validated_data.pop("table_number", None)
+        validated_data.pop("event", None)
+
+        with transaction.atomic():
+            Event.objects.select_for_update().get(pk=event.pk)
+            max_number = (
+                NetworkingTable.objects
+                .filter(event=event)
+                .aggregate(max_number=Max("table_number"))
+                .get("max_number")
+            ) or 0
+
+            return NetworkingTable.objects.create(
+                event=event,
+                table_number=max_number + 1,
+                **validated_data,
+            )
+
+
+class NetworkingMeetingSerializer(serializers.ModelSerializer):
+    requester_user_name = serializers.CharField(source='requester.user.username', read_only=True)
+    recipient_user_name = serializers.CharField(source='recipient.user.username', read_only=True)
+    suggested_by_user_name = serializers.CharField(source='suggested_by.user.username', read_only=True, allow_null=True)
+    table_name = serializers.CharField(source='table.name', read_only=True, allow_null=True)
+    requester_detail = serializers.SerializerMethodField()
+    recipient_detail = serializers.SerializerMethodField()
+
+    class Meta:
+        model = NetworkingMeeting
+        fields = [
+            'id', 'event', 'requester', 'requester_user_name', 'requester_detail', 'recipient', 'recipient_user_name', 'recipient_detail',
+            'duration_minutes', 'start_time', 'end_time', 'table', 'table_name', 'status',
+            'message', 'suggested_start_time', 'suggested_end_time', 'suggested_by', 'suggested_by_user_name',
+            'accepted_at', 'declined_at', 'cancelled_at', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'event', 'requester', 'recipient', 'status', 'suggested_start_time',
+            'suggested_end_time', 'suggested_by', 'accepted_at', 'declined_at', 'cancelled_at',
+            'created_at', 'updated_at', 'requester_user_name', 'recipient_user_name',
+            'suggested_by_user_name', 'table_name', 'requester_detail', 'recipient_detail'
+        ]
+
+    def _get_avatar_url(self, profile):
+        """Safely get avatar URL from profile."""
+        if not profile:
+            return None
+
+        # Try user_image field (ImageField)
+        user_image = getattr(profile, 'user_image', None)
+        if user_image and hasattr(user_image, 'url'):
+            # Build absolute URL if request available in context
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(user_image.url)
+            return user_image.url
+
+        # Fallback to wordpress_avatar_url if no image
+        wordpress_avatar = getattr(profile, 'wordpress_avatar_url', None)
+        if wordpress_avatar:
+            return wordpress_avatar
+
+        return None
+
+    def get_requester_detail(self, obj):
+        if not obj.requester or not obj.requester.user:
+            return None
+        user = obj.requester.user
+        profile = getattr(user, 'profile', None)
+        return {
+            'id': obj.requester.id,
+            'user_id': user.id,
+            'display_name': user.get_full_name() or user.username,
+            'company': profile.company if profile else None,
+            'job_title': profile.job_title if profile else None,
+            'avatar_url': self._get_avatar_url(profile),
+        }
+
+    def get_recipient_detail(self, obj):
+        if not obj.recipient or not obj.recipient.user:
+            return None
+        user = obj.recipient.user
+        profile = getattr(user, 'profile', None)
+        return {
+            'id': obj.recipient.id,
+            'user_id': user.id,
+            'display_name': user.get_full_name() or user.username,
+            'company': profile.company if profile else None,
+            'job_title': profile.job_title if profile else None,
+            'avatar_url': self._get_avatar_url(profile),
+        }
+
+    def validate_duration_minutes(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Duration must be positive.")
+        return value
+
+
+class NetworkingMeetingCreateSerializer(serializers.Serializer):
+    recipient_registration_id = serializers.IntegerField()
+    duration_minutes = serializers.IntegerField()
+    start_time = serializers.DateTimeField()
+    message = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_duration_minutes(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Duration must be positive.")
+        return value
+
+
+class NetworkingMeetingSuggestSerializer(serializers.Serializer):
+    suggested_start_time = serializers.DateTimeField()
+    suggested_end_time = serializers.DateTimeField()
+
+    def validate(self, data):
+        if data['suggested_end_time'] <= data['suggested_start_time']:
+            raise serializers.ValidationError("End time must be after start time.")
+        return data

@@ -1,0 +1,15 @@
+Hello {{ first_name }},
+
+{{ other_party_name }} has declined your 1:1 meeting request at {{ event_title }}.
+
+Requested Meeting:
+- Date: {{ meeting_date }}
+- Time: {{ meeting_time }}
+- Duration: {{ duration_minutes }} minutes
+
+Feel free to explore other networking opportunities at the event. You can browse all attendees in your Event Companion's Directory.
+
+If you have any questions, please reply to this email or contact us at {{ support_email }}.
+
+Best regards,
+The {{ app_name }} Team

@@ -1,0 +1,15 @@
+Hello {{ first_name }},
+
+{{ other_party_name }} has cancelled your 1:1 meeting at {{ event_title }}.
+
+Cancelled Meeting:
+- Date: {{ meeting_date }}
+- Time: {{ meeting_time }}
+- Duration: {{ duration_minutes }} minutes
+
+If you'd like to connect with other attendees, you can explore networking opportunities in your Event Companion page.
+
+If you have any questions, please reply to this email or contact us at {{ support_email }}.
+
+Best regards,
+The {{ app_name }} Team

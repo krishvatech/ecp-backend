@@ -1,0 +1,22 @@
+Hello {{ first_name }},
+
+{{ other_party_name }} has accepted your 1:1 meeting request at {{ event_title }}.
+
+Meeting Confirmed ✓
+- Date: {{ meeting_date }}
+- Time: {{ meeting_time }}
+- Duration: {{ duration_minutes }} minutes
+{% if table_number %}- Table: {{ table_number }}
+{% endif %}
+
+{% if reminder_minutes %}You'll receive a reminder {{ reminder_minutes }} minutes before the meeting starts.{% endif %}
+
+You can view and manage this meeting in your Event Companion page:
+{{ meeting_url }}
+
+If you need to reschedule or cancel, you can do so until 24 hours before the meeting.
+
+If you have any questions, please reply to this email or contact us at {{ support_email }}.
+
+Best regards,
+The {{ app_name }} Team

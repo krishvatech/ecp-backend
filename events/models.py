@@ -10,6 +10,7 @@ from django.contrib.auth.models import User
 from community.models import Community
 from django.utils.text import slugify
 from django.conf import settings
+from django.core.exceptions import ValidationError
 import os, uuid
 def event_preview_upload_to(instance, filename):
     """
@@ -2757,3 +2758,177 @@ class EventSaleorDiscount(models.Model):
 
     def __str__(self):
         return f"{self.name} - {self.event.title}"
+
+
+class EventNetworkingSettings(models.Model):
+    event = models.OneToOneField(Event, on_delete=models.CASCADE, related_name="networking_settings")
+    enabled = models.BooleanField(default=False)
+    duration_options_minutes = models.JSONField(default=list, help_text="List of available meeting durations in minutes")
+    allowed_windows = models.JSONField(
+        default=list,
+        help_text="List of available time windows with format: [{'date': 'YYYY-MM-DD', 'start': 'HH:MM', 'end': 'HH:MM'}]"
+    )
+    reminder_minutes_before = models.PositiveIntegerField(default=5, help_text="Minutes before meeting to send reminders")
+    sms_enabled = models.BooleanField(default=False, help_text="Enable SMS reminders for meetings")
+    max_meetings_per_attendee_per_day = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Maximum number of networking meetings per attendee per day (null for unlimited)"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = "Event Networking Settings"
+
+    def __str__(self):
+        return f"Networking Settings for {self.event.title}"
+
+    def save(self, *args, **kwargs):
+        if self.duration_options_minutes is None:
+            self.duration_options_minutes = [5, 10, 15]
+        if self.allowed_windows is None:
+            self.allowed_windows = []
+        super().save(*args, **kwargs)
+
+
+class NetworkingTable(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="networking_tables")
+    table_number = models.PositiveIntegerField(help_text="Table number/identifier")
+    name = models.CharField(max_length=255, blank=True, help_text="Optional table name")
+    location_note = models.TextField(blank=True, help_text="Optional location notes or description")
+    is_active = models.BooleanField(default=True, help_text="Whether this table is available for meetings")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("event", "table_number")
+        indexes = [
+            models.Index(fields=["event", "table_number"]),
+            models.Index(fields=["event", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"Table {self.table_number} - {self.event.title}"
+
+
+class NetworkingMeeting(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("accepted", "Accepted"),
+        ("declined", "Declined"),
+        ("suggested", "Suggested"),
+        ("cancelled", "Cancelled"),
+        ("expired", "Expired"),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="networking_meetings")
+    requester = models.ForeignKey(
+        EventRegistration,
+        on_delete=models.CASCADE,
+        related_name="requested_networking_meetings",
+        help_text="The attendee who requested the meeting"
+    )
+    recipient = models.ForeignKey(
+        EventRegistration,
+        on_delete=models.CASCADE,
+        related_name="received_networking_meetings",
+        help_text="The attendee being requested for a meeting"
+    )
+    duration_minutes = models.PositiveIntegerField(help_text="Duration of meeting in minutes")
+    start_time = models.DateTimeField(help_text="Scheduled start time of the meeting")
+    end_time = models.DateTimeField(help_text="Scheduled end time of the meeting")
+    table = models.ForeignKey(
+        NetworkingTable,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="networking_meetings",
+        help_text="Assigned networking table for this meeting"
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="pending",
+        db_index=True,
+        help_text="Current status of the meeting request"
+    )
+    message = models.TextField(blank=True, help_text="Optional message from requester")
+    suggested_start_time = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Suggested alternative start time"
+    )
+    suggested_end_time = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Suggested alternative end time"
+    )
+    suggested_by = models.ForeignKey(
+        EventRegistration,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="suggested_networking_meetings",
+        help_text="Who suggested the alternative time"
+    )
+    accepted_at = models.DateTimeField(null=True, blank=True, help_text="When the meeting was accepted")
+    declined_at = models.DateTimeField(null=True, blank=True, help_text="When the meeting was declined")
+    cancelled_at = models.DateTimeField(null=True, blank=True, help_text="When the meeting was cancelled")
+    reminder_task_id = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Celery task ID for reminder notification"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["event", "status"]),
+            models.Index(fields=["requester", "status"]),
+            models.Index(fields=["recipient", "status"]),
+            models.Index(fields=["start_time", "end_time"]),
+            models.Index(fields=["table", "start_time", "end_time"]),
+        ]
+
+    def clean(self):
+        from django.utils import timezone
+
+        # Self-meeting prevention
+        if self.requester_id == self.recipient_id:
+            raise ValidationError("Cannot request a meeting with yourself.")
+
+        # Event registration checks
+        if self.requester.event_id != self.event_id:
+            raise ValidationError("Requester must be registered for this event.")
+
+        if self.recipient.event_id != self.event_id:
+            raise ValidationError("Recipient must be registered for this event.")
+
+        # Table validation
+        if self.table and self.table.event_id != self.event_id:
+            raise ValidationError("Table must belong to this event.")
+
+        # Time validation
+        if self.end_time <= self.start_time:
+            raise ValidationError("End time must be after start time.")
+
+        # Duration validation
+        expected_duration = (self.end_time - self.start_time).total_seconds() / 60
+        if abs(expected_duration - self.duration_minutes) > 0.5:
+            raise ValidationError(f"Duration mismatch: duration_minutes ({self.duration_minutes}) does not match time window ({int(expected_duration)} minutes).")
+
+        # Past meeting prevention (only for new/pending/suggested meetings)
+        if self.status in ['pending', 'suggested']:
+            if self.start_time < timezone.now():
+                raise ValidationError("Cannot create a meeting in the past.")
+
+        # Event bounds check
+        if self.event.start_time and self.start_time < self.event.start_time:
+            raise ValidationError("Meeting must start after event begins.")
+        if self.event.end_time and self.end_time > self.event.end_time:
+            raise ValidationError("Meeting must end before event ends.")
+
+    def __str__(self):
+        return f"Meeting: {self.requester.user.username} + {self.recipient.user.username} - {self.event.title}"

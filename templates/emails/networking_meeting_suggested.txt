@@ -1,0 +1,18 @@
+Hello {{ first_name }},
+
+{{ other_party_name }} has suggested a different time for your 1:1 meeting at {{ event_title }}.
+
+Suggested Time:
+- Date & Time: {{ suggested_date }} at {{ suggested_time }}
+- Duration: {{ duration_minutes }} minutes
+
+{% if suggestion_message %}{{ other_party_name }}'s message:
+{{ suggestion_message }}
+
+{% endif %}Please review the suggestion and either accept it, decline it, or suggest another alternative in your Event Companion page:
+{{ meeting_url }}
+
+If you have any questions, please reply to this email or contact us at {{ support_email }}.
+
+Best regards,
+The {{ app_name }} Team

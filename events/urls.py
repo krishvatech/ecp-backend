@@ -54,6 +54,18 @@ from .guest_views import (
     GuestProfileDetailView,
 )
 from .speed_networking_views import SpeedNetworkingSessionViewSet, SpeedNetworkingQueueViewSet
+from .networking_views import (
+    EventNetworkingSettingsView,
+    NetworkingTableViewSet,
+    NetworkingMeetingAvailabilityView,
+    NetworkingMeetingListCreateView,
+    NetworkingMeetingMyView,
+    NetworkingMeetingAcceptView,
+    NetworkingMeetingDeclineView,
+    NetworkingMeetingSuggestView,
+    NetworkingMeetingCancelView,
+    NetworkingMeetingRescheduleView,
+)
 from .webhooks import realtime_webhook
 from .wordpress_event_webhook import WordPressEventWebhookView
 from .saleor_webhooks import SaleorProductWebhookView
@@ -325,4 +337,72 @@ urlpatterns = [
     path("events/saleor/permission-groups/create/", SaleorPermissionGroupCreateView.as_view(), name="saleor-permission-group-create"),
     path("events/saleor/permission-groups/<int:pk>/", SaleorPermissionGroupUpdateView.as_view(), name="saleor-permission-group-update"),
     path("events/saleor/permission-groups/<int:pk>/delete/", SaleorPermissionGroupDeleteView.as_view(), name="saleor-permission-group-delete"),
+
+    # --- 1:1 Networking Meetings ---
+    # Networking Settings
+    path(
+        "events/<int:event_id>/networking-settings/",
+        EventNetworkingSettingsView.as_view(),
+        name="networking-settings"
+    ),
+
+    # Networking Tables
+    path(
+        "events/<int:event_id>/networking-tables/",
+        NetworkingTableViewSet.as_view({'get': 'list', 'post': 'create'}),
+        name="networking-tables-list"
+    ),
+    path(
+        "events/<int:event_id>/networking-tables/<int:pk>/",
+        NetworkingTableViewSet.as_view({'get': 'retrieve', 'patch': 'partial_update', 'delete': 'destroy'}),
+        name="networking-tables-detail"
+    ),
+
+    # Networking Meetings Availability
+    path(
+        "events/<int:event_id>/networking-meetings/availability/",
+        NetworkingMeetingAvailabilityView.as_view(),
+        name="networking-meetings-availability"
+    ),
+
+    # Networking Meetings List/Create
+    path(
+        "events/<int:event_id>/networking-meetings/",
+        NetworkingMeetingListCreateView.as_view(),
+        name="networking-meetings-list"
+    ),
+
+    # Networking Meetings My (user's meetings)
+    path(
+        "events/<int:event_id>/networking-meetings/my/",
+        NetworkingMeetingMyView.as_view(),
+        name="networking-meetings-my"
+    ),
+
+    # Networking Meeting Actions
+    path(
+        "networking-meetings/<int:meeting_id>/accept/",
+        NetworkingMeetingAcceptView.as_view(),
+        name="networking-meeting-accept"
+    ),
+    path(
+        "networking-meetings/<int:meeting_id>/decline/",
+        NetworkingMeetingDeclineView.as_view(),
+        name="networking-meeting-decline"
+    ),
+    path(
+        "networking-meetings/<int:meeting_id>/suggest/",
+        NetworkingMeetingSuggestView.as_view(),
+        name="networking-meeting-suggest"
+    ),
+    path(
+        "networking-meetings/<int:meeting_id>/cancel/",
+        NetworkingMeetingCancelView.as_view(),
+        name="networking-meeting-cancel"
+    ),
+    path(
+        "networking-meetings/<int:meeting_id>/reschedule/",
+        NetworkingMeetingRescheduleView.as_view(),
+        name="networking-meeting-reschedule"
+    ),
 ]

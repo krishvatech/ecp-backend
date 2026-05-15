@@ -1,0 +1,21 @@
+Hello {{ first_name }},
+
+⏰ YOUR 1:1 MEETING IS STARTING IN {{ reminder_minutes }} MINUTES!
+
+Meeting Details:
+- Meeting with: {{ other_party_name }}
+- Date & Time: {{ meeting_date }} at {{ meeting_time }}
+- Duration: {{ duration_minutes }} minutes
+{% if table_number %}- Table: {{ table_number }}
+{% endif %}{% if location %}- Location: {{ location }}
+{% endif %}
+
+Head over to the Event Companion page to find your meeting location and details:
+{{ event_url }}
+
+If you need to reschedule or cancel before the meeting starts, please do so immediately.
+
+If you have any questions, please reply to this email or contact us at {{ support_email }}.
+
+Best regards,
+The {{ app_name }} Team

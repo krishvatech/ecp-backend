@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <h2>{{ app_name }} – Meeting Request Declined</h2>
+    <p>Hello {{ first_name }},</p>
+    <p><strong>{{ other_party_name }}</strong> has declined your 1:1 meeting request at <strong>{{ event_title }}</strong>.</p>
+    <div style="background-color: #fff3cd; padding: 15px; margin: 20px 0; border-left: 4px solid #FF9500;">
+        <p style="margin: 5px 0;"><strong>📅 Requested Date:</strong> {{ meeting_date }}</p>
+        <p style="margin: 5px 0;"><strong>⏰ Requested Time:</strong> {{ meeting_time }}</p>
+        <p style="margin: 5px 0;"><strong>⏱️ Duration:</strong> {{ duration_minutes }} minutes</p>
+    </div>
+    <p>Feel free to explore other networking opportunities or reach out to other attendees at the event. You can view all participants in your Event Companion's Directory.</p>
+    <p style="text-align: center; margin: 25px 0;">
+        <a href="{{ directory_url }}" style="background-color: #0066cc; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">Browse Attendees</a>
+    </p>
+    <p>If you have any questions, please reply to this email or contact us at {{ support_email }}.</p>
+    <p>Best regards,<br>The {{ app_name }} Team</p>
+</body>
+</html>

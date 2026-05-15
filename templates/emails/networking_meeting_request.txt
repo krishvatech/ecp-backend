@@ -1,0 +1,23 @@
+Hello {{ first_name }},
+
+{{ requester_name }} has requested a 1:1 meeting with you at {{ event_title }}.
+
+Meeting Details:
+- Date: {{ meeting_date }}
+- Time: {{ meeting_time }}
+- Duration: {{ duration_minutes }} minutes
+{% if requester_company %}- Company: {{ requester_company }}
+{% endif %}{% if requester_job_title %}- Role: {{ requester_job_title }}
+{% endif %}
+
+{% if message %}
+Message from {{ requester_name }}:
+{{ message }}
+
+{% endif %}You can accept, decline, or suggest a different time in your Event Companion page:
+{{ meeting_url }}
+
+If you have any questions, please reply to this email or contact us at {{ support_email }}.
+
+Best regards,
+The {{ app_name }} Team

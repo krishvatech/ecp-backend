@@ -1077,5 +1077,404 @@ def scheduled_send_replay_expiring_alerts(self):
                 except Exception as e:
                     logger.error(f"[SCHEDULER] Failed to process replay expiration for event {event.id}: {e}")
 
-    logger.info(f"[SCHEDULER] Scheduled replay expiration task complete: {events_processed} events, {total_emails_sent} emails sent")
-    return {"status": "ok", "events_processed": events_processed, "total_emails": total_emails_sent}
+
+# ============================================================================
+# NETWORKING MEETING EMAIL NOTIFICATIONS
+# ============================================================================
+
+@shared_task
+def send_networking_meeting_request_email(meeting_id):
+    """
+    Send email to recipient when meeting request is created.
+    Called immediately when meeting is created.
+    """
+    from events.models import NetworkingMeeting
+    from users.email_utils import send_template_email, format_event_time_for_email, get_support_email
+    from django.conf import settings
+
+    try:
+        meeting = NetworkingMeeting.objects.get(id=meeting_id)
+        recipient = meeting.recipient
+        requester = meeting.requester
+        event = meeting.event
+
+        if not recipient or not recipient.user or not recipient.user.email:
+            return False
+
+        # Format meeting time in event's timezone
+        import pytz
+        event_tz = pytz.timezone(event.timezone) if event.timezone else timezone.get_default_timezone()
+        meeting_start_tz = meeting.start_time.astimezone(event_tz)
+        meeting_end_tz = meeting.end_time.astimezone(event_tz)
+
+        frontend_base = getattr(settings, 'FRONTEND_URL', '')
+        meeting_url = f"{frontend_base}/events/{event.slug}/companion?tab=meetings&meeting={meeting.id}"
+
+        ctx = {
+            "app_name": "IMAA Connect",
+            "first_name": recipient.user.first_name or recipient.user.username or "there",
+            "requester_name": requester.user.get_full_name() or requester.user.username,
+            "requester_company": requester.user.profile.company if hasattr(requester.user, 'profile') else None,
+            "requester_job_title": requester.user.profile.job_title if hasattr(requester.user, 'profile') else None,
+            "event_title": event.title,
+            "meeting_date": meeting_start_tz.strftime("%B %d, %Y"),
+            "meeting_time": meeting_start_tz.strftime("%I:%M %p").lstrip('0'),
+            "duration_minutes": meeting.duration_minutes,
+            "message": meeting.message or "",
+            "meeting_url": meeting_url,
+            "support_email": get_support_email(),
+        }
+
+        return send_template_email(
+            template_key="networking_meeting_request",
+            to_email=recipient.user.email,
+            context=ctx,
+            subject_override=f"1:1 Meeting Request from {requester.user.get_full_name() or requester.user.username} at {event.title}",
+            fail_silently=True,
+            event=event,
+        )
+    except Exception as e:
+        logger.error(f"Failed to send networking meeting request email for meeting {meeting_id}: {e}")
+        return False
+
+
+@shared_task
+def send_networking_meeting_accepted_email(meeting_id):
+    """Send email to both parties when meeting is accepted."""
+    from events.models import NetworkingMeeting
+    from users.email_utils import send_template_email, get_support_email
+    from django.conf import settings
+
+    try:
+        meeting = NetworkingMeeting.objects.get(id=meeting_id)
+        event = meeting.event
+        requester = meeting.requester
+        recipient = meeting.recipient
+
+        if not (requester and requester.user and requester.user.email and recipient and recipient.user and recipient.user.email):
+            return False
+
+        import pytz
+        event_tz = pytz.timezone(event.timezone) if event.timezone else timezone.get_default_timezone()
+        meeting_start_tz = meeting.start_time.astimezone(event_tz)
+
+        frontend_base = getattr(settings, 'FRONTEND_URL', '')
+        meeting_url = f"{frontend_base}/events/{event.slug}/companion?tab=meetings&meeting={meeting.id}"
+
+        base_ctx = {
+            "app_name": "IMAA Connect",
+            "event_title": event.title,
+            "meeting_date": meeting_start_tz.strftime("%B %d, %Y"),
+            "meeting_time": meeting_start_tz.strftime("%I:%M %p").lstrip('0'),
+            "duration_minutes": meeting.duration_minutes,
+            "table_number": meeting.table.name if meeting.table else None,
+            "reminder_minutes": event.networking_settings.reminder_minutes_before if hasattr(event, 'networking_settings') else 15,
+            "meeting_url": meeting_url,
+            "support_email": get_support_email(),
+        }
+
+        # Send to requester
+        ctx_requester = {**base_ctx, "first_name": requester.user.first_name or requester.user.username or "there", "other_party_name": recipient.user.get_full_name() or recipient.user.username}
+        send_template_email(
+            template_key="networking_meeting_accepted",
+            to_email=requester.user.email,
+            context=ctx_requester,
+            subject_override=f"Meeting Confirmed: {recipient.user.get_full_name() or recipient.user.username} at {event.title}",
+            fail_silently=True,
+            event=event,
+        )
+
+        # Send to recipient
+        ctx_recipient = {**base_ctx, "first_name": recipient.user.first_name or recipient.user.username or "there", "other_party_name": requester.user.get_full_name() or requester.user.username}
+        send_template_email(
+            template_key="networking_meeting_accepted",
+            to_email=recipient.user.email,
+            context=ctx_recipient,
+            subject_override=f"Meeting Confirmed: {requester.user.get_full_name() or requester.user.username} at {event.title}",
+            fail_silently=True,
+            event=event,
+        )
+
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send networking meeting accepted emails for meeting {meeting_id}: {e}")
+        return False
+
+
+@shared_task
+def send_networking_meeting_declined_email(meeting_id):
+    """Send email to requester when meeting is declined."""
+    from events.models import NetworkingMeeting
+    from users.email_utils import send_template_email, get_support_email
+    from django.conf import settings
+
+    try:
+        meeting = NetworkingMeeting.objects.get(id=meeting_id)
+        requester = meeting.requester
+        recipient = meeting.recipient
+        event = meeting.event
+
+        if not requester or not requester.user or not requester.user.email:
+            return False
+
+        import pytz
+        event_tz = pytz.timezone(event.timezone) if event.timezone else timezone.get_default_timezone()
+        meeting_start_tz = meeting.start_time.astimezone(event_tz)
+
+        frontend_base = getattr(settings, 'FRONTEND_URL', '')
+        directory_url = f"{frontend_base}/events/{event.slug}/companion?tab=directory"
+
+        ctx = {
+            "app_name": "IMAA Connect",
+            "first_name": requester.user.first_name or requester.user.username or "there",
+            "other_party_name": recipient.user.get_full_name() or recipient.user.username,
+            "event_title": event.title,
+            "meeting_date": meeting_start_tz.strftime("%B %d, %Y"),
+            "meeting_time": meeting_start_tz.strftime("%I:%M %p").lstrip('0'),
+            "duration_minutes": meeting.duration_minutes,
+            "directory_url": directory_url,
+            "support_email": get_support_email(),
+        }
+
+        return send_template_email(
+            template_key="networking_meeting_declined",
+            to_email=requester.user.email,
+            context=ctx,
+            subject_override=f"Meeting Request Declined: {recipient.user.get_full_name() or recipient.user.username} at {event.title}",
+            fail_silently=True,
+            event=event,
+        )
+    except Exception as e:
+        logger.error(f"Failed to send networking meeting declined email for meeting {meeting_id}: {e}")
+        return False
+
+
+@shared_task
+def send_networking_meeting_suggested_email(meeting_id):
+    """Send email to other party when meeting time is suggested."""
+    from events.models import NetworkingMeeting
+    from users.email_utils import send_template_email, get_support_email
+    from django.conf import settings
+
+    try:
+        meeting = NetworkingMeeting.objects.get(id=meeting_id)
+        event = meeting.event
+        requester = meeting.requester
+        recipient = meeting.recipient
+
+        if not (requester and requester.user and requester.user.email and recipient and recipient.user and recipient.user.email):
+            return False
+
+        import pytz
+        event_tz = pytz.timezone(event.timezone) if event.timezone else timezone.get_default_timezone()
+
+        frontend_base = getattr(settings, 'FRONTEND_URL', '')
+        meeting_url = f"{frontend_base}/events/{event.slug}/companion?tab=meetings&meeting={meeting.id}"
+
+        base_ctx = {
+            "app_name": "IMAA Connect",
+            "event_title": event.title,
+            "duration_minutes": meeting.duration_minutes,
+            "meeting_url": meeting_url,
+            "support_email": get_support_email(),
+        }
+
+        # For suggested status, show the proposed time
+        if meeting.start_time:
+            suggested_start = meeting.start_time.astimezone(event_tz)
+            base_ctx["suggested_date"] = suggested_start.strftime("%B %d, %Y")
+            base_ctx["suggested_time"] = suggested_start.strftime("%I:%M %p").lstrip('0')
+
+        # Send to recipient (the one receiving the suggestion)
+        ctx_recipient = {**base_ctx, "first_name": recipient.user.first_name or recipient.user.username or "there", "other_party_name": requester.user.get_full_name() or requester.user.username, "suggestion_message": meeting.message or ""}
+        send_template_email(
+            template_key="networking_meeting_suggested",
+            to_email=recipient.user.email,
+            context=ctx_recipient,
+            subject_override=f"Alternative Time Suggested: {requester.user.get_full_name() or requester.user.username} at {event.title}",
+            fail_silently=True,
+            event=event,
+        )
+
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send networking meeting suggested email for meeting {meeting_id}: {e}")
+        return False
+
+
+@shared_task
+def send_networking_meeting_cancelled_email(meeting_id):
+    """Send email to both parties when meeting is cancelled."""
+    from events.models import NetworkingMeeting
+    from users.email_utils import send_template_email, get_support_email
+    from django.conf import settings
+
+    try:
+        meeting = NetworkingMeeting.objects.get(id=meeting_id)
+        event = meeting.event
+        requester = meeting.requester
+        recipient = meeting.recipient
+
+        if not (requester and requester.user and requester.user.email and recipient and recipient.user and recipient.user.email):
+            return False
+
+        import pytz
+        event_tz = pytz.timezone(event.timezone) if event.timezone else timezone.get_default_timezone()
+        meeting_start_tz = meeting.start_time.astimezone(event_tz)
+
+        frontend_base = getattr(settings, 'FRONTEND_URL', '')
+        directory_url = f"{frontend_base}/events/{event.slug}/companion?tab=directory"
+
+        base_ctx = {
+            "app_name": "IMAA Connect",
+            "event_title": event.title,
+            "meeting_date": meeting_start_tz.strftime("%B %d, %Y"),
+            "meeting_time": meeting_start_tz.strftime("%I:%M %p").lstrip('0'),
+            "duration_minutes": meeting.duration_minutes,
+            "directory_url": directory_url,
+            "support_email": get_support_email(),
+        }
+
+        # Send to requester
+        ctx_requester = {**base_ctx, "first_name": requester.user.first_name or requester.user.username or "there", "other_party_name": recipient.user.get_full_name() or recipient.user.username}
+        send_template_email(
+            template_key="networking_meeting_cancelled",
+            to_email=requester.user.email,
+            context=ctx_requester,
+            subject_override=f"Meeting Cancelled: {recipient.user.get_full_name() or recipient.user.username} at {event.title}",
+            fail_silently=True,
+            event=event,
+        )
+
+        # Send to recipient
+        ctx_recipient = {**base_ctx, "first_name": recipient.user.first_name or recipient.user.username or "there", "other_party_name": requester.user.get_full_name() or requester.user.username}
+        send_template_email(
+            template_key="networking_meeting_cancelled",
+            to_email=recipient.user.email,
+            context=ctx_recipient,
+            subject_override=f"Meeting Cancelled: {requester.user.get_full_name() or requester.user.username} at {event.title}",
+            fail_silently=True,
+            event=event,
+        )
+
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send networking meeting cancelled emails for meeting {meeting_id}: {e}")
+        return False
+
+
+@shared_task
+def send_networking_meeting_reminder_email(meeting_id):
+    """
+    Send reminder email X minutes before meeting starts.
+    Called by scheduled task that runs every minute.
+    Re-checks meeting status before sending - if not ACCEPTED, does not send.
+    """
+    from events.models import NetworkingMeeting
+    from users.email_utils import send_template_email, get_support_email
+    from django.conf import settings
+
+    try:
+        meeting = NetworkingMeeting.objects.get(id=meeting_id)
+
+        # Safety check: only send reminder for ACCEPTED meetings
+        if meeting.status != 'accepted':
+            logger.info(f"Skipping reminder for meeting {meeting_id}: status is {meeting.status}, not accepted")
+            return False
+
+        event = meeting.event
+        requester = meeting.requester
+        recipient = meeting.recipient
+
+        if not (requester and requester.user and requester.user.email and recipient and recipient.user and recipient.user.email):
+            return False
+
+        import pytz
+        event_tz = pytz.timezone(event.timezone) if event.timezone else timezone.get_default_timezone()
+        meeting_start_tz = meeting.start_time.astimezone(event_tz)
+
+        frontend_base = getattr(settings, 'FRONTEND_URL', '')
+        event_url = f"{frontend_base}/events/{event.slug}/companion?tab=meetings&meeting={meeting.id}"
+
+        reminder_minutes = event.networking_settings.reminder_minutes_before if hasattr(event, 'networking_settings') else 15
+
+        base_ctx = {
+            "app_name": "IMAA Connect",
+            "event_title": event.title,
+            "meeting_date": meeting_start_tz.strftime("%B %d, %Y"),
+            "meeting_time": meeting_start_tz.strftime("%I:%M %p").lstrip('0'),
+            "duration_minutes": meeting.duration_minutes,
+            "reminder_minutes": reminder_minutes,
+            "table_number": meeting.table.name if meeting.table else None,
+            "location": meeting.table.location_note if meeting.table and meeting.table.location_note else None,
+            "event_url": event_url,
+            "support_email": get_support_email(),
+        }
+
+        # Send to requester
+        ctx_requester = {**base_ctx, "first_name": requester.user.first_name or requester.user.username or "there", "other_party_name": recipient.user.get_full_name() or recipient.user.username}
+        send_template_email(
+            template_key="networking_meeting_reminder",
+            to_email=requester.user.email,
+            context=ctx_requester,
+            subject_override=f"Reminder: Meeting with {recipient.user.get_full_name() or recipient.user.username} in {reminder_minutes} minutes",
+            fail_silently=True,
+            event=event,
+        )
+
+        # Send to recipient
+        ctx_recipient = {**base_ctx, "first_name": recipient.user.first_name or recipient.user.username or "there", "other_party_name": requester.user.get_full_name() or requester.user.username}
+        send_template_email(
+            template_key="networking_meeting_reminder",
+            to_email=recipient.user.email,
+            context=ctx_recipient,
+            subject_override=f"Reminder: Meeting with {requester.user.get_full_name() or requester.user.username} in {reminder_minutes} minutes",
+            fail_silently=True,
+            event=event,
+        )
+
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send networking meeting reminder email for meeting {meeting_id}: {e}")
+        return False
+
+
+@shared_task
+def schedule_networking_meeting_reminders():
+    """
+    Scheduled task that runs every minute to find meetings starting soon.
+    Sends reminder emails X minutes before meeting start time.
+    """
+    from events.models import NetworkingMeeting
+    from datetime import datetime
+    from django.utils import timezone
+
+    try:
+        now = timezone.now()
+        reminders_sent = 0
+
+        # Get all ACCEPTED meetings
+        meetings = NetworkingMeeting.objects.filter(status='accepted')
+
+        for meeting in meetings:
+            if not meeting.event or not hasattr(meeting.event, 'networking_settings'):
+                continue
+
+            settings = meeting.event.networking_settings
+            reminder_minutes = settings.reminder_minutes_before
+
+            # Calculate the time window for sending reminders
+            # Send reminder when: start_time - now == reminder_minutes (within 1-2 minute tolerance)
+            time_until_meeting = (meeting.start_time - now).total_seconds() / 60
+
+            # Check if we're in the reminder window (within 2 minutes of target time)
+            if reminder_minutes - 2 <= time_until_meeting <= reminder_minutes + 1:
+                send_networking_meeting_reminder_email.delay(meeting.id)
+                reminders_sent += 1
+
+        logger.info(f"Scheduled networking meeting reminders: {reminders_sent} reminders queued")
+        return {"reminders_sent": reminders_sent}
+
+    except Exception as e:
+        logger.error(f"Failed to schedule networking meeting reminders: {e}")
+        return {"error": str(e)}
