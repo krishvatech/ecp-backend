@@ -421,6 +421,23 @@ urlpatterns = [
         name="networking-meeting-reschedule"
     ),
     path(
+        "events/<int:event_id>/sessions/",
+        EventSessionViewSet.as_view({
+            'get': 'list',
+            'post': 'create',
+        }),
+        name="event-sessions-list"
+    ),
+    path(
+        "events/<int:event_id>/sessions/<int:pk>/",
+        EventSessionViewSet.as_view({
+            'get': 'retrieve',
+            'patch': 'partial_update',
+            'delete': 'destroy',
+        }),
+        name="event-sessions-detail"
+    ),
+    path(
         "events/<int:event_id>/schedule/",
         EventScheduleView.as_view(),
         name="event-schedule"

@@ -354,7 +354,9 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
             def on_create_success():
                 # Create in-app notification
                 from friends.models import Notification
+                from events.tasks import build_networking_meeting_url
                 requester_name = requester_reg.user.get_full_name() or requester_reg.user.username
+                companion_url = build_networking_meeting_url(meeting)
                 Notification.objects.create(
                     recipient=recipient_reg.user,
                     actor=requester_reg.user,
@@ -368,7 +370,7 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
                         "event_id": meeting.event_id,
                         "event_slug": meeting.event.slug,
                         "tab": "meetings",
-                        "action_url": f"/events/{meeting.event.slug}/companion?tab=meetings&meeting={meeting.id}",
+                        "action_url": companion_url,
                     }
                 )
 
@@ -486,8 +488,10 @@ class NetworkingMeetingAcceptView(views.APIView):
             # Send notifications and emails after transaction commits
             def on_accept_success():
                 from friends.models import Notification
+                from events.tasks import build_networking_meeting_url
                 requester_name = meeting.requester.user.get_full_name() or meeting.requester.user.username
                 recipient_name = meeting.recipient.user.get_full_name() or meeting.recipient.user.username
+                companion_url = build_networking_meeting_url(meeting)
 
                 # Notify requester (they see their request was accepted)
                 Notification.objects.create(
@@ -502,6 +506,8 @@ class NetworkingMeetingAcceptView(views.APIView):
                         "meeting_id": meeting.id,
                         "event_id": meeting.event_id,
                         "event_slug": meeting.event.slug,
+                        "action_url": companion_url,
+                        "tab": "meetings",
                     }
                 )
 
@@ -518,6 +524,8 @@ class NetworkingMeetingAcceptView(views.APIView):
                         "meeting_id": meeting.id,
                         "event_id": meeting.event_id,
                         "event_slug": meeting.event.slug,
+                        "action_url": companion_url,
+                        "tab": "meetings",
                     }
                 )
 
@@ -568,7 +576,9 @@ class NetworkingMeetingDeclineView(views.APIView):
             # Send notification and email after transaction commits
             def on_decline_success():
                 from friends.models import Notification
+                from events.tasks import build_networking_meeting_url
                 recipient_name = meeting.recipient.user.get_full_name() or meeting.recipient.user.username
+                companion_url = build_networking_meeting_url(meeting)
 
                 # Notify requester that their request was declined
                 Notification.objects.create(
@@ -584,7 +594,7 @@ class NetworkingMeetingDeclineView(views.APIView):
                         "event_id": meeting.event_id,
                         "event_slug": meeting.event.slug,
                         "tab": "meetings",
-                        "action_url": f"/events/{meeting.event.slug}/companion?tab=meetings&meeting={meeting.id}",
+                        "action_url": companion_url,
                     }
                 )
 
@@ -669,7 +679,9 @@ class NetworkingMeetingSuggestView(views.APIView):
             # Send notification and email after transaction commits
             def on_suggest_success():
                 from friends.models import Notification
+                from events.tasks import build_networking_meeting_url
                 suggester_name = suggested_by.user.get_full_name() or suggested_by.user.username
+                companion_url = build_networking_meeting_url(meeting)
 
                 # Notify the other party about the suggestion
                 Notification.objects.create(
@@ -684,6 +696,8 @@ class NetworkingMeetingSuggestView(views.APIView):
                         "meeting_id": meeting.id,
                         "event_id": meeting.event_id,
                         "event_slug": meeting.event.slug,
+                        "action_url": companion_url,
+                        "tab": "meetings",
                     }
                 )
 
@@ -728,9 +742,12 @@ class NetworkingMeetingCancelView(views.APIView):
             # Send notifications and emails after transaction commits
             def on_cancel_success():
                 from friends.models import Notification
+                from events.tasks import build_networking_meeting_url
                 canceller = meeting.requester if user_is_requester else meeting.recipient
                 other_party = meeting.recipient if user_is_requester else meeting.requester
                 canceller_name = canceller.user.get_full_name() or canceller.user.username
+                frontend_url = getattr(settings, 'FRONTEND_URL', '').rstrip('/') or 'http://localhost:5173'
+                directory_url = f"{frontend_url}/events/{meeting.event.slug}/companion?tab=directory"
 
                 # Notify the other party that meeting was cancelled
                 Notification.objects.create(
@@ -745,6 +762,8 @@ class NetworkingMeetingCancelView(views.APIView):
                         "meeting_id": meeting.id,
                         "event_id": meeting.event_id,
                         "event_slug": meeting.event.slug,
+                        "action_url": directory_url,
+                        "tab": "directory",
                     }
                 )
 

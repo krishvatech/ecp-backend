@@ -10,6 +10,27 @@ import logging
 logger = logging.getLogger('events')
 IDLE_TIMEOUT_MINUTES = 15
 
+
+def build_networking_meeting_url(meeting):
+    """
+    Build the complete companion page URL for a networking meeting.
+
+    Args:
+        meeting: NetworkingMeeting instance
+
+    Returns:
+        Full URL to the companion page meetings tab with meeting ID
+        e.g., http://localhost:5173/events/my-event/companion?tab=meetings&meeting=123
+    """
+    frontend_url = getattr(settings, 'FRONTEND_URL', '').rstrip('/')
+    if not frontend_url:
+        # Fallback to http://localhost:5173 if not configured
+        frontend_url = 'http://localhost:5173'
+
+    event_slug = meeting.event.slug if meeting.event and hasattr(meeting.event, 'slug') else str(meeting.event_id)
+    return f"{frontend_url}/events/{event_slug}/companion?tab=meetings&meeting={meeting.id}"
+
+
 def run_saleor_mutation(query, variables=None):
     url = settings.SALEOR_API_URL
     token = settings.SALEOR_APP_TOKEN
@@ -1090,7 +1111,6 @@ def send_networking_meeting_request_email(meeting_id):
     """
     from events.models import NetworkingMeeting
     from users.email_utils import send_template_email, format_event_time_for_email, get_support_email
-    from django.conf import settings
 
     try:
         meeting = NetworkingMeeting.objects.get(id=meeting_id)
@@ -1107,8 +1127,7 @@ def send_networking_meeting_request_email(meeting_id):
         meeting_start_tz = meeting.start_time.astimezone(event_tz)
         meeting_end_tz = meeting.end_time.astimezone(event_tz)
 
-        frontend_base = getattr(settings, 'FRONTEND_URL', '')
-        meeting_url = f"{frontend_base}/events/{event.slug}/companion?tab=meetings&meeting={meeting.id}"
+        companion_url = build_networking_meeting_url(meeting)
 
         ctx = {
             "app_name": "IMAA Connect",
@@ -1121,7 +1140,8 @@ def send_networking_meeting_request_email(meeting_id):
             "meeting_time": meeting_start_tz.strftime("%I:%M %p").lstrip('0'),
             "duration_minutes": meeting.duration_minutes,
             "message": meeting.message or "",
-            "meeting_url": meeting_url,
+            "companion_url": companion_url,
+            "meeting_url": companion_url,  # For backwards compatibility
             "support_email": get_support_email(),
         }
 
@@ -1143,7 +1163,6 @@ def send_networking_meeting_accepted_email(meeting_id):
     """Send email to both parties when meeting is accepted."""
     from events.models import NetworkingMeeting
     from users.email_utils import send_template_email, get_support_email
-    from django.conf import settings
 
     try:
         meeting = NetworkingMeeting.objects.get(id=meeting_id)
@@ -1158,8 +1177,7 @@ def send_networking_meeting_accepted_email(meeting_id):
         event_tz = pytz.timezone(event.timezone) if event.timezone else timezone.get_default_timezone()
         meeting_start_tz = meeting.start_time.astimezone(event_tz)
 
-        frontend_base = getattr(settings, 'FRONTEND_URL', '')
-        meeting_url = f"{frontend_base}/events/{event.slug}/companion?tab=meetings&meeting={meeting.id}"
+        companion_url = build_networking_meeting_url(meeting)
 
         base_ctx = {
             "app_name": "IMAA Connect",
@@ -1169,7 +1187,8 @@ def send_networking_meeting_accepted_email(meeting_id):
             "duration_minutes": meeting.duration_minutes,
             "table_number": meeting.table.name if meeting.table else None,
             "reminder_minutes": event.networking_settings.reminder_minutes_before if hasattr(event, 'networking_settings') else 15,
-            "meeting_url": meeting_url,
+            "companion_url": companion_url,
+            "meeting_url": companion_url,  # For backwards compatibility
             "support_email": get_support_email(),
         }
 
@@ -1206,7 +1225,6 @@ def send_networking_meeting_declined_email(meeting_id):
     """Send email to requester when meeting is declined."""
     from events.models import NetworkingMeeting
     from users.email_utils import send_template_email, get_support_email
-    from django.conf import settings
 
     try:
         meeting = NetworkingMeeting.objects.get(id=meeting_id)
@@ -1221,8 +1239,9 @@ def send_networking_meeting_declined_email(meeting_id):
         event_tz = pytz.timezone(event.timezone) if event.timezone else timezone.get_default_timezone()
         meeting_start_tz = meeting.start_time.astimezone(event_tz)
 
-        frontend_base = getattr(settings, 'FRONTEND_URL', '')
-        directory_url = f"{frontend_base}/events/{event.slug}/companion?tab=directory"
+        companion_url = build_networking_meeting_url(meeting)
+        frontend_url = getattr(settings, 'FRONTEND_URL', '').rstrip('/') or 'http://localhost:5173'
+        directory_url = f"{frontend_url}/events/{event.slug}/companion?tab=directory"
 
         ctx = {
             "app_name": "IMAA Connect",
@@ -1232,6 +1251,7 @@ def send_networking_meeting_declined_email(meeting_id):
             "meeting_date": meeting_start_tz.strftime("%B %d, %Y"),
             "meeting_time": meeting_start_tz.strftime("%I:%M %p").lstrip('0'),
             "duration_minutes": meeting.duration_minutes,
+            "companion_url": directory_url,
             "directory_url": directory_url,
             "support_email": get_support_email(),
         }
@@ -1254,7 +1274,6 @@ def send_networking_meeting_suggested_email(meeting_id):
     """Send email to other party when meeting time is suggested."""
     from events.models import NetworkingMeeting
     from users.email_utils import send_template_email, get_support_email
-    from django.conf import settings
 
     try:
         meeting = NetworkingMeeting.objects.get(id=meeting_id)
@@ -1268,14 +1287,14 @@ def send_networking_meeting_suggested_email(meeting_id):
         import pytz
         event_tz = pytz.timezone(event.timezone) if event.timezone else timezone.get_default_timezone()
 
-        frontend_base = getattr(settings, 'FRONTEND_URL', '')
-        meeting_url = f"{frontend_base}/events/{event.slug}/companion?tab=meetings&meeting={meeting.id}"
+        companion_url = build_networking_meeting_url(meeting)
 
         base_ctx = {
             "app_name": "IMAA Connect",
             "event_title": event.title,
             "duration_minutes": meeting.duration_minutes,
-            "meeting_url": meeting_url,
+            "companion_url": companion_url,
+            "meeting_url": companion_url,  # For backwards compatibility
             "support_email": get_support_email(),
         }
 
@@ -1307,7 +1326,6 @@ def send_networking_meeting_cancelled_email(meeting_id):
     """Send email to both parties when meeting is cancelled."""
     from events.models import NetworkingMeeting
     from users.email_utils import send_template_email, get_support_email
-    from django.conf import settings
 
     try:
         meeting = NetworkingMeeting.objects.get(id=meeting_id)
@@ -1322,8 +1340,8 @@ def send_networking_meeting_cancelled_email(meeting_id):
         event_tz = pytz.timezone(event.timezone) if event.timezone else timezone.get_default_timezone()
         meeting_start_tz = meeting.start_time.astimezone(event_tz)
 
-        frontend_base = getattr(settings, 'FRONTEND_URL', '')
-        directory_url = f"{frontend_base}/events/{event.slug}/companion?tab=directory"
+        frontend_url = getattr(settings, 'FRONTEND_URL', '').rstrip('/') or 'http://localhost:5173'
+        directory_url = f"{frontend_url}/events/{event.slug}/companion?tab=directory"
 
         base_ctx = {
             "app_name": "IMAA Connect",
@@ -1331,6 +1349,7 @@ def send_networking_meeting_cancelled_email(meeting_id):
             "meeting_date": meeting_start_tz.strftime("%B %d, %Y"),
             "meeting_time": meeting_start_tz.strftime("%I:%M %p").lstrip('0'),
             "duration_minutes": meeting.duration_minutes,
+            "companion_url": directory_url,
             "directory_url": directory_url,
             "support_email": get_support_email(),
         }
@@ -1372,7 +1391,6 @@ def send_networking_meeting_reminder_email(meeting_id):
     """
     from events.models import NetworkingMeeting
     from users.email_utils import send_template_email, get_support_email
-    from django.conf import settings
 
     try:
         meeting = NetworkingMeeting.objects.get(id=meeting_id)
@@ -1393,8 +1411,7 @@ def send_networking_meeting_reminder_email(meeting_id):
         event_tz = pytz.timezone(event.timezone) if event.timezone else timezone.get_default_timezone()
         meeting_start_tz = meeting.start_time.astimezone(event_tz)
 
-        frontend_base = getattr(settings, 'FRONTEND_URL', '')
-        event_url = f"{frontend_base}/events/{event.slug}/companion?tab=meetings&meeting={meeting.id}"
+        companion_url = build_networking_meeting_url(meeting)
 
         reminder_minutes = event.networking_settings.reminder_minutes_before if hasattr(event, 'networking_settings') else 15
 
@@ -1407,7 +1424,8 @@ def send_networking_meeting_reminder_email(meeting_id):
             "reminder_minutes": reminder_minutes,
             "table_number": meeting.table.name if meeting.table else None,
             "location": meeting.table.location_note if meeting.table and meeting.table.location_note else None,
-            "event_url": event_url,
+            "companion_url": companion_url,
+            "event_url": companion_url,  # For backwards compatibility
             "support_email": get_support_email(),
         }
 
