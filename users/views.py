@@ -2393,9 +2393,8 @@ class StaffUserViewSet(viewsets.ModelViewSet):
 
         saleor_token = None
         if serializer.validated_data.get("is_superuser"):
-            saleor_token, saleor_error = self._saleor_staff_token_or_response()
-            if saleor_error:
-                return saleor_error
+            # Attempt to get token but don't block if missing
+            saleor_token, _ = self._saleor_staff_token_or_response()
         
         email = serializer.validated_data.get("email")
         if User.objects.filter(email__iexact=email).exists():
@@ -2457,9 +2456,8 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         saleor_token = None
 
         if new_is_superuser != old_is_superuser:
+            # Attempt to get token but don't block if missing
             saleor_token = get_valid_saleor_token_for_user(self.request.user, required_permissions=["MANAGE_STAFF"])
-            if not saleor_token:
-                raise PermissionDenied({"detail": "Connect Saleor SSO first.", "code": "SALEOR_SSO_REQUIRED"})
         
         # Prevent non-superusers from editing superusers
         if user.is_superuser and not self.request.user.is_superuser:
@@ -2538,9 +2536,8 @@ class StaffUserViewSet(viewsets.ModelViewSet):
 
         saleor_token = None
         if serializer.validated_data.get("is_superuser"):
-            saleor_token, saleor_error = self._saleor_staff_token_or_response()
-            if saleor_error:
-                return saleor_error
+            # Attempt to get token but don't block if missing
+            saleor_token, _ = self._saleor_staff_token_or_response()
 
         email = serializer.validated_data.get("email")
         password = request.data.get("password")
