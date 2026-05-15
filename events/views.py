@@ -4482,9 +4482,9 @@ class EventViewSet(viewsets.ModelViewSet):
     )
     def companion_directory(self, request, pk=None):
         """
-        Event Companion V1: Participant Directory for registered attendees.
+        Event Companion V1: Participant Directory for authenticated users.
 
-        Only registered attendees and event managers can view this directory.
+        All authenticated users can view this directory.
         Supports search (name, job_title, company) and role filtering.
 
         Response includes:
@@ -4496,17 +4496,8 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         user = request.user
 
-        # Check permissions: must be registered OR manager/admin
-        is_manager = _is_event_manager(user, event)
-        is_registered = EventRegistration.objects.filter(
-            event=event, user=user, status='registered'
-        ).exists()
-
-        if not is_registered and not is_manager:
-            return Response(
-                {"detail": "Only registered attendees can view this directory."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # All authenticated users can view the companion directory
+        # No registration requirement needed
 
         # Fetch registrations (only registered status, exclude superusers)
         qs = (

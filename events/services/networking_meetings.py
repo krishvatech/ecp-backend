@@ -59,11 +59,20 @@ def get_available_networking_slots(
     # Get event timezone
     event_tz = _get_event_timezone(event)
 
+    # Check if allowed_windows is configured
+    if not settings.allowed_windows:
+        raise ValidationError(
+            "No networking windows configured. Please set 'Allowed Networking Windows' in event settings."
+        )
+
     # Convert allowed windows to timezone-aware datetime ranges
     datetime_ranges = _parse_allowed_windows(settings.allowed_windows, event_tz)
 
     if not datetime_ranges:
-        return []
+        raise ValidationError(
+            "Failed to parse networking windows. Check that dates and times are in correct format "
+            "(date: YYYY-MM-DD, time: HH:MM or HH:MM AM/PM)."
+        )
 
     # Split ranges into slots based on duration
     all_slots = []
@@ -71,8 +80,9 @@ def get_available_networking_slots(
         slots = _split_into_slots(start_dt, end_dt, duration_minutes)
         all_slots.extend(slots)
 
-    # Filter out slots outside event start/end
-    all_slots = _filter_by_event_bounds(all_slots, event)
+    # NOTE: We don't filter by event bounds because networking windows are
+    # independently configured and may span beyond the main event hours.
+    # For example, a pre-event or post-event networking window.
 
     # Remove slots conflicting with EventSession/programme blocks
     all_slots = _remove_session_conflicts(all_slots, event)
@@ -103,8 +113,8 @@ def _parse_allowed_windows(allowed_windows_data, event_tz):
     [
         {
             "date": "2026-06-10",
-            "start": "10:30",
-            "end": "11:30"
+            "start": "10:30",  or "10:30 AM"
+            "end": "11:30"     or "05:00 PM"
         }
     ]
 
@@ -113,6 +123,26 @@ def _parse_allowed_windows(allowed_windows_data, event_tz):
     """
     if not allowed_windows_data:
         return []
+
+    def parse_time_str(time_str):
+        """Parse time in either HH:MM (24h) or HH:MM AM/PM (12h) format."""
+        time_str = time_str.strip()
+
+        # Try 24-hour format first
+        try:
+            return datetime.strptime(time_str, "%H:%M").time()
+        except ValueError:
+            pass
+
+        # Try 12-hour format with AM/PM
+        for fmt in ["%I:%M %p", "%I:%M%p"]:
+            try:
+                return datetime.strptime(time_str, fmt).time()
+            except ValueError:
+                pass
+
+        # If all fail, raise error
+        raise ValueError(f"Invalid time format: {time_str}")
 
     datetime_ranges = []
 
@@ -127,8 +157,8 @@ def _parse_allowed_windows(allowed_windows_data, event_tz):
 
             # Parse date and times
             date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
-            start_time = datetime.strptime(start_str, "%H:%M").time()
-            end_time = datetime.strptime(end_str, "%H:%M").time()
+            start_time = parse_time_str(start_str)
+            end_time = parse_time_str(end_str)
 
             # Combine into naive datetime then localize
             start_dt_naive = datetime.combine(date_obj, start_time)
@@ -182,12 +212,12 @@ def _remove_session_conflicts(slots, event):
     """
     Remove slots overlapping with EventSession/programme blocks.
 
-    TODO: Currently blocks all EventSession ranges by default.
-    In future, add logic to allow specific session types (e.g., "networking")
-    or consider session capacity/availability.
+    Only blocks sessions that are NOT "networking" type, since 1:1 meetings
+    can happen during dedicated networking sessions.
     """
-    # Get all EventSession blocks for this event
-    sessions = EventSession.objects.filter(event=event)
+    # Get all non-networking EventSession blocks for this event
+    # (allow 1:1 meetings during dedicated networking sessions)
+    sessions = EventSession.objects.filter(event=event).exclude(session_type="networking")
 
     filtered_slots = []
     for slot_start, slot_end in slots:

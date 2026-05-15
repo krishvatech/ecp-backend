@@ -3121,14 +3121,54 @@ class EventNetworkingSettingsSerializer(serializers.ModelSerializer):
         return value
 
     def validate_allowed_windows(self, value):
+        from datetime import datetime
+
         if not isinstance(value, list):
             raise serializers.ValidationError("Allowed windows must be a list.")
-        for window in value:
+
+        for i, window in enumerate(value):
             if not isinstance(window, dict):
-                raise serializers.ValidationError("Each window must be a dict.")
+                raise serializers.ValidationError(f"Window {i}: must be a dict.")
+
             required = ['date', 'start', 'end']
             if not all(k in window for k in required):
-                raise serializers.ValidationError(f"Each window must have {required} keys.")
+                raise serializers.ValidationError(f"Window {i}: must have keys {required}.")
+
+            # Validate date format
+            try:
+                datetime.strptime(window.get('date'), "%Y-%m-%d")
+            except (ValueError, TypeError):
+                raise serializers.ValidationError(
+                    f"Window {i}: invalid date format. Use YYYY-MM-DD (e.g., 2026-05-15)."
+                )
+
+            # Validate time formats (support both HH:MM and HH:MM AM/PM)
+            for time_field in ['start', 'end']:
+                time_str = window.get(time_field, '').strip()
+                valid_format = False
+
+                # Try HH:MM format
+                try:
+                    datetime.strptime(time_str, "%H:%M")
+                    valid_format = True
+                except ValueError:
+                    pass
+
+                # Try HH:MM AM/PM format
+                if not valid_format:
+                    for fmt in ["%I:%M %p", "%I:%M%p"]:
+                        try:
+                            datetime.strptime(time_str, fmt)
+                            valid_format = True
+                            break
+                        except ValueError:
+                            pass
+
+                if not valid_format:
+                    raise serializers.ValidationError(
+                        f"Window {i}: {time_field} has invalid time format. Use HH:MM (24h) or HH:MM AM/PM (12h)."
+                    )
+
         return value
 
     def validate_reminder_minutes_before(self, value):
@@ -3190,6 +3230,7 @@ class NetworkingMeetingSerializer(serializers.ModelSerializer):
     recipient_user_name = serializers.CharField(source='recipient.user.username', read_only=True)
     suggested_by_user_name = serializers.CharField(source='suggested_by.user.username', read_only=True, allow_null=True)
     table_name = serializers.CharField(source='table.name', read_only=True, allow_null=True)
+    table = NetworkingTableSerializer(read_only=True)
     requester_detail = serializers.SerializerMethodField()
     recipient_detail = serializers.SerializerMethodField()
 
@@ -3283,3 +3324,70 @@ class NetworkingMeetingSuggestSerializer(serializers.Serializer):
         if data['suggested_end_time'] <= data['suggested_start_time']:
             raise serializers.ValidationError("End time must be after start time.")
         return data
+
+
+class EventParticipantDirectorySerializer(serializers.ModelSerializer):
+    """Serializer for public participant directory (in-person events only)."""
+
+    display_name = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
+    company = serializers.SerializerMethodField()
+    job_title = serializers.SerializerMethodField()
+    badges = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventRegistration
+        fields = [
+            'id',
+            'display_name',
+            'avatar_url',
+            'company',
+            'job_title',
+            'badges',
+        ]
+
+    def get_display_name(self, obj):
+        """Get full name or username."""
+        return obj.user.get_full_name() or obj.user.username
+
+    def get_avatar_url(self, obj):
+        """Get avatar URL from user profile."""
+        profile = getattr(obj.user, 'profile', None)
+        if not profile:
+            return None
+
+        # Try user_image field (ImageField)
+        user_image = getattr(profile, 'user_image', None)
+        if user_image and hasattr(user_image, 'url'):
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(user_image.url)
+            return user_image.url
+
+        # Fallback to wordpress_avatar_url
+        wordpress_avatar = getattr(profile, 'wordpress_avatar_url', None)
+        if wordpress_avatar:
+            return wordpress_avatar
+
+        return None
+
+    def get_company(self, obj):
+        """Get company from user profile."""
+        profile = getattr(obj.user, 'profile', None)
+        return profile.company if profile else None
+
+    def get_job_title(self, obj):
+        """Get job title from user profile."""
+        profile = getattr(obj.user, 'profile', None)
+        return profile.job_title if profile else None
+
+    def get_badges(self, obj):
+        """Get badge labels with colors."""
+        return [
+            {
+                'id': label.id,
+                'name': label.name,
+                'color': label.color,
+            }
+            for label in obj.badge_labels.all()
+        ]

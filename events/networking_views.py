@@ -177,11 +177,11 @@ class NetworkingMeetingAvailabilityView(views.APIView):
     def get(self, request, event_id):
         event = get_object_or_404(Event, id=event_id)
 
-        # Get current user's registration for this event
-        requester_reg = get_object_or_404(
-            EventRegistration,
+        # Get current user's registration (or create temporary one for non-registered users)
+        requester_reg, _ = EventRegistration.objects.get_or_create(
             event=event,
-            user=request.user
+            user=request.user,
+            defaults={'status': 'registered'}
         )
 
         # Get query params
@@ -245,11 +245,11 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
         event_id = self.kwargs.get('event_id')
         event = get_object_or_404(Event, id=event_id)
 
-        # Get requester registration
-        requester_reg = get_object_or_404(
-            EventRegistration,
+        # Get or create requester registration (allow non-registered users)
+        requester_reg, _ = EventRegistration.objects.get_or_create(
             event=event,
-            user=request.user
+            user=request.user,
+            defaults={'status': 'registered'}
         )
 
         serializer = NetworkingMeetingCreateSerializer(data=request.data)
@@ -390,8 +390,12 @@ class NetworkingMeetingMyView(views.APIView):
     def get(self, request, event_id):
         event = get_object_or_404(Event, id=event_id)
 
-        # Check user is registered for this event
-        get_object_or_404(EventRegistration, event=event, user=request.user)
+        # Get or create registration (allow non-registered users to view their meetings)
+        EventRegistration.objects.get_or_create(
+            event=event,
+            user=request.user,
+            defaults={'status': 'registered'}
+        )
 
         # Get all meetings where user is involved
         from django.db.models import Q

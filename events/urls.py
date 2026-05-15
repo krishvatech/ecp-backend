@@ -66,6 +66,7 @@ from .networking_views import (
     NetworkingMeetingCancelView,
     NetworkingMeetingRescheduleView,
 )
+from .views_participant_directory import ParticipantDirectoryViewSet
 from .webhooks import realtime_webhook
 from .wordpress_event_webhook import WordPressEventWebhookView
 from .saleor_webhooks import SaleorProductWebhookView
@@ -87,6 +88,18 @@ urlpatterns = [
 
     # Public event landing page endpoint
     path("events/public/<str:slug>/", PublicEventDetailView.as_view(), name="event-public-detail"),
+
+    # Participant Directory (public, no auth required for in-person events)
+    path(
+        "events/<int:event_id>/participants/directory/",
+        ParticipantDirectoryViewSet.as_view({'get': 'directory'}),
+        name='participant-directory'
+    ),
+    path(
+        "events/<int:event_id>/participants/search/",
+        ParticipantDirectoryViewSet.as_view({'get': 'search'}),
+        name='participant-search'
+    ),
 
     # Guest attendee endpoints
     path("events/<int:pk>/guest-join/", GuestJoinView.as_view(), name="guest-join"),
