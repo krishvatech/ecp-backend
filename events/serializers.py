@@ -24,7 +24,7 @@ from .models import (
     EventSession, SessionParticipant, SessionAttendance, SessionBreak, EventApplication, VirtualSpeaker, GuestAttendee,
     SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup,
     EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate,
-    EventNetworkingSettings, NetworkingTable, NetworkingMeeting
+    EventNetworkingSettings, NetworkingTable, NetworkingMeeting, EventSessionBookmark
 )
 from community.models import Community
 from content.models import Resource
@@ -3391,3 +3391,60 @@ class EventParticipantDirectorySerializer(serializers.ModelSerializer):
             }
             for label in obj.badge_labels.all()
         ]
+
+
+class SessionSpeakerSerializer(serializers.Serializer):
+    """Minimal speaker info from SessionParticipant."""
+    id = serializers.IntegerField(source='user.id')
+    name = serializers.CharField(source='user.get_full_name', allow_null=True)
+    username = serializers.CharField(source='user.username')
+    avatar_url = serializers.SerializerMethodField()
+    role = serializers.CharField(source='get_participant_type_display', allow_null=True)
+
+    def get_avatar_url(self, obj):
+        """Get avatar URL from user profile."""
+        profile = getattr(obj.user, 'profile', None)
+        if profile and hasattr(profile, 'user_image') and profile.user_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(profile.user_image.url)
+            return profile.user_image.url
+        return None
+
+
+class ScheduleSessionSerializer(serializers.ModelSerializer):
+    """Full session details for schedule view including speakers and bookmark status."""
+    speakers = serializers.SerializerMethodField()
+    is_bookmarked = serializers.SerializerMethodField()
+    duration_minutes = serializers.IntegerField(source='computed_duration_minutes', read_only=True)
+
+    class Meta:
+        model = EventSession
+        fields = [
+            'id', 'title', 'description', 'start_time', 'end_time',
+            'room', 'location_note', 'session_type', 'display_order',
+            'speakers', 'is_bookmarked', 'session_image', 'duration_minutes'
+        ]
+        read_only_fields = ['id', 'session_type', 'display_order']
+
+    def get_speakers(self, obj):
+        """Get speaker list from SessionParticipant."""
+        participants = obj.participants.all()
+        serializer = SessionSpeakerSerializer(participants, many=True, context=self.context)
+        return serializer.data
+
+    def get_is_bookmarked(self, obj):
+        """Check if current user has bookmarked this session."""
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        return obj.bookmarks.filter(user=request.user).exists()
+
+
+class EventSessionBookmarkSerializer(serializers.ModelSerializer):
+    """Bookmark toggle for sessions."""
+
+    class Meta:
+        model = EventSessionBookmark
+        fields = ['id', 'event', 'session', 'created_at']
+        read_only_fields = ['id', 'event', 'created_at']

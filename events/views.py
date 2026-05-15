@@ -60,7 +60,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate
+from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark
 from .permissions import IsSuperuserOnly
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -100,6 +100,8 @@ from .serializers import (
     EventSaleorDiscountSerializer,
     EventEmailTemplateSerializer,
     EventBadgeLabelSerializer,
+    ScheduleSessionSerializer,
+    EventSessionBookmarkSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -9827,3 +9829,89 @@ class SeriesViewSet(viewsets.ModelViewSet):
                     {'error': 'Event not found in this series'},
                     status=status.HTTP_404_NOT_FOUND
                 )
+
+
+class EventScheduleView(views.APIView):
+    """
+    GET /api/events/{event_id}/schedule/
+
+    Returns conference schedule grouped by day with speaker info and bookmark status.
+    Requires authentication.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id)
+
+        # Get all sessions ordered by date and start time
+        sessions = EventSession.objects.filter(event=event).order_by('session_date', 'start_time')
+
+        # Group by date
+        grouped = {}
+        for session in sessions:
+            date_key = session.session_date.isoformat() if session.session_date else 'No Date'
+            if date_key not in grouped:
+                grouped[date_key] = []
+            grouped[date_key].append(session)
+
+        # Build response
+        days = []
+        for idx, (date_str, session_list) in enumerate(sorted(grouped.items())):
+            if date_str == 'No Date':
+                day_label = 'TBD'
+            else:
+                from datetime import datetime
+                day_obj = datetime.fromisoformat(date_str)
+                day_label = f"Day {idx + 1}"
+
+            serializer = ScheduleSessionSerializer(session_list, many=True, context={'request': request})
+            days.append({
+                'date': date_str,
+                'label': day_label,
+                'sessions': serializer.data
+            })
+
+        return Response({'days': days})
+
+
+class SessionBookmarkToggleView(views.APIView):
+    """
+    POST /api/events/{event_id}/schedule/{session_id}/bookmark/ - Create bookmark
+    DELETE /api/events/{event_id}/schedule/{session_id}/bookmark/ - Remove bookmark
+
+    Allows users to bookmark/save sessions they want to attend.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, event_id, session_id):
+        event = get_object_or_404(Event, id=event_id)
+        session = get_object_or_404(EventSession, id=session_id, event=event)
+
+        bookmark, created = EventSessionBookmark.objects.get_or_create(
+            event=event,
+            user=request.user,
+            session=session
+        )
+
+        return Response(
+            {'bookmarked': True, 'bookmark_id': bookmark.id},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        )
+
+    def delete(self, request, event_id, session_id):
+        event = get_object_or_404(Event, id=event_id)
+        session = get_object_or_404(EventSession, id=session_id, event=event)
+
+        deleted_count, _ = EventSessionBookmark.objects.filter(
+            event=event,
+            user=request.user,
+            session=session
+        ).delete()
+
+        if deleted_count == 0:
+            return Response(
+                {'detail': 'Bookmark not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({'bookmarked': False}, status=status.HTTP_204_NO_CONTENT)

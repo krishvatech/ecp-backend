@@ -4,7 +4,7 @@ from django import forms
 from .models import (
     Event, EventParticipant, LoungeTable, LoungeParticipant, EventRegistration,
     EventSession, SessionParticipant, SessionAttendance, EventApplication,
-    EventPreApprovalCode, EventPreApprovalAllowlist, EventSaleorDiscount
+    EventPreApprovalCode, EventPreApprovalAllowlist, EventSaleorDiscount, EventSessionBookmark
 )
 
 
@@ -285,3 +285,13 @@ class EventSaleorDiscountAdmin(admin.ModelAdmin):
             "classes": ("collapse",)
         }),
     )
+
+
+@admin.register(EventSessionBookmark)
+class EventSessionBookmarkAdmin(admin.ModelAdmin):
+    """Admin for session bookmarks."""
+    list_display = ['id', 'user', 'session', 'event', 'created_at']
+    list_filter = ['event', 'created_at']
+    search_fields = ['user__username', 'session__title', 'event__title']
+    readonly_fields = ['created_at']
+    raw_id_fields = ['event', 'session', 'user']

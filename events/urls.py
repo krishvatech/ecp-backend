@@ -43,6 +43,8 @@ from .views import (
     SaleorPermissionGroupCreateView,
     SaleorPermissionGroupUpdateView,
     SaleorPermissionGroupDeleteView,
+    EventScheduleView,
+    SessionBookmarkToggleView,
 )
 from .guest_views import (
     GuestJoinView,
@@ -417,5 +419,15 @@ urlpatterns = [
         "networking-meetings/<int:meeting_id>/reschedule/",
         NetworkingMeetingRescheduleView.as_view(),
         name="networking-meeting-reschedule"
+    ),
+    path(
+        "events/<int:event_id>/schedule/",
+        EventScheduleView.as_view(),
+        name="event-schedule"
+    ),
+    path(
+        "events/<int:event_id>/schedule/<int:session_id>/bookmark/",
+        SessionBookmarkToggleView.as_view(),
+        name="session-bookmark-toggle"
     ),
 ]

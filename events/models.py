@@ -1417,6 +1417,20 @@ class EventSession(models.Model):
         help_text="If True, use duration_minutes_override instead of computed duration"
     )
 
+    # Location information
+    room = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Room or location for the session"
+    )
+    location_note = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Additional location details (e.g., Floor 2, Building A)"
+    )
+
     # Session image (portrait orientation)
     session_image = models.ImageField(
         upload_to='session_images/',
@@ -1456,6 +1470,21 @@ class EventSession(models.Model):
 
     def __str__(self):
         return f"{self.title} - {self.event.title}"
+
+
+class EventSessionBookmark(models.Model):
+    """Allows users to bookmark/save sessions they want to attend."""
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="session_bookmarks")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="session_bookmarks")
+    session = models.ForeignKey(EventSession, on_delete=models.CASCADE, related_name="bookmarks")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('event', 'user', 'session')
+        indexes = [models.Index(fields=['event', 'user']), models.Index(fields=['session'])]
+
+    def __str__(self):
+        return f"{self.user.username} bookmarked {self.session.title}"
 
 
 class SessionBreak(models.Model):
