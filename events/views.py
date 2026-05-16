@@ -4489,6 +4489,7 @@ class EventViewSet(viewsets.ModelViewSet):
             .filter(event=event, status='registered')
             .exclude(user__is_superuser=True)
             .select_related("user", "user__profile")
+            .prefetch_related("badge_labels")
             .order_by("-registered_at")
         )
 
