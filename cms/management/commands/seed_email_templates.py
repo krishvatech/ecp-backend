@@ -41,6 +41,12 @@ DEFAULT_SUBJECTS = {
     "name_change_verification_failed": "Your name change verification was unsuccessful",
     "name_change_rejected": "Your name change request was rejected ❌",
     "admin_name_change_review": "New Identity Review Required: Name Change Request #{{ request_id }}",
+    "networking_meeting_request": "1:1 Meeting Request from {{ requester_name }} at {{ event_title }}",
+    "networking_meeting_accepted": "Meeting Confirmed: {{ other_party_name }} at {{ event_title }}",
+    "networking_meeting_declined": "Meeting Request Declined: {{ other_party_name }} at {{ event_title }}",
+    "networking_meeting_suggested": "Alternative Time Suggested: {{ other_party_name }} at {{ event_title }}",
+    "networking_meeting_cancelled": "Meeting Cancelled: {{ other_party_name }} at {{ event_title }}",
+    "networking_meeting_reminder": "Reminder: Meeting with {{ other_party_name }} in {{ reminder_minutes }} minutes",
 }
 
 

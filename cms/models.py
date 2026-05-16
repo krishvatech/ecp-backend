@@ -378,6 +378,12 @@ TEMPLATE_KEY_CHOICES = [
     ("name_change_rejected", "Name Change Rejected"),
     ("admin_name_change_review", "Admin Name Change Review"),
     ("post_event_qna_answer", "Post-Event Q&A Answer"),
+    ("networking_meeting_request", "Networking Meeting Request"),
+    ("networking_meeting_accepted", "Networking Meeting Accepted"),
+    ("networking_meeting_declined", "Networking Meeting Declined"),
+    ("networking_meeting_suggested", "Networking Meeting Suggested"),
+    ("networking_meeting_cancelled", "Networking Meeting Cancelled"),
+    ("networking_meeting_reminder", "Networking Meeting Reminder"),
 ]
 
 # Per-template-key required placeholders — used in clean() validation
@@ -407,6 +413,12 @@ REQUIRED_PLACEHOLDERS = {
     "name_change_rejected": ["{{ first_name }}"],
     "admin_name_change_review": ["{{ user_email }}", "{{ request_id }}"],
     "post_event_qna_answer": ["{{ recipient_name }}", "{{ event_name }}", "{{ answer_text }}"],
+    "networking_meeting_request": ["{{ first_name }}", "{{ requester_name }}", "{{ event_title }}", "{{ companion_url }}"],
+    "networking_meeting_accepted": ["{{ first_name }}", "{{ other_party_name }}", "{{ event_title }}", "{{ companion_url }}"],
+    "networking_meeting_declined": ["{{ first_name }}", "{{ other_party_name }}", "{{ event_title }}", "{{ companion_url }}"],
+    "networking_meeting_suggested": ["{{ first_name }}", "{{ other_party_name }}", "{{ event_title }}", "{{ companion_url }}"],
+    "networking_meeting_cancelled": ["{{ first_name }}", "{{ other_party_name }}", "{{ event_title }}", "{{ companion_url }}"],
+    "networking_meeting_reminder": ["{{ first_name }}", "{{ other_party_name }}", "{{ event_title }}", "{{ reminder_minutes }}", "{{ companion_url }}"],
 }
 
 
