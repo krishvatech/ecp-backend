@@ -11,6 +11,7 @@ from django.utils import timezone
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q, Max
+from django.conf import settings
 from datetime import timedelta
 
 from events.models import (
@@ -793,6 +794,14 @@ class NetworkingMeetingRescheduleView(views.APIView):
         if not (user_is_requester or user_is_recipient):
             raise PermissionDenied("Only requester or recipient can reschedule.")
 
+        # Only ACCEPTED or SUGGESTED meetings can be rescheduled
+        if meeting.status not in ['accepted', 'suggested']:
+            status_display = dict(NetworkingMeeting.STATUS_CHOICES).get(meeting.status, meeting.status)
+            return Response(
+                {"detail": f"Cannot reschedule a {status_display.lower()} meeting. Only accepted or suggested meetings can be rescheduled."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         serializer = NetworkingMeetingSuggestSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -862,16 +871,19 @@ class NetworkingMeetingRescheduleView(views.APIView):
                     status=status.HTTP_409_CONFLICT
                 )
 
-            # Reassign table with proper locking
+            # Find OTHER accepted meetings that conflict with new time and get their table IDs
+            conflicting_table_ids = NetworkingMeeting.objects.filter(
+                event=meeting.event,
+                status='accepted',
+                start_time__lt=new_end,
+                end_time__gt=new_start
+            ).exclude(id=meeting.id).values_list('table_id', flat=True).distinct()
+
+            # Reassign table with proper locking, excluding tables with conflicting meetings
             free_table = NetworkingTable.objects.select_for_update().filter(
                 event=meeting.event,
                 is_active=True
-            ).exclude(
-                networking_meetings__status='accepted',
-                networking_meetings__start_time__lt=new_end,
-                networking_meetings__end_time__gt=new_start,
-                networking_meetings__id=meeting.id
-            ).first()
+            ).exclude(id__in=conflicting_table_ids).first()
 
             if not free_table:
                 return Response(
