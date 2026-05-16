@@ -2911,6 +2911,8 @@ class NetworkingMeeting(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    requester_seen_at = models.DateTimeField(null=True, blank=True, help_text="When requester last viewed their notifications")
+    recipient_seen_at = models.DateTimeField(null=True, blank=True, help_text="When recipient last viewed their notifications")
 
     class Meta:
         indexes = [

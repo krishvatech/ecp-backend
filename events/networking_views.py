@@ -348,7 +348,8 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
                 end_time=end_time,
                 status='pending',
                 message=message,
-                table=None
+                table=None,
+                requester_seen_at=timezone.now()
             )
 
             # Send notification and email after transaction commits
@@ -899,3 +900,30 @@ class NetworkingMeetingRescheduleView(views.APIView):
 
         serializer = NetworkingMeetingSerializer(meeting)
         return Response(serializer.data)
+
+
+class NetworkingMeetingMarkSeenView(views.APIView):
+    """
+    Mark all networking meetings for the current user as seen.
+    This clears the notification badge for My Meetings.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id)
+        now = timezone.now()
+        user = request.user
+
+        # Mark meetings where user is recipient as seen by recipient
+        NetworkingMeeting.objects.filter(
+            event=event,
+            recipient__user=user
+        ).update(recipient_seen_at=now)
+
+        # Mark meetings where user is requester as seen by requester
+        NetworkingMeeting.objects.filter(
+            event=event,
+            requester__user=user
+        ).update(requester_seen_at=now)
+
+        return Response({'status': 'ok', 'message': 'All meeting notifications marked as seen'})

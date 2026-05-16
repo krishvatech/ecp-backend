@@ -3240,12 +3240,12 @@ class NetworkingMeetingSerializer(serializers.ModelSerializer):
             'id', 'event', 'requester', 'requester_user_name', 'requester_detail', 'recipient', 'recipient_user_name', 'recipient_detail',
             'duration_minutes', 'start_time', 'end_time', 'table', 'table_name', 'status',
             'message', 'suggested_start_time', 'suggested_end_time', 'suggested_by', 'suggested_by_user_name',
-            'accepted_at', 'declined_at', 'cancelled_at', 'created_at', 'updated_at'
+            'accepted_at', 'declined_at', 'cancelled_at', 'created_at', 'updated_at', 'requester_seen_at', 'recipient_seen_at'
         ]
         read_only_fields = [
             'id', 'event', 'requester', 'recipient', 'status', 'suggested_start_time',
             'suggested_end_time', 'suggested_by', 'accepted_at', 'declined_at', 'cancelled_at',
-            'created_at', 'updated_at', 'requester_user_name', 'recipient_user_name',
+            'created_at', 'updated_at', 'requester_seen_at', 'recipient_seen_at', 'requester_user_name', 'recipient_user_name',
             'suggested_by_user_name', 'table_name', 'requester_detail', 'recipient_detail'
         ]
 

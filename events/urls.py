@@ -67,6 +67,7 @@ from .networking_views import (
     NetworkingMeetingSuggestView,
     NetworkingMeetingCancelView,
     NetworkingMeetingRescheduleView,
+    NetworkingMeetingMarkSeenView,
 )
 from .views_participant_directory import ParticipantDirectoryViewSet
 from .webhooks import realtime_webhook
@@ -392,6 +393,13 @@ urlpatterns = [
         "events/<int:event_id>/networking-meetings/my/",
         NetworkingMeetingMyView.as_view(),
         name="networking-meetings-my"
+    ),
+
+    # Mark meetings as seen
+    path(
+        "events/<int:event_id>/networking-meetings/mark-seen/",
+        NetworkingMeetingMarkSeenView.as_view(),
+        name="networking-meetings-mark-seen"
     ),
 
     # Networking Meeting Actions
