@@ -1524,29 +1524,6 @@ class EventViewSet(viewsets.ModelViewSet):
             event = serializer.save(created_by=self.request.user, status=initial_status)
 
 
-            # Auto-register all platform super users on every newly created event
-            # so they are visible in "Registered Members" by default.
-            super_user_ids = list(
-                User.objects.filter(
-                    Q(groups__name="platform_admin")
-                    | Q(is_superuser=True, is_staff=True)
-                )
-                .filter(is_active=True)
-                .values_list("id", flat=True)
-                .distinct()
-            )
-            if super_user_ids:
-                existing_ids = set(
-                    EventRegistration.objects.filter(event=event, user_id__in=super_user_ids)
-                    .values_list("user_id", flat=True)
-                )
-                to_create = [
-                    EventRegistration(event=event, user_id=user_id, status="registered")
-                    for user_id in super_user_ids
-                    if user_id not in existing_ids
-                ]
-                if to_create:
-                    EventRegistration.objects.bulk_create(to_create)
 
     def perform_update(self, serializer):
         """
