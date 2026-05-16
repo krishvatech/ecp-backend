@@ -93,6 +93,9 @@ def get_available_networking_slots(
     # Remove slots where recipient has ACCEPTED meetings
     all_slots = _remove_recipient_conflicts(all_slots, recipient_registration)
 
+    # Remove past/current slots
+    all_slots = _remove_past_slots(all_slots)
+
     # Format as output
     return _format_slots(all_slots, event_tz)
 
@@ -255,6 +258,26 @@ def _remove_recipient_conflicts(slots, recipient_registration):
     )
 
     return _remove_slots_with_overlaps(slots, accepted_meetings)
+
+
+def _remove_past_slots(slots):
+    """
+    Remove slots that start at or before the current time.
+
+    Only future slots are available for booking.
+
+    Args:
+        slots: List of (slot_start, slot_end) timezone-aware datetime tuples
+
+    Returns:
+        List of future (slot_start, slot_end) tuples
+    """
+    now = timezone.now()
+    return [
+        (slot_start, slot_end)
+        for slot_start, slot_end in slots
+        if slot_start > now
+    ]
 
 
 def _remove_slots_with_overlaps(slots, meetings):
