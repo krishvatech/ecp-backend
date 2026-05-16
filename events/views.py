@@ -1407,6 +1407,11 @@ class EventViewSet(viewsets.ModelViewSet):
         if loc:
             qs = qs.filter(location__iexact=loc)
 
+        # Slug filter (exact match)
+        slug = params.get("slug", "").strip()
+        if slug:
+            qs = qs.filter(slug=slug)
+
         # Start / end dates (inclusive)
         start_date = params.get("start_date")
         end_date = params.get("end_date")
