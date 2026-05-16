@@ -28,8 +28,9 @@ from .serializers import ConversationSerializer, MessageSerializer,ConversationP
 from .permissions import IsConversationParticipant
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
-from django.utils import timezone 
-from events.models import Event, EventRegistration
+from django.utils import timezone
+from events.models import Event, EventRegistration, NetworkingMeeting
+from friends.models import Friendship
 from rest_framework.exceptions import PermissionDenied
 import logging
 
@@ -576,8 +577,13 @@ class ConversationViewSet(viewsets.ViewSet):
         Ensure a direct (1:1) conversation exists between the current user
         and the recipient.
 
+        Messaging permission:
+        - Users who are friends can always message
+        - Non-friends can message only if they have an accepted Event Companion
+          networking meeting together
+
         Accepts any of:
-        - {"recipient_id": <user_id>}   # preferred
+        - {"recipient_id": <user_id>, "meeting_id": <networking_meeting_id>}
         - {"user_id": <user_id>}
         - {"user": <user_id>}
         - {"id": <user_id>}
@@ -611,6 +617,58 @@ class ConversationViewSet(viewsets.ViewSet):
             recipient = User.objects.get(pk=recipient_id)
         except User.DoesNotExist:
             raise ValidationError({"recipient_id": "Recipient not found."})
+
+        # --- Check messaging permission ---
+        are_friends = Friendship.are_friends(user.id, recipient_id)
+
+        if not are_friends:
+            # Non-friends must have an accepted networking meeting
+            meeting_id = request.data.get("meeting_id")
+
+            if not meeting_id:
+                raise PermissionDenied(
+                    "You can only message this user after a confirmed 1:1 meeting."
+                )
+
+            try:
+                meeting_id = int(meeting_id)
+            except (TypeError, ValueError):
+                raise ValidationError({"meeting_id": "Invalid meeting ID."})
+
+            # Validate meeting exists, is accepted, and includes both users
+            try:
+                meeting = NetworkingMeeting.objects.get(
+                    pk=meeting_id,
+                    status="accepted"
+                )
+            except NetworkingMeeting.DoesNotExist:
+                raise PermissionDenied(
+                    "Meeting not found or not accepted."
+                )
+
+            # Validate current user is one side and recipient is the other
+            current_user_is_requester = (
+                meeting.requester.user_id == user.id
+            )
+            current_user_is_recipient = (
+                meeting.recipient.user_id == user.id
+            )
+            recipient_is_requester = (
+                meeting.requester.user_id == recipient_id
+            )
+            recipient_is_recipient = (
+                meeting.recipient.user_id == recipient_id
+            )
+
+            is_valid_meeting = (
+                (current_user_is_requester and recipient_is_recipient) or
+                (current_user_is_recipient and recipient_is_requester)
+            )
+
+            if not is_valid_meeting:
+                raise PermissionDenied(
+                    "This meeting does not involve both users."
+                )
 
         user_ids = sorted([user.id, recipient_id])
 
