@@ -587,6 +587,14 @@ class Event(models.Model):
             for s in self.sessions.filter(session_type__in=session_types)
         )
 
+    def get_or_create_participant_badge(self):
+        """Get or create the default 'Participant' badge for this event."""
+        badge, created = self.badge_labels.get_or_create(
+            name='Participant',
+            defaults={'color': '#9CA3AF'}
+        )
+        return badge
+
 
 class EventEmailTemplate(models.Model):
     """Per-event customizable email templates for registration confirmations."""

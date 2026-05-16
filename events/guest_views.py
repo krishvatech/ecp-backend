@@ -85,6 +85,10 @@ def _sync_converted_guest_registration(user, guest):
     )
 
     if created:
+        # Auto-assign Participant badge if registration has no badges
+        if not registration.badge_labels.exists():
+            participant_badge = guest.event.get_or_create_participant_badge()
+            registration.badge_labels.add(participant_badge)
         Event.objects.filter(pk=guest.event_id).update(attending_count=F("attending_count") + 1)
         return registration
 

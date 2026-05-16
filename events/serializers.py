@@ -1473,7 +1473,7 @@ class EventSerializer(serializers.ModelSerializer):
         # Auto-register all participant users so events appear in "My Events".
         # This includes staff participants and guests with user accounts.
         for user_id in registration_user_ids:
-            EventRegistration.objects.get_or_create(
+            obj, was_created = EventRegistration.objects.get_or_create(
                 event=event,
                 user_id=user_id,
                 defaults={
@@ -1483,6 +1483,10 @@ class EventSerializer(serializers.ModelSerializer):
                     "was_ever_admitted": True,
                 },
             )
+            # Auto-assign Participant badge if registration has no badges
+            if was_created and not obj.badge_labels.exists():
+                participant_badge = event.get_or_create_participant_badge()
+                obj.badge_labels.add(participant_badge)
 
         # Send credentials emails to newly created guest accounts
         if guests_to_create_accounts:
@@ -1549,7 +1553,7 @@ class EventSerializer(serializers.ModelSerializer):
 
             # Automatically add event creator as attendee
             creator = self.context["request"].user
-            EventRegistration.objects.get_or_create(
+            obj, was_created = EventRegistration.objects.get_or_create(
                 event=event,
                 user=creator,
                 defaults={
@@ -1558,6 +1562,10 @@ class EventSerializer(serializers.ModelSerializer):
                     "admission_status": "admitted",
                 }
             )
+            # Auto-assign Participant badge if registration has no badges
+            if was_created and not obj.badge_labels.exists():
+                participant_badge = event.get_or_create_participant_badge()
+                obj.badge_labels.add(participant_badge)
 
             # ----- read "Attach Resources" metadata coming from the form -----
             req = self.context.get("request")

@@ -179,11 +179,15 @@ class NetworkingMeetingAvailabilityView(views.APIView):
         event = get_object_or_404(Event, id=event_id)
 
         # Get current user's registration (or create temporary one for non-registered users)
-        requester_reg, _ = EventRegistration.objects.get_or_create(
+        requester_reg, created = EventRegistration.objects.get_or_create(
             event=event,
             user=request.user,
             defaults={'status': 'registered'}
         )
+        # Auto-assign Participant badge if registration has no badges
+        if created and not requester_reg.badge_labels.exists():
+            participant_badge = event.get_or_create_participant_badge()
+            requester_reg.badge_labels.add(participant_badge)
 
         # Get query params
         recipient_id = request.query_params.get('recipient_registration_id')
@@ -247,11 +251,15 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
         event = get_object_or_404(Event, id=event_id)
 
         # Get or create requester registration (allow non-registered users)
-        requester_reg, _ = EventRegistration.objects.get_or_create(
+        requester_reg, created = EventRegistration.objects.get_or_create(
             event=event,
             user=request.user,
             defaults={'status': 'registered'}
         )
+        # Auto-assign Participant badge if registration has no badges
+        if created and not requester_reg.badge_labels.exists():
+            participant_badge = event.get_or_create_participant_badge()
+            requester_reg.badge_labels.add(participant_badge)
 
         serializer = NetworkingMeetingCreateSerializer(data=request.data)
         if not serializer.is_valid():
@@ -395,11 +403,15 @@ class NetworkingMeetingMyView(views.APIView):
         event = get_object_or_404(Event, id=event_id)
 
         # Get or create registration (allow non-registered users to view their meetings)
-        EventRegistration.objects.get_or_create(
+        registration, created = EventRegistration.objects.get_or_create(
             event=event,
             user=request.user,
             defaults={'status': 'registered'}
         )
+        # Auto-assign Participant badge if registration has no badges
+        if created and not registration.badge_labels.exists():
+            participant_badge = event.get_or_create_participant_badge()
+            registration.badge_labels.add(participant_badge)
 
         # Get all meetings where user is involved
         from django.db.models import Q
