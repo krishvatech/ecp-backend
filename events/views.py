@@ -821,7 +821,7 @@ class EventLimitOffsetPagination(LimitOffsetPagination):
     default_limit = 9  # 9 per page
     limit_query_param = "limit"
     offset_query_param = "offset"
-    max_limit = 50
+    max_limit = 1000
 
 
 class IsCreatorOrReadOnly(BasePermission):
