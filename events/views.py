@@ -908,6 +908,89 @@ def _is_event_host(user, event) -> bool:
     return event.participants.filter(role="host").filter(host_match).exists()
 
 
+def _grant_invited_event_access(event, user, invited_by=None):
+    """
+    Grant Companion access to an invited user by creating/reactivating EventRegistration.
+    Bypasses application requirement even for apply-type events.
+    Auto-approves any pending applications.
+
+    Args:
+        event: Event instance
+        user: User instance to grant access
+        invited_by: Optional User instance who sent the invite
+
+    Returns:
+        dict with keys:
+        - registration_created: bool (True if new registration or reactivated)
+        - registration: EventRegistration instance
+        - application_approved: bool (True if pending app was approved)
+    """
+    now = timezone.now()
+    registration_created = False
+    application_approved = False
+
+    # Create or reactivate EventRegistration
+    existing_reg = EventRegistration.objects.filter(
+        event=event,
+        user=user
+    ).first()
+
+    if existing_reg and existing_reg.status == 'registered':
+        # Already registered, no action needed
+        registration = existing_reg
+    elif existing_reg and existing_reg.status in ['cancelled', 'deregistered']:
+        # Reactivate registration
+        existing_reg.status = 'registered'
+        existing_reg.save(update_fields=['status'])
+        registration = existing_reg
+        registration_created = True
+    else:
+        # Create new registration
+        initial_admission_status = 'waiting' if event.waiting_room_enabled else 'admitted'
+        registration = EventRegistration.objects.create(
+            event=event,
+            user=user,
+            status='registered',
+            admission_status=initial_admission_status
+        )
+        registration_created = True
+
+    # Auto-assign Participant badge if newly created
+    if registration_created and not registration.badge_labels.exists():
+        participant_badge = event.get_or_create_participant_badge()
+        registration.badge_labels.add(participant_badge)
+
+    # Update attending_count only when new/reactivated
+    if registration_created:
+        Event.objects.filter(pk=event.pk).update(
+            attending_count=F('attending_count') + 1
+        )
+
+    # Auto-approve any pending applications for this user
+    pending_app = EventApplication.objects.filter(
+        event=event,
+        user=user,
+        status__in=['pending', 'submitted']
+    ).first()
+
+    if pending_app:
+        pending_app.status = 'approved'
+        pending_app.reviewed_at = now
+        pending_app.reviewed_by = invited_by
+        pending_app.is_preapproved = True
+        pending_app.preapproved_at = now
+        pending_app.save(update_fields=[
+            'status', 'reviewed_at', 'reviewed_by', 'is_preapproved', 'preapproved_at'
+        ])
+        application_approved = True
+
+    return {
+        'registration_created': registration_created,
+        'registration': registration,
+        'application_approved': application_approved
+    }
+
+
 def _execute_lounge_transition(event_id, transition, user_ids):
     """
     Shared helper for lounge participant transitions.
@@ -1764,6 +1847,8 @@ class EventViewSet(viewsets.ModelViewSet):
     def invite_users(self, request, pk=None):
         """
         Invite users and group members to an event.
+        Creates EventRegistration and bypasses application requirement for invited users.
+        Auto-approves any pending applications for the invited user/email.
         Only staff users can perform this action.
         """
         if not request.user.is_staff:
@@ -1831,11 +1916,22 @@ class EventViewSet(viewsets.ModelViewSet):
             for m in memberships:
                 _set_user_source(m.user, "group", getattr(m.group, "name", "Group"), m.group_id)
 
-        # 3. Send Notifications
-        # Filter out the actor themselves if they selected themselves (optional but good UX)
+        # 3. Filter out the actor themselves if they selected themselves (optional but good UX)
         invited_users.pop(request.user.id, None)
         invite_sources.pop(request.user.id, None)
 
+        # 4. Use helper to grant access and approve applications
+        registrations_created_count = 0
+        applications_approved_count = 0
+
+        for user_id, user in invited_users.items():
+            result = _grant_invited_event_access(event, user, invited_by=request.user)
+            if result['registration_created']:
+                registrations_created_count += 1
+            if result['application_approved']:
+                applications_approved_count += 1
+
+        # 5. Send Notifications
         notifications_to_create = []
         direct_messages_to_create = []
 
@@ -1861,7 +1957,7 @@ class EventViewSet(viewsets.ModelViewSet):
                     actor=request.user,
                     kind="event",
                     title=f"Invitation: {event.title}",
-                    description=invite_message or f"You have been invited to {event.title}.",
+                    description=invite_message or f"You have been invited to {event.title}. You can now access the Event Companion.",
                     data={
                         "event_id": event.id,
                         "event_title": event.title,
@@ -1897,9 +1993,13 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response({
             "ok": True,
             "invited_count": len(invited_users),
+            "registrations_created": registrations_created_count,
+            "applications_approved": applications_approved_count,
             "messaged_count": len(direct_messages_to_create),
             "message": (
                 f"Sent invitations to {len(invited_users)} users."
+                + (f" Created {registrations_created_count} registrations." if registrations_created_count > 0 else "")
+                + (f" Approved {applications_approved_count} pending applications." if applications_approved_count > 0 else "")
                 + (f" Also sent {len(direct_messages_to_create)} event messages." if direct_messages_to_create else "")
             )
         })
@@ -2225,11 +2325,30 @@ class EventViewSet(viewsets.ModelViewSet):
     def register(self, request, pk=None):
         """
         Register the current user for a single event.
+        For 'apply' type events, only allows registration if user is already registered or has approved application.
         """
         event = self.get_object()
 
         if event.status == "cancelled":
             return Response({"detail": "Cannot register for a cancelled event."}, status=400)
+
+        # Prevent /register/ from bypassing application requirement for 'apply' type events
+        if event.registration_type == 'apply':
+            is_already_registered = EventRegistration.objects.filter(
+                event=event,
+                user=request.user,
+                status='registered'
+            ).exists()
+            has_approved_application = EventApplication.objects.filter(
+                event=event,
+                user=request.user,
+                status='approved'
+            ).exists()
+            if not (is_already_registered or has_approved_application):
+                return Response({
+                    "detail": "This event requires an application. Please submit an application first.",
+                    "code": "application_required"
+                }, status=400)
 
         # Check if event is ended and replay access is not enabled
         if event.status == "ended":
@@ -4477,7 +4596,11 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         Event Companion V1: Participant Directory for authenticated users.
 
-        All authenticated users can view this directory.
+        Access control:
+        - User must be registered for the event (EventRegistration.status='registered'), OR
+        - User must have approved application (EventApplication.status='approved'), OR
+        - User must be the event manager
+
         Supports search (name, job_title, company) and role filtering.
 
         Response includes:
@@ -4489,8 +4612,22 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         user = request.user
 
-        # All authenticated users can view the companion directory
-        # No registration requirement needed
+        # Check access permissions
+        is_event_manager = _is_event_manager(user, event)
+        is_registered = EventRegistration.objects.filter(
+            event=event,
+            user=user,
+            status='registered'
+        ).exists()
+        is_approved = EventApplication.objects.filter(
+            event=event,
+            user=user,
+            status='approved'
+        ).exists()
+
+        # Allow access only if registered, approved application, or event manager
+        if not (is_registered or is_approved or is_event_manager):
+            return Response({"detail": "Forbidden. You must be registered or approved to access the companion directory."}, status=403)
 
         # Fetch registrations (only registered status, exclude superusers)
         qs = (
@@ -7255,14 +7392,14 @@ class EventViewSet(viewsets.ModelViewSet):
             
         frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
         event_id_str = event.slug or str(event.id)
-        
+
         sent = 0
         failed = []
-        
+
         for email in emails:
             if current_daily + sent >= max_per_day:
                 break
-                
+
             payload = {
                 "kind": "event",
                 "event_id": event.id,
@@ -7270,7 +7407,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "invited_by": request.user.id
             }
             token = signing.dumps(payload, salt="event-email-invite")
-            invite_url = f"{frontend_url}/events/{event_id_str}?invite_token={token}"
+            invite_url = f"{frontend_url}/events/{event_id_str}/companion?invite_token={token}"
             
             success = send_event_invite_email(email, event, request.user, invite_url)
             if success:
@@ -7311,24 +7448,21 @@ class EventViewSet(viewsets.ModelViewSet):
         if not request.user.email or payload.get("email", "").lower() != request.user.email.lower():
             return Response({"detail": "Token belongs to a different email"}, status=403)
             
-        # Check waitlist / capacity
+        # Check capacity
         invited_by_id = payload.get("invited_by")
-        
-        status_val = "registered"
+
         if event.max_participants and event.registrations.filter(status="registered").count() >= event.max_participants:
-            if getattr(event, "waitlist_enabled", False):
-                status_val = "waitlisted"
-            else:
+            if not getattr(event, "waitlist_enabled", False):
                 return Response({"detail": "Event is at capacity"}, status=400)
-                
+
         # Handle paid events: don't auto-register, require payment flow instead
         if not event.is_free:
             is_registered = EventRegistration.objects.filter(
-                event=event, 
-                user=request.user, 
+                event=event,
+                user=request.user,
                 status__in=["registered", "waitlisted"]
             ).exists()
-            
+
             if not is_registered:
                 return Response({
                     "ok": True,
@@ -7336,28 +7470,22 @@ class EventViewSet(viewsets.ModelViewSet):
                     "event_id": event.id,
                     "detail": "Paid event requires ticket purchase"
                 })
-                
-        registration, created = EventRegistration.objects.get_or_create(
-            event=event,
-            user=request.user,
-            defaults={
-                "status": status_val,
-            }
-        )
-        if not created and registration.status not in ["registered", "waitlisted"]:
-            registration.status = status_val
-            registration.save(update_fields=["status"])
-            status_msg = "created"
-        elif not created:
-            status_msg = "already_registered"
-        else:
-            status_msg = "created"
-            
+
+        # Use helper to grant access (creates registration and approves pending apps)
+        invited_by_user = None
+        if invited_by_id:
+            try:
+                invited_by_user = User.objects.get(id=invited_by_id)
+            except User.DoesNotExist:
+                pass
+
+        result = _grant_invited_event_access(event, request.user, invited_by=invited_by_user)
+
         return Response({
             "ok": True,
-            "status": status_msg,
+            "status": "registered",
             "event_id": event.id,
-            "registration_status": registration.status
+            "registration_status": "registered"
         })
 
     # ========== Pinning/Promotion Endpoints ==========
