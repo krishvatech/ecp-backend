@@ -1008,6 +1008,7 @@ class EventSerializer(serializers.ModelSerializer):
             "pin_priority",
             "pinned_at",
             "pinned_by_id",
+            "is_featured",
             "replay_enabled",
             "replay_video_url",
             "youtube_summary_url",
@@ -1551,6 +1552,10 @@ class EventSerializer(serializers.ModelSerializer):
             print(f"    Stored end_time: {event.end_time}")
             print(f"🔴 BACKEND CREATE METHOD END\n")
 
+            # Handle one-featured-at-a-time constraint: unfeature all other events
+            if event.is_featured:
+                Event.objects.filter(is_featured=True).exclude(pk=event.pk).update(is_featured=False)
+
             # Automatically add event creator as attendee
             creator = self.context["request"].user
             obj, was_created = EventRegistration.objects.get_or_create(
@@ -1737,8 +1742,14 @@ class EventSerializer(serializers.ModelSerializer):
                     {"hours_calculation_session_types": "Only platform administrators can modify session types for hours calculation."}
                 )
 
-        # Update event fields
-        instance = super().update(instance, validated_data)
+        # Handle one-featured-at-a-time constraint: unfeature all other events
+        if validated_data.get('is_featured') is True:
+            with transaction.atomic():
+                Event.objects.filter(is_featured=True).exclude(pk=instance.pk).update(is_featured=False)
+                instance = super().update(instance, validated_data)
+        else:
+            # Update event fields
+            instance = super().update(instance, validated_data)
 
         # If participants data provided, intelligently update participants
         # Only send confirmation emails to newly added participants

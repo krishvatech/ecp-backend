@@ -7385,6 +7385,72 @@ class EventViewSet(viewsets.ModelViewSet):
         event.save(update_fields=["is_pinned", "pin_priority", "pinned_at", "pinned_by", "updated_at"])
         return Response(EventSerializer(event, context={"request": request}).data)
 
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="landing")
+    def landing_page_events(self, request):
+        """Get hero event and upcoming events sorted for landing page.
+
+        Returns:
+        {
+            "hero_event": {...},  # featured > pinned > nearest upcoming
+            "upcoming_events": [...]  # excludes hero, sorted: pinned first (by priority), then by date
+        }
+        """
+        from django.utils import timezone
+        now = timezone.now()
+
+        # Get upcoming events: published, not ended, after now
+        qs = self.get_queryset().filter(
+            status="published"
+        ).exclude(
+            status="ended"
+        ).exclude(
+            end_time__lt=now
+        ).filter(
+            Q(start_time__isnull=True) | Q(start_time__gt=now)
+        ).order_by("is_pinned", "pin_priority", "pinned_at", "start_time")
+
+        events = list(qs)
+
+        # Select hero event: featured > pinned (lowest priority) > nearest upcoming
+        hero_event = None
+
+        # Priority 1: Featured event
+        featured = next((e for e in events if e.is_featured), None)
+        if featured:
+            hero_event = featured
+        # Priority 2: Pinned event with lowest pin_priority
+        elif any(e.is_pinned for e in events):
+            pinned = [e for e in events if e.is_pinned]
+            hero_event = min(pinned, key=lambda e: (e.pin_priority or 999999, -(e.pinned_at.timestamp() if e.pinned_at else 0)))
+        # Priority 3: Nearest upcoming event
+        elif events:
+            hero_event = events[0]
+
+        # Get remaining events for grid, sorted properly
+        upcoming_events = [e for e in events if not hero_event or e.id != hero_event.id]
+
+        # Sort: pinned first (by pin_priority, then pinned_at), then normal by start_time
+        def sort_key(event):
+            if event.is_pinned:
+                # Pinned: (0, pin_priority, -pinned_at_timestamp)
+                pinned_time = -(event.pinned_at.timestamp() if event.pinned_at else 0)
+                return (0, event.pin_priority or 999999, pinned_time)
+            else:
+                # Normal: (1, start_time_timestamp)
+                start_time = event.start_time.timestamp() if event.start_time else float('inf')
+                return (1, start_time)
+
+        upcoming_events.sort(key=sort_key)
+
+        # Serialize
+        hero_data = EventSerializer(hero_event, context={"request": request}).data if hero_event else None
+        upcoming_data = EventSerializer(upcoming_events[:6], many=True, context={"request": request}).data
+
+        return Response({
+            "hero_event": hero_data,
+            "upcoming_events": upcoming_data,
+        })
+
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="pinned")
     def pinned_events(self, request):
         """Get public pinned events. Reuses visibility logic from main queryset."""
