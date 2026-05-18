@@ -1118,7 +1118,10 @@ def send_networking_meeting_request_email(meeting_id):
         requester = meeting.requester
         event = meeting.event
 
+        logger.info(f"[NETWORKING_EMAIL_DEBUG] send_networking_meeting_request_email start: meeting_id={meeting_id}, recipient={recipient}, requester={requester}")
+
         if not recipient or not recipient.user or not recipient.user.email:
+            logger.warning(f"[NETWORKING_EMAIL_DEBUG] Missing recipient/email for meeting {meeting_id}")
             return False
 
         # Format meeting time in event's timezone
@@ -1145,7 +1148,8 @@ def send_networking_meeting_request_email(meeting_id):
             "support_email": get_support_email(),
         }
 
-        return send_template_email(
+        logger.info(f"[NETWORKING_EMAIL_DEBUG] Attempting to send networking_meeting_request to {recipient.user.email}")
+        result = send_template_email(
             template_key="networking_meeting_request",
             to_email=recipient.user.email,
             context=ctx,
@@ -1153,8 +1157,10 @@ def send_networking_meeting_request_email(meeting_id):
             fail_silently=True,
             event=event,
         )
+        logger.info(f"[NETWORKING_EMAIL_DEBUG] send_template_email returned: {result}")
+        return result
     except Exception as e:
-        logger.error(f"Failed to send networking meeting request email for meeting {meeting_id}: {e}")
+        logger.error(f"[NETWORKING_EMAIL_ERROR] Failed to send networking meeting request email for meeting {meeting_id}: {e}", exc_info=True)
         return False
 
 

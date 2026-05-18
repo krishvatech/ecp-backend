@@ -14,4 +14,6 @@ app = Celery("ecp_backend")
 
 # Namespacing Celery settings with the "CELERY_" prefix in Django settings
 app.config_from_object("django.conf:settings", namespace="CELERY")
-app.autodiscover_tasks()
+
+# Explicitly list apps for task autodiscovery to ensure networking tasks are found
+app.autodiscover_tasks(['events', 'invoicing', 'interactions', 'friends', 'users', 'activity_feed', 'courses', 'content'])

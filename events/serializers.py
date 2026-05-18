@@ -1473,7 +1473,7 @@ class EventSerializer(serializers.ModelSerializer):
         # Auto-register all participant users so events appear in "My Events".
         # This includes staff participants and guests with user accounts.
         for user_id in registration_user_ids:
-            EventRegistration.objects.get_or_create(
+            obj, was_created = EventRegistration.objects.get_or_create(
                 event=event,
                 user_id=user_id,
                 defaults={
@@ -1483,6 +1483,10 @@ class EventSerializer(serializers.ModelSerializer):
                     "was_ever_admitted": True,
                 },
             )
+            # Auto-assign Participant badge if registration has no badges
+            if was_created and not obj.badge_labels.exists():
+                participant_badge = event.get_or_create_participant_badge()
+                obj.badge_labels.add(participant_badge)
 
         # Send credentials emails to newly created guest accounts
         if guests_to_create_accounts:
@@ -1549,7 +1553,7 @@ class EventSerializer(serializers.ModelSerializer):
 
             # Automatically add event creator as attendee
             creator = self.context["request"].user
-            EventRegistration.objects.get_or_create(
+            obj, was_created = EventRegistration.objects.get_or_create(
                 event=event,
                 user=creator,
                 defaults={
@@ -1558,6 +1562,10 @@ class EventSerializer(serializers.ModelSerializer):
                     "admission_status": "admitted",
                 }
             )
+            # Auto-assign Participant badge if registration has no badges
+            if was_created and not obj.badge_labels.exists():
+                participant_badge = event.get_or_create_participant_badge()
+                obj.badge_labels.add(participant_badge)
 
             # ----- read "Attach Resources" metadata coming from the form -----
             req = self.context.get("request")
@@ -3240,12 +3248,12 @@ class NetworkingMeetingSerializer(serializers.ModelSerializer):
             'id', 'event', 'requester', 'requester_user_name', 'requester_detail', 'recipient', 'recipient_user_name', 'recipient_detail',
             'duration_minutes', 'start_time', 'end_time', 'table', 'table_name', 'status',
             'message', 'suggested_start_time', 'suggested_end_time', 'suggested_by', 'suggested_by_user_name',
-            'accepted_at', 'declined_at', 'cancelled_at', 'created_at', 'updated_at'
+            'accepted_at', 'declined_at', 'cancelled_at', 'created_at', 'updated_at', 'requester_seen_at', 'recipient_seen_at'
         ]
         read_only_fields = [
             'id', 'event', 'requester', 'recipient', 'status', 'suggested_start_time',
             'suggested_end_time', 'suggested_by', 'accepted_at', 'declined_at', 'cancelled_at',
-            'created_at', 'updated_at', 'requester_user_name', 'recipient_user_name',
+            'created_at', 'updated_at', 'requester_seen_at', 'recipient_seen_at', 'requester_user_name', 'recipient_user_name',
             'suggested_by_user_name', 'table_name', 'requester_detail', 'recipient_detail'
         ]
 

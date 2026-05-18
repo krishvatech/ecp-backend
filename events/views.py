@@ -821,7 +821,7 @@ class EventLimitOffsetPagination(LimitOffsetPagination):
     default_limit = 9  # 9 per page
     limit_query_param = "limit"
     offset_query_param = "offset"
-    max_limit = 50
+    max_limit = 1000
 
 
 class IsCreatorOrReadOnly(BasePermission):
@@ -1726,6 +1726,10 @@ class EventViewSet(viewsets.ModelViewSet):
                     defaults={"admission_status": initial_admission_status}
                 )
                 if was_created:
+                    # Auto-assign Participant badge if registration has no badges
+                    if not obj.badge_labels.exists():
+                        participant_badge = ev.get_or_create_participant_badge()
+                        obj.badge_labels.add(participant_badge)
                     # keep a running count on Event
                     Event.objects.filter(pk=ev.pk).update(attending_count=F("attending_count") + 1)
                     created.append(ev.id)
@@ -2277,6 +2281,11 @@ class EventViewSet(viewsets.ModelViewSet):
             obj.admission_status = initial_admission_status # Reset admission status
             obj.save(update_fields=['status', 'admission_status'])
             was_created = True # Treat as created so we increment count below
+
+        # Auto-assign Participant badge if registration has no badges
+        if was_created and not obj.badge_labels.exists():
+            participant_badge = event.get_or_create_participant_badge()
+            obj.badge_labels.add(participant_badge)
 
         if was_created:
              Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)

@@ -179,11 +179,15 @@ class NetworkingMeetingAvailabilityView(views.APIView):
         event = get_object_or_404(Event, id=event_id)
 
         # Get current user's registration (or create temporary one for non-registered users)
-        requester_reg, _ = EventRegistration.objects.get_or_create(
+        requester_reg, created = EventRegistration.objects.get_or_create(
             event=event,
             user=request.user,
             defaults={'status': 'registered'}
         )
+        # Auto-assign Participant badge if registration has no badges
+        if created and not requester_reg.badge_labels.exists():
+            participant_badge = event.get_or_create_participant_badge()
+            requester_reg.badge_labels.add(participant_badge)
 
         # Get query params
         recipient_id = request.query_params.get('recipient_registration_id')
@@ -247,11 +251,15 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
         event = get_object_or_404(Event, id=event_id)
 
         # Get or create requester registration (allow non-registered users)
-        requester_reg, _ = EventRegistration.objects.get_or_create(
+        requester_reg, created = EventRegistration.objects.get_or_create(
             event=event,
             user=request.user,
             defaults={'status': 'registered'}
         )
+        # Auto-assign Participant badge if registration has no badges
+        if created and not requester_reg.badge_labels.exists():
+            participant_badge = event.get_or_create_participant_badge()
+            requester_reg.badge_labels.add(participant_badge)
 
         serializer = NetworkingMeetingCreateSerializer(data=request.data)
         if not serializer.is_valid():
@@ -348,7 +356,8 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
                 end_time=end_time,
                 status='pending',
                 message=message,
-                table=None
+                table=None,
+                requester_seen_at=timezone.now()
             )
 
             # Send notification and email after transaction commits
@@ -394,11 +403,15 @@ class NetworkingMeetingMyView(views.APIView):
         event = get_object_or_404(Event, id=event_id)
 
         # Get or create registration (allow non-registered users to view their meetings)
-        EventRegistration.objects.get_or_create(
+        registration, created = EventRegistration.objects.get_or_create(
             event=event,
             user=request.user,
             defaults={'status': 'registered'}
         )
+        # Auto-assign Participant badge if registration has no badges
+        if created and not registration.badge_labels.exists():
+            participant_badge = event.get_or_create_participant_badge()
+            registration.badge_labels.add(participant_badge)
 
         # Get all meetings where user is involved
         from django.db.models import Q
@@ -899,3 +912,30 @@ class NetworkingMeetingRescheduleView(views.APIView):
 
         serializer = NetworkingMeetingSerializer(meeting)
         return Response(serializer.data)
+
+
+class NetworkingMeetingMarkSeenView(views.APIView):
+    """
+    Mark all networking meetings for the current user as seen.
+    This clears the notification badge for My Meetings.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id)
+        now = timezone.now()
+        user = request.user
+
+        # Mark meetings where user is recipient as seen by recipient
+        NetworkingMeeting.objects.filter(
+            event=event,
+            recipient__user=user
+        ).update(recipient_seen_at=now)
+
+        # Mark meetings where user is requester as seen by requester
+        NetworkingMeeting.objects.filter(
+            event=event,
+            requester__user=user
+        ).update(requester_seen_at=now)
+
+        return Response({'status': 'ok', 'message': 'All meeting notifications marked as seen'})

@@ -587,6 +587,14 @@ class Event(models.Model):
             for s in self.sessions.filter(session_type__in=session_types)
         )
 
+    def get_or_create_participant_badge(self):
+        """Get or create the default 'Participant' badge for this event."""
+        badge, created = self.badge_labels.get_or_create(
+            name='Participant',
+            defaults={'color': '#9CA3AF'}
+        )
+        return badge
+
 
 class EventEmailTemplate(models.Model):
     """Per-event customizable email templates for registration confirmations."""
@@ -2911,6 +2919,8 @@ class NetworkingMeeting(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    requester_seen_at = models.DateTimeField(null=True, blank=True, help_text="When requester last viewed their notifications")
+    recipient_seen_at = models.DateTimeField(null=True, blank=True, help_text="When recipient last viewed their notifications")
 
     class Meta:
         indexes = [
