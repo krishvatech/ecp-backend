@@ -69,6 +69,7 @@ from .serializers import (
     EventSerializer,
     PublicEventSerializer,
     EventLiteSerializer,
+    MyEventCardSerializer,
     EventRegistrationSerializer,
     EventSessionSerializer,
     SessionAttendanceSerializer,
@@ -5905,20 +5906,14 @@ class EventViewSet(viewsets.ModelViewSet):
     def mine(self, request):
         """
         List events the current user is registered for OR attended as a guest (newest first).
-        Includes:
-        - Events with EventRegistration (registered user)
-        - Events with GuestAttendee where converted_user=user (guest who registered)
-        Each event in the response includes an `is_host` boolean so the
-        frontend can show "Join as Host" without a separate registration lookup.
+        Supports view=card for optimized card endpoint with minimal fields and prefetched data.
         """
-        from django.db.models import Q
+        from django.db.models import Q, Exists, OuterRef
 
         user = request.user
         user_email = (getattr(user, "email", "") or "").strip()
+        view_mode = (request.query_params.get("view") or "").strip().lower()
 
-        # Include both registered events AND events where user is a converted guest
-        # ✅ DRAFT Visibility: Drafts are ONLY visible in 'mine' to the creator or platform admin.
-        # Assigned hosts (registered users) will NOT see drafts here to avoid 404s in detail view.
         is_platform_admin = bool(getattr(user, "is_superuser", False))
 
         visibility_q = Q(created_by=user)
@@ -5937,42 +5932,49 @@ class EventViewSet(viewsets.ModelViewSet):
             .order_by("-start_time")
         )
 
-        # Note: mine endpoint already filters by user's registrations, so hidden events
-        # they're registered for are shown (platform_admin sees all, registered users see theirs)
-
-        # Apply bucket filter here too if needed
         bucket = (request.query_params.get("bucket") or "").strip().lower()
         if bucket:
             qs = _apply_bucket_filter(qs, bucket)
 
-        # Tab 5: Hidden events support
         is_hidden_param = request.query_params.get("is_hidden")
         if is_hidden_param is not None:
             is_hidden_bool = is_hidden_param.lower() == "true"
             qs = qs.filter(is_hidden=is_hidden_bool)
 
+        # ✅ Card mode: Use lightweight serializer with Prefetch optimizations
+        if view_mode == "card":
+            my_reg_prefetch = Prefetch(
+                "registrations",
+                EventRegistration.objects.filter(user=user, status__in=['registered', 'cancellation_requested'])
+            )
+            qs = qs.prefetch_related(my_reg_prefetch, "sessions")
+
+            page = self.paginate_queryset(qs)
+            events = page if page is not None else qs
+
+            for event in events:
+                event._prefetched_my_registration = (
+                    event.registrations.first() if hasattr(event, 'registrations') else None
+                )
+
+            ser = MyEventCardSerializer(events, many=True, context={"request": request})
+            result = ser.data
+            return self.get_paginated_response(result) if page is not None else Response(result)
+
+        # ✅ Default mode: Keep existing behavior for backward compatibility
         page = self.paginate_queryset(qs)
         events = page if page is not None else qs
         ser = EventLiteSerializer(events, many=True, context={"request": request})
         data = ser.data
 
-        # Annotate each event with is_host.
-        # Use the same narrow check as EventRegistrationSerializer.get_is_host():
-        #   - event creator or community owner → always host
-        #   - explicitly assigned in EventParticipant with role="host" → host
-        # We do NOT use _is_event_manager() here because that grants all is_staff users
-        # host access on every event, which is a permissions helper, not a role label.
         result = []
         for event_obj, event_data in zip(events, data):
             d = dict(event_data)
-
-            # Is this user the actual creator?
             is_actual_owner = (event_obj.created_by_id == user.id)
 
             if is_actual_owner:
                 d["is_host"] = True
             else:
-                # Check explicit EventParticipant assignment with role="host"
                 host_match = Q(participant_type="staff", user_id=user.id)
                 if user_email:
                     host_match = host_match | Q(participant_type="guest", guest_email__iexact=user_email)

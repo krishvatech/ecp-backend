@@ -26,6 +26,7 @@ from .models import (
     EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate,
     EventNetworkingSettings, NetworkingTable, NetworkingMeeting, EventSessionBookmark
 )
+from django.db.models import Prefetch as DjangoPrefetch
 from community.models import Community
 from content.models import Resource
 import json
@@ -2392,6 +2393,63 @@ class PublicEventSerializer(serializers.ModelSerializer):
         Check if user has replay access (is registered for the event).
         """
         return self.get_is_registered_for_event(obj)
+
+
+class SessionSummarySerializer(serializers.ModelSerializer):
+    """Lightweight session serializer for card view (minimal fields only)."""
+    class Meta:
+        model = EventSession
+        fields = ("id", "title", "start_time", "end_time", "session_date")
+
+
+class MyEventCardSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for My Events card view - includes only frontend-required fields."""
+    sessions_summary = SessionSummarySerializer(source="sessions", many=True, read_only=True)
+    my_registration = serializers.SerializerMethodField(read_only=True)
+
+    def get_my_registration(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user or not request.user.is_authenticated:
+            return None
+        registration = getattr(obj, "_prefetched_my_registration", None)
+        if registration:
+            return {
+                "id": registration.id,
+                "status": registration.status,
+                "registered_at": registration.registered_at,
+                "joined_live": registration.joined_live,
+                "watched_replay": registration.watched_replay,
+                "admitted_at": registration.admitted_at,
+                "admission_status": registration.admission_status,
+                "is_host": self._compute_is_host(obj, registration),
+            }
+        return None
+
+    def _compute_is_host(self, event, registration):
+        if registration.user_id == getattr(event, "created_by_id", None):
+            return True
+        host_match = Q(participant_type="staff", user_id=registration.user_id)
+        user_email = (getattr(registration.user, "email", "") or "").strip()
+        if user_email:
+            host_match = host_match | Q(participant_type="guest", guest_email__iexact=user_email)
+        return event.participants.filter(role="host").filter(host_match).exists()
+
+    class Meta:
+        model = Event
+        fields = (
+            "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
+            "preview_image", "cover_image", "waiting_room_image", "location", "location_city",
+            "location_country", "category", "is_live", "recording_url", "replay_available",
+            "replay_visible_to_participants", "price", "price_label", "currency", "is_free",
+            "registration_type", "waiting_room_enabled", "waiting_room_grace_period_minutes",
+            "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
+            "lounge_enabled_before", "lounge_before_buffer", "lounge_enabled_after", "lounge_after_buffer",
+            "is_multi_day", "sessions_summary", "cancellation_message", "recommended_event", "created_by_id",
+            "use_external_streaming", "external_streaming_platform", "external_streaming_url",
+            "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
+            "external_streaming_host_link", "replay_enabled", "replay_video_url", "youtube_summary_url",
+            "linkedin_summary_url", "replay_cta_text", "my_registration",
+        )
 
 
 class EventLiteSerializer(serializers.ModelSerializer):
