@@ -315,6 +315,40 @@ DATABASES = {
 # Redis configuration used for cache, channel layers, and Celery
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+
+# Live meeting ASG capacity manager
+# Enables automatic ASG capacity changes before/after large live meetings.
+# Keep disabled by default so local/dev environments never call AWS accidentally.
+LIVE_MEETING_ASG_AUTOSCALE_ENABLED = os.getenv(
+    "LIVE_MEETING_ASG_AUTOSCALE_ENABLED", "False"
+).lower() == "true"
+
+LIVE_MEETING_ASG_NAME = os.getenv("LIVE_MEETING_ASG_NAME", "ecp-backend-asg")
+LIVE_MEETING_ASG_REGION = os.getenv("LIVE_MEETING_ASG_REGION", "eu-central-1")
+
+# Normal production capacity
+LIVE_MEETING_ASG_NORMAL_MIN = int(os.getenv("LIVE_MEETING_ASG_NORMAL_MIN", "2"))
+LIVE_MEETING_ASG_NORMAL_DESIRED = int(os.getenv("LIVE_MEETING_ASG_NORMAL_DESIRED", "2"))
+LIVE_MEETING_ASG_NORMAL_MAX = int(os.getenv("LIVE_MEETING_ASG_NORMAL_MAX", "5"))
+
+# Capacity for large live meetings
+LIVE_MEETING_ASG_BIG_MIN = int(os.getenv("LIVE_MEETING_ASG_BIG_MIN", "3"))
+LIVE_MEETING_ASG_BIG_DESIRED = int(os.getenv("LIVE_MEETING_ASG_BIG_DESIRED", "3"))
+LIVE_MEETING_ASG_BIG_MAX = int(os.getenv("LIVE_MEETING_ASG_BIG_MAX", "6"))
+
+# Timing window
+LIVE_MEETING_ASG_SCALE_UP_BEFORE_MINUTES = int(
+    os.getenv("LIVE_MEETING_ASG_SCALE_UP_BEFORE_MINUTES", "60")
+)
+LIVE_MEETING_ASG_SCALE_DOWN_AFTER_MINUTES = int(
+    os.getenv("LIVE_MEETING_ASG_SCALE_DOWN_AFTER_MINUTES", "90")
+)
+
+# Only large events trigger temporary extra capacity.
+LIVE_MEETING_ASG_BIG_EVENT_THRESHOLD = int(
+    os.getenv("LIVE_MEETING_ASG_BIG_EVENT_THRESHOLD", "300")
+)
+
 # Moderation settings
 MODERATION_AUTO_REVIEW_THRESHOLD = int(os.getenv("MODERATION_AUTO_REVIEW_THRESHOLD", "3"))
 
@@ -534,6 +568,10 @@ CELERY_BEAT_SCHEDULE.update({
     "enforce_event_end_conditions": {
         "task": "events.tasks.enforce_event_end_conditions",
         "schedule": crontab(minute="*/5"),  # Reduced from every 1 minute to every 5 minutes
+    },
+    "manage-live-meeting-asg-capacity": {
+        "task": "events.tasks.manage_live_meeting_asg_capacity",
+        "schedule": crontab(minute="*/5"),  # Run every 5 minutes to prepare ASG capacity for large live meetings
     },
     "expire_stale_friend_requests": {
         "task": "friends.tasks.expire_stale_friend_requests",
