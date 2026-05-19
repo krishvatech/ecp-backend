@@ -95,7 +95,7 @@ class EventNetworkingSettingsView(views.APIView):
             # Create if doesn't exist
             settings = EventNetworkingSettings.objects.create(event=event)
 
-        serializer = EventNetworkingSettingsSerializer(settings, data=request.data, partial=True)
+        serializer = EventNetworkingSettingsSerializer(settings, data=request.data, partial=True, context={'event': event})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
@@ -178,6 +178,18 @@ class NetworkingMeetingAvailabilityView(views.APIView):
     def get(self, request, event_id):
         event = get_object_or_404(Event, id=event_id)
 
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         # Get current user's registration (or create temporary one for non-registered users)
         requester_reg, created = EventRegistration.objects.get_or_create(
             event=event,
@@ -249,6 +261,18 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
     def create(self, request, *args, **kwargs):
         event_id = self.kwargs.get('event_id')
         event = get_object_or_404(Event, id=event_id)
+
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Get or create requester registration (allow non-registered users)
         requester_reg, created = EventRegistration.objects.get_or_create(
@@ -434,6 +458,19 @@ class NetworkingMeetingAcceptView(views.APIView):
 
     def post(self, request, meeting_id):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
+        event = meeting.event
+
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Only recipient can accept
         if meeting.recipient.user_id != request.user.id:
@@ -569,6 +606,19 @@ class NetworkingMeetingDeclineView(views.APIView):
 
     def post(self, request, meeting_id):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
+        event = meeting.event
+
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Only recipient can decline
         if meeting.recipient.user_id != request.user.id:
@@ -630,6 +680,19 @@ class NetworkingMeetingSuggestView(views.APIView):
 
     def post(self, request, meeting_id):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
+        event = meeting.event
+
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Requester or recipient can suggest
         user_is_requester = meeting.requester.user_id == request.user.id
@@ -799,6 +862,19 @@ class NetworkingMeetingRescheduleView(views.APIView):
 
     def post(self, request, meeting_id):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
+        event = meeting.event
+
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Requester or recipient can reschedule
         user_is_requester = meeting.requester.user_id == request.user.id

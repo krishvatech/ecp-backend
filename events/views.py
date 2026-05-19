@@ -4630,6 +4630,18 @@ class EventViewSet(viewsets.ModelViewSet):
         if not (is_registered or is_approved or is_event_manager):
             return Response({"detail": "Forbidden. You must be registered or approved to access the companion directory."}, status=403)
 
+        # Block regular users before event start (but allow event managers to preview)
+        if event.start_time and timezone.now() < event.start_time and not is_event_manager:
+            return Response(
+                {
+                    "code": "COMPANION_NOT_OPEN",
+                    "detail": "Participant Directory will open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=403
+            )
+
         # Fetch registrations (only registered status, exclude superusers)
         qs = (
             EventRegistration.objects

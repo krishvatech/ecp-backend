@@ -3248,6 +3248,95 @@ class EventNetworkingSettingsSerializer(serializers.ModelSerializer):
 
         return value
 
+    def validate(self, data):
+        from datetime import datetime
+        from pytz import timezone as pytz_timezone
+
+        # Get event from context or instance
+        event = self.context.get('event')
+        if not event and self.instance:
+            event = self.instance.event
+
+        if not event:
+            return data
+
+        # Only validate if allowed_windows is being updated
+        allowed_windows = data.get('allowed_windows', self.instance.allowed_windows if self.instance else None)
+        if not allowed_windows:
+            return data
+
+        # Get event timezone
+        try:
+            event_tz = pytz_timezone(event.timezone)
+        except Exception:
+            event_tz = pytz_timezone('UTC')
+
+        if not event.start_time or not event.end_time:
+            raise serializers.ValidationError({
+                'allowed_windows': 'Event must have start_time and end_time set.'
+            })
+
+        # Helper to parse time in HH:MM or HH:MM AM/PM format
+        def parse_time_str(time_str):
+            time_str = time_str.strip()
+            try:
+                return datetime.strptime(time_str, "%H:%M").time()
+            except ValueError:
+                pass
+            for fmt in ["%I:%M %p", "%I:%M%p"]:
+                try:
+                    return datetime.strptime(time_str, fmt).time()
+                except ValueError:
+                    pass
+            raise ValueError(f"Invalid time format: {time_str}")
+
+        # Format event time for error messages
+        event_start_str = event.start_time.strftime('%b %d, %Y, %I:%M %p')
+        event_end_str = event.end_time.strftime('%I:%M %p')
+        event_time_display = f"{event_start_str} – {event_end_str}"
+
+        # Validate each window
+        errors = {}
+        for i, window in enumerate(allowed_windows):
+            try:
+                date_str = window.get('date')
+                start_str = window.get('start')
+                end_str = window.get('end')
+
+                if not all([date_str, start_str, end_str]):
+                    continue
+
+                # Parse window date and times
+                window_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                window_start_time = parse_time_str(start_str)
+                window_end_time = parse_time_str(end_str)
+
+                # Combine into timezone-aware datetimes
+                window_start_dt = event_tz.localize(datetime.combine(window_date, window_start_time))
+                window_end_dt = event_tz.localize(datetime.combine(window_date, window_end_time))
+
+                # Check window is within event date bounds
+                if window_date < event.start_time.date() or window_date > event.end_time.date():
+                    errors[f'window_{i}'] = f"Window {i + 1} must be within event time: {event_time_display}."
+                    continue
+
+                # Check window times are within event bounds
+                if window_start_dt < event.start_time or window_end_dt > event.end_time:
+                    errors[f'window_{i}'] = f"Window {i + 1} must be within event time: {event_time_display}."
+                    continue
+
+                # Check end > start
+                if window_end_dt <= window_start_dt:
+                    errors[f'window_{i}'] = f"Window {i + 1} end time must be after start time."
+
+            except (ValueError, TypeError) as e:
+                errors[f'window_{i}'] = f"Window {i + 1}: Invalid date or time format."
+
+        if errors:
+            raise serializers.ValidationError({'allowed_windows': list(errors.values())})
+
+        return data
+
     def validate_reminder_minutes_before(self, value):
         if value < 0:
             raise serializers.ValidationError("Reminder minutes must be non-negative.")
