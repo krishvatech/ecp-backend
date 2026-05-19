@@ -6513,6 +6513,318 @@ class EventViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="live/rejoin")
+    def live_rejoin(self, request, pk=None):
+        """
+        Rejoin a live meeting after a WebSocket disconnect.
+
+        Validates that:
+        - Event exists and is live or reconnectable
+        - User/guest is registered or allowed to join
+        - User was not removed, blocked, banned, or explicitly kicked
+
+        Returns normalized live meeting restore payload:
+        - event_id, meeting_status, is_live
+        - user_role, admission_status, waiting_room_status
+        - current_location, room_type (main_room/waiting_room/lounge/breakout/ended)
+        - rtk_meeting_id, rtk_token if needed
+        - lounge_state, breakout_state, break_state if applicable
+        - can_rejoin boolean with reason if false
+
+        Endpoint is idempotent: safe to call multiple times.
+        """
+        event = self.get_object()
+        user = request.user
+
+        # Log rejoin attempt
+        is_guest = getattr(user, "is_guest", False)
+        user_identifier = f"guest_{user.guest.id}" if is_guest else str(user.id)
+
+        logger.info(f"[LIVE_REJOIN] user={user_identifier} event={event.id} status={event.status}")
+
+        # ──── VALIDATION ──────────────────────────────────────────────────────
+
+        # Check if event exists and is not cancelled
+        if event.status == "cancelled":
+            logger.warning(f"[LIVE_REJOIN] event {event.id} is cancelled")
+            return Response({
+                "can_rejoin": False,
+                "reason": "event_cancelled",
+                "detail": "This event has been cancelled."
+            }, status=400)
+
+        # Check if event is live or ended-but-reopenable
+        if event.status not in ("live", "ended"):
+            logger.warning(f"[LIVE_REJOIN] event {event.id} status={event.status} (not live/ended)")
+            return Response({
+                "can_rejoin": False,
+                "reason": "event_not_live",
+                "detail": f"Event is {event.status}, not live or ended."
+            }, status=400)
+
+        # ──── GUEST BRANCH ────────────────────────────────────────────────────
+        if is_guest:
+            guest = user.guest
+
+            # Check guest belongs to this event
+            if guest.event_id != event.id:
+                logger.warning(f"[LIVE_REJOIN] guest {guest.id} event mismatch")
+                return Response({
+                    "can_rejoin": False,
+                    "reason": "guest_event_mismatch",
+                    "detail": "Guest token does not match this event."
+                }, status=403)
+
+            # Check if guest is banned
+            if guest.is_banned:
+                logger.warning(f"[LIVE_REJOIN] guest {guest.id} is banned")
+                return Response({
+                    "can_rejoin": False,
+                    "reason": "guest_banned",
+                    "detail": "You have been banned from this event."
+                }, status=403)
+
+            # Check if guest has converted to registered user
+            if guest.converted_at is not None:
+                logger.info(f"[LIVE_REJOIN] guest {guest.id} converted to user")
+                return Response({
+                    "can_rejoin": False,
+                    "reason": "guest_converted",
+                    "detail": "You have registered. Please sign in with your account."
+                }, status=403)
+
+            # Determine guest location and admission status
+            current_location = guest.current_location or "pre_event"
+            is_admitted = guest.current_location in ("main_room", "social_lounge", "breakout_room")
+            admission_status = "admitted" if is_admitted else "waiting"
+            waiting_room_enabled = event.waiting_room_enabled
+
+            # Build response for guest
+            response_data = {
+                "event_id": event.id,
+                "meeting_status": event.status,
+                "is_live": event.status == "live",
+                "user_role": "guest",
+                "admission_status": admission_status,
+                "waiting_room_enabled": waiting_room_enabled,
+                "current_location": current_location,
+                "can_rejoin": True,
+            }
+
+            # Add room type
+            if event.status == "ended":
+                response_data["room_type"] = "ended"
+            elif current_location == "waiting_room":
+                response_data["room_type"] = "waiting_room"
+            elif current_location == "social_lounge":
+                response_data["room_type"] = "lounge"
+            elif current_location == "breakout_room":
+                response_data["room_type"] = "breakout"
+                # Include last breakout table if available
+                if guest.lounge_table_id:
+                    response_data["breakout_table_id"] = guest.lounge_table_id
+                    response_data["breakout_table_name"] = guest.lounge_table.name if guest.lounge_table else None
+            else:
+                response_data["room_type"] = "main_room"
+
+            # Add RTK meeting ID (always needed)
+            try:
+                meeting_id = _ensure_rtk_meeting_for_event(event)
+                response_data["rtk_meeting_id"] = meeting_id
+            except RuntimeError as e:
+                logger.warning(f"[LIVE_REJOIN] RTK meeting error for event {event.id}: {e}")
+                response_data["rtk_meeting_id"] = None
+                response_data["rtk_token"] = None
+
+            # Generate RTK token if guest is admitted to main room
+            if is_admitted and event.status == "live":
+                try:
+                    meeting_id = _ensure_rtk_meeting_for_event(event)
+                    rtk_participant_id = f"guest_{guest.id}"
+                    rtk_resp = add_rtk_participant(
+                        meeting_id=meeting_id,
+                        user_id=rtk_participant_id,
+                        name=guest.get_display_name(),
+                        preset_name=RTK_PRESET_PARTICIPANT,
+                    )
+                    auth_token = ""
+                    if isinstance(rtk_resp, tuple):
+                        auth_token, rtk_error = rtk_resp
+                    else:
+                        auth_token = (rtk_resp or {}).get("data", {}).get("token", "")
+
+                    if auth_token:
+                        response_data["rtk_token"] = auth_token
+                        logger.info(f"[LIVE_REJOIN] guest {guest.id} rejoining event {event.id} room={current_location}")
+                    else:
+                        logger.warning(f"[LIVE_REJOIN] Failed to get RTK token for guest {guest.id}")
+                except Exception as e:
+                    logger.warning(f"[LIVE_REJOIN] RTK token error for guest {guest.id}: {e}")
+
+            # Add break state if meeting is on break
+            if event.is_on_break and event.break_started_at:
+                from django.utils import timezone as django_tz
+                elapsed = (django_tz.now() - event.break_started_at).total_seconds()
+                break_remaining = max(0, int(event.break_duration_seconds - elapsed))
+                response_data["is_on_break"] = True
+                response_data["break_duration_seconds"] = event.break_duration_seconds
+                response_data["break_remaining_seconds"] = break_remaining
+
+            return Response(response_data, status=200)
+
+        # ──── END GUEST BRANCH ────────────────────────────────────────────────
+
+        # ──── REGISTERED USER BRANCH ──────────────────────────────────────────
+
+        # Check if user is banned
+        if EventRegistration.objects.filter(event=event, user=user, is_banned=True).exists():
+            logger.warning(f"[LIVE_REJOIN] user {user.id} is banned")
+            return Response({
+                "can_rejoin": False,
+                "reason": "user_banned",
+                "detail": "You are banned from this event."
+            }, status=403)
+
+        # Check if user is cancelled/deregistered
+        if EventRegistration.objects.filter(event=event, user=user, status__in=["cancelled", "deregistered"]).exists():
+            logger.warning(f"[LIVE_REJOIN] user {user.id} status not registered")
+            return Response({
+                "can_rejoin": False,
+                "reason": "user_not_registered",
+                "detail": "You are not registered for this event."
+            }, status=403)
+
+        # Get or create registration
+        try:
+            registration = EventRegistration.objects.get(event=event, user=user)
+        except EventRegistration.DoesNotExist:
+            # Allow event host/creator to rejoin even without explicit registration
+            if not _is_event_host(user, event):
+                logger.warning(f"[LIVE_REJOIN] user {user.id} not registered for event {event.id}")
+                return Response({
+                    "can_rejoin": False,
+                    "reason": "user_not_registered",
+                    "detail": "You are not registered for this event."
+                }, status=403)
+            registration = None
+
+        # Determine admission status and location
+        if registration:
+            admission_status = registration.admission_status
+            current_location = registration.current_location or "pre_event"
+        else:
+            # Host without registration
+            admission_status = "admitted"
+            current_location = "main_room"
+
+        # Auto-admit previously admitted users (rejoin grace)
+        if registration and registration.was_ever_admitted and admission_status == "waiting":
+            registration.admission_status = "admitted"
+            registration.last_reconnect_at = timezone.now()
+            registration.save(update_fields=["admission_status", "last_reconnect_at"])
+            admission_status = "admitted"
+            logger.info(f"[LIVE_REJOIN] auto-readmitted user {user.id}")
+
+        # Validate user can access this room
+        is_host = _is_event_host(user, event)
+
+        if not is_host and event.waiting_room_enabled and admission_status == "waiting":
+            # User is still waiting
+            waiting_room_enabled = True
+        else:
+            waiting_room_enabled = event.waiting_room_enabled
+
+        # Build response for registered user
+        response_data = {
+            "event_id": event.id,
+            "meeting_status": event.status,
+            "is_live": event.status == "live",
+            "user_role": "host" if is_host else "participant",
+            "admission_status": admission_status,
+            "waiting_room_enabled": waiting_room_enabled,
+            "current_location": current_location,
+            "can_rejoin": True,
+        }
+
+        # Add room type
+        if event.status == "ended":
+            response_data["room_type"] = "ended"
+        elif current_location == "waiting_room" or (event.waiting_room_enabled and admission_status == "waiting"):
+            response_data["room_type"] = "waiting_room"
+        elif current_location == "social_lounge":
+            response_data["room_type"] = "lounge"
+        elif current_location == "breakout_room":
+            response_data["room_type"] = "breakout"
+            # Include last breakout table if available
+            if registration and registration.last_breakout_table_id:
+                response_data["breakout_table_id"] = registration.last_breakout_table_id
+                response_data["breakout_table_name"] = registration.last_breakout_table.name if registration.last_breakout_table else None
+        else:
+            response_data["room_type"] = "main_room"
+
+        # Add RTK meeting ID (always needed)
+        try:
+            meeting_id = _ensure_rtk_meeting_for_event(event)
+            response_data["rtk_meeting_id"] = meeting_id
+        except RuntimeError as e:
+            logger.warning(f"[LIVE_REJOIN] RTK meeting error for event {event.id}: {e}")
+            response_data["rtk_meeting_id"] = None
+            response_data["rtk_token"] = None
+
+        # Generate RTK token if user is admitted and event is live
+        if admission_status == "admitted" and event.status == "live":
+            try:
+                meeting_id = _ensure_rtk_meeting_for_event(event)
+                preset_name = RTK_PRESET_HOST if is_host else RTK_PRESET_PARTICIPANT
+
+                profile = getattr(user, "profile", None)
+                name = (getattr(profile, "full_name", "") if profile else "") or getattr(user, "get_full_name", lambda: "")() or user.username
+                picture = ""
+                try:
+                    if profile and getattr(profile, "user_image", None):
+                        picture = profile.user_image.url
+                except Exception:
+                    picture = ""
+
+                body = {
+                    "name": name or f"User {user.id}",
+                    "preset_name": preset_name,
+                    "client_specific_id": str(user.id),
+                }
+                if picture:
+                    body["picture"] = picture
+
+                resp = requests.post(
+                    f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
+                    headers=_rtk_headers(),
+                    json=body,
+                    timeout=10,
+                )
+
+                if resp.status_code in (200, 201):
+                    data = (resp.json() or {}).get("data") or {}
+                    auth_token = data.get("token")
+                    if auth_token:
+                        response_data["rtk_token"] = auth_token
+                        logger.info(f"[LIVE_REJOIN] user {user.id} rejoining event {event.id} role={response_data['user_role']} room={current_location}")
+                    else:
+                        logger.warning(f"[LIVE_REJOIN] No RTK token returned for user {user.id}")
+                else:
+                    logger.warning(f"[LIVE_REJOIN] RTK participant error for user {user.id}: {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"[LIVE_REJOIN] RTK token error for user {user.id}: {e}")
+
+        # Add break state if meeting is on break
+        if event.is_on_break and event.break_started_at:
+            from django.utils import timezone as django_tz
+            elapsed = (django_tz.now() - event.break_started_at).total_seconds()
+            break_remaining = max(0, int(event.break_duration_seconds - elapsed))
+            response_data["is_on_break"] = True
+            response_data["break_duration_seconds"] = event.break_duration_seconds
+            response_data["break_remaining_seconds"] = break_remaining
+
+        return Response(response_data, status=200)
+
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="waiting-room/status")
     def waiting_room_status(self, request, pk=None):
         event = self.get_object()
