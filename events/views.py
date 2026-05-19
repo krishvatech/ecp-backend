@@ -2303,6 +2303,33 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 logger.error(f"Failed to send registration acknowledgement email: {e}")
 
+        # Trigger post-acceptance forms for new registrations (both open and paid events)
+        if was_created:
+            try:
+                from events.services import trigger_post_acceptance_forms, send_form_assignment_email
+                from events.models import PostAcceptanceFormAssignment
+
+                # Set attendee_status to confirmed for open registration
+                if event.registration_type == 'open':
+                    obj.attendee_status = 'confirmed'
+                    obj.save(update_fields=['attendee_status'])
+
+                # Trigger form assignments
+                created_assignments = trigger_post_acceptance_forms(obj)
+
+                # Send form assignment emails
+                all_assignments = PostAcceptanceFormAssignment.objects.filter(
+                    event_registration=obj
+                )
+                for assignment in all_assignments:
+                    try:
+                        send_form_assignment_email(assignment)
+                        logger.info(f"Form assignment email sent for assignment {assignment.id} to {obj.user.email}")
+                    except Exception as e:
+                        logger.error(f"Failed to send form assignment email for assignment {assignment.id}: {str(e)}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Failed to trigger/send post-acceptance forms for registration {obj.id}: {str(e)}", exc_info=True)
+
         # Create in-app notification for all successful registrations
         if was_created:
             from friends.models import notify_event_registration
