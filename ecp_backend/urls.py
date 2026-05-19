@@ -19,7 +19,7 @@ from realtime.urls import urlpatterns as realtime_urls
 from users.views import UserViewSet, RegisterView, LinkedInAuthURL, LinkedInCallback, GoogleAuthURL, GoogleCallback
 from community.views import CommunityViewSet
 from events.views import EventViewSet
-from ecp_backend.views import index, health, public_event_meta
+from ecp_backend.views import index, health, live_health, public_event_meta
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenVerifyView,
@@ -54,6 +54,7 @@ urlpatterns = [
     path("public/<slug:slug>/", public_event_meta, name="public-event-meta"),
     path("events/<slug:slug>/", public_event_meta, name="event-meta"),
     path("api/health/", health, name="health"),
+    path("api/live/health/", live_health, name="live-health"),
     path("admin/", admin.site.urls),
 
     path("api/", RedirectView.as_view(pattern_name="swagger-ui", permanent=False)),
