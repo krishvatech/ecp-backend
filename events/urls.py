@@ -10,6 +10,8 @@ from .views import (
     SessionBreakViewSet,
     VirtualSpeakerViewSet,
     SeriesViewSet,
+    PostAcceptanceFormAssignmentViewSet,
+    PostAcceptanceFormAssignmentAdminViewSet,
     SaleorChannelListView,
     SaleorChannelSyncView,
     SaleorChannelCreateView,
@@ -80,6 +82,7 @@ router.register(r"event-registrations", EventRegistrationViewSet, basename="even
 router.register(r"event-badge-labels", EventBadgeLabelViewSet, basename="eventbadgelabel")
 router.register(r"series", SeriesViewSet, basename="series")
 router.register(r"virtual-speakers", VirtualSpeakerViewSet, basename="virtual-speaker")
+router.register(r"post-acceptance-form-assignments", PostAcceptanceFormAssignmentViewSet, basename="post-acceptance-form-assignment")
 
 
 urlpatterns = [
@@ -113,6 +116,43 @@ urlpatterns = [
     path("auth/guest-register/", GuestRegisterView.as_view(), name="guest-register"),
     path("auth/guest-register/link/", GuestRegisterLinkView.as_view(), name="guest-register-link"),
 ] + router.urls + [
+    # Admin form assignments endpoints
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({
+            'get': 'list',
+            'post': 'send_reminders'
+        }),
+        name='admin-form-assignments-list'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/send-reminders/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'post': 'send_reminders'}),
+        name='admin-form-assignments-send-reminders'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'post': 'export'}),
+        name='admin-form-assignments-export'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/<int:pk>/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({
+            'get': 'retrieve'
+        }),
+        name='admin-form-assignments-detail'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/<int:pk>/details/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'details'}),
+        name='admin-form-assignments-full-details'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/<int:pk>/mark-complete/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'post': 'mark_complete'}),
+        name='admin-form-assignments-mark-complete'
+    ),
+
     path("events/recording/webhook/", RecordingWebhookView.as_view(), name="rtk-recording-webhook"),
     path("realtime/webhook/", realtime_webhook, name="realtime-webhook"),
     path(

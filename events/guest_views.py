@@ -90,6 +90,19 @@ def _sync_converted_guest_registration(user, guest):
             participant_badge = guest.event.get_or_create_participant_badge()
             registration.badge_labels.add(participant_badge)
         Event.objects.filter(pk=guest.event_id).update(attending_count=F("attending_count") + 1)
+
+        # Trigger post-acceptance forms for confirmed attendees
+        try:
+            from events.services import trigger_post_acceptance_forms
+            trigger_post_acceptance_forms(registration)
+        except Exception as e:
+            logger.error(
+                f"Failed to trigger post-acceptance forms for guest {guest.email} "
+                f"on event {guest.event.title}: {str(e)}",
+                exc_info=True
+            )
+            # Do not fail the guest registration conversion - continue normally
+
         return registration
 
     update_fields = []

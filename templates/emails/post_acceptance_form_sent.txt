@@ -1,0 +1,22 @@
+Complete Your Participant Information
+
+Hello {{ first_name }},
+
+Thank you for registering for {{ event_title }}!
+
+Your application has been approved. To help us better support your attendance, please complete your Participant Information Form.
+
+{{ event_title }}
+{% if event_date %}📅 Event Date: {{ event_date }}{% endif %}
+{% if deadline %}⏰ Form Due: {{ deadline }}{% endif %}
+
+This information helps us with:
+- 🏠 Accessibility needs
+- 🍽️ Dietary requirements
+- 📸 Photo/video permissions
+- ✈️ Visa support (if needed)
+
+Complete Form:
+{{ form_url }}
+
+Questions? Reply to this email or contact the event organizer.

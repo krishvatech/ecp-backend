@@ -60,8 +60,8 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark
-from .permissions import IsSuperuserOnly
+from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer
+from .permissions import IsSuperuserOnly, IsEventAdminOrSuperuser, HasRestrictedDataPermission
 from friends.models import Notification
 from groups.models import Group, GroupMembership
 from messaging.models import Conversation, Message
@@ -102,6 +102,10 @@ from .serializers import (
     EventBadgeLabelSerializer,
     ScheduleSessionSerializer,
     EventSessionBookmarkSerializer,
+    PostAcceptanceFormTemplateSerializer,
+    PostAcceptanceFormAssignmentSerializer,
+    PostAcceptanceFormSubmissionSerializer,
+    PostAcceptanceFormAnswerSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -2423,11 +2427,18 @@ class EventViewSet(viewsets.ModelViewSet):
                 code_obj.save(update_fields=["status", "used_by_application", "used_by_user", "used_by_email", "used_at"])
 
             if is_preapproved and request.user.is_authenticated:
-                EventRegistration.objects.get_or_create(
+                registration, created = EventRegistration.objects.get_or_create(
                     event=locked_event,
                     user=request.user,
                     defaults={"status": "registered"},
                 )
+                # Trigger post-acceptance forms for pre-approved confirmed attendees
+                try:
+                    from events.services import trigger_post_acceptance_forms
+                    trigger_post_acceptance_forms(registration)
+                except Exception as e:
+                    logger.error(f"Failed to trigger post-acceptance forms for pre-approved application {app.id}: {str(e)}", exc_info=True)
+                    # Do not fail the application creation - continue normally
 
         # For guest applications: NO longer create GuestAttendee or JWT immediately
         # Guest will verify via OTP on event day when checking application status
@@ -2680,6 +2691,7 @@ class EventViewSet(viewsets.ModelViewSet):
     def approve_application(self, request, pk=None, app_id=None):
         """
         Approve an application and optionally auto-register the applicant.
+        Triggers post-acceptance forms for confirmed attendees (in-person/hybrid events).
         """
         event = self.get_object()
         if not _is_event_owner(request.user, event):
@@ -2694,7 +2706,33 @@ class EventViewSet(viewsets.ModelViewSet):
         # Auto-register authenticated applicants only
         if app.user:
             # Applicant has account - register them directly
-            EventRegistration.objects.get_or_create(event=event, user=app.user)
+            registration, created = EventRegistration.objects.get_or_create(event=event, user=app.user)
+            # Set attendee status to confirmed
+            registration.attendee_status = 'confirmed'
+            registration.save(update_fields=['attendee_status'])
+
+            # Trigger post-acceptance forms for confirmed attendees
+            try:
+                from events.services import trigger_post_acceptance_forms, send_form_assignment_email
+                from events.models import PostAcceptanceFormAssignment
+
+                # Trigger form assignments
+                created_assignments = trigger_post_acceptance_forms(registration)
+
+                # Send form emails for all form assignments (whether newly created or existing)
+                all_assignments = PostAcceptanceFormAssignment.objects.filter(
+                    event_registration=registration
+                )
+                for assignment in all_assignments:
+                    try:
+                        send_form_assignment_email(assignment)
+                        logger.info(f"Form email sent for assignment {assignment.id} to {registration.user.email}")
+                    except Exception as e:
+                        logger.error(f"Failed to send form email for assignment {assignment.id}: {str(e)}", exc_info=True)
+
+            except Exception as e:
+                logger.error(f"Failed to trigger post-acceptance forms for application {app.id}: {str(e)}", exc_info=True)
+                # Do not fail the approval - continue normally
         else:
             # Guest applicant - NO longer create User account
             # Guest will verify via OTP when checking application status on event day
@@ -9907,3 +9945,607 @@ class SessionBookmarkToggleView(views.APIView):
             )
 
         return Response({'bookmarked': False}, status=status.HTTP_204_NO_CONTENT)
+
+
+class PostAcceptanceFormAssignmentViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for post-acceptance form assignments.
+
+    Endpoints:
+    - GET /api/events/{event_id}/post-acceptance-form-assignments/
+      List all assignments for an event (admin only)
+    - GET /api/post-acceptance-form-assignments/my/
+      List current user's form assignments
+    - GET /api/post-acceptance-form-assignments/{id}/
+      Retrieve single assignment
+    - POST /api/post-acceptance-form-assignments/{id}/start/
+      Mark form as in-progress
+    - POST /api/post-acceptance-form-assignments/{id}/submit/
+      Submit form with answers
+    """
+    serializer_class = PostAcceptanceFormAssignmentSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = ['event', 'form_type', 'status']
+    ordering_fields = ['-created_at', 'deadline']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_authenticated:
+            return PostAcceptanceFormAssignment.objects.filter(
+                event_registration__user=user
+            )
+        return PostAcceptanceFormAssignment.objects.none()
+
+    @action(detail=False, methods=['get'], url_path='my')
+    def my_assignments(self, request):
+        """List current user's form assignments."""
+        assignments = self.get_queryset().select_related(
+            'event', 'form_template', 'event_registration'
+        )
+        serializer = self.get_serializer(assignments, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='start')
+    def start_form(self, request, pk=None):
+        """Mark form assignment as in-progress."""
+        assignment = self.get_object()
+
+        if assignment.event_registration.user != request.user:
+            raise PermissionDenied("You can only start your own forms")
+
+        if assignment.status != PostAcceptanceFormAssignment.STATUS_NOT_STARTED:
+            return Response(
+                {'error': f'Cannot start form with status {assignment.get_status_display()}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        from events.services import mark_assignment_in_progress
+        mark_assignment_in_progress(assignment)
+
+        return Response(
+            PostAcceptanceFormAssignmentSerializer(assignment).data,
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['post'], url_path='save-draft')
+    def save_draft(self, request, pk=None):
+        """Save draft form answers without submitting."""
+        assignment = self.get_object()
+
+        if assignment.event_registration.user != request.user:
+            raise PermissionDenied("You can only save drafts for your own forms")
+
+        answers_data = request.data.get('answers', {})
+
+        with transaction.atomic():
+            from events.models import PostAcceptanceFormDraft
+
+            draft, created = PostAcceptanceFormDraft.objects.get_or_create(
+                assignment=assignment
+            )
+            draft.draft_data = answers_data
+            draft.save()
+
+            if assignment.status == PostAcceptanceFormAssignment.STATUS_NOT_STARTED:
+                from events.services import mark_assignment_in_progress
+                mark_assignment_in_progress(assignment)
+
+        return Response(
+            {'detail': 'Draft saved successfully'},
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['post'], url_path='submit')
+    def submit_form(self, request, pk=None):
+        """Submit form with answers and strict validation."""
+        assignment = self.get_object()
+
+        if assignment.event_registration.user != request.user:
+            raise PermissionDenied("You can only submit your own forms")
+
+        if assignment.status not in [
+            PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
+            PostAcceptanceFormAssignment.STATUS_IN_PROGRESS,
+        ]:
+            return Response(
+                {'error': f'Cannot submit form with status {assignment.get_status_display()}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        answers_data = request.data.get('answers', {})
+
+        # Validate required fields
+        validation_errors = self._validate_form_submission(assignment, answers_data)
+        if validation_errors:
+            return Response(validation_errors, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            from events.services import mark_assignment_completed
+            from events.models import PostAcceptanceFormSubmission, PostAcceptanceFormAnswer
+
+            submission, created = PostAcceptanceFormSubmission.objects.get_or_create(
+                assignment=assignment
+            )
+
+            for question_key, answer_value in answers_data.items():
+                PostAcceptanceFormAnswer.objects.update_or_create(
+                    submission=submission,
+                    question_key=question_key,
+                    defaults={
+                        'answer_text': str(answer_value) if isinstance(answer_value, (str, int, float)) else '',
+                        'answer_data': answer_value if isinstance(answer_value, (list, dict)) else {}
+                    }
+                )
+
+            mark_assignment_completed(assignment)
+
+            # Write back form data to registration
+            from events.services import writeback_participant_information_form
+            writeback_participant_information_form(assignment)
+
+        return Response(
+            PostAcceptanceFormSubmissionSerializer(submission).data,
+            status=status.HTTP_201_CREATED
+        )
+
+    def _validate_form_submission(self, assignment, answers_data):
+        """Validate form submission against schema with comprehensive checks."""
+        from events.services.post_acceptance_forms import (
+            is_online_event, is_in_person_event, is_hybrid_event, should_show_physical_sections
+        )
+
+        errors = {}
+        event = assignment.event
+        schema = assignment.form_template.question_schema
+
+        # Check if form is for virtual/online-only event - block submission
+        if is_online_event(event):
+            return {'errors': {'detail': 'Participant Information Form is only available for in-person and hybrid events'}}
+
+        # Determine event format and visibility
+        attendance_mode = answers_data.get('attendance_mode', 'in_person' if is_in_person_event(event) else None)
+        show_physical_sections = should_show_physical_sections(event, attendance_mode)
+
+        # Always required fields (regardless of event format)
+        always_required = ['accessibility_support_needs', 'share_contact_details', 'photo_video_consent']
+        for field_id in always_required:
+            field_value = answers_data.get(field_id)
+            if not field_value or field_value == '':
+                field_label = field_id.replace('_', ' ').title()
+                errors[field_id] = f'{field_label} is required'
+
+        # Hybrid events require attendance mode selection
+        if is_hybrid_event(event):
+            if not attendance_mode or attendance_mode == '':
+                errors['attendance_mode'] = 'Please select your attendance mode'
+
+        # Physical sections require emergency contact fields
+        # (shown for in-person events and hybrid events where user selected in-person)
+        if show_physical_sections:
+            emergency_contact_required = ['emergency_contact_name', 'emergency_contact_phone', 'emergency_contact_relationship']
+            for field_id in emergency_contact_required:
+                field_value = answers_data.get(field_id)
+                if not field_value or field_value == '':
+                    field_label = field_id.replace('_', ' ').title()
+                    errors[field_id] = f'{field_label} is required'
+
+        # Validate each field in schema
+        for section in schema.get('sections', []):
+            section_id = section.get('id')
+
+            # Skip sections not visible to user
+            if section.get('showOnlyForHybrid') and not is_hybrid_event(event):
+                continue
+            if section.get('showOnlyForPhysical') and not show_physical_sections:
+                continue
+
+            for field in section.get('fields', []):
+                # Skip fields not visible
+                if field.get('showOnlyForHybrid') and not is_hybrid_event(event):
+                    continue
+                if self._is_field_hidden(field, answers_data):
+                    continue
+
+                field_id = field['id']
+                field_value = answers_data.get(field_id)
+                field_type = field.get('type')
+                is_required = field.get('required', False)
+
+                # Required field validation - only validate visible fields
+                if is_required:
+                    if field_type == 'multi_select':
+                        # Check for empty multi-select
+                        if not field_value or (isinstance(field_value, list) and len(field_value) == 0):
+                            errors[field_id] = 'This field is required'
+                        # Validate "None" mutual-exclusion for food-related fields
+                        elif isinstance(field_value, list) and field_id in ['food_allergies', 'dietary_restrictions']:
+                            if 'none' in field_value and len(field_value) > 1:
+                                errors[field_id] = '"None" cannot be selected with other options'
+                    else:
+                        # Check for empty text/select fields (but skip always-required, already checked above)
+                        if field_id not in always_required and field_id != 'attendance_mode':
+                            if not field_value or field_value == '':
+                                errors[field_id] = 'This field is required'
+
+                # Enforce "None" mutual-exclusion even if not required (for data integrity)
+                if field_type == 'multi_select' and field_id in ['food_allergies', 'dietary_restrictions']:
+                    if isinstance(field_value, list) and 'none' in field_value and len(field_value) > 1:
+                        errors[field_id] = '"None" cannot be selected with other options'
+
+                # Validate conditional "Other" fields
+                if field.get('showIfIncludes') or field.get('showIfValue'):
+                    # Field is visible due to conditional, check if it's required
+                    if field.get('required'):
+                        if field_type == 'multi_select':
+                            if not field_value or (isinstance(field_value, list) and len(field_value) == 0):
+                                errors[field_id] = 'This field is required'
+                        else:
+                            if not field_value or field_value == '':
+                                errors[field_id] = 'This field is required'
+
+                # Validate visa support details if visa support is selected
+                if field_id == 'visa_support' and field_value in ['required', 'not_yet_sure']:
+                    detail_value = answers_data.get('visa_support_details')
+                    if not detail_value or detail_value == '':
+                        errors['visa_support_details'] = 'Please describe what visa support you need'
+
+        return {'errors': errors} if errors else None
+
+    def _is_field_hidden(self, field, answers_data):
+        """Check if field is hidden based on conditional logic."""
+        if field.get('showIfValue'):
+            condition = field['showIfValue']
+            if answers_data.get(condition['field']) != condition['value']:
+                return True
+
+        if field.get('showIfIncludes'):
+            condition = field['showIfIncludes']
+            field_value = answers_data.get(condition['field'], [])
+            if not isinstance(field_value, list) or condition['value'] not in field_value:
+                return True
+
+        if field.get('showIfInList'):
+            condition = field['showIfInList']
+            if answers_data.get(condition['field']) not in condition.get('values', []):
+                return True
+
+        return False
+
+
+class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
+    """
+    Admin ViewSet for managing form assignments per event.
+
+    Endpoints:
+    - GET /api/events/{event_id}/post-acceptance-form-assignments-admin/
+      List all assignments for event (admin only)
+    - GET /api/events/{event_id}/post-acceptance-form-assignments-admin/{id}/
+      Get assignment details (admin only)
+    - GET /api/events/{event_id}/post-acceptance-form-assignments-admin/{id}/details/
+      Get full submission details for modal (admin only)
+    - POST /api/events/{event_id}/post-acceptance-form-assignments-admin/send-reminders/
+      Send reminders to selected assignments
+    - POST /api/events/{event_id}/post-acceptance-form-assignments-admin/{id}/mark-complete/
+      Mark assignment as complete
+    - POST /api/events/{event_id}/post-acceptance-form-assignments-admin/export/
+      Export assignments to CSV
+    """
+    serializer_class = PostAcceptanceFormAssignmentSerializer
+    permission_classes = [IsAuthenticated, IsEventAdminOrSuperuser]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['form_type', 'status']
+    search_fields = [
+        'event_registration__user__email',
+        'event_registration__user__first_name',
+        'event_registration__user__last_name',
+        'event_registration__user__username'
+    ]
+    ordering_fields = [
+        '-created_at', 'deadline', '-updated_at',
+        'event_registration__user__email',
+        'reminders_sent', 'completed_at'
+    ]
+    ordering = ['-created_at']
+
+    def get_serializer_class(self):
+        """Use admin detail serializer for admin list/detail views."""
+        if self.action in ['list', 'retrieve', 'details']:
+            from events.serializers import PostAcceptanceFormAssignmentAdminDetailSerializer
+            return PostAcceptanceFormAssignmentAdminDetailSerializer
+        return self.serializer_class
+
+    def get_queryset(self):
+        event_id = self.kwargs.get('event_id')
+        user = self.request.user
+
+        if not event_id:
+            return PostAcceptanceFormAssignment.objects.none()
+
+        event = get_object_or_404(Event, id=event_id)
+
+        if event.created_by != user and not user.is_superuser and not user.is_staff:
+            raise PermissionDenied("You can only view assignments for events you created")
+
+        from django.db.models import Prefetch
+        from events.models import PostAcceptanceFormSubmission, PostAcceptanceFormAnswer
+
+        # Prefetch submission and answers for efficient admin list/detail views
+        submission_prefetch = Prefetch(
+            'submission',
+            PostAcceptanceFormSubmission.objects.prefetch_related(
+                Prefetch('answers', queryset=PostAcceptanceFormAnswer.objects.all())
+            )
+        )
+
+        queryset = PostAcceptanceFormAssignment.objects.filter(event=event).select_related(
+            'event', 'form_template', 'event_registration', 'event_registration__user', 'manual_completed_by'
+        ).prefetch_related(submission_prefetch)
+
+        return queryset
+
+    @action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request, event_id=None):
+        """Get summary statistics for form completions."""
+        event = get_object_or_404(Event, id=event_id)
+        self.check_object_permissions(request, event)
+
+        queryset = self.get_queryset()
+
+        # Calculate counts by status
+        summary_data = {
+            'total': queryset.count(),
+            'completed': queryset.filter(status=PostAcceptanceFormAssignment.STATUS_COMPLETED).count(),
+            'in_progress': queryset.filter(status=PostAcceptanceFormAssignment.STATUS_IN_PROGRESS).count(),
+            'not_started': queryset.filter(status=PostAcceptanceFormAssignment.STATUS_NOT_STARTED).count(),
+            'lapsed': queryset.filter(status=PostAcceptanceFormAssignment.STATUS_LAPSED).count(),
+        }
+
+        # Calculate completion percentage
+        if summary_data['total'] > 0:
+            summary_data['completion_percentage'] = round(
+                (summary_data['completed'] / summary_data['total']) * 100, 1
+            )
+        else:
+            summary_data['completion_percentage'] = 0
+
+        return Response(summary_data)
+
+    @action(detail=False, methods=['post'], url_path='send-reminders')
+    def send_reminders(self, request, event_id=None):
+        """Send reminders to selected assignments."""
+        event = get_object_or_404(Event, id=event_id)
+        self.check_object_permissions(request, event)
+
+        assignment_ids = request.data.get('assignment_ids', [])
+        if not assignment_ids:
+            # Send to all incomplete assignments
+            assignments = self.get_queryset().filter(
+                status__in=[PostAcceptanceFormAssignment.STATUS_NOT_STARTED, PostAcceptanceFormAssignment.STATUS_IN_PROGRESS]
+            )
+        else:
+            assignments = self.get_queryset().filter(id__in=assignment_ids)
+
+        from events.services.post_acceptance_forms import send_form_reminder_email
+        from events.models import AdminAuditLog, PostAcceptanceReminderLog
+
+        sent_count = 0
+        sent_ids = []
+        skipped_count = 0
+        for assignment in assignments:
+            try:
+                # Only send reminder if assignment is NOT completed
+                if assignment.status == PostAcceptanceFormAssignment.STATUS_COMPLETED:
+                    logger.info(f"Skipping reminder for assignment {assignment.id} - already completed")
+                    skipped_count += 1
+                    continue
+
+                send_form_reminder_email(assignment)
+
+                # Increment reminders_sent counter
+                assignment.reminders_sent += 1
+                assignment.last_reminder_sent_at = timezone.now()
+                assignment.save(update_fields=['reminders_sent', 'last_reminder_sent_at'])
+
+                # Create reminder log entry with updated counter
+                PostAcceptanceReminderLog.objects.create(
+                    assignment=assignment,
+                    reminder_number=assignment.reminders_sent,
+                    sent_at=timezone.now()
+                )
+
+                sent_count += 1
+                sent_ids.append(assignment.id)
+            except Exception as e:
+                logger.error(f"Failed to send reminder for assignment {assignment.id}: {str(e)}")
+
+        # Create audit log entry for bulk reminder send
+        if sent_ids:
+            AdminAuditLog.objects.create(
+                event=event,
+                performed_by=request.user,
+                action='send_reminders',
+                details={'assignment_ids': sent_ids, 'count': sent_count}
+            )
+
+        response_msg = f'Reminders sent to {sent_count} participant(s)'
+        if skipped_count > 0:
+            response_msg += f' ({skipped_count} skipped - already completed)'
+
+        return Response({
+            'sent_count': sent_count,
+            'skipped_count': skipped_count,
+            'assignment_ids': sent_ids,
+            'message': response_msg
+        })
+
+    @action(detail=True, methods=['post'], url_path='mark-complete')
+    def mark_complete(self, request, pk=None, event_id=None):
+        """Admin manually marks assignment as complete."""
+        assignment = self.get_object()
+        self.check_object_permissions(request, assignment)
+
+        assignment.status = PostAcceptanceFormAssignment.STATUS_COMPLETED
+        assignment.completed_at = timezone.now()
+        assignment.manual_completed_by = request.user
+        assignment.manual_completed_at = timezone.now()
+        assignment.save()
+
+        # Create audit log
+        from events.models import AdminAuditLog
+        AdminAuditLog.objects.create(
+            event=assignment.event,
+            performed_by=request.user,
+            assignment=assignment,
+            action='manual_mark_complete',
+            details={'assignment_id': assignment.id}
+        )
+
+        return Response(PostAcceptanceFormAssignmentSerializer(assignment).data)
+
+    @action(detail=True, methods=['get'], url_path='details')
+    def details(self, request, pk=None, event_id=None):
+        """Get full submission details for modal view."""
+        assignment = self.get_object()
+        self.check_object_permissions(request, assignment)
+
+        # Check if user has permission to view restricted data
+        has_restricted_access = (
+            request.user.is_superuser or
+            request.user.is_staff or
+            request.user.groups.filter(name='view_restricted_attendee_data').exists()
+        )
+
+        # Create audit log if viewing restricted data
+        if has_restricted_access and assignment.status == PostAcceptanceFormAssignment.STATUS_COMPLETED:
+            from events.models import AdminAuditLog
+            AdminAuditLog.objects.create(
+                event=assignment.event,
+                performed_by=request.user,
+                assignment=assignment,
+                action='view_restricted',
+                details={'assignment_id': assignment.id}
+            )
+
+        # Use detail serializer
+        from events.serializers import PostAcceptanceFormAssignmentAdminDetailSerializer
+        serializer = PostAcceptanceFormAssignmentAdminDetailSerializer(
+            assignment,
+            context={'request': request, 'has_restricted_access': has_restricted_access}
+        )
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='export')
+    def export(self, request, event_id=None):
+        """Export assignments to CSV."""
+        event = get_object_or_404(Event, id=event_id)
+        self.check_object_permissions(request, event)
+
+        restricted = request.data.get('restricted', False)
+
+        # Check permission for restricted export
+        if restricted:
+            has_permission = (
+                request.user.is_superuser or
+                request.user.is_staff or
+                request.user.groups.filter(name='view_restricted_attendee_data').exists()
+            )
+            if not has_permission:
+                raise PermissionDenied("You do not have permission to export restricted data")
+
+            # Create audit log
+            from events.models import AdminAuditLog
+            AdminAuditLog.objects.create(
+                event=event,
+                performed_by=request.user,
+                action='export_restricted',
+                details={'export_type': 'csv', 'restricted': True}
+            )
+
+        assignments = self.get_queryset()
+        csv_data = self._generate_csv(assignments, restricted)
+
+        response = HttpResponse(csv_data, content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="form-assignments-{event.id}.csv"'
+        return response
+
+    def _generate_csv(self, assignments, include_restricted=False):
+        """Generate CSV for assignments with proper handling of array fields."""
+        import csv
+        from io import StringIO
+        import json
+
+        output = StringIO()
+        writer = csv.writer(output)
+
+        # Header
+        headers = [
+            'Assignment ID', 'Attendee Name', 'Email', 'Form Type', 'Status',
+            'Deadline', 'Started At', 'Completed At', 'Reminders Sent',
+            'Visa Support', 'Photo Consent', 'Directory Visibility'
+        ]
+
+        if include_restricted:
+            headers.extend([
+                'Emergency Contact Name', 'Emergency Contact Phone', 'Relationship',
+                'Relationship Other', 'Accessibility Needs', 'Accessibility Details',
+                'Mobility Requirements', 'Medical Info', 'Food Allergies',
+                'Allergies Other', 'Dietary Restrictions', 'Restrictions Other', 'Food Notes'
+            ])
+
+        writer.writerow(headers)
+
+        def get_answer_value(answer):
+            """Extract value from answer, handling both text and array (multi_select) fields."""
+            if not answer:
+                return ''
+            # For multi_select fields, use answer_data; otherwise use answer_text
+            if answer.answer_data and isinstance(answer.answer_data, list):
+                return ', '.join(str(v) for v in answer.answer_data)
+            return answer.answer_text or ''
+
+        # Rows
+        for assignment in assignments:
+            row = [
+                assignment.id,
+                assignment.event_registration.user.get_full_name() or assignment.event_registration.user.username,
+                assignment.event_registration.user.email,
+                assignment.get_form_type_display(),
+                assignment.get_status_display(),
+                assignment.deadline.isoformat() if assignment.deadline else '',
+                assignment.started_at.isoformat() if assignment.started_at else '',
+                assignment.completed_at.isoformat() if assignment.completed_at else '',
+                assignment.reminders_sent,
+                'Yes' if assignment.event_registration.visa_support_requested else 'No',
+                assignment.event_registration.photo_video_consent or 'N/A',
+                'Yes' if assignment.event_registration.directory_visibility else 'No'
+            ]
+
+            if include_restricted and assignment.submission:
+                try:
+                    answers = {ans.question_key: ans for ans in assignment.submission.answers.all()}
+                    row.extend([
+                        get_answer_value(answers.get('emergency_contact_name')),
+                        get_answer_value(answers.get('emergency_contact_phone')),
+                        get_answer_value(answers.get('emergency_contact_relationship')),
+                        get_answer_value(answers.get('emergency_contact_relationship_other')),
+                        get_answer_value(answers.get('accessibility_support_needs')),
+                        get_answer_value(answers.get('accessibility_needs_detail')),
+                        get_answer_value(answers.get('mobility_seating_requirements')),
+                        get_answer_value(answers.get('medical_info_emergency')),
+                        get_answer_value(answers.get('food_allergies')),
+                        get_answer_value(answers.get('food_allergies_other')),
+                        get_answer_value(answers.get('dietary_restrictions')),
+                        get_answer_value(answers.get('dietary_restrictions_other')),
+                        get_answer_value(answers.get('food_notes'))
+                    ])
+                except Exception as e:
+                    logger.error(f"Error extracting restricted data for assignment {assignment.id}: {str(e)}")
+                    row.extend([''] * 13)
+            elif include_restricted:
+                row.extend([''] * 13)
+
+            writer.writerow(row)
+
+        return output.getvalue()

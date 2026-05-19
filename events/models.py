@@ -797,6 +797,36 @@ class EventRegistration(models.Model):
         related_name='registrations',
     )
 
+    # Post-acceptance form writeback fields
+    directory_visibility = models.BooleanField(
+        default=False,
+        help_text='Whether contact details can be shared with other attendees'
+    )
+    photo_video_consent = models.CharField(
+        max_length=20,
+        choices=[
+            ('full', 'Yes, use my image in all materials'),
+            ('social_only', 'Yes, but only on social media'),
+            ('no', 'No, do not use my image'),
+        ],
+        default='no',
+        blank=True,
+        help_text='Photo and video consent from form'
+    )
+    visa_support_requested = models.BooleanField(
+        default=False,
+        help_text='Whether participant requested visa support or invitation letter'
+    )
+    participant_information_completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When participant completed information form'
+    )
+    accessibility_need_declared = models.BooleanField(
+        default=False,
+        help_text='Whether participant declared accessibility or support needs in form'
+    )
+
     class Meta:
         db_table = 'event_registrations'
         unique_together = ('event', 'user')                 
@@ -2971,3 +3001,197 @@ class NetworkingMeeting(models.Model):
 
     def __str__(self):
         return f"Meeting: {self.requester.user.username} + {self.recipient.user.username} - {self.event.title}"
+
+
+class PostAcceptanceFormTemplate(models.Model):
+    FORM_TYPE_PARTICIPANT_INFORMATION = 'participant_information'
+    FORM_TYPE_PROMOTIONAL_PROFILE = 'promotional_profile'
+    FORM_TYPE_CHOICES = [
+        (FORM_TYPE_PARTICIPANT_INFORMATION, 'Participant Information'),
+        (FORM_TYPE_PROMOTIONAL_PROFILE, 'Promotional Profile'),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='post_acceptance_form_templates')
+    form_type = models.CharField(max_length=50, choices=FORM_TYPE_CHOICES)
+    title = models.CharField(max_length=255, blank=True, help_text='Form title displayed to attendees')
+    description = models.TextField(blank=True, help_text='Form description and instructions')
+    question_schema = models.JSONField(default=dict, blank=True, help_text='Form questions and structure')
+    is_enabled = models.BooleanField(default=True, help_text='Whether this form type is enabled for this event')
+    deadline_days = models.PositiveIntegerField(default=7, help_text='Days after assignment deadline')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'post_acceptance_form_templates'
+        unique_together = ('event', 'form_type')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['event', 'form_type']),
+            models.Index(fields=['is_enabled']),
+        ]
+
+    def __str__(self):
+        return f"{self.get_form_type_display()} - {self.event.title}"
+
+
+class PostAcceptanceFormAssignment(models.Model):
+    STATUS_NOT_STARTED = 'not_started'
+    STATUS_IN_PROGRESS = 'in_progress'
+    STATUS_COMPLETED = 'completed'
+    STATUS_LAPSED = 'lapsed'
+    STATUS_CHOICES = [
+        (STATUS_NOT_STARTED, 'Not Started'),
+        (STATUS_IN_PROGRESS, 'In Progress'),
+        (STATUS_COMPLETED, 'Completed'),
+        (STATUS_LAPSED, 'Lapsed'),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='post_acceptance_form_assignments')
+    form_template = models.ForeignKey(PostAcceptanceFormTemplate, on_delete=models.CASCADE, related_name='assignments')
+    event_registration = models.ForeignKey(EventRegistration, on_delete=models.CASCADE, related_name='post_acceptance_form_assignments')
+
+    form_type = models.CharField(max_length=50, choices=PostAcceptanceFormTemplate.FORM_TYPE_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_NOT_STARTED, db_index=True)
+
+    deadline = models.DateTimeField(help_text='Deadline for form completion')
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    reminders_sent = models.PositiveIntegerField(default=0)
+    last_reminder_sent_at = models.DateTimeField(null=True, blank=True)
+
+    manual_completed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='manually_completed_assignments',
+        help_text='Admin who manually marked assignment as complete'
+    )
+    manual_completed_at = models.DateTimeField(null=True, blank=True, help_text='When admin manually marked complete')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'post_acceptance_form_assignments'
+        unique_together = ('event_registration', 'form_type')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['event', 'status']),
+            models.Index(fields=['event_registration', 'form_type']),
+            models.Index(fields=['status']),
+            models.Index(fields=['deadline']),
+        ]
+
+    def __str__(self):
+        return f"{self.get_form_type_display()} - {self.event_registration.user.username} - {self.status}"
+
+    def get_form_type_display(self):
+        return dict(PostAcceptanceFormTemplate.FORM_TYPE_CHOICES).get(self.form_type, self.form_type)
+
+
+class PostAcceptanceFormSubmission(models.Model):
+    assignment = models.OneToOneField(PostAcceptanceFormAssignment, on_delete=models.CASCADE, related_name='submission')
+    submitted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'post_acceptance_form_submissions'
+        ordering = ['-submitted_at']
+
+    def __str__(self):
+        return f"Submission for {self.assignment}"
+
+
+class PostAcceptanceFormAnswer(models.Model):
+    submission = models.ForeignKey(PostAcceptanceFormSubmission, on_delete=models.CASCADE, related_name='answers')
+    question_key = models.CharField(max_length=100, help_text='Unique question identifier')
+    answer_text = models.TextField(blank=True)
+    answer_data = models.JSONField(default=dict, blank=True, help_text='Complex answer data (for checkboxes, multi-select, etc.)')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'post_acceptance_form_answers'
+        unique_together = ('submission', 'question_key')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['submission']),
+        ]
+
+    def __str__(self):
+        return f"Answer {self.question_key} - {self.submission}"
+
+
+class PostAcceptanceFormDraft(models.Model):
+    assignment = models.OneToOneField(PostAcceptanceFormAssignment, on_delete=models.CASCADE, related_name='draft')
+    draft_data = models.JSONField(default=dict, blank=True, help_text='Partial form answers')
+    saved_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'post_acceptance_form_drafts'
+
+    def __str__(self):
+        return f"Draft for {self.assignment}"
+
+
+class AdminAuditLog(models.Model):
+    """
+    Audit log for admin access to restricted attendee data.
+    Tracks viewing, exporting, and modifying sensitive information.
+    """
+    ACTION_CHOICES = [
+        ('view_restricted', 'Viewed restricted details'),
+        ('export_restricted', 'Exported restricted data'),
+        ('manual_mark_complete', 'Marked assignment complete'),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='form_audit_logs')
+    performed_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='form_audit_actions'
+    )
+    assignment = models.ForeignKey(
+        PostAcceptanceFormAssignment,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='audit_logs'
+    )
+    action = models.CharField(max_length=50, choices=ACTION_CHOICES)
+    details = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Additional context (e.g., assignment IDs, export format)'
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'admin_audit_logs'
+        indexes = [
+            models.Index(fields=['event', 'performed_by', '-created_at']),
+            models.Index(fields=['action', '-created_at']),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.get_action_display()} by {self.performed_by.email} on {self.event.title}"
+
+
+class PostAcceptanceReminderLog(models.Model):
+    assignment = models.ForeignKey(PostAcceptanceFormAssignment, on_delete=models.CASCADE, related_name='reminder_logs')
+    reminder_number = models.PositiveIntegerField(help_text='Which reminder (1st, 2nd, etc.)')
+    sent_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'post_acceptance_reminder_logs'
+        ordering = ['-sent_at']
+        indexes = [
+            models.Index(fields=['assignment', 'reminder_number']),
+        ]
+
+    def __str__(self):
+        return f"Reminder {self.reminder_number} - {self.assignment}"

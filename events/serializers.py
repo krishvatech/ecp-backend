@@ -24,7 +24,9 @@ from .models import (
     EventSession, SessionParticipant, SessionAttendance, SessionBreak, EventApplication, VirtualSpeaker, GuestAttendee,
     SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup,
     EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate,
-    EventNetworkingSettings, NetworkingTable, NetworkingMeeting, EventSessionBookmark
+    EventNetworkingSettings, NetworkingTable, NetworkingMeeting, EventSessionBookmark,
+    PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer,
+    AdminAuditLog, PostAcceptanceFormDraft
 )
 from community.models import Community
 from content.models import Resource
@@ -3456,3 +3458,240 @@ class EventSessionBookmarkSerializer(serializers.ModelSerializer):
         model = EventSessionBookmark
         fields = ['id', 'event', 'session', 'created_at']
         read_only_fields = ['id', 'event', 'created_at']
+
+
+class PostAcceptanceFormTemplateSerializer(serializers.ModelSerializer):
+    """Serializer for post-acceptance form templates."""
+    form_type_display = serializers.CharField(source='get_form_type_display', read_only=True)
+
+    class Meta:
+        model = PostAcceptanceFormTemplate
+        fields = [
+            'id', 'event', 'form_type', 'form_type_display',
+            'title', 'description', 'question_schema',
+            'is_enabled', 'deadline_days', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class PostAcceptanceFormAssignmentSerializer(serializers.ModelSerializer):
+    """Serializer for form assignments."""
+    form_type_display = serializers.CharField(source='get_form_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    attendee_name = serializers.SerializerMethodField()
+    attendee_email = serializers.SerializerMethodField()
+    user_id = serializers.IntegerField(source='event_registration.user.id', read_only=True)
+    form_template = PostAcceptanceFormTemplateSerializer(read_only=True)
+    event_title = serializers.CharField(source='event.title', read_only=True)
+    event_format = serializers.CharField(source='event.format', read_only=True)
+    draft_data = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostAcceptanceFormAssignment
+        fields = [
+            'id', 'event', 'event_title', 'event_format', 'form_template', 'event_registration',
+            'form_type', 'form_type_display', 'status', 'status_display',
+            'deadline', 'started_at', 'completed_at',
+            'reminders_sent', 'last_reminder_sent_at',
+            'attendee_name', 'attendee_email', 'user_id',
+            'draft_data',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'event', 'form_template', 'form_type',
+            'reminders_sent', 'last_reminder_sent_at',
+            'created_at', 'updated_at'
+        ]
+
+    def get_attendee_name(self, obj):
+        """Get attendee full name."""
+        user = obj.event_registration.user
+        return user.get_full_name() or user.username
+
+    def get_attendee_email(self, obj):
+        """Get attendee email."""
+        return obj.event_registration.user.email
+
+    def get_draft_data(self, obj):
+        """Return draft data if it exists."""
+        try:
+            draft = PostAcceptanceFormDraft.objects.get(assignment=obj)
+            return draft.draft_data or {}
+        except PostAcceptanceFormDraft.DoesNotExist:
+            return {}
+
+
+class PostAcceptanceFormAnswerSerializer(serializers.ModelSerializer):
+    """Serializer for form answers with optional restricted field masking."""
+    # Restricted fields that require explicit permission to view
+    RESTRICTED_FIELDS = {
+        'emergency_contact_name',
+        'emergency_contact_phone',
+        'emergency_contact_relationship',
+        'emergency_contact_relationship_other',
+        'accessibility_needs_detail',
+        'mobility_seating_requirements',
+        'medical_info_emergency',
+        'food_allergies',
+        'food_allergies_other',
+        'dietary_restrictions',
+        'dietary_restrictions_other',
+        'food_notes'
+    }
+
+    class Meta:
+        model = PostAcceptanceFormAnswer
+        fields = ['id', 'question_key', 'answer_text', 'answer_data', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+    def to_representation(self, instance):
+        """Mask restricted field values if user lacks permission."""
+        data = super().to_representation(instance)
+
+        # Check if user has permission to view restricted data
+        context = self.context or {}
+        has_restricted_access = context.get('has_restricted_access', False)
+
+        # Mask restricted fields if user doesn't have permission
+        if not has_restricted_access and instance.question_key in self.RESTRICTED_FIELDS:
+            data['answer_text'] = '[RESTRICTED]'
+            data['answer_data'] = {}
+
+        return data
+
+
+class PostAcceptanceFormSubmissionSerializer(serializers.ModelSerializer):
+    """Serializer for form submissions with answers."""
+    answers = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostAcceptanceFormSubmission
+        fields = ['id', 'assignment', 'answers', 'submitted_at']
+        read_only_fields = ['id', 'submitted_at']
+
+    def get_answers(self, obj):
+        """Serialize answers with context passed for restricted field masking."""
+        return PostAcceptanceFormAnswerSerializer(
+            obj.answers.all(),
+            many=True,
+            context=self.context
+        ).data
+
+
+class AdminAuditLogSerializer(serializers.ModelSerializer):
+    """Serializer for admin audit logs."""
+    performed_by_name = serializers.CharField(source='performed_by.get_full_name', read_only=True)
+    performed_by_email = serializers.CharField(source='performed_by.email', read_only=True)
+    action_display = serializers.CharField(source='get_action_display', read_only=True)
+    event_title = serializers.CharField(source='event.title', read_only=True)
+
+    class Meta:
+        model = AdminAuditLog
+        fields = ['id', 'event', 'event_title', 'performed_by', 'performed_by_name', 'performed_by_email',
+                  'assignment', 'action', 'action_display', 'details', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class PostAcceptanceFormAssignmentAdminDetailSerializer(serializers.ModelSerializer):
+    """Detailed serializer for admin viewing assignment with submission."""
+    form_type_display = serializers.CharField(source='get_form_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    attendee_name = serializers.SerializerMethodField()
+    attendee_email = serializers.SerializerMethodField()
+    attendee_role = serializers.SerializerMethodField()
+    submission = serializers.SerializerMethodField()
+    form_template = PostAcceptanceFormTemplateSerializer(read_only=True)
+    event_title = serializers.CharField(source='event.title', read_only=True)
+    manual_completed_by_name = serializers.CharField(source='manual_completed_by.get_full_name', read_only=True, allow_null=True)
+
+    # Computed flags from registration
+    visa_support_requested = serializers.BooleanField(source='event_registration.visa_support_requested', read_only=True)
+    photo_video_consent = serializers.CharField(source='event_registration.photo_video_consent', read_only=True)
+    directory_visibility = serializers.BooleanField(source='event_registration.directory_visibility', read_only=True)
+
+    # Computed from submission data
+    attendance_mode = serializers.SerializerMethodField()
+    accessibility_need_declared = serializers.SerializerMethodField()
+    photo_consent_denied = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostAcceptanceFormAssignment
+        fields = [
+            'id', 'event', 'event_title', 'form_template', 'form_type', 'form_type_display',
+            'status', 'status_display', 'deadline', 'started_at', 'completed_at',
+            'reminders_sent', 'last_reminder_sent_at',
+            'manual_completed_by', 'manual_completed_by_name', 'manual_completed_at',
+            'attendee_name', 'attendee_email', 'attendee_role',
+            'attendance_mode', 'accessibility_need_declared', 'photo_consent_denied',
+            'submission', 'visa_support_requested', 'photo_video_consent', 'directory_visibility',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = fields
+
+    def get_attendee_name(self, obj):
+        """Get attendee full name."""
+        user = obj.event_registration.user
+        return user.get_full_name() or user.username
+
+    def get_attendee_email(self, obj):
+        """Get attendee email."""
+        return obj.event_registration.user.email
+
+    def get_attendee_role(self, obj):
+        """Get attendee role from EventParticipant."""
+        from events.models import EventParticipant
+        user = obj.event_registration.user
+        participant = EventParticipant.objects.filter(
+            event=obj.event,
+            user=user
+        ).first()
+        return participant.get_participant_type_display() if participant else 'Attendee'
+
+    def get_attendance_mode(self, obj):
+        """Extract attendance_mode from submission if completed."""
+        try:
+            submission = obj.submission
+        except:
+            return None
+        try:
+            answer = submission.answers.get(question_key='attendance_mode')
+            return answer.answer_text
+        except:
+            return None
+
+    def get_accessibility_need_declared(self, obj):
+        """Check if accessibility support needs were declared (yes value)."""
+        try:
+            submission = obj.submission
+        except:
+            return False
+        try:
+            answer = submission.answers.get(question_key='accessibility_support_needs')
+            return answer.answer_text == 'yes'
+        except:
+            return False
+
+    def get_photo_consent_denied(self, obj):
+        """Check if photo/video consent is denied."""
+        try:
+            submission = obj.submission
+        except:
+            return False
+        try:
+            answer = submission.answers.get(question_key='photo_video_consent')
+            return answer.answer_text == 'no'
+        except:
+            return False
+
+    def get_submission(self, obj):
+        """Serialize submission with context for restricted field masking."""
+        try:
+            submission = obj.submission
+        except:
+            return None
+        if not submission:
+            return None
+        return PostAcceptanceFormSubmissionSerializer(
+            submission,
+            context=self.context
+        ).data

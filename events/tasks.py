@@ -1502,3 +1502,226 @@ def schedule_networking_meeting_reminders():
     except Exception as e:
         logger.error(f"Failed to schedule networking meeting reminders: {e}")
         return {"error": str(e)}
+
+
+# ============================================================================
+# PARTICIPANT INFORMATION FORM REMINDER TASKS
+# ============================================================================
+
+@shared_task(bind=True, max_retries=3)
+def send_form_reminder_task(self, assignment_id):
+    """
+    Celery task to send reminder email for incomplete form assignment.
+    Retries up to 3 times with exponential backoff.
+    """
+    from events.models import PostAcceptanceFormAssignment, PostAcceptanceReminderLog
+    from events.services.post_acceptance_forms import send_form_reminder_email
+
+    try:
+        assignment = PostAcceptanceFormAssignment.objects.get(id=assignment_id)
+
+        # Don't send if already completed
+        if assignment.status == PostAcceptanceFormAssignment.STATUS_COMPLETED:
+            logger.info(f"Skipping reminder for assignment {assignment_id} - already completed")
+            return
+
+        # Don't send if lapsed
+        if assignment.status == PostAcceptanceFormAssignment.STATUS_LAPSED:
+            logger.info(f"Skipping reminder for assignment {assignment_id} - form lapsed")
+            return
+
+        # Send the reminder email
+        result = send_form_reminder_email(assignment)
+
+        if result:
+            # Update reminder counter
+            assignment.reminders_sent += 1
+            assignment.last_reminder_sent_at = timezone.now()
+            assignment.save(update_fields=['reminders_sent', 'last_reminder_sent_at'])
+
+            # Log reminder sent
+            PostAcceptanceReminderLog.objects.create(
+                assignment=assignment,
+                reminder_number=assignment.reminders_sent,
+                sent_at=timezone.now()
+            )
+
+            logger.info(f"Reminder {assignment.reminders_sent} sent for assignment {assignment_id}")
+            return {"status": "sent", "reminder_number": assignment.reminders_sent}
+        else:
+            raise Exception("send_form_reminder_email returned False")
+
+    except PostAcceptanceFormAssignment.DoesNotExist:
+        logger.error(f"Assignment {assignment_id} not found for reminder task")
+        return
+
+    except Exception as exc:
+        logger.error(f"Error sending form reminder for assignment {assignment_id}: {str(exc)}")
+        # Retry with exponential backoff: 60s, 120s, 240s
+        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+
+
+@shared_task
+def schedule_form_reminders():
+    """
+    Scheduled task to find incomplete form assignments approaching deadline.
+    Sends reminders:
+    - 14 days before deadline (first reminder)
+    - 3 days before deadline (second reminder)
+    - 24 hours before deadline (optional third reminder)
+    """
+    from events.models import PostAcceptanceFormAssignment
+    from datetime import datetime, timedelta
+    from django.utils import timezone
+
+    try:
+        now = timezone.now()
+        reminder_window_start = now
+        reminder_window_end = now + timedelta(days=1)  # Check daily
+        reminders_scheduled = 0
+
+        # Find incomplete assignments with deadline approaching in next 14+ days
+        assignments = PostAcceptanceFormAssignment.objects.filter(
+            status__in=[
+                PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
+                PostAcceptanceFormAssignment.STATUS_IN_PROGRESS
+            ],
+            deadline__gte=reminder_window_start,
+            deadline__lte=reminder_window_end + timedelta(days=14)
+        ).select_related('event')
+
+        for assignment in assignments:
+            days_until_deadline = (assignment.deadline - now).days
+
+            # Send first reminder 14 days before (13-15 day window for daily check)
+            if 13 <= days_until_deadline <= 15 and assignment.reminders_sent == 0:
+                send_form_reminder_task.delay(assignment.id)
+                reminders_scheduled += 1
+                logger.info(f"Scheduled first reminder (14d) for assignment {assignment.id}")
+
+            # Send second reminder 3 days before (2-4 day window for daily check)
+            elif 2 <= days_until_deadline <= 4 and assignment.reminders_sent == 1:
+                send_form_reminder_task.delay(assignment.id)
+                reminders_scheduled += 1
+                logger.info(f"Scheduled second reminder (3d) for assignment {assignment.id}")
+
+            # Optional third reminder 24 hours before is disabled by default
+            # Uncomment below to enable 24-hour reminders
+            # elif 0 <= days_until_deadline <= 1 and assignment.reminders_sent >= 2:
+            #     send_form_reminder_task.delay(assignment.id)
+            #     reminders_scheduled += 1
+            #     logger.info(f"Scheduled optional third reminder (24h) for assignment {assignment.id}")
+
+        logger.info(f"Form reminder scheduler: {reminders_scheduled} reminders queued")
+        return {"reminders_scheduled": reminders_scheduled}
+
+    except Exception as e:
+        logger.error(f"Failed to schedule form reminders: {e}")
+        return {"error": str(e)}
+
+
+@shared_task
+def mark_lapsed_form_assignments():
+    """
+    Scheduled task to mark assignments as lapsed when deadline passes.
+    Runs daily to check all incomplete assignments.
+    """
+    from events.models import PostAcceptanceFormAssignment
+    from django.utils import timezone
+
+    try:
+        now = timezone.now()
+        marked_lapsed = 0
+
+        # Find incomplete assignments past deadline
+        lapsed_assignments = PostAcceptanceFormAssignment.objects.filter(
+            status__in=[
+                PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
+                PostAcceptanceFormAssignment.STATUS_IN_PROGRESS
+            ],
+            deadline__lt=now
+        )
+
+        for assignment in lapsed_assignments:
+            assignment.status = PostAcceptanceFormAssignment.STATUS_LAPSED
+            assignment.save(update_fields=['status'])
+            marked_lapsed += 1
+
+            logger.info(f"Marked assignment {assignment.id} as lapsed")
+
+        logger.info(f"Marked {marked_lapsed} assignments as lapsed")
+        return {"marked_lapsed": marked_lapsed}
+
+    except Exception as e:
+        logger.error(f"Failed to mark lapsed form assignments: {e}")
+        return {"error": str(e)}
+
+
+@shared_task
+def purge_expired_form_data():
+    """
+    Scheduled task to purge restricted form data 30 days after event ends.
+    Removes emergency contact, medical/accessibility, and dietary information.
+    Keeps non-sensitive attendance and registration data.
+    Respects retention flags if any.
+    """
+    from events.models import Event, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer
+    from django.utils import timezone
+    from datetime import timedelta
+
+    try:
+        now = timezone.now()
+        thirty_days_ago = now - timedelta(days=30)
+        purged_count = 0
+        restricted_fields = {
+            # Emergency contact
+            'emergency_contact_name',
+            'emergency_contact_phone',
+            'emergency_contact_relationship',
+            'emergency_contact_relationship_other',
+            # Medical and accessibility
+            'accessibility_needs_detail',
+            'mobility_seating_requirements',
+            'medical_info_emergency',
+            # Dietary
+            'food_allergies',
+            'food_allergies_other',
+            'dietary_restrictions',
+            'dietary_restrictions_other',
+            'food_notes'
+        }
+
+        # Find events that ended more than 30 days ago
+        old_events = Event.objects.filter(
+            end_time__lt=thirty_days_ago,
+            status__in=['ended', 'completed']
+        )
+
+        logger.info(f"Found {old_events.count()} events eligible for restricted data purge")
+
+        for event in old_events:
+            # Get all completed submissions for this event
+            submissions = PostAcceptanceFormSubmission.objects.filter(
+                assignment__event=event,
+                assignment__status='completed'
+            )
+
+            for submission in submissions:
+                # Delete restricted answer fields
+                deleted = submission.answers.filter(
+                    question_key__in=restricted_fields
+                ).delete()
+
+                if deleted[0] > 0:
+                    purged_count += deleted[0]
+                    logger.info(
+                        f"Purged {deleted[0]} restricted fields from "
+                        f"submission {submission.id} for event {event.id}"
+                    )
+
+        logger.info(f"Purge expired form data: {purged_count} restricted fields removed")
+        return {"purged_fields": purged_count}
+
+    except Exception as e:
+        logger.error(f"Failed to purge expired form data: {e}", exc_info=True)
+        return {"error": str(e)}
