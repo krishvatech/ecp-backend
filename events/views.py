@@ -10191,6 +10191,28 @@ class PostAcceptanceFormAssignmentViewSet(viewsets.ModelViewSet):
                     if not detail_value or detail_value == '':
                         errors['visa_support_details'] = 'Please describe what visa support you need'
 
+        # Validate "Other" field dependencies (independent of schema conditional logic)
+        # If food_allergies includes "other", require food_allergies_other
+        food_allergies = answers_data.get('food_allergies', [])
+        if isinstance(food_allergies, list) and 'other' in food_allergies:
+            food_allergies_other = answers_data.get('food_allergies_other', '')
+            if not food_allergies_other or food_allergies_other == '':
+                errors['food_allergies_other'] = 'Please specify other allergies'
+
+        # If dietary_restrictions includes "other", require dietary_restrictions_other
+        dietary_restrictions = answers_data.get('dietary_restrictions', [])
+        if isinstance(dietary_restrictions, list) and 'other' in dietary_restrictions:
+            dietary_restrictions_other = answers_data.get('dietary_restrictions_other', '')
+            if not dietary_restrictions_other or dietary_restrictions_other == '':
+                errors['dietary_restrictions_other'] = 'Please specify other dietary restrictions'
+
+        # If emergency_contact_relationship = "other", require emergency_contact_relationship_other
+        emergency_contact_relationship = answers_data.get('emergency_contact_relationship', '')
+        if emergency_contact_relationship == 'other':
+            emergency_contact_relationship_other = answers_data.get('emergency_contact_relationship_other', '')
+            if not emergency_contact_relationship_other or emergency_contact_relationship_other == '':
+                errors['emergency_contact_relationship_other'] = 'Please specify relationship'
+
         return {'errors': errors} if errors else None
 
     def _is_field_hidden(self, field, answers_data):
@@ -10242,6 +10264,10 @@ class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
         'event_registration__user__last_name',
         'event_registration__user__username'
     ]
+    custom_filter_fields = [
+        'attendee_role', 'attendance_mode', 'visa_support_requested',
+        'accessibility_need_declared', 'photo_consent_denied'
+    ]
     ordering_fields = [
         '-created_at', 'deadline', '-updated_at',
         'event_registration__user__email',
@@ -10282,6 +10308,70 @@ class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
         queryset = PostAcceptanceFormAssignment.objects.filter(event=event).select_related(
             'event', 'form_template', 'event_registration', 'event_registration__user', 'manual_completed_by'
         ).prefetch_related(submission_prefetch)
+
+        # Handle filters using direct ORM (all fields exist on EventRegistration)
+        # Filter by attendee_role (from EventParticipant)
+        attendee_role = self.request.query_params.get('attendee_role')
+        if attendee_role and attendee_role != 'all':
+            from events.models import EventParticipant
+            valid_users = EventParticipant.objects.filter(
+                event=event,
+                role=attendee_role
+            ).values_list('user_id', flat=True)
+            queryset = queryset.filter(event_registration__user_id__in=valid_users)
+
+        # Filter by visa_support_requested (direct field on EventRegistration)
+        visa_support = self.request.query_params.get('visa_support_requested')
+        if visa_support and visa_support != 'all':
+            visa_bool = visa_support.lower() == 'true'
+            queryset = queryset.filter(event_registration__visa_support_requested=visa_bool)
+
+        # Filter by accessibility_need_declared (direct field on EventRegistration)
+        accessibility = self.request.query_params.get('accessibility_need_declared')
+        if accessibility and accessibility != 'all':
+            acc_bool = accessibility.lower() == 'true'
+            queryset = queryset.filter(event_registration__accessibility_need_declared=acc_bool)
+
+        # Filter by photo_video_consent (direct field on EventRegistration)
+        photo_consent = self.request.query_params.get('photo_consent_denied')
+        if photo_consent and photo_consent != 'all':
+            # photo_consent_denied=true means photo_video_consent != "yes"
+            if photo_consent.lower() == 'true':
+                queryset = queryset.exclude(event_registration__photo_video_consent='yes')
+            else:
+                queryset = queryset.filter(event_registration__photo_video_consent='yes')
+
+        # Filter by attendance_mode (from submission answers - in-memory only for this one)
+        attendance_mode = self.request.query_params.get('attendance_mode')
+        if attendance_mode and attendance_mode != 'all':
+            # For hybrid events, attendee selects attendance_mode in the form
+            # For in-person events, attendance_mode is always "in_person"
+            # For online events, no form is shown (filtered at event creation)
+            assignments_list = list(queryset)
+            filtered_list = []
+
+            for assignment in assignments_list:
+                try:
+                    if assignment.submission and assignment.submission.answers.all():
+                        mode = next(
+                            (a.answer_text for a in assignment.submission.answers.all()
+                             if a.question_key == 'attendance_mode'),
+                            None
+                        )
+                    else:
+                        # No submission = not started, skip in-person/online filter
+                        mode = None
+
+                    if mode == attendance_mode:
+                        filtered_list.append(assignment)
+                except:
+                    pass
+
+            queryset = PostAcceptanceFormAssignment.objects.filter(
+                id__in=[a.id for a in filtered_list]
+            ).select_related(
+                'event', 'form_template', 'event_registration', 'event_registration__user', 'manual_completed_by'
+            ).prefetch_related(submission_prefetch)
 
         return queryset
 
@@ -10413,7 +10503,6 @@ class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
         # Check if user has permission to view restricted data
         has_restricted_access = (
             request.user.is_superuser or
-            request.user.is_staff or
             request.user.groups.filter(name='view_restricted_attendee_data').exists()
         )
 
@@ -10444,26 +10533,28 @@ class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
 
         restricted = request.data.get('restricted', False)
 
+        # Get assignments for export
+        assignments = self.get_queryset()
+        export_count = assignments.count()
+
         # Check permission for restricted export
         if restricted:
             has_permission = (
                 request.user.is_superuser or
-                request.user.is_staff or
                 request.user.groups.filter(name='view_restricted_attendee_data').exists()
             )
             if not has_permission:
                 raise PermissionDenied("You do not have permission to export restricted data")
 
-            # Create audit log
+            # Create audit log with row count
             from events.models import AdminAuditLog
             AdminAuditLog.objects.create(
                 event=event,
                 performed_by=request.user,
                 action='export_restricted',
-                details={'export_type': 'csv', 'restricted': True}
+                details={'export_type': 'csv', 'restricted': True, 'row_count': export_count}
             )
 
-        assignments = self.get_queryset()
         csv_data = self._generate_csv(assignments, restricted)
 
         response = HttpResponse(csv_data, content_type='text/csv')

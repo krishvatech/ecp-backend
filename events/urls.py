@@ -136,6 +136,11 @@ urlpatterns = [
         name='admin-form-assignments-export'
     ),
     path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/summary/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'summary'}),
+        name='admin-form-assignments-summary'
+    ),
+    path(
         "events/<int:event_id>/post-acceptance-form-assignments-admin/<int:pk>/",
         PostAcceptanceFormAssignmentAdminViewSet.as_view({
             'get': 'retrieve'

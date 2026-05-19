@@ -99,7 +99,7 @@ def saleor_order_paid_webhook(request):
                         should_trigger_forms = True
                     else:
                         # Update existing payment_pending registrations to confirmed
-                        if registration.status == 'payment_pending':
+                        if registration.attendee_status == 'payment_pending':
                             registration.status = 'registered'
                             registration.attendee_status = 'confirmed'
                             registration.registered_at = timezone.now()
@@ -107,6 +107,13 @@ def saleor_order_paid_webhook(request):
                             logger.info(
                                 f"Updated existing registration for {user.email} to event {event.id} "
                                 f"from payment_pending to confirmed via Saleor webhook"
+                            )
+                            should_trigger_forms = True
+                        elif registration.status == 'registered' and registration.attendee_status == 'confirmed':
+                            # Existing confirmed registration - trigger forms (idempotent, duplicates prevented by service)
+                            logger.info(
+                                f"Registration already confirmed for {user.email} to event {event.id}. "
+                                f"Triggering forms again (duplicate prevention handled by service)."
                             )
                             should_trigger_forms = True
                         else:

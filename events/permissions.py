@@ -19,16 +19,15 @@ class HasRestrictedDataPermission(permissions.BasePermission):
     Permission to view restricted attendee data (emergency contact, medical info, accessibility needs).
     Allows:
     - Superusers
-    - Staff users
     - Users in 'view_restricted_attendee_data' group
     """
     def has_permission(self, request, view):
-        if request.user.is_superuser or request.user.is_staff:
+        if request.user.is_superuser:
             return True
-        
+
         if request.user.is_authenticated:
             return request.user.groups.filter(name='view_restricted_attendee_data').exists()
-        
+
         return False
 
 

@@ -1581,14 +1581,18 @@ def schedule_form_reminders():
         reminders_scheduled = 0
 
         # Find incomplete assignments with deadline approaching in next 14+ days
+        # Skip opted-out or cancelled registrations
+        # TODO: Add opt_out_automated_communication field to EventRegistration when available
         assignments = PostAcceptanceFormAssignment.objects.filter(
             status__in=[
                 PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
                 PostAcceptanceFormAssignment.STATUS_IN_PROGRESS
             ],
             deadline__gte=reminder_window_start,
-            deadline__lte=reminder_window_end + timedelta(days=14)
-        ).select_related('event')
+            deadline__lte=reminder_window_end + timedelta(days=14),
+            event_registration__attendee_status='confirmed',
+            event_registration__status='registered'
+        ).select_related('event', 'event_registration')
 
         for assignment in assignments:
             days_until_deadline = (assignment.deadline - now).days
@@ -1700,10 +1704,11 @@ def purge_expired_form_data():
         logger.info(f"Found {old_events.count()} events eligible for restricted data purge")
 
         for event in old_events:
-            # Get all completed submissions for this event
+            # Get all completed submissions for Participant Information forms only
             submissions = PostAcceptanceFormSubmission.objects.filter(
                 assignment__event=event,
-                assignment__status='completed'
+                assignment__status='completed',
+                assignment__form_type='participant_information'
             )
 
             for submission in submissions:
@@ -1719,7 +1724,17 @@ def purge_expired_form_data():
                         f"submission {submission.id} for event {event.id}"
                     )
 
-        logger.info(f"Purge expired form data: {purged_count} restricted fields removed")
+        if purged_count > 0:
+            logger.info(
+                f"AUDIT: Purge completed - action=purge_restricted, "
+                f"events_processed={old_events.count()}, "
+                f"restricted_fields_removed={purged_count}, "
+                f"form_type=participant_information, "
+                f"timestamp={timezone.now().isoformat()}"
+            )
+        else:
+            logger.info(f"Purge expired form data: No restricted fields to purge")
+
         return {"purged_fields": purged_count}
 
     except Exception as e:
