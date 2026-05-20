@@ -7529,24 +7529,31 @@ class EventViewSet(viewsets.ModelViewSet):
              return Response({"detail": "User not found."}, status=404)
 
         # 2. Register them
-        if EventRegistration.objects.filter(event=event, user=target_user).exists():
-            return Response({"detail": "User is already registered for this event."}, status=400)
-
-        # ✅ NEW: Set admission_status based on event's waiting_room_enabled setting
-        # If waiting room is enabled, new users start as "waiting" for host admission
-        # If waiting room is disabled, new users are automatically "admitted"
         initial_admission_status = "waiting" if event.waiting_room_enabled else "admitted"
 
-        EventRegistration.objects.create(
+        reg, created = EventRegistration.objects.get_or_create(
             event=event,
             user=target_user,
-            status="registered",  # Directly registered
-            admission_status=initial_admission_status,
-            # joined_live / watched_replay defaults are False
+            defaults={
+                "status": "registered",
+                "admission_status": initial_admission_status,
+            }
         )
-        
-        # Optionally update attending count immediately if you want them counted strictly
-        Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+
+        if not created:
+            # User exists but may be cancelled/deregistered - reinstate them
+            if reg.status == "registered":
+                return Response({"detail": "User is already registered for this event."}, status=400)
+
+            # Re-activate the registration
+            reg.status = "registered"
+            reg.admission_status = initial_admission_status
+            reg.save(update_fields=["status", "admission_status"])
+            Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+        else:
+            # New registration created
+            Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+
         return Response({"ok": True, "detail": f"User {target_user.username} added successfully."})
 
     @action(detail=True, methods=["patch"], permission_classes=[IsAuthenticated], url_path="reorder-speakers")
