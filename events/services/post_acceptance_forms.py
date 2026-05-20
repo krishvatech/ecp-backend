@@ -143,27 +143,20 @@ def trigger_post_acceptance_forms(event_registration):
                         exc_info=True
                     )
 
-            # Trigger Promotional Profile if confirmed AND user has a special role
-            # Only speakers, moderators, and hosts get promotional profiles (not regular attendees)
+            # Trigger Promotional Profile if confirmed AND user has promotional-eligible roles
             if event_registration.attendee_status == 'confirmed':
-                from events.models import EventParticipant
-                has_promotional_role = EventParticipant.objects.filter(
-                    event=event,
-                    user=user,
-                    role__in=['speaker', 'moderator', 'host']
-                ).exists()
+                from events.services.promotional_profile_service import get_promotional_modules_for_attendee
+                modules = get_promotional_modules_for_attendee(event_registration)
 
-                if has_promotional_role:
+                if modules:
                     try:
-                        assignment = _create_form_assignment(
-                            event_registration,
-                            PostAcceptanceFormTemplate.FORM_TYPE_PROMOTIONAL_PROFILE
-                        )
+                        from events.services.promotional_profile_service import get_or_create_promotional_profile
+                        assignment, created = get_or_create_promotional_profile(event_registration)
                         if assignment:
                             created_assignments[PostAcceptanceFormTemplate.FORM_TYPE_PROMOTIONAL_PROFILE] = assignment
                             logger.info(
                                 f"Promotional Profile Form assigned to {user.username} "
-                                f"for event '{event.title}' (event_id={event.id})"
+                                f"for event '{event.title}' (event_id={event.id}) with modules: {modules}"
                             )
                     except Exception as e:
                         logger.error(
@@ -275,8 +268,16 @@ def _create_form_assignment(event_registration, form_type):
         }
     )
 
-    # Note: Email is now sent explicitly in approve_application() endpoint
-    # to avoid duplicate emails. This function only creates the assignment.
+    # Send email notification when assignment is first created
+    if created:
+        try:
+            send_form_assignment_email(assignment)
+        except Exception as e:
+            logger.error(
+                f"Failed to send form assignment email for {assignment.id}: {str(e)}",
+                exc_info=True
+            )
+            # Don't fail assignment creation if email fails
 
     return assignment if created else None
 
@@ -548,6 +549,11 @@ def writeback_participant_information_form(assignment):
             registration.accessibility_need_declared = True
             update_fields.append('accessibility_need_declared')
 
+        # attendance_mode: save for hybrid events ('in_person' or 'online')
+        if 'attendance_mode' in answers and answers['attendance_mode'].answer_text:
+            registration.attendance_mode = answers['attendance_mode'].answer_text
+            update_fields.append('attendance_mode')
+
         # Mark completion
         registration.participant_information_completed_at = timezone.now()
 
@@ -563,6 +569,432 @@ def writeback_participant_information_form(assignment):
     except Exception as e:
         logger.error(
             f"Writeback failed for assignment {assignment.id}: {str(e)}",
+            exc_info=True
+        )
+        return False
+
+
+# ==================== SPEAKER MODULE VALIDATION ====================
+
+def validate_speaker_module_submission(answers, assignment=None):
+    """
+    Validate speaker module form submission.
+
+    Validates required fields, file uploads, text lengths, and URLs.
+
+    Args:
+        answers: dict of form answers {field_id: value}
+        assignment: PostAcceptanceFormAssignment instance (optional, for context)
+
+    Returns:
+        dict: {
+            'valid': bool,
+            'errors': {'field_id': 'error message', ...}
+        }
+    """
+    from events.validators import (
+        validate_headshot,
+        validate_slide_deck,
+        validate_speaker_bio,
+        validate_short_bio
+    )
+    from django.core.exceptions import ValidationError
+
+    errors = {}
+
+    # Required text fields
+    required_fields = [
+        'display_name', 'programme_title', 'programme_affiliation',
+        'headshot', 'programme_bio', 'short_bio',
+        'talk_title', 'talk_abstract', 'session_format', 'display_consent'
+    ]
+
+    for field in required_fields:
+        if field not in answers or not answers[field]:
+            errors[field] = f'{field} is required'
+
+    # Display name validation
+    if 'display_name' in answers and answers['display_name']:
+        name = answers['display_name']
+        if len(name) < 2 or len(name) > 150:
+            errors['display_name'] = 'Display name must be 2-150 characters'
+
+    # Programme title validation
+    if 'programme_title' in answers and answers['programme_title']:
+        title = answers['programme_title']
+        if len(title) < 2 or len(title) > 100:
+            errors['programme_title'] = 'Professional title must be 2-100 characters'
+
+    # Programme affiliation validation
+    if 'programme_affiliation' in answers and answers['programme_affiliation']:
+        aff = answers['programme_affiliation']
+        if len(aff) < 2 or len(aff) > 150:
+            errors['programme_affiliation'] = 'Organization must be 2-150 characters'
+
+    # Headshot validation
+    if 'headshot' in answers and answers['headshot']:
+        try:
+            validate_headshot(answers['headshot'])
+        except ValidationError as e:
+            errors['headshot'] = str(e.message)
+
+    # Programme bio validation (100-200 words)
+    if 'programme_bio' in answers and answers['programme_bio']:
+        bio_result = validate_speaker_bio(answers['programme_bio'], 'Programme bio')
+        if not bio_result['valid']:
+            errors['programme_bio'] = '; '.join(bio_result['errors'])
+
+    # Short bio validation (max 200 characters)
+    if 'short_bio' in answers and answers['short_bio']:
+        try:
+            validate_short_bio(answers['short_bio'])
+        except ValidationError as e:
+            errors['short_bio'] = str(e.message)
+
+    # Talk title validation
+    if 'talk_title' in answers and answers['talk_title']:
+        title = answers['talk_title']
+        if len(title) < 3 or len(title) > 200:
+            errors['talk_title'] = 'Talk title must be 3-200 characters'
+
+    # Talk abstract validation (20-200 words)
+    if 'talk_abstract' in answers and answers['talk_abstract']:
+        abstract = answers['talk_abstract']
+        words = len([w for w in abstract.split() if w.strip()])
+        if words < 20 or words > 200:
+            errors['talk_abstract'] = f'Talk abstract must be 20-200 words (currently {words} words)'
+
+    # Session format validation
+    valid_formats = ['keynote', 'presentation', 'panel', 'workshop', 'lightning_talk', 'fireside_chat', 'other']
+    if 'session_format' in answers and answers['session_format']:
+        if answers['session_format'] not in valid_formats:
+            errors['session_format'] = f'Invalid session format'
+
+    # Slide deck validation (optional but if provided, must be valid)
+    if 'slide_deck' in answers and answers['slide_deck']:
+        try:
+            validate_slide_deck(answers['slide_deck'])
+        except ValidationError as e:
+            errors['slide_deck'] = str(e.message)
+
+    # LinkedIn URL validation (optional)
+    if 'linkedin_url' in answers and answers['linkedin_url']:
+        url = answers['linkedin_url']
+        if not url.startswith(('http://', 'https://')):
+            errors['linkedin_url'] = 'LinkedIn URL must start with http:// or https://'
+        if len(url) > 255:
+            errors['linkedin_url'] = 'LinkedIn URL is too long'
+
+    # Twitter handle validation (optional)
+    if 'twitter_handle' in answers and answers['twitter_handle']:
+        handle = answers['twitter_handle']
+        handle = handle.lstrip('@')  # Remove @ if present
+        if not (1 <= len(handle) <= 15):
+            errors['twitter_handle'] = 'Twitter handle must be 1-15 characters (without @)'
+        if not handle.replace('_', '').isalnum():
+            errors['twitter_handle'] = 'Twitter handle can only contain letters, numbers, and underscores'
+
+    # Personal website validation (optional)
+    if 'personal_website' in answers and answers['personal_website']:
+        url = answers['personal_website']
+        if not url.startswith(('http://', 'https://')):
+            errors['personal_website'] = 'Website URL must start with http:// or https://'
+        if len(url) > 255:
+            errors['personal_website'] = 'Website URL is too long'
+
+    # Display consent validation
+    if 'display_consent' in answers and answers['display_consent']:
+        if answers['display_consent'] not in ['yes', 'no']:
+            errors['display_consent'] = 'Display consent must be "yes" or "no"'
+
+    return {
+        'valid': len(errors) == 0,
+        'errors': errors
+    }
+
+
+def writeback_speaker_profile_form(assignment):
+    """
+    Write speaker module submission data back to EventRegistration.
+
+    Updates speaker-related fields and marks form as complete.
+
+    Args:
+        assignment: PostAcceptanceFormAssignment instance
+
+    Returns:
+        bool: True if writeback successful, False otherwise
+    """
+    try:
+        submission = assignment.submission
+        registration = assignment.event_registration
+
+        # Extract answer data
+        answers_dict = {}
+        for answer in submission.answers.all():
+            answers_dict[answer.question_key] = answer.answer_text or answer.answer_data
+
+        # Update display_consent
+        if 'display_consent' in answers_dict:
+            registration.display_consent = answers_dict['display_consent']
+
+        # Mark promotional profile as complete
+        registration.promotional_profile_completed_at = timezone.now()
+
+        update_fields = ['display_consent', 'promotional_profile_completed_at']
+        registration.save(update_fields=update_fields)
+
+        logger.info(
+            f"Wrote back speaker profile {assignment.id} to registration {registration.id} "
+            f"for user {registration.user.username}. "
+            f"Display consent: {registration.display_consent}"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(
+            f"Speaker profile writeback failed for assignment {assignment.id}: {str(e)}",
+            exc_info=True
+        )
+        return False
+
+
+# ==================== SPONSOR MODULE VALIDATION ====================
+
+def validate_sponsor_organisation_submission(answers):
+    """
+    Validate sponsor organisation module submission.
+
+    Args:
+        answers: dict of form answers
+
+    Returns:
+        dict: {'valid': bool, 'errors': {field: message}}
+    """
+    from events.validators import (
+        validate_organisation_logo,
+        validate_organisation_description
+    )
+    from django.core.exceptions import ValidationError
+
+    errors = {}
+
+    # Required fields
+    required_fields = [
+        'organisation_name_display', 'organisation_logo', 'tagline',
+        'programme_description', 'website_url', 'primary_contact_name',
+        'primary_contact_email', 'display_consent'
+    ]
+
+    for field in required_fields:
+        if field not in answers or not answers[field]:
+            errors[field] = f'{field} is required'
+
+    # Validate organisation name
+    if 'organisation_name_display' in answers and answers['organisation_name_display']:
+        name = answers['organisation_name_display']
+        if len(name) < 2 or len(name) > 150:
+            errors['organisation_name_display'] = 'Name must be 2-150 characters'
+
+    # Validate tagline
+    if 'tagline' in answers and answers['tagline']:
+        tagline = answers['tagline']
+        if len(tagline) < 5 or len(tagline) > 100:
+            errors['tagline'] = 'Tagline must be 5-100 characters'
+
+    # Validate description
+    if 'programme_description' in answers and answers['programme_description']:
+        desc_result = validate_organisation_description(answers['programme_description'])
+        if not desc_result['valid']:
+            errors['programme_description'] = '; '.join(desc_result['errors'])
+
+    # Validate logos
+    if 'organisation_logo' in answers and answers['organisation_logo']:
+        try:
+            validate_organisation_logo(answers['organisation_logo'], 'organisation_logo')
+        except ValidationError as e:
+            errors['organisation_logo'] = str(e.message)
+
+    if 'organisation_logo_dark' in answers and answers['organisation_logo_dark']:
+        try:
+            validate_organisation_logo(answers['organisation_logo_dark'], 'organisation_logo_dark')
+        except ValidationError as e:
+            errors['organisation_logo_dark'] = str(e.message)
+
+    # Validate URLs
+    if 'website_url' in answers and answers['website_url']:
+        if not answers['website_url'].startswith(('http://', 'https://')):
+            errors['website_url'] = 'URL must start with http:// or https://'
+
+    # Validate email
+    if 'primary_contact_email' in answers and answers['primary_contact_email']:
+        import re
+        email_pattern = r'^[^\s@]+@[^\s@]+\.[^\s@]+$'
+        if not re.match(email_pattern, answers['primary_contact_email']):
+            errors['primary_contact_email'] = 'Invalid email format'
+
+    return {'valid': len(errors) == 0, 'errors': errors}
+
+
+# ==================== SPONSOR STAFF MODULE VALIDATION ====================
+
+def validate_sponsor_staff_submission(answers):
+    """Validate sponsor staff module submission."""
+    errors = {}
+
+    required_fields = ['display_name', 'role_at_sponsor', 'booth_presence', 'areas_of_conversation', 'display_consent']
+
+    for field in required_fields:
+        if field not in answers or not answers[field]:
+            errors[field] = f'{field} is required'
+
+    # Validate display name
+    if 'display_name' in answers and answers['display_name']:
+        if len(answers['display_name']) < 2 or len(answers['display_name']) > 150:
+            errors['display_name'] = 'Name must be 2-150 characters'
+
+    # Validate role
+    if 'role_at_sponsor' in answers and answers['role_at_sponsor']:
+        if len(answers['role_at_sponsor']) < 2 or len(answers['role_at_sponsor']) > 100:
+            errors['role_at_sponsor'] = 'Role must be 2-100 characters'
+
+    return {'valid': len(errors) == 0, 'errors': errors}
+
+
+# ==================== STARTUP MODULE VALIDATION ====================
+
+def validate_startup_submission(answers):
+    """Validate startup module submission."""
+    from events.validators import (
+        validate_startup_pitch,
+        validate_startup_description,
+        validate_pitch_deck,
+        validate_founder_photos
+    )
+    from django.core.exceptions import ValidationError
+
+    errors = {}
+
+    required_fields = [
+        'company_name_display', 'company_logo', 'one_line_pitch',
+        'programme_description', 'stage', 'sector_industry',
+        'founded_year', 'website_url', 'founder_names_roles', 'display_consent'
+    ]
+
+    for field in required_fields:
+        if field not in answers or not answers[field]:
+            errors[field] = f'{field} is required'
+
+    # Validate pitch
+    if 'one_line_pitch' in answers and answers['one_line_pitch']:
+        try:
+            validate_startup_pitch(answers['one_line_pitch'])
+        except ValidationError as e:
+            errors['one_line_pitch'] = str(e.message)
+
+    # Validate description
+    if 'programme_description' in answers and answers['programme_description']:
+        desc_result = validate_startup_description(answers['programme_description'])
+        if not desc_result['valid']:
+            errors['programme_description'] = '; '.join(desc_result['errors'])
+
+    # Validate founded year
+    if 'founded_year' in answers and answers['founded_year']:
+        try:
+            year = int(answers['founded_year'])
+            if year < 2000 or year > 2026:
+                errors['founded_year'] = 'Year must be between 2000 and 2026'
+        except (ValueError, TypeError):
+            errors['founded_year'] = 'Invalid year format'
+
+    # Validate pitch deck
+    if 'public_pitch_deck' in answers and answers['public_pitch_deck']:
+        try:
+            validate_pitch_deck(answers['public_pitch_deck'])
+        except ValidationError as e:
+            errors['public_pitch_deck'] = str(e.message)
+
+    # Validate founder photos
+    if 'founder_photos' in answers and answers['founder_photos']:
+        try:
+            validate_founder_photos(answers['founder_photos'])
+        except ValidationError as e:
+            errors['founder_photos'] = str(e.message)
+
+    return {'valid': len(errors) == 0, 'errors': errors}
+
+
+# ==================== INVESTOR MODULE VALIDATION ====================
+
+def validate_investor_submission(answers):
+    """Validate investor module submission."""
+    from events.validators import validate_thesis_tagline
+    from django.core.exceptions import ValidationError
+
+    errors = {}
+
+    required_fields = [
+        'display_name', 'thesis_tagline', 'stage_focus',
+        'sector_focus', 'geographic_focus', 'cheque_size_range',
+        'open_to_inbound', 'display_consent'
+    ]
+
+    for field in required_fields:
+        if field not in answers or not answers[field]:
+            errors[field] = f'{field} is required'
+
+    # Validate display name
+    if 'display_name' in answers and answers['display_name']:
+        if len(answers['display_name']) < 2 or len(answers['display_name']) > 150:
+            errors['display_name'] = 'Name must be 2-150 characters'
+
+    # Validate tagline
+    if 'thesis_tagline' in answers and answers['thesis_tagline']:
+        try:
+            validate_thesis_tagline(answers['thesis_tagline'])
+        except ValidationError as e:
+            errors['thesis_tagline'] = str(e.message)
+
+    return {'valid': len(errors) == 0, 'errors': errors}
+
+
+# ==================== PROMOTIONAL PROFILE WRITEBACK ====================
+
+def writeback_promotional_profile_module(assignment, module_type):
+    """
+    Generic writeback for promotional profile modules.
+
+    Args:
+        assignment: PostAcceptanceFormAssignment
+        module_type: 'sponsor', 'sponsor_staff', 'startup', or 'investor'
+
+    Returns:
+        bool: Success status
+    """
+    try:
+        submission = assignment.submission
+        registration = assignment.event_registration
+
+        # Update display_consent
+        for answer in submission.answers.all():
+            if answer.question_key == 'display_consent':
+                registration.display_consent = answer.answer_text
+                break
+
+        # Mark promotional profile as complete
+        registration.promotional_profile_completed_at = timezone.now()
+
+        update_fields = ['display_consent', 'promotional_profile_completed_at']
+        registration.save(update_fields=update_fields)
+
+        logger.info(
+            f"Wrote back {module_type} module {assignment.id} to registration {registration.id}"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(
+            f"Writeback failed for {module_type} module {assignment.id}: {str(e)}",
             exc_info=True
         )
         return False

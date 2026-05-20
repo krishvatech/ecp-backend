@@ -48,6 +48,9 @@ from .views import (
     EventScheduleView,
     SessionBookmarkToggleView,
 )
+from .admin_promotional_profiles import (
+    PromotionalProfileAdminViewSet,
+)
 from .guest_views import (
     GuestJoinView,
     GuestVerifyOTPView,
@@ -136,6 +139,36 @@ urlpatterns = [
         name='admin-form-assignments-export'
     ),
     path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'post': 'export_promotional'}),
+        name='admin-form-assignments-export-promotional'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional-completed/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'export_promotional_completed'}),
+        name='admin-form-assignments-export-promotional-completed'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional-speakers/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'export_speakers'}),
+        name='admin-form-assignments-export-speakers'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional-sponsors/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'export_sponsors'}),
+        name='admin-form-assignments-export-sponsors'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional-startups/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'export_startups'}),
+        name='admin-form-assignments-export-startups'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional-investors/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'export_investors'}),
+        name='admin-form-assignments-export-investors'
+    ),
+    path(
         "events/<int:event_id>/post-acceptance-form-assignments-admin/summary/",
         PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'summary'}),
         name='admin-form-assignments-summary'
@@ -156,6 +189,53 @@ urlpatterns = [
         "events/<int:event_id>/post-acceptance-form-assignments-admin/<int:pk>/mark-complete/",
         PostAcceptanceFormAssignmentAdminViewSet.as_view({'post': 'mark_complete'}),
         name='admin-form-assignments-mark-complete'
+    ),
+
+    # Promotional Profile Admin Endpoints
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/",
+        PromotionalProfileAdminViewSet.as_view({'get': 'list'}),
+        name='promotional-profiles-admin-list'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/summary/",
+        PromotionalProfileAdminViewSet.as_view({'get': 'summary'}),
+        name='promotional-profiles-admin-summary'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/reminders/",
+        PromotionalProfileAdminViewSet.as_view({'post': 'bulk_send_reminders'}),
+        name='promotional-profiles-admin-reminders'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/mark-complete/",
+        PromotionalProfileAdminViewSet.as_view({'post': 'bulk_mark_complete'}),
+        name='promotional-profiles-admin-mark-complete'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/export-csv/",
+        PromotionalProfileAdminViewSet.as_view({'get': 'export_csv'}),
+        name='promotional-profiles-admin-export-csv'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/export-by-role/",
+        PromotionalProfileAdminViewSet.as_view({'get': 'export_by_role'}),
+        name='promotional-profiles-admin-export-by-role'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/notify-production/",
+        PromotionalProfileAdminViewSet.as_view({'post': 'notify_production_lead'}),
+        name='promotional-profiles-admin-notify-production'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/missing-assets/",
+        PromotionalProfileAdminViewSet.as_view({'get': 'missing_assets_report'}),
+        name='promotional-profiles-admin-missing-assets'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/export-production/",
+        PromotionalProfileAdminViewSet.as_view({'post': 'export_production'}),
+        name='promotional-profiles-admin-export-production'
     ),
 
     path("events/recording/webhook/", RecordingWebhookView.as_view(), name="rtk-recording-webhook"),

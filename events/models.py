@@ -826,6 +826,45 @@ class EventRegistration(models.Model):
         default=False,
         help_text='Whether participant declared accessibility or support needs in form'
     )
+    attendance_mode = models.CharField(
+        max_length=20,
+        choices=[
+            ('in_person', 'In Person'),
+            ('online', 'Online'),
+            ('hybrid_not_selected', 'Hybrid Event - Not Yet Selected'),
+        ],
+        default='hybrid_not_selected',
+        blank=True,
+        help_text='Attendance mode selected by participant in hybrid events'
+    )
+
+    # Promotional Profile specific fields
+    promotional_profile_completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When promotional profile was completed'
+    )
+    display_consent = models.CharField(
+        max_length=20,
+        choices=[
+            ('yes', 'Yes, display profile publicly'),
+            ('no', 'No, do not display'),
+            ('pending', 'Not yet answered'),
+        ],
+        default='pending',
+        blank=True,
+        help_text='Whether attendee consents to public profile display'
+    )
+
+    # Restricted data retention override
+    restricted_data_retention_required = models.BooleanField(
+        default=False,
+        help_text='If True, skip automatic purge of restricted form data (used for legal/compliance holds)'
+    )
+    restricted_data_retention_reason = models.TextField(
+        blank=True,
+        help_text='Reason for retaining restricted data (legal reference, compliance note, etc.)'
+    )
 
     class Meta:
         db_table = 'event_registrations'
@@ -1235,14 +1274,43 @@ class EventParticipant(models.Model):
         (PARTICIPANT_TYPE_VIRTUAL, 'Virtual Speaker'),
     ]
 
+    # Stage participation roles
     ROLE_SPEAKER = 'speaker'
     ROLE_MODERATOR = 'moderator'
     ROLE_HOST = 'host'
+
+    # Promotional profile roles (for post-acceptance form)
+    ROLE_SPONSOR = 'sponsor'
+    ROLE_SPONSOR_STAFF = 'sponsor_staff'
+    ROLE_STARTUP = 'startup'
+    ROLE_INVESTOR = 'investor'
 
     ROLE_CHOICES = [
         (ROLE_SPEAKER, 'Speaker'),
         (ROLE_MODERATOR, 'Moderator'),
         (ROLE_HOST, 'Host'),
+        (ROLE_SPONSOR, 'Sponsor'),
+        (ROLE_SPONSOR_STAFF, 'Sponsor Staff'),
+        (ROLE_STARTUP, 'Start-up'),
+        (ROLE_INVESTOR, 'Investor'),
+    ]
+
+    # Mapping of roles to promotional profile modules
+    ROLE_MODULE_MAP = {
+        ROLE_SPEAKER: 'speaker',
+        ROLE_SPONSOR: 'sponsor',
+        ROLE_SPONSOR_STAFF: 'sponsor_staff',
+        ROLE_STARTUP: 'startup',
+        ROLE_INVESTOR: 'investor',
+    }
+
+    # Roles that trigger promotional profile creation
+    TRIGGERS_PROMOTIONAL_PROFILE_ROLES = [
+        ROLE_SPEAKER,
+        ROLE_SPONSOR,
+        ROLE_SPONSOR_STAFF,
+        ROLE_STARTUP,
+        ROLE_INVESTOR,
     ]
 
     # Core fields
@@ -3061,6 +3129,18 @@ class PostAcceptanceFormAssignment(models.Model):
     reminders_sent = models.PositiveIntegerField(default=0)
     last_reminder_sent_at = models.DateTimeField(null=True, blank=True)
 
+    # Promotional Profile specific fields
+    active_modules = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='List of active modules for promotional profile (e.g., ["speaker", "sponsor"])'
+    )
+    module_completion_status = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Per-module completion tracking (e.g., {"speaker": true, "sponsor": false})'
+    )
+
     manual_completed_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -3109,6 +3189,7 @@ class PostAcceptanceFormAnswer(models.Model):
     question_key = models.CharField(max_length=100, help_text='Unique question identifier')
     answer_text = models.TextField(blank=True)
     answer_data = models.JSONField(default=dict, blank=True, help_text='Complex answer data (for checkboxes, multi-select, etc.)')
+    answer_file = models.FileField(null=True, blank=True, upload_to='form_answers/%Y/%m/%d/', help_text='Uploaded file (for headshot, slide deck, etc.)')
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -3123,6 +3204,41 @@ class PostAcceptanceFormAnswer(models.Model):
 
     def __str__(self):
         return f"Answer {self.question_key} - {self.submission}"
+
+
+class PostAcceptanceFormAnswerFile(models.Model):
+    """
+    File attachment for form answers.
+
+    Supports multiple files per answer (e.g., multiple founder photos, multiple deliverables).
+    Links to PostAcceptanceFormAnswer via foreign key.
+    """
+    answer = models.ForeignKey(
+        PostAcceptanceFormAnswer,
+        on_delete=models.CASCADE,
+        related_name='files',
+        help_text='Parent form answer'
+    )
+    file = models.FileField(
+        upload_to='form_answers/%Y/%m/%d/',
+        help_text='Uploaded file'
+    )
+    file_order = models.PositiveIntegerField(
+        default=0,
+        help_text='Order of file in list (for multiple files per question)'
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'post_acceptance_form_answer_files'
+        ordering = ['file_order', 'uploaded_at']
+        indexes = [
+            models.Index(fields=['answer']),
+            models.Index(fields=['answer', 'file_order']),
+        ]
+
+    def __str__(self):
+        return f"File for {self.answer.question_key} - {self.file.name}"
 
 
 class PostAcceptanceFormDraft(models.Model):
@@ -3146,6 +3262,10 @@ class AdminAuditLog(models.Model):
         ('view_restricted', 'Viewed restricted details'),
         ('export_restricted', 'Exported restricted data'),
         ('manual_mark_complete', 'Marked assignment complete'),
+        ('export_promotional', 'Exported promotional profiles'),
+        ('send_reminders', 'Sent form reminders'),
+        ('export_production', 'Exported for production handoff'),
+        ('purge_restricted', 'Purged restricted form data'),
     ]
 
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='form_audit_logs')
@@ -3195,3 +3315,122 @@ class PostAcceptanceReminderLog(models.Model):
 
     def __str__(self):
         return f"Reminder {self.reminder_number} - {self.assignment}"
+
+
+class EventFormCustomization(models.Model):
+    """
+    Per-event customization for post-acceptance forms.
+
+    Allows organisers to:
+    - Enable/disable sections (Accessibility, Emergency Contact, etc.)
+    - Add custom questions
+    - Change field requirements
+    - Edit help text
+    - Modify select options
+    - Set deadlines
+    - Configure file specifications
+    - Configure reminder cadence
+    """
+    FORM_TYPE_CHOICES = [
+        ('participant_information', 'Participant Information'),
+        ('promotional_profile', 'Promotional Profile'),
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='form_customizations')
+    form_type = models.CharField(max_length=50, choices=FORM_TYPE_CHOICES)
+
+    # Section enablement (Participant Information specific)
+    enable_accessibility_section = models.BooleanField(default=True)
+    enable_emergency_contact_section = models.BooleanField(default=True)
+    enable_food_requirements_section = models.BooleanField(default=True)
+    enable_privacy_permissions_section = models.BooleanField(default=True)
+    enable_travel_information_section = models.BooleanField(default=True)
+
+    # Customization of fields
+    field_overrides = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Field-level customizations: {field_id: {required, help_text, options, ...}}'
+    )
+
+    # Custom questions
+    custom_questions = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='List of custom questions [{id, type, label, required, options, show_if, ...}]'
+    )
+
+    # Deadlines
+    form_deadline = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Overall deadline for this form type'
+    )
+
+    # Promotional Profile module deadlines
+    module_deadlines = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Module-specific deadlines: {speaker: ISO8601, sponsor: ISO8601, ...}'
+    )
+
+    # File specifications
+    file_specs = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='File requirements per field: {headshot: {max_size, formats, ...}, ...}'
+    )
+
+    # Reminder configuration
+    reminder_schedule = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Reminder cadence: {first_reminder_days: 14, second_reminder_days: 3, ...}'
+    )
+
+    # Audit
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='form_customizations_updated'
+    )
+
+    class Meta:
+        db_table = 'event_form_customizations'
+        unique_together = [['event', 'form_type']]
+        indexes = [
+            models.Index(fields=['event', 'form_type']),
+        ]
+
+    def __str__(self):
+        return f"Form Customization: {self.event.title} - {self.get_form_type_display()}"
+
+    def get_section_config(self):
+        """Return all section enable/disable settings."""
+        return {
+            'accessibility': self.enable_accessibility_section,
+            'emergency_contact': self.enable_emergency_contact_section,
+            'food_requirements': self.enable_food_requirements_section,
+            'privacy_permissions': self.enable_privacy_permissions_section,
+            'travel_information': self.enable_travel_information_section,
+        }
+
+    def get_field_override(self, field_id):
+        """Get customization for specific field."""
+        return self.field_overrides.get(field_id, {})
+
+    def add_custom_question(self, question_config):
+        """Add a custom question."""
+        if not question_config.get('id'):
+            question_config['id'] = f"custom_{len(self.custom_questions)}"
+        self.custom_questions.append(question_config)
+        self.save()
+
+    def remove_custom_question(self, question_id):
+        """Remove a custom question by ID."""
+        self.custom_questions = [q for q in self.custom_questions if q.get('id') != question_id]
+        self.save()

@@ -1565,12 +1565,20 @@ def send_form_reminder_task(self, assignment_id):
 def schedule_form_reminders():
     """
     Scheduled task to find incomplete form assignments approaching deadline.
-    Sends reminders:
+    Sends reminders with role/module-based cadence:
+
+    Participant Information (default):
     - 14 days before deadline (first reminder)
     - 3 days before deadline (second reminder)
-    - 24 hours before deadline (optional third reminder)
+
+    Promotional Profile (speaker/moderator/host emphasis):
+    - Day 0 (initial - already sent on creation)
+    - Day 3 before deadline
+    - Day 5 before deadline
+    - Day 7 before deadline
+    - Optional escalation (24 hours)
     """
-    from events.models import PostAcceptanceFormAssignment
+    from events.models import PostAcceptanceFormAssignment, PostAcceptanceFormTemplate
     from datetime import datetime, timedelta
     from django.utils import timezone
 
@@ -1581,8 +1589,7 @@ def schedule_form_reminders():
         reminders_scheduled = 0
 
         # Find incomplete assignments with deadline approaching in next 14+ days
-        # Skip opted-out or cancelled registrations
-        # TODO: Add opt_out_automated_communication field to EventRegistration when available
+        # Skip opted-out registrations if field exists
         assignments = PostAcceptanceFormAssignment.objects.filter(
             status__in=[
                 PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
@@ -1592,29 +1599,36 @@ def schedule_form_reminders():
             deadline__lte=reminder_window_end + timedelta(days=14),
             event_registration__attendee_status='confirmed',
             event_registration__status='registered'
-        ).select_related('event', 'event_registration')
+        ).select_related('event', 'event_registration', 'form_template')
 
         for assignment in assignments:
-            days_until_deadline = (assignment.deadline - now).days
+            form_type = assignment.form_type
 
-            # Send first reminder 14 days before (13-15 day window for daily check)
-            if 13 <= days_until_deadline <= 15 and assignment.reminders_sent == 0:
-                send_form_reminder_task.delay(assignment.id)
-                reminders_scheduled += 1
-                logger.info(f"Scheduled first reminder (14d) for assignment {assignment.id}")
+            # Get reminder schedule and calculate days
+            if form_type == 'promotional_profile':
+                reminder_schedule = _get_promotional_profile_reminder_schedule(assignment)
+                # For promotional profiles, use creation_at-based schedule
+                days_for_comparison = (now - assignment.created_at).days
+                reference_point = "creation"
+            else:
+                # Default participant_information schedule
+                reminder_schedule = _get_participant_information_reminder_schedule(assignment)
+                # For participant_information, use deadline-based schedule
+                days_for_comparison = (assignment.deadline - now).days
+                reference_point = "deadline"
 
-            # Send second reminder 3 days before (2-4 day window for daily check)
-            elif 2 <= days_until_deadline <= 4 and assignment.reminders_sent == 1:
-                send_form_reminder_task.delay(assignment.id)
-                reminders_scheduled += 1
-                logger.info(f"Scheduled second reminder (3d) for assignment {assignment.id}")
-
-            # Optional third reminder 24 hours before is disabled by default
-            # Uncomment below to enable 24-hour reminders
-            # elif 0 <= days_until_deadline <= 1 and assignment.reminders_sent >= 2:
-            #     send_form_reminder_task.delay(assignment.id)
-            #     reminders_scheduled += 1
-            #     logger.info(f"Scheduled optional third reminder (24h) for assignment {assignment.id}")
+            # Check if reminder should be sent now
+            for reminder_day, reminder_count in reminder_schedule:
+                # Allow 1-day tolerance window for matching
+                if (reminder_day - 1 <= days_for_comparison <= reminder_day + 1 and
+                    assignment.reminders_sent == reminder_count):
+                    send_form_reminder_task.delay(assignment.id)
+                    reminders_scheduled += 1
+                    logger.info(
+                        f"Scheduled reminder #{reminder_count + 1} ({reminder_day}d from {reference_point}) "
+                        f"for {form_type} assignment {assignment.id}"
+                    )
+                    break  # Only send one reminder per day
 
         logger.info(f"Form reminder scheduler: {reminders_scheduled} reminders queued")
         return {"reminders_scheduled": reminders_scheduled}
@@ -1622,6 +1636,46 @@ def schedule_form_reminders():
     except Exception as e:
         logger.error(f"Failed to schedule form reminders: {e}")
         return {"error": str(e)}
+
+
+def _get_participant_information_reminder_schedule(assignment):
+    """
+    Get reminder schedule for Participant Information forms.
+
+    Default schedule:
+    - Day 14: First reminder
+    - Day 3: Second reminder
+
+    Returns:
+        list: [(days_until_deadline, reminders_sent_threshold), ...]
+    """
+    return [
+        (14, 0),  # Send when 14 days before and no reminders sent yet
+        (3, 1),   # Send when 3 days before and 1 reminder already sent
+    ]
+
+
+def _get_promotional_profile_reminder_schedule(assignment):
+    """
+    Get reminder schedule for Promotional Profile forms.
+
+    Schedule based on days since assignment creation:
+    - Day 0: Initial email sent on creation
+    - Day 3: First reminder
+    - Day 5: Second reminder
+    - Day 7: Third reminder
+
+    Note: This uses creation_at-based schedule, not deadline-based.
+    The calling code should check days_since_created instead of days_until_deadline.
+
+    Returns:
+        list: [(days_since_created, reminders_sent_threshold), ...]
+    """
+    return [
+        (3, 0),  # First reminder 3 days after creation
+        (5, 1),  # Second reminder 5 days after creation
+        (7, 2),  # Third reminder 7 days after creation
+    ]
 
 
 @shared_task
@@ -1712,6 +1766,15 @@ def purge_expired_form_data():
             )
 
             for submission in submissions:
+                # Skip purging if registration has retention requirement
+                registration = submission.assignment.event_registration
+                if registration.restricted_data_retention_required:
+                    logger.info(
+                        f"Skipping purge for submission {submission.id} - "
+                        f"retention required. Reason: {registration.restricted_data_retention_reason}"
+                    )
+                    continue
+
                 # Delete restricted answer fields
                 deleted = submission.answers.filter(
                     question_key__in=restricted_fields

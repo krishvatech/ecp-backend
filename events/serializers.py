@@ -26,7 +26,7 @@ from .models import (
     EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate,
     EventNetworkingSettings, NetworkingTable, NetworkingMeeting, EventSessionBookmark,
     PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer,
-    AdminAuditLog, PostAcceptanceFormDraft
+    AdminAuditLog, PostAcceptanceFormDraft, EventFormCustomization
 )
 from community.models import Community
 from content.models import Resource
@@ -3494,12 +3494,14 @@ class PostAcceptanceFormAssignmentSerializer(serializers.ModelSerializer):
             'deadline', 'started_at', 'completed_at',
             'reminders_sent', 'last_reminder_sent_at',
             'attendee_name', 'attendee_email', 'user_id',
+            'active_modules', 'module_completion_status',
             'draft_data',
             'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'event', 'form_template', 'form_type',
             'reminders_sent', 'last_reminder_sent_at',
+            'active_modules', 'module_completion_status',
             'created_at', 'updated_at'
         ]
 
@@ -3695,3 +3697,82 @@ class PostAcceptanceFormAssignmentAdminDetailSerializer(serializers.ModelSeriali
             submission,
             context=self.context
         ).data
+
+
+class EventFormCustomizationSerializer(serializers.ModelSerializer):
+    """Serializer for per-event form customization."""
+    section_config = serializers.SerializerMethodField()
+    custom_questions_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventFormCustomization
+        fields = [
+            'id', 'event', 'form_type',
+            'enable_accessibility_section',
+            'enable_emergency_contact_section',
+            'enable_food_requirements_section',
+            'enable_privacy_permissions_section',
+            'enable_travel_information_section',
+            'section_config',
+            'field_overrides',
+            'custom_questions',
+            'custom_questions_count',
+            'form_deadline',
+            'module_deadlines',
+            'file_specs',
+            'reminder_schedule',
+            'created_at',
+            'updated_at',
+            'updated_by'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_section_config(self, obj):
+        """Return all section settings."""
+        return obj.get_section_config()
+
+    def get_custom_questions_count(self, obj):
+        """Return count of custom questions."""
+        return len(obj.custom_questions or [])
+
+    def create(self, validated_data):
+        """Create form customization."""
+        from events.models import EventFormCustomization
+        return EventFormCustomization.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+        """Update form customization."""
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.updated_by = self.context['request'].user
+        instance.save()
+        return instance
+
+
+class CustomQuestionSerializer(serializers.Serializer):
+    """Serializer for custom question within form customization."""
+    id = serializers.CharField(required=False)
+    type = serializers.ChoiceField(choices=['text', 'textarea', 'select', 'multi_select', 'checkbox', 'radio'])
+    label = serializers.CharField(max_length=500)
+    help_text = serializers.CharField(required=False, allow_blank=True)
+    required = serializers.BooleanField(default=False)
+    options = serializers.ListField(child=serializers.CharField(), required=False, allow_empty=True)
+    show_if = serializers.JSONField(required=False, allow_null=True)
+    placeholder = serializers.CharField(required=False, allow_blank=True)
+    rows = serializers.IntegerField(required=False, min_value=1, max_value=20)
+
+    def validate(self, data):
+        """Validate custom question."""
+        # Multi-select and select fields require options
+        if data['type'] in ['select', 'multi_select', 'radio'] and not data.get('options'):
+            raise serializers.ValidationError("Options required for select/multi_select/radio fields")
+        return data
+
+
+class FormFieldOverrideSerializer(serializers.Serializer):
+    """Serializer for field-level overrides."""
+    required = serializers.BooleanField(required=False)
+    help_text = serializers.CharField(required=False, allow_blank=True)
+    label = serializers.CharField(required=False, max_length=500)
+    options = serializers.ListField(child=serializers.CharField(), required=False)
+    hidden = serializers.BooleanField(required=False, default=False)

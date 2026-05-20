@@ -1,9 +1,9 @@
 from django.db.models.signals import post_save, pre_delete
 from django.dispatch import receiver
 from django.db import transaction
-from .models import Event, EventParticipant, PostAcceptanceFormTemplate
+from .models import Event, EventParticipant, PostAcceptanceFormTemplate, EventRegistration
 from .saleor_sync import sync_event_to_saleor_sync, delete_event_from_saleor
-from .services.post_acceptance_forms import is_online_event
+from .services.post_acceptance_forms import is_online_event, trigger_post_acceptance_forms
 import threading
 import logging
 
@@ -392,3 +392,28 @@ def delete_event_from_saleor_signal(sender, instance, **kwargs):
         logging.getLogger(__name__).error(
             f"Error deleting event {instance.id} from Saleor: {e}"
         )
+
+
+@receiver(post_save, sender=EventRegistration)
+def trigger_forms_on_registration_confirmed(sender, instance, created, **kwargs):
+    """
+    Trigger post-acceptance form assignments when registration is confirmed.
+
+    This ensures forms are created for:
+    - Auto-registered speakers/participants
+    - Approved applications
+    - Any time a registration reaches 'confirmed' status
+
+    Covers the gap where participants added directly by admin need form assignments.
+    """
+    # Only trigger if registration is confirmed and registered
+    if instance.attendee_status == 'confirmed' and instance.status == 'registered':
+        try:
+            from events.services import trigger_post_acceptance_forms
+            trigger_post_acceptance_forms(instance)
+        except Exception as e:
+            logger.error(
+                f"Failed to trigger post-acceptance forms for registration {instance.id}: {e}",
+                exc_info=True
+            )
+            # Don't fail the registration - continue normally

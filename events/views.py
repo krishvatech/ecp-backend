@@ -2306,29 +2306,18 @@ class EventViewSet(viewsets.ModelViewSet):
         # Trigger post-acceptance forms for new registrations (both open and paid events)
         if was_created:
             try:
-                from events.services import trigger_post_acceptance_forms, send_form_assignment_email
-                from events.models import PostAcceptanceFormAssignment
+                from events.services import trigger_post_acceptance_forms
 
                 # Set attendee_status to confirmed for open registration
                 if event.registration_type == 'open':
                     obj.attendee_status = 'confirmed'
                     obj.save(update_fields=['attendee_status'])
 
-                # Trigger form assignments
+                # Trigger form assignments (emails are sent automatically by service layer)
                 created_assignments = trigger_post_acceptance_forms(obj)
-
-                # Send form assignment emails
-                all_assignments = PostAcceptanceFormAssignment.objects.filter(
-                    event_registration=obj
-                )
-                for assignment in all_assignments:
-                    try:
-                        send_form_assignment_email(assignment)
-                        logger.info(f"Form assignment email sent for assignment {assignment.id} to {obj.user.email}")
-                    except Exception as e:
-                        logger.error(f"Failed to send form assignment email for assignment {assignment.id}: {str(e)}", exc_info=True)
+                logger.info(f"Triggered {len(created_assignments) if created_assignments else 0} form assignments for registration {obj.id}")
             except Exception as e:
-                logger.error(f"Failed to trigger/send post-acceptance forms for registration {obj.id}: {str(e)}", exc_info=True)
+                logger.error(f"Failed to trigger post-acceptance forms for registration {obj.id}: {str(e)}", exc_info=True)
 
         # Create in-app notification for all successful registrations
         if was_created:
@@ -2743,19 +2732,9 @@ class EventViewSet(viewsets.ModelViewSet):
                 from events.services import trigger_post_acceptance_forms, send_form_assignment_email
                 from events.models import PostAcceptanceFormAssignment
 
-                # Trigger form assignments
+                # Trigger form assignments (emails are sent automatically by service layer)
                 created_assignments = trigger_post_acceptance_forms(registration)
-
-                # Send form emails for all form assignments (whether newly created or existing)
-                all_assignments = PostAcceptanceFormAssignment.objects.filter(
-                    event_registration=registration
-                )
-                for assignment in all_assignments:
-                    try:
-                        send_form_assignment_email(assignment)
-                        logger.info(f"Form email sent for assignment {assignment.id} to {registration.user.email}")
-                    except Exception as e:
-                        logger.error(f"Failed to send form email for assignment {assignment.id}: {str(e)}", exc_info=True)
+                logger.info(f"Triggered {len(created_assignments) if created_assignments else 0} form assignments for user {registration.user.email}")
 
             except Exception as e:
                 logger.error(f"Failed to trigger post-acceptance forms for application {app.id}: {str(e)}", exc_info=True)
@@ -10081,7 +10060,31 @@ class PostAcceptanceFormAssignmentViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        answers_data = request.data.get('answers', {})
+        # Handle both JSON and multipart FormData submissions
+        # For FormData, answers come as answers.fieldname or just fieldname with files in request.FILES
+        answers_data = {}
+
+        if request.content_type and 'multipart/form-data' in request.content_type:
+            # Parse multipart FormData: answers.fieldname or direct fields
+            for key, value in request.data.items():
+                if key.startswith('answers.'):
+                    # answers.fieldname format
+                    field_name = key[8:]  # Remove 'answers.' prefix
+                    answers_data[field_name] = value
+                elif key not in ['answers']:
+                    # Direct field format (could be file or data)
+                    answers_data[key] = value
+
+            # Also check request.FILES for uploaded files
+            for file_key, file_obj in request.FILES.items():
+                if file_key.startswith('answers.'):
+                    field_name = file_key[8:]
+                    answers_data[field_name] = file_obj
+                else:
+                    answers_data[file_key] = file_obj
+        else:
+            # JSON format
+            answers_data = request.data.get('answers', {})
 
         # Validate required fields
         validation_errors = self._validate_form_submission(assignment, answers_data)
@@ -10090,27 +10093,88 @@ class PostAcceptanceFormAssignmentViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             from events.services import mark_assignment_completed
-            from events.models import PostAcceptanceFormSubmission, PostAcceptanceFormAnswer
+            from events.models import PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, PostAcceptanceFormAnswerFile
+            from django.core.files.uploadedfile import UploadedFile
 
             submission, created = PostAcceptanceFormSubmission.objects.get_or_create(
                 assignment=assignment
             )
 
             for question_key, answer_value in answers_data.items():
-                PostAcceptanceFormAnswer.objects.update_or_create(
+                # Handle file uploads separately
+                if isinstance(answer_value, UploadedFile):
+                    # Single file: store in answer_file field
+                    defaults = {
+                        'answer_text': answer_value.name,
+                        'answer_file': answer_value
+                    }
+                    PostAcceptanceFormAnswer.objects.update_or_create(
+                        submission=submission,
+                        question_key=question_key,
+                        defaults=defaults
+                    )
+                else:
+                    # Standard text/data handling
+                    # Parse JSON strings (from FormData multi-select arrays)
+                    parsed_value = answer_value
+                    if isinstance(answer_value, str) and answer_value.startswith('['):
+                        try:
+                            import json
+                            parsed_value = json.loads(answer_value)
+                        except (json.JSONDecodeError, ValueError):
+                            # If not valid JSON, treat as string
+                            parsed_value = answer_value
+
+                    defaults = {
+                        'answer_text': str(parsed_value) if isinstance(parsed_value, (str, int, float)) else '',
+                        'answer_data': parsed_value if isinstance(parsed_value, (list, dict)) else {}
+                    }
+                    PostAcceptanceFormAnswer.objects.update_or_create(
+                        submission=submission,
+                        question_key=question_key,
+                        defaults=defaults
+                    )
+
+            # Handle multiple files per question (for deliverables, founder_photos, etc.)
+            for file_key in request.FILES.keys():
+                # Parse question_key from file_key (e.g., "answers.deliverables" or "deliverables")
+                question_key = file_key.replace('answers.', '') if file_key.startswith('answers.') else file_key
+
+                # Get all files for this key (handles multiple uploads)
+                file_list = request.FILES.getlist(file_key)
+
+                # Get or create answer for this question
+                answer, _ = PostAcceptanceFormAnswer.objects.get_or_create(
                     submission=submission,
                     question_key=question_key,
-                    defaults={
-                        'answer_text': str(answer_value) if isinstance(answer_value, (str, int, float)) else '',
-                        'answer_data': answer_value if isinstance(answer_value, (list, dict)) else {}
-                    }
+                    defaults={'answer_text': '', 'answer_data': {}}
                 )
+
+                # Save each file to PostAcceptanceFormAnswerFile
+                for idx, file_obj in enumerate(file_list):
+                    PostAcceptanceFormAnswerFile.objects.create(
+                        answer=answer,
+                        file=file_obj,
+                        file_order=idx
+                    )
 
             mark_assignment_completed(assignment)
 
-            # Write back form data to registration
-            from events.services import writeback_participant_information_form
-            writeback_participant_information_form(assignment)
+            # Write back form data based on form type
+            if assignment.form_type == 'participant_information':
+                from events.services import writeback_participant_information_form
+                writeback_participant_information_form(assignment)
+            elif assignment.form_type == 'promotional_profile':
+                from events.services.post_acceptance_forms import writeback_promotional_profile_module
+                from events.services.promotional_profile_service import mark_module_completed
+
+                # Determine which module(s) were submitted
+                # For now, mark all active modules as completed
+                for module in assignment.active_modules or []:
+                    mark_module_completed(assignment, module)
+
+                # Generic promotional profile writeback
+                writeback_promotional_profile_module(assignment, 'promotional_profile')
 
         return Response(
             PostAcceptanceFormSubmissionSerializer(submission).data,
@@ -10127,7 +10191,26 @@ class PostAcceptanceFormAssignmentViewSet(viewsets.ModelViewSet):
         event = assignment.event
         schema = assignment.form_template.question_schema
 
-        # Check if form is for virtual/online-only event - block submission
+        # Route to form-type-specific validation
+        if assignment.form_type == 'participant_information':
+            return self._validate_participant_information(assignment, answers_data)
+        elif assignment.form_type == 'promotional_profile':
+            return self._validate_promotional_profile(assignment, answers_data)
+
+        # Fallback: generic schema validation
+        return self._validate_generic_form(assignment, answers_data)
+
+    def _validate_participant_information(self, assignment, answers_data):
+        """Validate Participant Information form (event attendance focused)."""
+        from events.services.post_acceptance_forms import (
+            is_online_event, is_in_person_event, is_hybrid_event, should_show_physical_sections
+        )
+
+        errors = {}
+        event = assignment.event
+        schema = assignment.form_template.question_schema
+
+        # Check if form is for virtual/online-only event
         if is_online_event(event):
             return {'errors': {'detail': 'Participant Information Form is only available for in-person and hybrid events'}}
 
@@ -10149,7 +10232,6 @@ class PostAcceptanceFormAssignmentViewSet(viewsets.ModelViewSet):
                 errors['attendance_mode'] = 'Please select your attendance mode'
 
         # Physical sections require emergency contact fields
-        # (shown for in-person events and hybrid events where user selected in-person)
         if show_physical_sections:
             emergency_contact_required = ['emergency_contact_name', 'emergency_contact_phone', 'emergency_contact_relationship']
             for field_id in emergency_contact_required:
@@ -10239,6 +10321,89 @@ class PostAcceptanceFormAssignmentViewSet(viewsets.ModelViewSet):
             emergency_contact_relationship_other = answers_data.get('emergency_contact_relationship_other', '')
             if not emergency_contact_relationship_other or emergency_contact_relationship_other == '':
                 errors['emergency_contact_relationship_other'] = 'Please specify relationship'
+
+        return {'errors': errors} if errors else None
+
+    def _validate_promotional_profile(self, assignment, answers_data):
+        """Validate Promotional Profile form (module-based validation)."""
+        errors = {}
+        schema = assignment.form_template.question_schema
+
+        # Get active modules for this assignment
+        active_modules = assignment.active_modules or []
+
+        def _is_section_visible(section):
+            """Check if section should be shown based on active_modules."""
+            condition = section.get('showIfIncludes')
+            if not condition:
+                return True
+
+            field_name = condition.get('field')
+            expected_value = condition.get('value')
+
+            if field_name == 'active_modules':
+                return expected_value in active_modules
+
+            return True
+
+        def _is_field_visible(field):
+            """Check if field should be shown based on active_modules."""
+            condition = field.get('showIfIncludes')
+            if not condition:
+                return True
+
+            field_name = condition.get('field')
+            expected_value = condition.get('value')
+
+            if field_name == 'active_modules':
+                return expected_value in active_modules
+
+            return True
+
+        # Validate only fields in active modules
+        for section in schema.get('sections', []):
+            # Skip sections not visible for active modules
+            if not _is_section_visible(section):
+                continue
+
+            for field in section.get('fields', []):
+                # Support both 'id' (new) and 'key' (old/legacy) for backward compatibility
+                field_key = field.get('id') or field.get('key')
+                field_value = answers_data.get(field_key)
+                field_type = field.get('type')
+                is_required = field.get('required', False)
+
+                # Skip fields hidden by module conditions
+                if not _is_field_visible(field):
+                    continue
+
+                # Required field validation
+                if is_required:
+                    if field_type == 'multi_select':
+                        if not field_value or (isinstance(field_value, list) and len(field_value) == 0):
+                            errors[field_key] = 'This field is required'
+                    elif field_type in ('file_upload', 'file_upload_multiple', 'file'):
+                        # File fields: required means at least one file must be uploaded
+                        if not field_value:
+                            errors[field_key] = 'This field is required'
+                    else:
+                        if not field_value or field_value == '':
+                            errors[field_key] = 'This field is required'
+
+        return {'errors': errors} if errors else None
+
+    def _validate_generic_form(self, assignment, answers_data):
+        """Generic validation for forms without specific handlers."""
+        errors = {}
+        schema = assignment.form_template.question_schema
+
+        # Validate required fields only
+        for section in schema.get('sections', []):
+            for field in section.get('fields', []):
+                if field.get('required'):
+                    field_value = answers_data.get(field['id'])
+                    if not field_value or field_value == '':
+                        errors[field['id']] = 'This field is required'
 
         return {'errors': errors} if errors else None
 
@@ -10667,3 +10832,272 @@ class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
             writer.writerow(row)
 
         return output.getvalue()
+
+    @action(detail=False, methods=['post'], url_path='export-promotional')
+    def export_promotional(self, request, event_id=None):
+        """Export promotional profiles in CSV, JSON, or ZIP format.
+
+        Query parameters:
+            format: 'csv' | 'json' | 'zip' (default: zip)
+            role: Optional role filter (speaker, sponsor, startup, investor)
+            include_internal: Include profiles with display_consent='no'
+            include_incomplete: Include in_progress assignments
+
+        Body:
+            {
+                "format": "csv",
+                "role": "speaker",
+                "include_internal": false,
+                "include_incomplete": false
+            }
+        """
+        from events.services.promotional_profile_export_service import (
+            generate_csv_export,
+            generate_json_export,
+            generate_zip_export,
+            build_export_queryset
+        )
+
+        event = get_object_or_404(Event, id=event_id)
+        self.check_object_permissions(request, event)
+
+        # Get parameters
+        export_format = request.data.get('format', 'zip').lower()
+        role = request.data.get('role')
+        include_internal = request.data.get('include_internal', False)
+        include_incomplete = request.data.get('include_incomplete', False)
+
+        # Permission check for internal export
+        if include_internal:
+            has_permission = (
+                request.user.is_superuser or
+                request.user.groups.filter(name='view_restricted_attendee_data').exists()
+            )
+            if not has_permission:
+                raise PermissionDenied(
+                    "Permission denied for internal promotional profile export"
+                )
+
+        # Build queryset
+        assignments = self.get_queryset().filter(
+            event=event,
+            form_type='promotional_profile'
+        )
+        assignments = build_export_queryset(
+            assignments,
+            include_internal=include_internal,
+            include_incomplete=include_incomplete,
+            role=role
+        )
+
+        row_count = assignments.count()
+
+        # Generate export
+        try:
+            if export_format == 'csv':
+                export_data = generate_csv_export(assignments, include_internal, role)
+                content_type = 'text/csv'
+                filename = f'promotional-profiles-{event_id}.csv'
+                response = HttpResponse(export_data, content_type=content_type)
+
+            elif export_format == 'json':
+                export_data = generate_json_export(assignments, include_internal, role)
+                content_type = 'application/json'
+                filename = f'promotional-profiles-{event_id}.json'
+                response = HttpResponse(export_data, content_type=content_type)
+
+            elif export_format == 'zip':
+                export_data = generate_zip_export(
+                    event, assignments, include_internal, role
+                )
+                content_type = 'application/zip'
+                filename = f'promotional-profiles-{event_id}.zip'
+                response = HttpResponse(export_data, content_type=content_type)
+
+            else:
+                return Response(
+                    {'error': f"Unsupported format: {export_format}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Set download header
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+            # Log to audit trail
+            from events.models import AdminAuditLog
+            AdminAuditLog.objects.create(
+                event=event,
+                performed_by=request.user,
+                action='export_promotional',
+                details={
+                    'format': export_format,
+                    'role': role,
+                    'include_internal': include_internal,
+                    'include_incomplete': include_incomplete,
+                    'row_count': row_count,
+                    'filename': filename
+                }
+            )
+
+            return response
+
+        except Exception as e:
+            logger.error(f"Error exporting promotional profiles: {e}", exc_info=True)
+            return Response(
+                {'error': f"Export failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'], url_path='export-promotional-completed')
+    def export_promotional_completed(self, request, event_id=None):
+        """Quick export of completed profiles with display_consent=yes in ZIP format.
+
+        Query parameters:
+            format: 'csv' | 'json' | 'zip' (default: zip)
+        """
+        from events.services.promotional_profile_export_service import (
+            generate_csv_export,
+            generate_json_export,
+            generate_zip_export,
+            build_export_queryset
+        )
+
+        event = get_object_or_404(Event, id=event_id)
+        self.check_object_permissions(request, event)
+
+        export_format = request.query_params.get('format', 'zip').lower()
+
+        # Get completed, public profiles only
+        assignments = self.get_queryset().filter(
+            event=event,
+            form_type='promotional_profile'
+        )
+        assignments = build_export_queryset(
+            assignments,
+            include_internal=False,
+            include_incomplete=False,
+            role=None
+        )
+
+        row_count = assignments.count()
+
+        try:
+            if export_format == 'csv':
+                export_data = generate_csv_export(assignments, False, None)
+                content_type = 'text/csv'
+                filename = f'promotional-profiles-completed-{event_id}.csv'
+                response = HttpResponse(export_data, content_type=content_type)
+
+            elif export_format == 'json':
+                export_data = generate_json_export(assignments, False, None)
+                content_type = 'application/json'
+                filename = f'promotional-profiles-completed-{event_id}.json'
+                response = HttpResponse(export_data, content_type=content_type)
+
+            else:  # Default to ZIP
+                export_data = generate_zip_export(event, assignments, False, None)
+                content_type = 'application/zip'
+                filename = f'promotional-profiles-completed-{event_id}.zip'
+                response = HttpResponse(export_data, content_type=content_type)
+
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+            # Log to audit trail
+            from events.models import AdminAuditLog
+            AdminAuditLog.objects.create(
+                event=event,
+                performed_by=request.user,
+                action='export_promotional',
+                details={
+                    'format': export_format,
+                    'role': None,
+                    'include_internal': False,
+                    'include_incomplete': False,
+                    'row_count': row_count,
+                    'filename': filename
+                }
+            )
+
+            return response
+
+        except Exception as e:
+            logger.error(f"Error exporting completed profiles: {e}", exc_info=True)
+            return Response(
+                {'error': f"Export failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def _export_by_role_helper(self, request, event_id, role, role_display):
+        """Helper method to export profiles by specific role."""
+        from events.services.promotional_profile_export_service import (
+            generate_zip_export,
+            build_export_queryset
+        )
+
+        event = get_object_or_404(Event, id=event_id)
+        self.check_object_permissions(request, event)
+
+        # Get profiles for this role only
+        assignments = self.get_queryset().filter(
+            event=event,
+            form_type='promotional_profile'
+        )
+        assignments = build_export_queryset(
+            assignments,
+            include_internal=False,
+            include_incomplete=False,
+            role=role
+        )
+
+        row_count = assignments.count()
+
+        try:
+            export_data = generate_zip_export(event, assignments, False, role)
+            filename = f'{role_display}-{event_id}.zip'
+            response = HttpResponse(export_data, content_type='application/zip')
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+            # Log to audit trail
+            from events.models import AdminAuditLog
+            AdminAuditLog.objects.create(
+                event=event,
+                performed_by=request.user,
+                action='export_promotional',
+                details={
+                    'format': 'zip',
+                    'role': role,
+                    'include_internal': False,
+                    'include_incomplete': False,
+                    'row_count': row_count,
+                    'filename': filename
+                }
+            )
+
+            return response
+
+        except Exception as e:
+            logger.error(f"Error exporting {role} profiles: {e}", exc_info=True)
+            return Response(
+                {'error': f"Export failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'], url_path='export-promotional-speakers')
+    def export_speakers(self, request, event_id=None):
+        """Quick export of speaker profiles in ZIP format."""
+        return self._export_by_role_helper(request, event_id, 'speaker', 'speakers')
+
+    @action(detail=False, methods=['get'], url_path='export-promotional-sponsors')
+    def export_sponsors(self, request, event_id=None):
+        """Quick export of sponsor profiles in ZIP format."""
+        return self._export_by_role_helper(request, event_id, 'sponsor', 'sponsors')
+
+    @action(detail=False, methods=['get'], url_path='export-promotional-startups')
+    def export_startups(self, request, event_id=None):
+        """Quick export of startup profiles in ZIP format."""
+        return self._export_by_role_helper(request, event_id, 'startup', 'startups')
+
+    @action(detail=False, methods=['get'], url_path='export-promotional-investors')
+    def export_investors(self, request, event_id=None):
+        """Quick export of investor profiles in ZIP format."""
+        return self._export_by_role_helper(request, event_id, 'investor', 'investors')

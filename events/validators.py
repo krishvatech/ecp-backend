@@ -282,3 +282,304 @@ def validate_session_datetimes(sess_start, sess_end, event, instance=None):
 
     if errors:
         raise serializers.ValidationError(errors)
+
+
+# ==================== Form File Validators ====================
+
+def validate_headshot(file_obj):
+    """
+    Validate speaker headshot image.
+
+    Requirements:
+    - JPG or PNG format
+    - Maximum 10 MB
+    - Minimum 1500 x 1500 px
+
+    Args:
+        file_obj: UploadedFile instance
+
+    Raises:
+        ValidationError: If validation fails
+    """
+    from django.core.exceptions import ValidationError
+    from PIL import Image
+    from io import BytesIO
+
+    if not file_obj:
+        return
+
+    # Check file size (10 MB = 10 * 1024 * 1024 bytes)
+    max_size = 10 * 1024 * 1024
+    if file_obj.size > max_size:
+        raise ValidationError(
+            f"Headshot file is too large. Maximum size is 10 MB, but file is {file_obj.size / 1024 / 1024:.1f} MB."
+        )
+
+    # Check file format
+    content_type = file_obj.content_type
+    if content_type not in ['image/jpeg', 'image/png']:
+        raise ValidationError(
+            f"Invalid image format. Only JPG and PNG are allowed, but got {content_type}."
+        )
+
+    # Check file extension
+    file_name = file_obj.name.lower()
+    if not (file_name.endswith('.jpg') or file_name.endswith('.jpeg') or file_name.endswith('.png')):
+        raise ValidationError(
+            "Invalid file extension. Only .jpg, .jpeg, and .png files are allowed."
+        )
+
+    # Validate image dimensions
+    try:
+        # Read image from uploaded file
+        img = Image.open(BytesIO(file_obj.read()))
+        file_obj.seek(0)  # Reset file pointer for later use
+
+        width, height = img.size
+        min_size = 1500
+
+        if width < min_size or height < min_size:
+            raise ValidationError(
+                f"Image dimensions are too small. Minimum size is {min_size}x{min_size} px, "
+                f"but image is {width}x{height} px."
+            )
+    except (AttributeError, OSError, IOError) as e:
+        raise ValidationError(
+            f"Unable to read image file. Please ensure the file is a valid image: {str(e)}"
+        )
+
+
+def validate_slide_deck(file_obj):
+    """
+    Validate speaker slide deck file.
+
+    Requirements:
+    - PDF or PPTX format
+    - Maximum 50 MB
+
+    Args:
+        file_obj: UploadedFile instance
+
+    Raises:
+        ValidationError: If validation fails
+    """
+    from django.core.exceptions import ValidationError
+
+    if not file_obj:
+        return
+
+    # Check file size (50 MB = 50 * 1024 * 1024 bytes)
+    max_size = 50 * 1024 * 1024
+    if file_obj.size > max_size:
+        raise ValidationError(
+            f"Slide deck file is too large. Maximum size is 50 MB, but file is {file_obj.size / 1024 / 1024:.1f} MB."
+        )
+
+    # Check file format and extension
+    file_name = file_obj.name.lower()
+    content_type = file_obj.content_type
+
+    allowed_content_types = [
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    ]
+
+    allowed_extensions = ['.pdf', '.pptx']
+
+    if not any(file_name.endswith(ext) for ext in allowed_extensions):
+        raise ValidationError(
+            "Invalid file extension. Only .pdf and .pptx files are allowed."
+        )
+
+    if content_type not in allowed_content_types:
+        raise ValidationError(
+            f"Invalid file format. Only PDF and PPTX are allowed, but got {content_type}."
+        )
+
+
+def validate_speaker_bio(bio_text, field_name='bio'):
+    """
+    Validate speaker bio text (programme_bio).
+
+    Requirements:
+    - 100-200 words
+    - Third person
+
+    Args:
+        bio_text: String containing bio text
+        field_name: Name of field for error message
+
+    Returns:
+        dict: {'word_count': int, 'valid': bool, 'errors': list}
+    """
+    if not bio_text:
+        return {
+            'word_count': 0,
+            'valid': False,
+            'errors': [f'{field_name} is required']
+        }
+
+    # Count words
+    words = [w for w in bio_text.split() if w.strip()]
+    word_count = len(words)
+
+    errors = []
+    if word_count < 100:
+        errors.append(f'Bio is too short. Minimum 100 words, but got {word_count} words.')
+    if word_count > 200:
+        errors.append(f'Bio is too long. Maximum 200 words, but got {word_count} words.')
+
+    return {
+        'word_count': word_count,
+        'valid': len(errors) == 0,
+        'errors': errors
+    }
+
+
+def validate_short_bio(bio_text):
+    """
+    Validate short bio character count (max 200 characters).
+
+    Args:
+        bio_text: String containing short bio
+
+    Raises:
+        ValidationError: If bio exceeds 200 characters
+    """
+    from django.core.exceptions import ValidationError
+
+    if not bio_text:
+        raise ValidationError("Short bio is required")
+
+    if len(bio_text) > 200:
+        raise ValidationError(
+            f"Short bio is too long. Maximum 200 characters, but got {len(bio_text)} characters."
+        )
+
+
+# ==================== SPONSOR MODULES VALIDATORS ====================
+
+def validate_organisation_logo(file_obj, field_name='logo'):
+    """Validate organisation logo (PNG, JPEG, SVG, max 5MB)."""
+    from django.core.exceptions import ValidationError
+
+    if not file_obj:
+        return
+
+    max_size = 5 * 1024 * 1024
+    if file_obj.size > max_size:
+        raise ValidationError(f'{field_name} is too large. Max 5 MB.')
+
+    allowed_types = ['image/jpeg', 'image/png', 'image/svg+xml']
+    if file_obj.content_type not in allowed_types:
+        raise ValidationError(f'Invalid format. PNG, JPEG, or SVG only.')
+
+
+def validate_organisation_description(text):
+    """Validate organisation description (50-150 words)."""
+    if not text:
+        return {'valid': False, 'errors': ['Description is required']}
+
+    words = len([w for w in text.split() if w.strip()])
+    errors = []
+
+    if words < 50:
+        errors.append(f'Too short. Minimum 50 words, got {words}.')
+    if words > 150:
+        errors.append(f'Too long. Maximum 150 words, got {words}.')
+
+    return {
+        'valid': len(errors) == 0,
+        'word_count': words,
+        'errors': errors
+    }
+
+
+# ==================== STARTUP MODULES VALIDATORS ====================
+
+def validate_startup_pitch(pitch_text):
+    """Validate one-line pitch (max 140 characters)."""
+    from django.core.exceptions import ValidationError
+
+    if not pitch_text:
+        raise ValidationError('One-line pitch is required')
+
+    if len(pitch_text) > 140:
+        raise ValidationError(
+            f'Pitch too long. Maximum 140 characters, got {len(pitch_text)}.'
+        )
+
+
+def validate_startup_description(text):
+    """Validate startup description (50-100 words)."""
+    if not text:
+        return {'valid': False, 'errors': ['Description is required']}
+
+    words = len([w for w in text.split() if w.strip()])
+    errors = []
+
+    if words < 50:
+        errors.append(f'Too short. Minimum 50 words, got {words}.')
+    if words > 100:
+        errors.append(f'Too long. Maximum 100 words, got {words}.')
+
+    return {
+        'valid': len(errors) == 0,
+        'word_count': words,
+        'errors': errors
+    }
+
+
+def validate_pitch_deck(file_obj):
+    """Validate public pitch deck (PDF, max 25MB)."""
+    from django.core.exceptions import ValidationError
+
+    if not file_obj:
+        return
+
+    max_size = 25 * 1024 * 1024
+    if file_obj.size > max_size:
+        raise ValidationError('Pitch deck too large. Max 25 MB.')
+
+    if file_obj.content_type != 'application/pdf':
+        raise ValidationError('Pitch deck must be PDF format.')
+
+
+def validate_founder_photos(files):
+    """Validate founder photos (JPEG/PNG, max 3MB each, max 3 files)."""
+    from django.core.exceptions import ValidationError
+
+    if not files:
+        return
+
+    # Handle both single file and list
+    files_list = files if isinstance(files, list) else [files]
+
+    if len(files_list) > 3:
+        raise ValidationError(f'Too many files. Maximum 3, got {len(files_list)}.')
+
+    for file_obj in files_list:
+        if not file_obj:
+            continue
+
+        max_size = 3 * 1024 * 1024
+        if file_obj.size > max_size:
+            raise ValidationError(f'{file_obj.name}: File too large. Max 3 MB each.')
+
+        if file_obj.content_type not in ['image/jpeg', 'image/png']:
+            raise ValidationError(f'{file_obj.name}: JPEG or PNG only.')
+
+
+# ==================== INVESTOR MODULES VALIDATORS ====================
+
+def validate_thesis_tagline(tagline):
+    """Validate investment thesis tagline (max 200 characters)."""
+    from django.core.exceptions import ValidationError
+
+    if not tagline:
+        raise ValidationError('Thesis tagline is required')
+
+    if len(tagline) > 200:
+        raise ValidationError(
+            f'Tagline too long. Maximum 200 characters, got {len(tagline)}.'
+        )
