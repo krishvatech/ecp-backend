@@ -6016,6 +6016,185 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return response
 
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="export-members-csv")
+    def export_members_csv(self, request, pk=None):
+        """
+        Export all registered members as CSV with profile data shown on profile page.
+        Each email, phone, and experience gets its own column.
+        """
+        event = self.get_object()
+        user = request.user
+        if not (user.is_staff or getattr(user, "is_superuser", False) or event.created_by_id == user.id):
+            return Response({"detail": "Permission denied."}, status=403)
+
+        filename = "Registered_Participants_Details.csv"
+
+        response = HttpResponse(content_type='text/csv; charset=utf-8-sig')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        response['X-Filename'] = filename
+
+        # First pass: collect all data and find max counts for emails, phones, experiences
+        regs_data = []
+        max_emails = 0
+        max_phones = 0
+        max_experiences = 0
+
+        regs = (
+            EventRegistration.objects
+            .filter(event=event, status__in=['registered', 'cancellation_requested'])
+            .exclude(user__is_superuser=True)  # Exclude superusers/hosts
+            .select_related('user', 'user__profile')
+            .prefetch_related('user__experiences')
+            .order_by('-registered_at')
+        )
+
+        for reg in regs:
+            u = reg.user
+            profile = u.profile
+
+            # Extract emails
+            all_emails = []
+            if u.email:
+                all_emails.append(u.email)
+
+            links = profile.links or {}
+            if isinstance(links, dict):
+                contact = links.get('contact', {})
+                if isinstance(contact, dict):
+                    emails_list = contact.get('emails', [])
+                    if isinstance(emails_list, list):
+                        for email_obj in emails_list:
+                            if isinstance(email_obj, dict):
+                                email_val = email_obj.get('email', '')
+                            else:
+                                email_val = str(email_obj)
+                            if email_val and email_val not in all_emails:  # deduplicate
+                                all_emails.append(email_val)
+
+            max_emails = max(max_emails, len(all_emails))
+
+            # Extract phone numbers
+            phone_numbers = []
+            if isinstance(links, dict):
+                contact = links.get('contact', {})
+                if isinstance(contact, dict):
+                    phones_list = contact.get('phones', [])
+                    if isinstance(phones_list, list):
+                        for phone_obj in phones_list:
+                            if isinstance(phone_obj, dict):
+                                phone_val = phone_obj.get('number', '')
+                            else:
+                                phone_val = str(phone_obj)
+                            if phone_val:
+                                # Format phone number: +CC NNNNNNNNNN
+                                phone_val = phone_val.strip()
+                                # Remove any existing spaces or dashes
+                                phone_val = phone_val.replace(' ', '').replace('-', '')
+                                # Ensure + prefix
+                                if phone_val and not phone_val.startswith('+'):
+                                    phone_val = '+' + phone_val
+                                # Add space after country code (typically 2-3 digits after +)
+                                # Common: +1, +44, +91, +886, etc.
+                                if phone_val.startswith('+'):
+                                    digits_only = phone_val[1:]  # Remove the +
+                                    # Find country code length (usually 1-3 digits)
+                                    cc_len = 2  # Default to 2 for most countries
+                                    if digits_only.startswith('1') and len(digits_only) == 11:
+                                        cc_len = 1  # US/Canada: +1 XXXXXXXXXX
+                                    elif digits_only.startswith(('7', '8', '9')) and len(digits_only) >= 10:
+                                        cc_len = 2  # Most countries: +CC XXXXXXXX
+                                    elif digits_only.startswith(('2', '3', '4', '5', '6')):
+                                        cc_len = 2  # Most European/African: +CC
+
+                                    # Add space after country code
+                                    if len(digits_only) > cc_len:
+                                        phone_val = '+' + digits_only[:cc_len] + ' ' + digits_only[cc_len:]
+                                phone_numbers.append(phone_val)
+
+            max_phones = max(max_phones, len(phone_numbers))
+
+            # Extract experiences (position + company)
+            job_and_company = []
+            for exp in u.experiences.all():
+                position = (exp.position or '').strip()
+                company = (exp.community_name or '').strip()
+                if position or company:
+                    job_and_company.append(f"{position} / {company}".strip('/ ').strip())
+
+            max_experiences = max(max_experiences, len(job_and_company))
+
+            regs_data.append({
+                'reg': reg,
+                'user': u,
+                'profile': profile,
+                'emails': all_emails,
+                'phones': phone_numbers,
+                'experiences': job_and_company
+            })
+
+        # Second pass: build fieldnames dynamically
+        fieldnames = [
+            # Profile basic fields
+            'Full Name', 'First Name', 'Last Name',
+        ]
+
+        # Add dynamic email columns (first is Primary Email, rest are Email 2, 3, etc.)
+        if max_emails > 0:
+            fieldnames.append('Primary Email')
+        for i in range(2, max_emails + 1):
+            fieldnames.append(f'Email {i}')
+
+        # Add dynamic phone columns
+        for i in range(1, max_phones + 1):
+            fieldnames.append(f'Phone {i}')
+
+        # Add dynamic experience columns
+        for i in range(1, max_experiences + 1):
+            fieldnames.append(f'Job Title / Company {i}')
+
+        # Add location column only (no attendance columns)
+        fieldnames.append('Country/Region')
+
+        writer = csv.DictWriter(response, fieldnames=fieldnames)
+        writer.writeheader()
+
+        # Third pass: write rows
+        for data in regs_data:
+            reg = data['reg']
+            u = data['user']
+            profile = data['profile']
+            all_emails = data['emails']
+            phone_numbers = data['phones']
+            job_and_company = data['experiences']
+
+            row = {
+                'Full Name': profile.full_name or '',
+                'First Name': u.first_name or '',
+                'Last Name': u.last_name or '',
+            }
+
+            # Add emails (first is Primary Email, rest are Email 2, 3, etc.)
+            for i, email in enumerate(all_emails):
+                if i == 0:
+                    row['Primary Email'] = email
+                else:
+                    row[f'Email {i + 1}'] = email
+
+            # Add phones
+            for i, phone in enumerate(phone_numbers, 1):
+                row[f'Phone {i}'] = phone
+
+            # Add experiences
+            for i, exp in enumerate(job_and_company, 1):
+                row[f'Job Title / Company {i}'] = exp
+
+            # Add location field only
+            row['Country/Region'] = profile.location or ''
+
+            writer.writerow(row)
+
+        return response
+
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="mine")
     def mine(self, request):
         """
