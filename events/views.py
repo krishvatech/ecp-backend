@@ -8274,6 +8274,7 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         """
         Admins/Staff/Event Owners -> See all relevant.
         Normal users -> See only their own.
+        Supports ?event=, ?user=, and ?attendance_status= filters.
         """
         user = self.request.user
         qs = EventRegistration.objects.select_related("event").order_by("-registered_at")
@@ -8299,6 +8300,16 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
             if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
                 qs = qs.filter(user_id=user_id)
             # For non-staff, the user filter is already enforced by the Q() above
+
+        # Apply ?attendance_status= filter for attendance categorization
+        attendance_status = self.request.query_params.get("attendance_status")
+        if attendance_status:
+            if attendance_status == "joined_live":
+                qs = qs.filter(joined_live=True)
+            elif attendance_status == "watched_replay":
+                qs = qs.filter(watched_replay=True, joined_live=False)
+            elif attendance_status == "did_not_attend":
+                qs = qs.filter(joined_live=False, watched_replay=False)
 
         return qs
 
