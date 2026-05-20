@@ -69,6 +69,7 @@ from .serializers import (
     EventSerializer,
     PublicEventSerializer,
     EventLiteSerializer,
+    MyEventCardSerializer,
     EventRegistrationSerializer,
     EventSessionSerializer,
     SessionAttendanceSerializer,
@@ -910,6 +911,89 @@ def _is_event_host(user, event) -> bool:
         host_match = host_match | Q(participant_type="guest", guest_email__iexact=user_email)
 
     return event.participants.filter(role="host").filter(host_match).exists()
+
+
+def _grant_invited_event_access(event, user, invited_by=None):
+    """
+    Grant Companion access to an invited user by creating/reactivating EventRegistration.
+    Bypasses application requirement even for apply-type events.
+    Auto-approves any pending applications.
+
+    Args:
+        event: Event instance
+        user: User instance to grant access
+        invited_by: Optional User instance who sent the invite
+
+    Returns:
+        dict with keys:
+        - registration_created: bool (True if new registration or reactivated)
+        - registration: EventRegistration instance
+        - application_approved: bool (True if pending app was approved)
+    """
+    now = timezone.now()
+    registration_created = False
+    application_approved = False
+
+    # Create or reactivate EventRegistration
+    existing_reg = EventRegistration.objects.filter(
+        event=event,
+        user=user
+    ).first()
+
+    if existing_reg and existing_reg.status == 'registered':
+        # Already registered, no action needed
+        registration = existing_reg
+    elif existing_reg and existing_reg.status in ['cancelled', 'deregistered']:
+        # Reactivate registration
+        existing_reg.status = 'registered'
+        existing_reg.save(update_fields=['status'])
+        registration = existing_reg
+        registration_created = True
+    else:
+        # Create new registration
+        initial_admission_status = 'waiting' if event.waiting_room_enabled else 'admitted'
+        registration = EventRegistration.objects.create(
+            event=event,
+            user=user,
+            status='registered',
+            admission_status=initial_admission_status
+        )
+        registration_created = True
+
+    # Auto-assign Participant badge if newly created
+    if registration_created and not registration.badge_labels.exists():
+        participant_badge = event.get_or_create_participant_badge()
+        registration.badge_labels.add(participant_badge)
+
+    # Update attending_count only when new/reactivated
+    if registration_created:
+        Event.objects.filter(pk=event.pk).update(
+            attending_count=F('attending_count') + 1
+        )
+
+    # Auto-approve any pending applications for this user
+    pending_app = EventApplication.objects.filter(
+        event=event,
+        user=user,
+        status__in=['pending', 'submitted']
+    ).first()
+
+    if pending_app:
+        pending_app.status = 'approved'
+        pending_app.reviewed_at = now
+        pending_app.reviewed_by = invited_by
+        pending_app.is_preapproved = True
+        pending_app.preapproved_at = now
+        pending_app.save(update_fields=[
+            'status', 'reviewed_at', 'reviewed_by', 'is_preapproved', 'preapproved_at'
+        ])
+        application_approved = True
+
+    return {
+        'registration_created': registration_created,
+        'registration': registration,
+        'application_approved': application_approved
+    }
 
 
 def _execute_lounge_transition(event_id, transition, user_ids):
@@ -1768,6 +1852,8 @@ class EventViewSet(viewsets.ModelViewSet):
     def invite_users(self, request, pk=None):
         """
         Invite users and group members to an event.
+        Creates EventRegistration and bypasses application requirement for invited users.
+        Auto-approves any pending applications for the invited user/email.
         Only staff users can perform this action.
         """
         if not request.user.is_staff:
@@ -1835,11 +1921,22 @@ class EventViewSet(viewsets.ModelViewSet):
             for m in memberships:
                 _set_user_source(m.user, "group", getattr(m.group, "name", "Group"), m.group_id)
 
-        # 3. Send Notifications
-        # Filter out the actor themselves if they selected themselves (optional but good UX)
+        # 3. Filter out the actor themselves if they selected themselves (optional but good UX)
         invited_users.pop(request.user.id, None)
         invite_sources.pop(request.user.id, None)
 
+        # 4. Use helper to grant access and approve applications
+        registrations_created_count = 0
+        applications_approved_count = 0
+
+        for user_id, user in invited_users.items():
+            result = _grant_invited_event_access(event, user, invited_by=request.user)
+            if result['registration_created']:
+                registrations_created_count += 1
+            if result['application_approved']:
+                applications_approved_count += 1
+
+        # 5. Send Notifications
         notifications_to_create = []
         direct_messages_to_create = []
 
@@ -1865,7 +1962,7 @@ class EventViewSet(viewsets.ModelViewSet):
                     actor=request.user,
                     kind="event",
                     title=f"Invitation: {event.title}",
-                    description=invite_message or f"You have been invited to {event.title}.",
+                    description=invite_message or f"You have been invited to {event.title}. You can now access the Event Companion.",
                     data={
                         "event_id": event.id,
                         "event_title": event.title,
@@ -1901,9 +1998,13 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response({
             "ok": True,
             "invited_count": len(invited_users),
+            "registrations_created": registrations_created_count,
+            "applications_approved": applications_approved_count,
             "messaged_count": len(direct_messages_to_create),
             "message": (
                 f"Sent invitations to {len(invited_users)} users."
+                + (f" Created {registrations_created_count} registrations." if registrations_created_count > 0 else "")
+                + (f" Approved {applications_approved_count} pending applications." if applications_approved_count > 0 else "")
                 + (f" Also sent {len(direct_messages_to_create)} event messages." if direct_messages_to_create else "")
             )
         })
@@ -2229,11 +2330,30 @@ class EventViewSet(viewsets.ModelViewSet):
     def register(self, request, pk=None):
         """
         Register the current user for a single event.
+        For 'apply' type events, only allows registration if user is already registered or has approved application.
         """
         event = self.get_object()
 
         if event.status == "cancelled":
             return Response({"detail": "Cannot register for a cancelled event."}, status=400)
+
+        # Prevent /register/ from bypassing application requirement for 'apply' type events
+        if event.registration_type == 'apply':
+            is_already_registered = EventRegistration.objects.filter(
+                event=event,
+                user=request.user,
+                status='registered'
+            ).exists()
+            has_approved_application = EventApplication.objects.filter(
+                event=event,
+                user=request.user,
+                status='approved'
+            ).exists()
+            if not (is_already_registered or has_approved_application):
+                return Response({
+                    "detail": "This event requires an application. Please submit an application first.",
+                    "code": "application_required"
+                }, status=400)
 
         # Check if event is ended and replay access is not enabled
         if event.status == "ended":
@@ -2785,6 +2905,108 @@ class EventViewSet(viewsets.ModelViewSet):
             logger.error(f"Failed to send decline email: {e}")
 
         return Response(EventApplicationSerializer(app).data)
+
+    @action(detail=True, methods=["post"], url_path=r"applications/bulk-approve", permission_classes=[IsAuthenticated])
+    def bulk_approve_applications(self, request, pk=None):
+        """
+        Approve multiple applications in bulk.
+
+        Body:
+        {
+            "application_ids": [1, 2, 3],  # Optional: specific application IDs to approve
+            "approve_all_pending": false   # Optional: if true, approve all pending applications
+        }
+
+        At least one of application_ids or approve_all_pending must be provided.
+        """
+        import logging
+        from django.db import transaction
+
+        logger = logging.getLogger(__name__)
+
+        event = self.get_object()
+        if not _is_event_owner(request.user, event):
+            return Response({'detail': 'Forbidden. Only the event owner can approve applications.'}, status=403)
+
+        # Parse request data
+        application_ids = request.data.get('application_ids', [])
+        approve_all_pending = request.data.get('approve_all_pending', False)
+
+        if not application_ids and not approve_all_pending:
+            return Response(
+                {'detail': 'Either "application_ids" or "approve_all_pending" must be provided.'},
+                status=400
+            )
+
+        # Build query for applications to approve
+        if approve_all_pending:
+            applications = EventApplication.objects.filter(
+                event=event,
+                status='pending'
+            )
+        else:
+            applications = EventApplication.objects.filter(
+                event=event,
+                id__in=application_ids,
+                status='pending'
+            )
+
+        if not applications.exists():
+            return Response({
+                'approved_count': 0,
+                'skipped_count': 0,
+                'skipped_reasons': [],
+                'message': 'No pending applications found to approve.'
+            })
+
+        approved_count = 0
+        skipped_reasons = []
+
+        try:
+            with transaction.atomic():
+                for app in applications:
+                    try:
+                        # Approve the application
+                        app.status = 'approved'
+                        app.reviewed_at = timezone.now()
+                        app.reviewed_by = request.user
+                        app.save()
+
+                        # Auto-register authenticated applicants
+                        if app.user:
+                            EventRegistration.objects.get_or_create(event=event, user=app.user)
+                        else:
+                            logger.info(f"Application {app.id} approved for guest {app.email}. Guest will verify via OTP on event day.")
+
+                        # Send approval email
+                        from users.email_utils import send_application_approved_email
+                        try:
+                            send_application_approved_email(app)
+                        except Exception as e:
+                            logger.error(f"Failed to send approval email for application {app.id}: {e}")
+
+                        approved_count += 1
+
+                    except Exception as e:
+                        logger.error(f"Error approving application {app.id}: {e}")
+                        skipped_reasons.append({
+                            'application_id': app.id,
+                            'email': app.email,
+                            'reason': str(e)
+                        })
+        except Exception as e:
+            logger.error(f"Bulk approval transaction failed: {e}")
+            return Response(
+                {'detail': f'Bulk approval failed: {str(e)}'},
+                status=500
+            )
+
+        return Response({
+            'approved_count': approved_count,
+            'skipped_count': len(skipped_reasons),
+            'skipped_reasons': skipped_reasons,
+            'message': f'Successfully approved {approved_count} application(s).'
+        })
 
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="max-price")
     def max_price(self, request):
@@ -4521,7 +4743,11 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         Event Companion V1: Participant Directory for authenticated users.
 
-        All authenticated users can view this directory.
+        Access control:
+        - User must be registered for the event (EventRegistration.status='registered'), OR
+        - User must have approved application (EventApplication.status='approved'), OR
+        - User must be the event manager
+
         Supports search (name, job_title, company) and role filtering.
 
         Response includes:
@@ -4533,8 +4759,34 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         user = request.user
 
-        # All authenticated users can view the companion directory
-        # No registration requirement needed
+        # Check access permissions
+        is_event_manager = _is_event_manager(user, event)
+        is_registered = EventRegistration.objects.filter(
+            event=event,
+            user=user,
+            status='registered'
+        ).exists()
+        is_approved = EventApplication.objects.filter(
+            event=event,
+            user=user,
+            status='approved'
+        ).exists()
+
+        # Allow access only if registered, approved application, or event manager
+        if not (is_registered or is_approved or is_event_manager):
+            return Response({"detail": "Forbidden. You must be registered or approved to access the companion directory."}, status=403)
+
+        # Block regular users before event start (but allow event managers to preview)
+        if event.start_time and timezone.now() < event.start_time and not is_event_manager:
+            return Response(
+                {
+                    "code": "COMPANION_NOT_OPEN",
+                    "detail": "Participant Directory will open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=403
+            )
 
         # Fetch registrations (only registered status, exclude superusers)
         qs = (
@@ -5777,7 +6029,7 @@ class EventViewSet(viewsets.ModelViewSet):
         
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        response['X-Filename'] = filename  # Expose filename to frontend if needed
+        response['X-Filename'] = filename
 
         writer = csv.writer(response)
         writer.writerow(['User ID', 'Name', 'Email', 'Registered At', 'Joined Live', 'Watched Replay', 'Status'])
@@ -5808,24 +6060,197 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return response
 
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="export-members-csv")
+    def export_members_csv(self, request, pk=None):
+        """
+        Export all registered members as CSV with profile data shown on profile page.
+        Each email, phone, and experience gets its own column.
+        """
+        event = self.get_object()
+        user = request.user
+        if not (user.is_staff or getattr(user, "is_superuser", False) or event.created_by_id == user.id):
+            return Response({"detail": "Permission denied."}, status=403)
+
+        filename = "Registered_Participants_Details.csv"
+
+        response = HttpResponse(content_type='text/csv; charset=utf-8-sig')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        response['X-Filename'] = filename
+
+        # First pass: collect all data and find max counts for emails, phones, experiences
+        regs_data = []
+        max_emails = 0
+        max_phones = 0
+        max_experiences = 0
+
+        regs = (
+            EventRegistration.objects
+            .filter(event=event, status__in=['registered', 'cancellation_requested'])
+            .exclude(user__is_superuser=True)  # Exclude superusers/hosts
+            .select_related('user', 'user__profile')
+            .prefetch_related('user__experiences')
+            .order_by('-registered_at')
+        )
+
+        for reg in regs:
+            u = reg.user
+            profile = u.profile
+
+            # Extract emails
+            all_emails = []
+            if u.email:
+                all_emails.append(u.email)
+
+            links = profile.links or {}
+            if isinstance(links, dict):
+                contact = links.get('contact', {})
+                if isinstance(contact, dict):
+                    emails_list = contact.get('emails', [])
+                    if isinstance(emails_list, list):
+                        for email_obj in emails_list:
+                            if isinstance(email_obj, dict):
+                                email_val = email_obj.get('email', '')
+                            else:
+                                email_val = str(email_obj)
+                            if email_val and email_val not in all_emails:  # deduplicate
+                                all_emails.append(email_val)
+
+            max_emails = max(max_emails, len(all_emails))
+
+            # Extract phone numbers
+            phone_numbers = []
+            if isinstance(links, dict):
+                contact = links.get('contact', {})
+                if isinstance(contact, dict):
+                    phones_list = contact.get('phones', [])
+                    if isinstance(phones_list, list):
+                        for phone_obj in phones_list:
+                            if isinstance(phone_obj, dict):
+                                phone_val = phone_obj.get('number', '')
+                            else:
+                                phone_val = str(phone_obj)
+                            if phone_val:
+                                # Format phone number: +CC NNNNNNNNNN
+                                phone_val = phone_val.strip()
+                                # Remove any existing spaces or dashes
+                                phone_val = phone_val.replace(' ', '').replace('-', '')
+                                # Ensure + prefix
+                                if phone_val and not phone_val.startswith('+'):
+                                    phone_val = '+' + phone_val
+                                # Add space after country code (typically 2-3 digits after +)
+                                # Common: +1, +44, +91, +886, etc.
+                                if phone_val.startswith('+'):
+                                    digits_only = phone_val[1:]  # Remove the +
+                                    # Find country code length (usually 1-3 digits)
+                                    cc_len = 2  # Default to 2 for most countries
+                                    if digits_only.startswith('1') and len(digits_only) == 11:
+                                        cc_len = 1  # US/Canada: +1 XXXXXXXXXX
+                                    elif digits_only.startswith(('7', '8', '9')) and len(digits_only) >= 10:
+                                        cc_len = 2  # Most countries: +CC XXXXXXXX
+                                    elif digits_only.startswith(('2', '3', '4', '5', '6')):
+                                        cc_len = 2  # Most European/African: +CC
+
+                                    # Add space after country code
+                                    if len(digits_only) > cc_len:
+                                        phone_val = '+' + digits_only[:cc_len] + ' ' + digits_only[cc_len:]
+                                phone_numbers.append(phone_val)
+
+            max_phones = max(max_phones, len(phone_numbers))
+
+            # Extract experiences (position + company)
+            job_and_company = []
+            for exp in u.experiences.all():
+                position = (exp.position or '').strip()
+                company = (exp.community_name or '').strip()
+                if position or company:
+                    job_and_company.append(f"{position} / {company}".strip('/ ').strip())
+
+            max_experiences = max(max_experiences, len(job_and_company))
+
+            regs_data.append({
+                'reg': reg,
+                'user': u,
+                'profile': profile,
+                'emails': all_emails,
+                'phones': phone_numbers,
+                'experiences': job_and_company
+            })
+
+        # Second pass: build fieldnames dynamically
+        fieldnames = [
+            # Profile basic fields
+            'Full Name', 'First Name', 'Last Name',
+        ]
+
+        # Add dynamic email columns (first is Primary Email, rest are Email 2, 3, etc.)
+        if max_emails > 0:
+            fieldnames.append('Primary Email')
+        for i in range(2, max_emails + 1):
+            fieldnames.append(f'Email {i}')
+
+        # Add dynamic phone columns
+        for i in range(1, max_phones + 1):
+            fieldnames.append(f'Phone {i}')
+
+        # Add dynamic experience columns
+        for i in range(1, max_experiences + 1):
+            fieldnames.append(f'Job Title / Company {i}')
+
+        # Add location column only (no attendance columns)
+        fieldnames.append('Country/Region')
+
+        writer = csv.DictWriter(response, fieldnames=fieldnames)
+        writer.writeheader()
+
+        # Third pass: write rows
+        for data in regs_data:
+            reg = data['reg']
+            u = data['user']
+            profile = data['profile']
+            all_emails = data['emails']
+            phone_numbers = data['phones']
+            job_and_company = data['experiences']
+
+            row = {
+                'Full Name': profile.full_name or '',
+                'First Name': u.first_name or '',
+                'Last Name': u.last_name or '',
+            }
+
+            # Add emails (first is Primary Email, rest are Email 2, 3, etc.)
+            for i, email in enumerate(all_emails):
+                if i == 0:
+                    row['Primary Email'] = email
+                else:
+                    row[f'Email {i + 1}'] = email
+
+            # Add phones
+            for i, phone in enumerate(phone_numbers, 1):
+                row[f'Phone {i}'] = phone
+
+            # Add experiences
+            for i, exp in enumerate(job_and_company, 1):
+                row[f'Job Title / Company {i}'] = exp
+
+            # Add location field only
+            row['Country/Region'] = profile.location or ''
+
+            writer.writerow(row)
+
+        return response
+
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="mine")
     def mine(self, request):
         """
         List events the current user is registered for OR attended as a guest (newest first).
-        Includes:
-        - Events with EventRegistration (registered user)
-        - Events with GuestAttendee where converted_user=user (guest who registered)
-        Each event in the response includes an `is_host` boolean so the
-        frontend can show "Join as Host" without a separate registration lookup.
+        Supports view=card for optimized card endpoint with minimal fields and prefetched data.
         """
-        from django.db.models import Q
+        from django.db.models import Q, Exists, OuterRef
 
         user = request.user
         user_email = (getattr(user, "email", "") or "").strip()
+        view_mode = (request.query_params.get("view") or "").strip().lower()
 
-        # Include both registered events AND events where user is a converted guest
-        # ✅ DRAFT Visibility: Drafts are ONLY visible in 'mine' to the creator or platform admin.
-        # Assigned hosts (registered users) will NOT see drafts here to avoid 404s in detail view.
         is_platform_admin = bool(getattr(user, "is_superuser", False))
 
         visibility_q = Q(created_by=user)
@@ -5844,42 +6269,49 @@ class EventViewSet(viewsets.ModelViewSet):
             .order_by("-start_time")
         )
 
-        # Note: mine endpoint already filters by user's registrations, so hidden events
-        # they're registered for are shown (platform_admin sees all, registered users see theirs)
-
-        # Apply bucket filter here too if needed
         bucket = (request.query_params.get("bucket") or "").strip().lower()
         if bucket:
             qs = _apply_bucket_filter(qs, bucket)
 
-        # Tab 5: Hidden events support
         is_hidden_param = request.query_params.get("is_hidden")
         if is_hidden_param is not None:
             is_hidden_bool = is_hidden_param.lower() == "true"
             qs = qs.filter(is_hidden=is_hidden_bool)
 
+        # ✅ Card mode: Use lightweight serializer with Prefetch optimizations
+        if view_mode == "card":
+            my_reg_prefetch = Prefetch(
+                "registrations",
+                EventRegistration.objects.filter(user=user, status__in=['registered', 'cancellation_requested'])
+            )
+            qs = qs.prefetch_related(my_reg_prefetch, "sessions")
+
+            page = self.paginate_queryset(qs)
+            events = page if page is not None else qs
+
+            for event in events:
+                event._prefetched_my_registration = (
+                    event.registrations.first() if hasattr(event, 'registrations') else None
+                )
+
+            ser = MyEventCardSerializer(events, many=True, context={"request": request})
+            result = ser.data
+            return self.get_paginated_response(result) if page is not None else Response(result)
+
+        # ✅ Default mode: Keep existing behavior for backward compatibility
         page = self.paginate_queryset(qs)
         events = page if page is not None else qs
         ser = EventLiteSerializer(events, many=True, context={"request": request})
         data = ser.data
 
-        # Annotate each event with is_host.
-        # Use the same narrow check as EventRegistrationSerializer.get_is_host():
-        #   - event creator or community owner → always host
-        #   - explicitly assigned in EventParticipant with role="host" → host
-        # We do NOT use _is_event_manager() here because that grants all is_staff users
-        # host access on every event, which is a permissions helper, not a role label.
         result = []
         for event_obj, event_data in zip(events, data):
             d = dict(event_data)
-
-            # Is this user the actual creator?
             is_actual_owner = (event_obj.created_by_id == user.id)
 
             if is_actual_owner:
                 d["is_host"] = True
             else:
-                # Check explicit EventParticipant assignment with role="host"
                 host_match = Q(participant_type="staff", user_id=user.id)
                 if user_email:
                     host_match = host_match | Q(participant_type="guest", guest_email__iexact=user_email)
@@ -6405,6 +6837,318 @@ class EventViewSet(viewsets.ModelViewSet):
                 "previewOnly": True,
             }
         )
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="live/rejoin")
+    def live_rejoin(self, request, pk=None):
+        """
+        Rejoin a live meeting after a WebSocket disconnect.
+
+        Validates that:
+        - Event exists and is live or reconnectable
+        - User/guest is registered or allowed to join
+        - User was not removed, blocked, banned, or explicitly kicked
+
+        Returns normalized live meeting restore payload:
+        - event_id, meeting_status, is_live
+        - user_role, admission_status, waiting_room_status
+        - current_location, room_type (main_room/waiting_room/lounge/breakout/ended)
+        - rtk_meeting_id, rtk_token if needed
+        - lounge_state, breakout_state, break_state if applicable
+        - can_rejoin boolean with reason if false
+
+        Endpoint is idempotent: safe to call multiple times.
+        """
+        event = self.get_object()
+        user = request.user
+
+        # Log rejoin attempt
+        is_guest = getattr(user, "is_guest", False)
+        user_identifier = f"guest_{user.guest.id}" if is_guest else str(user.id)
+
+        logger.info(f"[LIVE_REJOIN] user={user_identifier} event={event.id} status={event.status}")
+
+        # ──── VALIDATION ──────────────────────────────────────────────────────
+
+        # Check if event exists and is not cancelled
+        if event.status == "cancelled":
+            logger.warning(f"[LIVE_REJOIN] event {event.id} is cancelled")
+            return Response({
+                "can_rejoin": False,
+                "reason": "event_cancelled",
+                "detail": "This event has been cancelled."
+            }, status=400)
+
+        # Check if event is live or ended-but-reopenable
+        if event.status not in ("live", "ended"):
+            logger.warning(f"[LIVE_REJOIN] event {event.id} status={event.status} (not live/ended)")
+            return Response({
+                "can_rejoin": False,
+                "reason": "event_not_live",
+                "detail": f"Event is {event.status}, not live or ended."
+            }, status=400)
+
+        # ──── GUEST BRANCH ────────────────────────────────────────────────────
+        if is_guest:
+            guest = user.guest
+
+            # Check guest belongs to this event
+            if guest.event_id != event.id:
+                logger.warning(f"[LIVE_REJOIN] guest {guest.id} event mismatch")
+                return Response({
+                    "can_rejoin": False,
+                    "reason": "guest_event_mismatch",
+                    "detail": "Guest token does not match this event."
+                }, status=403)
+
+            # Check if guest is banned
+            if guest.is_banned:
+                logger.warning(f"[LIVE_REJOIN] guest {guest.id} is banned")
+                return Response({
+                    "can_rejoin": False,
+                    "reason": "guest_banned",
+                    "detail": "You have been banned from this event."
+                }, status=403)
+
+            # Check if guest has converted to registered user
+            if guest.converted_at is not None:
+                logger.info(f"[LIVE_REJOIN] guest {guest.id} converted to user")
+                return Response({
+                    "can_rejoin": False,
+                    "reason": "guest_converted",
+                    "detail": "You have registered. Please sign in with your account."
+                }, status=403)
+
+            # Determine guest location and admission status
+            current_location = guest.current_location or "pre_event"
+            is_admitted = guest.current_location in ("main_room", "social_lounge", "breakout_room")
+            admission_status = "admitted" if is_admitted else "waiting"
+            waiting_room_enabled = event.waiting_room_enabled
+
+            # Build response for guest
+            response_data = {
+                "event_id": event.id,
+                "meeting_status": event.status,
+                "is_live": event.status == "live",
+                "user_role": "guest",
+                "admission_status": admission_status,
+                "waiting_room_enabled": waiting_room_enabled,
+                "current_location": current_location,
+                "can_rejoin": True,
+            }
+
+            # Add room type
+            if event.status == "ended":
+                response_data["room_type"] = "ended"
+            elif current_location == "waiting_room":
+                response_data["room_type"] = "waiting_room"
+            elif current_location == "social_lounge":
+                response_data["room_type"] = "lounge"
+            elif current_location == "breakout_room":
+                response_data["room_type"] = "breakout"
+                # Include last breakout table if available
+                if guest.lounge_table_id:
+                    response_data["breakout_table_id"] = guest.lounge_table_id
+                    response_data["breakout_table_name"] = guest.lounge_table.name if guest.lounge_table else None
+            else:
+                response_data["room_type"] = "main_room"
+
+            # Add RTK meeting ID (always needed)
+            try:
+                meeting_id = _ensure_rtk_meeting_for_event(event)
+                response_data["rtk_meeting_id"] = meeting_id
+            except RuntimeError as e:
+                logger.warning(f"[LIVE_REJOIN] RTK meeting error for event {event.id}: {e}")
+                response_data["rtk_meeting_id"] = None
+                response_data["rtk_token"] = None
+
+            # Generate RTK token if guest is admitted to main room
+            if is_admitted and event.status == "live":
+                try:
+                    meeting_id = _ensure_rtk_meeting_for_event(event)
+                    rtk_participant_id = f"guest_{guest.id}"
+                    rtk_resp = add_rtk_participant(
+                        meeting_id=meeting_id,
+                        user_id=rtk_participant_id,
+                        name=guest.get_display_name(),
+                        preset_name=RTK_PRESET_PARTICIPANT,
+                    )
+                    auth_token = ""
+                    if isinstance(rtk_resp, tuple):
+                        auth_token, rtk_error = rtk_resp
+                    else:
+                        auth_token = (rtk_resp or {}).get("data", {}).get("token", "")
+
+                    if auth_token:
+                        response_data["rtk_token"] = auth_token
+                        logger.info(f"[LIVE_REJOIN] guest {guest.id} rejoining event {event.id} room={current_location}")
+                    else:
+                        logger.warning(f"[LIVE_REJOIN] Failed to get RTK token for guest {guest.id}")
+                except Exception as e:
+                    logger.warning(f"[LIVE_REJOIN] RTK token error for guest {guest.id}: {e}")
+
+            # Add break state if meeting is on break
+            if event.is_on_break and event.break_started_at:
+                from django.utils import timezone as django_tz
+                elapsed = (django_tz.now() - event.break_started_at).total_seconds()
+                break_remaining = max(0, int(event.break_duration_seconds - elapsed))
+                response_data["is_on_break"] = True
+                response_data["break_duration_seconds"] = event.break_duration_seconds
+                response_data["break_remaining_seconds"] = break_remaining
+
+            return Response(response_data, status=200)
+
+        # ──── END GUEST BRANCH ────────────────────────────────────────────────
+
+        # ──── REGISTERED USER BRANCH ──────────────────────────────────────────
+
+        # Check if user is banned
+        if EventRegistration.objects.filter(event=event, user=user, is_banned=True).exists():
+            logger.warning(f"[LIVE_REJOIN] user {user.id} is banned")
+            return Response({
+                "can_rejoin": False,
+                "reason": "user_banned",
+                "detail": "You are banned from this event."
+            }, status=403)
+
+        # Check if user is cancelled/deregistered
+        if EventRegistration.objects.filter(event=event, user=user, status__in=["cancelled", "deregistered"]).exists():
+            logger.warning(f"[LIVE_REJOIN] user {user.id} status not registered")
+            return Response({
+                "can_rejoin": False,
+                "reason": "user_not_registered",
+                "detail": "You are not registered for this event."
+            }, status=403)
+
+        # Get or create registration
+        try:
+            registration = EventRegistration.objects.get(event=event, user=user)
+        except EventRegistration.DoesNotExist:
+            # Allow event host/creator to rejoin even without explicit registration
+            if not _is_event_host(user, event):
+                logger.warning(f"[LIVE_REJOIN] user {user.id} not registered for event {event.id}")
+                return Response({
+                    "can_rejoin": False,
+                    "reason": "user_not_registered",
+                    "detail": "You are not registered for this event."
+                }, status=403)
+            registration = None
+
+        # Determine admission status and location
+        if registration:
+            admission_status = registration.admission_status
+            current_location = registration.current_location or "pre_event"
+        else:
+            # Host without registration
+            admission_status = "admitted"
+            current_location = "main_room"
+
+        # Auto-admit previously admitted users (rejoin grace)
+        if registration and registration.was_ever_admitted and admission_status == "waiting":
+            registration.admission_status = "admitted"
+            registration.last_reconnect_at = timezone.now()
+            registration.save(update_fields=["admission_status", "last_reconnect_at"])
+            admission_status = "admitted"
+            logger.info(f"[LIVE_REJOIN] auto-readmitted user {user.id}")
+
+        # Validate user can access this room
+        is_host = _is_event_host(user, event)
+
+        if not is_host and event.waiting_room_enabled and admission_status == "waiting":
+            # User is still waiting
+            waiting_room_enabled = True
+        else:
+            waiting_room_enabled = event.waiting_room_enabled
+
+        # Build response for registered user
+        response_data = {
+            "event_id": event.id,
+            "meeting_status": event.status,
+            "is_live": event.status == "live",
+            "user_role": "host" if is_host else "participant",
+            "admission_status": admission_status,
+            "waiting_room_enabled": waiting_room_enabled,
+            "current_location": current_location,
+            "can_rejoin": True,
+        }
+
+        # Add room type
+        if event.status == "ended":
+            response_data["room_type"] = "ended"
+        elif current_location == "waiting_room" or (event.waiting_room_enabled and admission_status == "waiting"):
+            response_data["room_type"] = "waiting_room"
+        elif current_location == "social_lounge":
+            response_data["room_type"] = "lounge"
+        elif current_location == "breakout_room":
+            response_data["room_type"] = "breakout"
+            # Include last breakout table if available
+            if registration and registration.last_breakout_table_id:
+                response_data["breakout_table_id"] = registration.last_breakout_table_id
+                response_data["breakout_table_name"] = registration.last_breakout_table.name if registration.last_breakout_table else None
+        else:
+            response_data["room_type"] = "main_room"
+
+        # Add RTK meeting ID (always needed)
+        try:
+            meeting_id = _ensure_rtk_meeting_for_event(event)
+            response_data["rtk_meeting_id"] = meeting_id
+        except RuntimeError as e:
+            logger.warning(f"[LIVE_REJOIN] RTK meeting error for event {event.id}: {e}")
+            response_data["rtk_meeting_id"] = None
+            response_data["rtk_token"] = None
+
+        # Generate RTK token if user is admitted and event is live
+        if admission_status == "admitted" and event.status == "live":
+            try:
+                meeting_id = _ensure_rtk_meeting_for_event(event)
+                preset_name = RTK_PRESET_HOST if is_host else RTK_PRESET_PARTICIPANT
+
+                profile = getattr(user, "profile", None)
+                name = (getattr(profile, "full_name", "") if profile else "") or getattr(user, "get_full_name", lambda: "")() or user.username
+                picture = ""
+                try:
+                    if profile and getattr(profile, "user_image", None):
+                        picture = profile.user_image.url
+                except Exception:
+                    picture = ""
+
+                body = {
+                    "name": name or f"User {user.id}",
+                    "preset_name": preset_name,
+                    "client_specific_id": str(user.id),
+                }
+                if picture:
+                    body["picture"] = picture
+
+                resp = requests.post(
+                    f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
+                    headers=_rtk_headers(),
+                    json=body,
+                    timeout=10,
+                )
+
+                if resp.status_code in (200, 201):
+                    data = (resp.json() or {}).get("data") or {}
+                    auth_token = data.get("token")
+                    if auth_token:
+                        response_data["rtk_token"] = auth_token
+                        logger.info(f"[LIVE_REJOIN] user {user.id} rejoining event {event.id} role={response_data['user_role']} room={current_location}")
+                    else:
+                        logger.warning(f"[LIVE_REJOIN] No RTK token returned for user {user.id}")
+                else:
+                    logger.warning(f"[LIVE_REJOIN] RTK participant error for user {user.id}: {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"[LIVE_REJOIN] RTK token error for user {user.id}: {e}")
+
+        # Add break state if meeting is on break
+        if event.is_on_break and event.break_started_at:
+            from django.utils import timezone as django_tz
+            elapsed = (django_tz.now() - event.break_started_at).total_seconds()
+            break_remaining = max(0, int(event.break_duration_seconds - elapsed))
+            response_data["is_on_break"] = True
+            response_data["break_duration_seconds"] = event.break_duration_seconds
+            response_data["break_remaining_seconds"] = break_remaining
+
+        return Response(response_data, status=200)
 
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="waiting-room/status")
     def waiting_room_status(self, request, pk=None):
@@ -7110,24 +7854,31 @@ class EventViewSet(viewsets.ModelViewSet):
              return Response({"detail": "User not found."}, status=404)
 
         # 2. Register them
-        if EventRegistration.objects.filter(event=event, user=target_user).exists():
-            return Response({"detail": "User is already registered for this event."}, status=400)
-
-        # ✅ NEW: Set admission_status based on event's waiting_room_enabled setting
-        # If waiting room is enabled, new users start as "waiting" for host admission
-        # If waiting room is disabled, new users are automatically "admitted"
         initial_admission_status = "waiting" if event.waiting_room_enabled else "admitted"
 
-        EventRegistration.objects.create(
+        reg, created = EventRegistration.objects.get_or_create(
             event=event,
             user=target_user,
-            status="registered",  # Directly registered
-            admission_status=initial_admission_status,
-            # joined_live / watched_replay defaults are False
+            defaults={
+                "status": "registered",
+                "admission_status": initial_admission_status,
+            }
         )
-        
-        # Optionally update attending count immediately if you want them counted strictly
-        Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+
+        if not created:
+            # User exists but may be cancelled/deregistered - reinstate them
+            if reg.status == "registered":
+                return Response({"detail": "User is already registered for this event."}, status=400)
+
+            # Re-activate the registration
+            reg.status = "registered"
+            reg.admission_status = initial_admission_status
+            reg.save(update_fields=["status", "admission_status"])
+            Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+        else:
+            # New registration created
+            Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+
         return Response({"ok": True, "detail": f"User {target_user.username} added successfully."})
 
     @action(detail=True, methods=["patch"], permission_classes=[IsAuthenticated], url_path="reorder-speakers")
@@ -7299,14 +8050,14 @@ class EventViewSet(viewsets.ModelViewSet):
             
         frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
         event_id_str = event.slug or str(event.id)
-        
+
         sent = 0
         failed = []
-        
+
         for email in emails:
             if current_daily + sent >= max_per_day:
                 break
-                
+
             payload = {
                 "kind": "event",
                 "event_id": event.id,
@@ -7314,7 +8065,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "invited_by": request.user.id
             }
             token = signing.dumps(payload, salt="event-email-invite")
-            invite_url = f"{frontend_url}/events/{event_id_str}?invite_token={token}"
+            invite_url = f"{frontend_url}/events/{event_id_str}/companion?invite_token={token}"
             
             success = send_event_invite_email(email, event, request.user, invite_url)
             if success:
@@ -7355,24 +8106,21 @@ class EventViewSet(viewsets.ModelViewSet):
         if not request.user.email or payload.get("email", "").lower() != request.user.email.lower():
             return Response({"detail": "Token belongs to a different email"}, status=403)
             
-        # Check waitlist / capacity
+        # Check capacity
         invited_by_id = payload.get("invited_by")
-        
-        status_val = "registered"
+
         if event.max_participants and event.registrations.filter(status="registered").count() >= event.max_participants:
-            if getattr(event, "waitlist_enabled", False):
-                status_val = "waitlisted"
-            else:
+            if not getattr(event, "waitlist_enabled", False):
                 return Response({"detail": "Event is at capacity"}, status=400)
-                
+
         # Handle paid events: don't auto-register, require payment flow instead
         if not event.is_free:
             is_registered = EventRegistration.objects.filter(
-                event=event, 
-                user=request.user, 
+                event=event,
+                user=request.user,
                 status__in=["registered", "waitlisted"]
             ).exists()
-            
+
             if not is_registered:
                 return Response({
                     "ok": True,
@@ -7380,28 +8128,22 @@ class EventViewSet(viewsets.ModelViewSet):
                     "event_id": event.id,
                     "detail": "Paid event requires ticket purchase"
                 })
-                
-        registration, created = EventRegistration.objects.get_or_create(
-            event=event,
-            user=request.user,
-            defaults={
-                "status": status_val,
-            }
-        )
-        if not created and registration.status not in ["registered", "waitlisted"]:
-            registration.status = status_val
-            registration.save(update_fields=["status"])
-            status_msg = "created"
-        elif not created:
-            status_msg = "already_registered"
-        else:
-            status_msg = "created"
-            
+
+        # Use helper to grant access (creates registration and approves pending apps)
+        invited_by_user = None
+        if invited_by_id:
+            try:
+                invited_by_user = User.objects.get(id=invited_by_id)
+            except User.DoesNotExist:
+                pass
+
+        result = _grant_invited_event_access(event, request.user, invited_by=invited_by_user)
+
         return Response({
             "ok": True,
-            "status": status_msg,
+            "status": "registered",
             "event_id": event.id,
-            "registration_status": registration.status
+            "registration_status": "registered"
         })
 
     # ========== Pinning/Promotion Endpoints ==========
@@ -7428,6 +8170,72 @@ class EventViewSet(viewsets.ModelViewSet):
         event.pinned_by = None
         event.save(update_fields=["is_pinned", "pin_priority", "pinned_at", "pinned_by", "updated_at"])
         return Response(EventSerializer(event, context={"request": request}).data)
+
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="landing")
+    def landing_page_events(self, request):
+        """Get hero event and upcoming events sorted for landing page.
+
+        Returns:
+        {
+            "hero_event": {...},  # featured > pinned > nearest upcoming
+            "upcoming_events": [...]  # excludes hero, sorted: pinned first (by priority), then by date
+        }
+        """
+        from django.utils import timezone
+        now = timezone.now()
+
+        # Get upcoming events: published, not ended, after now
+        qs = self.get_queryset().filter(
+            status="published"
+        ).exclude(
+            status="ended"
+        ).exclude(
+            end_time__lt=now
+        ).filter(
+            Q(start_time__isnull=True) | Q(start_time__gt=now)
+        ).order_by("is_pinned", "pin_priority", "pinned_at", "start_time")
+
+        events = list(qs)
+
+        # Select hero event: featured > pinned (lowest priority) > nearest upcoming
+        hero_event = None
+
+        # Priority 1: Featured event
+        featured = next((e for e in events if e.is_featured), None)
+        if featured:
+            hero_event = featured
+        # Priority 2: Pinned event with lowest pin_priority
+        elif any(e.is_pinned for e in events):
+            pinned = [e for e in events if e.is_pinned]
+            hero_event = min(pinned, key=lambda e: (e.pin_priority or 999999, -(e.pinned_at.timestamp() if e.pinned_at else 0)))
+        # Priority 3: Nearest upcoming event
+        elif events:
+            hero_event = events[0]
+
+        # Get remaining events for grid, sorted properly
+        upcoming_events = [e for e in events if not hero_event or e.id != hero_event.id]
+
+        # Sort: pinned first (by pin_priority, then pinned_at), then normal by start_time
+        def sort_key(event):
+            if event.is_pinned:
+                # Pinned: (0, pin_priority, -pinned_at_timestamp)
+                pinned_time = -(event.pinned_at.timestamp() if event.pinned_at else 0)
+                return (0, event.pin_priority or 999999, pinned_time)
+            else:
+                # Normal: (1, start_time_timestamp)
+                start_time = event.start_time.timestamp() if event.start_time else float('inf')
+                return (1, start_time)
+
+        upcoming_events.sort(key=sort_key)
+
+        # Serialize
+        hero_data = EventSerializer(hero_event, context={"request": request}).data if hero_event else None
+        upcoming_data = EventSerializer(upcoming_events[:6], many=True, context={"request": request}).data
+
+        return Response({
+            "hero_event": hero_data,
+            "upcoming_events": upcoming_data,
+        })
 
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="pinned")
     def pinned_events(self, request):
@@ -7798,6 +8606,7 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         """
         Admins/Staff/Event Owners -> See all relevant.
         Normal users -> See only their own.
+        Supports ?event=, ?user=, and ?attendance_status= filters.
         """
         user = self.request.user
         qs = EventRegistration.objects.select_related("event").order_by("-registered_at")
@@ -7823,6 +8632,16 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
             if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
                 qs = qs.filter(user_id=user_id)
             # For non-staff, the user filter is already enforced by the Q() above
+
+        # Apply ?attendance_status= filter for attendance categorization
+        attendance_status = self.request.query_params.get("attendance_status")
+        if attendance_status:
+            if attendance_status == "joined_live":
+                qs = qs.filter(joined_live=True)
+            elif attendance_status == "watched_replay":
+                qs = qs.filter(watched_replay=True, joined_live=False)
+            elif attendance_status == "did_not_attend":
+                qs = qs.filter(joined_live=False, watched_replay=False)
 
         return qs
 

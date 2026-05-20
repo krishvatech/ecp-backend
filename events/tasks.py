@@ -1803,3 +1803,183 @@ def purge_expired_form_data():
     except Exception as e:
         logger.error(f"Failed to purge expired form data: {e}", exc_info=True)
         return {"error": str(e)}
+@shared_task(name="events.tasks.manage_live_meeting_asg_capacity")
+def manage_live_meeting_asg_capacity():
+    """
+    Automatically manages backend Auto Scaling Group capacity for large live meetings.
+
+    Production behavior:
+    - Normal capacity: Min=2, Desired=2, Max=5
+    - Big live meeting capacity: Min=3, Desired=3, Max=6
+    - Scale up when a large live meeting starts within the configured lead time.
+    - Keep capacity high while the meeting is active and for the configured buffer after it ends.
+    - Scale back only after the buffer is over and no other large meeting is active/upcoming.
+
+    This avoids manual AWS scaling before every event and prevents sudden capacity shortage
+    during live meetings.
+    """
+    import boto3
+    from django.core.cache import cache
+    from django.db.models import Count, Q
+
+    if not getattr(settings, "LIVE_MEETING_ASG_AUTOSCALE_ENABLED", False):
+        logger.info("[ASG_CAPACITY] Disabled: LIVE_MEETING_ASG_AUTOSCALE_ENABLED=False")
+        return {"status": "disabled"}
+
+    lock_key = "live_meeting_asg_capacity_manager_lock"
+
+    # Avoid duplicate execution if Celery Beat/worker overlaps.
+    if not cache.add(lock_key, "1", timeout=240):
+        logger.info("[ASG_CAPACITY] Skipped: another task is already running")
+        return {"status": "locked"}
+
+    try:
+        asg_name = settings.LIVE_MEETING_ASG_NAME
+        region = settings.LIVE_MEETING_ASG_REGION
+        threshold = settings.LIVE_MEETING_ASG_BIG_EVENT_THRESHOLD
+
+        now = timezone.now()
+        scale_up_until = now + timedelta(
+            minutes=settings.LIVE_MEETING_ASG_SCALE_UP_BEFORE_MINUTES
+        )
+        keep_scaled_after = now - timedelta(
+            minutes=settings.LIVE_MEETING_ASG_SCALE_DOWN_AFTER_MINUTES
+        )
+
+        # A meeting needs big capacity if it is a native live meeting and either:
+        # - starts within the lead window,
+        # - is active,
+        # - or ended recently but is still inside the scale-down buffer.
+        #
+        # Size is detected using max_participants, cached attending_count, or confirmed
+        # registration count. This makes the task safer even if attending_count is stale.
+        big_meeting_qs = (
+            Event.objects.filter(
+                status__in=["published", "live"],
+                start_time__isnull=False,
+                start_time__lte=scale_up_until,
+                use_external_streaming=False,
+            )
+            .filter(
+                Q(end_time__isnull=True, start_time__gte=keep_scaled_after)
+                | Q(end_time__gte=keep_scaled_after)
+            )
+            .annotate(
+                confirmed_registration_count=Count(
+                    "registrations",
+                    filter=Q(
+                        registrations__status="registered",
+                        registrations__attendee_status="confirmed",
+                    ),
+                    distinct=True,
+                )
+            )
+            .filter(
+                Q(max_participants__gte=threshold)
+                | Q(attending_count__gte=threshold)
+                | Q(confirmed_registration_count__gte=threshold)
+            )
+        )
+
+        big_meeting = big_meeting_qs.order_by("start_time").first()
+
+        if big_meeting:
+            mode = "big_meeting"
+            desired_config = {
+                "MinSize": settings.LIVE_MEETING_ASG_BIG_MIN,
+                "DesiredCapacity": settings.LIVE_MEETING_ASG_BIG_DESIRED,
+                "MaxSize": settings.LIVE_MEETING_ASG_BIG_MAX,
+            }
+            logger.info(
+                "[ASG_CAPACITY] Large live meeting window detected: event_id=%s title=%s start=%s end=%s",
+                big_meeting.id,
+                big_meeting.title,
+                big_meeting.start_time,
+                big_meeting.end_time,
+            )
+        else:
+            mode = "normal"
+            desired_config = {
+                "MinSize": settings.LIVE_MEETING_ASG_NORMAL_MIN,
+                "DesiredCapacity": settings.LIVE_MEETING_ASG_NORMAL_DESIRED,
+                "MaxSize": settings.LIVE_MEETING_ASG_NORMAL_MAX,
+            }
+
+        client = boto3.client("autoscaling", region_name=region)
+        response = client.describe_auto_scaling_groups(
+            AutoScalingGroupNames=[asg_name]
+        )
+        groups = response.get("AutoScalingGroups", [])
+
+        if not groups:
+            logger.error("[ASG_CAPACITY] ASG not found: %s", asg_name)
+            return {"status": "error", "message": f"ASG not found: {asg_name}"}
+
+        current = groups[0]
+        current_min = current.get("MinSize")
+        current_desired = current.get("DesiredCapacity")
+        current_max = current.get("MaxSize")
+
+        already_correct = (
+            current_min == desired_config["MinSize"]
+            and current_desired == desired_config["DesiredCapacity"]
+            and current_max == desired_config["MaxSize"]
+        )
+
+        if already_correct:
+            logger.info(
+                "[ASG_CAPACITY] No change needed. mode=%s min=%s desired=%s max=%s",
+                mode,
+                current_min,
+                current_desired,
+                current_max,
+            )
+            return {
+                "status": "ok",
+                "changed": False,
+                "mode": mode,
+                "current": {
+                    "min": current_min,
+                    "desired": current_desired,
+                    "max": current_max,
+                },
+            }
+
+        logger.info(
+            "[ASG_CAPACITY] Updating ASG %s mode=%s from min=%s desired=%s max=%s "
+            "to min=%s desired=%s max=%s",
+            asg_name,
+            mode,
+            current_min,
+            current_desired,
+            current_max,
+            desired_config["MinSize"],
+            desired_config["DesiredCapacity"],
+            desired_config["MaxSize"],
+        )
+
+        client.update_auto_scaling_group(
+            AutoScalingGroupName=asg_name,
+            MinSize=desired_config["MinSize"],
+            DesiredCapacity=desired_config["DesiredCapacity"],
+            MaxSize=desired_config["MaxSize"],
+        )
+
+        return {
+            "status": "ok",
+            "changed": True,
+            "mode": mode,
+            "new": {
+                "min": desired_config["MinSize"],
+                "desired": desired_config["DesiredCapacity"],
+                "max": desired_config["MaxSize"],
+            },
+        }
+
+    except Exception as exc:
+        logger.exception("[ASG_CAPACITY] Failed to manage ASG capacity: %s", exc)
+        return {"status": "error", "error": str(exc)}
+
+    finally:
+        cache.delete(lock_key)
+

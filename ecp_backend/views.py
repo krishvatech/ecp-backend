@@ -5,9 +5,17 @@ from django.template.response import TemplateResponse
 from django.utils.html import strip_tags
 
 from events.models import Event
+from ecp_backend.health_checks import get_health_status
 
 def health(request):
+    """Simple health check for ALB. Must only return {"status": "ok"} without deep checks."""
     return JsonResponse({"status": "ok"})
+
+def live_health(request):
+    """Deep monitoring health check. Returns detailed status of all dependencies."""
+    result = get_health_status()
+    status_code = 200 if result["status"] == "ok" else 503
+    return JsonResponse(result, status=status_code)
 
 def index(request):
     # Logged in? send to your app home (dashboard)

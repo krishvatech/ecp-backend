@@ -494,6 +494,13 @@ class Event(models.Model):
         related_name="pinned_events",
     )
 
+    # Featured event for landing page hero
+    is_featured = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="When True, this event is displayed as the featured hero event on the landing page. Only one upcoming event should be featured at a time."
+    )
+
     # Post-event Replay Access
     replay_enabled = models.BooleanField(
         default=False,

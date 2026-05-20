@@ -33,7 +33,9 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = FeedItemSerializer
     pagination_class = FeedPagination
-    queryset = FeedItem.objects.select_related("actor", "actor__profile").order_by("-created_at")  
+    queryset = FeedItem.objects.select_related(
+        "actor", "actor__profile", "group", "community", "event", "event__created_by", "event__community"
+    ).order_by("-created_at")  
     
     def _friend_user_ids(self, user_id: int):
         pairs = Friendship.objects.filter(
@@ -155,7 +157,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             if search_q:
                 qs = qs.filter(self._feed_search_q(search_q))
 
-            return qs.select_related("actor", "actor__profile").order_by("-created_at")
+            return qs.select_related("actor", "actor__profile", "group", "community", "event", "event__created_by", "event__community").order_by("-created_at")
 
         if scope in ("community", "home", "friends_and_public"):
             # Communities the viewer is in (owner is always a member via your model's save())
@@ -182,7 +184,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 metadata__type__in=["text", "image", "link", "poll"],
             ).filter(
                 Q(verb="posted") | Q(verb="created_poll")
-            )
+            ).select_related("actor", "actor__profile", "group", "community", "event", "event__created_by", "event__community")
 
             # --- NEW: Filter suspended/fake/deceased users here too ---
             # (unless it is the user's own post)
@@ -218,7 +220,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 # Apply search filter if provided
                 if search_q:
                     comm_posts = comm_posts.filter(self._feed_search_q(search_q))
-                return comm_posts.select_related("actor", "actor__profile").order_by("-created_at")
+                return comm_posts.select_related("actor", "actor__profile", "group", "community", "event", "event__created_by", "event__community").order_by("-created_at")
 
             if scope in ("home", "friends_and_public"):
                 # Combine with the existing "member_groups" scope for a single home feed
@@ -237,7 +239,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     Q(metadata__groupId__in=member_group_ids_str) |
                     Q(metadata__group__id__in=member_group_ids) |
                     Q(metadata__group__id__in=member_group_ids_str)
-                )
+                ).select_related("actor", "actor__profile", "group", "community", "event", "event__created_by", "event__community")
 
                 # Exclude draft event posts from group feed
                 group_feed = group_feed.filter(
@@ -250,7 +252,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     Q(actor_id=me.id) | ~Q(actor__profile__profile_status__in=BLOCKED)
                 )
 
-                # Combine both feeds
+                # Combine both feeds (both already have select_related applied)
                 combined = (group_feed | comm_posts)
 
                 # Apply search filter if provided
@@ -258,7 +260,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     combined = combined.filter(self._feed_search_q(search_q))
 
                 # Return union of both
-                return combined.select_related("actor", "actor__profile").order_by("-created_at")
+                return combined.select_related("actor", "actor__profile", "group", "community", "event", "event__created_by", "event__community").order_by("-created_at")
         
         # Fallback (unchanged)
         if actor_id:  # <-- NEW

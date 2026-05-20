@@ -28,6 +28,7 @@ from .models import (
     PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer,
     AdminAuditLog, PostAcceptanceFormDraft, EventFormCustomization
 )
+from django.db.models import Prefetch as DjangoPrefetch
 from community.models import Community
 from content.models import Resource
 import json
@@ -1010,6 +1011,7 @@ class EventSerializer(serializers.ModelSerializer):
             "pin_priority",
             "pinned_at",
             "pinned_by_id",
+            "is_featured",
             "replay_enabled",
             "replay_video_url",
             "youtube_summary_url",
@@ -1553,6 +1555,10 @@ class EventSerializer(serializers.ModelSerializer):
             print(f"    Stored end_time: {event.end_time}")
             print(f"🔴 BACKEND CREATE METHOD END\n")
 
+            # Handle one-featured-at-a-time constraint: unfeature all other events
+            if event.is_featured:
+                Event.objects.filter(is_featured=True).exclude(pk=event.pk).update(is_featured=False)
+
             # Automatically add event creator as attendee
             creator = self.context["request"].user
             obj, was_created = EventRegistration.objects.get_or_create(
@@ -1739,8 +1745,14 @@ class EventSerializer(serializers.ModelSerializer):
                     {"hours_calculation_session_types": "Only platform administrators can modify session types for hours calculation."}
                 )
 
-        # Update event fields
-        instance = super().update(instance, validated_data)
+        # Handle one-featured-at-a-time constraint: unfeature all other events
+        if validated_data.get('is_featured') is True:
+            with transaction.atomic():
+                Event.objects.filter(is_featured=True).exclude(pk=instance.pk).update(is_featured=False)
+                instance = super().update(instance, validated_data)
+        else:
+            # Update event fields
+            instance = super().update(instance, validated_data)
 
         # If participants data provided, intelligently update participants
         # Only send confirmation emails to newly added participants
@@ -2383,6 +2395,63 @@ class PublicEventSerializer(serializers.ModelSerializer):
         Check if user has replay access (is registered for the event).
         """
         return self.get_is_registered_for_event(obj)
+
+
+class SessionSummarySerializer(serializers.ModelSerializer):
+    """Lightweight session serializer for card view (minimal fields only)."""
+    class Meta:
+        model = EventSession
+        fields = ("id", "title", "start_time", "end_time", "session_date")
+
+
+class MyEventCardSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for My Events card view - includes only frontend-required fields."""
+    sessions_summary = SessionSummarySerializer(source="sessions", many=True, read_only=True)
+    my_registration = serializers.SerializerMethodField(read_only=True)
+
+    def get_my_registration(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user or not request.user.is_authenticated:
+            return None
+        registration = getattr(obj, "_prefetched_my_registration", None)
+        if registration:
+            return {
+                "id": registration.id,
+                "status": registration.status,
+                "registered_at": registration.registered_at,
+                "joined_live": registration.joined_live,
+                "watched_replay": registration.watched_replay,
+                "admitted_at": registration.admitted_at,
+                "admission_status": registration.admission_status,
+                "is_host": self._compute_is_host(obj, registration),
+            }
+        return None
+
+    def _compute_is_host(self, event, registration):
+        if registration.user_id == getattr(event, "created_by_id", None):
+            return True
+        host_match = Q(participant_type="staff", user_id=registration.user_id)
+        user_email = (getattr(registration.user, "email", "") or "").strip()
+        if user_email:
+            host_match = host_match | Q(participant_type="guest", guest_email__iexact=user_email)
+        return event.participants.filter(role="host").filter(host_match).exists()
+
+    class Meta:
+        model = Event
+        fields = (
+            "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
+            "preview_image", "cover_image", "waiting_room_image", "location", "location_city",
+            "location_country", "category", "is_live", "recording_url", "replay_available",
+            "replay_visible_to_participants", "price", "price_label", "currency", "is_free",
+            "registration_type", "waiting_room_enabled", "waiting_room_grace_period_minutes",
+            "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
+            "lounge_enabled_before", "lounge_before_buffer", "lounge_enabled_after", "lounge_after_buffer",
+            "is_multi_day", "sessions_summary", "cancellation_message", "recommended_event", "created_by_id",
+            "use_external_streaming", "external_streaming_platform", "external_streaming_url",
+            "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
+            "external_streaming_host_link", "replay_enabled", "replay_video_url", "youtube_summary_url",
+            "linkedin_summary_url", "replay_cta_text", "my_registration",
+        )
 
 
 class EventLiteSerializer(serializers.ModelSerializer):
@@ -3180,6 +3249,95 @@ class EventNetworkingSettingsSerializer(serializers.ModelSerializer):
                     )
 
         return value
+
+    def validate(self, data):
+        from datetime import datetime
+        from pytz import timezone as pytz_timezone
+
+        # Get event from context or instance
+        event = self.context.get('event')
+        if not event and self.instance:
+            event = self.instance.event
+
+        if not event:
+            return data
+
+        # Only validate if allowed_windows is being updated
+        allowed_windows = data.get('allowed_windows', self.instance.allowed_windows if self.instance else None)
+        if not allowed_windows:
+            return data
+
+        # Get event timezone
+        try:
+            event_tz = pytz_timezone(event.timezone)
+        except Exception:
+            event_tz = pytz_timezone('UTC')
+
+        if not event.start_time or not event.end_time:
+            raise serializers.ValidationError({
+                'allowed_windows': 'Event must have start_time and end_time set.'
+            })
+
+        # Helper to parse time in HH:MM or HH:MM AM/PM format
+        def parse_time_str(time_str):
+            time_str = time_str.strip()
+            try:
+                return datetime.strptime(time_str, "%H:%M").time()
+            except ValueError:
+                pass
+            for fmt in ["%I:%M %p", "%I:%M%p"]:
+                try:
+                    return datetime.strptime(time_str, fmt).time()
+                except ValueError:
+                    pass
+            raise ValueError(f"Invalid time format: {time_str}")
+
+        # Format event time for error messages
+        event_start_str = event.start_time.strftime('%b %d, %Y, %I:%M %p')
+        event_end_str = event.end_time.strftime('%I:%M %p')
+        event_time_display = f"{event_start_str} – {event_end_str}"
+
+        # Validate each window
+        errors = {}
+        for i, window in enumerate(allowed_windows):
+            try:
+                date_str = window.get('date')
+                start_str = window.get('start')
+                end_str = window.get('end')
+
+                if not all([date_str, start_str, end_str]):
+                    continue
+
+                # Parse window date and times
+                window_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                window_start_time = parse_time_str(start_str)
+                window_end_time = parse_time_str(end_str)
+
+                # Combine into timezone-aware datetimes
+                window_start_dt = event_tz.localize(datetime.combine(window_date, window_start_time))
+                window_end_dt = event_tz.localize(datetime.combine(window_date, window_end_time))
+
+                # Check window is within event date bounds
+                if window_date < event.start_time.date() or window_date > event.end_time.date():
+                    errors[f'window_{i}'] = f"Window {i + 1} must be within event time: {event_time_display}."
+                    continue
+
+                # Check window times are within event bounds
+                if window_start_dt < event.start_time or window_end_dt > event.end_time:
+                    errors[f'window_{i}'] = f"Window {i + 1} must be within event time: {event_time_display}."
+                    continue
+
+                # Check end > start
+                if window_end_dt <= window_start_dt:
+                    errors[f'window_{i}'] = f"Window {i + 1} end time must be after start time."
+
+            except (ValueError, TypeError) as e:
+                errors[f'window_{i}'] = f"Window {i + 1}: Invalid date or time format."
+
+        if errors:
+            raise serializers.ValidationError({'allowed_windows': list(errors.values())})
+
+        return data
 
     def validate_reminder_minutes_before(self, value):
         if value < 0:

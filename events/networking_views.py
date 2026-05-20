@@ -8,6 +8,7 @@ from rest_framework.permissions import IsAuthenticated, BasePermission, SAFE_MET
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q, Max
@@ -95,7 +96,7 @@ class EventNetworkingSettingsView(views.APIView):
             # Create if doesn't exist
             settings = EventNetworkingSettings.objects.create(event=event)
 
-        serializer = EventNetworkingSettingsSerializer(settings, data=request.data, partial=True)
+        serializer = EventNetworkingSettingsSerializer(settings, data=request.data, partial=True, context={'event': event})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
@@ -178,6 +179,18 @@ class NetworkingMeetingAvailabilityView(views.APIView):
     def get(self, request, event_id):
         event = get_object_or_404(Event, id=event_id)
 
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         # Get current user's registration (or create temporary one for non-registered users)
         requester_reg, created = EventRegistration.objects.get_or_create(
             event=event,
@@ -249,6 +262,18 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
     def create(self, request, *args, **kwargs):
         event_id = self.kwargs.get('event_id')
         event = get_object_or_404(Event, id=event_id)
+
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Get or create requester registration (allow non-registered users)
         requester_reg, created = EventRegistration.objects.get_or_create(
@@ -328,9 +353,13 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
                 duration_minutes=duration_minutes
             )
 
-            # Check if requested slot is available
+            # Check if requested slot is available.
+            # Compare datetime instants, not ISO strings: get_available_networking_slots
+            # returns slot start_time in the event's local timezone (e.g. +05:30) while DRF's
+            # DateTimeField normalizes the incoming request to UTC, so string equality always
+            # fails for events not in UTC.
             slot_available = any(
-                slot['start_time'] == start_time.isoformat()
+                parse_datetime(slot['start_time']) == start_time
                 for slot in slots
             )
 
@@ -434,6 +463,19 @@ class NetworkingMeetingAcceptView(views.APIView):
 
     def post(self, request, meeting_id):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
+        event = meeting.event
+
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Only recipient can accept
         if meeting.recipient.user_id != request.user.id:
@@ -569,6 +611,19 @@ class NetworkingMeetingDeclineView(views.APIView):
 
     def post(self, request, meeting_id):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
+        event = meeting.event
+
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Only recipient can decline
         if meeting.recipient.user_id != request.user.id:
@@ -630,6 +685,19 @@ class NetworkingMeetingSuggestView(views.APIView):
 
     def post(self, request, meeting_id):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
+        event = meeting.event
+
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Requester or recipient can suggest
         user_is_requester = meeting.requester.user_id == request.user.id
@@ -662,8 +730,9 @@ class NetworkingMeetingSuggestView(views.APIView):
                 duration_minutes=meeting.duration_minutes
             )
 
+            # Compare datetime instants, not ISO strings (see slot_available note in create()).
             slot_available = any(
-                slot['start_time'] == suggested_start.isoformat()
+                parse_datetime(slot['start_time']) == suggested_start
                 for slot in slots
             )
 
@@ -799,6 +868,19 @@ class NetworkingMeetingRescheduleView(views.APIView):
 
     def post(self, request, meeting_id):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
+        event = meeting.event
+
+        # Check if event has started
+        if event.start_time and timezone.now() < event.start_time:
+            return Response(
+                {
+                    "code": "EVENT_NOT_STARTED",
+                    "detail": "1:1 meetings open when the event starts.",
+                    "event_start_time": event.start_time.isoformat(),
+                    "server_time": timezone.now().isoformat(),
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Requester or recipient can reschedule
         user_is_requester = meeting.requester.user_id == request.user.id
@@ -839,8 +921,9 @@ class NetworkingMeetingRescheduleView(views.APIView):
                 duration_minutes=meeting.duration_minutes
             )
 
+            # Compare datetime instants, not ISO strings (see slot_available note in create()).
             slot_available = any(
-                slot['start_time'] == new_start.isoformat()
+                parse_datetime(slot['start_time']) == new_start
                 for slot in slots
             )
 

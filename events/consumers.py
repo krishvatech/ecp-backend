@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 ASSISTANCE_COOLDOWN_SECONDS = 60
 DISCONNECT_CLEANUP_GRACE_SECONDS = 3
+HEARTBEAT_INTERVAL = 5  # Send ping every 5 seconds
+HEARTBEAT_TIMEOUT = 15  # Disconnect if no pong for 15 seconds
 
 class EventConsumer(AsyncJsonWebsocketConsumer):
     """Consumer to handle real-time communication within an event, including Social Lounge state."""
@@ -49,7 +51,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             self.user_group_name = f"user_{self.user.id}"
         await self.channel_layer.group_add(self.user_group_name, self.channel_name)
 
+        # ✅ HEARTBEAT: Initialize heartbeat mechanism for detecting dead connections
+        self.heartbeat_task = None
+        self.last_pong_at = None
+        self.pong_timeout_task = None
+
         await self.accept()
+
+        # ✅ HEARTBEAT: Start heartbeat ping task
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         # 🔍 DIAGNOSTIC: Log all handler methods on this consumer
         handler_methods = [m for m in dir(self) if not m.startswith('_') and callable(getattr(self, m)) and m.startswith('speed_networking')]
@@ -151,6 +161,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.broadcast_main_room_support_status()
 
     async def disconnect(self, code: int) -> None:
+        # ✅ HEARTBEAT: Cancel heartbeat tasks on disconnect
+        if hasattr(self, "heartbeat_task") and self.heartbeat_task:
+            self.heartbeat_task.cancel()
+        if hasattr(self, "pong_timeout_task") and self.pong_timeout_task:
+            self.pong_timeout_task.cancel()
+
         if hasattr(self, "group_name"):
             await self.update_online_status(False)
 
@@ -187,9 +203,47 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         if hasattr(self, "user_group_name"):
             await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
 
+    # ✅ HEARTBEAT: Send periodic pings to detect dead connections
+    async def _heartbeat_loop(self):
+        """Send ping every 5 seconds and monitor for pong responses."""
+        try:
+            while True:
+                await asyncio.sleep(HEARTBEAT_INTERVAL)
+                try:
+                    await self.send_json({"type": "ping"})
+                    self.last_pong_at = asyncio.get_event_loop().time()
+
+                    # Start timeout check for pong response
+                    if self.pong_timeout_task:
+                        self.pong_timeout_task.cancel()
+                    self.pong_timeout_task = asyncio.create_task(self._check_pong_timeout())
+                except Exception as e:
+                    logger.warning(f"[HEARTBEAT] Failed to send ping: {e}")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"[HEARTBEAT] Heartbeat loop error: {e}")
+
+    async def _check_pong_timeout(self):
+        """Disconnect if no pong received within timeout period."""
+        try:
+            await asyncio.sleep(HEARTBEAT_TIMEOUT)
+            logger.warning(f"[HEARTBEAT] No pong from {self.user.id} for {HEARTBEAT_TIMEOUT}s, disconnecting")
+            await self.close(code=4000)
+        except asyncio.CancelledError:
+            pass
+
     async def receive_json(self, content: dict, **kwargs) -> None:
         action = content.get("action")
-        
+
+        # ✅ HEARTBEAT: Handle pong response from client
+        if action == "pong":
+            self.last_pong_at = asyncio.get_event_loop().time()
+            if self.pong_timeout_task:
+                self.pong_timeout_task.cancel()
+                self.pong_timeout_task = None
+            return
+
         if action == "join_table":
             table_id = content.get("table_id")
             seat_index = content.get("seat_index")

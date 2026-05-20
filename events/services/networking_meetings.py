@@ -80,9 +80,8 @@ def get_available_networking_slots(
         slots = _split_into_slots(start_dt, end_dt, duration_minutes)
         all_slots.extend(slots)
 
-    # NOTE: We don't filter by event bounds because networking windows are
-    # independently configured and may span beyond the main event hours.
-    # For example, a pre-event or post-event networking window.
+    # NOTE: Networking windows are validated to be within event bounds at the API level.
+    # Slots will be filtered by event bounds below.
 
     # Remove slots conflicting with EventSession/programme blocks
     all_slots = _remove_session_conflicts(all_slots, event)
@@ -95,6 +94,9 @@ def get_available_networking_slots(
 
     # Remove past/current slots
     all_slots = _remove_past_slots(all_slots)
+
+    # Filter slots to only those within event start/end bounds
+    all_slots = _filter_by_event_bounds(all_slots, event)
 
     # Format as output
     return _format_slots(all_slots, event_tz)
