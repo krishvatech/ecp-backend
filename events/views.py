@@ -2862,6 +2862,108 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return Response(EventApplicationSerializer(app).data)
 
+    @action(detail=True, methods=["post"], url_path=r"applications/bulk-approve", permission_classes=[IsAuthenticated])
+    def bulk_approve_applications(self, request, pk=None):
+        """
+        Approve multiple applications in bulk.
+
+        Body:
+        {
+            "application_ids": [1, 2, 3],  # Optional: specific application IDs to approve
+            "approve_all_pending": false   # Optional: if true, approve all pending applications
+        }
+
+        At least one of application_ids or approve_all_pending must be provided.
+        """
+        import logging
+        from django.db import transaction
+
+        logger = logging.getLogger(__name__)
+
+        event = self.get_object()
+        if not _is_event_owner(request.user, event):
+            return Response({'detail': 'Forbidden. Only the event owner can approve applications.'}, status=403)
+
+        # Parse request data
+        application_ids = request.data.get('application_ids', [])
+        approve_all_pending = request.data.get('approve_all_pending', False)
+
+        if not application_ids and not approve_all_pending:
+            return Response(
+                {'detail': 'Either "application_ids" or "approve_all_pending" must be provided.'},
+                status=400
+            )
+
+        # Build query for applications to approve
+        if approve_all_pending:
+            applications = EventApplication.objects.filter(
+                event=event,
+                status='pending'
+            )
+        else:
+            applications = EventApplication.objects.filter(
+                event=event,
+                id__in=application_ids,
+                status='pending'
+            )
+
+        if not applications.exists():
+            return Response({
+                'approved_count': 0,
+                'skipped_count': 0,
+                'skipped_reasons': [],
+                'message': 'No pending applications found to approve.'
+            })
+
+        approved_count = 0
+        skipped_reasons = []
+
+        try:
+            with transaction.atomic():
+                for app in applications:
+                    try:
+                        # Approve the application
+                        app.status = 'approved'
+                        app.reviewed_at = timezone.now()
+                        app.reviewed_by = request.user
+                        app.save()
+
+                        # Auto-register authenticated applicants
+                        if app.user:
+                            EventRegistration.objects.get_or_create(event=event, user=app.user)
+                        else:
+                            logger.info(f"Application {app.id} approved for guest {app.email}. Guest will verify via OTP on event day.")
+
+                        # Send approval email
+                        from users.email_utils import send_application_approved_email
+                        try:
+                            send_application_approved_email(app)
+                        except Exception as e:
+                            logger.error(f"Failed to send approval email for application {app.id}: {e}")
+
+                        approved_count += 1
+
+                    except Exception as e:
+                        logger.error(f"Error approving application {app.id}: {e}")
+                        skipped_reasons.append({
+                            'application_id': app.id,
+                            'email': app.email,
+                            'reason': str(e)
+                        })
+        except Exception as e:
+            logger.error(f"Bulk approval transaction failed: {e}")
+            return Response(
+                {'detail': f'Bulk approval failed: {str(e)}'},
+                status=500
+            )
+
+        return Response({
+            'approved_count': approved_count,
+            'skipped_count': len(skipped_reasons),
+            'skipped_reasons': skipped_reasons,
+            'message': f'Successfully approved {approved_count} application(s).'
+        })
+
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="max-price")
     def max_price(self, request):
         """
@@ -5883,7 +5985,7 @@ class EventViewSet(viewsets.ModelViewSet):
         
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        response['X-Filename'] = filename  # Expose filename to frontend if needed
+        response['X-Filename'] = filename
 
         writer = csv.writer(response)
         writer.writerow(['User ID', 'Name', 'Email', 'Registered At', 'Joined Live', 'Watched Replay', 'Status'])
