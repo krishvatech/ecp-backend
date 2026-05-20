@@ -8,6 +8,7 @@ from rest_framework.permissions import IsAuthenticated, BasePermission, SAFE_MET
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q, Max
@@ -352,9 +353,13 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
                 duration_minutes=duration_minutes
             )
 
-            # Check if requested slot is available
+            # Check if requested slot is available.
+            # Compare datetime instants, not ISO strings: get_available_networking_slots
+            # returns slot start_time in the event's local timezone (e.g. +05:30) while DRF's
+            # DateTimeField normalizes the incoming request to UTC, so string equality always
+            # fails for events not in UTC.
             slot_available = any(
-                slot['start_time'] == start_time.isoformat()
+                parse_datetime(slot['start_time']) == start_time
                 for slot in slots
             )
 
@@ -725,8 +730,9 @@ class NetworkingMeetingSuggestView(views.APIView):
                 duration_minutes=meeting.duration_minutes
             )
 
+            # Compare datetime instants, not ISO strings (see slot_available note in create()).
             slot_available = any(
-                slot['start_time'] == suggested_start.isoformat()
+                parse_datetime(slot['start_time']) == suggested_start
                 for slot in slots
             )
 
@@ -915,8 +921,9 @@ class NetworkingMeetingRescheduleView(views.APIView):
                 duration_minutes=meeting.duration_minutes
             )
 
+            # Compare datetime instants, not ISO strings (see slot_available note in create()).
             slot_available = any(
-                slot['start_time'] == new_start.isoformat()
+                parse_datetime(slot['start_time']) == new_start
                 for slot in slots
             )
 
