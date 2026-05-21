@@ -292,8 +292,12 @@ ROOT_URLCONF = "ecp_backend.urls"
 ASGI_APPLICATION = "ecp_backend.asgi.application"
 WSGI_APPLICATION = None  # Channels-based; no WSGI application needed
 
-_DB_CONN_MAX_AGE = 0 
-# if DEBUG else int(os.getenv("DB_CONN_MAX_AGE", "600"))
+# Connection pooling configuration
+DB_POOL_MIN_SIZE = int(os.getenv("DB_POOL_MIN_SIZE", "10"))
+DB_POOL_MAX_SIZE = int(os.getenv("DB_POOL_MAX_SIZE", "50"))
+DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "300"))
+
+_DB_CONN_MAX_AGE = 600 if not DEBUG else 0  # Keep connections alive for 10 min (prod), close immediately (dev)
 
 DATABASES = {
     "default": {
@@ -305,9 +309,15 @@ DATABASES = {
         "PORT": os.getenv("POSTGRES_PORT", "5432"),
         "CONN_MAX_AGE": _DB_CONN_MAX_AGE,
         "CONN_HEALTH_CHECKS": True,           # validates stale pooled conns
+        "CONN_HEALTH_CHECKS_INTERVAL": 10,   # check every 10 seconds
         "OPTIONS": {
             "connect_timeout": 5,    # fail fast instead of hanging
-            "options": "-c statement_timeout=30000"  # 30 second query timeout
+            "options": "-c statement_timeout=30000",  # 30 second query timeout
+            "pool": {
+                "min_size": DB_POOL_MIN_SIZE,      # keep N connections warm
+                "max_size": DB_POOL_MAX_SIZE,      # max N connections per process
+                "max_idle": DB_POOL_TIMEOUT,       # close connections idle longer than N seconds
+            }
         },
     }
 }
