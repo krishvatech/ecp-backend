@@ -433,14 +433,13 @@ class CognitoJWTAuthentication(BaseAuthentication):
                     else:
                         profile.save()
 
-            # --- ECP <-> Saleor Sync (Synchronous) ---
-            from .saleor_sync import sync_user_to_saleor_sync
+            # --- ECP <-> Saleor Sync (Async Background Task) ---
+            from .tasks import sync_user_to_saleor_async
             try:
-                sync_user_to_saleor_sync(user)
+                sync_user_to_saleor_async.delay(user.id)
             except Exception as e:
-                # Log but don't fail login if sync fails
-                pass
-            # -----------------------------------------
+                logger.warning(f"Failed to queue Saleor sync task: {e}")
+            # -------------------------------------------------------
 
             return (user, token)
 

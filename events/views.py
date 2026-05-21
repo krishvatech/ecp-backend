@@ -2073,9 +2073,8 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsCreatorOrReadOnly], url_path="sync-saleor-product")
     def sync_saleor_product(self, request, pk=None):
         """
-        Create or re-sync Saleor product for a paid event.
-        Calls sync_event_to_saleor_sync(event) to create/update the Saleor product.
-        Returns updated saleor_product_id and saleor_variant_id.
+        Queue async task to sync Saleor product for a paid event.
+        Returns immediately with a queued message.
         """
         event = self.get_object()
 
@@ -2087,16 +2086,16 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response({"error": "Free events do not need Saleor products."}, status=400)
 
         try:
-            from .saleor_sync import sync_event_to_saleor_sync
-            sync_event_to_saleor_sync(event)
-            event.refresh_from_db()
+            from .tasks import sync_event_to_saleor_async
+            sync_event_to_saleor_async.delay(event.id)
             return Response({
-                "saleor_product_id": event.saleor_product_id,
-                "saleor_variant_id": event.saleor_variant_id,
+                "status": "queued",
+                "message": "Event sync to Saleor queued in background",
+                "event_id": event.id,
             })
         except Exception as e:
-            logger.error(f"Error syncing event {event.id} to Saleor: {e}")
-            return Response({"error": f"Sync failed: {str(e)}"}, status=500)
+            logger.error(f"Error queuing Saleor sync task for event {event.id}: {e}")
+            return Response({"error": f"Failed to queue sync: {str(e)}"}, status=500)
 
     # POST /api/events/{id}/publish/
     @action(detail=True, methods=["post"], permission_classes=[IsCreatorOrReadOnly], url_path="publish")
