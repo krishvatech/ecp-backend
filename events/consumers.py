@@ -28,6 +28,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self) -> None:
         self.user = self.scope.get("user")
         if not self.user or self.user.is_anonymous:
+            logger.warning("WS[Event] rejected: anonymous user path=%s", self.scope.get("path"))
             await self.close(code=4401)
             return
 
@@ -41,7 +42,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         # Check for Ban Status
         is_banned = await self.check_is_banned()
         if is_banned:
-            print(f"[CONSUMER] User {self.user.username} is BANNED from event {self.event_id}. Closing connection.")
+            logger.warning("WS[Event] rejected: user %s is banned from event %s", self.user.id, self.event_id)
             await self.close(code=4003)
             return
 
@@ -170,38 +171,48 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         if hasattr(self, "group_name"):
             await self.update_online_status(False)
 
-            should_finalize_cleanup = True
-            try:
-                await asyncio.sleep(DISCONNECT_CLEANUP_GRACE_SECONDS)
-                should_finalize_cleanup = await self.should_finalize_disconnect_cleanup()
-            except Exception as e:
-                logger.warning(f"[CLEANUP] Grace-period check failed for user {self.user.id}: {e}")
-
-            if should_finalize_cleanup:
-                # Treat socket closes as provisional first. This avoids ejecting users
-                # when the client briefly reconnects during page transitions/reloads.
-                await self.leave_current_table()
-
-                # Cleanup RTK participants
-                try:
-                    meeting_ids = await self.get_user_rtk_meetings()
-                    if meeting_ids:
-                        loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(None, self.cleanup_rtk_participants_sync, meeting_ids)
-                except Exception as e:
-                    logging.getLogger(__name__).error(f"[CLEANUP] Failed: {e}")
-            else:
-                logger.info(
-                    f"[CLEANUP] Skipping destructive cleanup for user {self.user.id} "
-                    f"on event {self.event_id}; another connection became active during grace period."
-                )
-
+            # Fast operations before returning disconnect
             await self.broadcast_lounge_update() # Sync everyone
             await self.broadcast_main_room_support_status()
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
+            # Heavy cleanup (grace period + RTK API calls) runs in background
+            asyncio.create_task(self._deferred_cleanup())
+
         if hasattr(self, "user_group_name"):
             await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
+
+    async def _deferred_cleanup(self) -> None:
+        """Runs after disconnect returns. Handles grace period + RTK cleanup without blocking disconnect."""
+        try:
+            await asyncio.sleep(DISCONNECT_CLEANUP_GRACE_SECONDS)
+            should_finalize = await self.should_finalize_disconnect_cleanup()
+        except Exception as e:
+            logger.warning(f"[CLEANUP] Grace-period check failed for user {self.user.id}: {e}")
+            should_finalize = True
+
+        if not should_finalize:
+            logger.info(
+                f"[CLEANUP] Skipping destructive cleanup for user {self.user.id} "
+                f"on event {self.event_id}; another connection became active during grace period."
+            )
+            return
+
+        try:
+            # Treat socket closes as provisional first. This avoids ejecting users
+            # when the client briefly reconnects during page transitions/reloads.
+            await self.leave_current_table()
+        except Exception as e:
+            logger.error(f"[CLEANUP] leave_current_table failed for user {self.user.id}: {e}")
+
+        # Cleanup RTK participants
+        try:
+            meeting_ids = await self.get_user_rtk_meetings()
+            if meeting_ids:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self.cleanup_rtk_participants_sync, meeting_ids)
+        except Exception as e:
+            logger.error(f"[CLEANUP] RTK cleanup failed for user {self.user.id}: {e}")
 
     # ✅ HEARTBEAT: Send periodic pings to detect dead connections
     async def _heartbeat_loop(self):

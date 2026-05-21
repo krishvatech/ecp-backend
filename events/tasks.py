@@ -1983,3 +1983,124 @@ def manage_live_meeting_asg_capacity():
     finally:
         cache.delete(lock_key)
 
+
+# ============================================================================
+# Saleor Auto-Sync Tasks (run automatically via Celery Beat every 30 minutes)
+# ============================================================================
+#
+# Resilience strategy when Saleor is down:
+#   1. Retry up to 3 times with exponential backoff: 1 min → 5 min → 15 min
+#   2. Circuit breaker: after 5 consecutive task failures across any sync type,
+#      all Saleor sync tasks are paused for 30 minutes automatically, then resume.
+#   3. After all retries exhausted, log CRITICAL so monitoring/Sentry picks it up.
+
+from django.core.cache import cache
+
+from .saleor_sync import (
+    sync_channels_from_saleor,
+    sync_warehouses_from_saleor,
+    sync_shipping_zones_from_saleor,
+    sync_product_types_from_saleor,
+    sync_staff_users_from_saleor,
+    sync_permission_groups_from_saleor,
+)
+
+_CIRCUIT_BREAKER_KEY = "saleor_circuit_open"
+_FAILURE_COUNT_KEY = "saleor_sync_failure_count"
+_CIRCUIT_OPEN_SECONDS = 30 * 60   # pause sync for 30 minutes when tripped
+_CIRCUIT_TRIP_THRESHOLD = 5       # consecutive failures before circuit opens
+
+# Exponential backoff delays (seconds) for retries 1, 2, 3
+_RETRY_DELAYS = [60, 300, 900]
+
+
+def _is_circuit_open():
+    return cache.get(_CIRCUIT_BREAKER_KEY, False)
+
+
+def _record_saleor_failure():
+    """Increment the failure counter; trip the circuit breaker when threshold hit."""
+    count = cache.get(_FAILURE_COUNT_KEY, 0) + 1
+    cache.set(_FAILURE_COUNT_KEY, count, timeout=_CIRCUIT_OPEN_SECONDS)
+    if count >= _CIRCUIT_TRIP_THRESHOLD:
+        cache.set(_CIRCUIT_BREAKER_KEY, True, timeout=_CIRCUIT_OPEN_SECONDS)
+        logger.critical(
+            "[SALEOR_SYNC] Circuit breaker OPENED — Saleor appears to be down. "
+            "All Saleor sync tasks paused for 30 minutes."
+        )
+
+
+def _record_saleor_success():
+    """Reset failure counter and close circuit breaker on any success."""
+    was_open = cache.get(_CIRCUIT_BREAKER_KEY, False)
+    cache.delete(_CIRCUIT_BREAKER_KEY)
+    cache.delete(_FAILURE_COUNT_KEY)
+    if was_open:
+        logger.info("[SALEOR_SYNC] Circuit breaker CLOSED — Saleor is back online.")
+
+
+def _run_saleor_sync_task(self, label, sync_fn):
+    """
+    Shared wrapper for all 6 Saleor sync tasks.
+    Handles circuit breaker check, retry with exponential backoff, and success/failure tracking.
+    """
+    if _is_circuit_open():
+        logger.warning(f"[SALEOR_SYNC] Circuit open — skipping {label} sync.")
+        return {"status": "skipped", "reason": "circuit_open"}
+
+    try:
+        synced_ids = sync_fn()
+        _record_saleor_success()
+        logger.info(f"[SALEOR_SYNC] {label} synced: {len(synced_ids)}")
+        return {"status": "ok", "synced": len(synced_ids)}
+
+    except Exception as e:
+        retry_number = self.request.retries          # 0-based current attempt
+        retries_left = self.max_retries - retry_number
+
+        if retries_left > 0:
+            delay = _RETRY_DELAYS[min(retry_number, len(_RETRY_DELAYS) - 1)]
+            logger.warning(
+                f"[SALEOR_SYNC] {label} sync failed (attempt {retry_number + 1}/"
+                f"{self.max_retries + 1}). Retrying in {delay}s. Error: {e}"
+            )
+            raise self.retry(exc=e, countdown=delay)
+
+        # All retries exhausted
+        _record_saleor_failure()
+        logger.critical(
+            f"[SALEOR_SYNC] {label} sync FAILED after {self.max_retries + 1} attempts. "
+            f"Error: {e}"
+        )
+        return {"status": "failed", "error": str(e)}
+
+
+@shared_task(bind=True, max_retries=3)
+def auto_sync_saleor_channels(self):
+    return _run_saleor_sync_task(self, "Channels", sync_channels_from_saleor)
+
+
+@shared_task(bind=True, max_retries=3)
+def auto_sync_saleor_warehouses(self):
+    return _run_saleor_sync_task(self, "Warehouses", sync_warehouses_from_saleor)
+
+
+@shared_task(bind=True, max_retries=3)
+def auto_sync_saleor_shipping_zones(self):
+    return _run_saleor_sync_task(self, "Shipping zones", sync_shipping_zones_from_saleor)
+
+
+@shared_task(bind=True, max_retries=3)
+def auto_sync_saleor_product_types(self):
+    return _run_saleor_sync_task(self, "Product types", sync_product_types_from_saleor)
+
+
+@shared_task(bind=True, max_retries=3)
+def auto_sync_saleor_staff_users(self):
+    return _run_saleor_sync_task(self, "Staff users", sync_staff_users_from_saleor)
+
+
+@shared_task(bind=True, max_retries=3)
+def auto_sync_saleor_permission_groups(self):
+    return _run_saleor_sync_task(self, "Permission groups", sync_permission_groups_from_saleor)
+

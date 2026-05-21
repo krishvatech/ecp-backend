@@ -125,7 +125,7 @@ def _create_product_in_saleor(event, url, headers, cat_id, type_id, channel):
     }
     
     try:
-        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers)
+        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers, timeout=20)
         data = r.json()
         logger.info(f"DEBUG: productCreate response: {data}") # DEBUG
         
@@ -171,7 +171,7 @@ def _update_product_in_saleor(event, url, headers, channel):
     }
 
     try:
-        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers)
+        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers, timeout=20)
         logger.info(f"DEBUG: productUpdate response: {r.json()}")
     except Exception as e:
         logger.error(f"Exc updating product: {e}")
@@ -215,7 +215,7 @@ def _create_variant(event, url, headers, product_id, channel):
     }
 
     try:
-        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers)
+        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers, timeout=20)
         data = r.json()
         logger.info(f"DEBUG: productVariantCreate response: {data}") # DEBUG
 
@@ -295,7 +295,7 @@ def _update_product_channel_listing(url, headers, product_id, channel):
     variables["input"]["updateChannels"][0]["channelId"] = channel_id
 
     try:
-        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers)
+        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers, timeout=20)
         data = r.json()
         errors = data.get("data", {}).get("productChannelListingUpdate", {}).get("errors", [])
         if errors:
@@ -329,7 +329,7 @@ def _update_variant_channel_listing(event, url, headers, variant_id, channel):
         }]
     }
     try:
-        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers)
+        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers, timeout=20)
         response_data = r.json()
         errors = response_data.get("data", {}).get("productVariantChannelListingUpdate", {}).get("errors", [])
 
@@ -359,7 +359,7 @@ def _get_channel_id(url, headers, slug):
     }
     """
     try:
-        r = requests.post(url, json={"query": query}, headers=headers)
+        r = requests.post(url, json={"query": query}, headers=headers, timeout=20)
         if r.status_code == 200:
             for ch in r.json().get("data", {}).get("channels", []):
                 if ch["slug"] == slug:
@@ -381,7 +381,7 @@ def _get_variant_by_sku(url, headers, sku):
     }
     """
     try:
-        r = requests.post(url, json={"query": query, "variables": {"sku": sku}}, headers=headers)
+        r = requests.post(url, json={"query": query, "variables": {"sku": sku}}, headers=headers, timeout=20)
         return r.json().get("data", {}).get("productVariant")
     except:
         return None
@@ -395,7 +395,7 @@ def _delete_product_by_id(url, headers, product_id):
     }
     """
     try:
-        requests.post(url, json={"query": mutation, "variables": {"id": product_id}}, headers=headers)
+        requests.post(url, json={"query": mutation, "variables": {"id": product_id}}, headers=headers, timeout=20)
     except:
         pass
 
@@ -409,7 +409,7 @@ def _get_or_create_category(url, headers, name):
     }
     """
     try:
-        r = requests.post(url, json={"query": query, "variables": {"search": name}}, headers=headers)
+        r = requests.post(url, json={"query": query, "variables": {"search": name}}, headers=headers, timeout=20)
         edges = r.json().get("data", {}).get("categories", {}).get("edges", [])
         if edges:
             return edges[0]["node"]["id"]
@@ -425,7 +425,7 @@ def _get_or_create_category(url, headers, name):
     }
     """
     try:
-        r = requests.post(url, json={"query": mutation, "variables": {"name": name}}, headers=headers)
+        r = requests.post(url, json={"query": mutation, "variables": {"name": name}}, headers=headers, timeout=20)
         return r.json().get("data", {}).get("categoryCreate", {}).get("category", {}).get("id")
     except:
         return None
@@ -440,7 +440,7 @@ def _get_or_create_product_type(url, headers, name):
     }
     """
     try:
-        r = requests.post(url, json={"query": query, "variables": {"search": name}}, headers=headers)
+        r = requests.post(url, json={"query": query, "variables": {"search": name}}, headers=headers, timeout=20)
         edges = r.json().get("data", {}).get("productTypes", {}).get("edges", [])
         if edges:
             return edges[0]["node"]["id"]
@@ -457,7 +457,7 @@ def _get_or_create_product_type(url, headers, name):
     """
 
     try:
-        r = requests.post(url, json={"query": mutation, "variables": {"name": name}}, headers=headers)
+        r = requests.post(url, json={"query": mutation, "variables": {"name": name}}, headers=headers, timeout=20)
         r_json = r.json()
         data = r_json.get("data", {}).get("productTypeCreate", {})
         errors = data.get("errors", [])
@@ -480,7 +480,7 @@ def _get_existing_product_type(url, headers, name):
     }
     """
     try:
-        r = requests.post(url, json={"query": query, "variables": {"search": name}}, headers=headers)
+        r = requests.post(url, json={"query": query, "variables": {"search": name}}, headers=headers, timeout=20)
         edges = r.json().get("data", {}).get("productTypes", {}).get("edges", [])
         if edges:
             return edges[0]["node"]["id"]
@@ -499,7 +499,7 @@ def _get_or_create_warehouse(url, headers):
     }
     """
     try:
-        r = requests.post(url, json={"query": query}, headers=headers)
+        r = requests.post(url, json={"query": query}, headers=headers, timeout=20)
         warehouses = r.json().get("data", {}).get("warehouses", {}).get("edges", [])
         if warehouses:
             warehouse_id = warehouses[0]["node"]["id"]
@@ -518,7 +518,7 @@ def _get_or_create_warehouse(url, headers):
     }
     """
     try:
-        r = requests.post(url, json={"query": mutation, "variables": {"name": "Default", "slug": "default"}}, headers=headers)
+        r = requests.post(url, json={"query": mutation, "variables": {"name": "Default", "slug": "default"}}, headers=headers, timeout=20)
         warehouse_id = r.json().get("data", {}).get("warehouseCreate", {}).get("warehouse", {}).get("id")
         if warehouse_id:
             logger.info(f"DEBUG: Created warehouse ID: {warehouse_id}")
@@ -563,7 +563,7 @@ def _create_or_update_stock(event, url, headers, variant_id):
                 }
             ]
         }
-        r = requests.post(url, json={"query": mutation_update, "variables": variables}, headers=headers)
+        r = requests.post(url, json={"query": mutation_update, "variables": variables}, headers=headers, timeout=20)
         response_data = r.json()
         logger.info(f"DEBUG: productVariantStocksUpdate response: {response_data}")
 
@@ -624,7 +624,7 @@ def delete_event_from_saleor(event):
 
     try:
         logger.info(f"🗑️  Deleting Saleor product {event.saleor_product_id} for event {event.id}")
-        r = requests.post(saleor_url, json={"query": mutation, "variables": variables}, headers=headers)
+        r = requests.post(saleor_url, json={"query": mutation, "variables": variables}, headers=headers, timeout=20)
         response_data = r.json()
 
         errors = response_data.get("data", {}).get("productDelete", {}).get("errors", [])
@@ -741,7 +741,7 @@ def _fetch_full_product_from_saleor(product_id):
     """
 
     try:
-        r = requests.post(saleor_url, json={"query": query, "variables": {"id": product_id}}, headers=headers)
+        r = requests.post(saleor_url, json={"query": query, "variables": {"id": product_id}}, headers=headers, timeout=20)
         data = r.json()
         product = data.get("data", {}).get("product")
         if product:

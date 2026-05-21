@@ -10,12 +10,15 @@ events and receive ``message.created`` events.
 from __future__ import annotations
 
 from typing import Any
+import logging
 
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.db import database_sync_to_async
 
 from .models import Conversation, Message
 from .serializers import MessageSerializer
+
+logger = logging.getLogger(__name__)
 
 
 class DirectMessageConsumer(AsyncJsonWebsocketConsumer):
@@ -27,10 +30,12 @@ class DirectMessageConsumer(AsyncJsonWebsocketConsumer):
         self.group_name = f"conversation_{self.conversation_id}"
         user = self.scope.get("user")
         if not user or not user.is_authenticated:
-            await self.close()
+            logger.warning("WS[DM] rejected: anonymous user conv_id=%s", self.conversation_id)
+            await self.close(code=4401)
             return
         if not await self._is_participant(user.id, self.conversation_id):
-            await self.close()
+            logger.warning("WS[DM] rejected: user %s not participant in conv %s", user.id, self.conversation_id)
+            await self.close(code=4403)
             return
         await self.accept()
         await self.channel_layer.group_add(self.group_name, self.channel_name)

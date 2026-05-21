@@ -16,13 +16,18 @@
         <div style="background-color: white; border-left: 4px solid #159AC9; padding: 20px; margin: 20px 0; border-radius: 5px;">
             <h2 style="margin-top: 0; color: #2c3e50;">{{ event_title }}</h2>
             {% if event_start %}
-            {% if is_multi_day %}
-            <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_date_range_str }}</p>
-            {% else %}
-            <p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_date_str }}</p>
-            <p style="margin: 5px 0;"><strong>⏰ Time:</strong> {{ event_start_str }}{% if event_end_str %} - {{ event_end_str }} ({{ event_timezone }}){% endif %}</p>
-            {% endif %}
-            {% if event_timezone %}<p style="margin: 5px 0;"><strong>🌍 Timezone:</strong> {{ event_timezone }}</p>{% endif %}
+                {% if is_multi_day %}
+                    {% if event_date_range_str %}<p style="margin: 5px 0;"><strong>📅 Dates:</strong> {{ event_date_range_str }}</p>{% endif %}
+                {% else %}
+                    {% if event_date_str %}<p style="margin: 5px 0;"><strong>📅 Date:</strong> {{ event_date_str }}</p>{% endif %}
+                    {% if event_start_str %}<p style="margin: 5px 0;"><strong>⏰ Time:</strong> {{ event_start_str }}{% if event_end_str %} - {{ event_end_str }}{% endif %}</p>{% endif %}
+                {% endif %}
+                {% if event_format == "in_person" or event_format == "hybrid" %}
+                    {% if event_location %}<p style="margin: 5px 0;"><strong>📍 Location:</strong> {{ event_location }}</p>{% endif %}
+                {% endif %}
+                {% if event_format == "virtual" or event_format == "hybrid" %}
+                    {% if event_timezone %}<p style="margin: 5px 0;"><strong>🌍 Timezone:</strong> {{ event_timezone }}</p>{% endif %}
+                {% endif %}
             {% endif %}
         </div>
 

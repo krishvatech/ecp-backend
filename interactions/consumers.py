@@ -14,7 +14,7 @@ from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.contrib.auth.models import AnonymousUser
 
-from events.models import Event
+from events.models import Event, EventRegistration
 from interactions.models import ChatMessage, Question
 
 log = logging.getLogger("channels")
@@ -46,13 +46,23 @@ def _display_name(user):
 @database_sync_to_async
 def _get_event_and_check_membership(event_id: int, user_id: int):
     """
-    Resolve the Event. Add membership checks here if required by your app.
+    Resolve the Event and verify user is authorized (registered, guest, or organizer).
     Return None to reject.
     """
     try:
-        return Event.objects.get(pk=event_id)
+        event = Event.objects.select_related("community").get(pk=event_id)
     except Event.DoesNotExist:
         return None
+
+    # Organizer always has access
+    if event.community and event.community.owner_id == user_id:
+        return event
+
+    # Registered participant has access
+    if EventRegistration.objects.filter(event_id=event_id, user_id=user_id).exists():
+        return event
+
+    return None  # Not a member — reject
 
 
 @database_sync_to_async
@@ -124,17 +134,20 @@ class BaseEventConsumer(AsyncJsonWebsocketConsumer):
         log.debug("WS path=%s", self.scope.get("path"))
         self.user = self.scope.get("user", None)
         if not self.user or isinstance(self.user, AnonymousUser):
+            log.warning("WS[Chat] rejected: anonymous user path=%s", self.scope.get("path"))
             await self.close(code=4401)  # Unauthorized
             return
 
         try:
             self.event_id = int(self.scope["url_route"]["kwargs"]["event_id"])
         except Exception:
+            log.warning("WS[Chat] rejected: invalid event_id in path")
             await self.close(code=4400)  # Bad Request
             return
 
         event = await _get_event_and_check_membership(self.event_id, self.user.id)
         if not event:
+            log.warning("WS[Chat] rejected: event not found or user not member event_id=%s user_id=%s", self.event_id, self.user.id)
             await self.close(code=4403)  # Forbidden
             return
 
@@ -240,17 +253,20 @@ class QnAConsumer(BaseEventConsumer):
         log.debug("WS path=%s", self.scope.get("path"))
         self.user = self.scope.get("user", None)
         if not self.user or isinstance(self.user, AnonymousUser):
+            log.warning("WS[QnA] rejected: anonymous user path=%s", self.scope.get("path"))
             await self.close(code=4401)
             return
 
         try:
             self.event_id = int(self.scope["url_route"]["kwargs"]["event_id"])
         except Exception:
+            log.warning("WS[QnA] rejected: invalid event_id in path")
             await self.close(code=4400)
             return
 
         event = await _get_event_and_check_membership(self.event_id, self.user.id)
         if not event:
+            log.warning("WS[QnA] rejected: event not found or user not member event_id=%s user_id=%s", self.event_id, self.user.id)
             await self.close(code=4403)
             return
 

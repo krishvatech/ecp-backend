@@ -5,6 +5,20 @@ Hello {{ applicant_name }},
 Thank you for applying to our event. We appreciate your interest in:
 
 {{ event_title }}
+{% if event_start %}
+{% if is_multi_day %}
+{% if event_date_range_str %}Dates: {{ event_date_range_str }}{% endif %}
+{% else %}
+{% if event_date_str %}Date: {{ event_date_str }}{% endif %}
+{% if event_start_str %}Time: {{ event_start_str }}{% if event_end_str %} - {{ event_end_str }}{% endif %}{% endif %}
+{% endif %}
+{% if event_format == "in_person" or event_format == "hybrid" %}
+{% if event_location %}Location: {{ event_location }}{% endif %}
+{% endif %}
+{% if event_format == "virtual" or event_format == "hybrid" %}
+{% if event_timezone %}Timezone: {{ event_timezone }}{% endif %}
+{% endif %}
+{% endif %}
 
 Unfortunately, we were unable to approve your application at this time.
 
