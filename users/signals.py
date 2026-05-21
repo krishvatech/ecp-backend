@@ -54,12 +54,20 @@ def ensure_profile(sender, instance, created, **kwargs):
                 # public.community_community_members (community_id=1, user_id=<user.id>)
                 default_comm.members.add(instance)
 
-            # Send welcome email
-            from users.email_utils import send_welcome_email
-            try:
-                send_welcome_email(instance)
-            except Exception as e:
-                logger.warning(f"Failed to send welcome email to {instance.email}: {e}")
+            # Send welcome email (skip for load test users)
+            is_test_user = (
+                instance.email and (
+                    'loadtest.' in instance.email.lower() or
+                    instance.email.lower().startswith('loadtest')
+                )
+            )
+
+            if not is_test_user:
+                from users.email_utils import send_welcome_email
+                try:
+                    send_welcome_email(instance)
+                except Exception as e:
+                    logger.warning(f"Failed to send welcome email to {instance.email}: {e}")
 
     # Run after the transaction commits so IDs are available
     transaction.on_commit(_create)
