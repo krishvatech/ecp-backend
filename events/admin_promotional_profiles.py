@@ -643,7 +643,16 @@ class PromotionalProfileAdminViewSet(viewsets.ModelViewSet):
                 f"role={role}, count={queryset.count()}, user={request.user.email}"
             )
 
-            response = HttpResponse(data if isinstance(data, bytes) else data.encode(), content_type=content_type)
+            # Handle different data types
+            from io import BytesIO
+            if isinstance(data, BytesIO):
+                response_data = data.getvalue()
+            elif isinstance(data, bytes):
+                response_data = data
+            else:
+                response_data = data.encode()
+
+            response = HttpResponse(response_data, content_type=content_type)
             response['Content-Disposition'] = f'attachment; filename="{filename}"'
             return response
 

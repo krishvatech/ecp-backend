@@ -396,7 +396,7 @@ def generate_zip_export(event, assignments, include_internal=False, role=None):
     zip_buffer = BytesIO()
 
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # Create metadata.json
+        # Initialize metadata structure
         metadata = {
             'event': {
                 'id': event.id,
@@ -414,17 +414,11 @@ def generate_zip_export(event, assignments, include_internal=False, role=None):
                     'display_consent': 'all' if include_internal else 'yes_only'
                 },
                 'summary': {
-                    'total_profiles': assignments.count(),
+                    'total_profiles': 0,
                     'by_role': {}
                 }
             }
         }
-
-        # Write metadata
-        zf.writestr(
-            'promotional_profiles/metadata.json',
-            json.dumps(metadata, indent=2, default=str)
-        )
 
         # Track which assignments we've added to prevent duplicates
         added_assignments = set()
@@ -478,7 +472,7 @@ def generate_zip_export(event, assignments, include_internal=False, role=None):
                     )
                     continue
 
-        # Update summary with actual counts
+        # Write metadata.json with final counts
         assignments_list = list(assignments)
         by_role = {}
         for m in ['speaker', 'sponsor', 'startup', 'investor', 'sponsor_staff']:
@@ -492,7 +486,6 @@ def generate_zip_export(event, assignments, include_internal=False, role=None):
         metadata['export']['summary']['by_role'] = by_role
         metadata['export']['summary']['total_profiles'] = len(added_assignments)
 
-        # Update metadata.json with final counts
         zf.writestr(
             'promotional_profiles/metadata.json',
             json.dumps(metadata, indent=2, default=str)
