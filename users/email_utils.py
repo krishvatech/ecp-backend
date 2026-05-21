@@ -981,6 +981,14 @@ def send_application_acknowledgement_email(application):
     # Format event times in event's timezone
     time_info = format_event_time_for_email(application.event)
 
+    # Format location
+    event_location = ""
+    if application.event.location:
+        location_parts = [application.event.location]
+        if application.event.location_country:
+            location_parts.append(application.event.location_country)
+        event_location = ", ".join(location_parts)
+
     ctx = {
         "app_name": app_name,
         "applicant_name": f"{application.first_name} {application.last_name}",
@@ -991,7 +999,10 @@ def send_application_acknowledgement_email(application):
         "event_start_str": time_info["event_start_str"],
         "event_end_str": time_info["event_end_str"],
         "event_date_str": time_info["event_date_str"],
+        "event_date_range_str": time_info["event_date_range_str"],
         "is_multi_day": application.event.is_multi_day,
+        "event_format": application.event.format,
+        "event_location": event_location,
         "event_timezone": application.event.timezone,
         "event_url": event_url,
         "support_email": get_support_email(),
@@ -1027,6 +1038,14 @@ def send_application_approved_email(application):
     # Format event times in event's timezone
     time_info = format_event_time_for_email(application.event)
 
+    # Format location
+    event_location = ""
+    if application.event.location:
+        location_parts = [application.event.location]
+        if application.event.location_country:
+            location_parts.append(application.event.location_country)
+        event_location = ", ".join(location_parts)
+
     # For guest applications (no linked user yet), generate magic login token
     # Backend already created user during approval, so application.user should exist
     if application.user:
@@ -1054,7 +1073,10 @@ def send_application_approved_email(application):
         "event_start_str": time_info["event_start_str"],
         "event_end_str": time_info["event_end_str"],
         "event_date_str": time_info["event_date_str"],
+        "event_date_range_str": time_info["event_date_range_str"],
         "is_multi_day": application.event.is_multi_day,
+        "event_format": application.event.format,
+        "event_location": event_location,
         "event_timezone": application.event.timezone,
         "event_url": event_url,
         "magic_link": magic_link,
@@ -1088,6 +1110,14 @@ def send_application_declined_email(application, custom_message=''):
     # Format event times in event's timezone
     time_info = format_event_time_for_email(application.event)
 
+    # Format location
+    event_location = ""
+    if application.event.location:
+        location_parts = [application.event.location]
+        if application.event.location_country:
+            location_parts.append(application.event.location_country)
+        event_location = ", ".join(location_parts)
+
     ctx = {
         "app_name": app_name,
         "applicant_name": f"{application.first_name} {application.last_name}",
@@ -1097,7 +1127,10 @@ def send_application_declined_email(application, custom_message=''):
         "event_start_str": time_info["event_start_str"],
         "event_end_str": time_info["event_end_str"],
         "event_date_str": time_info["event_date_str"],
+        "event_date_range_str": time_info["event_date_range_str"],
         "is_multi_day": application.event.is_multi_day,
+        "event_format": application.event.format,
+        "event_location": event_location,
         "event_timezone": application.event.timezone,
         "custom_message": custom_message or '',
     }
