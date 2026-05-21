@@ -605,6 +605,34 @@ CELERY_BEAT_SCHEDULE.update({
     },
 })
 
+# Saleor auto-sync tasks — every 30 minutes
+CELERY_BEAT_SCHEDULE.update({
+    "auto-sync-saleor-channels": {
+        "task": "events.tasks.auto_sync_saleor_channels",
+        "schedule": crontab(minute="*/30"),
+    },
+    "auto-sync-saleor-warehouses": {
+        "task": "events.tasks.auto_sync_saleor_warehouses",
+        "schedule": crontab(minute="*/30"),
+    },
+    "auto-sync-saleor-shipping-zones": {
+        "task": "events.tasks.auto_sync_saleor_shipping_zones",
+        "schedule": crontab(minute="*/30"),
+    },
+    "auto-sync-saleor-product-types": {
+        "task": "events.tasks.auto_sync_saleor_product_types",
+        "schedule": crontab(minute="*/30"),
+    },
+    "auto-sync-saleor-staff-users": {
+        "task": "events.tasks.auto_sync_saleor_staff_users",
+        "schedule": crontab(minute="*/30"),
+    },
+    "auto-sync-saleor-permission-groups": {
+        "task": "events.tasks.auto_sync_saleor_permission_groups",
+        "schedule": crontab(minute="*/30"),
+    },
+})
+
 # Contact Request Quota Settings
 FRIEND_REQUEST_WINDOW_DAYS = int(os.getenv("FRIEND_REQUEST_WINDOW_DAYS", "30"))
 FRIEND_REQUEST_LIMIT_FREE = int(os.getenv("FRIEND_REQUEST_LIMIT_FREE", "30"))
