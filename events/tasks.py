@@ -176,6 +176,40 @@ def sync_event_to_saleor(event_id):
     return f"Successfully synced event {event_id} to Saleor."
 
 @shared_task
+def sync_event_to_saleor_async(event_id):
+    """
+    Async background task to sync an event to Saleor.
+    Runs in Celery worker, not in request cycle.
+    """
+    try:
+        event = Event.objects.get(id=event_id)
+        from .saleor_sync import sync_event_to_saleor_sync
+        sync_event_to_saleor_sync(event)
+        logger.info(f"Successfully synced event {event.id} ({event.title}) to Saleor (async)")
+    except Event.DoesNotExist:
+        logger.warning(f"Event {event_id} not found for Saleor sync")
+    except Exception as e:
+        logger.error(f"Failed to sync event {event_id} to Saleor (async): {e}")
+
+
+@shared_task
+def delete_event_from_saleor_async(event_id):
+    """
+    Async background task to delete an event from Saleor.
+    Runs in Celery worker, not in request cycle.
+    """
+    try:
+        event = Event.objects.get(id=event_id)
+        from .saleor_sync import delete_event_from_saleor
+        delete_event_from_saleor(event)
+        logger.info(f"Successfully deleted event {event.id} from Saleor (async)")
+    except Event.DoesNotExist:
+        logger.warning(f"Event {event_id} not found for Saleor deletion")
+    except Exception as e:
+        logger.error(f"Failed to delete event {event_id} from Saleor (async): {e}")
+
+
+@shared_task
 def example_cleanup_task() -> str:
     """Return a string with the current timestamp to verify Celery runs."""
     return f"Cleanup ran at {timezone.now().isoformat()}"

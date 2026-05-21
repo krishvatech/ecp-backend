@@ -8,20 +8,15 @@ import threading
 import logging
 
 logger = logging.getLogger(__name__)
+from .models import Event, EventParticipant
 
 @receiver(post_save, sender=Event)
 def sync_event_to_saleor_signal(sender, instance, created, **kwargs):
     """
-    Trigger sync to Saleor when an Event is saved.
-    We run this in a thread to avoid blocking the main save response too long,
-    although 'synchronous' was requested, a short thread detach is usually 
-    better UX for Admin. But user asked for SYNC logic.
-    
-    Let's keep it truly synchronous as requested in plan, or lightweight sync.
-    Actually, to prevent 'recursion' (save calls sync, sync calls save),
-    we must be careful.
+    Trigger async Saleor sync when an Event is saved.
+    Runs in background Celery task, not blocking the request.
     """
-    
+
     # Check if we are saving because of the sync itself
     if getattr(instance, "skip_saleor_sync", False):
         return
@@ -31,19 +26,16 @@ def sync_event_to_saleor_signal(sender, instance, created, **kwargs):
     if update_fields and ("saleor_product_id" in update_fields or "saleor_variant_id" in update_fields):
         return
 
-    # To avoid blocking the browser for 3-5 seconds while creating products,
-    # let's use a standard sync call but inside a transaction on_commit if possible,
-    # OR just call it.
-    
-    # User requested flow: "Create events --> sync to saleor DB".
-    # Implementation:
-    def run_sync():
+    # Queue async task to sync to Saleor after transaction commits
+    def queue_sync_task():
+        from .tasks import sync_event_to_saleor_async
         try:
-            sync_event_to_saleor_sync(instance)
+            sync_event_to_saleor_async.delay(instance.id)
         except Exception as e:
-            print(f"Error syncing event {instance.id} to Saleor: {e}")
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to queue Saleor sync task for event {instance.id}: {e}")
 
-    transaction.on_commit(run_sync)
+    transaction.on_commit(queue_sync_task)
 
 
 @receiver(post_save, sender=EventParticipant)
@@ -382,15 +374,16 @@ def create_post_acceptance_forms_for_event(sender, instance, created, **kwargs):
 @receiver(pre_delete, sender=Event)
 def delete_event_from_saleor_signal(sender, instance, **kwargs):
     """
-    Delete Saleor product when event is permanently deleted.
-    Only deletes from Saleor if the event has a saleor_product_id.
+    Queue async task to delete Saleor product when event is deleted.
+    Runs in background Celery task, not blocking the request.
     """
+    from .tasks import delete_event_from_saleor_async
     try:
-        delete_event_from_saleor(instance)
+        delete_event_from_saleor_async.delay(instance.id)
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(
-            f"Error deleting event {instance.id} from Saleor: {e}"
+            f"Failed to queue Saleor deletion task for event {instance.id}: {e}"
         )
 
 
