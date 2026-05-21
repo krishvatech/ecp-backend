@@ -26,7 +26,7 @@ from .models import (
     EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate,
     EventNetworkingSettings, NetworkingTable, NetworkingMeeting, EventSessionBookmark,
     PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer,
-    AdminAuditLog, PostAcceptanceFormDraft, EventFormCustomization
+    AdminAuditLog, PostAcceptanceFormDraft, EventFormCustomization, EventRole, EventApplicationTrack
 )
 from django.db.models import Prefetch as DjangoPrefetch
 from community.models import Community
@@ -2579,6 +2579,37 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
         )
 
+
+class EventRoleSerializer(serializers.ModelSerializer):
+    """Serializer for EventRole model - attendee role catalog for events."""
+
+    class Meta:
+        model = EventRole
+        fields = [
+            'id', 'event_id', 'key', 'label', 'description',
+            'visibility', 'sort_priority', 'badge_color', 'badge_style',
+            'triggers_promotional_profile', 'is_system_default',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class EventApplicationTrackSerializer(serializers.ModelSerializer):
+    """Serializer for EventApplicationTrack - application track configuration."""
+
+    class Meta:
+        model = EventApplicationTrack
+        fields = [
+            'id', 'event_id', 'key', 'label', 'short_description',
+            'status', 'sort_order', 'is_active',
+            'enabled_submission_modes', 'form_schema',
+            'preapproval_configuration', 'role_mappings_on_acceptance',
+            'content_surfaces', 'is_system_default',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'is_system_default', 'created_at', 'updated_at']
+
+
 class EventRegistrationSerializer(serializers.ModelSerializer):
     event = EventLiteSerializer(read_only=True)
     event_id = serializers.PrimaryKeyRelatedField(
@@ -2600,6 +2631,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
     attendance_duration_seconds = serializers.SerializerMethodField()
     attendance_category = serializers.SerializerMethodField()
     badge_labels = serializers.SerializerMethodField()
+    roles = EventRoleSerializer(many=True, read_only=True)
 
     class Meta:
         model = EventRegistration
@@ -2631,6 +2663,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "attendance_duration_seconds",
             "attendance_category",
             "badge_labels",
+            "roles",
         )
         read_only_fields = (
             "id",
@@ -2654,6 +2687,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "is_host",
             "current_location",
             "badge_labels",
+            "roles",
         )
 
     def get_badge_labels(self, obj):

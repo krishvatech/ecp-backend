@@ -4,7 +4,8 @@ from django import forms
 from .models import (
     Event, EventParticipant, LoungeTable, LoungeParticipant, EventRegistration,
     EventSession, SessionParticipant, SessionAttendance, EventApplication,
-    EventPreApprovalCode, EventPreApprovalAllowlist, EventSaleorDiscount, EventSessionBookmark
+    EventPreApprovalCode, EventPreApprovalAllowlist, EventSaleorDiscount, EventSessionBookmark,
+    EventRole, EventApplicationTrack
 )
 
 
@@ -62,13 +63,29 @@ class EventSessionInline(admin.TabularInline):
     show_change_link = True
 
 
+class EventRoleInline(admin.TabularInline):
+    """Inline for managing roles within Event admin."""
+    model = EventRole
+    extra = 0
+    fields = ('key', 'label', 'visibility', 'sort_priority', 'triggers_promotional_profile', 'is_system_default')
+    ordering = ['sort_priority', 'label']
+
+
+class EventApplicationTrackInline(admin.TabularInline):
+    """Inline for managing application tracks within Event admin."""
+    model = EventApplicationTrack
+    extra = 0
+    fields = ('key', 'label', 'status', 'is_active', 'sort_order')
+    ordering = ['sort_order', 'label']
+
+
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
     list_display = ("title", "community", "status", "is_live", "is_on_break", "created_by", "created_at")
     list_filter = ("status", "community", "lounge_enabled_before", "lounge_enabled_during", "lounge_enabled_after")
     search_fields = ("title", "community__name")
     prepopulated_fields = {"slug": ("title",)}
-    inlines = [EventParticipantInline, EventSessionInline]
+    inlines = [EventParticipantInline, EventSessionInline, EventRoleInline, EventApplicationTrackInline]
     fieldsets = (
         (None, {"fields": ("community", "title", "slug", "description", "start_time", "end_time", "timezone", "status", "is_live", "is_on_break")}),
         ("Application Pre-Approval", {
@@ -295,3 +312,63 @@ class EventSessionBookmarkAdmin(admin.ModelAdmin):
     search_fields = ['user__username', 'session__title', 'event__title']
     readonly_fields = ['created_at']
     raw_id_fields = ['event', 'session', 'user']
+
+
+@admin.register(EventRole)
+class EventRoleAdmin(admin.ModelAdmin):
+    """Admin for EventRole - attendee role catalog."""
+    list_display = ('label', 'event', 'key', 'visibility', 'triggers_promotional_profile', 'sort_priority', 'created_at')
+    list_filter = ('event', 'visibility', 'triggers_promotional_profile', 'is_system_default', 'created_at')
+    search_fields = ('event__title', 'label', 'key')
+    raw_id_fields = ('event',)
+    readonly_fields = ('is_system_default', 'created_at', 'updated_at')
+    ordering = ['event', 'sort_priority', 'label']
+
+    fieldsets = (
+        (None, {
+            'fields': ('event', 'key', 'label', 'description')
+        }),
+        ('Display Settings', {
+            'fields': ('visibility', 'sort_priority', 'badge_color', 'badge_style')
+        }),
+        ('Profile Settings', {
+            'fields': ('triggers_promotional_profile',)
+        }),
+        ('System', {
+            'fields': ('is_system_default', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+
+@admin.register(EventApplicationTrack)
+class EventApplicationTrackAdmin(admin.ModelAdmin):
+    """Admin for EventApplicationTrack - application track configuration."""
+    list_display = ('label', 'event', 'key', 'status', 'is_active', 'sort_order', 'created_at')
+    list_filter = ('event', 'status', 'is_active', 'is_system_default', 'created_at')
+    search_fields = ('event__title', 'label', 'key')
+    raw_id_fields = ('event',)
+    readonly_fields = ('is_system_default', 'created_at', 'updated_at')
+    ordering = ['event', 'sort_order', 'label']
+
+    fieldsets = (
+        (None, {
+            'fields': ('event', 'key', 'label', 'short_description')
+        }),
+        ('Track Settings', {
+            'fields': ('status', 'is_active', 'sort_order')
+        }),
+        ('Submission Configuration', {
+            'fields': ('enabled_submission_modes', 'form_schema', 'preapproval_configuration'),
+            'classes': ('collapse',)
+        }),
+        ('Role & Content', {
+            'fields': ('role_mappings_on_acceptance', 'content_surfaces'),
+            'classes': ('collapse',)
+        }),
+        ('System', {
+            'fields': ('is_system_default', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+

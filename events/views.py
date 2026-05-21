@@ -60,7 +60,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer
+from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack
 from .permissions import IsSuperuserOnly, IsEventAdminOrSuperuser, HasRestrictedDataPermission
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -83,6 +83,7 @@ from .serializers import (
     resolve_registration_roles,
     EventApplicationSerializer,
     EventApplicationSubmitSerializer,
+    EventApplicationTrackSerializer,
     EventPreApprovalCodeSerializer,
     EventPreApprovalAllowlistSerializer,
     VirtualSpeakerSerializer,
@@ -11940,3 +11941,23 @@ class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
     def export_investors(self, request, event_id=None):
         """Quick export of investor profiles in ZIP format."""
         return self._export_by_role_helper(request, event_id, 'investor', 'investors')
+
+
+class EventApplicationTrackViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing EventApplicationTrack - application track configuration per event."""
+
+    serializer_class = EventApplicationTrackSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        """Filter tracks by event_id from URL parameter."""
+        event_id = self.kwargs.get('event_id')
+        if event_id:
+            return EventApplicationTrack.objects.filter(event_id=event_id).order_by('sort_order', 'label')
+        return EventApplicationTrack.objects.none()
+
+    def perform_create(self, serializer):
+        """Create track for specified event."""
+        event_id = self.kwargs.get('event_id')
+        event = Event.objects.get(pk=event_id)
+        serializer.save(event=event)

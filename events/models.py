@@ -873,15 +873,208 @@ class EventRegistration(models.Model):
         help_text='Reason for retaining restricted data (legal reference, compliance note, etc.)'
     )
 
+    # Attendee roles (many-to-many)
+    roles = models.ManyToManyField(
+        'EventRole',
+        blank=True,
+        related_name='registrations',
+        help_text='Roles held by this attendee in this event (e.g., Speaker, Sponsor, Attendee)'
+    )
+
     class Meta:
         db_table = 'event_registrations'
-        unique_together = ('event', 'user')                 
+        unique_together = ('event', 'user')
         indexes = [
             models.Index(fields=['event', 'user']),
             models.Index(fields=['user']),
         ]
     def __str__(self):
         return f'{self.user_id} -> {self.event_id}'
+
+
+class EventRole(models.Model):
+    """
+    Defines attendee roles available for an event.
+    Each role can be assigned to multiple attendees.
+    Examples: Attendee, Speaker, Sponsor, Press, Researcher, etc.
+    """
+    VISIBILITY_CHOICES = [
+        ('public', 'Public - Visible to all participants'),
+        ('admin_only', 'Admin Only - Hidden from attendees'),
+        ('restricted', 'Restricted - Visible only to specific roles'),
+    ]
+
+    BADGE_STYLE_CHOICES = [
+        ('filled', 'Filled'),
+        ('outlined', 'Outlined'),
+        ('default', 'Default'),
+    ]
+
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='roles',
+        help_text='The event this role is defined for'
+    )
+    key = models.CharField(
+        max_length=50,
+        help_text='Unique system identifier for this role (e.g., "speaker", "sponsor")'
+    )
+    label = models.CharField(
+        max_length=100,
+        help_text='Display name for this role (e.g., "Speaker", "Conference Sponsor")'
+    )
+    description = models.TextField(
+        blank=True,
+        help_text='Description of what this role entails'
+    )
+    visibility = models.CharField(
+        max_length=20,
+        choices=VISIBILITY_CHOICES,
+        default='public',
+        help_text='Who can see this role displayed'
+    )
+    sort_priority = models.IntegerField(
+        default=100,
+        help_text='Sort order when displaying roles (lower numbers appear first)'
+    )
+    badge_color = models.CharField(
+        max_length=50,
+        blank=True,
+        default='',
+        help_text='Color for role badge (hex code like #FF5733 or color name like "blue")'
+    )
+    badge_style = models.CharField(
+        max_length=20,
+        choices=BADGE_STYLE_CHOICES,
+        default='default',
+        help_text='Visual style for the role badge'
+    )
+    triggers_promotional_profile = models.BooleanField(
+        default=False,
+        help_text='Whether attendees with this role must complete promotional profile form'
+    )
+    is_system_default = models.BooleanField(
+        default=False,
+        help_text='Whether this is a system-provided default role'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'event_roles'
+        unique_together = ('event', 'key')
+        ordering = ['sort_priority', 'label']
+        indexes = [
+            models.Index(fields=['event', 'key']),
+            models.Index(fields=['triggers_promotional_profile']),
+        ]
+
+    def __str__(self):
+        return f"{self.label} ({self.event.title})"
+
+
+class EventApplicationTrack(models.Model):
+    """
+    Defines application tracks for an event.
+    Tracks allow organizers to create different application flows (e.g., Speaker, Startup, Sponsor).
+    Each track can have different forms, pre-approval rules, and role assignments.
+    """
+    STATUS_CHOICES = [
+        ('open', 'Open - Accepting new applications'),
+        ('closed', 'Closed - No new applications'),
+        ('invite_only', 'Invite Only - Selected applicants only'),
+    ]
+
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='application_tracks',
+        help_text='The event this track is for'
+    )
+    key = models.CharField(
+        max_length=50,
+        help_text='Unique system identifier (e.g., "speaker", "startup")'
+    )
+    label = models.CharField(
+        max_length=100,
+        help_text='Display name (e.g., "Speaker Application")'
+    )
+    short_description = models.TextField(
+        blank=True,
+        help_text='Brief description of what this track is for'
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='open',
+        help_text='Whether this track is accepting applications'
+    )
+    sort_order = models.IntegerField(
+        default=0,
+        help_text='Display order (lower numbers appear first)'
+    )
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text='Whether this track is enabled for the event'
+    )
+
+    # Submission configuration
+    enabled_submission_modes = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='Submission modes: ["online_form", "preapproved", "manual_review", "invite_only"]'
+    )
+
+    # Form configuration (per-track form schema)
+    form_schema = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Custom form questions/schema for this track'
+    )
+
+    # Pre-approval configuration
+    preapproval_configuration = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Pre-approval rules: {codes_enabled, allowlist_enabled, auto_approve}'
+    )
+
+    # Role mappings when applicant is approved
+    role_mappings_on_acceptance = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='Roles to assign on acceptance: ["speaker", "sponsor", etc.]'
+    )
+
+    # Content surfaces (where to display this track)
+    content_surfaces = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='Where to show this track: ["event_page", "email", "application_modal"]'
+    )
+
+    # System tracking
+    is_system_default = models.BooleanField(
+        default=False,
+        help_text='Whether this is a platform-provided default track'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'event_application_tracks'
+        unique_together = ('event', 'key')
+        ordering = ['sort_order', 'label']
+        indexes = [
+            models.Index(fields=['event', 'key']),
+            models.Index(fields=['event', 'is_active']),
+            models.Index(fields=['status']),
+        ]
+
+    def __str__(self):
+        return f"{self.label} ({self.event.title})"
 
 
 class EventBadgeLabel(models.Model):

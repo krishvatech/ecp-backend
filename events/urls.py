@@ -12,6 +12,7 @@ from .views import (
     SeriesViewSet,
     PostAcceptanceFormAssignmentViewSet,
     PostAcceptanceFormAssignmentAdminViewSet,
+    EventApplicationTrackViewSet,
     SaleorChannelListView,
     SaleorChannelSyncView,
     SaleorChannelCreateView,
@@ -189,6 +190,26 @@ urlpatterns = [
         "events/<int:event_id>/post-acceptance-form-assignments-admin/<int:pk>/mark-complete/",
         PostAcceptanceFormAssignmentAdminViewSet.as_view({'post': 'mark_complete'}),
         name='admin-form-assignments-mark-complete'
+    ),
+
+    # Application Tracks Endpoints
+    path(
+        "events/<int:event_id>/application-tracks/",
+        EventApplicationTrackViewSet.as_view({
+            'get': 'list',
+            'post': 'create'
+        }),
+        name='application-tracks-list'
+    ),
+    path(
+        "events/<int:event_id>/application-tracks/<int:pk>/",
+        EventApplicationTrackViewSet.as_view({
+            'get': 'retrieve',
+            'put': 'update',
+            'patch': 'partial_update',
+            'delete': 'destroy'
+        }),
+        name='application-tracks-detail'
     ),
 
     # Promotional Profile Admin Endpoints
