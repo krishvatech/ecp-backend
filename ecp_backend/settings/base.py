@@ -297,7 +297,7 @@ DB_POOL_MIN_SIZE = int(os.getenv("DB_POOL_MIN_SIZE", "10"))
 DB_POOL_MAX_SIZE = int(os.getenv("DB_POOL_MAX_SIZE", "50"))
 DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "300"))
 
-_DB_CONN_MAX_AGE = 600 if not DEBUG else 0  # Keep connections alive for 10 min (prod), close immediately (dev)
+_DB_CONN_MAX_AGE = 0  # MUST be 0 when using connection pooling! Pool manages reuse automatically.
 
 DATABASES = {
     "default": {
