@@ -6301,8 +6301,70 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return self.get_paginated_response(result) if page is not None else Response(result)
 
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="replays")
+    def replays(self, request):
+        """
+        List available replays: ended events with replay enabled, visible, and media present.
+        Excludes already-registered events for authenticated users.
+        Supports same filters as normal event list.
+        """
+        user = request.user
+        is_platform_admin = bool(getattr(user, "is_superuser", False)) or bool(getattr(user, "is_staff", False))
 
-    
+        # Start with base queryset
+        qs = Event.objects.select_related("community")
+
+        # Handle hidden events: same visibility rules as get_queryset
+        if user.is_authenticated:
+            if is_platform_admin:
+                pass
+            else:
+                hidden_accessible_ids = EventRegistration.objects.filter(
+                    user_id=user.id,
+                    status__in=['registered', 'cancellation_requested']
+                ).values_list('event_id', flat=True)
+                qs = qs.filter(
+                    Q(is_hidden=False) |
+                    Q(is_hidden=True, created_by_id=user.id) |
+                    Q(is_hidden=True, id__in=hidden_accessible_ids)
+                )
+        else:
+            qs = qs.filter(is_hidden=False)
+
+        # Filter for replay events: must be ended with replay enabled, visible, and have media
+        now = timezone.now()
+        qs = qs.filter(
+            status="ended",
+            replay_enabled=True,
+            replay_visible_to_participants=True
+        ).exclude(
+            # Must have actual media (recording_url or replay_video_url)
+            recording_url="",
+            replay_video_url=""
+        )
+
+        # For authenticated users: exclude their own registrations
+        if user.is_authenticated:
+            user_registered_ids = EventRegistration.objects.filter(
+                user_id=user.id,
+                status="registered"
+            ).values_list('event_id', flat=True)
+            qs = qs.exclude(id__in=user_registered_ids)
+
+        # Order newest replay first
+        qs = qs.order_by("-end_time")
+
+        # Apply all filter backends (category, location, date_range, event_format, price_range, search)
+        qs = self.filter_queryset(qs)
+
+        # Paginate
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="rtk/join")
     def rtk_join(self, request, pk=None):
