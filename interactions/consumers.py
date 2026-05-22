@@ -13,6 +13,10 @@ from asgiref.sync import async_to_sync
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.contrib.auth.models import AnonymousUser
+try:
+    from autobahn.exception import Disconnected
+except Exception:  # pragma: no cover - import guard for local/runtime variation
+    Disconnected = None
 
 from events.models import Event, EventRegistration
 from interactions.models import ChatMessage, Question
@@ -130,8 +134,37 @@ class BaseEventConsumer(AsyncJsonWebsocketConsumer):
 
     group_name_prefix: str = "event"
 
+    def _is_closed_socket_error(self, exc: Exception) -> bool:
+        if Disconnected is not None and isinstance(exc, Disconnected):
+            return True
+        message = str(exc).lower()
+        return (
+            "closed protocol" in message
+            or "connection already closed" in message
+            or "socket is already closed" in message
+        )
+
+    async def send_json(self, content, close=False):
+        if getattr(self, "_ws_closed", False):
+            return
+        try:
+            await super().send_json(content, close=close)
+        except Exception as exc:
+            if self._is_closed_socket_error(exc):
+                self._ws_closed = True
+                log.debug(
+                    "WS[%s] dropped send on closed socket event_id=%s user_id=%s payload_type=%s",
+                    self.__class__.__name__,
+                    getattr(self, "event_id", None),
+                    getattr(getattr(self, "user", None), "id", None),
+                    content.get("type") if isinstance(content, dict) else type(content).__name__,
+                )
+                return
+            raise
+
     async def connect(self) -> None:
         log.debug("WS path=%s", self.scope.get("path"))
+        self._ws_closed = False
         self.user = self.scope.get("user", None)
         if not self.user or isinstance(self.user, AnonymousUser):
             log.warning("WS[Chat] rejected: anonymous user path=%s", self.scope.get("path"))
@@ -158,6 +191,7 @@ class BaseEventConsumer(AsyncJsonWebsocketConsumer):
         await self.accept()
 
     async def disconnect(self, code: int) -> None:
+        self._ws_closed = True
         try:
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
         except Exception:

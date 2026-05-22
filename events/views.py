@@ -1547,10 +1547,31 @@ class EventViewSet(viewsets.ModelViewSet):
         ⚡ OPTIMIZED: Add prefetches only for detail views (not list).
         This keeps list queries fast while detail views get full data.
         """
+        from interactions.models import Question
+        from .models import SessionParticipant
+
+        participant_qs = (
+            EventParticipant.objects.select_related("user", "user__profile", "virtual_speaker")
+            .prefetch_related("user__experiences")
+            .order_by("display_order", "id")
+        )
+        session_participant_qs = (
+            SessionParticipant.objects.select_related("user", "user__profile", "virtual_speaker")
+            .order_by("role", "display_order", "id")
+        )
+        session_qs = EventSession.objects.prefetch_related(
+            Prefetch("participants", queryset=session_participant_qs)
+        )
+        registration_qs = EventRegistration.objects.select_related("user", "user__profile")
+        question_qs = Question.objects.select_related("user", "guest_asker")
+
         queryset = self.get_queryset().prefetch_related(
-            "sessions",
-            "participants__user",
-            "participants__user__profile"
+            Prefetch("sessions", queryset=session_qs),
+            Prefetch("participants", queryset=participant_qs),
+            Prefetch("registrations", queryset=registration_qs),
+            Prefetch("questions", queryset=question_qs),
+            "guest_attendees",
+            "resources",
         )
         self.queryset = queryset
         return super().retrieve(request, *args, **kwargs)
