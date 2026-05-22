@@ -6002,7 +6002,7 @@ class EventViewSet(viewsets.ModelViewSet):
         safe_title = re.sub(r'[^a-zA-Z0-9]', '_', event.title or "Event")
         safe_title = re.sub(r'_+', '_', safe_title).strip('_')
         filename = f"{safe_title}_details.csv"
-        
+
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
         response['X-Filename'] = filename
@@ -6011,6 +6011,8 @@ class EventViewSet(viewsets.ModelViewSet):
         writer.writerow(['User ID', 'Name', 'Email', 'Registered At', 'Joined Live', 'Watched Replay', 'Status'])
 
         regs = EventRegistration.objects.filter(event=event).select_related('user').order_by('-registered_at')
+        has_replay = event.replay_available or bool(event.recording_url)
+
         for r in regs:
             first = (r.user.first_name or "").strip()
             last = (r.user.last_name or "").strip()
@@ -6024,13 +6026,15 @@ class EventViewSet(viewsets.ModelViewSet):
             elif r.watched_replay:
                 status_label = "Watched Replay"
 
+            watched_replay_value = "No replay available" if not has_replay else ("Yes" if r.watched_replay else "No")
+
             writer.writerow([
                 r.user.id,
                 full_name,
                 r.user.email,
                 r.registered_at.strftime("%Y-%m-%d %H:%M:%S"),
                 "Yes" if r.joined_live else "No",
-                "Yes" if r.watched_replay else "No",
+                watched_replay_value,
                 status_label
             ])
 
