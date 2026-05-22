@@ -1,4 +1,4 @@
-from django.db.models.signals import post_save, pre_delete
+from django.db.models.signals import post_save, pre_delete, pre_save
 from django.dispatch import receiver
 from django.db import transaction
 from .models import Event, EventParticipant, PostAcceptanceFormTemplate, EventRegistration
@@ -387,22 +387,46 @@ def delete_event_from_saleor_signal(sender, instance, **kwargs):
         )
 
 
+# Note: Pre-save status tracking replaced with database-level detection in post_save handler.
+# This prevents race conditions in multi-process environments and is more reliable.
+
+
 @receiver(post_save, sender=EventRegistration)
 def trigger_forms_on_registration_confirmed(sender, instance, created, **kwargs):
     """
-    Trigger post-acceptance form assignments when registration is confirmed.
+    Trigger post-acceptance form assignments when registration transitions to confirmed.
 
-    This ensures forms are created for:
-    - Auto-registered speakers/participants
-    - Approved applications
-    - Any time a registration reaches 'confirmed' status
+    Only triggers if:
+    - New registration created with attendee_status='confirmed', OR
+    - Existing registration status changed to 'confirmed'
 
-    Covers the gap where participants added directly by admin need form assignments.
+    Performance: Uses database-level status detection instead of thread-local cache
+    to prevent race conditions and unnecessary triggers on every save.
     """
-    # Only trigger if registration is confirmed and registered
-    if instance.attendee_status == 'confirmed' and instance.status == 'registered':
+    # Guard: only process if status is confirmed
+    if instance.attendee_status != 'confirmed':
+        return
+
+    # Check if this is a status transition (new record or status just changed)
+    is_transition = False
+    if created:
+        is_transition = True
+    else:
+        # Query previous status from DB for safety (avoids thread-local cache race conditions)
         try:
-            from events.services import trigger_post_acceptance_forms
+            previous = EventRegistration.objects.get(pk=instance.pk)
+            is_transition = previous.attendee_status != instance.attendee_status
+        except EventRegistration.DoesNotExist:
+            is_transition = True  # Edge case: deleted then recreated
+
+    # Skip if this isn't actually a transition to confirmed
+    if not is_transition:
+        return
+
+    # Queue form triggers after commit to ensure registration is persisted
+    def trigger_forms():
+        try:
+            from events.services.post_acceptance_forms import trigger_post_acceptance_forms
             trigger_post_acceptance_forms(instance)
         except Exception as e:
             logger.error(
@@ -410,3 +434,5 @@ def trigger_forms_on_registration_confirmed(sender, instance, created, **kwargs)
                 exc_info=True
             )
             # Don't fail the registration - continue normally
+
+    transaction.on_commit(trigger_forms)

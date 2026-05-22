@@ -88,7 +88,7 @@ def should_show_physical_sections(event, attendance_mode=None):
         return False
 
 
-def trigger_post_acceptance_forms(event_registration):
+def trigger_post_acceptance_forms(event_registration, form_template_cache=None):
     """
     Trigger post-acceptance form assignments for a confirmed attendee.
 
@@ -103,6 +103,8 @@ def trigger_post_acceptance_forms(event_registration):
 
     Args:
         event_registration: EventRegistration instance
+        form_template_cache: Optional dict {form_type: template} for reuse in bulk operations
+                            Allows caching templates across multiple registrations
 
     Returns:
         dict: Created assignments with form_type as key, assignment as value
@@ -111,6 +113,8 @@ def trigger_post_acceptance_forms(event_registration):
     Raises:
         TypeError: If event_registration is not an EventRegistration instance
     """
+    if form_template_cache is None:
+        form_template_cache = {}
     if not isinstance(event_registration, EventRegistration):
         raise TypeError("event_registration must be an EventRegistration instance")
 
@@ -128,11 +132,12 @@ def trigger_post_acceptance_forms(event_registration):
                 try:
                     assignment = _create_form_assignment(
                         event_registration,
-                        PostAcceptanceFormTemplate.FORM_TYPE_PARTICIPANT_INFORMATION
+                        PostAcceptanceFormTemplate.FORM_TYPE_PARTICIPANT_INFORMATION,
+                        form_template_cache=form_template_cache
                     )
                     if assignment:
                         created_assignments[PostAcceptanceFormTemplate.FORM_TYPE_PARTICIPANT_INFORMATION] = assignment
-                        logger.info(
+                        logger.debug(
                             f"Participant Information Form assigned to {user.username} "
                             f"for event '{event.title}' (event_id={event.id})"
                         )
@@ -154,7 +159,7 @@ def trigger_post_acceptance_forms(event_registration):
                         assignment, created = get_or_create_promotional_profile(event_registration)
                         if assignment:
                             created_assignments[PostAcceptanceFormTemplate.FORM_TYPE_PROMOTIONAL_PROFILE] = assignment
-                            logger.info(
+                            logger.debug(
                                 f"Promotional Profile Form assigned to {user.username} "
                                 f"for event '{event.title}' (event_id={event.id}) with modules: {modules}"
                             )
@@ -166,7 +171,7 @@ def trigger_post_acceptance_forms(event_registration):
                         )
 
         if created_assignments:
-            logger.info(
+            logger.debug(
                 f"Successfully created {len(created_assignments)} form(s) "
                 f"for {user.username} on event '{event.title}'"
             )
@@ -221,7 +226,7 @@ def _calculate_form_deadline(event, form_template):
         return now + timedelta(days=default_days)
 
 
-def _create_form_assignment(event_registration, form_type):
+def _create_form_assignment(event_registration, form_type, form_template_cache=None):
     """
     Create or get a form assignment for an attendee.
 
@@ -233,17 +238,26 @@ def _create_form_assignment(event_registration, form_type):
     Args:
         event_registration: EventRegistration instance
         form_type: Form type constant
+        form_template_cache: Optional dict {form_type: template} for reuse in bulk operations
 
     Returns:
         PostAcceptanceFormAssignment or None if form is not enabled
     """
+    if form_template_cache is None:
+        form_template_cache = {}
+
     event = event_registration.event
 
-    form_template = PostAcceptanceFormTemplate.objects.filter(
-        event=event,
-        form_type=form_type,
-        is_enabled=True
-    ).first()
+    # Use cache or query template
+    if form_type in form_template_cache:
+        form_template = form_template_cache[form_type]
+    else:
+        form_template = PostAcceptanceFormTemplate.objects.filter(
+            event=event,
+            form_type=form_type,
+            is_enabled=True
+        ).first()
+        form_template_cache[form_type] = form_template
 
     if not form_template:
         return None
@@ -268,16 +282,29 @@ def _create_form_assignment(event_registration, form_type):
         }
     )
 
-    # Send email notification when assignment is first created
+    # Queue email notification asynchronously after assignment is persisted
     if created:
-        try:
-            send_form_assignment_email(assignment)
-        except Exception as e:
-            logger.error(
-                f"Failed to send form assignment email for {assignment.id}: {str(e)}",
-                exc_info=True
-            )
-            # Don't fail assignment creation if email fails
+        def queue_email():
+            from events.tasks import send_form_assignment_email_task
+            try:
+                send_form_assignment_email_task.delay(assignment.id)
+            except Exception as e:
+                logger.error(
+                    f"Failed to queue form assignment email for {assignment.id}: {str(e)}",
+                    exc_info=True
+                )
+                # If Celery is unavailable, fall back to synchronous send
+                try:
+                    send_form_assignment_email(assignment)
+                except Exception as fallback_e:
+                    logger.error(
+                        f"Fallback: Failed to send form assignment email for {assignment.id}: {str(fallback_e)}",
+                        exc_info=True
+                    )
+                    # Don't fail assignment creation if email fails
+
+        from django.db import transaction
+        transaction.on_commit(queue_email)
 
     return assignment if created else None
 
@@ -506,7 +533,11 @@ def writeback_participant_information_form(assignment):
 
     try:
         registration = assignment.event_registration
-        answers = {ans.question_key: ans for ans in submission.answers.all()}
+        # Optimize query: only fetch needed fields, exclude large JSON data
+        answers = {
+            ans.question_key: ans
+            for ans in submission.answers.all().only('question_key', 'answer_text', 'answer_data')
+        }
 
         update_fields = ['participant_information_completed_at']
 

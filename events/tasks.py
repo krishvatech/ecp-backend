@@ -1539,6 +1539,62 @@ def schedule_networking_meeting_reminders():
 
 
 # ============================================================================
+# FORM ASSIGNMENT EMAIL TASK
+# ============================================================================
+
+@shared_task(bind=True, max_retries=2)
+def send_form_assignment_email_task(self, assignment_id):
+    """
+    Async task to send form assignment notification email.
+    Non-blocking - form creation continues even if email fails.
+
+    Args:
+        assignment_id: ID of PostAcceptanceFormAssignment
+
+    Returns:
+        dict: {'status': 'sent'|'failed', 'reason': str}
+    """
+    try:
+        from events.models import PostAcceptanceFormAssignment
+        from events.services.post_acceptance_forms import send_form_assignment_email
+
+        assignment = PostAcceptanceFormAssignment.objects.select_related(
+            'event', 'event_registration', 'event_registration__user', 'form_template'
+        ).get(id=assignment_id)
+
+        # Check opt-out flag on registration
+        if assignment.event_registration.opt_out_automated_communication:
+            logger.info(
+                f"Skipping form assignment email for {assignment.event_registration.user.email} - opted out"
+            )
+            return {'status': 'skipped', 'reason': 'opted_out'}
+
+        # Send form assignment email
+        result = send_form_assignment_email(assignment)
+        if result:
+            logger.info(
+                f"Sent {assignment.form_type} form assignment email to {assignment.event_registration.user.email}"
+            )
+            return {'status': 'sent', 'reason': 'success'}
+        else:
+            logger.warning(
+                f"Failed to send {assignment.form_type} form assignment email to {assignment.event_registration.user.email}"
+            )
+            raise Exception("send_form_assignment_email returned False")
+
+    except PostAcceptanceFormAssignment.DoesNotExist:
+        logger.error(f"PostAcceptanceFormAssignment {assignment_id} not found")
+        return {'status': 'failed', 'reason': 'not_found'}
+    except Exception as e:
+        logger.error(
+            f"Error sending form assignment email for assignment {assignment_id}: {e}",
+            exc_info=True
+        )
+        # Retry with exponential backoff
+        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
+
+
+# ============================================================================
 # PARTICIPANT INFORMATION FORM REMINDER TASKS
 # ============================================================================
 
@@ -1624,6 +1680,7 @@ def schedule_form_reminders():
 
         # Find incomplete assignments with deadline approaching in next 14+ days
         # Skip opted-out registrations if field exists
+        # Use select_related + prefetch_related to prevent N+1 queries on user lookups
         assignments = PostAcceptanceFormAssignment.objects.filter(
             status__in=[
                 PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
@@ -1633,7 +1690,11 @@ def schedule_form_reminders():
             deadline__lte=reminder_window_end + timedelta(days=14),
             event_registration__attendee_status='confirmed',
             event_registration__status='registered'
-        ).select_related('event', 'event_registration', 'form_template')
+        ).select_related(
+            'event', 'event_registration', 'form_template'
+        ).prefetch_related(
+            'event_registration__user'
+        )
 
         for assignment in assignments:
             form_type = assignment.form_type
@@ -2137,4 +2198,135 @@ def auto_sync_saleor_staff_users(self):
 @shared_task(bind=True, max_retries=3)
 def auto_sync_saleor_permission_groups(self):
     return _run_saleor_sync_task(self, "Permission groups", sync_permission_groups_from_saleor)
+
+
+# Phase 13: Application decision email tasks (async, non-blocking)
+
+@shared_task(bind=True, max_retries=2)
+def send_application_acceptance_email_task(self, track_application_id):
+    """
+    Async task to send acceptance email for a track application.
+    Non-blocking - errors are logged but don't fail the acceptance.
+
+    Args:
+        track_application_id: ID of EventApplicationTrackApplication
+
+    Returns:
+        dict: {'status': 'sent'|'skipped'|'failed', 'reason': str}
+    """
+    try:
+        from events.models import EventApplicationTrackApplication
+        from events.services.communication import send_application_decision_email
+
+        track_app = EventApplicationTrackApplication.objects.select_related(
+            'application', 'track', 'track__event'
+        ).get(id=track_application_id)
+
+        # Check opt-out flag
+        if track_app.application.opt_out_automated_communication:
+            logger.info(f"Skipping acceptance email for {track_app.application.email} - opted out")
+            return {'status': 'skipped', 'reason': 'opted_out'}
+
+        # Send acceptance email
+        result = send_application_decision_email(track_app, 'accepted')
+        if result:
+            logger.info(f"Sent acceptance email to {track_app.application.email}")
+            return {'status': 'sent', 'reason': 'success'}
+        else:
+            logger.warning(f"Failed to send acceptance email to {track_app.application.email}")
+            raise Exception("send_application_decision_email returned False")
+
+    except EventApplicationTrackApplication.DoesNotExist:
+        logger.error(f"TrackApplication {track_application_id} not found")
+        return {'status': 'failed', 'reason': 'not_found'}
+    except Exception as e:
+        logger.error(f"Error sending acceptance email for track app {track_application_id}: {e}", exc_info=True)
+        # Retry with exponential backoff
+        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
+
+
+@shared_task(bind=True, max_retries=2)
+def send_application_decline_email_task(self, track_application_id):
+    """
+    Async task to send decline email for a track application.
+    Non-blocking - errors are logged but don't fail the decline decision.
+
+    Args:
+        track_application_id: ID of EventApplicationTrackApplication
+
+    Returns:
+        dict: {'status': 'sent'|'skipped'|'failed', 'reason': str}
+    """
+    try:
+        from events.models import EventApplicationTrackApplication
+        from events.services.communication import send_application_decision_email
+
+        track_app = EventApplicationTrackApplication.objects.select_related(
+            'application', 'track', 'track__event'
+        ).get(id=track_application_id)
+
+        # Check opt-out flag
+        if track_app.application.opt_out_automated_communication:
+            logger.info(f"Skipping decline email for {track_app.application.email} - opted out")
+            return {'status': 'skipped', 'reason': 'opted_out'}
+
+        # Send decline email
+        result = send_application_decision_email(track_app, 'declined')
+        if result:
+            logger.info(f"Sent decline email to {track_app.application.email}")
+            return {'status': 'sent', 'reason': 'success'}
+        else:
+            logger.warning(f"Failed to send decline email to {track_app.application.email}")
+            raise Exception("send_application_decision_email returned False")
+
+    except EventApplicationTrackApplication.DoesNotExist:
+        logger.error(f"TrackApplication {track_application_id} not found")
+        return {'status': 'failed', 'reason': 'not_found'}
+    except Exception as e:
+        logger.error(f"Error sending decline email for track app {track_application_id}: {e}", exc_info=True)
+        # Retry with exponential backoff
+        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
+
+
+@shared_task(bind=True, max_retries=2)
+def send_application_waitlist_email_task(self, track_application_id):
+    """
+    Async task to send waitlist email for a track application.
+    Non-blocking - errors are logged but don't fail the waitlist decision.
+
+    Args:
+        track_application_id: ID of EventApplicationTrackApplication
+
+    Returns:
+        dict: {'status': 'sent'|'skipped'|'failed', 'reason': str}
+    """
+    try:
+        from events.models import EventApplicationTrackApplication
+        from events.services.communication import send_application_decision_email
+
+        track_app = EventApplicationTrackApplication.objects.select_related(
+            'application', 'track', 'track__event'
+        ).get(id=track_application_id)
+
+        # Check opt-out flag
+        if track_app.application.opt_out_automated_communication:
+            logger.info(f"Skipping waitlist email for {track_app.application.email} - opted out")
+            return {'status': 'skipped', 'reason': 'opted_out'}
+
+        # Send waitlist email
+        result = send_application_decision_email(track_app, 'waitlisted')
+        if result:
+            logger.info(f"Sent waitlist email to {track_app.application.email}")
+            return {'status': 'sent', 'reason': 'success'}
+        else:
+            logger.warning(f"Failed to send waitlist email to {track_app.application.email}")
+            raise Exception("send_application_decision_email returned False")
+
+    except EventApplicationTrackApplication.DoesNotExist:
+        logger.error(f"TrackApplication {track_application_id} not found")
+        return {'status': 'failed', 'reason': 'not_found'}
+    except Exception as e:
+        logger.error(f"Error sending waitlist email for track app {track_application_id}: {e}", exc_info=True)
+        # Retry with exponential backoff
+        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
 

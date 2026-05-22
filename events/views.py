@@ -60,7 +60,7 @@ from rest_framework.throttling import UserRateThrottle
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack
+from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField
 from .permissions import IsSuperuserOnly, IsEventAdminOrSuperuser, HasRestrictedDataPermission
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -86,6 +86,7 @@ from .serializers import (
     EventApplicationTrackSerializer,
     EventPreApprovalCodeSerializer,
     EventPreApprovalAllowlistSerializer,
+    EventApplicationTrackApplicationDetailSerializer,
     VirtualSpeakerSerializer,
     VirtualSpeakerConvertSerializer,
     SaleorChannelSerializer,
@@ -108,6 +109,9 @@ from .serializers import (
     PostAcceptanceFormAssignmentSerializer,
     PostAcceptanceFormSubmissionSerializer,
     PostAcceptanceFormAnswerSerializer,
+    SharedQuestionCategorySerializer,
+    SharedQuestionSerializer,
+    FormFieldSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -2512,20 +2516,69 @@ class EventViewSet(viewsets.ModelViewSet):
         attendee_marker_value = bool(data.get("attendee_marker_value", False))
         comments = (data.get("comments") or "").strip()
 
+        # Phase 3: Handle submission mode and track selection
+        submission_mode = data.get('submission_mode', EventApplication.SUBMISSION_MODE_SELF)
+        track_id = data.get('track_id')
+        track_key = data.get('track_key')
+        application_track = None
+
+        # Resolve track by ID or key
+        if track_id or track_key:
+            try:
+                if track_id:
+                    application_track = EventApplicationTrack.objects.get(id=track_id, event=event)
+                else:
+                    application_track = EventApplicationTrack.objects.get(key=track_key, event=event)
+
+                # Validate submission_mode is enabled for this track
+                enabled_modes = application_track.enabled_submission_modes or []
+                if submission_mode not in enabled_modes:
+                    return Response(
+                        {'detail': f'Submission mode "{submission_mode}" is not enabled for this track.'},
+                        status=400
+                    )
+            except EventApplicationTrack.DoesNotExist:
+                return Response({'detail': 'Application track not found.'}, status=404)
+
+        # Validate mode-specific required fields
+        mode_required_fields = {
+            EventApplication.SUBMISSION_MODE_SELF: ['first_name', 'last_name', 'email'],
+            EventApplication.SUBMISSION_MODE_CONFIRMED: ['first_name', 'last_name', 'email', 'sponsor_organization'],
+            EventApplication.SUBMISSION_MODE_SELF_NOMINATION: ['first_name', 'last_name', 'email'],
+            EventApplication.SUBMISSION_MODE_THIRD_PARTY: ['nominator_name', 'nominator_email', 'nominee_name', 'nominee_email'],
+        }
+
+        required_fields = mode_required_fields.get(submission_mode, [])
+        for field in required_fields:
+            if not (data.get(field) or '').strip():
+                return Response(
+                    {'detail': f'Field "{field}" is required for {submission_mode} submission mode.'},
+                    status=400
+                )
+
         with transaction.atomic():
             locked_event = Event.objects.select_for_update().get(pk=event.pk)
             if EventApplication.objects.filter(event=locked_event, email=email).exists():
                 return Response({'detail': 'An application with this email already exists.'}, status=409)
 
+            # Phase 8: Check pre-approval with track + submission_mode scoping
             preapproval_source = EventApplication.PREAPPROVAL_SOURCE_NONE
             code_obj = None
             allowlist_entry = None
 
+            track_id_for_preapproval = application_track.id if application_track else None
+
             if locked_event.preapproval_code_enabled and submitted_code:
+                from django.db.models import Q
                 code_obj = (
                     EventPreApprovalCode.objects
                     .select_for_update()
                     .filter(
+                        # Phase 8: Filter by track + submission_mode (with backward compatibility)
+                        # Match if: specific track OR event-level (track=NULL)
+                        Q(track_id=track_id_for_preapproval) | Q(track_id__isnull=True),
+                        # Match if: specific submission_mode OR all-modes (submission_mode='')
+                        Q(submission_mode=submission_mode) | Q(submission_mode=''),
                         event=locked_event,
                         code=submitted_code,
                         status=EventPreApprovalCode.STATUS_ACTIVE,
@@ -2540,9 +2593,17 @@ class EventViewSet(viewsets.ModelViewSet):
                 and locked_event.preapproval_allowlist_enabled
                 and email
             ):
+                from django.db.models import Q
                 allowlist_entry = (
                     EventPreApprovalAllowlist.objects
-                    .filter(event=locked_event, email=email, is_active=True)
+                    .filter(
+                        # Phase 8: Filter by track + submission_mode
+                        Q(track_id=track_id_for_preapproval) | Q(track_id__isnull=True),
+                        Q(submission_mode=submission_mode) | Q(submission_mode=''),
+                        event=locked_event,
+                        email=email,
+                        is_active=True,
+                    )
                     .first()
                 )
                 if allowlist_entry:
@@ -2573,6 +2634,15 @@ class EventViewSet(viewsets.ModelViewSet):
                 preapproval_code=code_obj,
                 preapproval_allowlist_entry=allowlist_entry,
                 preapproved_at=now if is_preapproved else None,
+                # Phase 3: Submission modes
+                application_track=application_track,
+                submission_mode=submission_mode,
+                nominator_name=(data.get("nominator_name") or "").strip(),
+                nominator_email=(data.get("nominator_email") or "").strip(),
+                nominee_name=(data.get("nominee_name") or "").strip(),
+                nominee_email=(data.get("nominee_email") or "").strip(),
+                nominee_details=data.get("nominee_details") or {},
+                sponsor_organization=(data.get("sponsor_organization") or "").strip(),
             )
 
             if code_obj and is_preapproved:
@@ -2625,7 +2695,24 @@ class EventViewSet(viewsets.ModelViewSet):
         if not code:
             return Response({"preapproved": False, "reason": "invalid", "message": "This code is not valid."})
 
-        code_obj = EventPreApprovalCode.objects.filter(event=event, code=code).first()
+        # Phase 8: Accept track_id and submission_mode for fine-grained pre-approval checking
+        track_id = request.data.get("track_id")
+        submission_mode = (request.data.get("submission_mode") or "").strip()
+
+        # Validate track exists if provided
+        if track_id:
+            if not EventApplicationTrack.objects.filter(id=track_id, event=event).exists():
+                return Response({"preapproved": False, "reason": "invalid", "message": "Track not found."}, status=400)
+
+        from django.db.models import Q
+        code_obj = EventPreApprovalCode.objects.filter(
+            # Phase 8: Filter by track + submission_mode (with backward compatibility)
+            Q(track_id=track_id) | Q(track_id__isnull=True),
+            Q(submission_mode=submission_mode) | Q(submission_mode=''),
+            event=event,
+            code=code,
+        ).first()
+
         if not code_obj:
             return Response({"preapproved": False, "reason": "invalid", "message": "This code is not valid."})
         if code_obj.status == EventPreApprovalCode.STATUS_USED:
@@ -2644,7 +2731,25 @@ class EventViewSet(viewsets.ModelViewSet):
         if not email:
             return Response({"preapproved": False, "reason": "not_found"})
 
-        entry = EventPreApprovalAllowlist.objects.filter(event=event, email=email, is_active=True).first()
+        # Phase 8: Accept track_id and submission_mode for fine-grained pre-approval checking
+        track_id = request.data.get("track_id")
+        submission_mode = (request.data.get("submission_mode") or "").strip()
+
+        # Validate track exists if provided
+        if track_id:
+            if not EventApplicationTrack.objects.filter(id=track_id, event=event).exists():
+                return Response({"preapproved": False, "reason": "not_found"})
+
+        from django.db.models import Q
+        entry = EventPreApprovalAllowlist.objects.filter(
+            # Phase 8: Filter by track + submission_mode (with backward compatibility)
+            Q(track_id=track_id) | Q(track_id__isnull=True),
+            Q(submission_mode=submission_mode) | Q(submission_mode=''),
+            event=event,
+            email=email,
+            is_active=True,
+        ).first()
+
         if not entry:
             return Response({"preapproved": False, "reason": "not_found"})
         return Response(
@@ -2843,6 +2948,582 @@ class EventViewSet(viewsets.ModelViewSet):
             )
             created += 1
         return Response({"created": created, "skipped": skipped, "errors": errors})
+
+    # ==================== Phase 9: Review Queue ====================
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="review-queue")
+    def review_queue(self, request, pk=None):
+        """
+        Phase 9: List all track applications for review with advanced filtering.
+        GET /events/{id}/review-queue/
+
+        Query parameters:
+        - track_id: Filter by track
+        - submission_mode: Filter by submission mode
+        - status: Filter by status (pending, pre_approved, accepted, declined, waitlisted)
+        - tier_id: Filter by requested tier
+        - reviewer_id: Filter by assigned reviewer
+        - search: Search by applicant name/email
+        - ordering: Sort field (status, created_at, etc.)
+        - page: Pagination
+        """
+        event = self.get_object()
+
+        # Permission check: must be event staff/admin
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can access review queue.'}, status=403)
+
+        # Base queryset with optimized queries - prevent N+1 on user lookups
+        qs = EventApplicationTrackApplication.objects.filter(
+            track__event=event
+        ).select_related(
+            'application',
+            'application__user',
+            'track',
+            'track__event',
+            'tier_preference',
+            'reviewed_by'
+        ).only(
+            # Exclude large JSON fields from list view (form_answers, file_uploads)
+            'id', 'application_id', 'track_id', 'status',
+            'submission_mode', 'tier_preference_id', 'accepted_tier_id',
+            'reviewed_by_id', 'reviewed_at', 'created_at', 'updated_at',
+            'application__id', 'application__email', 'application__first_name',
+            'application__last_name', 'application__user_id',
+            'application__user__id', 'application__user__username', 'application__user__email',
+            'track__id', 'track__label', 'track__key',
+            'track__event__id', 'track__event__title',
+            'tier_preference__id', 'tier_preference__label',
+            'reviewed_by__id', 'reviewed_by__username'
+        )
+
+        # Apply filters
+        track_id = request.query_params.get('track_id')
+        if track_id:
+            qs = qs.filter(track_id=track_id)
+
+        submission_mode = request.query_params.get('submission_mode')
+        if submission_mode:
+            qs = qs.filter(submission_mode=submission_mode)
+
+        status_param = request.query_params.get('status')
+        if status_param:
+            qs = qs.filter(status=status_param)
+
+        tier_id = request.query_params.get('tier_id')
+        if tier_id:
+            qs = qs.filter(tier_preference_id=tier_id)
+
+        reviewer_id = request.query_params.get('reviewer_id')
+        if reviewer_id:
+            qs = qs.filter(reviewed_by_id=reviewer_id)
+
+        search = request.query_params.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(application__email__icontains=search) |
+                Q(application__first_name__icontains=search) |
+                Q(application__last_name__icontains=search)
+            )
+
+        # Apply ordering
+        ordering = request.query_params.get('ordering', '-created_at')
+        qs = qs.order_by(ordering)
+
+        # Paginate
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            from .serializers import EventApplicationTrackApplicationDetailSerializer
+            serializer = EventApplicationTrackApplicationDetailSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        from .serializers import EventApplicationTrackApplicationDetailSerializer
+        serializer = EventApplicationTrackApplicationDetailSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="review-queue/stats")
+    def review_queue_stats(self, request, pk=None):
+        """
+        Phase 9: Get statistics for review queue.
+        GET /events/{id}/review-queue/stats/
+
+        Returns counts grouped by:
+        - track
+        - submission_mode
+        - status
+        - tier_preference
+        """
+        event = self.get_object()
+
+        # Permission check: must be event staff/admin
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can access stats.'}, status=403)
+
+        qs = EventApplicationTrackApplication.objects.filter(track__event=event)
+
+        stats = {
+            'by_track': list(qs.values('track__label').annotate(count=Count('id')).order_by('track__label')),
+            'by_mode': list(qs.values('submission_mode').annotate(count=Count('id')).order_by('submission_mode')),
+            'by_status': list(qs.values('status').annotate(count=Count('id')).order_by('status')),
+            'by_tier': list(qs.filter(tier_preference__isnull=False).values('tier_preference__label').annotate(count=Count('id')).order_by('tier_preference__label')),
+            'total': qs.count(),
+        }
+        return Response(stats)
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="review-queue/export")
+    def review_queue_export(self, request, pk=None):
+        """
+        Phase 13: Export review queue data as JSON or CSV (backend-driven).
+        GET /events/{id}/review-queue/export/?format=json|csv
+
+        Query parameters:
+        - format: 'json' (default) or 'csv'
+        - track_id, submission_mode, status, tier_id, reviewer_id, search: Same filters as review-queue
+
+        Returns:
+        - JSON: Array of track applications with all details
+        - CSV: Spreadsheet file with key fields
+
+        Performance: Uses streaming for CSV, pagination headers for JSON size awareness.
+        """
+        event = self.get_object()
+
+        # Permission check: must be event staff/admin
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can export review queue.'}, status=403)
+
+        # Build optimized queryset (same as review-queue endpoint)
+        qs = EventApplicationTrackApplication.objects.filter(
+            track__event=event
+        ).select_related(
+            'application', 'track', 'tier_preference', 'reviewed_by', 'accepted_tier'
+        )
+
+        # Apply same filters
+        track_id = request.query_params.get('track_id')
+        if track_id:
+            qs = qs.filter(track_id=track_id)
+
+        submission_mode = request.query_params.get('submission_mode')
+        if submission_mode:
+            qs = qs.filter(submission_mode=submission_mode)
+
+        status_param = request.query_params.get('status')
+        if status_param:
+            qs = qs.filter(status=status_param)
+
+        tier_id = request.query_params.get('tier_id')
+        if tier_id:
+            qs = qs.filter(tier_preference_id=tier_id)
+
+        reviewer_id = request.query_params.get('reviewer_id')
+        if reviewer_id:
+            qs = qs.filter(reviewed_by_id=reviewer_id)
+
+        search = request.query_params.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(application__email__icontains=search) |
+                Q(application__first_name__icontains=search) |
+                Q(application__last_name__icontains=search)
+            )
+
+        # Default ordering
+        qs = qs.order_by('-created_at')
+
+        # Return format
+        export_format = request.query_params.get('format', 'json').lower()
+
+        if export_format == 'csv':
+            # Stream CSV file
+            import csv
+            from io import StringIO
+            from django.http import StreamingHttpResponse
+
+            # Limit CSV export to prevent memory issues (still allow large exports server-side)
+            csv_limit = int(request.query_params.get('limit', 5000))
+            qs = qs[:csv_limit]
+
+            def generate_csv():
+                """Generator function for streaming CSV."""
+                output = StringIO()
+                writer = csv.writer(output)
+
+                # CSV headers
+                headers = [
+                    'ID', 'Applicant Email', 'Applicant Name', 'Track', 'Submission Mode',
+                    'Status', 'Tier Preference', 'Accepted Tier', 'Company', 'Job Title',
+                    'Reviewed By', 'Reviewed At', 'Created At', 'Pre-approved'
+                ]
+                writer.writerow(headers)
+                yield output.getvalue()
+                output.truncate(0)
+                output.seek(0)
+
+                # CSV rows
+                for track_app in qs:
+                    row = [
+                        track_app.id,
+                        track_app.application.email,
+                        f"{track_app.application.first_name} {track_app.application.last_name}",
+                        track_app.track.label,
+                        track_app.get_submission_mode_display(),
+                        track_app.get_status_display(),
+                        track_app.tier_preference.label if track_app.tier_preference else '',
+                        track_app.accepted_tier.label if track_app.accepted_tier else '',
+                        track_app.application.company_name or '',
+                        track_app.application.job_title or '',
+                        track_app.reviewed_by.username if track_app.reviewed_by else '',
+                        track_app.reviewed_at.isoformat() if track_app.reviewed_at else '',
+                        track_app.created_at.isoformat(),
+                        'Yes' if track_app.application.is_preapproved else 'No',
+                    ]
+                    writer.writerow(row)
+                    yield output.getvalue()
+                    output.truncate(0)
+                    output.seek(0)
+
+            response = StreamingHttpResponse(generate_csv(), content_type='text/csv')
+            response['Content-Disposition'] = f'attachment; filename="review-queue-export-{event.id}.csv"'
+            return response
+
+        else:
+            # JSON export with pagination info
+            # Limit to prevent memory issues (frontend should use paginated review-queue for interactive browsing)
+            json_limit = int(request.query_params.get('limit', 1000))
+            qs = qs[:json_limit]
+
+            from .serializers import EventApplicationTrackApplicationDetailSerializer
+            serializer = EventApplicationTrackApplicationDetailSerializer(qs, many=True)
+
+            return Response({
+                'event_id': event.id,
+                'event_name': event.title,
+                'export_time': timezone.now().isoformat(),
+                'total_count': qs.count(),
+                'limit': json_limit,
+                'data': serializer.data,
+                'note': 'For large exports, use CSV format with ?format=csv&limit=5000'
+            })
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="bulk-action")
+    def bulk_action(self, request, pk=None):
+        """
+        Phase 9/10/11/12: Perform bulk actions on track applications.
+        POST /events/{id}/bulk-action/
+
+        Request body:
+        {
+          "action": "accept|decline|waitlist|assign_reviewer",
+          "track_application_ids": [1, 2, 3, ...],
+          "tier_preference_id": 5,  // For accept action
+          "reviewer_id": 10,  // For assign_reviewer action
+        }
+
+        For accept action: calls accept_track_application() service for each track app,
+        creating registrations, assigning roles, and triggering post-acceptance forms.
+        """
+        from django.db import transaction
+        from events.services.application_decisions import (
+            accept_track_application,
+            decline_track_application,
+            waitlist_track_application
+        )
+
+        event = self.get_object()
+
+        # Permission check: must be event staff/admin
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can perform bulk actions.'}, status=403)
+
+        action = request.data.get('action')
+        track_app_ids = request.data.get('track_application_ids', [])
+
+        if not action or not track_app_ids:
+            return Response({'detail': 'action and track_application_ids are required.'}, status=400)
+
+        # Verify all belong to this event
+        qs = EventApplicationTrackApplication.objects.filter(
+            id__in=track_app_ids,
+            track__event=event
+        )
+
+        if not qs.exists():
+            return Response({'detail': 'No matching track applications found.'}, status=404)
+
+        updated_count = 0
+        errors = []
+
+        try:
+            with transaction.atomic():
+                if action == 'accept':
+                    tier_id = request.data.get('tier_preference_id')
+                    accepted_tier = None
+                    if tier_id:
+                        try:
+                            accepted_tier = TrackPricingTier.objects.get(id=tier_id)
+                        except TrackPricingTier.DoesNotExist:
+                            return Response({'detail': 'Tier not found.'}, status=400)
+
+                    for track_app in qs:
+                        try:
+                            # Call service function for each application
+                            # This creates registrations, assigns roles, and triggers forms
+                            accept_track_application(
+                                track_app,
+                                request.user,
+                                accepted_tier=accepted_tier
+                            )
+                            updated_count += 1
+                        except ValueError as e:
+                            errors.append(f"Track app {track_app.id}: {str(e)}")
+                        except Exception as e:
+                            errors.append(f"Track app {track_app.id}: Unexpected error: {str(e)}")
+
+                elif action == 'decline':
+                    for track_app in qs:
+                        try:
+                            decline_track_application(track_app, request.user, send_email=True)
+                            updated_count += 1
+                        except Exception as e:
+                            errors.append(f"Track app {track_app.id}: {str(e)}")
+
+                elif action == 'waitlist':
+                    for track_app in qs:
+                        try:
+                            waitlist_track_application(track_app, request.user, send_email=True)
+                            updated_count += 1
+                        except Exception as e:
+                            errors.append(f"Track app {track_app.id}: {str(e)}")
+
+                elif action == 'assign_reviewer':
+                    reviewer_id = request.data.get('reviewer_id')
+                    updated_count = qs.update(reviewed_by_id=reviewer_id)
+
+                else:
+                    return Response({'detail': f'Invalid action: {action}'}, status=400)
+
+        except Exception as e:
+            return Response({
+                'success': False,
+                'detail': f'Bulk action failed: {str(e)}',
+                'updated_count': updated_count,
+                'errors': errors
+            }, status=500)
+
+        response_data = {'success': True, 'updated_count': updated_count}
+        if errors:
+            response_data['errors'] = errors
+        return Response(response_data)
+
+    # ==================== Phase 10: Accept, Decline, Waitlist ====================
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path=r"applications/(?P<app_id>\d+)/track-applications/(?P<track_app_id>\d+)/accept")
+    def accept_track_application(self, request, pk=None, app_id=None, track_app_id=None):
+        """
+        Phase 10: Accept a track application with tier selection.
+        POST /events/{id}/applications/{app_id}/track-applications/{track_app_id}/accept/
+
+        Request body:
+        {
+          "accepted_tier_id": 5,  // Optional: tier to assign (uses requested or default if omitted)
+          "notes": "Optional notes"
+        }
+        """
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can make decisions.'}, status=403)
+
+        track_app = get_object_or_404(
+            EventApplicationTrackApplication,
+            id=track_app_id,
+            application_id=app_id,
+            track__event=event
+        )
+
+        from events.services.application_decisions import accept_track_application
+
+        # Get tier: use provided, or fallback to requested, or use track default
+        tier_id = request.data.get('accepted_tier_id')
+        accepted_tier = None
+        if tier_id:
+            try:
+                accepted_tier = TrackPricingTier.objects.get(id=tier_id, track=track_app.track)
+            except TrackPricingTier.DoesNotExist:
+                return Response({'detail': 'Tier not found for this track.'}, status=400)
+
+        notes = request.data.get('notes', '')
+
+        try:
+            track_app = accept_track_application(
+                track_app,
+                request.user,
+                accepted_tier=accepted_tier,
+                notes=notes
+            )
+            return Response({
+                'success': True,
+                'status': track_app.status,
+                'accepted_tier': track_app.accepted_tier.id if track_app.accepted_tier else None,
+                'accepted_at': track_app.accepted_at,
+                'message': 'Application accepted successfully'
+            })
+        except Exception as e:
+            logger.exception(f"Error accepting application {track_app_id}: {e}")
+            return Response(
+                {'detail': f'Error accepting application: {str(e)}'},
+                status=500
+            )
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path=r"applications/(?P<app_id>\d+)/track-applications/(?P<track_app_id>\d+)/decline")
+    def decline_track_application(self, request, pk=None, app_id=None, track_app_id=None):
+        """
+        Phase 10: Decline a track application.
+        POST /events/{id}/applications/{app_id}/track-applications/{track_app_id}/decline/
+
+        Request body:
+        {
+          "send_email": true,  // Optional: whether to send decline notification
+          "notes": "Optional notes"
+        }
+        """
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can make decisions.'}, status=403)
+
+        track_app = get_object_or_404(
+            EventApplicationTrackApplication,
+            id=track_app_id,
+            application_id=app_id,
+            track__event=event
+        )
+
+        from events.services.application_decisions import decline_track_application
+
+        send_email = request.data.get('send_email', True)
+        notes = request.data.get('notes', '')
+
+        try:
+            track_app = decline_track_application(
+                track_app,
+                request.user,
+                send_email=send_email,
+                notes=notes
+            )
+            return Response({
+                'success': True,
+                'status': track_app.status,
+                'declined_at': track_app.declined_at,
+                'message': 'Application declined successfully'
+            })
+        except Exception as e:
+            logger.exception(f"Error declining application {track_app_id}: {e}")
+            return Response(
+                {'detail': f'Error declining application: {str(e)}'},
+                status=500
+            )
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path=r"applications/(?P<app_id>\d+)/track-applications/(?P<track_app_id>\d+)/waitlist")
+    def waitlist_track_application(self, request, pk=None, app_id=None, track_app_id=None):
+        """
+        Phase 10: Waitlist a track application.
+        POST /events/{id}/applications/{app_id}/track-applications/{track_app_id}/waitlist/
+
+        Request body:
+        {
+          "send_email": true,  // Optional: whether to send waitlist notification
+          "notes": "Optional notes"
+        }
+        """
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can make decisions.'}, status=403)
+
+        track_app = get_object_or_404(
+            EventApplicationTrackApplication,
+            id=track_app_id,
+            application_id=app_id,
+            track__event=event
+        )
+
+        from events.services.application_decisions import waitlist_track_application
+
+        send_email = request.data.get('send_email', True)
+        notes = request.data.get('notes', '')
+
+        try:
+            track_app = waitlist_track_application(
+                track_app,
+                request.user,
+                send_email=send_email,
+                notes=notes
+            )
+            return Response({
+                'success': True,
+                'status': track_app.status,
+                'waitlisted_at': track_app.waitlisted_at,
+                'message': 'Application waitlisted successfully'
+            })
+        except Exception as e:
+            logger.exception(f"Error waitlisting application {track_app_id}: {e}")
+            return Response(
+                {'detail': f'Error waitlisting application: {str(e)}'},
+                status=500
+            )
+
+    @action(detail=True, methods=["post"], url_path=r"registrations/(?P<reg_id>\d+)/mark-paid", permission_classes=[IsAuthenticated])
+    def mark_registration_paid(self, request, pk=None, reg_id=None):
+        """
+        Phase 11: Manually mark a payment_pending registration as confirmed.
+        POST /events/{id}/registrations/{reg_id}/mark-paid/
+
+        Request body:
+        {
+          "payment_reference": "INV-12345"  // Optional: payment reference
+        }
+
+        Only updates registrations with attendee_status='payment_pending'.
+        Triggers post-acceptance forms when status transitions to confirmed.
+        """
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can mark payments.'}, status=403)
+
+        registration = get_object_or_404(
+            EventRegistration,
+            id=reg_id,
+            event=event
+        )
+
+        if registration.attendee_status != 'payment_pending':
+            return Response({
+                'detail': f'Cannot mark as paid. Attendee status is {registration.attendee_status}, not payment_pending.'
+            }, status=400)
+
+        from events.services.attendee_directory import mark_paid
+
+        payment_reference = request.data.get('payment_reference', '')
+
+        try:
+            registration = mark_paid(
+                registration,
+                request.user,
+                payment_reference=payment_reference
+            )
+            return Response({
+                'success': True,
+                'attendee_status': registration.attendee_status,
+                'marked_paid_at': registration.marked_paid_at,
+                'message': 'Registration marked as paid successfully'
+            })
+        except ValueError as e:
+            return Response({'detail': str(e)}, status=400)
+        except Exception as e:
+            logger.exception(f"Error marking registration {reg_id} as paid: {e}")
+            return Response(
+                {'detail': f'Error marking as paid: {str(e)}'},
+                status=500
+            )
 
     @action(detail=True, methods=["post"], url_path=r"applications/(?P<app_id>\d+)/approve", permission_classes=[IsAuthenticated])
     def approve_application(self, request, pk=None, app_id=None):
@@ -11961,3 +12642,61 @@ class EventApplicationTrackViewSet(viewsets.ModelViewSet):
         event_id = self.kwargs.get('event_id')
         event = Event.objects.get(pk=event_id)
         serializer.save(event=event)
+
+
+# Phase 5: Form Schema Primitives and Shared Question Library
+
+class SharedQuestionCategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet for shared question categories (read-only)."""
+
+    serializer_class = SharedQuestionCategorySerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = SharedQuestionCategory.objects.all()
+
+    def get_queryset(self):
+        """Return all categories ordered by sort_order."""
+        return SharedQuestionCategory.objects.all().order_by('sort_order', 'name')
+
+
+class SharedQuestionViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet for shared questions (read-only)."""
+
+    serializer_class = SharedQuestionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        """Filter by category_id if provided."""
+        queryset = SharedQuestion.objects.all()
+        category_id = self.request.query_params.get('category_id')
+        if category_id:
+            queryset = queryset.filter(category_id=category_id)
+        return queryset.order_by('category__sort_order', 'id')
+
+
+class FormFieldViewSet(viewsets.ModelViewSet):
+    """ViewSet for form fields in application tracks."""
+
+    serializer_class = FormFieldSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        """Filter form fields by track_id from URL parameter."""
+        event_id = self.kwargs.get('event_id')
+        track_id = self.kwargs.get('track_id')
+
+        if event_id and track_id:
+            return FormField.objects.filter(
+                track_id=track_id,
+                track__event_id=event_id
+            ).order_by('sort_order', 'id')
+        return FormField.objects.none()
+
+    def perform_create(self, serializer):
+        """Create form field for specified track."""
+        track_id = self.kwargs.get('track_id')
+        track = EventApplicationTrack.objects.get(pk=track_id)
+        serializer.save(track=track)
+
+    def perform_update(self, serializer):
+        """Update form field and maintain sort order."""
+        serializer.save()
