@@ -286,7 +286,14 @@ class UserViewSet(
         if not user_obj:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = self.get_serializer(user_obj)
+        hydrated_user = (
+            self.get_queryset()
+            .prefetch_related("educations", "experiences")
+            .filter(pk=user_obj.pk)
+            .first()
+            or user_obj
+        )
+        serializer = self.get_serializer(hydrated_user)
         return Response(serializer.data)
 
 
@@ -348,7 +355,14 @@ class UserViewSet(
              raise AuthenticationFailed("Account is suspended or disabled.")
 
         if request.method == "GET":
-            return Response(UserSerializer(user, context={"request": request}).data)
+            hydrated_user = (
+                self.get_queryset()
+                .prefetch_related("educations", "experiences")
+                .filter(pk=user.pk)
+                .first()
+                or user
+            )
+            return Response(UserSerializer(hydrated_user, context={"request": request}).data)
 
         data = request.data.copy()
         profile = {}

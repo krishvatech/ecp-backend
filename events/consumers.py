@@ -11,6 +11,10 @@ import asyncio
 import requests
 import logging
 from .utils import create_rtk_meeting, RTK_API_BASE, _rtk_headers
+try:
+    from autobahn.exception import Disconnected
+except Exception:  # pragma: no cover - import guard for local/runtime variation
+    Disconnected = None
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,33 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     def _is_guest_user(self):
         return bool(getattr(self.user, "is_guest", False) and getattr(self.user, "guest", None))
 
+    def _is_closed_socket_error(self, exc: Exception) -> bool:
+        if Disconnected is not None and isinstance(exc, Disconnected):
+            return True
+        message = str(exc).lower()
+        return (
+            "closed protocol" in message
+            or "connection already closed" in message
+            or "socket is already closed" in message
+        )
+
+    async def send_json(self, content, close=False):
+        if getattr(self, "_ws_closed", False):
+            return
+        try:
+            await super().send_json(content, close=close)
+        except Exception as exc:
+            if self._is_closed_socket_error(exc):
+                self._ws_closed = True
+                logger.debug(
+                    "WS[Event] dropped send on closed socket event=%s user=%s payload_type=%s",
+                    getattr(self, "event_id", None),
+                    getattr(getattr(self, "user", None), "id", None),
+                    content.get("type") if isinstance(content, dict) else type(content).__name__,
+                )
+                return
+            raise
+
     async def connect(self) -> None:
         self.user = self.scope.get("user")
         if not self.user or self.user.is_anonymous:
@@ -34,6 +65,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         self.event_id = self.scope["url_route"]["kwargs"]["event_id"]
         self.group_name = f"event_{self.event_id}"
+        self._ws_closed = False
+        self._disconnect_cleanup_task = None
 
         # Join event group
         await self.channel_layer.group_add(self.group_name, self.channel_name)
@@ -162,6 +195,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.broadcast_main_room_support_status()
 
     async def disconnect(self, code: int) -> None:
+        self._ws_closed = True
+
         # ✅ HEARTBEAT: Cancel heartbeat tasks on disconnect
         if hasattr(self, "heartbeat_task") and self.heartbeat_task:
             self.heartbeat_task.cancel()
@@ -169,21 +204,24 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             self.pong_timeout_task.cancel()
 
         if hasattr(self, "group_name"):
-            await self.update_online_status(False)
-
-            # Fast operations before returning disconnect
-            await self.broadcast_lounge_update() # Sync everyone
-            await self.broadcast_main_room_support_status()
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
-
-            # Heavy cleanup (grace period + RTK API calls) runs in background
-            asyncio.create_task(self._deferred_cleanup())
 
         if hasattr(self, "user_group_name"):
             await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
 
-    async def _deferred_cleanup(self) -> None:
-        """Runs after disconnect returns. Handles grace period + RTK cleanup without blocking disconnect."""
+        if not self._disconnect_cleanup_task:
+            self._disconnect_cleanup_task = asyncio.create_task(self._finalize_disconnect())
+
+    async def _finalize_disconnect(self) -> None:
+        """Runs after disconnect returns. Handles presence, broadcasts, grace period, and RTK cleanup."""
+        try:
+            if hasattr(self, "group_name"):
+                await self.update_online_status(False)
+                await self.broadcast_lounge_update()
+                await self.broadcast_main_room_support_status()
+        except Exception as e:
+            logger.warning(f"[CLEANUP] Presence/broadcast cleanup failed for user {self.user.id}: {e}")
+
         try:
             await asyncio.sleep(DISCONNECT_CLEANUP_GRACE_SECONDS)
             should_finalize = await self.should_finalize_disconnect_cleanup()
@@ -220,6 +258,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         try:
             while True:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
+                if getattr(self, "_ws_closed", False):
+                    return
                 try:
                     await self.send_json({"type": "ping"})
                     self.last_pong_at = asyncio.get_event_loop().time()

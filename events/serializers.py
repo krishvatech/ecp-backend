@@ -71,11 +71,40 @@ def normalize_participant_email(value):
     return (value or "").strip().lower()
 
 
+def _get_prefetched_related_list(instance, relation_name):
+    cache = getattr(instance, "_prefetched_objects_cache", None) or {}
+    if relation_name in cache:
+        return list(cache[relation_name])
+    manager = getattr(instance, relation_name, None)
+    if manager is None:
+        return []
+    return list(manager.all())
+
+
+def _get_event_sessions_cached(event):
+    cached = getattr(event, "_event_sessions_cache", None)
+    if cached is not None:
+        return cached
+    cached = _get_prefetched_related_list(event, "sessions")
+    setattr(event, "_event_sessions_cache", cached)
+    return cached
+
+
+def _get_event_participants_cached(event):
+    cached = getattr(event, "_event_participants_cache", None)
+    if cached is not None:
+        return cached
+    cached = _get_prefetched_related_list(event, "participants")
+    setattr(event, "_event_participants_cache", cached)
+    return cached
+
+
 def build_event_participant_lookup(event):
-    participant_qs = (
-        event.participants.select_related("user", "user__profile")
-        .all()
-    )
+    participant_qs = _get_event_participants_cached(event)
+    if not participant_qs:
+        participant_qs = list(
+            event.participants.select_related("user", "user__profile").all()
+        )
     by_user_id = {}
     by_email = {}
 
@@ -129,10 +158,13 @@ def serialize_featured_participants(event, context=None, skip_visibility_filter=
     context = context or {}
     request = context.get("request")
     featured = []
-    participants = (
-        event.participants.select_related("user", "user__profile", "virtual_speaker")
-        .all()
-    )
+    participants = _get_event_participants_cached(event)
+    if not participants:
+        participants = list(
+            event.participants.select_related("user", "user__profile", "virtual_speaker")
+            .prefetch_related("user__experiences")
+            .all()
+        )
     # Skip visibility filter if requested (e.g., for public marketing pages)
     if skip_visibility_filter:
         visible_participants = list(participants)
@@ -175,11 +207,30 @@ def serialize_featured_participants(event, context=None, skip_visibility_filter=
                 professional_info = profile.headline
             else:
                 # Try to get latest experience (most recent work)
-                latest_experience = (
-                    participant.user.experiences.all()
-                    .order_by('-start_date', '-end_date', '-id')
-                    .first()
+                prefetched_experiences = (
+                    getattr(participant.user, "_prefetched_objects_cache", {}).get("experiences")
                 )
+                if prefetched_experiences is not None:
+                    latest_experience = next(
+                        iter(
+                            sorted(
+                                prefetched_experiences,
+                                key=lambda exp: (
+                                    exp.start_date.toordinal() if exp.start_date else -1,
+                                    exp.end_date.toordinal() if exp.end_date else -1,
+                                    exp.id,
+                                ),
+                                reverse=True,
+                            )
+                        ),
+                        None,
+                    )
+                else:
+                    latest_experience = (
+                        participant.user.experiences.all()
+                        .order_by('-start_date', '-end_date', '-id')
+                        .first()
+                    )
                 if latest_experience:
                     # Use position (job title) and community_name (company) from experience
                     parts = [latest_experience.position, latest_experience.community_name]
@@ -222,12 +273,21 @@ def compute_public_registered_count(event, registrations_qs=None):
     """
     qs = registrations_qs
     if qs is None:
-        qs = (
-            EventRegistration.objects
-            .filter(event=event, status='registered')
-            .exclude(user__is_superuser=True)
-            .select_related("user", "user__profile")
-        )
+        prefetched = getattr(event, "_prefetched_objects_cache", {}).get("registrations")
+        if prefetched is not None:
+            qs = [
+                reg
+                for reg in prefetched
+                if reg.status == "registered"
+                and not getattr(getattr(reg, "user", None), "is_superuser", False)
+            ]
+        else:
+            qs = (
+                EventRegistration.objects
+                .filter(event=event, status='registered')
+                .exclude(user__is_superuser=True)
+                .select_related("user", "user__profile")
+            )
 
     participant_lookup = build_event_participant_lookup(event)
     visible_count = 0
@@ -260,6 +320,15 @@ def compute_public_guest_count(event, guest_qs=None):
     """
     qs = guest_qs
     if qs is None:
+        prefetched = getattr(event, "_prefetched_objects_cache", {}).get("guest_attendees")
+        if prefetched is not None:
+            return sum(
+                1
+                for guest in prefetched
+                if not guest.is_banned
+                and guest.converted_user_id is None
+                and guest.email_verified
+            )
         qs = GuestAttendee.objects.filter(event=event)
 
     return qs.filter(
@@ -626,7 +695,11 @@ class EventSessionSerializer(serializers.ModelSerializer):
         from itertools import groupby
         from operator import attrgetter
 
-        participants = obj.participants.all().order_by('role', 'display_order')
+        prefetched = getattr(obj, "_prefetched_objects_cache", {}).get("participants")
+        if prefetched is not None:
+            participants = sorted(prefetched, key=lambda p: (p.role, p.display_order, p.id))
+        else:
+            participants = obj.participants.all().order_by('role', 'display_order')
         grouped = {}
         for role, group in groupby(participants, key=attrgetter('role')):
             grouped[role] = SessionParticipantSerializer(list(group), many=True, context=self.context).data
@@ -648,14 +721,23 @@ class EventSessionSerializer(serializers.ModelSerializer):
         """Return day label (Day 1, Day 2, etc.) based on session position."""
         if not obj.session_date or not obj.event:
             return None
-        sessions = obj.event.sessions.filter(
-            session_date__isnull=False
-        ).order_by('session_date', 'display_order', 'start_time').distinct('session_date')
-        unique_dates = sorted(set(s.session_date for s in sessions))
+        event = obj.event
+        day_map = getattr(event, "_session_day_label_map", None)
+        if day_map is None:
+            sessions = _get_event_sessions_cached(event)
+            unique_dates = sorted({s.session_date for s in sessions if s.session_date})
+            if not unique_dates:
+                db_dates = (
+                    event.sessions.filter(session_date__isnull=False)
+                    .order_by('session_date', 'display_order', 'start_time')
+                    .values_list('session_date', flat=True)
+                )
+                unique_dates = sorted(set(db_dates))
+            day_map = {session_date: idx + 1 for idx, session_date in enumerate(unique_dates)}
+            setattr(event, "_session_day_label_map", day_map)
         try:
-            day_num = unique_dates.index(obj.session_date) + 1
-            return f"Day {day_num}"
-        except (ValueError, IndexError):
+            return f"Day {day_map[obj.session_date]}"
+        except (KeyError, ValueError, IndexError):
             return None
 
     def create(self, validated_data):
@@ -868,7 +950,7 @@ class EventSerializer(serializers.ModelSerializer):
     def get_questions(self, obj):
         """Return all questions for this event with serialized data."""
         from interactions.serializers import QuestionSerializer
-        questions = obj.questions.all()
+        questions = _get_prefetched_related_list(obj, "questions")
         return QuestionSerializer(questions, many=True).data
 
     # Write-only field for sessions input during event creation (atomic with event)
@@ -1783,16 +1865,15 @@ class EventSerializer(serializers.ModelSerializer):
 
     def get_event_participants(self, obj):
         """Return all participants grouped by role, sorted by display_order within each role."""
-        qs = getattr(obj, 'participants', None)
-        if not qs:
+        participants = _get_event_participants_cached(obj)
+        if not participants:
             return {
                 'speakers': [],
                 'moderators': [],
                 'hosts': [],
             }
 
-        # Prefetch related user profiles for efficiency and sort by display_order
-        participants = qs.select_related('user', 'user__profile').order_by('display_order').all()
+        participants = sorted(participants, key=lambda participant: (participant.display_order, participant.id))
 
         serializer = EventParticipantSerializer(
             participants,
@@ -1856,19 +1937,19 @@ class EventSerializer(serializers.ModelSerializer):
 
     def get_main_sessions_count(self, obj):
         """Count sessions of type 'main'."""
-        return obj.sessions.filter(session_type="main").count()
+        return sum(1 for session in _get_event_sessions_cached(obj) if session.session_type == "main")
 
     def get_breakout_sessions_count(self, obj):
         """Count sessions of type 'breakout'."""
-        return obj.sessions.filter(session_type="breakout").count()
+        return sum(1 for session in _get_event_sessions_cached(obj) if session.session_type == "breakout")
 
     def get_workshops_count(self, obj):
         """Count sessions of type 'workshop'."""
-        return obj.sessions.filter(session_type="workshop").count()
+        return sum(1 for session in _get_event_sessions_cached(obj) if session.session_type == "workshop")
 
     def get_networking_count(self, obj):
         """Count sessions of type 'networking'."""
-        return obj.sessions.filter(session_type="networking").count()
+        return sum(1 for session in _get_event_sessions_cached(obj) if session.session_type == "networking")
 
     def get_calculated_hours_minutes(self, obj):
         """Calculate total hours in minutes based on selected session types, respecting breaks and overrides."""
