@@ -75,6 +75,34 @@ def test_event_summary_endpoint_uses_cached_payload(client, live_event, monkeypa
     assert second.json() == first_payload
 
 
+def test_public_event_summary_cache_skips_object_lookup(client, live_event, monkeypatch):
+    first = client.get(f"/api/events/{live_event.id}/summary/")
+    assert first.status_code == 200
+
+    import events.views as event_views
+
+    def fail_object_lookup(self):
+        raise AssertionError("summary cache hit should not resolve the Event object")
+
+    monkeypatch.setattr(event_views.EventViewSet, "get_object", fail_object_lookup)
+
+    second = client.get(f"/api/events/{live_event.id}/summary/")
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+
+def test_hidden_event_summary_cache_is_not_served_to_anonymous_users(auth_client, live_event):
+    live_event.is_hidden = True
+    live_event.save(update_fields=["is_hidden"])
+
+    creator_response = auth_client.get(f"/api/events/{live_event.id}/summary/")
+    assert creator_response.status_code == 200
+
+    auth_client.defaults.pop("HTTP_AUTHORIZATION", None)
+    anonymous_response = auth_client.get(f"/api/events/{live_event.id}/summary/")
+    assert anonymous_response.status_code == 404
+
+
 def test_live_rejoin_denial_is_terminal_for_unregistered_user(other_auth_client, live_event):
     response = other_auth_client.post(
         f"/api/events/{live_event.id}/live/rejoin/",

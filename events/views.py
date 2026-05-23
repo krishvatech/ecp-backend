@@ -955,6 +955,35 @@ def _serialize_event_summary(event, request=None) -> dict:
     }
 
 
+EVENT_SUMMARY_CACHE_TTL_SECONDS = 2
+
+
+def _event_summary_cache_key(event_id) -> str:
+    return f"event:{event_id}:summary:v1"
+
+
+def _public_event_summary_cache_key(event_id) -> str:
+    return f"event:{event_id}:summary:public:v1"
+
+
+def _is_publicly_cacheable_event(event) -> bool:
+    return not getattr(event, "is_hidden", False) and event.status in {"published", "live"}
+
+
+def _cache_event_summary(event, data: dict) -> None:
+    cache.set(_event_summary_cache_key(event.id), data, EVENT_SUMMARY_CACHE_TTL_SECONDS)
+    public_key = _public_event_summary_cache_key(event.id)
+    if _is_publicly_cacheable_event(event):
+        cache.set(public_key, data, EVENT_SUMMARY_CACHE_TTL_SECONDS)
+    else:
+        cache.delete(public_key)
+
+
+def _delete_event_summary_cache(event_id) -> None:
+    cache.delete(_event_summary_cache_key(event_id))
+    cache.delete(_public_event_summary_cache_key(event_id))
+
+
 def _grant_invited_event_access(event, user, invited_by=None):
     """
     Grant Companion access to an invited user by creating/reactivating EventRegistration.
@@ -1633,14 +1662,20 @@ class EventViewSet(viewsets.ModelViewSet):
         Lightweight event detail endpoint for live polling and chat metadata.
         Avoids the full retrieve() prefetch tree.
         """
+        lookup = self.kwargs.get(self.lookup_field)
+        if lookup is not None and str(lookup).isdigit():
+            cached_public = cache.get(_public_event_summary_cache_key(lookup))
+            if cached_public is not None:
+                return Response(cached_public)
+
         event = self.get_object()
-        cache_key = f"event:{event.id}:summary:v1"
+        cache_key = _event_summary_cache_key(event.id)
         cached = cache.get(cache_key)
         if cached is not None:
             return Response(cached)
 
         data = _serialize_event_summary(event, request=request)
-        cache.set(cache_key, data, 2)
+        _cache_event_summary(event, data)
         return Response(data)
 
     # ---------------------- Permissions ----------------------
@@ -1732,6 +1767,7 @@ class EventViewSet(viewsets.ModelViewSet):
         }
 
         super().perform_update(serializer)
+        _delete_event_summary_cache(instance.id)
         
         # Check for changes
         new_instance = serializer.instance # Refreshed instance
@@ -3269,6 +3305,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "break_celery_task_id",
                 "updated_at",
             ])
+            _delete_event_summary_cache(event.id)
 
         if action_type == "start":
             # 📢 Broadcast meeting start to all participants
