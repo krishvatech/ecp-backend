@@ -1634,7 +1634,14 @@ class EventViewSet(viewsets.ModelViewSet):
         Avoids the full retrieve() prefetch tree.
         """
         event = self.get_object()
-        return Response(_serialize_event_summary(event, request=request))
+        cache_key = f"event:{event.id}:summary:v1"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        data = _serialize_event_summary(event, request=request)
+        cache.set(cache_key, data, 2)
+        return Response(data)
 
     # ---------------------- Permissions ----------------------
     def get_permissions(self):
@@ -7141,28 +7148,40 @@ class EventViewSet(viewsets.ModelViewSet):
         # Log rejoin attempt
         is_guest = getattr(user, "is_guest", False)
         user_identifier = f"guest_{user.guest.id}" if is_guest else str(user.id)
+        deny_cache_key = f"event:{event.id}:live_rejoin:deny:{user_identifier}:v1"
 
         logger.info(f"[LIVE_REJOIN] user={user_identifier} event={event.id} status={event.status}")
+
+        cached_denial = cache.get(deny_cache_key)
+        if cached_denial is not None:
+            return Response(cached_denial["data"], status=cached_denial["status"])
+
+        def _deny(reason: str, detail: str, status_code: int, *, cacheable: bool = False):
+            payload = {
+                "can_rejoin": False,
+                "retryable": False,
+                "reason": reason,
+                "detail": detail,
+            }
+            if cacheable:
+                cache.set(
+                    deny_cache_key,
+                    {"data": payload, "status": status_code},
+                    5,
+                )
+            return Response(payload, status=status_code)
 
         # ──── VALIDATION ──────────────────────────────────────────────────────
 
         # Check if event exists and is not cancelled
         if event.status == "cancelled":
             logger.warning(f"[LIVE_REJOIN] event {event.id} is cancelled")
-            return Response({
-                "can_rejoin": False,
-                "reason": "event_cancelled",
-                "detail": "This event has been cancelled."
-            }, status=400)
+            return _deny("event_cancelled", "This event has been cancelled.", 400, cacheable=True)
 
         # Check if event is live or ended-but-reopenable
         if event.status not in ("live", "ended"):
             logger.warning(f"[LIVE_REJOIN] event {event.id} status={event.status} (not live/ended)")
-            return Response({
-                "can_rejoin": False,
-                "reason": "event_not_live",
-                "detail": f"Event is {event.status}, not live or ended."
-            }, status=400)
+            return _deny("event_not_live", f"Event is {event.status}, not live or ended.", 400)
 
         # ──── GUEST BRANCH ────────────────────────────────────────────────────
         if is_guest:
@@ -7171,29 +7190,17 @@ class EventViewSet(viewsets.ModelViewSet):
             # Check guest belongs to this event
             if guest.event_id != event.id:
                 logger.warning(f"[LIVE_REJOIN] guest {guest.id} event mismatch")
-                return Response({
-                    "can_rejoin": False,
-                    "reason": "guest_event_mismatch",
-                    "detail": "Guest token does not match this event."
-                }, status=403)
+                return _deny("guest_event_mismatch", "Guest token does not match this event.", 403, cacheable=True)
 
             # Check if guest is banned
             if guest.is_banned:
                 logger.warning(f"[LIVE_REJOIN] guest {guest.id} is banned")
-                return Response({
-                    "can_rejoin": False,
-                    "reason": "guest_banned",
-                    "detail": "You have been banned from this event."
-                }, status=403)
+                return _deny("guest_banned", "You have been banned from this event.", 403, cacheable=True)
 
             # Check if guest has converted to registered user
             if guest.converted_at is not None:
                 logger.info(f"[LIVE_REJOIN] guest {guest.id} converted to user")
-                return Response({
-                    "can_rejoin": False,
-                    "reason": "guest_converted",
-                    "detail": "You have registered. Please sign in with your account."
-                }, status=403)
+                return _deny("guest_converted", "You have registered. Please sign in with your account.", 403, cacheable=True)
 
             # Determine guest location and admission status
             current_location = guest.current_location or "pre_event"
@@ -7281,20 +7288,12 @@ class EventViewSet(viewsets.ModelViewSet):
         # Check if user is banned
         if EventRegistration.objects.filter(event=event, user=user, is_banned=True).exists():
             logger.warning(f"[LIVE_REJOIN] user {user.id} is banned")
-            return Response({
-                "can_rejoin": False,
-                "reason": "user_banned",
-                "detail": "You are banned from this event."
-            }, status=403)
+            return _deny("user_banned", "You are banned from this event.", 403, cacheable=True)
 
         # Check if user is cancelled/deregistered
         if EventRegistration.objects.filter(event=event, user=user, status__in=["cancelled", "deregistered"]).exists():
             logger.warning(f"[LIVE_REJOIN] user {user.id} status not registered")
-            return Response({
-                "can_rejoin": False,
-                "reason": "user_not_registered",
-                "detail": "You are not registered for this event."
-            }, status=403)
+            return _deny("user_not_registered", "You are not registered for this event.", 403)
 
         # Get or create registration
         try:
@@ -7303,11 +7302,7 @@ class EventViewSet(viewsets.ModelViewSet):
             # Allow event host/creator to rejoin even without explicit registration
             if not _is_event_host(user, event):
                 logger.warning(f"[LIVE_REJOIN] user {user.id} not registered for event {event.id}")
-                return Response({
-                    "can_rejoin": False,
-                    "reason": "user_not_registered",
-                    "detail": "You are not registered for this event."
-                }, status=403)
+                return _deny("user_not_registered", "You are not registered for this event.", 403)
             registration = None
 
         # Determine admission status and location
