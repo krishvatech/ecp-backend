@@ -946,7 +946,13 @@ class EventSerializer(serializers.ModelSerializer):
         return None
 
     def get_questions(self, obj):
-        """Return all questions for this event with serialized data."""
+        """Return Q&A only when explicitly requested via include=questions."""
+        request = self.context.get("request")
+        include = request.query_params.get("include", "") if request else ""
+        include_parts = {part.strip() for part in include.split(",") if part.strip()}
+        if "questions" not in include_parts:
+            return []
+
         from interactions.serializers import QuestionSerializer
         questions = _get_prefetched_related_list(obj, "questions")
         return QuestionSerializer(questions, many=True).data

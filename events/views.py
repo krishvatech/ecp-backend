@@ -9,6 +9,7 @@ belonging to the target community.
 # ============================================================
 # ================ Standard Library / Third-Party ============
 # ============================================================
+from collections import defaultdict
 from datetime import timedelta
 import logging
 import csv
@@ -34,6 +35,7 @@ from django.utils.dateparse import parse_date
 from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
 from django.template import Template as DjangoTemplate, Context
+from django.core.cache import cache
 
 # ============================================================
 # ================= DRF (Django REST Framework) ==============
@@ -909,6 +911,50 @@ def _is_event_host(user, event) -> bool:
     return event.participants.filter(role="host").filter(host_match).exists()
 
 
+def _absolute_media_url(request, value) -> str:
+    if not value:
+        return ""
+    try:
+        url = getattr(value, "url", "") or str(value)
+    except Exception:
+        url = str(value) if value else ""
+    if not url:
+        return ""
+    if request and url.startswith("/"):
+        try:
+            return request.build_absolute_uri(url)
+        except Exception:
+            return url
+    return url
+
+
+def _serialize_event_summary(event, request=None) -> dict:
+    return {
+        "id": event.id,
+        "slug": event.slug,
+        "title": event.title,
+        "status": event.status,
+        "is_live": event.is_live,
+        "created_by_id": event.created_by_id,
+        "start_time": event.start_time,
+        "end_time": event.end_time,
+        "timezone": event.timezone,
+        "live_started_at": event.live_started_at,
+        "live_ended_at": event.live_ended_at,
+        "waiting_room_enabled": event.waiting_room_enabled,
+        "pre_event_qna_enabled": getattr(event, "pre_event_qna_enabled", False),
+        "qna_moderation_enabled": getattr(event, "qna_moderation_enabled", False),
+        "qna_anonymous_mode": getattr(event, "qna_anonymous_mode", False),
+        "qna_ai_public_suggestions_enabled": getattr(event, "qna_ai_public_suggestions_enabled", False),
+        "lounge_enabled_waiting_room": getattr(event, "lounge_enabled_waiting_room", False),
+        "lounge_enabled_speed_networking": getattr(event, "lounge_enabled_speed_networking", False),
+        "replay_available": getattr(event, "replay_available", False),
+        "cover_image": _absolute_media_url(request, getattr(event, "cover_image", None)),
+        "preview_image": _absolute_media_url(request, getattr(event, "preview_image", None)),
+        "waiting_room_image": _absolute_media_url(request, getattr(event, "waiting_room_image", None)),
+    }
+
+
 def _grant_invited_event_access(event, user, invited_by=None):
     """
     Grant Companion access to an invited user by creating/reactivating EventRegistration.
@@ -1564,17 +1610,31 @@ class EventViewSet(viewsets.ModelViewSet):
         )
         registration_qs = EventRegistration.objects.select_related("user", "user__profile")
         question_qs = Question.objects.select_related("user", "guest_asker")
+        include = request.query_params.get("include", "")
+        include_parts = {part.strip() for part in include.split(",") if part.strip()}
 
-        queryset = self.get_queryset().prefetch_related(
+        prefetches = [
             Prefetch("sessions", queryset=session_qs),
             Prefetch("participants", queryset=participant_qs),
             Prefetch("registrations", queryset=registration_qs),
-            Prefetch("questions", queryset=question_qs),
             "guest_attendees",
             "resources",
-        )
+        ]
+        if "questions" in include_parts:
+            prefetches.append(Prefetch("questions", queryset=question_qs))
+
+        queryset = self.get_queryset().prefetch_related(*prefetches)
         self.queryset = queryset
         return super().retrieve(request, *args, **kwargs)
+
+    @action(detail=True, methods=["get"], permission_classes=[AllowAny], url_path="summary")
+    def summary(self, request, pk=None):
+        """
+        Lightweight event detail endpoint for live polling and chat metadata.
+        Avoids the full retrieve() prefetch tree.
+        """
+        event = self.get_object()
+        return Response(_serialize_event_summary(event, request=request))
 
     # ---------------------- Permissions ----------------------
     def get_permissions(self):
@@ -3934,6 +3994,7 @@ class EventViewSet(viewsets.ModelViewSet):
         Return current mood state for online/admitted participants in this event.
         """
         event = self.get_object()
+        cache_key = f"event:{event.id}:moods:v1"
 
         is_host = _is_event_manager(request.user, event)
         requester_reg = EventRegistration.objects.filter(event=event, user=request.user).first()
@@ -3946,6 +4007,10 @@ class EventViewSet(viewsets.ModelViewSet):
             and requester_reg.admission_status != "admitted"
         ):
             return Response({"detail": "You are not admitted to the live meeting."}, status=403)
+
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
 
         rows = (
             EventRegistration.objects.filter(
@@ -3967,7 +4032,9 @@ class EventViewSet(viewsets.ModelViewSet):
             }
             for row in rows
         ]
-        return Response({"moods": payload, "allowed_moods": MOOD_ALLOWED_EMOJIS})
+        data = {"moods": payload, "allowed_moods": MOOD_ALLOWED_EMOJIS}
+        cache.set(cache_key, data, 5)
+        return Response(data)
 
     @action(
         detail=True,
@@ -4031,6 +4098,7 @@ class EventViewSet(viewsets.ModelViewSet):
             reg.current_mood = None
             reg.mood_updated_at = timezone.now()
             reg.save(update_fields=["current_mood", "mood_updated_at"])
+            cache.delete(f"event:{event.id}:moods:v1")
             logger.info(f"[MOOD API] User {request.user.id} cleared mood for event {pk}")
             return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -4059,6 +4127,7 @@ class EventViewSet(viewsets.ModelViewSet):
         reg.current_mood = mood
         reg.mood_updated_at = timezone.now()
         reg.save(update_fields=["current_mood", "mood_updated_at"])
+        cache.delete(f"event:{event.id}:moods:v1")
 
         profile = getattr(request.user, "profile", None)
         if profile is not None:
@@ -5075,9 +5144,22 @@ class EventViewSet(viewsets.ModelViewSet):
     def lounge_state(self, request, pk=None):
         """Fetch the current state of the Social Lounge for this event."""
         event = self.get_object()
+        cache_key = f"event:{event.id}:http_lounge_state:v1"
 
-        # DEBUG: Log event state when lounge-state is called
-        logger.info(f"[lounge_state] Event {event.id}: is_live={event.is_live}, status={event.status}, live_ended_at={event.live_ended_at}, lounge_enabled_after={event.lounge_enabled_after}, lounge_enabled_during={event.lounge_enabled_during}")
+        logger.debug(
+            "[lounge_state] Event %s: is_live=%s status=%s live_ended_at=%s "
+            "lounge_enabled_after=%s lounge_enabled_during=%s",
+            event.id,
+            event.is_live,
+            event.status,
+            event.live_ended_at,
+            event.lounge_enabled_after,
+            event.lounge_enabled_during,
+        )
+
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
 
         # ✅ Use shared function to ensure consistency with lounge_join_table
         status_code, reason, next_change = self._get_lounge_availability(event)
@@ -5100,7 +5182,23 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception:
                 return url
 
-        tables = LoungeTable.objects.filter(event_id=pk).prefetch_related('participants__user')
+        def _user_mini(user_obj):
+            try:
+                return UserMiniSerializer(user_obj, context={"request": request}).data
+            except Exception:
+                return {}
+
+        tables = LoungeTable.objects.filter(event_id=pk).prefetch_related('participants__user__profile')
+        guest_rows = (
+            event.guest_attendees
+            .filter(converted_at__isnull=True, lounge_table_id__isnull=False)
+            .order_by("id")
+            .only("id", "first_name", "last_name", "email", "joined_live_at", "lounge_table_id")
+        )
+        guests_by_table = defaultdict(list)
+        for guest in guest_rows:
+            guests_by_table[guest.lounge_table_id].append(guest)
+
         state = []
         for t in tables:
             icon_url = ""
@@ -5111,6 +5209,7 @@ class EventViewSet(viewsets.ModelViewSet):
                     icon_url = t.icon.url
             participants = {
                 p.seat_index: {
+                    **_user_mini(p.user),
                     "user_id": p.user.id,
                     "username": p.user.username,
                     "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username,
@@ -5118,9 +5217,8 @@ class EventViewSet(viewsets.ModelViewSet):
                     "joined_at": p.joined_at.isoformat() if p.joined_at else None,
                 } for p in t.participants.all()
             }
-            guest_rows = event.guest_attendees.filter(lounge_table_id=t.id).order_by("id")
             seat_start = (max(participants.keys()) + 1) if participants else 0
-            for i, g in enumerate(guest_rows):
+            for i, g in enumerate(guests_by_table.get(t.id, [])):
                 participants[seat_start + i] = {
                     "user_id": f"guest_{g.id}",
                     "username": g.get_display_name(),
@@ -5139,14 +5237,16 @@ class EventViewSet(viewsets.ModelViewSet):
                 "participants": participants
             })
         
-        return Response({
+        data = {
             "tables": state,
             "lounge_open_status": {
                 "status": status_code,
                 "reason": reason,
                 "next_change": next_change
             }
-        })
+        }
+        cache.set(cache_key, data, 2)
+        return Response(data)
 
     @action(detail=True, methods=["post"], url_path="create-lounge-table")
     def create_lounge_table(self, request, pk=None):
@@ -7366,9 +7466,14 @@ class EventViewSet(viewsets.ModelViewSet):
 
             # Include non-hosts
             lp = lounge_map.get(reg.user_id)
+            mini_user = UserMiniSerializer(user, context={"request": request}).data
             data.append({
                 "user_id": reg.user_id,
-                "user_name": user.get_full_name() or user.username,
+                "user_name": mini_user.get("full_name") or user.get_full_name() or user.username,
+                "avatar_url": mini_user.get("avatar_url") or "",
+                "kyc_status": mini_user.get("kyc_status") or "",
+                "job_title": mini_user.get("job_title") or "",
+                "company": mini_user.get("company") or "",
                 "table_id": lp.table_id if lp else None,
                 "table_name": lp.table.name if lp else None,
                 "admission_status": reg.admission_status,
@@ -9239,7 +9344,17 @@ def _build_lounge_state_sync(event_id):
     Returns list of table states with current participants.
     """
     try:
-        tables = LoungeTable.objects.filter(event_id=event_id).prefetch_related('participants__user')
+        tables = LoungeTable.objects.filter(event_id=event_id).prefetch_related('participants__user__profile')
+        guest_rows = (
+            GuestAttendee.objects
+            .filter(event_id=event_id, converted_at__isnull=True, lounge_table_id__isnull=False)
+            .only("id", "first_name", "last_name", "email", "lounge_table_id")
+            .order_by("id")
+        )
+        guests_by_table = defaultdict(list)
+        for guest in guest_rows:
+            guests_by_table[guest.lounge_table_id].append(guest)
+
         state = []
         for t in tables:
             participants = {}
@@ -9264,13 +9379,8 @@ def _build_lounge_state_sync(event_id):
                 occupied_seats.add(p.seat_index)
 
             # Include guests seated at this table.
-            guest_rows = GuestAttendee.objects.filter(
-                event_id=event_id,
-                lounge_table=t,
-                converted_at__isnull=True,
-            ).only("id", "first_name", "last_name", "email")
             next_free_seat = 0
-            for guest in guest_rows:
+            for guest in guests_by_table.get(t.id, []):
                 while next_free_seat in occupied_seats:
                     next_free_seat += 1
                 if next_free_seat >= max(t.max_seats, 1):

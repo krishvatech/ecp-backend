@@ -26,6 +26,29 @@ HEARTBEAT_TIMEOUT = 15  # Disconnect if no pong for 15 seconds
 class EventConsumer(AsyncJsonWebsocketConsumer):
     """Consumer to handle real-time communication within an event, including Social Lounge state."""
 
+    def _cache_key_online_participants(self) -> str:
+        return f"event:{self.event_id}:online_participants:v1"
+
+    def _cache_key_ws_lounge_state(self) -> str:
+        return f"event:{self.event_id}:ws_lounge_state:v1"
+
+    def _cache_key_http_lounge_state(self) -> str:
+        return f"event:{self.event_id}:http_lounge_state:v1"
+
+    def _cache_key_moods(self) -> str:
+        return f"event:{self.event_id}:moods:v1"
+
+    def _invalidate_lounge_presence_cache_sync(self) -> None:
+        cache.delete_many([
+            self._cache_key_online_participants(),
+            self._cache_key_ws_lounge_state(),
+            self._cache_key_http_lounge_state(),
+            self._cache_key_moods(),
+        ])
+
+    async def invalidate_lounge_presence_cache(self) -> None:
+        await database_sync_to_async(self._invalidate_lounge_presence_cache_sync)()
+
     def _is_guest_user(self):
         return bool(getattr(self.user, "is_guest", False) and getattr(self.user, "guest", None))
 
@@ -137,7 +160,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         })
                         # 🔄 Broadcast lounge update so other participants see this user rejoined
                         # This ensures Christopher (and anyone else in the room) sees Ravikumar rejoin
-                        await self.broadcast_lounge_update()
+                        await self.schedule_lounge_update()
                     else:
                         print(f"[RECONNECT] ❌ Failed to restore breakout room: {result}")
                         await self.send_json({
@@ -156,7 +179,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         lounge_state = await self.get_lounge_state()
         await self.update_online_status(True)
         await self.sync_current_location_on_connect()  # ✅ NEW: Sync current_location from DB state
-        await self.broadcast_lounge_update() # Sync everyone with new online count
+        await self.schedule_lounge_update()  # Coalesce reconnect/join bursts
 
         # Prepare break state for reconnecting participants
         event = await self.get_event()
@@ -217,7 +240,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         try:
             if hasattr(self, "group_name"):
                 await self.update_online_status(False)
-                await self.broadcast_lounge_update()
+                await self.schedule_lounge_update()
                 await self.broadcast_main_room_support_status()
         except Exception as e:
             logger.warning(f"[CLEANUP] Presence/broadcast cleanup failed for user {self.user.id}: {e}")
@@ -784,6 +807,26 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             }
         )
 
+    async def schedule_lounge_update(self):
+        """
+        Coalesce repeated connect/disconnect bursts into a single lounge broadcast.
+        """
+        key = f"event:{self.event_id}:lounge_update_scheduled"
+        created = await database_sync_to_async(cache.add)(key, "1", timeout=2)
+        if created:
+            asyncio.create_task(self._delayed_lounge_update())
+
+    async def _delayed_lounge_update(self):
+        await asyncio.sleep(1)
+        try:
+            await self.broadcast_lounge_update()
+        except Exception as exc:
+            logger.warning(
+                "[LOUNGE_UPDATE] delayed broadcast failed event=%s error=%s",
+                self.event_id,
+                exc,
+            )
+
     async def main_room_support_status(self, event: dict) -> None:
         """Handler for explicit main-room host/moderator presence updates."""
         await self.send_json({
@@ -806,6 +849,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         Handler for guest profile updates.
         Broadcasts updated online-users list to all participants when a guest updates their profile.
         """
+        await self.invalidate_lounge_presence_cache()
         # Fetch updated online participants info and send to all clients
         online_users = await self.get_online_participants_info()
         await self.send_json({
@@ -1055,12 +1099,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 guest = self.user.guest
                 guest.current_location = "social_lounge"
                 guest.save(update_fields=["current_location"])
+                self._invalidate_lounge_presence_cache_sync()
                 logger.info(f"[CONSUMER] {self.user.username} entered lounge area (guest)")
                 return
 
             EventRegistration.objects.filter(
                 event_id=self.event_id, user=self.user
             ).update(current_location="social_lounge")
+            self._invalidate_lounge_presence_cache_sync()
             logger.info(f"[CONSUMER] {self.user.username} entered lounge area")
         except Exception as e:
             logger.warning(f"[CONSUMER] enter_lounge error: {e}")
@@ -1075,6 +1121,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     return
                 guest.current_location = "main_room"
                 guest.save(update_fields=["current_location"])
+                self._invalidate_lounge_presence_cache_sync()
                 logger.info(f"[CONSUMER] {self.user.username} exited lounge, location reset to main_room (guest)")
                 return
 
@@ -1092,6 +1139,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     new_loc = "pre_event"
                 reg.current_location = new_loc
                 reg.save(update_fields=["current_location"])
+                self._invalidate_lounge_presence_cache_sync()
                 logger.info(f"[CONSUMER] {self.user.username} exited lounge, location reset to {new_loc}")
         except Exception as e:
             logger.warning(f"[CONSUMER] exit_lounge error: {e}")
@@ -1163,43 +1211,45 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def get_online_participants_info(self):
-        regs = EventRegistration.objects.filter(
-            event_id=self.event_id,
-            is_online=True,
-            is_banned=False  # Exclude banned users even if online flag is stuck
-        ).exclude(user_id=self.user.id).select_related('user')
-        users = [{
-            "user_id": r.user.id,
-            "username": r.user.username,
-            "full_name": f"{r.user.first_name} {r.user.last_name}".strip() or r.user.username,
-            "current_location": r.current_location,  # ✅ NEW
-            "admission_status": r.admission_status,  # ✅ NEW
-        } for r in regs]
+        cache_key = self._cache_key_online_participants()
+        cached = cache.get(cache_key)
+        if cached is None:
+            regs = EventRegistration.objects.filter(
+                event_id=self.event_id,
+                is_online=True,
+                is_banned=False,
+            ).select_related("user")
+            users = [{
+                "user_id": r.user.id,
+                "username": r.user.username,
+                "full_name": f"{r.user.first_name} {r.user.last_name}".strip() or r.user.username,
+                "current_location": r.current_location,
+                "admission_status": r.admission_status,
+            } for r in regs]
 
-        guests_qs = GuestAttendee.objects.filter(
-            event_id=self.event_id,
-            converted_at__isnull=True,
-            joined_live=True,
-        ).select_related("lounge_table")
+            guests_qs = GuestAttendee.objects.filter(
+                event_id=self.event_id,
+                converted_at__isnull=True,
+                joined_live=True,
+            ).select_related("lounge_table")
+            guests = [{
+                "user_id": f"guest_{g.id}",
+                "username": f"guest_{g.id}",
+                "full_name": g.get_display_name(),
+                "current_location": g.current_location or "main_room",
+                "admission_status": "admitted",
+                "is_guest": True,
+                "company": g.company or "",
+                "job_title": g.job_title or "",
+                "lounge_table_id": g.lounge_table_id,
+                "lounge_table_name": g.lounge_table.name if g.lounge_table_id and g.lounge_table else "",
+                "rtk_participant_id": g.rtk_participant_id or "",
+            } for g in guests_qs]
+            cached = users + guests
+            cache.set(cache_key, cached, 2)
 
-        if self._is_guest_user():
-            guests_qs = guests_qs.exclude(id=self.user.guest.id)
-
-        guests = [{
-            "user_id": f"guest_{g.id}",
-            "username": f"guest_{g.id}",
-            "full_name": g.get_display_name(),
-            "current_location": g.current_location or "main_room",
-            "admission_status": "admitted",
-            "is_guest": True,
-            "company": g.company or "",
-            "job_title": g.job_title or "",
-            "lounge_table_id": g.lounge_table_id,
-            "lounge_table_name": g.lounge_table.name if g.lounge_table_id and g.lounge_table else "",
-            "rtk_participant_id": g.rtk_participant_id or "",
-        } for g in guests_qs]
-
-        return users + guests
+        self_user_id = f"guest_{self.user.guest.id}" if self._is_guest_user() else self.user.id
+        return [entry for entry in cached if entry.get("user_id") != self_user_id]
 
     @database_sync_to_async
     def get_main_room_support_status(self):
@@ -1663,6 +1713,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         is_live=True,
                         idle_started_at__isnull=False,
                     ).update(idle_started_at=None)
+                self._invalidate_lounge_presence_cache_sync()
         except Exception as e:
             print(f"[CONSUMER] Error updating online status for {self.user.username}: {e}")
 
@@ -1704,6 +1755,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             lounge_table=None,
             current_location="main_room",
         )
+        self._invalidate_lounge_presence_cache_sync()
 
     @database_sync_to_async
     def perform_random_assignment(self, per_room):
@@ -1900,6 +1952,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             return []
 
         print(f"[RANDOM_ASSIGN] Completed: Created {len(assignments)} assignments.")
+        if assignments:
+            self._invalidate_lounge_presence_cache_sync()
         return assignments
 
     async def perform_random_assignment_and_notify(self, per_room):
@@ -2044,6 +2098,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 print(f"[MANUAL_ASSIGN] ✅ Assigned user {user_id} to table {table_id}, seat {seat_index}")
 
             print(f"[MANUAL_ASSIGN] Completed: Created {len(assignments)} assignments.")
+            if assignments:
+                self._invalidate_lounge_presence_cache_sync()
             return assignments
 
         except Exception as e:
@@ -2052,9 +2108,25 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def get_lounge_state(self):
-        tables = LoungeTable.objects.filter(event_id=self.event_id).prefetch_related('participants__user')
+        cache_key = self._cache_key_ws_lounge_state()
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        tables = LoungeTable.objects.filter(event_id=self.event_id).prefetch_related(
+            "participants__user",
+            "participants__user__profile",
+        )
         state = []
         debug_counts = []
+        guests_by_table = {}
+        for guest in GuestAttendee.objects.filter(
+            event_id=self.event_id,
+            converted_at__isnull=True,
+            lounge_table_id__isnull=False,
+        ).only("id", "first_name", "last_name", "email", "lounge_table_id"):
+            guests_by_table.setdefault(guest.lounge_table_id, []).append(guest)
+
         for t in tables:
             participants = {}
             occupied_seats = set()
@@ -2077,14 +2149,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 }
                 occupied_seats.add(p.seat_index)
 
-            # Include guests seated at this table (GuestAttendee has no seat index column).
-            guest_rows = GuestAttendee.objects.filter(
-                event_id=self.event_id,
-                lounge_table=t,
-                converted_at__isnull=True,
-            ).only("id", "first_name", "last_name", "email")
             next_free_seat = 0
-            for guest in guest_rows:
+            for guest in guests_by_table.get(t.id, []):
                 while next_free_seat in occupied_seats:
                     next_free_seat += 1
                 if next_free_seat >= max(t.max_seats, 1):
@@ -2100,6 +2166,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 }
                 occupied_seats.add(next_free_seat)
                 next_free_seat += 1
+
             icon_url = ""
             if getattr(t, "icon", None):
                 try:
@@ -2113,13 +2180,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 "max_seats": t.max_seats,
                 "rtk_meeting_id": t.rtk_meeting_id,
                 "icon_url": icon_url,
-                "participants": participants
+                "participants": participants,
             })
             if participants:
                 debug_counts.append(f"Table {t.id}: {len(participants)} users")
-        
+
         if debug_counts:
             print(f"[CONSUMER] get_lounge_state: Found participants: {', '.join(debug_counts)}")
+        cache.set(cache_key, state, 2)
         return state
 
     @database_sync_to_async
@@ -2158,6 +2226,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     user=self.user,
                     seat_index=seat
                 )
+                self._invalidate_lounge_presence_cache_sync()
                 # Keep last_breakout_table in EventRegistration (already set)
                 return True, seat
         except Exception as e:
@@ -2195,6 +2264,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     guest.lounge_table = table_obj
                     guest.current_location = "breakout_room" if table_obj.category == "BREAKOUT" else "social_lounge"
                     guest.save(update_fields=["lounge_table", "current_location"])
+                    self._invalidate_lounge_presence_cache_sync()
                     print(f"[CONSUMER] join_table: Guest {guest.id} joined table {table_id}")
                     return True, None, table_obj
 
@@ -2247,6 +2317,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         waiting_started_at__isnull=True
                     ).update(waiting_started_at=timezone.now())
 
+                self._invalidate_lounge_presence_cache_sync()
                 print(f"[CONSUMER] join_table: Created record for user {self.user.id} at table {table_id} seat {seat_index}")
                 return True, None, table
         except Exception as e:
@@ -2284,6 +2355,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 guest.lounge_table = None
                 guest.rtk_participant_id = ""
                 guest.save(update_fields=["current_location", "lounge_table", "rtk_participant_id"])
+                self._invalidate_lounge_presence_cache_sync()
                 logger.info(f"[CONSUMER] Guest {guest.id} left table {table.id}; location=main_room")
                 return 1, table
 
@@ -2362,6 +2434,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
             reg.current_location = new_location
             reg.save(update_fields=["current_location"])
+            self._invalidate_lounge_presence_cache_sync()
 
             logger.info(f"[CONSUMER] User {self.user.username} (ID:{self.user.id}) left table. "
                        f"Removed from both Django and RTK. Location updated to: {new_location}")
@@ -2463,6 +2536,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 else:
                     guest_qs.update(current_location="waiting_room", lounge_table=None)
                 transitioned_user_ids.extend([f"guest_{gid}" for gid in guest_ids])
+            self._invalidate_lounge_presence_cache_sync()
         return transitioned_user_ids
 
     async def _execute_lounge_transition_after_delay(self, transition, user_ids, delay_seconds):
@@ -2525,6 +2599,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     LoungeParticipant.objects.filter(
                         table__event_id=self.event_id, user_id__in=admitted_user_ids
                     ).delete()
+                    self._invalidate_lounge_presence_cache_sync()
                     print(f"[CONSUMER] Admitted {len(admitted_user_ids)} participants from lounge: {admitted_user_ids}")
 
                 return admitted_user_ids
