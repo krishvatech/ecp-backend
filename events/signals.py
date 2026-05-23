@@ -4,11 +4,34 @@ from django.db import transaction
 from .models import Event, EventParticipant, PostAcceptanceFormTemplate, EventRegistration
 from .saleor_sync import sync_event_to_saleor_sync, delete_event_from_saleor
 from .services.post_acceptance_forms import is_online_event, trigger_post_acceptance_forms
+from .services.role_seeding import seed_default_roles_for_event
 import threading
 import logging
 
 logger = logging.getLogger(__name__)
 from .models import Event, EventParticipant
+
+@receiver(post_save, sender=Event)
+def seed_event_roles_signal(sender, instance, created, **kwargs):
+    """
+    Automatically seed default EventRole records when a new Event is created.
+
+    This ensures every event has a standard set of roles available for application tracks.
+    Only runs on event creation (created=True), not on updates.
+    """
+    if not created:
+        return  # Only seed on creation, not updates
+
+    # Seed roles in background after transaction commits
+    def seed_roles():
+        try:
+            stats = seed_default_roles_for_event(instance)
+            logger.info(f"Seeded roles for event {instance.id}: created={stats['created']}, existing={stats['existing']}")
+        except Exception as e:
+            logger.error(f"Failed to seed roles for event {instance.id}: {e}", exc_info=True)
+
+    transaction.on_commit(seed_roles)
+
 
 @receiver(post_save, sender=Event)
 def sync_event_to_saleor_signal(sender, instance, created, **kwargs):
@@ -387,8 +410,18 @@ def delete_event_from_saleor_signal(sender, instance, **kwargs):
         )
 
 
-# Note: Pre-save status tracking replaced with database-level detection in post_save handler.
-# This prevents race conditions in multi-process environments and is more reliable.
+# FIX 7: Use pre_save to track previous status, then check in post_save
+@receiver(pre_save, sender=EventRegistration)
+def mark_previous_status(sender, instance, **kwargs):
+    """Mark the previous attendee_status before saving."""
+    if instance.pk:
+        try:
+            previous = EventRegistration.objects.get(pk=instance.pk)
+            instance._previous_attendee_status = previous.attendee_status
+        except EventRegistration.DoesNotExist:
+            instance._previous_attendee_status = None
+    else:
+        instance._previous_attendee_status = None
 
 
 @receiver(post_save, sender=EventRegistration)
@@ -400,24 +433,20 @@ def trigger_forms_on_registration_confirmed(sender, instance, created, **kwargs)
     - New registration created with attendee_status='confirmed', OR
     - Existing registration status changed to 'confirmed'
 
-    Performance: Uses database-level status detection instead of thread-local cache
-    to prevent race conditions and unnecessary triggers on every save.
+    FIX 7: Uses pre_save marker to detect actual status transition.
     """
     # Guard: only process if status is confirmed
     if instance.attendee_status != 'confirmed':
         return
 
-    # Check if this is a status transition (new record or status just changed)
+    # Check if this is a status transition
     is_transition = False
     if created:
         is_transition = True
     else:
-        # Query previous status from DB for safety (avoids thread-local cache race conditions)
-        try:
-            previous = EventRegistration.objects.get(pk=instance.pk)
-            is_transition = previous.attendee_status != instance.attendee_status
-        except EventRegistration.DoesNotExist:
-            is_transition = True  # Edge case: deleted then recreated
+        # FIX 7: Check the previous status we marked in pre_save
+        previous_status = getattr(instance, '_previous_attendee_status', None)
+        is_transition = previous_status != 'confirmed'
 
     # Skip if this isn't actually a transition to confirmed
     if not is_transition:

@@ -604,11 +604,23 @@ class Event(models.Model):
 
 
 class EventEmailTemplate(models.Model):
-    """Per-event customizable email templates for registration confirmations."""
+    """Per-event customizable email templates for registration confirmations and application decisions."""
     TEMPLATE_KEY_CHOICES = [
+        # Phase 1-11: Registration templates
         ("user_registration_acknowledgement", "User Registration Acknowledgement"),
         ("guest_registration_acknowledgement", "Guest Registration Acknowledgement"),
         ("event_confirmation", "Event Confirmation (Speaker/Host)"),
+
+        # Phase 12: Application decision templates (Applicant)
+        ("application_accepted_applicant", "Application Accepted (Applicant)"),
+        ("application_declined_applicant", "Application Declined (Applicant)"),
+        ("application_waitlisted_applicant", "Application Waitlisted (Applicant)"),
+        ("application_reminder_to_complete", "Reminder to Complete Registration"),
+
+        # Phase 12: Application decision templates (Nominator)
+        ("application_acknowledgement_nominator", "Application Submission Acknowledgement (Nominator)"),
+        ("application_accepted_nominator", "Nominee Accepted Notification (Nominator)"),
+        ("application_declined_nominator", "Nominee Declined Notification (Nominator)"),
     ]
 
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="email_template_overrides")
@@ -881,6 +893,27 @@ class EventRegistration(models.Model):
         help_text='Roles held by this attendee in this event (e.g., Speaker, Sponsor, Attendee)'
     )
 
+    # Phase 11: Payment tracking (for marking payment_pending → confirmed)
+    marked_paid_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='marked_paid_registrations',
+        help_text='Admin user who manually marked this registration as paid'
+    )
+    marked_paid_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When this registration was manually marked as paid'
+    )
+    payment_reference = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text='Payment reference (invoice number, check number, etc.)'
+    )
+
     class Meta:
         db_table = 'event_registrations'
         unique_together = ('event', 'user')
@@ -974,6 +1007,133 @@ class EventRole(models.Model):
         return f"{self.label} ({self.event.title})"
 
 
+class EventAttendeeOrigin(models.Model):
+    """
+    Phase 11: Tracks origin metadata for each role an attendee has at an event.
+    When an application is accepted, an EventAttendeeOrigin record is created
+    for each role assigned, storing track, submission_mode, tier, and reviewer info.
+
+    One record per EventRegistration + EventRole + EventApplicationTrack combination
+    (unique_together constraint). This allows the same user to have the same role
+    from multiple different tracks (e.g., accepted as Speaker via both Track A and Track B).
+    """
+    registration = models.ForeignKey(
+        EventRegistration,
+        on_delete=models.CASCADE,
+        related_name='origins',
+        help_text='The registration this origin belongs to'
+    )
+    role = models.ForeignKey(
+        EventRole,
+        on_delete=models.CASCADE,
+        help_text='The role this origin is for'
+    )
+
+    # Track and submission information
+    track = models.ForeignKey(
+        'EventApplicationTrack',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text='Which application track this came from'
+    )
+    submission_mode = models.CharField(
+        max_length=50,
+        blank=True,
+        default='',
+        help_text='Submission mode: self_submission, confirmed, self_nomination, third_party_nomination'
+    )
+
+    # Acceptance decision metadata
+    accepted_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='accepted_attendee_origins',
+        help_text='Admin user who accepted this application'
+    )
+    accepted_at = models.DateTimeField(
+        help_text='When this application was accepted'
+    )
+    accepted_tier = models.ForeignKey(
+        'TrackPricingTier',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text='Tier that was selected on acceptance (free or paid)'
+    )
+
+    # Third-party nomination metadata (if applicable)
+    nominator_name = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text='Name of nominator if third_party_nomination mode'
+    )
+    nominator_email = models.EmailField(
+        blank=True,
+        help_text='Email of nominator if third_party_nomination mode'
+    )
+
+    # Status
+    status = models.CharField(
+        max_length=50,
+        default='active',
+        choices=[
+            ('active', 'Active'),
+            ('cancelled', 'Cancelled'),
+        ],
+        help_text='Origin status (active or cancelled)'
+    )
+
+    # FIX 1: Per-track/origin payment status
+    origin_status = models.CharField(
+        max_length=50,
+        default='confirmed',
+        choices=[
+            ('confirmed', 'Confirmed'),
+            ('payment_pending', 'Payment Pending'),
+            ('cancelled', 'Cancelled'),
+        ],
+        help_text='Payment/confirmation status for this origin (per-track)'
+    )
+    marked_paid_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='marked_paid_origins',
+        help_text='Admin user who marked this origin as paid'
+    )
+    marked_paid_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When this origin was marked as paid'
+    )
+    payment_reference = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text='Optional payment reference number'
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'event_attendee_origins'
+        unique_together = ('registration', 'role', 'track')
+        indexes = [
+            models.Index(fields=['registration', 'role', 'track']),
+            models.Index(fields=['track', 'submission_mode']),
+            models.Index(fields=['status']),
+            models.Index(fields=['accepted_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.registration.user.username} - {self.role.label} ({self.track.label if self.track else 'Manual'})"
+
+
 class EventApplicationTrack(models.Model):
     """
     Defines application tracks for an event.
@@ -1024,7 +1184,7 @@ class EventApplicationTrack(models.Model):
     enabled_submission_modes = models.JSONField(
         default=list,
         blank=True,
-        help_text='Submission modes: ["online_form", "preapproved", "manual_review", "invite_only"]'
+        help_text='Submission modes: ["self_submission", "confirmed", "self_nomination", "third_party_nomination"]'
     )
 
     # Form configuration (per-track form schema)
@@ -1055,6 +1215,23 @@ class EventApplicationTrack(models.Model):
         help_text='Where to show this track: ["event_page", "email", "application_modal"]'
     )
 
+    # Phase 6: Per-track content blocks
+    landing_page_content = models.TextField(
+        blank=True,
+        default='',
+        help_text='Markdown content displayed above track CTA on public event page'
+    )
+    form_header_notice = models.TextField(
+        blank=True,
+        default='',
+        help_text='Markdown notice displayed at top of application form'
+    )
+    confirmation_page_content = models.TextField(
+        blank=True,
+        default='',
+        help_text='Markdown content displayed after successful application submission'
+    )
+
     # System tracking
     is_system_default = models.BooleanField(
         default=False,
@@ -1075,6 +1252,352 @@ class EventApplicationTrack(models.Model):
 
     def __str__(self):
         return f"{self.label} ({self.event.title})"
+
+
+class TrackPricingTier(models.Model):
+    """
+    Pricing tiers for application tracks.
+    Allows different pricing options when accepting applications to a track.
+    Phase 4: Track-specific pricing configuration.
+    """
+    VISIBILITY_CHOICES = [
+        ('public', 'Public - Visible to all applicants'),
+        ('hidden', 'Hidden - Not shown, internal use only'),
+        ('admin_only', 'Admin Only - Only visible in admin interface'),
+    ]
+
+    track = models.ForeignKey(
+        EventApplicationTrack,
+        on_delete=models.CASCADE,
+        related_name='pricing_tiers',
+        help_text='The application track this pricing tier belongs to'
+    )
+    key = models.CharField(
+        max_length=50,
+        help_text='Unique identifier per track (e.g., "standard", "early_career")'
+    )
+    label = models.CharField(
+        max_length=100,
+        help_text='Display name (e.g., "Standard Pass", "Early Career Pricing")'
+    )
+    price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text='Price amount. 0 means free tier.'
+    )
+    currency = models.CharField(
+        max_length=3,
+        default='USD',
+        help_text='ISO 4217 currency code (USD, EUR, GBP, etc.)'
+    )
+    visibility = models.CharField(
+        max_length=20,
+        choices=VISIBILITY_CHOICES,
+        default='public',
+        help_text='Visibility level of this tier'
+    )
+    is_default = models.BooleanField(
+        default=False,
+        help_text='If True, this is the default tier selected for new acceptances. Only one per track.'
+    )
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text='If False, tier is disabled and cannot be selected'
+    )
+    sort_order = models.IntegerField(
+        default=0,
+        help_text='Display order (ascending)'
+    )
+    description = models.TextField(
+        blank=True,
+        default='',
+        help_text='Detailed description of what this tier includes'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'track_pricing_tiers'
+        unique_together = ('track', 'key')
+        ordering = ['sort_order', 'label']
+        indexes = [
+            models.Index(fields=['track', 'is_active']),
+            models.Index(fields=['track', 'is_default']),
+            models.Index(fields=['price']),
+        ]
+
+    def __str__(self):
+        return f"{self.label} ({self.track.label}) - {self.price} {self.currency}"
+
+    def is_paid(self):
+        """Returns True if this tier has a price > 0."""
+        return self.price > 0
+
+    def is_free(self):
+        """Returns True if this tier is free (price = 0)."""
+        return self.price == 0
+
+    def save(self, *args, **kwargs):
+        """Ensure only one default tier per track."""
+        if self.is_default:
+            # Remove default flag from other tiers in this track
+            TrackPricingTier.objects.filter(
+                track=self.track,
+                is_default=True
+            ).exclude(pk=self.pk).update(is_default=False)
+        super().save(*args, **kwargs)
+
+
+class SharedQuestionCategory(models.Model):
+    """
+    Categories for shared reusable form questions.
+    Phase 5: Shared question library for form builders.
+    """
+    name = models.CharField(
+        max_length=100,
+        help_text='Category name (e.g., "Personal", "Professional")'
+    )
+    description = models.TextField(
+        blank=True,
+        default='',
+        help_text='Category description'
+    )
+    sort_order = models.IntegerField(
+        default=0,
+        help_text='Display order (ascending)'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'shared_question_categories'
+        ordering = ['sort_order', 'name']
+
+    def __str__(self):
+        return self.name
+
+
+class SharedQuestion(models.Model):
+    """
+    Reusable form questions in a shared library.
+    Can be inserted into form schemas by administrators.
+    Phase 5: Shared question library.
+    """
+    FIELD_TYPES = [
+        ('text', 'Text'),
+        ('long_text', 'Long Text'),
+        ('email', 'Email'),
+        ('url', 'URL'),
+        ('phone', 'Phone'),
+        ('number', 'Number'),
+        ('date', 'Date'),
+        ('select', 'Select'),
+        ('multi_select', 'Multi Select'),
+        ('radio_group', 'Radio Group'),
+        ('checkbox_group', 'Checkbox Group'),
+        ('checkbox', 'Checkbox'),
+        ('file_upload', 'File Upload'),
+    ]
+
+    category = models.ForeignKey(
+        SharedQuestionCategory,
+        on_delete=models.CASCADE,
+        related_name='questions',
+        help_text='Category this question belongs to'
+    )
+    label = models.CharField(
+        max_length=255,
+        help_text='Question label/title'
+    )
+    field_type = models.CharField(
+        max_length=50,
+        choices=FIELD_TYPES,
+        help_text='Type of form field'
+    )
+    help_text = models.TextField(
+        blank=True,
+        default='',
+        help_text='Help text shown below the question'
+    )
+    placeholder = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text='Placeholder text for input fields'
+    )
+    options = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='Options for select/radio/checkbox fields: [{label, value}, ...]'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'shared_questions'
+        ordering = ['category__sort_order', 'id']
+        indexes = [
+            models.Index(fields=['category', 'field_type']),
+        ]
+
+    def __str__(self):
+        return f"{self.label} ({self.get_field_type_display()})"
+
+
+class FormField(models.Model):
+    """
+    Form fields for an application track.
+    Stores form schema for dynamically rendering application forms.
+    Can reference a SharedQuestion or be custom-defined.
+    Phase 5: Dynamic form schema system.
+    """
+    FIELD_TYPES = [
+        ('text', 'Text'),
+        ('long_text', 'Long Text'),
+        ('email', 'Email'),
+        ('url', 'URL'),
+        ('phone', 'Phone'),
+        ('number', 'Number'),
+        ('date', 'Date'),
+        ('select', 'Select'),
+        ('multi_select', 'Multi Select'),
+        ('radio_group', 'Radio Group'),
+        ('checkbox_group', 'Checkbox Group'),
+        ('checkbox', 'Checkbox'),
+        ('file_upload', 'File Upload'),
+    ]
+
+    PROFILE_BINDING_MODES = [
+        ('always_show', 'Always Show'),
+        ('prefill_if_present', 'Prefill If Present'),
+        ('hide_if_present', 'Hide If Present'),
+        ('require_if_absent', 'Require If Absent'),
+    ]
+
+    track = models.ForeignKey(
+        EventApplicationTrack,
+        on_delete=models.CASCADE,
+        related_name='form_fields',
+        help_text='The application track this field belongs to'
+    )
+    shared_question = models.ForeignKey(
+        SharedQuestion,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='form_fields',
+        help_text='Reference to shared question library (if created from library)'
+    )
+
+    field_type = models.CharField(
+        max_length=50,
+        choices=FIELD_TYPES,
+        help_text='Type of form field'
+    )
+    label = models.CharField(
+        max_length=255,
+        help_text='Field label/question text'
+    )
+    help_text = models.TextField(
+        blank=True,
+        default='',
+        help_text='Help text shown below the field'
+    )
+    placeholder = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text='Placeholder text for input fields'
+    )
+    required = models.BooleanField(
+        default=False,
+        help_text='If True, this field must be filled'
+    )
+    options = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='Options for select/radio/checkbox fields: [{label, value}, ...]'
+    )
+
+    min_length = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text='Minimum length for text fields'
+    )
+    max_length = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text='Maximum length for text fields'
+    )
+    min_value = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text='Minimum value for number/date fields'
+    )
+    max_value = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text='Maximum value for number/date fields'
+    )
+
+    profile_binding = models.CharField(
+        max_length=100,
+        blank=True,
+        default='',
+        help_text='Profile field path to bind to (e.g., "user.first_name")'
+    )
+    profile_binding_mode = models.CharField(
+        max_length=50,
+        choices=PROFILE_BINDING_MODES,
+        default='always_show',
+        help_text='How to handle profile binding'
+    )
+
+    conditional_visibility = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Conditional visibility logic: {if: {...}, then: visible}'
+    )
+
+    visibility_per_mode = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Visibility per submission mode: {self_submission: true, confirmed: false, ...}'
+    )
+
+    visible_in_review_list = models.BooleanField(
+        default=True,
+        help_text='Show this field in acceptance list'
+    )
+    visible_in_review_detail = models.BooleanField(
+        default=True,
+        help_text='Show this field in acceptance detail'
+    )
+
+    sort_order = models.IntegerField(
+        default=0,
+        help_text='Display order (ascending)'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'form_fields'
+        unique_together = [('track', 'label')]
+        ordering = ['sort_order', 'id']
+        indexes = [
+            models.Index(fields=['track', 'sort_order']),
+            models.Index(fields=['track', 'field_type']),
+        ]
+
+    def __str__(self):
+        return f"{self.label} ({self.track.label})"
 
 
 class EventBadgeLabel(models.Model):
@@ -2552,6 +3075,70 @@ class EventApplication(models.Model):
     attendee_marker_value = models.BooleanField(default=False)
     comments = models.TextField(blank=True, default='')
 
+    # Application track and submission mode (Phase 3)
+    application_track = models.ForeignKey(
+        'EventApplicationTrack',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='applications',
+        help_text='The application track/type this application is for'
+    )
+    SUBMISSION_MODE_SELF = 'self_submission'
+    SUBMISSION_MODE_CONFIRMED = 'confirmed'
+    SUBMISSION_MODE_SELF_NOMINATION = 'self_nomination'
+    SUBMISSION_MODE_THIRD_PARTY = 'third_party_nomination'
+    SUBMISSION_MODE_CHOICES = [
+        (SUBMISSION_MODE_SELF, 'Self Submission'),
+        (SUBMISSION_MODE_CONFIRMED, 'Confirmed'),
+        (SUBMISSION_MODE_SELF_NOMINATION, 'Self Nomination'),
+        (SUBMISSION_MODE_THIRD_PARTY, 'Third Party Nomination'),
+    ]
+    submission_mode = models.CharField(
+        max_length=50,
+        choices=SUBMISSION_MODE_CHOICES,
+        default=SUBMISSION_MODE_SELF,
+        help_text='How the applicant is submitting (self, confirmed, nominated, etc.)'
+    )
+
+    # Mode-specific fields (Phase 3)
+    # For third_party_nomination mode:
+    nominator_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text='Name of person nominating (third_party_nomination mode)'
+    )
+    nominator_email = models.EmailField(
+        blank=True,
+        default='',
+        help_text='Email of person nominating (third_party_nomination mode)'
+    )
+    nominee_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text='Name of nominated person (third_party_nomination mode)'
+    )
+    nominee_email = models.EmailField(
+        blank=True,
+        default='',
+        help_text='Email of nominated person (third_party_nomination mode)'
+    )
+    nominee_details = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Additional details about nominee (JSONField)'
+    )
+
+    # For confirmed mode:
+    sponsor_organization = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text='Sponsoring/partner organization name (confirmed mode)'
+    )
+
     # Application status
     status = models.CharField(
         max_length=20,
@@ -2598,6 +3185,19 @@ class EventApplication(models.Model):
         related_name="applications",
     )
     preapproved_at = models.DateTimeField(null=True, blank=True)
+
+    # Phase 7: Multi-track support
+    selected_tracks = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='List of track IDs selected in this multi-track application'
+    )
+
+    # Phase 12: Communication preferences
+    opt_out_automated_communication = models.BooleanField(
+        default=False,
+        help_text='If True, applicant has opted out of automated emails (accept/decline/waitlist notifications)'
+    )
 
     class Meta:
         db_table = 'event_applications'
@@ -2669,16 +3269,33 @@ class EventPreApprovalCode(models.Model):
     revoked_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True, default="")
 
+    # Phase 8: Track + Mode scoping
+    track = models.ForeignKey(
+        EventApplicationTrack,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="preapproval_codes",
+        help_text="Track this code applies to. Null = applies to all tracks at event level.",
+    )
+    submission_mode = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Submission mode this code applies to. Empty = applies to all modes for the track.",
+    )
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["event", "code"],
-                name="unique_preapproval_code_per_event",
+                fields=["event", "track", "submission_mode", "code"],
+                name="unique_preapproval_code_per_track_mode",
             )
         ]
         indexes = [
             models.Index(fields=["event", "status"]),
             models.Index(fields=["event", "code"]),
+            models.Index(fields=["track", "submission_mode", "status"]),
         ]
 
     def save(self, *args, **kwargs):
@@ -2715,23 +3332,194 @@ class EventPreApprovalAllowlist(models.Model):
     removed_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True, default="")
 
+    # Phase 8: Track + Mode scoping
+    track = models.ForeignKey(
+        EventApplicationTrack,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="preapproval_allowlist",
+        help_text="Track this entry applies to. Null = applies to all tracks at event level.",
+    )
+    submission_mode = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Submission mode this entry applies to. Empty = applies to all modes for the track.",
+    )
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["event", "email"],
+                fields=["event", "track", "submission_mode", "email"],
                 condition=models.Q(is_active=True),
-                name="unique_active_allowlist_email_per_event",
+                name="unique_active_allowlist_email_per_track_mode",
             )
         ]
         indexes = [
             models.Index(fields=["event", "email"]),
             models.Index(fields=["event", "is_active"]),
+            models.Index(fields=["track", "submission_mode", "is_active"]),
         ]
 
     def save(self, *args, **kwargs):
         if self.email:
             self.email = self.email.strip().lower()
         super().save(*args, **kwargs)
+
+
+class EventApplicationTrackApplication(models.Model):
+    """
+    Phase 7: Per-track application data within an overall event application.
+    Allows applicants to apply to multiple tracks simultaneously.
+    """
+    STATUS_PENDING = 'pending'
+    STATUS_PRE_APPROVED = 'pre_approved'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_DECLINED = 'declined'
+    STATUS_WAITLISTED = 'waitlisted'
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_PRE_APPROVED, 'Pre-Approved'),
+        (STATUS_ACCEPTED, 'Accepted'),
+        (STATUS_DECLINED, 'Declined'),
+        (STATUS_WAITLISTED, 'Waitlisted'),
+    ]
+
+    # Core relationships
+    application = models.ForeignKey(
+        EventApplication,
+        on_delete=models.CASCADE,
+        related_name='track_applications'
+    )
+    track = models.ForeignKey(
+        EventApplicationTrack,
+        on_delete=models.CASCADE,
+        related_name='track_applications'
+    )
+
+    # Submission details
+    submission_mode = models.CharField(
+        max_length=50,
+        default='self_submission',
+        help_text='Submission mode for this track application'
+    )
+    status = models.CharField(
+        max_length=50,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+        help_text='Current application status for this track'
+    )
+    tier_preference = models.ForeignKey(
+        TrackPricingTier,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text='Preferred pricing tier for this track'
+    )
+
+    # Form data
+    form_answers = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Track-specific form field answers'
+    )
+    file_uploads = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='File upload metadata and URLs'
+    )
+
+    # Review tracking
+    reviewed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When this track application was reviewed'
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reviewed_track_applications',
+        help_text='Admin user who reviewed this application'
+    )
+
+    # Phase 10: Decision tracking
+    accepted_tier = models.ForeignKey(
+        TrackPricingTier,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='accepted_track_applications',
+        help_text='Tier selected by reviewer on acceptance (may differ from tier_preference)'
+    )
+    accepted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When this application was accepted'
+    )
+    declined_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When this application was declined'
+    )
+    waitlisted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When this application was waitlisted'
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'event_application_track_applications'
+        unique_together = [('application', 'track')]
+        indexes = [
+            models.Index(fields=['application', 'status']),
+            models.Index(fields=['track', 'status']),
+            models.Index(fields=['application', 'created_at']),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.application.email} → {self.track.label} ({self.get_status_display()})"
+
+
+class TrackApplicationListVisibilityField(models.Model):
+    """
+    Phase 9: Configurable list view columns for review queue.
+    Allows admins to customize which fields are visible in the review queue list.
+    """
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='track_app_list_fields'
+    )
+    field_name = models.CharField(
+        max_length=100,
+        help_text='Field name: email, first_name, last_name, submission_mode, status, tier_preference, etc.'
+    )
+    label = models.CharField(max_length=200, help_text='Display label for this column')
+    sort_order = models.PositiveIntegerField(default=0, help_text='Order in which column appears')
+    is_visible = models.BooleanField(default=True, help_text='Whether column is shown in list view')
+    is_sortable = models.BooleanField(default=False, help_text='Whether column can be sorted')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [['event', 'field_name']]
+        ordering = ['sort_order', 'field_name']
+        indexes = [
+            models.Index(fields=['event', 'is_visible']),
+        ]
+
+    def __str__(self):
+        return f"{self.event.title} - {self.label}"
 
 
 class SaleorChannel(models.Model):
@@ -3323,6 +4111,12 @@ class PostAcceptanceFormAssignment(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_NOT_STARTED, db_index=True)
 
     deadline = models.DateTimeField(help_text='Deadline for form completion')
+    # FIX 9: Allow edits to completed forms until this date (defaults to event start)
+    editable_until = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Allow editing completed forms until this date (defaults to event start)'
+    )
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 
@@ -3386,7 +4180,12 @@ class PostAcceptanceFormSubmission(models.Model):
 
 class PostAcceptanceFormAnswer(models.Model):
     submission = models.ForeignKey(PostAcceptanceFormSubmission, on_delete=models.CASCADE, related_name='answers')
-    question_key = models.CharField(max_length=100, help_text='Unique question identifier')
+    question_key = models.CharField(max_length=100, help_text='Unique question identifier within form type')
+    form_type = models.CharField(
+        max_length=50,
+        default='participant_information',
+        help_text='Form type: participant_information, promotional_profile, etc.'
+    )
     answer_text = models.TextField(blank=True)
     answer_data = models.JSONField(default=dict, blank=True, help_text='Complex answer data (for checkboxes, multi-select, etc.)')
     answer_file = models.FileField(null=True, blank=True, upload_to='form_answers/%Y/%m/%d/', help_text='Uploaded file (for headshot, slide deck, etc.)')
@@ -3396,10 +4195,11 @@ class PostAcceptanceFormAnswer(models.Model):
 
     class Meta:
         db_table = 'post_acceptance_form_answers'
-        unique_together = ('submission', 'question_key')
+        unique_together = ('submission', 'question_key', 'form_type')
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['submission']),
+            models.Index(fields=['submission', 'form_type']),
+            models.Index(fields=['form_type']),
         ]
 
     def __str__(self):

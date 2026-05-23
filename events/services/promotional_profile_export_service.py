@@ -24,13 +24,13 @@ from events.models import PostAcceptanceFormAssignment, PostAcceptanceFormAnswer
 
 logger = logging.getLogger(__name__)
 
-# Module to file fields mapping
+# Module to file fields mapping (with prefixes to match schema)
 MODULE_FILE_FIELDS = {
-    'speaker': ['headshot', 'slide_deck'],
-    'sponsor': ['organisation_logo', 'organisation_logo_dark', 'deliverables'],
-    'sponsor_staff': ['headshot'],
-    'startup': ['company_logo', 'public_pitch_deck', 'founder_photos'],
-    'investor': ['display_logo']
+    'speaker': ['speaker_headshot', 'speaker_slide_deck'],
+    'sponsor': ['sponsor_organisation_logo', 'sponsor_organisation_logo_dark', 'sponsor_deliverables'],
+    'sponsor_staff': ['sponsor_staff_headshot'],
+    'startup': ['startup_company_logo', 'startup_public_pitch_deck', 'startup_founder_photos'],
+    'investor': ['investor_display_logo']
 }
 
 SAFE_FOLDER_NAMES = {
@@ -41,34 +41,34 @@ SAFE_FOLDER_NAMES = {
     'investor': 'investors'
 }
 
-# Module-specific fields for JSON export
+# Module-specific fields for JSON export (with prefixes to match schema)
 MODULE_QUESTION_KEYS = {
     'speaker': [
-        'display_name', 'programme_title', 'programme_affiliation', 'headshot',
-        'programme_bio', 'short_bio', 'talk_title', 'talk_abstract', 'session_format',
-        'co_speakers', 'av_requirements', 'slide_deck', 'linkedin_url', 'twitter_handle',
-        'personal_website', 'display_consent'
+        'speaker_display_name', 'speaker_programme_title', 'speaker_programme_affiliation', 'speaker_headshot',
+        'speaker_programme_bio', 'speaker_short_bio', 'speaker_talk_title', 'speaker_talk_abstract', 'speaker_session_format',
+        'speaker_co_speakers', 'speaker_av_requirements', 'speaker_slide_deck', 'speaker_linkedin_url', 'speaker_twitter_handle',
+        'speaker_personal_website', 'speaker_display_consent'
     ],
     'sponsor': [
-        'organisation_name_display', 'organisation_logo', 'organisation_logo_dark',
-        'tagline', 'programme_description', 'website_url', 'sponsor_tier',
-        'booth_activation_details', 'deliverables', 'primary_contact_name',
-        'primary_contact_email', 'display_consent'
+        'sponsor_organisation_name_display', 'sponsor_organisation_logo', 'sponsor_organisation_logo_dark',
+        'sponsor_tagline', 'sponsor_programme_description', 'sponsor_website_url', 'sponsor_sponsor_tier',
+        'sponsor_booth_activation_details', 'sponsor_deliverables', 'sponsor_primary_contact_name',
+        'sponsor_primary_contact_email', 'sponsor_display_consent'
     ],
     'sponsor_staff': [
-        'display_name', 'role_at_sponsor', 'headshot', 'booth_presence',
-        'areas_of_conversation', 'display_consent'
+        'sponsor_staff_display_name', 'sponsor_staff_role_at_sponsor', 'sponsor_staff_headshot', 'sponsor_staff_booth_presence',
+        'sponsor_staff_areas_of_conversation', 'sponsor_staff_display_consent'
     ],
     'startup': [
-        'company_name_display', 'company_logo', 'one_line_pitch',
-        'programme_description', 'stage', 'sector_industry', 'founded_year',
-        'website_url', 'demo_url', 'public_pitch_deck', 'founder_names_roles',
-        'founder_photos', 'display_consent'
+        'startup_company_name_display', 'startup_company_logo', 'startup_one_line_pitch',
+        'startup_programme_description', 'startup_stage', 'startup_sector_industry', 'startup_founded_year',
+        'startup_website_url', 'startup_demo_url', 'startup_public_pitch_deck', 'startup_founder_names_roles',
+        'startup_founder_photos', 'startup_display_consent'
     ],
     'investor': [
-        'display_name', 'display_logo', 'thesis_tagline', 'stage_focus',
-        'sector_focus', 'geographic_focus', 'cheque_size_range', 'open_to_inbound',
-        'display_consent'
+        'investor_display_name', 'investor_display_logo', 'investor_thesis_tagline', 'investor_stage_focus',
+        'investor_sector_focus', 'investor_geographic_focus', 'investor_cheque_size_range', 'investor_open_to_inbound',
+        'investor_display_consent'
     ]
 }
 
@@ -499,13 +499,13 @@ def _get_display_name_for_module(assignment, module_name):
     """Extract the display name for a specific module."""
     answers = _get_module_answers(assignment)
 
-    # Map module to display_name question key
+    # Map module to display_name question key (prefixed)
     display_keys = {
-        'speaker': 'display_name',
-        'sponsor': 'organisation_name_display',
-        'sponsor_staff': 'display_name',
-        'startup': 'company_name_display',
-        'investor': 'display_name'
+        'speaker': 'speaker_display_name',
+        'sponsor': 'sponsor_organisation_name_display',
+        'sponsor_staff': 'sponsor_staff_display_name',
+        'startup': 'startup_company_name_display',
+        'investor': 'investor_display_name'
     }
 
     key = display_keys.get(module_name)
@@ -572,10 +572,10 @@ def _add_module_files_to_zip(zf, assignment, module_name, base_path):
                     file_content = file_obj.read()
                     file_obj.close()
 
-                    # Handle multiple deliverables/founder_photos
-                    if answer.question_key in ['deliverables', 'founder_photos']:
+                    # Handle multiple deliverables/founder_photos (check for prefixed versions)
+                    if answer.question_key in ['sponsor_deliverables', 'startup_founder_photos']:
                         subfolder = (
-                            'deliverables' if answer.question_key == 'deliverables'
+                            'deliverables' if answer.question_key == 'sponsor_deliverables'
                             else 'founder-photos'
                         )
                         zip_file_path = f'{base_path}/{subfolder}/{file_name}'

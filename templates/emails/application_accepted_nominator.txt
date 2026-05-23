@@ -1,0 +1,26 @@
+Excellent News!
+
+Dear {{ nominator_first_name }},
+
+We're pleased to inform you that {{ nominee_name }}, whom you nominated for {{ event_name }}, has been ACCEPTED!
+
+Acceptance Details:
+Nominee: {{ nominee_name }}
+Event: {{ event_name }}
+Track: {{ track_label }}
+{% if tier_label %}
+Tier: {{ tier_label }}
+{% if tier_price %}Cost: ${{ tier_price }}{% endif %}
+{% endif %}
+Event Date: {{ event_date_str }}
+
+Your nomination played an important role in {{ nominee_name }}'s selection. Thank you for believing in their potential and nominating them for this opportunity!
+
+If you have any questions, please reach out to us at {{ support_email }}.
+
+Best regards,
+{{ app_name }} Team
+
+---
+© {{ app_name }}. All rights reserved.
+If you no longer wish to receive these emails, please contact us.

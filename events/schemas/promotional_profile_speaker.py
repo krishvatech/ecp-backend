@@ -90,6 +90,7 @@ SPEAKER_MODULE_SCHEMA = {
                 {"value": "workshop", "label": "Workshop"},
                 {"value": "lightning_talk", "label": "Lightning Talk"},
                 {"value": "fireside_chat", "label": "Fireside Chat"},
+                {"value": "demo", "label": "Demo"},
                 {"value": "other", "label": "Other"}
             ],
             "help_text": "Type of session you'll be delivering"

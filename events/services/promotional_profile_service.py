@@ -22,6 +22,27 @@ from events.promotional_profile_schemas import PROMOTIONAL_PROFILE_SCHEMA
 logger = logging.getLogger('events')
 
 
+def _normalize_module_name(role_key):
+    """
+    FIX 0: Normalize role keys to promotional profile module names.
+
+    Maps role.key values to the module names used in schemas, validation, and export.
+
+    Args:
+        role_key: The EventRole.key value (e.g., 'sponsor', 'sponsor_organisation')
+
+    Returns:
+        str: The normalized module name used in promotional profile system
+    """
+    # Map various sponsor key formats to canonical sponsor_organisation module name
+    sponsor_aliases = {'sponsor', 'sponsor_org', 'sponsor_organisation'}
+    if role_key in sponsor_aliases:
+        return 'sponsor_organisation'
+
+    # All other roles map to themselves
+    return role_key
+
+
 def get_promotional_modules_for_attendee(event_registration):
     """
     Get list of promotional profile modules that should be active for an attendee.
@@ -30,25 +51,43 @@ def get_promotional_modules_for_attendee(event_registration):
         event_registration (EventRegistration): The attendee's event registration
 
     Returns:
-        list: List of module names (e.g., ['speaker', 'sponsor'])
+        list: List of module names (e.g., ['speaker', 'sponsor_organisation'])
         empty list if attendee doesn't have promotional profile-triggering roles
     """
     if not event_registration or not event_registration.event:
         return []
 
-    # Get all roles for this attendee at this event
-    roles = EventParticipant.objects.filter(
-        event=event_registration.event,
-        user=event_registration.user
-    ).values_list('role', flat=True)
-
-    # Map roles to promotional modules
     modules = []
+
+    # Primary: Get roles from EventRegistration.roles (new system)
+    # These are assigned when applications are accepted
+    roles = event_registration.roles.all()
     for role in roles:
-        if role in EventParticipant.TRIGGERS_PROMOTIONAL_PROFILE_ROLES:
-            module = EventParticipant.ROLE_MODULE_MAP.get(role)
+        if role.triggers_promotional_profile:
+            # FIX 0: Normalize role key to module name
+            # (handles sponsor→sponsor_organisation mapping)
+            module = _normalize_module_name(role.key)
             if module and module not in modules:
                 modules.append(module)
+
+    # Fallback: Check EventParticipant for backward compatibility with old attendees
+    # This handles attendees added before the new EventRegistration.roles system
+    if not modules:
+        try:
+            old_roles = EventParticipant.objects.filter(
+                event=event_registration.event,
+                user=event_registration.user
+            ).values_list('role', flat=True)
+
+            for role in old_roles:
+                if hasattr(EventParticipant, 'TRIGGERS_PROMOTIONAL_PROFILE_ROLES'):
+                    if role in EventParticipant.TRIGGERS_PROMOTIONAL_PROFILE_ROLES:
+                        module = EventParticipant.ROLE_MODULE_MAP.get(role)
+                        if module and module not in modules:
+                            modules.append(module)
+        except Exception:
+            # If EventParticipant is removed or broken, just use new roles
+            pass
 
     return sorted(modules)  # Return in consistent order
 

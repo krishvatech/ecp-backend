@@ -633,11 +633,12 @@ def validate_speaker_module_submission(answers, assignment=None):
 
     errors = {}
 
+    # FIX 4: Use prefixed field keys (speaker_* prefix)
     # Required text fields
     required_fields = [
-        'display_name', 'programme_title', 'programme_affiliation',
-        'headshot', 'programme_bio', 'short_bio',
-        'talk_title', 'talk_abstract', 'session_format', 'display_consent'
+        'speaker_display_name', 'speaker_programme_title', 'speaker_programme_affiliation',
+        'speaker_headshot', 'speaker_programme_bio', 'speaker_short_bio',
+        'speaker_talk_title', 'speaker_talk_abstract', 'speaker_session_format', 'speaker_display_consent'
     ]
 
     for field in required_fields:
@@ -645,98 +646,98 @@ def validate_speaker_module_submission(answers, assignment=None):
             errors[field] = f'{field} is required'
 
     # Display name validation
-    if 'display_name' in answers and answers['display_name']:
-        name = answers['display_name']
+    if 'speaker_display_name' in answers and answers['speaker_display_name']:
+        name = answers['speaker_display_name']
         if len(name) < 2 or len(name) > 150:
-            errors['display_name'] = 'Display name must be 2-150 characters'
+            errors['speaker_display_name'] = 'Display name must be 2-150 characters'
 
     # Programme title validation
-    if 'programme_title' in answers and answers['programme_title']:
-        title = answers['programme_title']
+    if 'speaker_programme_title' in answers and answers['speaker_programme_title']:
+        title = answers['speaker_programme_title']
         if len(title) < 2 or len(title) > 100:
-            errors['programme_title'] = 'Professional title must be 2-100 characters'
+            errors['speaker_programme_title'] = 'Professional title must be 2-100 characters'
 
     # Programme affiliation validation
-    if 'programme_affiliation' in answers and answers['programme_affiliation']:
-        aff = answers['programme_affiliation']
+    if 'speaker_programme_affiliation' in answers and answers['speaker_programme_affiliation']:
+        aff = answers['speaker_programme_affiliation']
         if len(aff) < 2 or len(aff) > 150:
-            errors['programme_affiliation'] = 'Organization must be 2-150 characters'
+            errors['speaker_programme_affiliation'] = 'Organization must be 2-150 characters'
 
     # Headshot validation
-    if 'headshot' in answers and answers['headshot']:
+    if 'speaker_headshot' in answers and answers['speaker_headshot']:
         try:
-            validate_headshot(answers['headshot'])
+            validate_headshot(answers['speaker_headshot'])
         except ValidationError as e:
-            errors['headshot'] = str(e.message)
+            errors['speaker_headshot'] = str(e.message)
 
     # Programme bio validation (100-200 words)
-    if 'programme_bio' in answers and answers['programme_bio']:
-        bio_result = validate_speaker_bio(answers['programme_bio'], 'Programme bio')
+    if 'speaker_programme_bio' in answers and answers['speaker_programme_bio']:
+        bio_result = validate_speaker_bio(answers['speaker_programme_bio'], 'Programme bio')
         if not bio_result['valid']:
-            errors['programme_bio'] = '; '.join(bio_result['errors'])
+            errors['speaker_programme_bio'] = '; '.join(bio_result['errors'])
 
     # Short bio validation (max 200 characters)
-    if 'short_bio' in answers and answers['short_bio']:
+    if 'speaker_short_bio' in answers and answers['speaker_short_bio']:
         try:
-            validate_short_bio(answers['short_bio'])
+            validate_short_bio(answers['speaker_short_bio'])
         except ValidationError as e:
-            errors['short_bio'] = str(e.message)
+            errors['speaker_short_bio'] = str(e.message)
 
     # Talk title validation
-    if 'talk_title' in answers and answers['talk_title']:
-        title = answers['talk_title']
+    if 'speaker_talk_title' in answers and answers['speaker_talk_title']:
+        title = answers['speaker_talk_title']
         if len(title) < 3 or len(title) > 200:
-            errors['talk_title'] = 'Talk title must be 3-200 characters'
+            errors['speaker_talk_title'] = 'Talk title must be 3-200 characters'
 
     # Talk abstract validation (20-200 words)
-    if 'talk_abstract' in answers and answers['talk_abstract']:
-        abstract = answers['talk_abstract']
+    if 'speaker_talk_abstract' in answers and answers['speaker_talk_abstract']:
+        abstract = answers['speaker_talk_abstract']
         words = len([w for w in abstract.split() if w.strip()])
         if words < 20 or words > 200:
-            errors['talk_abstract'] = f'Talk abstract must be 20-200 words (currently {words} words)'
+            errors['speaker_talk_abstract'] = f'Talk abstract must be 20-200 words (currently {words} words)'
 
     # Session format validation
-    valid_formats = ['keynote', 'presentation', 'panel', 'workshop', 'lightning_talk', 'fireside_chat', 'other']
-    if 'session_format' in answers and answers['session_format']:
-        if answers['session_format'] not in valid_formats:
-            errors['session_format'] = f'Invalid session format'
+    valid_formats = ['keynote', 'presentation', 'panel', 'workshop', 'lightning_talk', 'fireside_chat', 'demo', 'other']
+    if 'speaker_session_format' in answers and answers['speaker_session_format']:
+        if answers['speaker_session_format'] not in valid_formats:
+            errors['speaker_session_format'] = f'Invalid session format'
 
     # Slide deck validation (optional but if provided, must be valid)
-    if 'slide_deck' in answers and answers['slide_deck']:
+    if 'speaker_slide_deck' in answers and answers['speaker_slide_deck']:
         try:
-            validate_slide_deck(answers['slide_deck'])
+            validate_slide_deck(answers['speaker_slide_deck'])
         except ValidationError as e:
-            errors['slide_deck'] = str(e.message)
+            errors['speaker_slide_deck'] = str(e.message)
 
     # LinkedIn URL validation (optional)
-    if 'linkedin_url' in answers and answers['linkedin_url']:
-        url = answers['linkedin_url']
+    if 'speaker_linkedin_url' in answers and answers['speaker_linkedin_url']:
+        url = answers['speaker_linkedin_url']
         if not url.startswith(('http://', 'https://')):
-            errors['linkedin_url'] = 'LinkedIn URL must start with http:// or https://'
+            errors['speaker_linkedin_url'] = 'LinkedIn URL must start with http:// or https://'
         if len(url) > 255:
-            errors['linkedin_url'] = 'LinkedIn URL is too long'
+            errors['speaker_linkedin_url'] = 'LinkedIn URL is too long'
 
     # Twitter handle validation (optional)
-    if 'twitter_handle' in answers and answers['twitter_handle']:
-        handle = answers['twitter_handle']
+    if 'speaker_twitter_handle' in answers and answers['speaker_twitter_handle']:
+        handle = answers['speaker_twitter_handle']
         handle = handle.lstrip('@')  # Remove @ if present
         if not (1 <= len(handle) <= 15):
-            errors['twitter_handle'] = 'Twitter handle must be 1-15 characters (without @)'
+            errors['speaker_twitter_handle'] = 'Twitter handle must be 1-15 characters (without @)'
         if not handle.replace('_', '').isalnum():
-            errors['twitter_handle'] = 'Twitter handle can only contain letters, numbers, and underscores'
+            errors['speaker_twitter_handle'] = 'Twitter handle can only contain letters, numbers, and underscores'
 
     # Personal website validation (optional)
-    if 'personal_website' in answers and answers['personal_website']:
-        url = answers['personal_website']
+    if 'speaker_personal_website' in answers and answers['speaker_personal_website']:
+        url = answers['speaker_personal_website']
         if not url.startswith(('http://', 'https://')):
-            errors['personal_website'] = 'Website URL must start with http:// or https://'
+            errors['speaker_personal_website'] = 'Website URL must start with http:// or https://'
         if len(url) > 255:
-            errors['personal_website'] = 'Website URL is too long'
+            errors['speaker_personal_website'] = 'Website URL is too long'
 
     # Display consent validation
-    if 'display_consent' in answers and answers['display_consent']:
-        if answers['display_consent'] not in ['yes', 'no']:
-            errors['display_consent'] = 'Display consent must be "yes" or "no"'
+    if 'speaker_display_consent' in answers and answers['speaker_display_consent']:
+        if answers['speaker_display_consent'] not in ['yes', 'no']:
+            errors['speaker_display_consent'] = 'Display consent must be "yes" or "no"'
 
     return {
         'valid': len(errors) == 0,
@@ -765,9 +766,9 @@ def writeback_speaker_profile_form(assignment):
         for answer in submission.answers.all():
             answers_dict[answer.question_key] = answer.answer_text or answer.answer_data
 
-        # Update display_consent
-        if 'display_consent' in answers_dict:
-            registration.display_consent = answers_dict['display_consent']
+        # FIX 4: Update display_consent using prefixed field key
+        if 'speaker_display_consent' in answers_dict:
+            registration.display_consent = answers_dict['speaker_display_consent']
 
         # Mark promotional profile as complete
         registration.promotional_profile_completed_at = timezone.now()
@@ -810,11 +811,12 @@ def validate_sponsor_organisation_submission(answers):
 
     errors = {}
 
+    # FIX 4: Use prefixed field keys (sponsor_org_* prefix)
     # Required fields
     required_fields = [
-        'organisation_name_display', 'organisation_logo', 'tagline',
-        'programme_description', 'website_url', 'primary_contact_name',
-        'primary_contact_email', 'display_consent'
+        'sponsor_org_organisation_name_display', 'sponsor_org_organisation_logo', 'sponsor_org_tagline',
+        'sponsor_org_programme_description', 'sponsor_org_website_url', 'sponsor_org_primary_contact_name',
+        'sponsor_org_primary_contact_email'
     ]
 
     for field in required_fields:
@@ -822,47 +824,47 @@ def validate_sponsor_organisation_submission(answers):
             errors[field] = f'{field} is required'
 
     # Validate organisation name
-    if 'organisation_name_display' in answers and answers['organisation_name_display']:
-        name = answers['organisation_name_display']
+    if 'sponsor_org_organisation_name_display' in answers and answers['sponsor_org_organisation_name_display']:
+        name = answers['sponsor_org_organisation_name_display']
         if len(name) < 2 or len(name) > 150:
-            errors['organisation_name_display'] = 'Name must be 2-150 characters'
+            errors['sponsor_org_organisation_name_display'] = 'Name must be 2-150 characters'
 
     # Validate tagline
-    if 'tagline' in answers and answers['tagline']:
-        tagline = answers['tagline']
+    if 'sponsor_org_tagline' in answers and answers['sponsor_org_tagline']:
+        tagline = answers['sponsor_org_tagline']
         if len(tagline) < 5 or len(tagline) > 100:
-            errors['tagline'] = 'Tagline must be 5-100 characters'
+            errors['sponsor_org_tagline'] = 'Tagline must be 5-100 characters'
 
     # Validate description
-    if 'programme_description' in answers and answers['programme_description']:
-        desc_result = validate_organisation_description(answers['programme_description'])
+    if 'sponsor_org_programme_description' in answers and answers['sponsor_org_programme_description']:
+        desc_result = validate_organisation_description(answers['sponsor_org_programme_description'])
         if not desc_result['valid']:
-            errors['programme_description'] = '; '.join(desc_result['errors'])
+            errors['sponsor_org_programme_description'] = '; '.join(desc_result['errors'])
 
     # Validate logos
-    if 'organisation_logo' in answers and answers['organisation_logo']:
+    if 'sponsor_org_organisation_logo' in answers and answers['sponsor_org_organisation_logo']:
         try:
-            validate_organisation_logo(answers['organisation_logo'], 'organisation_logo')
+            validate_organisation_logo(answers['sponsor_org_organisation_logo'], 'sponsor_org_organisation_logo')
         except ValidationError as e:
-            errors['organisation_logo'] = str(e.message)
+            errors['sponsor_org_organisation_logo'] = str(e.message)
 
-    if 'organisation_logo_dark' in answers and answers['organisation_logo_dark']:
+    if 'sponsor_org_organisation_logo_dark' in answers and answers['sponsor_org_organisation_logo_dark']:
         try:
-            validate_organisation_logo(answers['organisation_logo_dark'], 'organisation_logo_dark')
+            validate_organisation_logo(answers['sponsor_org_organisation_logo_dark'], 'sponsor_org_organisation_logo_dark')
         except ValidationError as e:
-            errors['organisation_logo_dark'] = str(e.message)
+            errors['sponsor_org_organisation_logo_dark'] = str(e.message)
 
     # Validate URLs
-    if 'website_url' in answers and answers['website_url']:
-        if not answers['website_url'].startswith(('http://', 'https://')):
-            errors['website_url'] = 'URL must start with http:// or https://'
+    if 'sponsor_org_website_url' in answers and answers['sponsor_org_website_url']:
+        if not answers['sponsor_org_website_url'].startswith(('http://', 'https://')):
+            errors['sponsor_org_website_url'] = 'URL must start with http:// or https://'
 
     # Validate email
-    if 'primary_contact_email' in answers and answers['primary_contact_email']:
+    if 'sponsor_org_primary_contact_email' in answers and answers['sponsor_org_primary_contact_email']:
         import re
         email_pattern = r'^[^\s@]+@[^\s@]+\.[^\s@]+$'
-        if not re.match(email_pattern, answers['primary_contact_email']):
-            errors['primary_contact_email'] = 'Invalid email format'
+        if not re.match(email_pattern, answers['sponsor_org_primary_contact_email']):
+            errors['sponsor_org_primary_contact_email'] = 'Invalid email format'
 
     return {'valid': len(errors) == 0, 'errors': errors}
 
@@ -871,23 +873,24 @@ def validate_sponsor_organisation_submission(answers):
 
 def validate_sponsor_staff_submission(answers):
     """Validate sponsor staff module submission."""
+    # FIX 4: Use prefixed field keys (sponsor_staff_* prefix)
     errors = {}
 
-    required_fields = ['display_name', 'role_at_sponsor', 'booth_presence', 'areas_of_conversation', 'display_consent']
+    required_fields = ['sponsor_staff_display_name', 'sponsor_staff_role_at_sponsor', 'sponsor_staff_booth_presence', 'sponsor_staff_display_consent']
 
     for field in required_fields:
         if field not in answers or not answers[field]:
             errors[field] = f'{field} is required'
 
     # Validate display name
-    if 'display_name' in answers and answers['display_name']:
-        if len(answers['display_name']) < 2 or len(answers['display_name']) > 150:
-            errors['display_name'] = 'Name must be 2-150 characters'
+    if 'sponsor_staff_display_name' in answers and answers['sponsor_staff_display_name']:
+        if len(answers['sponsor_staff_display_name']) < 2 or len(answers['sponsor_staff_display_name']) > 150:
+            errors['sponsor_staff_display_name'] = 'Name must be 2-150 characters'
 
     # Validate role
-    if 'role_at_sponsor' in answers and answers['role_at_sponsor']:
-        if len(answers['role_at_sponsor']) < 2 or len(answers['role_at_sponsor']) > 100:
-            errors['role_at_sponsor'] = 'Role must be 2-100 characters'
+    if 'sponsor_staff_role_at_sponsor' in answers and answers['sponsor_staff_role_at_sponsor']:
+        if len(answers['sponsor_staff_role_at_sponsor']) < 2 or len(answers['sponsor_staff_role_at_sponsor']) > 100:
+            errors['sponsor_staff_role_at_sponsor'] = 'Role must be 2-100 characters'
 
     return {'valid': len(errors) == 0, 'errors': errors}
 
@@ -904,12 +907,13 @@ def validate_startup_submission(answers):
     )
     from django.core.exceptions import ValidationError
 
+    # FIX 4: Use prefixed field keys (startup_* prefix)
     errors = {}
 
     required_fields = [
-        'company_name_display', 'company_logo', 'one_line_pitch',
-        'programme_description', 'stage', 'sector_industry',
-        'founded_year', 'website_url', 'founder_names_roles', 'display_consent'
+        'startup_company_name_display', 'startup_company_logo', 'startup_one_line_pitch',
+        'startup_programme_description', 'startup_stage', 'startup_sector_industry',
+        'startup_founded_year', 'startup_website_url', 'startup_founder_names_roles', 'startup_display_consent'
     ]
 
     for field in required_fields:
@@ -917,40 +921,40 @@ def validate_startup_submission(answers):
             errors[field] = f'{field} is required'
 
     # Validate pitch
-    if 'one_line_pitch' in answers and answers['one_line_pitch']:
+    if 'startup_one_line_pitch' in answers and answers['startup_one_line_pitch']:
         try:
-            validate_startup_pitch(answers['one_line_pitch'])
+            validate_startup_pitch(answers['startup_one_line_pitch'])
         except ValidationError as e:
-            errors['one_line_pitch'] = str(e.message)
+            errors['startup_one_line_pitch'] = str(e.message)
 
     # Validate description
-    if 'programme_description' in answers and answers['programme_description']:
-        desc_result = validate_startup_description(answers['programme_description'])
+    if 'startup_programme_description' in answers and answers['startup_programme_description']:
+        desc_result = validate_startup_description(answers['startup_programme_description'])
         if not desc_result['valid']:
-            errors['programme_description'] = '; '.join(desc_result['errors'])
+            errors['startup_programme_description'] = '; '.join(desc_result['errors'])
 
     # Validate founded year
-    if 'founded_year' in answers and answers['founded_year']:
+    if 'startup_founded_year' in answers and answers['startup_founded_year']:
         try:
-            year = int(answers['founded_year'])
+            year = int(answers['startup_founded_year'])
             if year < 2000 or year > 2026:
-                errors['founded_year'] = 'Year must be between 2000 and 2026'
+                errors['startup_founded_year'] = 'Year must be between 2000 and 2026'
         except (ValueError, TypeError):
-            errors['founded_year'] = 'Invalid year format'
+            errors['startup_founded_year'] = 'Invalid year format'
 
     # Validate pitch deck
-    if 'public_pitch_deck' in answers and answers['public_pitch_deck']:
+    if 'startup_public_pitch_deck' in answers and answers['startup_public_pitch_deck']:
         try:
-            validate_pitch_deck(answers['public_pitch_deck'])
+            validate_pitch_deck(answers['startup_public_pitch_deck'])
         except ValidationError as e:
-            errors['public_pitch_deck'] = str(e.message)
+            errors['startup_public_pitch_deck'] = str(e.message)
 
     # Validate founder photos
-    if 'founder_photos' in answers and answers['founder_photos']:
+    if 'startup_founder_photos' in answers and answers['startup_founder_photos']:
         try:
-            validate_founder_photos(answers['founder_photos'])
+            validate_founder_photos(answers['startup_founder_photos'])
         except ValidationError as e:
-            errors['founder_photos'] = str(e.message)
+            errors['startup_founder_photos'] = str(e.message)
 
     return {'valid': len(errors) == 0, 'errors': errors}
 
@@ -962,12 +966,13 @@ def validate_investor_submission(answers):
     from events.validators import validate_thesis_tagline
     from django.core.exceptions import ValidationError
 
+    # FIX 4: Use prefixed field keys (investor_* prefix)
     errors = {}
 
     required_fields = [
-        'display_name', 'thesis_tagline', 'stage_focus',
-        'sector_focus', 'geographic_focus', 'cheque_size_range',
-        'open_to_inbound', 'display_consent'
+        'investor_display_name', 'investor_thesis_tagline', 'investor_stage_focus',
+        'investor_sector_focus', 'investor_geographic_focus', 'investor_cheque_size_range',
+        'investor_open_to_inbound', 'investor_display_consent'
     ]
 
     for field in required_fields:
@@ -975,16 +980,16 @@ def validate_investor_submission(answers):
             errors[field] = f'{field} is required'
 
     # Validate display name
-    if 'display_name' in answers and answers['display_name']:
-        if len(answers['display_name']) < 2 or len(answers['display_name']) > 150:
-            errors['display_name'] = 'Name must be 2-150 characters'
+    if 'investor_display_name' in answers and answers['investor_display_name']:
+        if len(answers['investor_display_name']) < 2 or len(answers['investor_display_name']) > 150:
+            errors['investor_display_name'] = 'Name must be 2-150 characters'
 
     # Validate tagline
-    if 'thesis_tagline' in answers and answers['thesis_tagline']:
+    if 'investor_thesis_tagline' in answers and answers['investor_thesis_tagline']:
         try:
-            validate_thesis_tagline(answers['thesis_tagline'])
+            validate_thesis_tagline(answers['investor_thesis_tagline'])
         except ValidationError as e:
-            errors['thesis_tagline'] = str(e.message)
+            errors['investor_thesis_tagline'] = str(e.message)
 
     return {'valid': len(errors) == 0, 'errors': errors}
 
@@ -997,7 +1002,7 @@ def writeback_promotional_profile_module(assignment, module_type):
 
     Args:
         assignment: PostAcceptanceFormAssignment
-        module_type: 'sponsor', 'sponsor_staff', 'startup', or 'investor'
+        module_type: 'speaker', 'sponsor_staff', 'startup', 'investor', 'sponsor_organisation'
 
     Returns:
         bool: Success status
@@ -1006,9 +1011,20 @@ def writeback_promotional_profile_module(assignment, module_type):
         submission = assignment.submission
         registration = assignment.event_registration
 
-        # Update display_consent
+        # FIX 4: Map module_type to field prefix and look for prefixed display_consent
+        prefix_map = {
+            'speaker': 'speaker_',
+            'sponsor_staff': 'sponsor_staff_',
+            'startup': 'startup_',
+            'investor': 'investor_',
+            'sponsor_organisation': 'sponsor_org_',
+        }
+        prefix = prefix_map.get(module_type, '')
+        consent_field_key = f'{prefix}display_consent'
+
+        # Update display_consent using prefixed field key
         for answer in submission.answers.all():
-            if answer.question_key == 'display_consent':
+            if answer.question_key == consent_field_key:
                 registration.display_consent = answer.answer_text
                 break
 

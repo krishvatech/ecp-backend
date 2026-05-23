@@ -13,6 +13,9 @@ from .views import (
     PostAcceptanceFormAssignmentViewSet,
     PostAcceptanceFormAssignmentAdminViewSet,
     EventApplicationTrackViewSet,
+    EventRoleViewSet,
+    FormFieldViewSet,
+    TrackPricingTierViewSet,
     SaleorChannelListView,
     SaleorChannelSyncView,
     SaleorChannelCreateView,
@@ -210,6 +213,66 @@ urlpatterns = [
             'delete': 'destroy'
         }),
         name='application-tracks-detail'
+    ),
+
+    # Event Roles Endpoints
+    path(
+        "events/<int:event_id>/roles/",
+        EventRoleViewSet.as_view({
+            'get': 'list',
+            'post': 'create'
+        }),
+        name='event-roles-list'
+    ),
+    path(
+        "events/<int:event_id>/roles/<int:pk>/",
+        EventRoleViewSet.as_view({
+            'get': 'retrieve',
+            'put': 'update',
+            'patch': 'partial_update',
+            'delete': 'destroy'
+        }),
+        name='event-roles-detail'
+    ),
+
+    # Form Fields Endpoints (nested under application tracks)
+    path(
+        "events/<int:event_id>/application-tracks/<int:track_id>/form-fields/",
+        FormFieldViewSet.as_view({
+            'get': 'list',
+            'post': 'create'
+        }),
+        name='form-fields-list'
+    ),
+    path(
+        "events/<int:event_id>/application-tracks/<int:track_id>/form-fields/<int:pk>/",
+        FormFieldViewSet.as_view({
+            'get': 'retrieve',
+            'put': 'update',
+            'patch': 'partial_update',
+            'delete': 'destroy'
+        }),
+        name='form-fields-detail'
+    ),
+
+    # FIX 3: Pricing Tiers Endpoints (nested under application tracks)
+    path(
+        "events/<int:event_id>/application-tracks/<int:track_id>/pricing-tiers/",
+        TrackPricingTierViewSet.as_view({
+            'get': 'list',
+            'post': 'create'
+        }),
+        name='pricing-tiers-list'
+    ),
+    path(
+        "events/<int:event_id>/application-tracks/<int:track_id>/pricing-tiers/<int:pk>/",
+        TrackPricingTierViewSet.as_view({
+            'get': 'retrieve',
+            'put': 'update',
+            'patch': 'partial_update',
+            'delete': 'destroy'
+        }),
+        name='pricing-tiers-detail'
     ),
 
     # Promotional Profile Admin Endpoints

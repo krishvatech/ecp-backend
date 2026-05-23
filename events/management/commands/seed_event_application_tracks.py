@@ -14,6 +14,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Standard application tracks to seed for each event
+# Phase 13: Updated submission modes to new taxonomy:
+#   - self_submission: Applicant submits themselves (standard form)
+#   - confirmed: Confirmed/pre-approved applicant (organization/partner confirmed)
+#   - self_nomination: Self-nominated without verification
+#   - third_party_nomination: Nominated by someone else
 DEFAULT_TRACKS = [
     {
         'key': 'participant',
@@ -22,7 +27,7 @@ DEFAULT_TRACKS = [
         'status': 'open',
         'sort_order': 100,
         'is_active': True,
-        'enabled_submission_modes': ['online_form', 'preapproved'],
+        'enabled_submission_modes': ['self_submission', 'confirmed'],
         'role_mappings_on_acceptance': ['attendee'],
         'content_surfaces': ['event_page', 'email'],
         'is_system_default': True,
@@ -34,7 +39,7 @@ DEFAULT_TRACKS = [
         'status': 'open',
         'sort_order': 10,
         'is_active': True,
-        'enabled_submission_modes': ['online_form', 'preapproved', 'invite_only'],
+        'enabled_submission_modes': ['self_submission', 'confirmed', 'third_party_nomination'],
         'role_mappings_on_acceptance': ['speaker', 'attendee'],
         'content_surfaces': ['event_page', 'email', 'application_modal'],
         'is_system_default': True,
@@ -46,7 +51,7 @@ DEFAULT_TRACKS = [
         'status': 'open',
         'sort_order': 20,
         'is_active': True,
-        'enabled_submission_modes': ['online_form', 'preapproved'],
+        'enabled_submission_modes': ['self_submission', 'confirmed'],
         'role_mappings_on_acceptance': ['startup', 'attendee'],
         'content_surfaces': ['event_page', 'email', 'application_modal'],
         'is_system_default': True,
@@ -58,7 +63,7 @@ DEFAULT_TRACKS = [
         'status': 'open',
         'sort_order': 30,
         'is_active': True,
-        'enabled_submission_modes': ['online_form', 'invite_only'],
+        'enabled_submission_modes': ['self_submission', 'third_party_nomination'],
         'role_mappings_on_acceptance': ['investor', 'attendee'],
         'content_surfaces': ['event_page', 'email'],
         'is_system_default': True,
@@ -70,7 +75,7 @@ DEFAULT_TRACKS = [
         'status': 'open',
         'sort_order': 40,
         'is_active': True,
-        'enabled_submission_modes': ['online_form', 'preapproved'],
+        'enabled_submission_modes': ['self_submission', 'confirmed'],
         'role_mappings_on_acceptance': ['researcher', 'attendee'],
         'content_surfaces': ['event_page', 'email'],
         'is_system_default': True,
@@ -82,7 +87,7 @@ DEFAULT_TRACKS = [
         'status': 'open',
         'sort_order': 50,
         'is_active': True,
-        'enabled_submission_modes': ['online_form', 'invite_only'],
+        'enabled_submission_modes': ['self_submission', 'third_party_nomination'],
         'role_mappings_on_acceptance': ['sponsor', 'sponsor_staff', 'attendee'],
         'content_surfaces': ['event_page', 'email', 'application_modal'],
         'is_system_default': True,

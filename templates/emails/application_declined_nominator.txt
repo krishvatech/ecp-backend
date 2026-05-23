@@ -1,0 +1,29 @@
+Application Status Update
+
+Dear {{ nominator_first_name }},
+
+Thank you for nominating {{ nominee_name }} for {{ event_name }}. We appreciate your confidence in them and the time you spent on the nomination.
+
+Unfortunately, we have decided not to move forward with the nomination at this time for the {{ track_label }} track.
+
+Application Details:
+Nominee: {{ nominee_name }}
+Event: {{ event_name }}
+Track: {{ track_label }}
+Event Date: {{ event_date_str }}
+
+{% if custom_message %}
+Feedback:
+{{ custom_message }}
+{% endif %}
+
+We encourage you to consider nominating them again for future opportunities. If you have any questions about this decision, please feel free to reach out to us at {{ support_email }}.
+
+Thank you for your support and interest in {{ event_name }}.
+
+Best regards,
+{{ app_name }} Team
+
+---
+© {{ app_name }}. All rights reserved.
+If you no longer wish to receive these emails, please contact us.

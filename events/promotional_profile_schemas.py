@@ -9,6 +9,31 @@ Defines complete form schemas for each promotional profile module:
 - Investor
 """
 
+import copy
+
+
+def add_module_prefix(schema, module_prefix):
+    """
+    FIX 6: Add module prefix to all field IDs in schema to prevent collisions.
+
+    Example:
+        add_module_prefix(SPEAKER_MODULE_SCHEMA, "speaker_")
+
+    Result:
+        "display_name" → "speaker_display_name"
+        "headshot" → "speaker_headshot"
+    """
+    schema_copy = copy.deepcopy(schema)
+
+    for section in schema_copy.get("sections", []):
+        for field in section.get("fields", []):
+            original_id = field.get("id")
+            if original_id:
+                field["id"] = f"{module_prefix}{original_id}"
+
+    return schema_copy
+
+
 SPEAKER_MODULE_SCHEMA = {
     "sections": [
         {
@@ -40,10 +65,11 @@ SPEAKER_MODULE_SCHEMA = {
                 },
                 {
                     "id": "headshot",
-                    "label": "Headshot (PNG/JPG, min 500x500px)",
+                    "label": "Headshot",
                     "type": "file_upload",
                     "required": True,
-                    "accept": "image/png,image/jpeg"
+                    "accept": "image/png,image/jpeg",
+                    "help_text": "JPG or PNG format. Minimum 1500×1500 pixels. Maximum 10 MB."
                 }
             ]
         },
@@ -54,17 +80,19 @@ SPEAKER_MODULE_SCHEMA = {
             "fields": [
                 {
                     "id": "programme_bio",
-                    "label": "Extended Bio (for program materials)",
+                    "label": "Bio",
                     "type": "textarea",
                     "required": True,
-                    "placeholder": "200-300 words about your background and expertise"
+                    "placeholder": "Write about yourself in third person",
+                    "help_text": "100–200 words. Write in third person (e.g., 'John is a software engineer...' rather than 'I am a software engineer...')."
                 },
                 {
                     "id": "short_bio",
-                    "label": "Short Bio (for website)",
+                    "label": "Short Bio",
                     "type": "textarea",
                     "required": True,
-                    "placeholder": "50-100 words"
+                    "placeholder": "One sentence describing yourself",
+                    "help_text": "One sentence. Maximum 200 characters."
                 }
             ]
         },
@@ -84,14 +112,21 @@ SPEAKER_MODULE_SCHEMA = {
                     "label": "Talk Abstract",
                     "type": "textarea",
                     "required": True,
-                    "placeholder": "200-300 words describing your talk"
+                    "placeholder": "Describe your talk",
+                    "help_text": "3–5 sentences describing the key points and value of your talk."
                 },
                 {
                     "id": "session_format",
                     "label": "Session Format",
                     "type": "select",
                     "required": True,
-                    "options": ["Keynote", "Panel", "Workshop", "Lightning Talk", "Demo"]
+                    "options": [
+                        {"value": "keynote", "label": "Keynote"},
+                        {"value": "panel", "label": "Panel"},
+                        {"value": "workshop", "label": "Workshop"},
+                        {"value": "lightning_talk", "label": "Lightning Talk"},
+                        {"value": "demo", "label": "Demo"}
+                    ]
                 },
                 {
                     "id": "co_speakers",
@@ -108,10 +143,11 @@ SPEAKER_MODULE_SCHEMA = {
                 },
                 {
                     "id": "slide_deck",
-                    "label": "Slide Deck (PDF)",
+                    "label": "Slide Deck",
                     "type": "file_upload",
                     "required": False,
-                    "accept": "application/pdf"
+                    "accept": "application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    "help_text": "PDF or PowerPoint format. Maximum 50 MB."
                 }
             ]
         },
@@ -144,7 +180,10 @@ SPEAKER_MODULE_SCHEMA = {
                     "label": "Display Consent - May we publish your profile publicly?",
                     "type": "select",
                     "required": True,
-                    "options": ["Yes", "No"]
+                    "options": [
+                        {"value": "yes", "label": "Yes"},
+                        {"value": "no", "label": "No"}
+                    ]
                 }
             ]
         }
@@ -217,7 +256,13 @@ SPONSOR_ORGANISATION_MODULE_SCHEMA = {
                     "label": "Sponsorship Tier",
                     "type": "select",
                     "required": True,
-                    "options": ["Platinum", "Gold", "Silver", "Bronze", "Other"]
+                    "options": [
+                        {"value": "platinum", "label": "Platinum"},
+                        {"value": "gold", "label": "Gold"},
+                        {"value": "silver", "label": "Silver"},
+                        {"value": "bronze", "label": "Bronze"},
+                        {"value": "other", "label": "Other"}
+                    ]
                 },
                 {
                     "id": "booth_activation_details",
@@ -256,7 +301,10 @@ SPONSOR_ORGANISATION_MODULE_SCHEMA = {
                     "label": "Display Consent - May we publish your organization's profile publicly?",
                     "type": "select",
                     "required": True,
-                    "options": ["Yes", "No"]
+                    "options": [
+                        {"value": "yes", "label": "Yes"},
+                        {"value": "no", "label": "No"}
+                    ]
                 }
             ]
         }
@@ -301,7 +349,11 @@ SPONSOR_STAFF_MODULE_SCHEMA = {
                     "label": "Will you be at the booth?",
                     "type": "select",
                     "required": True,
-                    "options": ["Yes", "No", "Part-time"]
+                    "options": [
+                        {"value": "yes", "label": "Yes"},
+                        {"value": "no", "label": "No"},
+                        {"value": "part_time", "label": "Part-time"}
+                    ]
                 },
                 {
                     "id": "areas_of_conversation",
@@ -314,7 +366,10 @@ SPONSOR_STAFF_MODULE_SCHEMA = {
                     "label": "Display Consent - May we publish your profile publicly?",
                     "type": "select",
                     "required": True,
-                    "options": ["Yes", "No"]
+                    "options": [
+                        {"value": "yes", "label": "Yes"},
+                        {"value": "no", "label": "No"}
+                    ]
                 }
             ]
         }
@@ -366,14 +421,27 @@ STARTUP_MODULE_SCHEMA = {
                     "label": "Stage",
                     "type": "select",
                     "required": True,
-                    "options": ["Idea", "Pre-seed", "Seed", "Series A", "Series B", "Later"]
+                    "options": [
+                        {"value": "idea", "label": "Idea"},
+                        {"value": "pre_seed", "label": "Pre-seed"},
+                        {"value": "seed", "label": "Seed"},
+                        {"value": "series_a", "label": "Series A"},
+                        {"value": "series_b", "label": "Series B"},
+                        {"value": "later", "label": "Later"}
+                    ]
                 },
                 {
                     "id": "sector_industry",
                     "label": "Sector/Industry",
                     "type": "select",
                     "required": True,
-                    "options": ["AI/ML", "Climate", "Fintech", "Healthtech", "Other"]
+                    "options": [
+                        {"value": "aiml", "label": "AI/ML"},
+                        {"value": "climate", "label": "Climate"},
+                        {"value": "fintech", "label": "Fintech"},
+                        {"value": "healthtech", "label": "Healthtech"},
+                        {"value": "other", "label": "Other"}
+                    ]
                 },
                 {
                     "id": "founded_year",
@@ -432,7 +500,10 @@ STARTUP_MODULE_SCHEMA = {
                     "label": "Display Consent - May we publish your startup's profile publicly?",
                     "type": "select",
                     "required": True,
-                    "options": ["Yes", "No"]
+                    "options": [
+                        {"value": "yes", "label": "Yes"},
+                        {"value": "no", "label": "No"}
+                    ]
                 }
             ]
         }
@@ -477,14 +548,27 @@ INVESTOR_MODULE_SCHEMA = {
                     "label": "Stage Focus",
                     "type": "select",
                     "required": True,
-                    "options": ["Pre-seed", "Seed", "Series A", "Series B+", "All stages"]
+                    "options": [
+                        {"value": "pre_seed", "label": "Pre-seed"},
+                        {"value": "seed", "label": "Seed"},
+                        {"value": "series_a", "label": "Series A"},
+                        {"value": "series_b_plus", "label": "Series B+"},
+                        {"value": "all_stages", "label": "All stages"}
+                    ]
                 },
                 {
                     "id": "sector_focus",
                     "label": "Sector Focus",
                     "type": "select",
                     "required": True,
-                    "options": ["AI/ML", "Climate", "Fintech", "Healthtech", "Other", "Multi-sector"]
+                    "options": [
+                        {"value": "aiml", "label": "AI/ML"},
+                        {"value": "climate", "label": "Climate"},
+                        {"value": "fintech", "label": "Fintech"},
+                        {"value": "healthtech", "label": "Healthtech"},
+                        {"value": "other", "label": "Other"},
+                        {"value": "multi_sector", "label": "Multi-sector"}
+                    ]
                 },
                 {
                     "id": "geographic_focus",
@@ -504,27 +588,50 @@ INVESTOR_MODULE_SCHEMA = {
                     "label": "Open to Inbound?",
                     "type": "select",
                     "required": True,
-                    "options": ["Yes", "No", "Case-by-case"]
+                    "options": [
+                        {"value": "yes", "label": "Yes"},
+                        {"value": "no", "label": "No"},
+                        {"value": "case_by_case", "label": "Case-by-case"}
+                    ]
                 },
                 {
                     "id": "display_consent",
                     "label": "Display Consent - May we publish your investor profile publicly?",
                     "type": "select",
                     "required": True,
-                    "options": ["Yes", "No"]
+                    "options": [
+                        {"value": "yes", "label": "Yes"},
+                        {"value": "no", "label": "No"}
+                    ]
                 }
             ]
         }
     ]
 }
 
-# Master schema combining all modules
+# FIX 6: Prefixed schemas to prevent field ID collisions across modules
+SPEAKER_SCHEMA_PREFIXED = add_module_prefix(SPEAKER_MODULE_SCHEMA, "speaker_")
+SPONSOR_ORGANISATION_SCHEMA_PREFIXED = add_module_prefix(SPONSOR_ORGANISATION_MODULE_SCHEMA, "sponsor_org_")
+SPONSOR_STAFF_SCHEMA_PREFIXED = add_module_prefix(SPONSOR_STAFF_MODULE_SCHEMA, "sponsor_staff_")
+STARTUP_SCHEMA_PREFIXED = add_module_prefix(STARTUP_MODULE_SCHEMA, "startup_")
+INVESTOR_SCHEMA_PREFIXED = add_module_prefix(INVESTOR_MODULE_SCHEMA, "investor_")
+
+# FIX 3: Master schema combining all modules - use prefixed schemas to prevent field ID collisions
 PROMOTIONAL_PROFILE_SCHEMA = {
     "sections": (
-        SPEAKER_MODULE_SCHEMA.get("sections", []) +
-        SPONSOR_ORGANISATION_MODULE_SCHEMA.get("sections", []) +
-        SPONSOR_STAFF_MODULE_SCHEMA.get("sections", []) +
-        STARTUP_MODULE_SCHEMA.get("sections", []) +
-        INVESTOR_MODULE_SCHEMA.get("sections", [])
+        SPEAKER_SCHEMA_PREFIXED.get("sections", []) +
+        SPONSOR_ORGANISATION_SCHEMA_PREFIXED.get("sections", []) +
+        SPONSOR_STAFF_SCHEMA_PREFIXED.get("sections", []) +
+        STARTUP_SCHEMA_PREFIXED.get("sections", []) +
+        INVESTOR_SCHEMA_PREFIXED.get("sections", [])
     )
+}
+
+# Mapping of module names to their prefixed schemas
+MODULE_SCHEMAS_PREFIXED = {
+    'speaker': SPEAKER_SCHEMA_PREFIXED,
+    'sponsor_organisation': SPONSOR_ORGANISATION_SCHEMA_PREFIXED,
+    'sponsor_staff': SPONSOR_STAFF_SCHEMA_PREFIXED,
+    'startup': STARTUP_SCHEMA_PREFIXED,
+    'investor': INVESTOR_SCHEMA_PREFIXED,
 }

@@ -1,0 +1,22 @@
+Thank You for Your Nomination
+
+Dear {{ nominator_first_name }},
+
+Thank you for nominating {{ nominee_name }} for {{ event_name }}! We truly appreciate you taking the time to recognize this outstanding individual.
+
+Nomination Details:
+Nominee: {{ nominee_name }}
+Event: {{ event_name }}
+Track: {{ track_label }}
+Event Date: {{ event_date_str }}
+
+We will review the nomination and notify both you and {{ nominee_name }} of the decision as soon as possible. If you have any questions in the meantime, please don't hesitate to contact us at {{ support_email }}.
+
+Thank you again for your nomination!
+
+Best regards,
+{{ app_name }} Team
+
+---
+© {{ app_name }}. All rights reserved.
+If you no longer wish to receive these emails, please contact us.
