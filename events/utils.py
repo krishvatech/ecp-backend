@@ -18,17 +18,33 @@ RTK_AUTH_HEADER = os.getenv("RTK_AUTH_HEADER", "")
 RTK_PRESET_HOST = os.getenv("RTK_PRESET_NAME_HOST", os.getenv("RTK_PRESET_NAME", "group_call_host"))
 RTK_PRESET_PARTICIPANT = os.getenv("RTK_PRESET_NAME_MEMBER", "group_call_participant")
 
+def _mask_secret(value: str, prefix: int = 4) -> str:
+    value = value or ""
+    if not value:
+        return "<missing>"
+    if len(value) <= prefix:
+        return "*" * len(value)
+    return f"{value[:prefix]}..."
+
 def _rtk_headers():
     """HTTP headers for RTK REST API (Basic auth: org_id:api_key)."""
     if RTK_ORG_ID and RTK_ORG_API_KEY:
         credentials = f"{RTK_ORG_ID}:{RTK_ORG_API_KEY}"
         auth = "Basic " + base64.b64encode(credentials.encode()).decode()
-        logger.error(f"[RTK_DEBUG] Using ORG_ID={RTK_ORG_ID[:8]}... KEY={RTK_ORG_API_KEY[:6]}... auth={auth[:40]}...")
+        logger.debug(
+            "[RTK_AUTH] Using RTK org credentials org_id=%s api_key=%s",
+            _mask_secret(RTK_ORG_ID, prefix=8),
+            _mask_secret(RTK_ORG_API_KEY, prefix=6),
+        )
     elif RTK_AUTH_HEADER:
         auth = RTK_AUTH_HEADER
-        logger.error(f"[RTK_DEBUG] Using RTK_AUTH_HEADER={RTK_AUTH_HEADER[:40]}...")
+        logger.debug("[RTK_AUTH] Using RTK_AUTH_HEADER=%s", _mask_secret(RTK_AUTH_HEADER, prefix=12))
     else:
-        logger.error(f"[RTK_DEBUG] NO CREDENTIALS FOUND — ORG_ID={repr(RTK_ORG_ID)} AUTH_HEADER={repr(RTK_AUTH_HEADER)}")
+        logger.error(
+            "[RTK_AUTH] No RTK credentials configured org_id=%s auth_header=%s",
+            _mask_secret(RTK_ORG_ID, prefix=8),
+            _mask_secret(RTK_AUTH_HEADER, prefix=12),
+        )
         raise RuntimeError(
             "RTK credentials not configured. Set RTK_ORG_ID + RTK_ORG_API_KEY in .env"
         )
