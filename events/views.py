@@ -2401,6 +2401,77 @@ class EventViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": str(e)}, status=400)
 
+    def _get_missing_lead_gen_fields(self, user):
+        """
+        Check if user has all required lead-generation fields for event registration.
+        Validates from correct sources to avoid false positives:
+        - Name: user.first_name/last_name (primary) or profile.full_name (fallback)
+        - Email: user.email
+        - Job Title: profile.job_title (primary) or latest Experience.position (fallback)
+        - Company: profile.company (primary) or latest Experience.community_name (fallback)
+        - Contact Number: profile.links.contact.phones
+        - Country/Region: profile.location (country field, not just city)
+
+        Returns: (is_complete, missing_fields_dict)
+        - is_complete: Boolean - True if all fields present and non-empty
+        - missing_fields_dict: Dict with field keys and display names
+        """
+        missing = {}
+
+        # 1. Check name: user.first_name + user.last_name, or fallback to profile.full_name
+        profile = getattr(user, 'profile', None)
+        has_first_name = user.first_name and user.first_name.strip()
+        has_last_name = user.last_name and user.last_name.strip()
+        has_full_name = profile and profile.full_name and profile.full_name.strip()
+
+        # Name is complete if either (first_name AND last_name) OR full_name
+        if not ((has_first_name and has_last_name) or has_full_name):
+            missing['first_name'] = 'First Name'
+            missing['last_name'] = 'Last Name'
+
+        # 2. Check email
+        if not (user.email and user.email.strip()):
+            missing['email'] = 'Email'
+
+        # 3 & 4. Check job title and company from profile, and fetch latest experience once if needed
+        has_job_title = profile and profile.job_title and profile.job_title.strip()
+        has_company = profile and profile.company and profile.company.strip()
+
+        # Only query latest_exp if either job_title or company is missing from profile
+        latest_exp = None
+        if not has_job_title or not has_company:
+            latest_exp = user.experiences.order_by('-start_date').first()
+
+        # Check job title fallback to latest experience
+        if not has_job_title:
+            has_job_title = latest_exp and latest_exp.position and latest_exp.position.strip()
+
+        if not has_job_title:
+            missing['job_title'] = 'Job Title'
+
+        # Check company fallback to latest experience
+        if not has_company:
+            has_company = latest_exp and latest_exp.community_name and latest_exp.community_name.strip()
+
+        if not has_company:
+            missing['company'] = 'Company'
+
+        # 5. Check country/region: profile.location (must be country/region, not just city)
+        has_location = profile and profile.location and profile.location.strip()
+        if not has_location:
+            missing['location'] = 'Country/Region'
+
+        # 6. Check contact number: profile.links.contact.phones (primary phone)
+        has_phone = False
+        if profile:
+            phones = (profile.links or {}).get('contact', {}).get('phones', [])
+            has_phone = any(p.get('number') and str(p.get('number')).strip() for p in phones)
+
+        if not has_phone:
+            missing['phone'] = 'Contact Number'
+
+        return len(missing) == 0, missing
+
     # POST /api/events/{id}/register/
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="register")
     def register(self, request, pk=None):
@@ -2456,6 +2527,15 @@ class EventViewSet(viewsets.ModelViewSet):
             if not is_already_registered:
                 return Response({"detail": "This is a paid event. Please purchase a ticket to register.", "code": "requires_payment"}, status=402)
 
+        # ✅ Validate lead-generation fields before registration
+        is_lead_gen_complete, missing_fields = self._get_missing_lead_gen_fields(request.user)
+        if not is_lead_gen_complete:
+            return Response({
+                "status": "missing_lead_gen_fields",
+                "detail": "Please complete your registration profile to register for this event.",
+                "missing_fields": missing_fields
+            }, status=400)
+
         # ✅ NEW: Set admission_status based on event's waiting_room_enabled setting
         # If waiting room is enabled, new users start as "waiting" for host admission
         # If waiting room is disabled, new users are automatically "admitted"
@@ -2509,6 +2589,51 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return Response({"ok": True, "created": was_created, "event_id": event.id})
 
+    @action(detail=False, methods=["post"], permission_classes=[IsAuthenticated], url_path="save-lead-gen-fields")
+    def save_lead_gen_fields(self, request):
+        """
+        Save lead-generation fields to user profile.
+        Accepts: first_name, last_name, email, job_title, company, location, phone
+        """
+        user = request.user
+        profile = user.profile
+
+        # Update user fields
+        if 'first_name' in request.data:
+            user.first_name = request.data['first_name']
+        if 'last_name' in request.data:
+            user.last_name = request.data['last_name']
+        if 'email' in request.data:
+            user.email = request.data['email']
+        user.save()
+
+        # Update profile fields
+        if 'job_title' in request.data:
+            profile.job_title = request.data['job_title']
+        if 'company' in request.data:
+            profile.company = request.data['company']
+        if 'location' in request.data:
+            profile.location = request.data['location']
+
+        # Handle phone separately (it's in a nested structure)
+        if 'phone' in request.data and request.data['phone']:
+            if not profile.links:
+                profile.links = {}
+            if 'contact' not in profile.links:
+                profile.links['contact'] = {}
+            if 'phones' not in profile.links['contact']:
+                profile.links['contact']['phones'] = []
+
+            # Add or update phone (replace existing phones with new one)
+            new_phone = {'number': request.data['phone'], 'type': 'mobile'}
+            profile.links['contact']['phones'] = [new_phone]
+
+        profile.save()
+
+        from users.serializers import UserProfileSerializer
+        serializer = UserProfileSerializer(profile)
+        return Response({"status": "success", "profile": serializer.data})
+
     @action(detail=True, methods=["post", "get"], permission_classes=[AllowAny], url_path="apply")
     def apply(self, request, pk=None):
         """
@@ -2545,6 +2670,16 @@ class EventViewSet(viewsets.ModelViewSet):
         serializer = EventApplicationSubmitSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+
+        # ✅ For authenticated users, validate lead-generation fields
+        if request.user.is_authenticated:
+            is_lead_gen_complete, missing_fields = self._get_missing_lead_gen_fields(request.user)
+            if not is_lead_gen_complete:
+                return Response({
+                    "status": "missing_lead_gen_fields",
+                    "detail": "Please complete your registration profile to submit an application.",
+                    "missing_fields": missing_fields
+                }, status=400)
 
         email = (data.get('email') or '').strip().lower()
         submitted_code = (data.get('preapproved_code') or '').strip()
