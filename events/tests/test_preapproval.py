@@ -3,7 +3,13 @@ from django.contrib.auth.models import User
 from rest_framework.test import APIClient
 
 from community.models import Community
-from events.models import Event, EventApplication, EventPreApprovalAllowlist, EventPreApprovalCode
+from events.models import (
+    Event,
+    EventApplication,
+    EventApplicationTrack,
+    EventPreApprovalAllowlist,
+    EventPreApprovalCode,
+)
 
 
 @pytest.fixture
@@ -19,12 +25,21 @@ def user(db):
 @pytest.fixture
 def event_apply(db, owner):
     community = Community.objects.create(name="PreApproval Community", created_by=owner)
-    return Event.objects.create(
+    event = Event.objects.create(
         community=community,
         title="Selective Event",
         created_by=owner,
         registration_type="apply",
     )
+    EventApplicationTrack.objects.create(
+        event=event,
+        key="general",
+        label="General",
+        status="open",
+        is_active=True,
+        enabled_submission_modes=["self_submission"],
+    )
+    return event
 
 
 @pytest.mark.django_db
@@ -125,8 +140,9 @@ def test_apply_with_code_auto_approves_and_consumes(monkeypatch, event_apply, us
 
 
 @pytest.mark.django_db
-def test_apply_with_allowlist_auto_approves(event_apply):
+def test_apply_with_allowlist_auto_approves(event_apply, user):
     client = APIClient()
+    client.force_authenticate(user=user)
     event_apply.preapproval_allowlist_enabled = True
     event_apply.save(update_fields=["preapproval_allowlist_enabled"])
     EventPreApprovalAllowlist.objects.create(
@@ -150,8 +166,9 @@ def test_apply_with_allowlist_auto_approves(event_apply):
 
 
 @pytest.mark.django_db
-def test_apply_without_preapproval_stays_pending(monkeypatch, event_apply):
+def test_apply_without_preapproval_stays_pending(monkeypatch, event_apply, user):
     client = APIClient()
+    client.force_authenticate(user=user)
     called = {"ack": 0}
 
     def fake_ack(_app):

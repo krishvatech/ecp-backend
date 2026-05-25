@@ -2513,6 +2513,17 @@ class EventViewSet(viewsets.ModelViewSet):
                     status=401
                 )
 
+            open_tracks = list(
+                event.application_tracks
+                .filter(is_active=True, status='open')
+                .order_by('sort_order', 'label')
+            )
+            if not open_tracks:
+                return Response(
+                    {'detail': 'Applications are not open yet. No application tracks are available for this event.'},
+                    status=400
+                )
+
         if request.method == 'GET':
             # Authenticated users: return their own application
             if request.user.is_authenticated:
@@ -2547,7 +2558,21 @@ class EventViewSet(viewsets.ModelViewSet):
         submission_mode = data.get('submission_mode', EventApplication.SUBMISSION_MODE_SELF)
         track_id = data.get('track_id')
         track_key = data.get('track_key')
+        track_applications_payload = data.get('track_applications') or []
         application_track = None
+
+        if not track_id and not track_key and not track_applications_payload:
+            if len(open_tracks) == 1:
+                application_track = open_tracks[0]
+                if 'submission_mode' not in request.data:
+                    enabled_modes = application_track.enabled_submission_modes or []
+                    if len(enabled_modes) == 1:
+                        submission_mode = enabled_modes[0]
+            else:
+                return Response(
+                    {'detail': 'Please select an application track before applying.'},
+                    status=400
+                )
 
         # Resolve track by ID or key
         if track_id or track_key:
@@ -2556,6 +2581,9 @@ class EventViewSet(viewsets.ModelViewSet):
                     application_track = EventApplicationTrack.objects.get(id=track_id, event=event)
                 else:
                     application_track = EventApplicationTrack.objects.get(key=track_key, event=event)
+
+                if not application_track.is_active or application_track.status != 'open':
+                    return Response({'detail': 'Application track is not open.'}, status=400)
 
                 # Validate submission_mode is enabled for this track
                 enabled_modes = application_track.enabled_submission_modes or []
@@ -2587,6 +2615,73 @@ class EventViewSet(viewsets.ModelViewSet):
             locked_event = Event.objects.select_for_update().get(pk=event.pk)
             if EventApplication.objects.filter(event=locked_event, email=email).exists():
                 return Response({'detail': 'An application with this email already exists.'}, status=409)
+
+            # Resolve and validate target tracks before creating the parent application.
+            # This prevents legacy parent-only EventApplication rows that never appear in Review Queue.
+            tracks_to_apply = []
+            track_configs = {}
+
+            if application_track:
+                tracks_to_apply = [application_track]
+                track_configs[application_track] = {
+                    'submission_mode': submission_mode,
+                    'tier_preference_id': data.get('tier_preference') or data.get('requested_tier'),
+                    'form_answers': data.get('form_answers', {}),
+                    'file_uploads': data.get('file_uploads', {})
+                }
+            elif track_applications_payload:
+                if isinstance(track_applications_payload, list):
+                    track_validation_errors = []
+                    for idx, track_app_data in enumerate(track_applications_payload):
+                        track_id_item = track_app_data.get('track_id')
+                        track_key_item = track_app_data.get('track_key')
+
+                        if not track_id_item and not track_key_item:
+                            track_validation_errors.append({
+                                'index': idx,
+                                'error': 'Track data missing track_id or track_key'
+                            })
+                            continue
+
+                        try:
+                            if track_id_item:
+                                t = EventApplicationTrack.objects.get(id=track_id_item, event=locked_event)
+                            else:
+                                t = EventApplicationTrack.objects.get(key=track_key_item, event=locked_event)
+
+                            if not t.is_active or t.status != 'open':
+                                track_validation_errors.append({
+                                    'track_id': t.id,
+                                    'track_key': t.key,
+                                    'error': f'Track "{t.label}" is not open'
+                                })
+                                continue
+
+                            tracks_to_apply.append(t)
+                            track_configs[t] = {
+                                'submission_mode': track_app_data.get('submission_mode', submission_mode),
+                                'tier_preference_id': track_app_data.get('tier_preference_id'),
+                                'form_answers': track_app_data.get('form_answers', {}),
+                                'file_uploads': track_app_data.get('file_uploads', {})
+                            }
+                        except EventApplicationTrack.DoesNotExist:
+                            track_validation_errors.append({
+                                'track_id': track_id_item,
+                                'track_key': track_key_item,
+                                'error': 'Track not found for this event'
+                            })
+
+                    if track_validation_errors:
+                        return Response({
+                            'detail': 'One or more requested tracks are invalid or unavailable',
+                            'track_errors': track_validation_errors
+                        }, status=400)
+
+            if not tracks_to_apply:
+                return Response(
+                    {'detail': 'Please select an application track before applying.'},
+                    status=400
+                )
 
             # Phase 8: Check pre-approval with track + submission_mode scoping
             preapproval_source = EventApplication.PREAPPROVAL_SOURCE_NONE
@@ -2679,79 +2774,6 @@ class EventViewSet(viewsets.ModelViewSet):
                 code_obj.used_by_email = email
                 code_obj.used_at = now
                 code_obj.save(update_fields=["status", "used_by_application", "used_by_user", "used_by_email", "used_at"])
-
-            # CRITICAL FIX: Create EventApplicationTrackApplication records
-            # Determine which tracks to create applications for
-            tracks_to_apply = []
-
-            # FIX 1: Store track-to-config mapping to preserve per-track values
-            # Option 1: Single track from track_id or track_key
-            track_configs = {}  # Map track -> track_app_data (config for that track)
-
-            if application_track:
-                tracks_to_apply = [application_track]
-                track_configs[application_track] = {
-                    'submission_mode': submission_mode,
-                    'tier_preference_id': data.get('tier_preference') or data.get('requested_tier'),
-                    'form_answers': data.get('form_answers', {}),
-                    'file_uploads': data.get('file_uploads', {})
-                }
-
-            # Option 2: Multiple tracks from track_applications array
-            elif data.get('track_applications'):
-                track_applications = data.get('track_applications', [])
-                if isinstance(track_applications, list):
-                    # FIX 5: Validate all tracks BEFORE processing - return error if any invalid
-                    track_validation_errors = []
-                    for idx, track_app_data in enumerate(track_applications):
-                        track_id_item = track_app_data.get('track_id')
-                        track_key_item = track_app_data.get('track_key')
-
-                        # Check for missing track_id/track_key
-                        if not track_id_item and not track_key_item:
-                            track_validation_errors.append({
-                                'index': idx,
-                                'error': 'Track data missing track_id or track_key'
-                            })
-                            continue
-
-                        try:
-                            # Look up track
-                            if track_id_item:
-                                t = EventApplicationTrack.objects.get(id=track_id_item, event=locked_event)
-                            else:
-                                t = EventApplicationTrack.objects.get(key=track_key_item, event=locked_event)
-
-                            # Validate track is active
-                            if not t.is_active:
-                                track_validation_errors.append({
-                                    'track_id': t.id,
-                                    'track_key': t.key,
-                                    'error': f'Track "{t.label}" is not active'
-                                })
-                                continue
-
-                            tracks_to_apply.append(t)
-                            # FIX 1: Store per-track config from track_app_data
-                            track_configs[t] = {
-                                'submission_mode': track_app_data.get('submission_mode', submission_mode),
-                                'tier_preference_id': track_app_data.get('tier_preference_id'),
-                                'form_answers': track_app_data.get('form_answers', {}),
-                                'file_uploads': track_app_data.get('file_uploads', {})
-                            }
-                        except EventApplicationTrack.DoesNotExist:
-                            track_validation_errors.append({
-                                'track_id': track_id_item,
-                                'track_key': track_key_item,
-                                'error': 'Track not found for this event'
-                            })
-
-                    # Return error if any track validation failed
-                    if track_validation_errors:
-                        return Response({
-                            'detail': 'One or more requested tracks are invalid or unavailable',
-                            'track_errors': track_validation_errors
-                        }, status=400)
 
             # Create EventApplicationTrackApplication for each track
             track_app_objects = []

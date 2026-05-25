@@ -857,6 +857,7 @@ class EventSerializer(serializers.ModelSerializer):
     public_registered_count = serializers.SerializerMethodField(read_only=True)
     public_guest_count = serializers.SerializerMethodField(read_only=True)
     total_registered = serializers.SerializerMethodField(read_only=True)
+    application_tracks = serializers.SerializerMethodField(read_only=True)
 
     # Access-controlled recording_url (host can always see, participants only if visible)
     recording_url = serializers.SerializerMethodField(read_only=True)
@@ -1018,6 +1019,7 @@ class EventSerializer(serializers.ModelSerializer):
             "public_registered_count",
             "public_guest_count",
             "total_registered",
+            "application_tracks",
             "preview_image",
             "cover_image",
             "waiting_room_image",
@@ -1931,6 +1933,12 @@ class EventSerializer(serializers.ModelSerializer):
         registered_users = self.get_public_registered_count(obj)
         guest_users = self.get_public_guest_count(obj)
         return max(0, safe_int(registered_users) + safe_int(guest_users))
+
+    def get_application_tracks(self, obj):
+        if obj.registration_type != "apply":
+            return []
+        tracks = obj.application_tracks.filter(is_active=True).order_by("sort_order", "label")
+        return EventApplicationTrackSerializer(tracks, many=True).data
 
     def get_has_sessions(self, obj):
         """Check if event has sessions."""

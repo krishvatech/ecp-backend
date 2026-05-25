@@ -122,6 +122,11 @@ def trigger_post_acceptance_forms(event_registration, form_template_cache=None):
     user = event_registration.user
     created_assignments = {}
 
+    # Skip form assignment for event organizers/creators (event owner)
+    if user == event.created_by:
+        logger.debug(f"Skipping form assignments for {user.username} - event organizer")
+        return created_assignments
+
     try:
         with transaction.atomic():
             # Trigger Participant Information Form if confirmed and in-person/hybrid
@@ -282,29 +287,22 @@ def _create_form_assignment(event_registration, form_type, form_template_cache=N
         }
     )
 
-    # Queue email notification asynchronously after assignment is persisted
+    # FIX: Send form email synchronously (reliable) after assignment is persisted
     if created:
-        def queue_email():
-            from events.tasks import send_form_assignment_email_task
+        def send_email():
             try:
-                send_form_assignment_email_task.delay(assignment.id)
+                # Send synchronously for reliability - users should receive form email immediately
+                send_form_assignment_email(assignment)
+                logger.info(f"Form assignment email sent to {assignment.event_registration.user.email} for assignment {assignment.id}")
             except Exception as e:
                 logger.error(
-                    f"Failed to queue form assignment email for {assignment.id}: {str(e)}",
+                    f"Failed to send form assignment email for {assignment.id}: {str(e)}",
                     exc_info=True
                 )
-                # If Celery is unavailable, fall back to synchronous send
-                try:
-                    send_form_assignment_email(assignment)
-                except Exception as fallback_e:
-                    logger.error(
-                        f"Fallback: Failed to send form assignment email for {assignment.id}: {str(fallback_e)}",
-                        exc_info=True
-                    )
-                    # Don't fail assignment creation if email fails
+                # Don't fail assignment creation if email fails
 
         from django.db import transaction
-        transaction.on_commit(queue_email)
+        transaction.on_commit(send_email)
 
     return assignment if created else None
 

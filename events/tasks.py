@@ -1562,13 +1562,6 @@ def send_form_assignment_email_task(self, assignment_id):
             'event', 'event_registration', 'event_registration__user', 'form_template'
         ).get(id=assignment_id)
 
-        # Check opt-out flag on registration
-        if assignment.event_registration.opt_out_automated_communication:
-            logger.info(
-                f"Skipping form assignment email for {assignment.event_registration.user.email} - opted out"
-            )
-            return {'status': 'skipped', 'reason': 'opted_out'}
-
         # Send form assignment email
         result = send_form_assignment_email(assignment)
         if result:

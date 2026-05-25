@@ -12,11 +12,12 @@ from django.test import TestCase
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import timedelta
+from unittest.mock import patch
 from rest_framework.test import APIClient
 from rest_framework import status
 from events.models import (
     Event, EventApplicationTrack, EventApplication, EventApplicationTrackApplication,
-    TrackPricingTier, EventApplicationTrackTierRule, EventRegistration
+    TrackPricingTier, EventRegistration
 )
 
 User = get_user_model()
@@ -29,6 +30,7 @@ class TrackApplicationCreationTest(TestCase):
         """Create test event and tracks."""
         self.client = APIClient()
         self.user = User.objects.create_user(username='testuser', email='test@example.com', password='pass')
+        self.client.force_authenticate(user=self.user)
 
         # Create event
         self.event = Event.objects.create(
@@ -341,13 +343,157 @@ class TrackApplicationCreationTest(TestCase):
 
         response = self.client.post(f'/api/events/{self.event.id}/apply/', data, format='json')
 
-        # Should reject or skip the closed track
-        if response.status_code == status.HTTP_201_CREATED:
-            # If created, verify no track applications for closed track
-            app = EventApplication.objects.get(email='david@example.com')
-            self.assertEqual(app.track_applications.count(), 0)
-        else:
-            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(EventApplication.objects.filter(email='david@example.com').exists())
+        self.assertFalse(EventApplicationTrackApplication.objects.filter(track=closed_track).exists())
+
+    def test_no_open_tracks_blocks_application_without_side_effects(self):
+        """Application-required events with no open tracks must not create legacy parent-only rows."""
+        event = Event.objects.create(
+            title='No Tracks Event',
+            slug='no-tracks-event',
+            format='virtual',
+            start_time=timezone.now() + timedelta(days=10),
+            end_time=timezone.now() + timedelta(days=11),
+            organizer_id=self.user.id,
+            registration_type='apply',
+            status='published'
+        )
+        data = {
+            'first_name': 'No',
+            'last_name': 'Tracks',
+            'email': 'no-tracks@example.com',
+            'submission_mode': 'self_submission'
+        }
+
+        with patch('users.email_utils.send_application_acknowledgement_email') as mock_ack:
+            response = self.client.post(f'/api/events/{event.id}/apply/', data, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data['detail'],
+            'Applications are not open yet. No application tracks are available for this event.'
+        )
+        self.assertEqual(EventApplication.objects.filter(event=event).count(), 0)
+        self.assertEqual(EventApplicationTrackApplication.objects.filter(track__event=event).count(), 0)
+        mock_ack.assert_not_called()
+
+    def test_single_open_track_defaults_when_no_track_selected(self):
+        """If exactly one open track exists, a legacy/simple payload is attached to that track."""
+        event = Event.objects.create(
+            title='Single Track Event',
+            slug='single-track-event',
+            format='virtual',
+            start_time=timezone.now() + timedelta(days=10),
+            end_time=timezone.now() + timedelta(days=11),
+            organizer_id=self.user.id,
+            registration_type='apply',
+            status='published'
+        )
+        track = EventApplicationTrack.objects.create(
+            event=event,
+            key='general',
+            label='General',
+            status='open',
+            is_active=True,
+            enabled_submission_modes=['self_submission']
+        )
+        data = {
+            'first_name': 'Single',
+            'last_name': 'Track',
+            'email': 'single-track@example.com'
+        }
+
+        response = self.client.post(f'/api/events/{event.id}/apply/', data, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        app = EventApplication.objects.get(event=event, email='single-track@example.com')
+        track_app = EventApplicationTrackApplication.objects.get(application=app)
+        self.assertEqual(track_app.track, track)
+        self.assertEqual(track_app.status, EventApplicationTrackApplication.STATUS_PENDING)
+
+        queue_response = self.client.get(f'/api/events/{event.id}/review-queue/')
+        self.assertEqual(queue_response.status_code, status.HTTP_200_OK)
+        results = queue_response.data.get('results', [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['id'], track_app.id)
+
+    def test_multiple_open_tracks_require_track_selection(self):
+        """Multiple open tracks must not create parent-only applications."""
+        data = {
+            'first_name': 'Multi',
+            'last_name': 'Track',
+            'email': 'multi-track@example.com',
+            'submission_mode': 'self_submission'
+        }
+
+        response = self.client.post(f'/api/events/{self.event.id}/apply/', data, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['detail'], 'Please select an application track before applying.')
+        self.assertFalse(EventApplication.objects.filter(event=self.event, email='multi-track@example.com').exists())
+
+    def test_all_closed_or_inactive_tracks_block_application(self):
+        """Closed/inactive tracks do not count as open application tracks."""
+        event = Event.objects.create(
+            title='Closed Tracks Event',
+            slug='closed-tracks-event',
+            format='virtual',
+            start_time=timezone.now() + timedelta(days=10),
+            end_time=timezone.now() + timedelta(days=11),
+            organizer_id=self.user.id,
+            registration_type='apply',
+            status='published'
+        )
+        EventApplicationTrack.objects.create(
+            event=event,
+            key='closed',
+            label='Closed',
+            status='closed',
+            is_active=True,
+            enabled_submission_modes=['self_submission']
+        )
+        EventApplicationTrack.objects.create(
+            event=event,
+            key='inactive',
+            label='Inactive',
+            status='open',
+            is_active=False,
+            enabled_submission_modes=['self_submission']
+        )
+        data = {
+            'first_name': 'Closed',
+            'last_name': 'Tracks',
+            'email': 'closed-tracks@example.com',
+            'submission_mode': 'self_submission'
+        }
+
+        response = self.client.post(f'/api/events/{event.id}/apply/', data, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data['detail'],
+            'Applications are not open yet. No application tracks are available for this event.'
+        )
+        self.assertEqual(EventApplication.objects.filter(event=event).count(), 0)
+
+    def test_normal_open_registration_still_works(self):
+        """The application-track guard must not affect normal registration events."""
+        event = Event.objects.create(
+            title='Open Registration Event',
+            slug='open-registration-event',
+            format='virtual',
+            start_time=timezone.now() + timedelta(days=10),
+            end_time=timezone.now() + timedelta(days=11),
+            organizer_id=self.user.id,
+            registration_type='open',
+            status='published'
+        )
+
+        response = self.client.post(f'/api/events/{event.id}/register/', {}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(EventRegistration.objects.filter(event=event, user=self.user).exists())
 
 
 class ReviewQueueDisplayTest(TestCase):
@@ -360,6 +506,7 @@ class ReviewQueueDisplayTest(TestCase):
         self.user.is_staff = True
         self.user.is_superuser = True
         self.user.save()
+        self.client.force_authenticate(user=self.user)
 
         # Create event
         self.event = Event.objects.create(
@@ -421,6 +568,7 @@ class EventApplicationTrackConsistencyTest(TestCase):
         """Create test event and tracks."""
         self.client = APIClient()
         self.user = User.objects.create_user(username='user1', email='user1@example.com', password='pass')
+        self.client.force_authenticate(user=self.user)
 
         self.event = Event.objects.create(
             title='Consistency Test',
