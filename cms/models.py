@@ -1,4 +1,5 @@
 from django.db import models
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.template import Template as DjangoTemplate, TemplateSyntaxError
 
@@ -395,9 +396,12 @@ REQUIRED_PLACEHOLDERS = {
     "event_confirmation": ["{{ first_name }}", "{{ event_title }}"],
     "event_cancelled": ["{{ first_name }}", "{{ event_title }}"],
     "event_invite": ["{{ inviter_name }}", "{{ event_title }}", "{{ invite_url }}"],
+    "event_starting_soon": ["{{ first_name }}", "{{ event_title }}", "{{ event_url }}"],
+    "event_join_confirmation": ["{{ first_name }}", "{{ event_title }}", "{{ event_url }}"],
     "group_invite": ["{{ inviter_name }}", "{{ group_name }}", "{{ invite_url }}"],
     "replay_no_show": ["{{ first_name }}", "{{ event_title }}", "{{ replay_url }}"],
     "replay_partial": ["{{ first_name }}", "{{ event_title }}", "{{ replay_url }}"],
+    "replay_expiring_soon": ["{{ first_name }}", "{{ event_title }}", "{{ replay_url }}"],
     "application_acknowledgement": ["{{ applicant_name }}", "{{ event_title }}"],
     "application_approved": ["{{ applicant_name }}", "{{ event_title }}"],
     "application_declined": ["{{ applicant_name }}", "{{ event_title }}"],
@@ -449,6 +453,9 @@ class EmailTemplate(models.Model):
     text_body = models.TextField(
         help_text="Plain-text fallback body. Supports Django template syntax.",
     )
+    editor_json = models.JSONField(null=True, blank=True)
+    mjml_body = models.TextField(blank=True)
+    editor_type = models.CharField(max_length=50, default="templatical")
     is_active = models.BooleanField(
         default=True,
         help_text=(
@@ -462,14 +469,25 @@ class EmailTemplate(models.Model):
     )
     last_updated = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="updated_email_templates",
+    )
 
     panels = [
         FieldPanel("template_key"),
         FieldPanel("subject"),
         FieldPanel("html_body", classname="full"),
         FieldPanel("text_body", classname="full"),
+        FieldPanel("editor_json"),
+        FieldPanel("mjml_body", classname="full"),
+        FieldPanel("editor_type"),
         FieldPanel("is_active"),
         FieldPanel("notes"),
+        FieldPanel("updated_by"),
     ]
 
     def __str__(self):
@@ -500,9 +518,10 @@ class EmailTemplate(models.Model):
             except TemplateSyntaxError as e:
                 errors["subject"] = f"Invalid Django template syntax in subject: {e}"
 
-        # 4. Check required placeholders present in html_body
+        # 4. Check required placeholders present in editable/rendered bodies.
         required = REQUIRED_PLACEHOLDERS.get(self.template_key, [])
-        missing = [p for p in required if p not in self.html_body]
+        searchable_body = "\n".join([self.mjml_body or "", self.html_body or "", self.text_body or ""])
+        missing = [p for p in required if p not in searchable_body]
         if missing:
             errors["html_body"] = (
                 errors.get("html_body", "")

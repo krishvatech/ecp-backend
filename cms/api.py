@@ -1,9 +1,24 @@
+from pathlib import Path
+
+from django.conf import settings
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.template import Context, Template as DjangoTemplate, TemplateSyntaxError
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, serializers
+from rest_framework.permissions import IsAuthenticated
 
 from wagtail.models import Page
 from wagtail.rich_text import RichText
+
+from cms.email_template_registry import get_template_metadata
+from cms.models import EmailTemplate, TEMPLATE_KEY_CHOICES
+from cms.serializers import (
+    EmailTemplatePreviewSerializer,
+    EmailTemplateSendTestSerializer,
+    EmailTemplateSerializer,
+)
+from users.email_utils import send_platform_email
 
 
 def image_url(request, image, spec="fill-2000x900"):
@@ -174,3 +189,316 @@ class ProfileLayoutView(APIView):
             ],
         }
         return Response(data, status=status.HTTP_200_OK)
+
+
+VALID_TEMPLATE_KEYS = {key for key, _label in TEMPLATE_KEY_CHOICES}
+
+
+def is_admin_user(user):
+    return bool(user and user.is_authenticated and (user.is_staff or user.is_superuser))
+
+
+def is_platform_admin(user):
+    return bool(user and user.is_authenticated and user.is_superuser)
+
+
+def read_email_template_file(template_key, extension):
+    path = Path(settings.BASE_DIR) / "templates" / "emails" / f"{template_key}.{extension}"
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def get_file_defaults(template_key):
+    metadata = get_template_metadata(template_key)
+    return {
+        "subject": metadata["default_subject"] if metadata else f"[{template_key}]",
+        "html_body": read_email_template_file(template_key, "html"),
+        "text_body": read_email_template_file(template_key, "txt"),
+    }
+
+
+def compile_mjml(mjml_body):
+    if not mjml_body:
+        return ""
+
+    try:
+        import mrml
+    except ImportError as exc:
+        try:
+            import mrml_python as mrml
+        except ImportError:
+            raise serializers.ValidationError({
+                "mjml_body": "MJML compiler is not installed. Install mrml-python/mrml to save MJML templates."
+            }) from exc
+
+    try:
+        if hasattr(mrml, "to_html"):
+            result = mrml.to_html(mjml_body)
+        elif hasattr(mrml, "mjml_to_html"):
+            result = mrml.mjml_to_html(mjml_body)
+        else:
+            raise RuntimeError("No supported MJML compile function found.")
+
+        if isinstance(result, str):
+            return result
+        if isinstance(result, dict):
+            errors = result.get("errors")
+            if errors:
+                raise RuntimeError(errors)
+            return result.get("html") or result.get("content") or ""
+        if isinstance(result, tuple):
+            return result[0]
+        return str(result)
+    except serializers.ValidationError:
+        raise
+    except Exception as exc:
+        raise serializers.ValidationError({"mjml_body": f"MJML compilation failed: {exc}"}) from exc
+
+
+def validate_template_syntax(subject, html_body, text_body):
+    errors = {}
+    for field, value in (("subject", subject), ("html_body", html_body), ("text_body", text_body)):
+        if value is None:
+            continue
+        try:
+            DjangoTemplate(value)
+        except TemplateSyntaxError as exc:
+            errors[field] = f"Invalid Django template syntax: {exc}"
+    if errors:
+        raise serializers.ValidationError(errors)
+
+
+def validate_required_placeholders(template_key, html_body, mjml_body="", text_body=""):
+    metadata = get_template_metadata(template_key) or {}
+    required = metadata.get("required_placeholders", [])
+    searchable = f"{mjml_body or ''}\n{html_body or ''}\n{text_body or ''}"
+    missing = [placeholder for placeholder in required if placeholder not in searchable]
+    if missing:
+        raise serializers.ValidationError({
+            "html_body": f"Missing required placeholders: {', '.join(missing)}"
+        })
+
+
+def render_template_parts(subject, html_body, text_body, context):
+    validate_template_syntax(subject, html_body, text_body)
+    ctx = Context(context)
+    return {
+        "rendered_subject": DjangoTemplate(subject).render(ctx),
+        "rendered_html": DjangoTemplate(html_body or "").render(ctx),
+        "rendered_text": DjangoTemplate(text_body or "").render(ctx),
+    }
+
+
+def get_email_template_payload(template_key):
+    metadata = get_template_metadata(template_key)
+    if not metadata:
+        return None
+
+    obj = EmailTemplate.objects.filter(template_key=template_key).select_related("updated_by").first()
+    if obj:
+        source = "db"
+        template_status = "active" if obj.is_active else "inactive"
+        payload = {
+            "template_key": template_key,
+            "label": metadata["label"],
+            "category": metadata["category"],
+            "subject": obj.subject,
+            "html_body": obj.html_body,
+            "text_body": obj.text_body,
+            "editor_json": obj.editor_json,
+            "mjml_body": obj.mjml_body,
+            "editor_type": obj.editor_type,
+            "is_active": obj.is_active,
+            "notes": obj.notes,
+            "last_updated": obj.last_updated,
+            "created_at": obj.created_at,
+            "updated_by_name": obj.updated_by.get_full_name() or obj.updated_by.email if obj.updated_by else None,
+            "source": source,
+            "status": template_status,
+        }
+    else:
+        defaults = get_file_defaults(template_key)
+        payload = {
+            "template_key": template_key,
+            "label": metadata["label"],
+            "category": metadata["category"],
+            "subject": defaults["subject"],
+            "html_body": defaults["html_body"],
+            "text_body": defaults["text_body"],
+            "editor_json": None,
+            "mjml_body": "",
+            "editor_type": "templatical",
+            "is_active": True,
+            "notes": "",
+            "last_updated": None,
+            "created_at": None,
+            "updated_by_name": None,
+            "source": "file_default",
+            "status": "file_default",
+        }
+
+    payload["merge_tags"] = metadata["merge_tags"]
+    payload["required_placeholders"] = metadata["required_placeholders"]
+    return payload
+
+
+class EmailTemplateListView(APIView):
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get(self, request):
+        if not is_admin_user(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        data = [get_email_template_payload(key) for key, _label in TEMPLATE_KEY_CHOICES]
+        return Response(EmailTemplateSerializer(data, many=True).data)
+
+
+class EmailTemplateDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get(self, request, template_key):
+        if not is_admin_user(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        payload = get_email_template_payload(template_key)
+        if not payload:
+            return Response({"detail": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(EmailTemplateSerializer(payload).data)
+
+    def patch(self, request, template_key):
+        if not is_platform_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        if template_key not in VALID_TEMPLATE_KEYS:
+            return Response({"detail": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        current = get_email_template_payload(template_key)
+        incoming = dict(request.data)
+        subject = incoming.get("subject", current["subject"])
+        html_body = incoming.get("html_body", current["html_body"])
+        text_body = incoming.get("text_body", current["text_body"])
+        mjml_body = incoming.get("mjml_body", current["mjml_body"])
+
+        if "mjml_body" in incoming and mjml_body:
+            html_body = compile_mjml(mjml_body)
+
+        serializer = EmailTemplateSerializer(data={
+            **current,
+            **incoming,
+            "subject": subject,
+            "html_body": html_body,
+            "text_body": text_body,
+            "mjml_body": mjml_body,
+        }, partial=True)
+        serializer.is_valid(raise_exception=True)
+        validate_template_syntax(subject, html_body, text_body)
+        validate_required_placeholders(template_key, html_body, mjml_body, text_body)
+
+        obj, _created = EmailTemplate.objects.get_or_create(
+            template_key=template_key,
+            defaults={
+                "subject": subject,
+                "html_body": html_body or "",
+                "text_body": text_body or "",
+            },
+        )
+        for field in ("subject", "html_body", "text_body", "editor_json", "mjml_body", "editor_type", "is_active", "notes"):
+            if field in serializer.validated_data:
+                setattr(obj, field, serializer.validated_data[field])
+        obj.updated_by = request.user
+        try:
+            obj.full_clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.message_dict) from exc
+        obj.save()
+        return Response(EmailTemplateSerializer(get_email_template_payload(template_key)).data)
+
+
+class EmailTemplatePreviewView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, template_key):
+        if not is_admin_user(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        if template_key not in VALID_TEMPLATE_KEYS:
+            return Response({"detail": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        payload = get_email_template_payload(template_key)
+        serializer = EmailTemplatePreviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        subject = data.get("subject", payload["subject"])
+        html_body = data.get("html_body", payload["html_body"])
+        text_body = data.get("text_body", payload["text_body"])
+        mjml_body = data.get("mjml_body", "")
+        if mjml_body:
+            html_body = compile_mjml(mjml_body)
+
+        metadata = get_template_metadata(template_key)
+        validate_required_placeholders(template_key, html_body, mjml_body, text_body)
+        return Response(render_template_parts(subject, html_body, text_body, metadata["sample_context"]))
+
+
+class EmailTemplateSendTestView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, template_key):
+        if not is_platform_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        if template_key not in VALID_TEMPLATE_KEYS:
+            return Response({"detail": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = EmailTemplateSendTestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = get_email_template_payload(template_key)
+        metadata = get_template_metadata(template_key)
+        rendered = render_template_parts(
+            payload["subject"],
+            payload["html_body"],
+            payload["text_body"],
+            metadata["sample_context"],
+        )
+        try:
+            sent = send_platform_email(
+                subject=rendered["rendered_subject"],
+                message=rendered["rendered_text"],
+                recipient_list=[serializer.validated_data["test_email"]],
+                html_message=rendered["rendered_html"] or None,
+                fail_silently=False,
+            )
+        except Exception as exc:
+            return Response({"success": False, "detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"success": bool(sent), "sent": sent})
+
+
+class EmailTemplateResetView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, template_key):
+        if not is_platform_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        if template_key not in VALID_TEMPLATE_KEYS:
+            return Response({"detail": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        defaults = get_file_defaults(template_key)
+        validate_template_syntax(defaults["subject"], defaults["html_body"], defaults["text_body"])
+        validate_required_placeholders(template_key, defaults["html_body"], text_body=defaults["text_body"])
+        obj, _created = EmailTemplate.objects.get_or_create(
+            template_key=template_key,
+            defaults={
+                "subject": defaults["subject"],
+                "html_body": defaults["html_body"],
+                "text_body": defaults["text_body"],
+            },
+        )
+        obj.subject = defaults["subject"]
+        obj.html_body = defaults["html_body"]
+        obj.text_body = defaults["text_body"]
+        obj.editor_json = None
+        obj.mjml_body = ""
+        obj.editor_type = "templatical"
+        obj.is_active = True
+        obj.updated_by = request.user
+        obj.full_clean()
+        obj.save()
+        return Response(EmailTemplateSerializer(get_email_template_payload(template_key)).data)
