@@ -234,6 +234,69 @@ class ReviewQueueStatsTestCase(TestCase):
         self.assertIn('by_track', stats)
 
 
+class ReviewQueueExportTestCase(TestCase):
+    """Test review queue export endpoint."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.community = Community.objects.create(name='Test Community')
+        self.user = User.objects.create_user(username='testuser', password='pass123', is_staff=True)
+        self.event = Event.objects.create(
+            community=self.community,
+            title='Test Event',
+            created_by=self.user,
+            registration_type='apply',
+        )
+        self.track = EventApplicationTrack.objects.create(
+            event=self.event,
+            label='Speaker',
+            short_description='Speaker track',
+        )
+        self.tier = TrackPricingTier.objects.create(
+            track=self.track,
+            label='Standard',
+            price=100,
+        )
+        self.app = EventApplication.objects.create(
+            event=self.event,
+            first_name='Jane',
+            last_name='Smith',
+            email='jane@example.com',
+            status='approved',
+        )
+        EventApplicationTrackApplication.objects.create(
+            application=self.app,
+            track=self.track,
+            submission_mode='self_submission',
+            status='accepted',
+            tier_preference=self.tier,
+        )
+
+    def test_export_csv_endpoint_exists_and_returns_file(self):
+        self.client.force_authenticate(self.user)
+        response = self.client.get(f'/events/{self.event.id}/review-queue/export/?format=csv')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/csv')
+        self.assertIn(
+            f'review-queue-export-{self.event.id}.csv',
+            response['Content-Disposition'],
+        )
+        csv_content = response.content.decode()
+        self.assertIn('jane@example.com', csv_content)
+        self.assertIn('Self Submission', csv_content)
+
+    def test_export_json_endpoint_exists_and_returns_data(self):
+        self.client.force_authenticate(self.user)
+        response = self.client.get(f'/events/{self.event.id}/review-queue/export/?format=json')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['event_id'], self.event.id)
+        self.assertEqual(payload['total_count'], 1)
+        self.assertEqual(len(payload['data']), 1)
+
+
 class BulkActionTestCase(TestCase):
     """Test bulk action endpoint."""
 

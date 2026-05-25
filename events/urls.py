@@ -205,6 +205,11 @@ urlpatterns = [
         name='application-tracks-list'
     ),
     path(
+        "events/<int:pk>/review-queue/export/",
+        EventViewSet.as_view({'get': 'review_queue_export'}),
+        name='event-review-queue-export'
+    ),
+    path(
         "events/<int:event_id>/application-tracks/<int:pk>/",
         EventApplicationTrackViewSet.as_view({
             'get': 'retrieve',

@@ -3142,12 +3142,13 @@ class EventApplicationTrackApplicationSerializer(serializers.ModelSerializer):
     track_label = serializers.SerializerMethodField()
     track_short_description = serializers.SerializerMethodField()
     status_display = serializers.SerializerMethodField()
+    accepted_tier_label = serializers.SerializerMethodField()
 
     class Meta:
         model = EventApplicationTrackApplication
         fields = [
             'id', 'application_id', 'track_id', 'track_label', 'track_short_description',
-            'submission_mode', 'status', 'status_display', 'tier_preference_id',
+            'submission_mode', 'status', 'status_display', 'tier_preference_id', 'accepted_tier_label',
             'form_answers', 'file_uploads', 'created_at', 'updated_at', 'reviewed_at', 'reviewed_by_id'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'reviewed_at', 'reviewed_by_id']
@@ -3160,6 +3161,11 @@ class EventApplicationTrackApplicationSerializer(serializers.ModelSerializer):
 
     def get_status_display(self, obj):
         return obj.get_status_display()
+
+    def get_accepted_tier_label(self, obj):
+        if obj.accepted_tier:
+            return obj.accepted_tier.label
+        return None
 
 
 # Phase 9: Review queue detail view
@@ -3197,13 +3203,14 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
 
     # Tier info
     tier_label = serializers.SerializerMethodField()
+    accepted_tier_label = serializers.SerializerMethodField()
 
     class Meta:
         model = EventApplicationTrackApplication
         fields = [
             'id', 'application_id', 'track_id', 'track_label', 'track_short_description',
             'submission_mode', 'submission_mode_display', 'status', 'status_display',
-            'tier_preference_id', 'tier_label', 'form_answers', 'file_uploads',
+            'tier_preference_id', 'tier_label', 'accepted_tier_label', 'form_answers', 'file_uploads',
             'applicant_email', 'applicant_first_name', 'applicant_last_name',
             'applicant_job_title', 'applicant_company', 'applicant_linkedin',
             'is_preapproved', 'preapproval_source',
@@ -3236,6 +3243,11 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
     def get_tier_label(self, obj):
         if obj.tier_preference:
             return obj.tier_preference.label
+        return None
+
+    def get_accepted_tier_label(self, obj):
+        if obj.accepted_tier:
+            return obj.accepted_tier.label
         return None
 
 

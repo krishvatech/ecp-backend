@@ -55,6 +55,7 @@ from rest_framework.permissions import (
 )
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
+from rest_framework.renderers import BaseRenderer, JSONRenderer
 
 # ============================================================
 # ===================== Local App Imports ====================
@@ -200,6 +201,19 @@ MOOD_ALLOWED_SET = set(MOOD_ALLOWED_EMOJIS)
 
 class MoodRateThrottle(UserRateThrottle):
     scope = "mood"
+
+
+class ReviewQueueCSVRenderer(BaseRenderer):
+    media_type = "text/csv"
+    format = "csv"
+    charset = "utf-8"
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        if data is None:
+            return b""
+        if isinstance(data, (bytes, bytearray)):
+            return data
+        return str(data).encode(self.charset)
 
 
 def _sanitize_mood(raw_value):
@@ -3358,14 +3372,20 @@ class EventViewSet(viewsets.ModelViewSet):
         }
         return Response(stats)
 
-    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="review-queue/export")
+    @action(
+        detail=True,
+        methods=["get"],
+        permission_classes=[IsAuthenticated],
+        renderer_classes=[JSONRenderer, ReviewQueueCSVRenderer],
+        url_path="review-queue/export",
+    )
     def review_queue_export(self, request, pk=None):
         """
         Phase 13: Export review queue data as JSON or CSV (backend-driven).
-        GET /events/{id}/review-queue/export/?format=json|csv
+        GET /events/{id}/review-queue/export/?export_format=json|csv
 
         Query parameters:
-        - format: 'json' (default) or 'csv'
+        - export_format: 'json' (default) or 'csv'
         - track_id, submission_mode, status, tier_id, reviewer_id, search: Same filters as review-queue
 
         Returns:
@@ -3420,58 +3440,49 @@ class EventViewSet(viewsets.ModelViewSet):
         qs = qs.order_by('-created_at')
 
         # Return format
-        export_format = request.query_params.get('format', 'json').lower()
+        export_format = request.query_params.get('export_format') or request.query_params.get('format', 'json')
+        export_format = export_format.lower()
 
         if export_format == 'csv':
-            # Stream CSV file
             import csv
             from io import StringIO
-            from django.http import StreamingHttpResponse
 
             # Limit CSV export to prevent memory issues (still allow large exports server-side)
             csv_limit = int(request.query_params.get('limit', 5000))
             qs = qs[:csv_limit]
+            submission_mode_labels = {
+                'self_submission': 'Self Submission',
+                'confirmed': 'Confirmed',
+                'pre_approved': 'Pre-Approved',
+            }
 
-            def generate_csv():
-                """Generator function for streaming CSV."""
-                output = StringIO()
-                writer = csv.writer(output)
+            output = StringIO()
+            writer = csv.writer(output)
+            writer.writerow([
+                'ID', 'Applicant Email', 'Applicant Name', 'Track', 'Submission Mode',
+                'Status', 'Tier Preference', 'Accepted Tier', 'Company', 'Job Title',
+                'Reviewed By', 'Reviewed At', 'Created At', 'Pre-approved'
+            ])
 
-                # CSV headers
-                headers = [
-                    'ID', 'Applicant Email', 'Applicant Name', 'Track', 'Submission Mode',
-                    'Status', 'Tier Preference', 'Accepted Tier', 'Company', 'Job Title',
-                    'Reviewed By', 'Reviewed At', 'Created At', 'Pre-approved'
-                ]
-                writer.writerow(headers)
-                yield output.getvalue()
-                output.truncate(0)
-                output.seek(0)
+            for track_app in qs:
+                writer.writerow([
+                    track_app.id,
+                    track_app.application.email,
+                    f"{track_app.application.first_name} {track_app.application.last_name}",
+                    track_app.track.label,
+                    submission_mode_labels.get(track_app.submission_mode, track_app.submission_mode),
+                    track_app.get_status_display(),
+                    track_app.tier_preference.label if track_app.tier_preference else '',
+                    track_app.accepted_tier.label if track_app.accepted_tier else '',
+                    track_app.application.company_name or '',
+                    track_app.application.job_title or '',
+                    track_app.reviewed_by.username if track_app.reviewed_by else '',
+                    track_app.reviewed_at.isoformat() if track_app.reviewed_at else '',
+                    track_app.created_at.isoformat(),
+                    'Yes' if track_app.application.is_preapproved else 'No',
+                ])
 
-                # CSV rows
-                for track_app in qs:
-                    row = [
-                        track_app.id,
-                        track_app.application.email,
-                        f"{track_app.application.first_name} {track_app.application.last_name}",
-                        track_app.track.label,
-                        track_app.get_submission_mode_display(),
-                        track_app.get_status_display(),
-                        track_app.tier_preference.label if track_app.tier_preference else '',
-                        track_app.accepted_tier.label if track_app.accepted_tier else '',
-                        track_app.application.company_name or '',
-                        track_app.application.job_title or '',
-                        track_app.reviewed_by.username if track_app.reviewed_by else '',
-                        track_app.reviewed_at.isoformat() if track_app.reviewed_at else '',
-                        track_app.created_at.isoformat(),
-                        'Yes' if track_app.application.is_preapproved else 'No',
-                    ]
-                    writer.writerow(row)
-                    yield output.getvalue()
-                    output.truncate(0)
-                    output.seek(0)
-
-            response = StreamingHttpResponse(generate_csv(), content_type='text/csv')
+            response = HttpResponse(output.getvalue(), content_type='text/csv')
             response['Content-Disposition'] = f'attachment; filename="review-queue-export-{event.id}.csv"'
             return response
 
@@ -3540,6 +3551,7 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response({'detail': 'No matching track applications found.'}, status=404)
 
         updated_count = 0
+        skipped_count = 0
         errors = []
 
         # Use chunking for bulk operations to prevent memory issues
@@ -3556,9 +3568,13 @@ class EventViewSet(viewsets.ModelViewSet):
                     except TrackPricingTier.DoesNotExist:
                         return Response({'detail': 'Tier not found.'}, status=400)
 
+                # FIX: Filter out already-accepted applications
+                to_process = [ta for ta in track_apps_list if ta.status != EventApplicationTrackApplication.STATUS_ACCEPTED]
+                skipped_count = len(track_apps_list) - len(to_process)
+
                 # Process in chunks
-                for chunk_start in range(0, len(track_apps_list), CHUNK_SIZE):
-                    chunk = track_apps_list[chunk_start:chunk_start + CHUNK_SIZE]
+                for chunk_start in range(0, len(to_process), CHUNK_SIZE):
+                    chunk = to_process[chunk_start:chunk_start + CHUNK_SIZE]
                     with transaction.atomic():
                         for track_app in chunk:
                             try:
@@ -3574,9 +3590,13 @@ class EventViewSet(viewsets.ModelViewSet):
                                 errors.append(f"Track app {track_app.id}: Unexpected error: {str(e)}")
 
             elif action == 'decline':
+                # FIX: Filter out already-declined applications
+                to_process = [ta for ta in track_apps_list if ta.status != EventApplicationTrackApplication.STATUS_DECLINED]
+                skipped_count = len(track_apps_list) - len(to_process)
+
                 # Process in chunks
-                for chunk_start in range(0, len(track_apps_list), CHUNK_SIZE):
-                    chunk = track_apps_list[chunk_start:chunk_start + CHUNK_SIZE]
+                for chunk_start in range(0, len(to_process), CHUNK_SIZE):
+                    chunk = to_process[chunk_start:chunk_start + CHUNK_SIZE]
                     with transaction.atomic():
                         for track_app in chunk:
                             try:
@@ -3586,9 +3606,13 @@ class EventViewSet(viewsets.ModelViewSet):
                                 errors.append(f"Track app {track_app.id}: {str(e)}")
 
             elif action == 'waitlist':
+                # FIX: Filter out already-waitlisted applications
+                to_process = [ta for ta in track_apps_list if ta.status != EventApplicationTrackApplication.STATUS_WAITLISTED]
+                skipped_count = len(track_apps_list) - len(to_process)
+
                 # Process in chunks
-                for chunk_start in range(0, len(track_apps_list), CHUNK_SIZE):
-                    chunk = track_apps_list[chunk_start:chunk_start + CHUNK_SIZE]
+                for chunk_start in range(0, len(to_process), CHUNK_SIZE):
+                    chunk = to_process[chunk_start:chunk_start + CHUNK_SIZE]
                     with transaction.atomic():
                         for track_app in chunk:
                             try:
@@ -3614,6 +3638,9 @@ class EventViewSet(viewsets.ModelViewSet):
             }, status=500)
 
         response_data = {'success': True, 'updated_count': updated_count}
+        if skipped_count > 0:
+            response_data['skipped_count'] = skipped_count
+            response_data['message'] = f'Processed {updated_count}, skipped {skipped_count} (already in target status)'
         if errors:
             response_data['errors'] = errors
         return Response(response_data)
@@ -3642,6 +3669,14 @@ class EventViewSet(viewsets.ModelViewSet):
             application_id=app_id,
             track__event=event
         )
+
+        # FIX: Check if already accepted
+        if track_app.status == EventApplicationTrackApplication.STATUS_ACCEPTED:
+            return Response({
+                'detail': 'Application is already accepted.',
+                'status': track_app.status,
+                'accepted_at': track_app.accepted_at
+            }, status=400)
 
         from events.services.application_decisions import accept_track_application
 
@@ -3700,6 +3735,14 @@ class EventViewSet(viewsets.ModelViewSet):
             track__event=event
         )
 
+        # FIX: Check if already declined
+        if track_app.status == EventApplicationTrackApplication.STATUS_DECLINED:
+            return Response({
+                'detail': 'Application is already declined.',
+                'status': track_app.status,
+                'declined_at': track_app.declined_at
+            }, status=400)
+
         from events.services.application_decisions import decline_track_application
 
         send_email = request.data.get('send_email', True)
@@ -3747,6 +3790,14 @@ class EventViewSet(viewsets.ModelViewSet):
             application_id=app_id,
             track__event=event
         )
+
+        # FIX: Check if already waitlisted
+        if track_app.status == EventApplicationTrackApplication.STATUS_WAITLISTED:
+            return Response({
+                'detail': 'Application is already waitlisted.',
+                'status': track_app.status,
+                'waitlisted_at': track_app.waitlisted_at
+            }, status=400)
 
         from events.services.application_decisions import waitlist_track_application
 
@@ -13025,13 +13076,21 @@ class EventApplicationTrackViewSet(viewsets.ModelViewSet):
     """ViewSet for managing EventApplicationTrack - application track configuration per event."""
 
     serializer_class = EventApplicationTrackSerializer
-    permission_classes = [permissions.IsAuthenticated]
+
+    def get_permissions(self):
+        """Allow unauthenticated users to LIST/RETRIEVE tracks, but require auth for CREATE/UPDATE/DELETE."""
+        if self.action in ['list', 'retrieve']:
+            # Anyone (authenticated or guest) can view application tracks
+            return []
+        # Require authentication for create, update, delete, etc.
+        return [permissions.IsAuthenticated()]
 
     def get_queryset(self):
         """Filter tracks by event_id from URL parameter."""
         event_id = self.kwargs.get('event_id')
         if event_id:
-            return EventApplicationTrack.objects.filter(event_id=event_id).order_by('sort_order', 'label')
+            # Only return active tracks that are visible to applicants
+            return EventApplicationTrack.objects.filter(event_id=event_id, is_active=True).order_by('sort_order', 'label')
         return EventApplicationTrack.objects.none()
 
     def perform_create(self, serializer):
@@ -13072,7 +13131,14 @@ class TrackPricingTierViewSet(viewsets.ModelViewSet):
     """ViewSet for managing TrackPricingTier - pricing options per track."""
 
     serializer_class = TrackPricingTierSerializer
-    permission_classes = [permissions.IsAuthenticated]
+
+    def get_permissions(self):
+        """Allow unauthenticated users to LIST/RETRIEVE tiers, but require auth for CREATE/UPDATE/DELETE."""
+        if self.action in ['list', 'retrieve']:
+            # Anyone (authenticated or guest) can view pricing tiers
+            return []
+        # Require authentication for create, update, delete, etc.
+        return [permissions.IsAuthenticated()]
 
     def get_queryset(self):
         """Filter pricing tiers by track_id from URL parameter."""
@@ -13080,16 +13146,28 @@ class TrackPricingTierViewSet(viewsets.ModelViewSet):
         track_id = self.kwargs.get('track_id')
 
         if event_id and track_id:
+            # Only return active tiers
             return TrackPricingTier.objects.filter(
                 track_id=track_id,
-                track__event_id=event_id
+                track__event_id=event_id,
+                is_active=True
             ).order_by('sort_order', 'label')
         return TrackPricingTier.objects.none()
 
     def perform_create(self, serializer):
-        """Create pricing tier for specified track."""
+        """Create pricing tier for specified track with duplicate prevention."""
         track_id = self.kwargs.get('track_id')
         track = EventApplicationTrack.objects.get(pk=track_id)
+
+        # Prevent duplicate tiers with same key for this track
+        tier_key = serializer.validated_data.get('key')
+        if tier_key and TrackPricingTier.objects.filter(track=track, key=tier_key).exists():
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({
+                'key': f'Pricing tier with key "{tier_key}" already exists for this track',
+                'detail': f'Pricing tier "{tier_key}" already exists. Please use a different key or edit the existing tier.'
+            })
+
         serializer.save(track=track)
 
     def perform_update(self, serializer):
