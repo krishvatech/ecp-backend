@@ -339,6 +339,145 @@ def compute_public_guest_count(event, guest_qs=None):
     ).count()
 
 
+def serialize_tier_for_status(tier):
+    if not tier:
+        return None
+    return {
+        "id": tier.id,
+        "key": tier.key,
+        "label": tier.label,
+        "price": str(tier.price),
+        "currency": tier.currency,
+    }
+
+
+def get_confirmed_registered_count_for_event(event):
+    """Count confirmed attendees without treating payment_pending as registered."""
+    from events.models import EventAttendeeOrigin, EventRegistration
+
+    confirmed_origin_registration_ids = set(
+        EventAttendeeOrigin.objects.filter(
+            registration__event=event,
+            status="active",
+            origin_status="confirmed",
+        ).values_list("registration_id", flat=True)
+    )
+    confirmed_without_origins = set(
+        EventRegistration.objects.filter(
+            event=event,
+            status="registered",
+            attendee_status="confirmed",
+        )
+        .exclude(origins__status="active")
+        .values_list("id", flat=True)
+    )
+    return len(confirmed_origin_registration_ids | confirmed_without_origins)
+
+
+def build_current_user_event_status(event, request):
+    if not request or not request.user.is_authenticated:
+        return None
+
+    from events.models import EventApplication, EventRegistration
+
+    app = (
+        EventApplication.objects
+        .filter(event=event, user=request.user)
+        .prefetch_related("track_applications__track", "track_applications__accepted_tier")
+        .first()
+    )
+    reg = (
+        EventRegistration.objects
+        .filter(event=event, user=request.user, status__in=["registered", "cancellation_requested"])
+        .prefetch_related("origins__track", "origins__role", "origins__accepted_tier")
+        .first()
+    )
+
+    track_apps_data = []
+    assigned_tier = None
+    application_status = None
+    if app:
+        track_statuses = []
+        for ta in app.track_applications.all():
+            tier_data = serialize_tier_for_status(ta.accepted_tier)
+            if tier_data and not assigned_tier:
+                assigned_tier = tier_data
+            track_statuses.append(ta.status)
+            track_apps_data.append({
+                "track_id": ta.track.id,
+                "track_label": ta.track.label,
+                "status": ta.status,
+                "accepted_tier": tier_data,
+            })
+
+        if "accepted" in track_statuses:
+            application_status = "accepted"
+        elif track_statuses and all(status == "declined" for status in track_statuses):
+            application_status = "declined"
+        elif track_statuses and any(status == "waitlisted" for status in track_statuses):
+            application_status = "waitlisted"
+        else:
+            application_status = app.status
+
+    if reg:
+        origins_data = []
+        payment_pending = reg.attendee_status == "payment_pending"
+        for origin in reg.origins.filter(status="active").select_related("track", "role", "accepted_tier"):
+            tier_data = serialize_tier_for_status(origin.accepted_tier)
+            if origin.origin_status == "payment_pending":
+                payment_pending = True
+                if tier_data:
+                    assigned_tier = tier_data
+            elif tier_data and not assigned_tier:
+                assigned_tier = tier_data
+
+            origins_data.append({
+                "id": origin.id,
+                "track_label": origin.track.label if origin.track else None,
+                "role_label": origin.role.label,
+                "tier_label": origin.accepted_tier.label if origin.accepted_tier else None,
+                "price": str(origin.accepted_tier.price) if origin.accepted_tier else "0",
+                "currency": origin.accepted_tier.currency if origin.accepted_tier else None,
+                "origin_status": origin.origin_status,
+                "payment_reference": origin.payment_reference,
+                "marked_paid_at": origin.marked_paid_at.isoformat() if origin.marked_paid_at else None,
+            })
+
+        confirmed_count = reg.origins.filter(status="active", origin_status="confirmed").count()
+        pending_count = reg.origins.filter(status="active", origin_status="payment_pending").count()
+        is_confirmed_registered = reg.attendee_status == "confirmed" and pending_count == 0
+        origin_status = "payment_pending" if payment_pending else ("confirmed" if is_confirmed_registered or confirmed_count > 0 else None)
+
+        return {
+            "application_status": application_status,
+            "track_applications": track_apps_data,
+            "registration_status": reg.status,
+            "attendee_status": reg.attendee_status,
+            "origin_status": origin_status,
+            "payment_pending": payment_pending,
+            "is_confirmed_registered": is_confirmed_registered,
+            "assigned_tier": assigned_tier,
+            "origins": origins_data,
+            "confirmed_origins_count": confirmed_count,
+            "pending_origins_count": pending_count,
+        }
+
+    if app:
+        return {
+            "application_status": application_status,
+            "track_applications": track_apps_data,
+            "registration_status": None,
+            "attendee_status": None,
+            "origin_status": None,
+            "payment_pending": False,
+            "is_confirmed_registered": False,
+            "assigned_tier": assigned_tier,
+            "origins": [],
+        }
+
+    return None
+
+
 def safe_int(value, default=0):
     try:
         if value is None:
@@ -858,6 +997,16 @@ class EventSerializer(serializers.ModelSerializer):
     public_guest_count = serializers.SerializerMethodField(read_only=True)
     total_registered = serializers.SerializerMethodField(read_only=True)
     application_tracks = serializers.SerializerMethodField(read_only=True)
+    confirmed_registered_count = serializers.SerializerMethodField(read_only=True)
+    user_status = serializers.SerializerMethodField(read_only=True)
+    application_status = serializers.SerializerMethodField(read_only=True)
+    registration_status = serializers.SerializerMethodField(read_only=True)
+    attendee_status = serializers.SerializerMethodField(read_only=True)
+    origin_status = serializers.SerializerMethodField(read_only=True)
+    payment_pending = serializers.SerializerMethodField(read_only=True)
+    is_confirmed_registered = serializers.SerializerMethodField(read_only=True)
+    assigned_tier = serializers.SerializerMethodField(read_only=True)
+    origins = serializers.SerializerMethodField(read_only=True)
 
     # Access-controlled recording_url (host can always see, participants only if visible)
     recording_url = serializers.SerializerMethodField(read_only=True)
@@ -1020,6 +1169,16 @@ class EventSerializer(serializers.ModelSerializer):
             "public_guest_count",
             "total_registered",
             "application_tracks",
+            "confirmed_registered_count",
+            "user_status",
+            "application_status",
+            "registration_status",
+            "attendee_status",
+            "origin_status",
+            "payment_pending",
+            "is_confirmed_registered",
+            "assigned_tier",
+            "origins",
             "preview_image",
             "cover_image",
             "waiting_room_image",
@@ -1940,6 +2099,40 @@ class EventSerializer(serializers.ModelSerializer):
         tracks = obj.application_tracks.filter(is_active=True).order_by("sort_order", "label")
         return EventApplicationTrackSerializer(tracks, many=True).data
 
+    def get_user_status(self, obj):
+        return build_current_user_event_status(obj, self.context.get("request"))
+
+    def get_confirmed_registered_count(self, obj):
+        return get_confirmed_registered_count_for_event(obj)
+
+    def _current_user_status_value(self, obj, key, default=None):
+        status = self.get_user_status(obj) or {}
+        return status.get(key, default)
+
+    def get_application_status(self, obj):
+        return self._current_user_status_value(obj, "application_status")
+
+    def get_registration_status(self, obj):
+        return self._current_user_status_value(obj, "registration_status")
+
+    def get_attendee_status(self, obj):
+        return self._current_user_status_value(obj, "attendee_status")
+
+    def get_origin_status(self, obj):
+        return self._current_user_status_value(obj, "origin_status")
+
+    def get_payment_pending(self, obj):
+        return self._current_user_status_value(obj, "payment_pending", False)
+
+    def get_is_confirmed_registered(self, obj):
+        return self._current_user_status_value(obj, "is_confirmed_registered", False)
+
+    def get_assigned_tier(self, obj):
+        return self._current_user_status_value(obj, "assigned_tier")
+
+    def get_origins(self, obj):
+        return self._current_user_status_value(obj, "origins", [])
+
     def get_has_sessions(self, obj):
         """Check if event has sessions."""
         return obj.has_sessions
@@ -2325,6 +2518,8 @@ class PublicEventSerializer(serializers.ModelSerializer):
     cpd_cpe_credits = serializers.SerializerMethodField(read_only=True)
     replay_video_url = serializers.SerializerMethodField()
     is_registered_for_event = serializers.SerializerMethodField()
+    user_status = serializers.SerializerMethodField()
+    confirmed_registered_count = serializers.SerializerMethodField()
     replay_signup_enabled = serializers.SerializerMethodField()
     can_signup_for_replay = serializers.SerializerMethodField()
     has_replay_access = serializers.SerializerMethodField()
@@ -2337,7 +2532,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "status", "is_live", "category", "format",
             "location", "location_city", "location_country",
             "price", "price_label", "price_display_label", "allow_manual_price_display", "currency", "is_free",
-            "preview_image", "cover_image", "attending_count",
+            "preview_image", "cover_image", "attending_count", "confirmed_registered_count",
             "created_at", "sessions", "speakers",
             "featured_participants", "featured_participants_total",
             "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
@@ -2346,7 +2541,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
             "external_streaming_host_link",
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
-            "is_registered_for_event", "replay_signup_enabled", "can_signup_for_replay", "has_replay_access",
+            "is_registered_for_event", "user_status", "replay_signup_enabled", "can_signup_for_replay", "has_replay_access",
         ]
         read_only_fields = fields
 
@@ -2441,8 +2636,17 @@ class PublicEventSerializer(serializers.ModelSerializer):
             return False
         return EventRegistration.objects.filter(
             event=obj, user=request.user,
-            status__in=["registered", "cancellation_requested"]
+            status__in=["registered", "cancellation_requested"],
+            attendee_status="confirmed",
         ).exists()
+
+    def get_user_status(self, obj):
+        """Get current user's application/registration status for this event with tier info."""
+        return build_current_user_event_status(obj, self.context.get('request'))
+
+    def get_confirmed_registered_count(self, obj):
+        """Count only confirmed registrations/origins, not payment_pending."""
+        return get_confirmed_registered_count_for_event(obj)
 
     def get_replay_signup_enabled(self, obj):
         """Return whether replay signup is enabled for this event."""
@@ -2648,12 +2852,15 @@ class EventAttendeeOriginSerializer(serializers.ModelSerializer):
     track_label = serializers.CharField(source='track.label', read_only=True)
     role_label = serializers.CharField(source='role.label', read_only=True)
     tier_label = serializers.CharField(source='accepted_tier.label', read_only=True)
+    accepted_tier_label = serializers.CharField(source='accepted_tier.label', read_only=True)
     tier_price = serializers.DecimalField(
         source='accepted_tier.price',
         read_only=True,
         max_digits=10,
         decimal_places=2
     )
+    price = serializers.DecimalField(source='accepted_tier.price', read_only=True, max_digits=10, decimal_places=2)
+    currency = serializers.CharField(source='accepted_tier.currency', read_only=True)
     accepted_by_id = serializers.IntegerField(source='accepted_by.id', read_only=True)
     accepted_by_name = serializers.SerializerMethodField(read_only=True)
 
@@ -2662,14 +2869,15 @@ class EventAttendeeOriginSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'registration_id', 'role_id', 'role_label',
             'track_id', 'track_label', 'submission_mode',
-            'accepted_tier_id', 'tier_label', 'tier_price',
+            'accepted_tier_id', 'tier_label', 'accepted_tier_label', 'tier_price', 'price', 'currency',
             'accepted_by_id', 'accepted_by_name', 'accepted_at',
             'nominator_name', 'nominator_email',
-            'status', 'created_at', 'updated_at'
+            'status', 'origin_status', 'payment_reference', 'marked_paid_at',
+            'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'created_at', 'updated_at',
-            'role_label', 'track_label', 'tier_label', 'tier_price',
+            'role_label', 'track_label', 'tier_label', 'accepted_tier_label', 'tier_price', 'price', 'currency',
             'accepted_by_id', 'accepted_by_name'
         ]
 
@@ -3208,10 +3416,13 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
 
     # Reviewer info
     reviewed_by_user = serializers.SerializerMethodField()
+    registration_id = serializers.SerializerMethodField()
 
     # Tier info
     tier_label = serializers.SerializerMethodField()
     accepted_tier_label = serializers.SerializerMethodField()
+    accepted_tier_price = serializers.SerializerMethodField()
+    accepted_tier_currency = serializers.SerializerMethodField()
 
     class Meta:
         model = EventApplicationTrackApplication
@@ -3224,7 +3435,8 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
             'is_preapproved', 'preapproval_source',
             'nominator_name', 'nominator_email', 'nominee_name', 'nominee_email',
             'sponsor_organization',
-            'reviewed_by_user', 'reviewed_at', 'created_at', 'updated_at'
+            'reviewed_by_user', 'registration_id', 'reviewed_at', 'created_at', 'updated_at',
+            'accepted_tier_price', 'accepted_tier_currency'
         ]
         read_only_fields = fields
 
@@ -3257,6 +3469,27 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
         if obj.accepted_tier:
             return obj.accepted_tier.label
         return None
+
+    def get_accepted_tier_price(self, obj):
+        if obj.accepted_tier:
+            return str(obj.accepted_tier.price)
+        return None
+
+    def get_accepted_tier_currency(self, obj):
+        if obj.accepted_tier:
+            return obj.accepted_tier.currency
+        return None
+
+    def get_registration_id(self, obj):
+        user = obj.application.user
+        if not user:
+            return None
+        registration = EventRegistration.objects.filter(
+            event=obj.track.event,
+            user=user,
+            status__in=['registered', 'cancellation_requested']
+        ).first()
+        return registration.id if registration else None
 
 
 class SaleorChannelSerializer(serializers.ModelSerializer):

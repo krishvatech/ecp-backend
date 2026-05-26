@@ -90,21 +90,18 @@ def should_show_physical_sections(event, attendance_mode=None):
 
 def trigger_post_acceptance_forms(event_registration, form_template_cache=None):
     """
-    Trigger post-acceptance form assignments for a confirmed attendee.
+    Trigger post-acceptance form assignments only for CONFIRMED origins.
+
+    For multi-track applications:
+    - Participant Information Form: only if has confirmed non-speaker origins AND in-person/hybrid event
+    - Promotional Profile: only if has confirmed speaker/moderator/host origins
 
     Idempotent: Safe to call multiple times. Only creates new assignments.
     Non-blocking: Errors are logged but do not break payment/confirmation flow.
 
-    Requirements:
-    - If attendee status is confirmed and event is in-person or hybrid:
-      create Participant Information Form assignment (role-agnostic)
-    - If attendee status is confirmed and has a speaker/moderator/host role:
-      create Promotional Profile assignment (role-based)
-
     Args:
         event_registration: EventRegistration instance
         form_template_cache: Optional dict {form_type: template} for reuse in bulk operations
-                            Allows caching templates across multiple registrations
 
     Returns:
         dict: Created assignments with form_type as key, assignment as value
@@ -129,9 +126,25 @@ def trigger_post_acceptance_forms(event_registration, form_template_cache=None):
 
     try:
         with transaction.atomic():
-            # Trigger Participant Information Form if confirmed and in-person/hybrid
+            # Get only CONFIRMED origins
+            confirmed_origins = event_registration.origins.filter(
+                status='active',
+                origin_status='confirmed'
+            ).select_related('role')
+
+            if not confirmed_origins.exists():
+                logger.debug(
+                    f"No confirmed origins for {user.username} on event '{event.title}', skipping form assignments"
+                )
+                return created_assignments
+
+            # Trigger Participant Information Form if has confirmed non-speaker origins AND in-person/hybrid
+            has_participant_role = confirmed_origins.exclude(
+                role__key__in=['speaker', 'moderator', 'host']
+            ).exists()
+
             if (
-                event_registration.attendee_status == 'confirmed'
+                has_participant_role
                 and (is_in_person_event(event) or is_hybrid_event(event))
             ):
                 try:
@@ -153,8 +166,12 @@ def trigger_post_acceptance_forms(event_registration, form_template_cache=None):
                         exc_info=True
                     )
 
-            # Trigger Promotional Profile if confirmed AND user has promotional-eligible roles
-            if event_registration.attendee_status == 'confirmed':
+            # Trigger Promotional Profile if has confirmed speaker/moderator/host roles
+            has_promotional_role = confirmed_origins.filter(
+                role__key__in=['speaker', 'moderator', 'host']
+            ).exists()
+
+            if has_promotional_role:
                 from events.services.promotional_profile_service import get_promotional_modules_for_attendee
                 modules = get_promotional_modules_for_attendee(event_registration)
 

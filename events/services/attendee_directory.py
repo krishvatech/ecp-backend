@@ -149,6 +149,17 @@ def mark_origin_paid(origin, marked_by_user, payment_reference=''):
         registration = origin.registration
         _recalculate_registration_status(registration)
 
+        # Send payment confirmed email
+        def send_email_on_commit():
+            from events.services.communication import send_payment_confirmed_email
+            try:
+                send_payment_confirmed_email(origin)
+            except Exception as e:
+                logger.error(
+                    f"Error sending payment confirmed email for origin {origin.id}: {e}",
+                    exc_info=True
+                )
+
         # Trigger post-acceptance forms if registration is now confirmed
         if registration.attendee_status == 'confirmed':
             def trigger_forms_on_commit():
@@ -163,6 +174,9 @@ def mark_origin_paid(origin, marked_by_user, payment_reference=''):
                         )
 
             transaction.on_commit(trigger_forms_on_commit)
+
+        # Send email on commit
+        transaction.on_commit(send_email_on_commit)
 
     return origin
 

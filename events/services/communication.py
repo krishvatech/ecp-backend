@@ -99,6 +99,7 @@ def build_email_context(track_application, outcome=None, tier=None):
 def send_application_decision_email(track_application, outcome, custom_message=None):
     """
     Send decision email to applicant using template hierarchy.
+    For accepted applications with paid tiers, sends payment_pending email instead.
     Respects opt_out_automated_communication flag.
 
     Args:
@@ -124,16 +125,27 @@ def send_application_decision_email(track_application, outcome, custom_message=N
         logger.warning(f"No email found for track application {track_application.id}")
         return False
 
+    # Check if accepted with paid tier (payment pending scenario)
+    is_payment_pending = (
+        outcome in ['accept', 'accepted']
+        and track_application.accepted_tier
+        and track_application.accepted_tier.price
+        and track_application.accepted_tier.price > 0
+    )
+
     # Map outcome to template key
-    template_key_map = {
-        'accept': 'application_accepted_applicant',
-        'accepted': 'application_accepted_applicant',
-        'decline': 'application_declined_applicant',
-        'declined': 'application_declined_applicant',
-        'waitlist': 'application_waitlisted_applicant',
-        'waitlisted': 'application_waitlisted_applicant',
-    }
-    template_key = template_key_map.get(outcome)
+    if is_payment_pending:
+        template_key = 'application_accepted_payment_pending'
+    else:
+        template_key_map = {
+            'accept': 'application_accepted_applicant',
+            'accepted': 'application_accepted_applicant',
+            'decline': 'application_declined_applicant',
+            'declined': 'application_declined_applicant',
+            'waitlist': 'application_waitlisted_applicant',
+            'waitlisted': 'application_waitlisted_applicant',
+        }
+        template_key = template_key_map.get(outcome)
 
     if not template_key:
         logger.error(f"Unknown outcome type: {outcome}")
@@ -141,6 +153,15 @@ def send_application_decision_email(track_application, outcome, custom_message=N
 
     # Build context
     context = build_email_context(track_application, outcome=outcome)
+
+    # Add payment tier information for payment_pending emails
+    if is_payment_pending:
+        context.update({
+            'accepted_tier_label': track_application.accepted_tier.label,
+            'amount_due': str(track_application.accepted_tier.price),
+            'currency': track_application.accepted_tier.currency or 'USD',
+            'payment_message': 'Your registration is pending payment. Please complete payment to confirm your spot.',
+        })
 
     # Store custom message if provided
     if custom_message:
@@ -164,6 +185,55 @@ def send_application_decision_email(track_application, outcome, custom_message=N
         return result
     except Exception as e:
         logger.error(f"Failed to send {outcome} email to {recipient_email}: {e}")
+        return False
+
+
+def send_payment_confirmed_email(origin):
+    """
+    Send confirmation email after admin marks origin as paid.
+
+    Args:
+        origin: EventAttendeeOrigin instance with origin_status='confirmed'
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    registration = origin.registration
+    user = registration.user
+    event = registration.event
+
+    if not user or not user.email:
+        logger.warning(f"No email found for registration {registration.id}")
+        return False
+
+    # Build context
+    context = {
+        'event_name': event.title,
+        'track_label': origin.track.label if origin.track else 'Event',
+        'user_first_name': user.first_name or user.username,
+        'confirmation_message': 'Your registration is confirmed! You are all set for the event.',
+    }
+
+    # Add tier information if available
+    if origin.accepted_tier:
+        context.update({
+            'tier_label': origin.accepted_tier.label,
+            'amount_paid': str(origin.accepted_tier.price),
+            'currency': origin.accepted_tier.currency or 'USD',
+        })
+
+    try:
+        result = send_template_email(
+            template_key='payment_confirmed_applicant',
+            to_email=user.email,
+            context=context,
+            event=event,
+            fail_silently=False
+        )
+        logger.info(f"Sent payment confirmed email to {user.email} for registration {registration.id}")
+        return result
+    except Exception as e:
+        logger.error(f"Failed to send payment confirmed email to {user.email}: {e}")
         return False
 
 

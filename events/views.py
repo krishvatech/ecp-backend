@@ -61,7 +61,7 @@ from rest_framework.renderers import BaseRenderer, JSONRenderer
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField, TrackPricingTier, EventRole
+from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField, TrackPricingTier, EventRole, EventAttendeeOrigin
 from .permissions import IsSuperuserOnly, IsEventAdminOrSuperuser, HasRestrictedDataPermission
 from friends.models import Notification
 from groups.models import Group, GroupMembership
@@ -115,6 +115,7 @@ from .serializers import (
     FormFieldSerializer,
     TrackPricingTierSerializer,
     EventRoleSerializer,
+    EventAttendeeOriginSerializer,
 )
 from users.serializers import UserMiniSerializer
 from .utils import (
@@ -3899,6 +3900,27 @@ class EventViewSet(viewsets.ModelViewSet):
                 {'detail': f'Error marking as paid: {str(e)}'},
                 status=500
             )
+
+    @action(detail=True, methods=["get"], url_path="attendee-origins", permission_classes=[IsAuthenticated])
+    def attendee_origins(self, request, pk=None):
+        """
+        List attendee origins for an event, optionally filtered by registration_id.
+        Used by Review Queue to show per-track tier/payment status.
+        """
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({'detail': 'Forbidden. Only event managers can view attendee origins.'}, status=403)
+
+        qs = EventAttendeeOrigin.objects.filter(
+            registration__event=event
+        ).select_related('registration', 'role', 'track', 'accepted_tier', 'accepted_by')
+
+        registration_id = request.query_params.get('registration_id')
+        if registration_id:
+            qs = qs.filter(registration_id=registration_id)
+
+        serializer = EventAttendeeOriginSerializer(qs.order_by('track__label', 'role__label'), many=True)
+        return Response(serializer.data)
 
     @action(detail=True, methods=["post"], url_path=r"attendee-origins/(?P<origin_id>\d+)/mark-paid", permission_classes=[IsAuthenticated])
     def mark_origin_paid(self, request, pk=None, origin_id=None):
