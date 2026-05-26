@@ -2868,10 +2868,12 @@ class EventViewSet(viewsets.ModelViewSet):
                     }, status=400)
 
                 # FIX 2 & FIX 6: Validate per-track required fields based on submission mode
+                # Per Jira: CONFIRMED mode is pre-approval/invitation from event organizer
+                # Nominator info is system-provided (from pre-approval) or auto-filled, NOT user input
                 # MUST block submission if ANY required field is missing (don't silently skip)
                 mode_required_fields = {
                     EventApplication.SUBMISSION_MODE_SELF: ['first_name', 'last_name', 'email'],
-                    EventApplication.SUBMISSION_MODE_CONFIRMED: ['first_name', 'last_name', 'email', 'sponsor_organization'],
+                    EventApplication.SUBMISSION_MODE_CONFIRMED: ['first_name', 'last_name', 'email'],
                     EventApplication.SUBMISSION_MODE_SELF_NOMINATION: ['first_name', 'last_name', 'email'],
                     EventApplication.SUBMISSION_MODE_THIRD_PARTY: ['nominator_name', 'nominator_email', 'nominee_name', 'nominee_email'],
                 }
