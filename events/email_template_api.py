@@ -28,8 +28,10 @@ def user_can_manage_event_email_templates(user, event):
 
 
 def event_frontend_url(event):
+    if event is None:
+        return ""
     frontend_base = getattr(settings, "FRONTEND_URL", "").rstrip("/")
-    slug_or_id = event.slug or event.id
+    slug_or_id = getattr(event, "slug", None) or getattr(event, "id", "")
     return f"{frontend_base}/events/{slug_or_id}/" if frontend_base else f"/events/{slug_or_id}/"
 
 
@@ -46,6 +48,7 @@ def build_event_email_sample_context(event, template_key, user=None):
     context = dict(metadata.get("sample_context", {}))
     time_info = format_event_time_for_email(event)
     frontend_base = getattr(settings, "FRONTEND_URL", "").rstrip("/")
+    recommended_event = getattr(event, "recommended_event", None) or event
     display_name = ""
     email = ""
     if user and user.is_authenticated:
@@ -88,8 +91,8 @@ def build_event_email_sample_context(event, template_key, user=None):
         "inviter_name": "Jordan Lee",
         "group_name": "M&A Practitioners",
         "cancellation_message": getattr(event, "cancellation_message", "") or "This event has been cancelled.",
-        "recommended_event_title": getattr(getattr(event, "recommended_event", None), "title", "") or "Recommended Event",
-        "recommended_event_url": event_frontend_url(getattr(event, "recommended_event", event)),
+        "recommended_event_title": getattr(recommended_event, "title", "") or "Recommended Event",
+        "recommended_event_url": event_frontend_url(recommended_event),
         "custom_message": "Thank you for your interest. We are unable to approve this application at this time.",
         "expiration_date": time_info.get("end_time_in_tz"),
         "answering_user_name": "Dr. Morgan Chen",

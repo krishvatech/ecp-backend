@@ -47,6 +47,8 @@ DEFAULT_SUBJECTS = {
     "networking_meeting_suggested": "Alternative Time Suggested: {{ other_party_name }} at {{ event_title }}",
     "networking_meeting_cancelled": "Meeting Cancelled: {{ other_party_name }} at {{ event_title }}",
     "networking_meeting_reminder": "Reminder: Meeting with {{ other_party_name }} in {{ reminder_minutes }} minutes",
+    "post_acceptance_form_sent": "{{ event_title }} - Complete Your Participant Information",
+    "post_acceptance_form_reminder": "Reminder: Complete Your Form for {{ event_title }}",
 }
 
 
