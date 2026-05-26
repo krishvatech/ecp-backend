@@ -61,45 +61,126 @@ systemctl disable daphne.service 2>/dev/null || true
 systemctl mask daphne.service 2>/dev/null || true
 systemctl daemon-reload || true
 
-echo "===== Stop old backend containers and stale Daphne ====="
-docker update --restart=no ecp-backend 2>/dev/null || true
-docker stop -t 0 ecp-backend 2>/dev/null || true
-docker rm -f ecp-backend 2>/dev/null || true
+echo "===== Stop old backend containers and stale Daphne safely ====="
 
-OLD_BACKEND_CONTAINERS=$(docker ps -a --format '{{.ID}} {{.Image}} {{.Names}}' | awk '$2 ~ /ecp-backend/ || $3 ~ /ecp-backend/ {print $1}' || true)
-for CID in $OLD_BACKEND_CONTAINERS; do
-  echo "Removing old backend container $CID"
-  docker update --restart=no "$CID" 2>/dev/null || true
-  docker stop -t 0 "$CID" 2>/dev/null || true
-  docker rm -f "$CID" 2>/dev/null || true
+CURRENT_IMAGE=$(docker inspect -f '{{.Config.Image}}' ecp-backend 2>/dev/null || echo NO_CONTAINER)
+CURRENT_STATUS=$(docker inspect -f '{{.State.Status}}' ecp-backend 2>/dev/null || echo missing)
+CURRENT_RESTARTING=$(docker inspect -f '{{.State.Restarting}}' ecp-backend 2>/dev/null || echo true)
+
+echo "CURRENT_IMAGE=$CURRENT_IMAGE"
+echo "CURRENT_STATUS=$CURRENT_STATUS"
+echo "CURRENT_RESTARTING=$CURRENT_RESTARTING"
+
+if [ "$CURRENT_IMAGE" = "$IMAGE_URI" ] && [ "$CURRENT_STATUS" = "running" ] && [ "$CURRENT_RESTARTING" = "false" ]; then
+  echo "Expected backend container is already running. Keeping it."
+else
+  echo "Backend is missing, old, stopped, or restarting. Replacing container."
+
+  docker update --restart=no ecp-backend 2>/dev/null || true
+  docker stop -t 0 ecp-backend 2>/dev/null || true
+  docker rm -f ecp-backend 2>/dev/null || true
+
+  OLD_BACKEND_CONTAINERS=$(docker ps -a --format '{{.ID}} {{.Image}} {{.Names}}' | awk '$2 ~ /ecp-backend/ || $3 ~ /ecp-backend/ {print $1}' || true)
+  for CID in $OLD_BACKEND_CONTAINERS; do
+    echo "Removing old backend container $CID"
+    docker update --restart=no "$CID" 2>/dev/null || true
+    docker stop -t 0 "$CID" 2>/dev/null || true
+    docker rm -f "$CID" 2>/dev/null || true
+  done
+fi
+
+echo "===== Free port 8000 safely if needed ====="
+
+for attempt in $(seq 1 30); do
+  BUSY=$(ss -lntpH | awk '$4 ~ /:8000$/ {print}' || true)
+
+  if [ -z "$BUSY" ]; then
+    echo "Port 8000 is free"
+    break
+  fi
+
+  CURRENT_PID=$(docker inspect -f '{{.State.Pid}}' ecp-backend 2>/dev/null || echo "")
+  CURRENT_IMAGE_NOW=$(docker inspect -f '{{.Config.Image}}' ecp-backend 2>/dev/null || echo NO_CONTAINER)
+  CURRENT_STATUS_NOW=$(docker inspect -f '{{.State.Status}}' ecp-backend 2>/dev/null || echo missing)
+
+  PORT_PIDS=$(echo "$BUSY" | grep -oP 'pid=\K[0-9]+' | sort -u || true)
+
+  echo "Port 8000 busy attempt $attempt"
+  echo "$BUSY"
+  echo "CURRENT_PID=$CURRENT_PID CURRENT_IMAGE_NOW=$CURRENT_IMAGE_NOW CURRENT_STATUS_NOW=$CURRENT_STATUS_NOW"
+
+  KEEP_EXPECTED_BACKEND=false
+
+  for PID in $PORT_PIDS; do
+    if [ -n "$CURRENT_PID" ] \
+      && [ "$PID" = "$CURRENT_PID" ] \
+      && [ "$CURRENT_IMAGE_NOW" = "$IMAGE_URI" ] \
+      && [ "$CURRENT_STATUS_NOW" = "running" ]; then
+      echo "Port 8000 is owned by expected ecp-backend container PID=$PID. Keeping it."
+      KEEP_EXPECTED_BACKEND=true
+    else
+      CMD=$(ps -p "$PID" -o args= || true)
+      echo "Killing stale process on 8000 PID=$PID CMD=$CMD"
+      kill -TERM "$PID" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$PID" 2>/dev/null || true
+    fi
+  done
+
+  if [ "$KEEP_EXPECTED_BACKEND" = true ]; then
+    break
+  fi
+
+  sleep 2
 done
 
-pkill -9 -f 'daphne .*ecp_backend.asgi:application' 2>/dev/null || true
-fuser -k 8000/tcp 2>/dev/null || true
-sleep 5
-
 if ss -lntpH | awk '$4 ~ /:8000$/ {print}' | grep -q ':8000'; then
-  echo "ERROR: port 8000 is still busy before backend start"
-  ss -lntp | grep ':8000' || true
-  exit 1
+  CURRENT_PID=$(docker inspect -f '{{.State.Pid}}' ecp-backend 2>/dev/null || echo "")
+  CURRENT_IMAGE_NOW=$(docker inspect -f '{{.Config.Image}}' ecp-backend 2>/dev/null || echo NO_CONTAINER)
+  CURRENT_STATUS_NOW=$(docker inspect -f '{{.State.Status}}' ecp-backend 2>/dev/null || echo missing)
+
+  PORT_PID=$(ss -lntpH | awk '$4 ~ /:8000$/ {print}' | grep -oP 'pid=\K[0-9]+' | head -1 || true)
+
+  if [ -n "$CURRENT_PID" ] \
+    && [ "$PORT_PID" = "$CURRENT_PID" ] \
+    && [ "$CURRENT_IMAGE_NOW" = "$IMAGE_URI" ] \
+    && [ "$CURRENT_STATUS_NOW" = "running" ]; then
+    echo "Port 8000 is owned by expected backend. Continuing."
+  else
+    echo "ERROR: port 8000 is still busy before backend start"
+    ss -lntp | grep ':8000' || true
+    exit 1
+  fi
 fi
 
 echo "===== Login to ECR and pull backend image ====="
-aws ecr get-login-password --region "$REGION" \
-  | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+ACTUAL_IMAGE=$(docker inspect -f '{{.Config.Image}}' ecp-backend 2>/dev/null || echo NO_CONTAINER)
+ACTUAL_STATUS=$(docker inspect -f '{{.State.Status}}' ecp-backend 2>/dev/null || echo missing)
+ACTUAL_RESTARTING=$(docker inspect -f '{{.State.Restarting}}' ecp-backend 2>/dev/null || echo true)
 
-docker pull "$IMAGE_URI"
+if [ "$ACTUAL_IMAGE" = "$IMAGE_URI" ] && [ "$ACTUAL_STATUS" = "running" ] && [ "$ACTUAL_RESTARTING" = "false" ]; then
+  echo "Backend already running expected image. Skipping docker run."
+else
+  aws ecr get-login-password --region "$REGION" \
+    | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 
-echo "===== Starting ECP backend Docker container ====="
-BACKEND_CID=$(docker run -d \
-  --name ecp-backend \
-  --label app=ecp-backend \
-  --restart no \
-  --network host \
-  --env-file "$ECP_ENV" \
-  "$IMAGE_URI")
+  docker pull "$IMAGE_URI"
 
-echo "Started backend container: $BACKEND_CID"
+  echo "===== Starting ECP backend Docker container ====="
+  BACKEND_CID=$(docker run -d \
+    --name ecp-backend \
+    --label app=ecp-backend \
+    --restart no \
+    --network host \
+    --env-file "$ECP_ENV" \
+    "$IMAGE_URI")
+fi
+
+if [ "${BACKEND_CID:-}" != "" ]; then
+  echo "Started backend container: $BACKEND_CID"
+else
+  echo "Backend container was already running; no new container was started."
+fi
 
 echo "===== Waiting for backend ====="
 BACKEND_READY=false
@@ -155,7 +236,7 @@ if [ "$BACKEND_READY" != true ]; then
 fi
 
 echo "Backend started successfully with expected image: $IMAGE_URI"
-docker update --restart unless-stopped ecp-backend || true
+docker update --restart=unless-stopped ecp-backend || true
 
 echo "===== Collecting CMS static ====="
 docker exec ecp-backend sh -lc "mkdir -p /app/staticfiles && python manage.py collectstatic --noinput" || true

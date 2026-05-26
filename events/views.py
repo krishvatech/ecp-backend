@@ -3308,6 +3308,17 @@ class EventViewSet(viewsets.ModelViewSet):
             _delete_event_summary_cache(event.id)
 
         if action_type == "start":
+            # Scale out immediately if host starts early (scale up only).
+            try:
+                from events.services.live_meeting_capacity import scale_asg_if_needed
+
+                scale_asg_if_needed(
+                    reason=f"host_started_event_{event.id}",
+                    scale_down_allowed=False,
+                )
+            except Exception as e:
+                logger.warning("Live meeting ASG scale-out failed for event %s: %s", event.id, e)
+
             # 📢 Broadcast meeting start to all participants
             try:
                 channel_layer = get_channel_layer()
@@ -6657,6 +6668,58 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         event = self.get_object()
         user = request.user
+
+        # Capacity protection before issuing main-room meeting token.
+        # If autoscaling is enabled and we are below required capacity, return 202 so frontend can poll.
+        is_host = False
+        if not getattr(user, "is_guest", False):
+            try:
+                is_host = _is_event_manager(user, event)
+            except Exception:
+                is_host = False
+
+        if getattr(settings, "LIVE_MEETING_ASG_AUTOSCALE_ENABLED", False) and not is_host:
+            try:
+                from events.services.live_meeting_capacity import (
+                    calculate_required_capacity,
+                    get_current_asg_capacity,
+                )
+
+                required = calculate_required_capacity()
+                current = get_current_asg_capacity()
+
+                if current["desired"] < required["desired_instances"]:
+                    from events.services.live_meeting_capacity import scale_asg_if_needed
+
+                    scale_asg_if_needed(
+                        reason=f"participant_waiting_capacity_event_{event.id}",
+                        scale_down_allowed=False,
+                    )
+
+                    return Response(
+                        {
+                            "waiting": True,
+                            "waiting_room": True,
+                            "waiting_room_enabled": True,
+                            "reason": "capacity_preparing",
+                            "message": "Meeting capacity is preparing. Please wait.",
+                            "required": required,
+                            "current": current,
+                        },
+                        status=202,
+                    )
+            except Exception as e:
+                logger.warning("Capacity check failed for event %s: %s", event.id, e)
+                return Response(
+                    {
+                        "waiting": True,
+                        "waiting_room": True,
+                        "waiting_room_enabled": True,
+                        "reason": "capacity_check_failed",
+                        "message": "Meeting capacity is preparing. Please wait.",
+                    },
+                    status=202,
+                )
 
         # ──── GUEST BRANCH ──────────────────────────────────────────────────────
         if getattr(user, "is_guest", False):

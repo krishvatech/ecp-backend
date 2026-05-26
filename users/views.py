@@ -96,6 +96,13 @@ LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 API_ME = "https://api.linkedin.com/v2/me"
 API_EMAIL = "https://api.linkedin.com/v2/emailAddress?q=members&projection=(elements*(handle~))"
 OIDC_USERINFO = "https://api.linkedin.com/v2/userinfo"  # if using OIDC product
+PROFILE_SUMMARY_PREFETCHES = (
+    "educations",
+    "experiences",
+    "user_skills",
+    "certifications",
+    "memberships",
+)
 
 # Google OAuth2 endpoints
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"

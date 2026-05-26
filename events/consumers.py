@@ -94,6 +94,18 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         self.group_name = f"event_{self.event_id}"
         self._ws_closed = False
         self._disconnect_cleanup_task = None
+
+        event_exists = await database_sync_to_async(lambda: Event.objects.filter(id=self.event_id).exists())()
+        if not event_exists:
+            logger.warning(
+                "WS[Event] rejected: event not found event=%s user=%s path=%s",
+                self.event_id,
+                getattr(self.user, "id", None),
+                self.scope.get("path"),
+            )
+            await self.close(code=4404)
+            return
+
         logger.info(
             "WS[Event] connect start event=%s user=%s channel=%s path=%s",
             self.event_id,
@@ -102,16 +114,17 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             self.scope.get("path"),
         )
 
-        # Join event group
-        await self.channel_layer.group_add(self.group_name, self.channel_name)
-        
-        # Join user-specific group for private messages
-        # Check for Ban Status
+        # Check for Ban Status before joining any groups
         is_banned = await self.check_is_banned()
         if is_banned:
             logger.warning("WS[Event] rejected: user %s is banned from event %s", self.user.id, self.event_id)
             await self.close(code=4003)
             return
+
+        # Join event group
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        
+        # Join user-specific group for private messages
 
         if self._is_guest_user():
             self.user_group_name = f"guest_user_{self.user.guest.id}"
@@ -2753,7 +2766,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
             # 1. Check if breakout rooms are marked as active in the Event model
             # This is the primary source of truth.
-            event_obj = await self.get_event()
+            try:
+                event_obj = await self.get_event()
+            except Event.DoesNotExist:
+                logger.info(
+                    "[LATE_JOINER] Skipping: event not found event=%s user=%s",
+                    getattr(self, "event_id", None),
+                    getattr(getattr(self, "user", None), "id", None),
+                )
+                return
             if not event_obj.breakout_rooms_active:
                 # Double check with participant count just in case flag is out of sync (defensive)
                 has_active = await self._check_active_breakout_rooms()
