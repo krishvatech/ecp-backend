@@ -2604,7 +2604,11 @@ class EventViewSet(viewsets.ModelViewSet):
             EventApplication.SUBMISSION_MODE_THIRD_PARTY: ['nominator_name', 'nominator_email', 'nominee_name', 'nominee_email'],
         }
 
-        required_fields = mode_required_fields.get(submission_mode, [])
+        required_fields = (
+            ['first_name', 'last_name', 'email']
+            if track_applications_payload
+            else mode_required_fields.get(submission_mode, [])
+        )
         missing_fields = []
         for field in required_fields:
             # Special handling for pre_approval_code - map to preapproved_code in payload
@@ -2673,7 +2677,13 @@ class EventViewSet(viewsets.ModelViewSet):
                     'submission_mode': submission_mode,
                     'tier_preference_id': data.get('tier_preference') or data.get('requested_tier'),
                     'form_answers': data.get('form_answers', {}),
-                    'file_uploads': data.get('file_uploads', {})
+                    'file_uploads': data.get('file_uploads', {}),
+                    'nominator_name': data.get('nominator_name', ''),
+                    'nominator_email': data.get('nominator_email', ''),
+                    'nominee_name': data.get('nominee_name', ''),
+                    'nominee_email': data.get('nominee_email', ''),
+                    'nominee_details': data.get('nominee_details') or {},
+                    'sponsor_organization': data.get('sponsor_organization', ''),
                 }
             elif track_applications_payload:
                 if isinstance(track_applications_payload, list):
@@ -2709,6 +2719,11 @@ class EventViewSet(viewsets.ModelViewSet):
                                 'tier_preference_id': track_app_data.get('tier_preference_id'),
                                 'form_answers': track_app_data.get('form_answers', {}),
                                 'file_uploads': track_app_data.get('file_uploads', {}),
+                                'nominator_name': track_app_data.get('nominator_name', ''),
+                                'nominator_email': track_app_data.get('nominator_email', ''),
+                                'nominee_name': track_app_data.get('nominee_name', ''),
+                                'nominee_email': track_app_data.get('nominee_email', ''),
+                                'nominee_details': track_app_data.get('nominee_details') or {},
                                 'sponsor_organization': track_app_data.get('sponsor_organization', ''),
                                 'pre_approval_code': track_app_data.get('pre_approval_code', '')
                             }
@@ -2730,6 +2745,42 @@ class EventViewSet(viewsets.ModelViewSet):
                     {'detail': 'Please select an application track before applying.'},
                     status=400
                 )
+
+            per_track_required_fields = {
+                EventApplication.SUBMISSION_MODE_SELF: ['first_name', 'last_name', 'email'],
+                EventApplication.SUBMISSION_MODE_CONFIRMED: ['first_name', 'last_name', 'email', 'sponsor_organization'],
+                EventApplication.SUBMISSION_MODE_SELF_NOMINATION: ['first_name', 'last_name', 'email'],
+                EventApplication.SUBMISSION_MODE_THIRD_PARTY: ['nominator_name', 'nominator_email', 'nominee_name', 'nominee_email'],
+            }
+
+            for track in tracks_to_apply:
+                track_config = track_configs.get(track, {})
+                track_submission_mode = track_config.get('submission_mode', submission_mode)
+                enabled_modes = track.enabled_submission_modes or []
+
+                if track_submission_mode not in enabled_modes:
+                    return Response({
+                        'detail': f'Submission mode "{track_submission_mode}" is not enabled for track "{track.label}"',
+                        'track_id': track.id,
+                        'submission_mode': track_submission_mode,
+                        'enabled_modes': enabled_modes
+                    }, status=400)
+
+                track_errors = []
+                for field in per_track_required_fields.get(track_submission_mode, []):
+                    field_value = track_config.get(field)
+                    if field_value is None or field_value == '':
+                        field_value = data.get(field)
+                    if not (field_value or '').strip():
+                        track_errors.append(field)
+
+                if track_errors:
+                    return Response({
+                        'detail': f'Missing required fields for track "{track.label}" with {track_submission_mode} submission mode',
+                        'missing_fields': track_errors,
+                        'track_id': track.id,
+                        'submission_mode': track_submission_mode
+                    }, status=400)
 
             # Phase 8: Check pre-approval with track + submission_mode scoping
             preapproval_source = EventApplication.PREAPPROVAL_SOURCE_NONE
@@ -2866,12 +2917,12 @@ class EventViewSet(viewsets.ModelViewSet):
                 app.preapproved_at = now if is_preapproved else None
                 app.application_track = application_track
                 app.submission_mode = submission_mode
-                app.nominator_name = (data.get("nominator_name") or "").strip()
-                app.nominator_email = (data.get("nominator_email") or "").strip()
-                app.nominee_name = (data.get("nominee_name") or "").strip()
-                app.nominee_email = (data.get("nominee_email") or "").strip()
-                app.nominee_details = data.get("nominee_details") or {}
-                app.sponsor_organization = sponsor_organization_value
+                app.nominator_name = first_non_empty("nominator_name", nomination_config).strip()
+                app.nominator_email = first_non_empty("nominator_email", nomination_config).strip()
+                app.nominee_name = first_non_empty("nominee_name", nomination_config).strip()
+                app.nominee_email = first_non_empty("nominee_email", nomination_config).strip()
+                app.nominee_details = data.get("nominee_details") or nomination_config.get("nominee_details") or {}
+                app.sponsor_organization = first_non_empty("sponsor_organization", confirmed_config).strip()
                 app.save()
 
                 # Delete old cancelled track applications so we can create fresh ones
@@ -2900,12 +2951,12 @@ class EventViewSet(viewsets.ModelViewSet):
                     # Phase 3: Submission modes
                     application_track=application_track,
                     submission_mode=submission_mode,
-                    nominator_name=(data.get("nominator_name") or "").strip(),
-                    nominator_email=(data.get("nominator_email") or "").strip(),
-                    nominee_name=(data.get("nominee_name") or "").strip(),
-                    nominee_email=(data.get("nominee_email") or "").strip(),
-                    nominee_details=data.get("nominee_details") or {},
-                    sponsor_organization=sponsor_organization_value,
+                    nominator_name=first_non_empty("nominator_name", nomination_config).strip(),
+                    nominator_email=first_non_empty("nominator_email", nomination_config).strip(),
+                    nominee_name=first_non_empty("nominee_name", nomination_config).strip(),
+                    nominee_email=first_non_empty("nominee_email", nomination_config).strip(),
+                    nominee_details=data.get("nominee_details") or nomination_config.get("nominee_details") or {},
+                    sponsor_organization=first_non_empty("sponsor_organization", confirmed_config).strip(),
                 )
 
             if code_obj and is_preapproved:
@@ -2937,15 +2988,10 @@ class EventViewSet(viewsets.ModelViewSet):
                         'enabled_modes': enabled_modes
                     }, status=400)
 
-                # FIX 2 & FIX 6: Validate per-track required fields based on submission mode
-                # MUST block submission if ANY required field is missing (don't silently skip)
-                mode_required_fields = {
-                    EventApplication.SUBMISSION_MODE_SELF: ['first_name', 'last_name', 'email'],
-                    EventApplication.SUBMISSION_MODE_CONFIRMED: ['first_name', 'last_name', 'email', 'sponsor_organization'],
-                    EventApplication.SUBMISSION_MODE_SELF_NOMINATION: ['first_name', 'last_name', 'email'],
-                    EventApplication.SUBMISSION_MODE_THIRD_PARTY: ['nominator_name', 'nominator_email', 'nominee_name', 'nominee_email'],
-                }
-                required_fields_for_mode = mode_required_fields.get(track_submission_mode, [])
+                # Validate per-track required fields based on submission mode.
+                # Multi-track payloads carry nomination/confirmed fields inside each track application,
+                # while older single-track payloads may still send them at the top level.
+                required_fields_for_mode = per_track_required_fields.get(track_submission_mode, [])
                 track_errors = []
                 for field in required_fields_for_mode:
                     # For confirmed mode with multi-track, check sponsor_organization in track_config first
