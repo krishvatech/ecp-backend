@@ -2930,6 +2930,7 @@ class EventViewSet(viewsets.ModelViewSet):
                     'nominee_email': data.get('nominee_email', ''),
                     'nominee_details': data.get('nominee_details') or {},
                     'sponsor_organization': data.get('sponsor_organization', ''),
+                    'pre_approval_code': data.get('pre_approval_code') or data.get('preapproved_code') or '',
                 }
             elif track_applications_payload:
                 if isinstance(track_applications_payload, list):
@@ -2994,7 +2995,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
             per_track_required_fields = {
                 EventApplication.SUBMISSION_MODE_SELF: ['first_name', 'last_name', 'email'],
-                EventApplication.SUBMISSION_MODE_CONFIRMED: ['first_name', 'last_name', 'email', 'sponsor_organization'],
+                EventApplication.SUBMISSION_MODE_CONFIRMED: ['first_name', 'last_name', 'email', 'sponsor_organization', 'pre_approval_code'],
                 EventApplication.SUBMISSION_MODE_SELF_NOMINATION: ['first_name', 'last_name', 'email'],
                 EventApplication.SUBMISSION_MODE_THIRD_PARTY: ['nominator_name', 'nominator_email', 'nominee_name', 'nominee_email'],
             }
@@ -3014,7 +3015,11 @@ class EventViewSet(viewsets.ModelViewSet):
 
                 track_errors = []
                 for field in per_track_required_fields.get(track_submission_mode, []):
-                    field_value = track_config.get(field)
+                    field_value = (
+                        track_config.get('pre_approval_code') or data.get('preapproved_code') or data.get('pre_approval_code')
+                        if field == 'pre_approval_code'
+                        else track_config.get(field)
+                    )
                     if field_value is None or field_value == '':
                         field_value = data.get(field)
                     if not (field_value or '').strip():
@@ -3130,6 +3135,24 @@ class EventViewSet(viewsets.ModelViewSet):
             reviewed_at = now if is_preapproved else None
             reviewed_by = request.user if is_preapproved and request.user.is_authenticated else None
 
+            nomination_config = next(
+                (
+                    config for config in track_configs.values()
+                    if config.get('submission_mode') == EventApplication.SUBMISSION_MODE_THIRD_PARTY
+                ),
+                {}
+            )
+            confirmed_config = next(
+                (
+                    config for config in track_configs.values()
+                    if config.get('submission_mode') == EventApplication.SUBMISSION_MODE_CONFIRMED
+                ),
+                {}
+            )
+
+            def first_non_empty(field_name, source_config):
+                return data.get(field_name) or source_config.get(field_name) or ''
+
             # Extract sponsor_organization: prefer root level, then from track_configs (for multi-track confirmed mode)
             sponsor_organization_value = (data.get("sponsor_organization") or "").strip()
             if not sponsor_organization_value:
@@ -3240,14 +3263,14 @@ class EventViewSet(viewsets.ModelViewSet):
                 required_fields_for_mode = per_track_required_fields.get(track_submission_mode, [])
                 track_errors = []
                 for field in required_fields_for_mode:
-                    # For confirmed mode with multi-track, check sponsor_organization in track_config first
-                    if field == 'sponsor_organization' and track_submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED:
-                        sponsor_org = (track_config.get('sponsor_organization') or data.get(field) or '').strip()
-                        if not sponsor_org:
-                            track_errors.append(field)
+                    if field == 'pre_approval_code':
+                        field_value = track_config.get('pre_approval_code') or data.get('preapproved_code') or data.get('pre_approval_code')
                     else:
-                        if not (data.get(field) or '').strip():
-                            track_errors.append(field)
+                        field_value = track_config.get(field)
+                        if field_value is None or field_value == '':
+                            field_value = data.get(field)
+                    if not (field_value or '').strip():
+                        track_errors.append(field)
 
                 # FIX 2: Return error if any required fields missing - do NOT skip silently
                 if track_errors:
