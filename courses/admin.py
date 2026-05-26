@@ -20,7 +20,7 @@ class MoodleCourseAdmin(admin.ModelAdmin):
     search_fields = ["full_name", "short_name"]
     readonly_fields = ["synced_at", "moodle_url"]
     ordering = ["full_name"]
-
+ 
 
 @admin.register(MoodleEnrollment)
 class MoodleEnrollmentAdmin(admin.ModelAdmin):

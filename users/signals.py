@@ -5,17 +5,76 @@ Automatically create or update a `UserProfile` instance whenever a `User`
 is created or saved, and add new users to the default community.
 """
 from django.contrib.auth import get_user_model
-from django.db.models.signals import post_save, pre_delete
+from django.db.models.signals import post_delete, post_save, pre_delete
 from django.db import transaction
 from django.dispatch import receiver
 from django.apps import apps
 from django.utils import timezone
 from django.conf import settings
 from .models import UserProfile
+from .cache_utils import bump_user_cache_version
+from .models import (
+    Education,
+    Experience,
+    LinkedInAccount,
+    ProfileCertification,
+    ProfileMembership,
+    ProfileTraining,
+    UserEmailAlias,
+    UserLanguage,
+    UserProfile,
+    UserSkill,
+    VerificationRequest,
+)
 import logging
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
+
+
+def _cache_user_id(instance):
+    user = getattr(instance, "user", None)
+    if user is not None:
+        return getattr(user, "id", None)
+    return getattr(instance, "user_id", None)
+
+
+def _invalidate_user_detail_cache(sender, instance, **kwargs):
+    user_id = _cache_user_id(instance)
+    if user_id:
+        transaction.on_commit(lambda: bump_user_cache_version(user_id))
+
+
+@receiver(post_save, sender=User)
+def invalidate_user_cache_on_user_save(sender, instance, **kwargs):
+    transaction.on_commit(lambda: bump_user_cache_version(instance.id))
+
+
+for _cache_model in (
+    UserProfile,
+    Education,
+    Experience,
+    LinkedInAccount,
+    ProfileCertification,
+    ProfileMembership,
+    ProfileTraining,
+    UserEmailAlias,
+    UserLanguage,
+    UserSkill,
+    VerificationRequest,
+):
+    post_save.connect(
+        _invalidate_user_detail_cache,
+        sender=_cache_model,
+        weak=False,
+        dispatch_uid=f"users.invalidate_user_detail_cache.post_save.{_cache_model._meta.label_lower}",
+    )
+    post_delete.connect(
+        _invalidate_user_detail_cache,
+        sender=_cache_model,
+        weak=False,
+        dispatch_uid=f"users.invalidate_user_detail_cache.post_delete.{_cache_model._meta.label_lower}",
+    )
 
 
 @receiver(post_save, sender=User)

@@ -946,7 +946,13 @@ class EventSerializer(serializers.ModelSerializer):
         return None
 
     def get_questions(self, obj):
-        """Return all questions for this event with serialized data."""
+        """Return Q&A only when explicitly requested via include=questions."""
+        request = self.context.get("request")
+        include = request.query_params.get("include", "") if request else ""
+        include_parts = {part.strip() for part in include.split(",") if part.strip()}
+        if "questions" not in include_parts:
+            return []
+
         from interactions.serializers import QuestionSerializer
         questions = _get_prefetched_related_list(obj, "questions")
         return QuestionSerializer(questions, many=True).data
@@ -2834,11 +2840,11 @@ class EventApplicationSerializer(serializers.ModelSerializer):
 
 class EventApplicationSubmitSerializer(serializers.Serializer):
     """Serializer for submitting an application - write-only, used for POST requests."""
-    first_name = serializers.CharField(max_length=150, allow_blank=True, default='')
-    last_name = serializers.CharField(max_length=150, allow_blank=True, default='')
-    email = serializers.CharField(max_length=254, allow_blank=True, default='')  # Changed from EmailField to allow blank
-    job_title = serializers.CharField(max_length=200, allow_blank=True, default='')
-    company_name = serializers.CharField(max_length=200, allow_blank=True, default='')
+    first_name = serializers.CharField(max_length=150, required=True, help_text="First name is required")
+    last_name = serializers.CharField(max_length=150, required=True, help_text="Last name is required")
+    email = serializers.CharField(max_length=254, required=True, help_text="Email is required")
+    job_title = serializers.CharField(max_length=200, required=True, help_text="Job title is required")
+    company_name = serializers.CharField(max_length=200, required=True, help_text="Company name is required")
     linkedin_url = serializers.URLField(required=False, allow_blank=True, default='')
     attendee_marker_value = serializers.BooleanField(required=False, default=False)
     comments = serializers.CharField(required=False, allow_blank=True, default='')

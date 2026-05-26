@@ -48,7 +48,7 @@ def _display_name(user):
 # -----------------------------
 
 @database_sync_to_async
-def _get_event_and_check_membership(event_id: int, user_id: int):
+def _get_event_and_check_membership(event_id: int, user):
     """
     Resolve the Event and verify user is authorized (registered, guest, or organizer).
     Return None to reject.
@@ -58,12 +58,25 @@ def _get_event_and_check_membership(event_id: int, user_id: int):
     except Event.DoesNotExist:
         return None
 
+    user_id = getattr(user, "id", None)
+
     # Organizer always has access
     if event.community and event.community.owner_id == user_id:
         return event
 
     # Registered participant has access
     if EventRegistration.objects.filter(event_id=event_id, user_id=user_id).exists():
+        return event
+
+    # Guest users and recently converted guests should retain access to their event Q&A.
+    from events.models import GuestAttendee
+
+    guest_record = getattr(user, "guest", None)
+    if guest_record and getattr(guest_record, "event_id", None) == event_id:
+        return event
+
+    converted_guest = GuestAttendee.objects.filter(event_id=event_id, converted_user_id=user_id).first()
+    if converted_guest:
         return event
 
     return None  # Not a member — reject
@@ -178,7 +191,7 @@ class BaseEventConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=4400)  # Bad Request
             return
 
-        event = await _get_event_and_check_membership(self.event_id, self.user.id)
+        event = await _get_event_and_check_membership(self.event_id, self.user)
         if not event:
             log.warning("WS[Chat] rejected: event not found or user not member event_id=%s user_id=%s", self.event_id, self.user.id)
             await self.close(code=4403)  # Forbidden
@@ -298,7 +311,7 @@ class QnAConsumer(BaseEventConsumer):
             await self.close(code=4400)
             return
 
-        event = await _get_event_and_check_membership(self.event_id, self.user.id)
+        event = await _get_event_and_check_membership(self.event_id, self.user)
         if not event:
             log.warning("WS[QnA] rejected: event not found or user not member event_id=%s user_id=%s", self.event_id, self.user.id)
             await self.close(code=4403)

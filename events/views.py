@@ -9,6 +9,7 @@ belonging to the target community.
 # ============================================================
 # ================ Standard Library / Third-Party ============
 # ============================================================
+from collections import defaultdict
 from datetime import timedelta
 import logging
 import csv
@@ -34,6 +35,7 @@ from django.utils.dateparse import parse_date
 from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
 from django.template import Template as DjangoTemplate, Context
+from django.core.cache import cache
 
 # ============================================================
 # ================= DRF (Django REST Framework) ==============
@@ -909,6 +911,79 @@ def _is_event_host(user, event) -> bool:
     return event.participants.filter(role="host").filter(host_match).exists()
 
 
+def _absolute_media_url(request, value) -> str:
+    if not value:
+        return ""
+    try:
+        url = getattr(value, "url", "") or str(value)
+    except Exception:
+        url = str(value) if value else ""
+    if not url:
+        return ""
+    if request and url.startswith("/"):
+        try:
+            return request.build_absolute_uri(url)
+        except Exception:
+            return url
+    return url
+
+
+def _serialize_event_summary(event, request=None) -> dict:
+    return {
+        "id": event.id,
+        "slug": event.slug,
+        "title": event.title,
+        "status": event.status,
+        "is_live": event.is_live,
+        "created_by_id": event.created_by_id,
+        "start_time": event.start_time,
+        "end_time": event.end_time,
+        "timezone": event.timezone,
+        "live_started_at": event.live_started_at,
+        "live_ended_at": event.live_ended_at,
+        "waiting_room_enabled": event.waiting_room_enabled,
+        "pre_event_qna_enabled": getattr(event, "pre_event_qna_enabled", False),
+        "qna_moderation_enabled": getattr(event, "qna_moderation_enabled", False),
+        "qna_anonymous_mode": getattr(event, "qna_anonymous_mode", False),
+        "qna_ai_public_suggestions_enabled": getattr(event, "qna_ai_public_suggestions_enabled", False),
+        "lounge_enabled_waiting_room": getattr(event, "lounge_enabled_waiting_room", False),
+        "lounge_enabled_speed_networking": getattr(event, "lounge_enabled_speed_networking", False),
+        "replay_available": getattr(event, "replay_available", False),
+        "cover_image": _absolute_media_url(request, getattr(event, "cover_image", None)),
+        "preview_image": _absolute_media_url(request, getattr(event, "preview_image", None)),
+        "waiting_room_image": _absolute_media_url(request, getattr(event, "waiting_room_image", None)),
+    }
+
+
+EVENT_SUMMARY_CACHE_TTL_SECONDS = 2
+
+
+def _event_summary_cache_key(event_id) -> str:
+    return f"event:{event_id}:summary:v1"
+
+
+def _public_event_summary_cache_key(event_id) -> str:
+    return f"event:{event_id}:summary:public:v1"
+
+
+def _is_publicly_cacheable_event(event) -> bool:
+    return not getattr(event, "is_hidden", False) and event.status in {"published", "live"}
+
+
+def _cache_event_summary(event, data: dict) -> None:
+    cache.set(_event_summary_cache_key(event.id), data, EVENT_SUMMARY_CACHE_TTL_SECONDS)
+    public_key = _public_event_summary_cache_key(event.id)
+    if _is_publicly_cacheable_event(event):
+        cache.set(public_key, data, EVENT_SUMMARY_CACHE_TTL_SECONDS)
+    else:
+        cache.delete(public_key)
+
+
+def _delete_event_summary_cache(event_id) -> None:
+    cache.delete(_event_summary_cache_key(event_id))
+    cache.delete(_public_event_summary_cache_key(event_id))
+
+
 def _grant_invited_event_access(event, user, invited_by=None):
     """
     Grant Companion access to an invited user by creating/reactivating EventRegistration.
@@ -1564,17 +1639,44 @@ class EventViewSet(viewsets.ModelViewSet):
         )
         registration_qs = EventRegistration.objects.select_related("user", "user__profile")
         question_qs = Question.objects.select_related("user", "guest_asker")
+        include = request.query_params.get("include", "")
+        include_parts = {part.strip() for part in include.split(",") if part.strip()}
 
-        queryset = self.get_queryset().prefetch_related(
+        prefetches = [
             Prefetch("sessions", queryset=session_qs),
             Prefetch("participants", queryset=participant_qs),
             Prefetch("registrations", queryset=registration_qs),
-            Prefetch("questions", queryset=question_qs),
             "guest_attendees",
             "resources",
-        )
+        ]
+        if "questions" in include_parts:
+            prefetches.append(Prefetch("questions", queryset=question_qs))
+
+        queryset = self.get_queryset().prefetch_related(*prefetches)
         self.queryset = queryset
         return super().retrieve(request, *args, **kwargs)
+
+    @action(detail=True, methods=["get"], permission_classes=[AllowAny], url_path="summary")
+    def summary(self, request, pk=None):
+        """
+        Lightweight event detail endpoint for live polling and chat metadata.
+        Avoids the full retrieve() prefetch tree.
+        """
+        lookup = self.kwargs.get(self.lookup_field)
+        if lookup is not None and str(lookup).isdigit():
+            cached_public = cache.get(_public_event_summary_cache_key(lookup))
+            if cached_public is not None:
+                return Response(cached_public)
+
+        event = self.get_object()
+        cache_key = _event_summary_cache_key(event.id)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        data = _serialize_event_summary(event, request=request)
+        _cache_event_summary(event, data)
+        return Response(data)
 
     # ---------------------- Permissions ----------------------
     def get_permissions(self):
@@ -1665,6 +1767,7 @@ class EventViewSet(viewsets.ModelViewSet):
         }
 
         super().perform_update(serializer)
+        _delete_event_summary_cache(instance.id)
         
         # Check for changes
         new_instance = serializer.instance # Refreshed instance
@@ -2341,6 +2444,77 @@ class EventViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": str(e)}, status=400)
 
+    def _get_missing_lead_gen_fields(self, user):
+        """
+        Check if user has all required lead-generation fields for event registration.
+        Validates from correct sources to avoid false positives:
+        - Name: user.first_name/last_name (primary) or profile.full_name (fallback)
+        - Email: user.email
+        - Job Title: profile.job_title (primary) or latest Experience.position (fallback)
+        - Company: profile.company (primary) or latest Experience.community_name (fallback)
+        - Contact Number: profile.links.contact.phones
+        - Country/Region: profile.location (country field, not just city)
+
+        Returns: (is_complete, missing_fields_dict)
+        - is_complete: Boolean - True if all fields present and non-empty
+        - missing_fields_dict: Dict with field keys and display names
+        """
+        missing = {}
+
+        # 1. Check name: user.first_name + user.last_name, or fallback to profile.full_name
+        profile = getattr(user, 'profile', None)
+        has_first_name = user.first_name and user.first_name.strip()
+        has_last_name = user.last_name and user.last_name.strip()
+        has_full_name = profile and profile.full_name and profile.full_name.strip()
+
+        # Name is complete if either (first_name AND last_name) OR full_name
+        if not ((has_first_name and has_last_name) or has_full_name):
+            missing['first_name'] = 'First Name'
+            missing['last_name'] = 'Last Name'
+
+        # 2. Check email
+        if not (user.email and user.email.strip()):
+            missing['email'] = 'Email'
+
+        # 3 & 4. Check job title and company from profile, and fetch latest experience once if needed
+        has_job_title = profile and profile.job_title and profile.job_title.strip()
+        has_company = profile and profile.company and profile.company.strip()
+
+        # Only query latest_exp if either job_title or company is missing from profile
+        latest_exp = None
+        if not has_job_title or not has_company:
+            latest_exp = user.experiences.order_by('-start_date').first()
+
+        # Check job title fallback to latest experience
+        if not has_job_title:
+            has_job_title = latest_exp and latest_exp.position and latest_exp.position.strip()
+
+        if not has_job_title:
+            missing['job_title'] = 'Job Title'
+
+        # Check company fallback to latest experience
+        if not has_company:
+            has_company = latest_exp and latest_exp.community_name and latest_exp.community_name.strip()
+
+        if not has_company:
+            missing['company'] = 'Company'
+
+        # 5. Check country/region: profile.location (must be country/region, not just city)
+        has_location = profile and profile.location and profile.location.strip()
+        if not has_location:
+            missing['location'] = 'Country/Region'
+
+        # 6. Check contact number: profile.links.contact.phones (primary phone)
+        has_phone = False
+        if profile:
+            phones = (profile.links or {}).get('contact', {}).get('phones', [])
+            has_phone = any(p.get('number') and str(p.get('number')).strip() for p in phones)
+
+        if not has_phone:
+            missing['phone'] = 'Contact Number'
+
+        return len(missing) == 0, missing
+
     # POST /api/events/{id}/register/
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="register")
     def register(self, request, pk=None):
@@ -2396,6 +2570,15 @@ class EventViewSet(viewsets.ModelViewSet):
             if not is_already_registered:
                 return Response({"detail": "This is a paid event. Please purchase a ticket to register.", "code": "requires_payment"}, status=402)
 
+        # ✅ Validate lead-generation fields before registration
+        is_lead_gen_complete, missing_fields = self._get_missing_lead_gen_fields(request.user)
+        if not is_lead_gen_complete:
+            return Response({
+                "status": "missing_lead_gen_fields",
+                "detail": "Please complete your registration profile to register for this event.",
+                "missing_fields": missing_fields
+            }, status=400)
+
         # ✅ NEW: Set admission_status based on event's waiting_room_enabled setting
         # If waiting room is enabled, new users start as "waiting" for host admission
         # If waiting room is disabled, new users are automatically "admitted"
@@ -2449,6 +2632,51 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return Response({"ok": True, "created": was_created, "event_id": event.id})
 
+    @action(detail=False, methods=["post"], permission_classes=[IsAuthenticated], url_path="save-lead-gen-fields")
+    def save_lead_gen_fields(self, request):
+        """
+        Save lead-generation fields to user profile.
+        Accepts: first_name, last_name, email, job_title, company, location, phone
+        """
+        user = request.user
+        profile = user.profile
+
+        # Update user fields
+        if 'first_name' in request.data:
+            user.first_name = request.data['first_name']
+        if 'last_name' in request.data:
+            user.last_name = request.data['last_name']
+        if 'email' in request.data:
+            user.email = request.data['email']
+        user.save()
+
+        # Update profile fields
+        if 'job_title' in request.data:
+            profile.job_title = request.data['job_title']
+        if 'company' in request.data:
+            profile.company = request.data['company']
+        if 'location' in request.data:
+            profile.location = request.data['location']
+
+        # Handle phone separately (it's in a nested structure)
+        if 'phone' in request.data and request.data['phone']:
+            if not profile.links:
+                profile.links = {}
+            if 'contact' not in profile.links:
+                profile.links['contact'] = {}
+            if 'phones' not in profile.links['contact']:
+                profile.links['contact']['phones'] = []
+
+            # Add or update phone (replace existing phones with new one)
+            new_phone = {'number': request.data['phone'], 'type': 'mobile'}
+            profile.links['contact']['phones'] = [new_phone]
+
+        profile.save()
+
+        from users.serializers import UserProfileSerializer
+        serializer = UserProfileSerializer(profile)
+        return Response({"status": "success", "profile": serializer.data})
+
     @action(detail=True, methods=["post", "get"], permission_classes=[AllowAny], url_path="apply")
     def apply(self, request, pk=None):
         """
@@ -2485,6 +2713,16 @@ class EventViewSet(viewsets.ModelViewSet):
         serializer = EventApplicationSubmitSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+
+        # ✅ For authenticated users, validate lead-generation fields
+        if request.user.is_authenticated:
+            is_lead_gen_complete, missing_fields = self._get_missing_lead_gen_fields(request.user)
+            if not is_lead_gen_complete:
+                return Response({
+                    "status": "missing_lead_gen_fields",
+                    "detail": "Please complete your registration profile to submit an application.",
+                    "missing_fields": missing_fields
+                }, status=400)
 
         email = (data.get('email') or '').strip().lower()
         submitted_code = (data.get('preapproved_code') or '').strip()
@@ -3067,6 +3305,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "break_celery_task_id",
                 "updated_at",
             ])
+            _delete_event_summary_cache(event.id)
 
         if action_type == "start":
             # 📢 Broadcast meeting start to all participants
@@ -3934,6 +4173,7 @@ class EventViewSet(viewsets.ModelViewSet):
         Return current mood state for online/admitted participants in this event.
         """
         event = self.get_object()
+        cache_key = f"event:{event.id}:moods:v1"
 
         is_host = _is_event_manager(request.user, event)
         requester_reg = EventRegistration.objects.filter(event=event, user=request.user).first()
@@ -3946,6 +4186,10 @@ class EventViewSet(viewsets.ModelViewSet):
             and requester_reg.admission_status != "admitted"
         ):
             return Response({"detail": "You are not admitted to the live meeting."}, status=403)
+
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
 
         rows = (
             EventRegistration.objects.filter(
@@ -3967,7 +4211,9 @@ class EventViewSet(viewsets.ModelViewSet):
             }
             for row in rows
         ]
-        return Response({"moods": payload, "allowed_moods": MOOD_ALLOWED_EMOJIS})
+        data = {"moods": payload, "allowed_moods": MOOD_ALLOWED_EMOJIS}
+        cache.set(cache_key, data, 5)
+        return Response(data)
 
     @action(
         detail=True,
@@ -4031,6 +4277,7 @@ class EventViewSet(viewsets.ModelViewSet):
             reg.current_mood = None
             reg.mood_updated_at = timezone.now()
             reg.save(update_fields=["current_mood", "mood_updated_at"])
+            cache.delete(f"event:{event.id}:moods:v1")
             logger.info(f"[MOOD API] User {request.user.id} cleared mood for event {pk}")
             return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -4059,6 +4306,7 @@ class EventViewSet(viewsets.ModelViewSet):
         reg.current_mood = mood
         reg.mood_updated_at = timezone.now()
         reg.save(update_fields=["current_mood", "mood_updated_at"])
+        cache.delete(f"event:{event.id}:moods:v1")
 
         profile = getattr(request.user, "profile", None)
         if profile is not None:
@@ -5075,9 +5323,22 @@ class EventViewSet(viewsets.ModelViewSet):
     def lounge_state(self, request, pk=None):
         """Fetch the current state of the Social Lounge for this event."""
         event = self.get_object()
+        cache_key = f"event:{event.id}:http_lounge_state:v1"
 
-        # DEBUG: Log event state when lounge-state is called
-        logger.info(f"[lounge_state] Event {event.id}: is_live={event.is_live}, status={event.status}, live_ended_at={event.live_ended_at}, lounge_enabled_after={event.lounge_enabled_after}, lounge_enabled_during={event.lounge_enabled_during}")
+        logger.debug(
+            "[lounge_state] Event %s: is_live=%s status=%s live_ended_at=%s "
+            "lounge_enabled_after=%s lounge_enabled_during=%s",
+            event.id,
+            event.is_live,
+            event.status,
+            event.live_ended_at,
+            event.lounge_enabled_after,
+            event.lounge_enabled_during,
+        )
+
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
 
         # ✅ Use shared function to ensure consistency with lounge_join_table
         status_code, reason, next_change = self._get_lounge_availability(event)
@@ -5100,7 +5361,23 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception:
                 return url
 
-        tables = LoungeTable.objects.filter(event_id=pk).prefetch_related('participants__user')
+        def _user_mini(user_obj):
+            try:
+                return UserMiniSerializer(user_obj, context={"request": request}).data
+            except Exception:
+                return {}
+
+        tables = LoungeTable.objects.filter(event_id=pk).prefetch_related('participants__user__profile')
+        guest_rows = (
+            event.guest_attendees
+            .filter(converted_at__isnull=True, lounge_table_id__isnull=False)
+            .order_by("id")
+            .only("id", "first_name", "last_name", "email", "joined_live_at", "lounge_table_id")
+        )
+        guests_by_table = defaultdict(list)
+        for guest in guest_rows:
+            guests_by_table[guest.lounge_table_id].append(guest)
+
         state = []
         for t in tables:
             icon_url = ""
@@ -5111,6 +5388,7 @@ class EventViewSet(viewsets.ModelViewSet):
                     icon_url = t.icon.url
             participants = {
                 p.seat_index: {
+                    **_user_mini(p.user),
                     "user_id": p.user.id,
                     "username": p.user.username,
                     "full_name": f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username,
@@ -5118,9 +5396,8 @@ class EventViewSet(viewsets.ModelViewSet):
                     "joined_at": p.joined_at.isoformat() if p.joined_at else None,
                 } for p in t.participants.all()
             }
-            guest_rows = event.guest_attendees.filter(lounge_table_id=t.id).order_by("id")
             seat_start = (max(participants.keys()) + 1) if participants else 0
-            for i, g in enumerate(guest_rows):
+            for i, g in enumerate(guests_by_table.get(t.id, [])):
                 participants[seat_start + i] = {
                     "user_id": f"guest_{g.id}",
                     "username": g.get_display_name(),
@@ -5139,14 +5416,16 @@ class EventViewSet(viewsets.ModelViewSet):
                 "participants": participants
             })
         
-        return Response({
+        data = {
             "tables": state,
             "lounge_open_status": {
                 "status": status_code,
                 "reason": reason,
                 "next_change": next_change
             }
-        })
+        }
+        cache.set(cache_key, data, 2)
+        return Response(data)
 
     @action(detail=True, methods=["post"], url_path="create-lounge-table")
     def create_lounge_table(self, request, pk=None):
@@ -6002,7 +6281,7 @@ class EventViewSet(viewsets.ModelViewSet):
         safe_title = re.sub(r'[^a-zA-Z0-9]', '_', event.title or "Event")
         safe_title = re.sub(r'_+', '_', safe_title).strip('_')
         filename = f"{safe_title}_details.csv"
-        
+
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
         response['X-Filename'] = filename
@@ -6011,6 +6290,8 @@ class EventViewSet(viewsets.ModelViewSet):
         writer.writerow(['User ID', 'Name', 'Email', 'Registered At', 'Joined Live', 'Watched Replay', 'Status'])
 
         regs = EventRegistration.objects.filter(event=event).select_related('user').order_by('-registered_at')
+        has_replay = event.replay_available or bool(event.recording_url)
+
         for r in regs:
             first = (r.user.first_name or "").strip()
             last = (r.user.last_name or "").strip()
@@ -6024,13 +6305,15 @@ class EventViewSet(viewsets.ModelViewSet):
             elif r.watched_replay:
                 status_label = "Watched Replay"
 
+            watched_replay_value = "No replay available" if not has_replay else ("Yes" if r.watched_replay else "No")
+
             writer.writerow([
                 r.user.id,
                 full_name,
                 r.user.email,
                 r.registered_at.strftime("%Y-%m-%d %H:%M:%S"),
                 "Yes" if r.joined_live else "No",
-                "Yes" if r.watched_replay else "No",
+                watched_replay_value,
                 status_label
             ])
 
@@ -6297,8 +6580,70 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return self.get_paginated_response(result) if page is not None else Response(result)
 
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="replays")
+    def replays(self, request):
+        """
+        List available replays: ended events with replay enabled, visible, and media present.
+        Excludes already-registered events for authenticated users.
+        Supports same filters as normal event list.
+        """
+        user = request.user
+        is_platform_admin = bool(getattr(user, "is_superuser", False)) or bool(getattr(user, "is_staff", False))
 
-    
+        # Start with base queryset
+        qs = Event.objects.select_related("community")
+
+        # Handle hidden events: same visibility rules as get_queryset
+        if user.is_authenticated:
+            if is_platform_admin:
+                pass
+            else:
+                hidden_accessible_ids = EventRegistration.objects.filter(
+                    user_id=user.id,
+                    status__in=['registered', 'cancellation_requested']
+                ).values_list('event_id', flat=True)
+                qs = qs.filter(
+                    Q(is_hidden=False) |
+                    Q(is_hidden=True, created_by_id=user.id) |
+                    Q(is_hidden=True, id__in=hidden_accessible_ids)
+                )
+        else:
+            qs = qs.filter(is_hidden=False)
+
+        # Filter for replay events: must be ended with replay enabled, visible, and have media
+        now = timezone.now()
+        qs = qs.filter(
+            status="ended",
+            replay_enabled=True,
+            replay_visible_to_participants=True
+        ).exclude(
+            # Must have actual media (recording_url or replay_video_url)
+            recording_url="",
+            replay_video_url=""
+        )
+
+        # For authenticated users: exclude their own registrations
+        if user.is_authenticated:
+            user_registered_ids = EventRegistration.objects.filter(
+                user_id=user.id,
+                status="registered"
+            ).values_list('event_id', flat=True)
+            qs = qs.exclude(id__in=user_registered_ids)
+
+        # Order newest replay first
+        qs = qs.order_by("-end_time")
+
+        # Apply all filter backends (category, location, date_range, event_format, price_range, search)
+        qs = self.filter_queryset(qs)
+
+        # Paginate
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="rtk/join")
     def rtk_join(self, request, pk=None):
@@ -6840,28 +7185,40 @@ class EventViewSet(viewsets.ModelViewSet):
         # Log rejoin attempt
         is_guest = getattr(user, "is_guest", False)
         user_identifier = f"guest_{user.guest.id}" if is_guest else str(user.id)
+        deny_cache_key = f"event:{event.id}:live_rejoin:deny:{user_identifier}:v1"
 
         logger.info(f"[LIVE_REJOIN] user={user_identifier} event={event.id} status={event.status}")
+
+        cached_denial = cache.get(deny_cache_key)
+        if cached_denial is not None:
+            return Response(cached_denial["data"], status=cached_denial["status"])
+
+        def _deny(reason: str, detail: str, status_code: int, *, cacheable: bool = False):
+            payload = {
+                "can_rejoin": False,
+                "retryable": False,
+                "reason": reason,
+                "detail": detail,
+            }
+            if cacheable:
+                cache.set(
+                    deny_cache_key,
+                    {"data": payload, "status": status_code},
+                    5,
+                )
+            return Response(payload, status=status_code)
 
         # ──── VALIDATION ──────────────────────────────────────────────────────
 
         # Check if event exists and is not cancelled
         if event.status == "cancelled":
             logger.warning(f"[LIVE_REJOIN] event {event.id} is cancelled")
-            return Response({
-                "can_rejoin": False,
-                "reason": "event_cancelled",
-                "detail": "This event has been cancelled."
-            }, status=400)
+            return _deny("event_cancelled", "This event has been cancelled.", 400, cacheable=True)
 
         # Check if event is live or ended-but-reopenable
         if event.status not in ("live", "ended"):
             logger.warning(f"[LIVE_REJOIN] event {event.id} status={event.status} (not live/ended)")
-            return Response({
-                "can_rejoin": False,
-                "reason": "event_not_live",
-                "detail": f"Event is {event.status}, not live or ended."
-            }, status=400)
+            return _deny("event_not_live", f"Event is {event.status}, not live or ended.", 400)
 
         # ──── GUEST BRANCH ────────────────────────────────────────────────────
         if is_guest:
@@ -6870,29 +7227,17 @@ class EventViewSet(viewsets.ModelViewSet):
             # Check guest belongs to this event
             if guest.event_id != event.id:
                 logger.warning(f"[LIVE_REJOIN] guest {guest.id} event mismatch")
-                return Response({
-                    "can_rejoin": False,
-                    "reason": "guest_event_mismatch",
-                    "detail": "Guest token does not match this event."
-                }, status=403)
+                return _deny("guest_event_mismatch", "Guest token does not match this event.", 403, cacheable=True)
 
             # Check if guest is banned
             if guest.is_banned:
                 logger.warning(f"[LIVE_REJOIN] guest {guest.id} is banned")
-                return Response({
-                    "can_rejoin": False,
-                    "reason": "guest_banned",
-                    "detail": "You have been banned from this event."
-                }, status=403)
+                return _deny("guest_banned", "You have been banned from this event.", 403, cacheable=True)
 
             # Check if guest has converted to registered user
             if guest.converted_at is not None:
                 logger.info(f"[LIVE_REJOIN] guest {guest.id} converted to user")
-                return Response({
-                    "can_rejoin": False,
-                    "reason": "guest_converted",
-                    "detail": "You have registered. Please sign in with your account."
-                }, status=403)
+                return _deny("guest_converted", "You have registered. Please sign in with your account.", 403, cacheable=True)
 
             # Determine guest location and admission status
             current_location = guest.current_location or "pre_event"
@@ -6980,20 +7325,12 @@ class EventViewSet(viewsets.ModelViewSet):
         # Check if user is banned
         if EventRegistration.objects.filter(event=event, user=user, is_banned=True).exists():
             logger.warning(f"[LIVE_REJOIN] user {user.id} is banned")
-            return Response({
-                "can_rejoin": False,
-                "reason": "user_banned",
-                "detail": "You are banned from this event."
-            }, status=403)
+            return _deny("user_banned", "You are banned from this event.", 403, cacheable=True)
 
         # Check if user is cancelled/deregistered
         if EventRegistration.objects.filter(event=event, user=user, status__in=["cancelled", "deregistered"]).exists():
             logger.warning(f"[LIVE_REJOIN] user {user.id} status not registered")
-            return Response({
-                "can_rejoin": False,
-                "reason": "user_not_registered",
-                "detail": "You are not registered for this event."
-            }, status=403)
+            return _deny("user_not_registered", "You are not registered for this event.", 403)
 
         # Get or create registration
         try:
@@ -7002,11 +7339,7 @@ class EventViewSet(viewsets.ModelViewSet):
             # Allow event host/creator to rejoin even without explicit registration
             if not _is_event_host(user, event):
                 logger.warning(f"[LIVE_REJOIN] user {user.id} not registered for event {event.id}")
-                return Response({
-                    "can_rejoin": False,
-                    "reason": "user_not_registered",
-                    "detail": "You are not registered for this event."
-                }, status=403)
+                return _deny("user_not_registered", "You are not registered for this event.", 403)
             registration = None
 
         # Determine admission status and location
@@ -7114,6 +7447,17 @@ class EventViewSet(viewsets.ModelViewSet):
                     logger.warning(f"[LIVE_REJOIN] RTK participant error for user {user.id}: {resp.status_code}")
             except Exception as e:
                 logger.warning(f"[LIVE_REJOIN] RTK token error for user {user.id}: {e}")
+
+        logger.info(
+            "[LIVE_REJOIN] response user=%s event=%s room_type=%s admission=%s current_location=%s waiting_room_enabled=%s last_reconnect_at=%s",
+            user.id,
+            event.id,
+            response_data.get("room_type"),
+            admission_status,
+            current_location,
+            waiting_room_enabled,
+            registration.last_reconnect_at.isoformat() if registration and registration.last_reconnect_at else None,
+        )
 
         # Add break state if meeting is on break
         if event.is_on_break and event.break_started_at:
@@ -7300,9 +7644,14 @@ class EventViewSet(viewsets.ModelViewSet):
 
             # Include non-hosts
             lp = lounge_map.get(reg.user_id)
+            mini_user = UserMiniSerializer(user, context={"request": request}).data
             data.append({
                 "user_id": reg.user_id,
-                "user_name": user.get_full_name() or user.username,
+                "user_name": mini_user.get("full_name") or user.get_full_name() or user.username,
+                "avatar_url": mini_user.get("avatar_url") or "",
+                "kyc_status": mini_user.get("kyc_status") or "",
+                "job_title": mini_user.get("job_title") or "",
+                "company": mini_user.get("company") or "",
                 "table_id": lp.table_id if lp else None,
                 "table_name": lp.table.name if lp else None,
                 "admission_status": reg.admission_status,
@@ -9173,7 +9522,17 @@ def _build_lounge_state_sync(event_id):
     Returns list of table states with current participants.
     """
     try:
-        tables = LoungeTable.objects.filter(event_id=event_id).prefetch_related('participants__user')
+        tables = LoungeTable.objects.filter(event_id=event_id).prefetch_related('participants__user__profile')
+        guest_rows = (
+            GuestAttendee.objects
+            .filter(event_id=event_id, converted_at__isnull=True, lounge_table_id__isnull=False)
+            .only("id", "first_name", "last_name", "email", "lounge_table_id")
+            .order_by("id")
+        )
+        guests_by_table = defaultdict(list)
+        for guest in guest_rows:
+            guests_by_table[guest.lounge_table_id].append(guest)
+
         state = []
         for t in tables:
             participants = {}
@@ -9198,13 +9557,8 @@ def _build_lounge_state_sync(event_id):
                 occupied_seats.add(p.seat_index)
 
             # Include guests seated at this table.
-            guest_rows = GuestAttendee.objects.filter(
-                event_id=event_id,
-                lounge_table=t,
-                converted_at__isnull=True,
-            ).only("id", "first_name", "last_name", "email")
             next_free_seat = 0
-            for guest in guest_rows:
+            for guest in guests_by_table.get(t.id, []):
                 while next_free_seat in occupied_seats:
                     next_free_seat += 1
                 if next_free_seat >= max(t.max_seats, 1):

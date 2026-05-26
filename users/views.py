@@ -18,6 +18,13 @@ from rest_framework.views import APIView
 from django.contrib.auth import update_session_auth_hash
 from django.http import HttpResponse
 from django.conf import settings
+from django.core.cache import cache
+from users.cache_utils import (
+    USER_DETAIL_CACHE_TTL_SECONDS,
+    bump_user_cache_version,
+    user_detail_cache_key,
+    user_me_cache_key,
+)
 from users.email_utils import send_platform_email
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
@@ -152,6 +159,35 @@ def _build_guest_me_payload(user):
     }
 
 
+def _requested_sparse_fields(request):
+    raw = request.query_params.get("ecp_lite", "")
+    return {field.strip().lower() for field in raw.split(",") if field.strip()}
+
+
+def _build_user_qna_preferences_payload(user):
+    profile = getattr(user, "profile", None)
+    return {
+        "id": user.pk,
+        "profile": {
+            "default_qna_anonymous": bool(
+                getattr(profile, "default_qna_anonymous", False)
+            ),
+        },
+    }
+
+
+def _build_user_kyc_payload(user):
+    profile = getattr(user, "profile", None)
+    kyc_status = getattr(profile, "kyc_status", "") if profile else ""
+    return {
+        "id": user.pk,
+        "kyc_status": kyc_status,
+        "profile": {
+            "kyc_status": kyc_status,
+        },
+    }
+
+
 class IsSuperuser(permissions.BasePermission):
     """
     Restrict access to owner-level operations.
@@ -279,6 +315,12 @@ class UserViewSet(
 
     def retrieve(self, request, *args, **kwargs):
         identifier = kwargs.get(self.lookup_field)
+        cached = None
+        if str(identifier or "").isdigit():
+            cached = cache.get(user_detail_cache_key(request, request.user.id, int(identifier)))
+            if cached is not None:
+                return Response(cached)
+
         user_obj = self._resolve_user_from_identifier(
             identifier,
             queryset=self.get_queryset(),
@@ -286,15 +328,28 @@ class UserViewSet(
         if not user_obj:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        cache_key = user_detail_cache_key(request, request.user.id, user_obj.pk)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        sparse_fields = _requested_sparse_fields(request)
+        if "kyc" in sparse_fields:
+            data = _build_user_kyc_payload(user_obj)
+            cache.set(cache_key, data, USER_DETAIL_CACHE_TTL_SECONDS)
+            return Response(data)
+
         hydrated_user = (
             self.get_queryset()
-            .prefetch_related("educations", "experiences")
+            .prefetch_related(*PROFILE_SUMMARY_PREFETCHES)
             .filter(pk=user_obj.pk)
             .first()
             or user_obj
         )
         serializer = self.get_serializer(hydrated_user)
-        return Response(serializer.data)
+        data = serializer.data
+        cache.set(cache_key, data, USER_DETAIL_CACHE_TTL_SECONDS)
+        return Response(data)
 
 
     def get_queryset(self):
@@ -355,14 +410,27 @@ class UserViewSet(
              raise AuthenticationFailed("Account is suspended or disabled.")
 
         if request.method == "GET":
+            cache_key = user_me_cache_key(request, user.pk)
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
+
+            sparse_fields = _requested_sparse_fields(request)
+            if "qna" in sparse_fields:
+                data = _build_user_qna_preferences_payload(user)
+                cache.set(cache_key, data, USER_DETAIL_CACHE_TTL_SECONDS)
+                return Response(data)
+
             hydrated_user = (
                 self.get_queryset()
-                .prefetch_related("educations", "experiences")
+                .prefetch_related(*PROFILE_SUMMARY_PREFETCHES)
                 .filter(pk=user.pk)
                 .first()
                 or user
             )
-            return Response(UserSerializer(hydrated_user, context={"request": request}).data)
+            data = UserSerializer(hydrated_user, context={"request": request}).data
+            cache.set(cache_key, data, USER_DETAIL_CACHE_TTL_SECONDS)
+            return Response(data)
 
         data = request.data.copy()
         profile = {}
@@ -389,6 +457,7 @@ class UserViewSet(
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        bump_user_cache_version(user.id)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="me/email/initiate")

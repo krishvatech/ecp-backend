@@ -184,10 +184,17 @@ class UserProfileSerializer(serializers.ModelSerializer):
         return VerificationRequest.objects.filter(user=user, status=VerificationRequest.STATUS_PENDING).exists()
 
     def get_profile_completion_percentage(self, obj):
-        return obj.calculate_profile_completion()
+        missing = self._get_cached_missing_sections(obj)
+        sections_completed = 10 - len(missing)
+        return int((sections_completed / 10) * 100)
 
     def get_missing_sections(self, obj):
-        return obj.get_missing_sections()
+        return self._get_cached_missing_sections(obj)
+
+    def _get_cached_missing_sections(self, obj):
+        if not hasattr(obj, "_serialized_missing_sections"):
+            obj._serialized_missing_sections = obj.get_missing_sections()
+        return obj._serialized_missing_sections
 
 
     def get_user_image_url(self, obj):
