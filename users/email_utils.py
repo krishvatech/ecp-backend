@@ -705,6 +705,7 @@ def send_event_cancelled_email(event):
             context=ctx,
             subject_override=f"Update: '{event.title}' has been cancelled",
             fail_silently=True,
+            event=event,
         ):
             success_count += 1
 
@@ -769,6 +770,7 @@ def send_event_invite_email(to_email, event, inviter, invite_url):
         context=ctx,
         subject_override=f"You're invited to '{event.title}' on {app_name}",
         fail_silently=True,
+        event=event,
     )
 
 
@@ -810,6 +812,7 @@ def send_replay_noshow_email(user, event):
         context=ctx,
         subject_override=f"You missed '{event.title}' – the recording is now available",
         fail_silently=True,
+        event=event,
     )
 
 
@@ -851,6 +854,7 @@ def send_replay_partial_email(user, event):
         context=ctx,
         subject_override=f"You left '{event.title}' early – catch what you missed",
         fail_silently=True,
+        event=event,
     )
 
 
@@ -1014,6 +1018,7 @@ def send_application_acknowledgement_email(application):
         context=ctx,
         subject_override=f"Application Received – '{application.event.title}'",
         fail_silently=True,
+        event=application.event,
     )
 
 
@@ -1088,6 +1093,7 @@ def send_application_approved_email(application):
         context=ctx,
         subject_override=f"Your application to '{application.event.title}' has been approved!",
         fail_silently=True,
+        event=application.event,
     )
 
 
@@ -1141,6 +1147,7 @@ def send_application_declined_email(application, custom_message=''):
         context=ctx,
         subject_override=f"Your application to '{application.event.title}' – status update",
         fail_silently=True,
+        event=application.event,
     )
 
 
@@ -1312,6 +1319,7 @@ def send_event_starting_soon_email(user, event):
         context=ctx,
         subject_override=f"Reminder: '{event.title}' starts in 1 hour",
         fail_silently=True,
+        event=event,
     )
 
 
@@ -1348,6 +1356,7 @@ def send_event_join_confirmation_email(user, event):
         context=ctx,
         subject_override=f"You've joined '{event.title}'",
         fail_silently=True,
+        event=event,
     )
 
 
@@ -1388,6 +1397,7 @@ def send_replay_expiring_soon_email(user, event, expiration_date):
         context=ctx,
         subject_override=f"Reminder: Replay for '{event.title}' expires soon",
         fail_silently=True,
+        event=event,
     )
 
 

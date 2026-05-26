@@ -609,6 +609,23 @@ class EventEmailTemplate(models.Model):
         ("user_registration_acknowledgement", "User Registration Acknowledgement"),
         ("guest_registration_acknowledgement", "Guest Registration Acknowledgement"),
         ("event_confirmation", "Event Confirmation (Speaker/Host)"),
+        ("event_starting_soon", "Event Starting Soon (1 Hour Before)"),
+        ("event_join_confirmation", "Event Join Confirmation"),
+        ("event_cancelled", "Event Cancelled"),
+        ("event_invite", "Event Invite"),
+        ("application_acknowledgement", "Application Acknowledgement"),
+        ("application_approved", "Application Approved"),
+        ("application_declined", "Application Declined"),
+        ("replay_no_show", "Replay: No Show"),
+        ("replay_partial", "Replay: Partial Attendance"),
+        ("replay_expiring_soon", "Replay Expiring Soon"),
+        ("post_event_qna_answer", "Post-Event Q&A Answer"),
+        ("networking_meeting_request", "Networking Meeting Request"),
+        ("networking_meeting_accepted", "Networking Meeting Accepted"),
+        ("networking_meeting_declined", "Networking Meeting Declined"),
+        ("networking_meeting_suggested", "Networking Meeting Suggested"),
+        ("networking_meeting_cancelled", "Networking Meeting Cancelled"),
+        ("networking_meeting_reminder", "Networking Meeting Reminder"),
     ]
 
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="email_template_overrides")
@@ -616,7 +633,11 @@ class EventEmailTemplate(models.Model):
     subject = models.CharField(max_length=250)
     html_body = models.TextField()
     text_body = models.TextField(blank=True)
+    editor_json = models.JSONField(null=True, blank=True)
+    mjml_body = models.TextField(blank=True)
+    editor_type = models.CharField(max_length=50, default="templatical")
     is_active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,

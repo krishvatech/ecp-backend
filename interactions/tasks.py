@@ -42,12 +42,15 @@ def send_post_event_answer_email_task(question_id, answering_user_id, recipient_
 
     for recipient in recipients:
         context = {
+            "app_name": "IMAA Connect",
             "recipient_name": recipient.first_name or recipient.username or "Participant",
             "event_name": question.event.title,
+            "event_title": question.event.title,
             "question_text": question.content,
             "answer_text": question.answer_text,
             "answering_user_name": answering_user_name,
             "event_url": event_url,
+            "support_email": getattr(settings, "SUPPORT_EMAIL", getattr(settings, "DEFAULT_FROM_EMAIL", "")),
         }
         send_template_email(
             template_key="post_event_qna_answer",
@@ -55,6 +58,7 @@ def send_post_event_answer_email_task(question_id, answering_user_id, recipient_
             context=context,
             subject_override=f"Your Q&A Question Has Been Answered — {question.event.title}",
             fail_silently=True,
+            event=question.event,
         )
 
 

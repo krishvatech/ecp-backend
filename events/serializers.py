@@ -3239,14 +3239,47 @@ class EventSaleorDiscountSerializer(serializers.ModelSerializer):
 class EventEmailTemplateSerializer(serializers.ModelSerializer):
     """Serializer for per-event email template overrides."""
     updated_by_name = serializers.CharField(source='updated_by.get_full_name', read_only=True)
+    label = serializers.SerializerMethodField()
+    category = serializers.SerializerMethodField()
+    source = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    merge_tags = serializers.SerializerMethodField()
+    required_placeholders = serializers.SerializerMethodField()
+
+    def _metadata(self, obj):
+        from cms.email_template_registry import get_template_metadata
+        return get_template_metadata(obj.template_key) or {}
 
     class Meta:
         model = EventEmailTemplate
         fields = [
             'id', 'event', 'template_key', 'subject', 'html_body', 'text_body',
-            'is_active', 'updated_by', 'updated_by_name', 'created_at', 'updated_at'
+            'editor_json', 'mjml_body', 'editor_type', 'is_active', 'notes',
+            'updated_by', 'updated_by_name', 'created_at', 'updated_at',
+            'label', 'category', 'source', 'status', 'merge_tags', 'required_placeholders',
         ]
-        read_only_fields = ['id', 'event', 'created_at', 'updated_at', 'updated_by_name']
+        read_only_fields = [
+            'id', 'event', 'created_at', 'updated_at', 'updated_by_name',
+            'label', 'category', 'source', 'status', 'merge_tags', 'required_placeholders',
+        ]
+
+    def get_label(self, obj):
+        return self._metadata(obj).get('label', obj.get_template_key_display())
+
+    def get_category(self, obj):
+        return self._metadata(obj).get('category', 'Events')
+
+    def get_source(self, obj):
+        return 'event_specific'
+
+    def get_status(self, obj):
+        return 'active' if obj.is_active else 'inactive'
+
+    def get_merge_tags(self, obj):
+        return self._metadata(obj).get('merge_tags', [])
+
+    def get_required_placeholders(self, obj):
+        return self._metadata(obj).get('required_placeholders', [])
 
 
 class EventBadgeLabelSerializer(serializers.ModelSerializer):
