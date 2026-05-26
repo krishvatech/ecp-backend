@@ -3187,6 +3187,7 @@ class EventApplicationSubmitSerializer(serializers.Serializer):
     attendee_marker_value = serializers.BooleanField(required=False, default=False)
     comments = serializers.CharField(required=False, allow_blank=True, default='')
     preapproved_code = serializers.CharField(required=False, allow_blank=True, default='')
+    pre_approval_code = serializers.CharField(required=False, allow_blank=True, default='')  # Alias for preapproved_code
 
     # Phase 3: Submission modes
     track_id = serializers.IntegerField(required=False, allow_null=True)
@@ -3217,6 +3218,12 @@ class EventApplicationSubmitSerializer(serializers.Serializer):
     file_uploads = serializers.JSONField(required=False, default=dict)
     tier_preference = serializers.IntegerField(required=False, allow_null=True)
     requested_tier = serializers.IntegerField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        """Merge pre_approval_code into preapproved_code for compatibility."""
+        if attrs.get('pre_approval_code') and not attrs.get('preapproved_code'):
+            attrs['preapproved_code'] = attrs['pre_approval_code']
+        return attrs
 
 
 class EventPreApprovalCodeSerializer(serializers.ModelSerializer):
