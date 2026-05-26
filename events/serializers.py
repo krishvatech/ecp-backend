@@ -2096,7 +2096,7 @@ class EventSerializer(serializers.ModelSerializer):
     def get_application_tracks(self, obj):
         if obj.registration_type != "apply":
             return []
-        tracks = obj.application_tracks.filter(is_active=True).order_by("sort_order", "label")
+        tracks = obj.application_tracks.all().order_by("sort_order", "label")
         return EventApplicationTrackSerializer(tracks, many=True).data
 
     def get_user_status(self, obj):
@@ -3424,6 +3424,9 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
     accepted_tier_price = serializers.SerializerMethodField()
     accepted_tier_currency = serializers.SerializerMethodField()
 
+    # Payment status - from EventAttendeeOrigin
+    origin_status = serializers.SerializerMethodField()
+
     class Meta:
         model = EventApplicationTrackApplication
         fields = [
@@ -3436,7 +3439,7 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
             'nominator_name', 'nominator_email', 'nominee_name', 'nominee_email',
             'sponsor_organization',
             'reviewed_by_user', 'registration_id', 'reviewed_at', 'created_at', 'updated_at',
-            'accepted_tier_price', 'accepted_tier_currency'
+            'accepted_tier_price', 'accepted_tier_currency', 'origin_status'
         ]
         read_only_fields = fields
 
@@ -3490,6 +3493,24 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
             status__in=['registered', 'cancellation_requested']
         ).first()
         return registration.id if registration else None
+
+    def get_origin_status(self, obj):
+        """Get the actual origin_status from EventAttendeeOrigin for accepted applications."""
+        if obj.status != 'accepted':
+            return None
+
+        user = obj.application.user
+        if not user:
+            return None
+
+        origin = EventAttendeeOrigin.objects.filter(
+            registration__event=obj.track.event,
+            registration__user=user,
+            track=obj.track,
+            status='active'
+        ).first()
+
+        return origin.origin_status if origin else None
 
 
 class SaleorChannelSerializer(serializers.ModelSerializer):
