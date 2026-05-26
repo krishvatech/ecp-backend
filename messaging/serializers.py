@@ -2,6 +2,7 @@ from __future__ import annotations
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from .models import Conversation, Message, MessageReadReceipt, ConversationPinnedMessage, MessageFlag
+from users.serializers import UserMiniSerializer
 
 User = get_user_model()
 
@@ -21,6 +22,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     chat_type = serializers.SerializerMethodField(method_name="compute_chat_type")
     display_title = serializers.SerializerMethodField(method_name="compute_display_title")
     is_pinned = serializers.BooleanField(read_only=True)
+    other_participant = serializers.SerializerMethodField()
 
     event_title = serializers.CharField(source="event.title", read_only=True, default=None)
     group_name  = serializers.CharField(source="group.name", read_only=True, default=None)
@@ -38,6 +40,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             "event_title", "group_name", "lounge_table_name",
             "chat_type",
             "participant_ids",
+            "other_participant",
             "last_message",
             "unread_count",
             "updated_at", "created_at", "created_by","is_pinned",
@@ -196,6 +199,23 @@ class ConversationSerializer(serializers.ModelSerializer):
             return []
         return [obj.user1_id, obj.user2_id]
 
+    def get_other_participant(self, obj: Conversation):
+        if obj.is_group or obj.is_event_group or getattr(obj, "lounge_table_id", None):
+            return None
+        req = self.context.get("request")
+        me_id = getattr(getattr(req, "user", None), "id", None)
+        if not me_id:
+            return None
+        if obj.user1_id == me_id:
+            other = getattr(obj, "user2", None)
+        elif obj.user2_id == me_id:
+            other = getattr(obj, "user1", None)
+        else:
+            other = None
+        if not other:
+            return None
+        return UserMiniSerializer(other, context=self.context).data
+
     def get_last_message(self, obj: Conversation) -> str:
         msg = (
             obj.messages.filter(is_hidden=False, is_deleted=False)
@@ -227,6 +247,7 @@ class MessageSerializer(serializers.ModelSerializer):
     sender_name = serializers.SerializerMethodField()
     sender_display = serializers.SerializerMethodField()
     sender_avatar = serializers.SerializerMethodField()
+    sender_kyc_status = serializers.SerializerMethodField()
     mine = serializers.SerializerMethodField()
     read_by_me = serializers.SerializerMethodField()
     # keep old clients happy
@@ -243,7 +264,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "event_id",
             "sender", "sender_id",
             "guest_sender_id",
-            "sender_name", "sender_display", "sender_avatar",
+            "sender_name", "sender_display", "sender_avatar", "sender_kyc_status",
             "mine",
             "body", "attachments",
             "created_at",
@@ -260,7 +281,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "event_id",
             "sender", "sender_id",
             "guest_sender_id",
-            "sender_name", "sender_display", "sender_avatar",
+            "sender_name", "sender_display", "sender_avatar", "sender_kyc_status",
             "mine",
             "created_at",
             "is_hidden", "is_deleted", "deleted_at",
@@ -375,6 +396,13 @@ class MessageSerializer(serializers.ModelSerializer):
                 return url
         li = getattr(u, "linkedin", None)
         return getattr(li, "picture_url", "") or ""
+
+    def get_sender_kyc_status(self, obj):
+        if getattr(obj, "guest_sender", None):
+            return ""
+        u = getattr(obj, "sender", None)
+        profile = getattr(u, "profile", None) if u else None
+        return getattr(profile, "kyc_status", "") if profile else ""
 
     def get_mine(self, obj):
         req = self.context.get("request")
