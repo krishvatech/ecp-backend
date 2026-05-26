@@ -248,6 +248,24 @@ def send_template_email(template_key, to_email, context, subject_override=None, 
         return False
 
 
+def send_application_decision_email(track_application, outcome, event=None, *args, **kwargs):
+    """
+    Phase 12: Send decision email using communication service with template hierarchy.
+    Replaces individual send_application_approved_email, send_application_declined_email calls.
+
+    Args:
+        track_application: EventApplicationTrackApplication instance
+        outcome: 'accept' | 'decline' | 'waitlist' | 'accepted' | 'declined' | 'waitlisted'
+        event: Optional Event instance (determined from track_application if not provided)
+        *args, **kwargs: Additional arguments for compatibility (ignored)
+
+    Returns:
+        bool: True if email sent successfully
+    """
+    from events.services.communication import send_application_decision_email as _send_decision_email
+    return _send_decision_email(track_application, outcome)
+
+
 def generate_temporary_password(length=12):
     """
     Generate a secure temporary password that meets Cognito requirements.

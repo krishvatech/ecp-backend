@@ -1537,183 +1537,383 @@ def schedule_networking_meeting_reminders():
         logger.error(f"Failed to schedule networking meeting reminders: {e}")
         return {"error": str(e)}
 
+
+# ============================================================================
+# FORM ASSIGNMENT EMAIL TASK
+# ============================================================================
+
+@shared_task(bind=True, max_retries=2)
+def send_form_assignment_email_task(self, assignment_id):
+    """
+    Async task to send form assignment notification email.
+    Non-blocking - form creation continues even if email fails.
+
+    Args:
+        assignment_id: ID of PostAcceptanceFormAssignment
+
+    Returns:
+        dict: {'status': 'sent'|'failed', 'reason': str}
+    """
+    try:
+        from events.models import PostAcceptanceFormAssignment
+        from events.services.post_acceptance_forms import send_form_assignment_email
+
+        assignment = PostAcceptanceFormAssignment.objects.select_related(
+            'event', 'event_registration', 'event_registration__user', 'form_template'
+        ).get(id=assignment_id)
+
+        # Send form assignment email
+        result = send_form_assignment_email(assignment)
+        if result:
+            logger.info(
+                f"Sent {assignment.form_type} form assignment email to {assignment.event_registration.user.email}"
+            )
+            return {'status': 'sent', 'reason': 'success'}
+        else:
+            logger.warning(
+                f"Failed to send {assignment.form_type} form assignment email to {assignment.event_registration.user.email}"
+            )
+            raise Exception("send_form_assignment_email returned False")
+
+    except PostAcceptanceFormAssignment.DoesNotExist:
+        logger.error(f"PostAcceptanceFormAssignment {assignment_id} not found")
+        return {'status': 'failed', 'reason': 'not_found'}
+    except Exception as e:
+        logger.error(
+            f"Error sending form assignment email for assignment {assignment_id}: {e}",
+            exc_info=True
+        )
+        # Retry with exponential backoff
+        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
+
+
+# ============================================================================
+# PARTICIPANT INFORMATION FORM REMINDER TASKS
+# ============================================================================
+
+@shared_task(bind=True, max_retries=3)
+def send_form_reminder_task(self, assignment_id):
+    """
+    Celery task to send reminder email for incomplete form assignment.
+    Retries up to 3 times with exponential backoff.
+    """
+    from events.models import PostAcceptanceFormAssignment, PostAcceptanceReminderLog
+    from events.services.post_acceptance_forms import send_form_reminder_email
+
+    try:
+        assignment = PostAcceptanceFormAssignment.objects.get(id=assignment_id)
+
+        # Don't send if already completed
+        if assignment.status == PostAcceptanceFormAssignment.STATUS_COMPLETED:
+            logger.info(f"Skipping reminder for assignment {assignment_id} - already completed")
+            return
+
+        # Don't send if lapsed
+        if assignment.status == PostAcceptanceFormAssignment.STATUS_LAPSED:
+            logger.info(f"Skipping reminder for assignment {assignment_id} - form lapsed")
+            return
+
+        # Send the reminder email
+        result = send_form_reminder_email(assignment)
+
+        if result:
+            # Update reminder counter
+            assignment.reminders_sent += 1
+            assignment.last_reminder_sent_at = timezone.now()
+            assignment.save(update_fields=['reminders_sent', 'last_reminder_sent_at'])
+
+            # Log reminder sent
+            PostAcceptanceReminderLog.objects.create(
+                assignment=assignment,
+                reminder_number=assignment.reminders_sent,
+                sent_at=timezone.now()
+            )
+
+            logger.info(f"Reminder {assignment.reminders_sent} sent for assignment {assignment_id}")
+            return {"status": "sent", "reminder_number": assignment.reminders_sent}
+        else:
+            raise Exception("send_form_reminder_email returned False")
+
+    except PostAcceptanceFormAssignment.DoesNotExist:
+        logger.error(f"Assignment {assignment_id} not found for reminder task")
+        return
+
+    except Exception as exc:
+        logger.error(f"Error sending form reminder for assignment {assignment_id}: {str(exc)}")
+        # Retry with exponential backoff: 60s, 120s, 240s
+        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+
+
+@shared_task
+def schedule_form_reminders():
+    """
+    Scheduled task to find incomplete form assignments approaching deadline.
+    Sends reminders with role/module-based cadence:
+
+    Participant Information (default):
+    - 14 days before deadline (first reminder)
+    - 3 days before deadline (second reminder)
+
+    Promotional Profile (speaker/moderator/host emphasis):
+    - Day 0 (initial - already sent on creation)
+    - Day 3 before deadline
+    - Day 5 before deadline
+    - Day 7 before deadline
+    - Optional escalation (24 hours)
+    """
+    from events.models import PostAcceptanceFormAssignment, PostAcceptanceFormTemplate
+    from datetime import datetime, timedelta
+    from django.utils import timezone
+
+    try:
+        now = timezone.now()
+        reminder_window_start = now
+        reminder_window_end = now + timedelta(days=1)  # Check daily
+        reminders_scheduled = 0
+
+        # Find incomplete assignments with deadline approaching in next 14+ days
+        # Skip opted-out registrations if field exists
+        # Use select_related + prefetch_related to prevent N+1 queries on user lookups
+        assignments = PostAcceptanceFormAssignment.objects.filter(
+            status__in=[
+                PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
+                PostAcceptanceFormAssignment.STATUS_IN_PROGRESS
+            ],
+            deadline__gte=reminder_window_start,
+            deadline__lte=reminder_window_end + timedelta(days=14),
+            event_registration__attendee_status='confirmed',
+            event_registration__status='registered'
+        ).select_related(
+            'event', 'event_registration', 'form_template'
+        ).prefetch_related(
+            'event_registration__user'
+        )
+
+        for assignment in assignments:
+            form_type = assignment.form_type
+
+            # Get reminder schedule and calculate days
+            if form_type == 'promotional_profile':
+                reminder_schedule = _get_promotional_profile_reminder_schedule(assignment)
+                # For promotional profiles, use creation_at-based schedule
+                days_for_comparison = (now - assignment.created_at).days
+                reference_point = "creation"
+            else:
+                # Default participant_information schedule
+                reminder_schedule = _get_participant_information_reminder_schedule(assignment)
+                # For participant_information, use deadline-based schedule
+                days_for_comparison = (assignment.deadline - now).days
+                reference_point = "deadline"
+
+            # Check if reminder should be sent now
+            for reminder_day, reminder_count in reminder_schedule:
+                # Allow 1-day tolerance window for matching
+                if (reminder_day - 1 <= days_for_comparison <= reminder_day + 1 and
+                    assignment.reminders_sent == reminder_count):
+                    send_form_reminder_task.delay(assignment.id)
+                    reminders_scheduled += 1
+                    logger.info(
+                        f"Scheduled reminder #{reminder_count + 1} ({reminder_day}d from {reference_point}) "
+                        f"for {form_type} assignment {assignment.id}"
+                    )
+                    break  # Only send one reminder per day
+
+        logger.info(f"Form reminder scheduler: {reminders_scheduled} reminders queued")
+        return {"reminders_scheduled": reminders_scheduled}
+
+    except Exception as e:
+        logger.error(f"Failed to schedule form reminders: {e}")
+        return {"error": str(e)}
+
+
+def _get_participant_information_reminder_schedule(assignment):
+    """
+    Get reminder schedule for Participant Information forms.
+
+    Default schedule:
+    - Day 14: First reminder
+    - Day 3: Second reminder
+
+    Returns:
+        list: [(days_until_deadline, reminders_sent_threshold), ...]
+    """
+    return [
+        (14, 0),  # Send when 14 days before and no reminders sent yet
+        (3, 1),   # Send when 3 days before and 1 reminder already sent
+    ]
+
+
+def _get_promotional_profile_reminder_schedule(assignment):
+    """
+    Get reminder schedule for Promotional Profile forms.
+
+    Schedule based on days since assignment creation:
+    - Day 0: Initial email sent on creation
+    - Day 3: First reminder
+    - Day 5: Second reminder
+    - Day 7: Third reminder
+
+    Note: This uses creation_at-based schedule, not deadline-based.
+    The calling code should check days_since_created instead of days_until_deadline.
+
+    Returns:
+        list: [(days_since_created, reminders_sent_threshold), ...]
+    """
+    return [
+        (3, 0),  # First reminder 3 days after creation
+        (5, 1),  # Second reminder 5 days after creation
+        (7, 2),  # Third reminder 7 days after creation
+    ]
+
+
+@shared_task
+def mark_lapsed_form_assignments():
+    """
+    Scheduled task to mark assignments as lapsed when deadline passes.
+    Runs daily to check all incomplete assignments.
+    """
+    from events.models import PostAcceptanceFormAssignment
+    from django.utils import timezone
+
+    try:
+        now = timezone.now()
+        marked_lapsed = 0
+
+        # Find incomplete assignments past deadline
+        lapsed_assignments = PostAcceptanceFormAssignment.objects.filter(
+            status__in=[
+                PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
+                PostAcceptanceFormAssignment.STATUS_IN_PROGRESS
+            ],
+            deadline__lt=now
+        )
+
+        for assignment in lapsed_assignments:
+            assignment.status = PostAcceptanceFormAssignment.STATUS_LAPSED
+            assignment.save(update_fields=['status'])
+            marked_lapsed += 1
+
+            logger.info(f"Marked assignment {assignment.id} as lapsed")
+
+        logger.info(f"Marked {marked_lapsed} assignments as lapsed")
+        return {"marked_lapsed": marked_lapsed}
+
+    except Exception as e:
+        logger.error(f"Failed to mark lapsed form assignments: {e}")
+        return {"error": str(e)}
+
+
+@shared_task
+def purge_expired_form_data():
+    """
+    Scheduled task to purge restricted form data 30 days after event ends.
+    Removes emergency contact, medical/accessibility, and dietary information.
+    Keeps non-sensitive attendance and registration data.
+    Respects retention flags if any.
+    """
+    from events.models import Event, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer
+    from django.utils import timezone
+    from datetime import timedelta
+
+    try:
+        now = timezone.now()
+        thirty_days_ago = now - timedelta(days=30)
+        purged_count = 0
+        restricted_fields = {
+            # Emergency contact
+            'emergency_contact_name',
+            'emergency_contact_phone',
+            'emergency_contact_relationship',
+            'emergency_contact_relationship_other',
+            # Medical and accessibility
+            'accessibility_needs_detail',
+            'mobility_seating_requirements',
+            'medical_info_emergency',
+            # Dietary
+            'food_allergies',
+            'food_allergies_other',
+            'dietary_restrictions',
+            'dietary_restrictions_other',
+            'food_notes'
+        }
+
+        # Find events that ended more than 30 days ago
+        old_events = Event.objects.filter(
+            end_time__lt=thirty_days_ago,
+            status__in=['ended', 'completed']
+        )
+
+        logger.info(f"Found {old_events.count()} events eligible for restricted data purge")
+
+        for event in old_events:
+            # Get all completed submissions for Participant Information forms only
+            submissions = PostAcceptanceFormSubmission.objects.filter(
+                assignment__event=event,
+                assignment__status='completed',
+                assignment__form_type='participant_information'
+            )
+
+            for submission in submissions:
+                # Skip purging if registration has retention requirement
+                registration = submission.assignment.event_registration
+                if registration.restricted_data_retention_required:
+                    logger.info(
+                        f"Skipping purge for submission {submission.id} - "
+                        f"retention required. Reason: {registration.restricted_data_retention_reason}"
+                    )
+                    continue
+
+                # Delete restricted answer fields
+                deleted = submission.answers.filter(
+                    question_key__in=restricted_fields
+                ).delete()
+
+                if deleted[0] > 0:
+                    purged_count += deleted[0]
+                    logger.info(
+                        f"Purged {deleted[0]} restricted fields from "
+                        f"submission {submission.id} for event {event.id}"
+                    )
+
+        if purged_count > 0:
+            logger.info(
+                f"AUDIT: Purge completed - action=purge_restricted, "
+                f"events_processed={old_events.count()}, "
+                f"restricted_fields_removed={purged_count}, "
+                f"form_type=participant_information, "
+                f"timestamp={timezone.now().isoformat()}"
+            )
+        else:
+            logger.info(f"Purge expired form data: No restricted fields to purge")
+
+        return {"purged_fields": purged_count}
+
+    except Exception as e:
+        logger.error(f"Failed to purge expired form data: {e}", exc_info=True)
+        return {"error": str(e)}
 @shared_task(name="events.tasks.manage_live_meeting_asg_capacity")
 def manage_live_meeting_asg_capacity():
     """
-    Automatically manages backend Auto Scaling Group capacity for large live meetings.
-
-    Production behavior:
-    - Normal capacity: Min=2, Desired=2, Max=5
-    - Big live meeting capacity: Min=3, Desired=3, Max=6
-    - Scale up when a large live meeting starts within the configured lead time.
-    - Keep capacity high while the meeting is active and for the configured buffer after it ends.
-    - Scale back only after the buffer is over and no other large meeting is active/upcoming.
-
-    This avoids manual AWS scaling before every event and prevents sudden capacity shortage
-    during live meetings.
+    Runs every few minutes.
+    Handles scheduled, upcoming, active, early-start, and late-registration load.
     """
-    import boto3
     from django.core.cache import cache
-    from django.db.models import Count, Q
-
-    if not getattr(settings, "LIVE_MEETING_ASG_AUTOSCALE_ENABLED", False):
-        logger.info("[ASG_CAPACITY] Disabled: LIVE_MEETING_ASG_AUTOSCALE_ENABLED=False")
-        return {"status": "disabled"}
+    from events.services.live_meeting_capacity import scale_asg_if_needed
 
     lock_key = "live_meeting_asg_capacity_manager_lock"
 
-    # Avoid duplicate execution if Celery Beat/worker overlaps.
     if not cache.add(lock_key, "1", timeout=240):
         logger.info("[ASG_CAPACITY] Skipped: another task is already running")
         return {"status": "locked"}
 
     try:
-        asg_name = settings.LIVE_MEETING_ASG_NAME
-        region = settings.LIVE_MEETING_ASG_REGION
-        threshold = settings.LIVE_MEETING_ASG_BIG_EVENT_THRESHOLD
-
-        now = timezone.now()
-        scale_up_until = now + timedelta(
-            minutes=settings.LIVE_MEETING_ASG_SCALE_UP_BEFORE_MINUTES
+        return scale_asg_if_needed(
+            reason="celery_live_meeting_capacity_manager",
+            scale_down_allowed=True,
         )
-        keep_scaled_after = now - timedelta(
-            minutes=settings.LIVE_MEETING_ASG_SCALE_DOWN_AFTER_MINUTES
-        )
-
-        # A meeting needs big capacity if it is a native live meeting and either:
-        # - starts within the lead window,
-        # - is active,
-        # - or ended recently but is still inside the scale-down buffer.
-        #
-        # Size is detected using max_participants, cached attending_count, or confirmed
-        # registration count. This makes the task safer even if attending_count is stale.
-        big_meeting_qs = (
-            Event.objects.filter(
-                status__in=["published", "live"],
-                start_time__isnull=False,
-                start_time__lte=scale_up_until,
-                use_external_streaming=False,
-            )
-            .filter(
-                Q(end_time__isnull=True, start_time__gte=keep_scaled_after)
-                | Q(end_time__gte=keep_scaled_after)
-            )
-            .annotate(
-                confirmed_registration_count=Count(
-                    "registrations",
-                    filter=Q(
-                        registrations__status="registered",
-                        registrations__attendee_status="confirmed",
-                    ),
-                    distinct=True,
-                )
-            )
-            .filter(
-                Q(max_participants__gte=threshold)
-                | Q(attending_count__gte=threshold)
-                | Q(confirmed_registration_count__gte=threshold)
-            )
-        )
-
-        big_meeting = big_meeting_qs.order_by("start_time").first()
-
-        if big_meeting:
-            mode = "big_meeting"
-            desired_config = {
-                "MinSize": settings.LIVE_MEETING_ASG_BIG_MIN,
-                "DesiredCapacity": settings.LIVE_MEETING_ASG_BIG_DESIRED,
-                "MaxSize": settings.LIVE_MEETING_ASG_BIG_MAX,
-            }
-            logger.info(
-                "[ASG_CAPACITY] Large live meeting window detected: event_id=%s title=%s start=%s end=%s",
-                big_meeting.id,
-                big_meeting.title,
-                big_meeting.start_time,
-                big_meeting.end_time,
-            )
-        else:
-            mode = "normal"
-            desired_config = {
-                "MinSize": settings.LIVE_MEETING_ASG_NORMAL_MIN,
-                "DesiredCapacity": settings.LIVE_MEETING_ASG_NORMAL_DESIRED,
-                "MaxSize": settings.LIVE_MEETING_ASG_NORMAL_MAX,
-            }
-
-        client = boto3.client("autoscaling", region_name=region)
-        response = client.describe_auto_scaling_groups(
-            AutoScalingGroupNames=[asg_name]
-        )
-        groups = response.get("AutoScalingGroups", [])
-
-        if not groups:
-            logger.error("[ASG_CAPACITY] ASG not found: %s", asg_name)
-            return {"status": "error", "message": f"ASG not found: {asg_name}"}
-
-        current = groups[0]
-        current_min = current.get("MinSize")
-        current_desired = current.get("DesiredCapacity")
-        current_max = current.get("MaxSize")
-
-        already_correct = (
-            current_min == desired_config["MinSize"]
-            and current_desired == desired_config["DesiredCapacity"]
-            and current_max == desired_config["MaxSize"]
-        )
-
-        if already_correct:
-            logger.info(
-                "[ASG_CAPACITY] No change needed. mode=%s min=%s desired=%s max=%s",
-                mode,
-                current_min,
-                current_desired,
-                current_max,
-            )
-            return {
-                "status": "ok",
-                "changed": False,
-                "mode": mode,
-                "current": {
-                    "min": current_min,
-                    "desired": current_desired,
-                    "max": current_max,
-                },
-            }
-
-        logger.info(
-            "[ASG_CAPACITY] Updating ASG %s mode=%s from min=%s desired=%s max=%s "
-            "to min=%s desired=%s max=%s",
-            asg_name,
-            mode,
-            current_min,
-            current_desired,
-            current_max,
-            desired_config["MinSize"],
-            desired_config["DesiredCapacity"],
-            desired_config["MaxSize"],
-        )
-
-        client.update_auto_scaling_group(
-            AutoScalingGroupName=asg_name,
-            MinSize=desired_config["MinSize"],
-            DesiredCapacity=desired_config["DesiredCapacity"],
-            MaxSize=desired_config["MaxSize"],
-        )
-
-        return {
-            "status": "ok",
-            "changed": True,
-            "mode": mode,
-            "new": {
-                "min": desired_config["MinSize"],
-                "desired": desired_config["DesiredCapacity"],
-                "max": desired_config["MaxSize"],
-            },
-        }
-
     except Exception as exc:
         logger.exception("[ASG_CAPACITY] Failed to manage ASG capacity: %s", exc)
         return {"status": "error", "error": str(exc)}
-
     finally:
         cache.delete(lock_key)
 
@@ -1837,4 +2037,135 @@ def auto_sync_saleor_staff_users(self):
 @shared_task(bind=True, max_retries=3)
 def auto_sync_saleor_permission_groups(self):
     return _run_saleor_sync_task(self, "Permission groups", sync_permission_groups_from_saleor)
+
+
+# Phase 13: Application decision email tasks (async, non-blocking)
+
+@shared_task(bind=True, max_retries=2)
+def send_application_acceptance_email_task(self, track_application_id):
+    """
+    Async task to send acceptance email for a track application.
+    Non-blocking - errors are logged but don't fail the acceptance.
+
+    Args:
+        track_application_id: ID of EventApplicationTrackApplication
+
+    Returns:
+        dict: {'status': 'sent'|'skipped'|'failed', 'reason': str}
+    """
+    try:
+        from events.models import EventApplicationTrackApplication
+        from events.services.communication import send_application_decision_email
+
+        track_app = EventApplicationTrackApplication.objects.select_related(
+            'application', 'track', 'track__event'
+        ).get(id=track_application_id)
+
+        # Check opt-out flag
+        if track_app.application.opt_out_automated_communication:
+            logger.info(f"Skipping acceptance email for {track_app.application.email} - opted out")
+            return {'status': 'skipped', 'reason': 'opted_out'}
+
+        # Send acceptance email
+        result = send_application_decision_email(track_app, 'accepted')
+        if result:
+            logger.info(f"Sent acceptance email to {track_app.application.email}")
+            return {'status': 'sent', 'reason': 'success'}
+        else:
+            logger.warning(f"Failed to send acceptance email to {track_app.application.email}")
+            raise Exception("send_application_decision_email returned False")
+
+    except EventApplicationTrackApplication.DoesNotExist:
+        logger.error(f"TrackApplication {track_application_id} not found")
+        return {'status': 'failed', 'reason': 'not_found'}
+    except Exception as e:
+        logger.error(f"Error sending acceptance email for track app {track_application_id}: {e}", exc_info=True)
+        # Retry with exponential backoff
+        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
+
+
+@shared_task(bind=True, max_retries=2)
+def send_application_decline_email_task(self, track_application_id):
+    """
+    Async task to send decline email for a track application.
+    Non-blocking - errors are logged but don't fail the decline decision.
+
+    Args:
+        track_application_id: ID of EventApplicationTrackApplication
+
+    Returns:
+        dict: {'status': 'sent'|'skipped'|'failed', 'reason': str}
+    """
+    try:
+        from events.models import EventApplicationTrackApplication
+        from events.services.communication import send_application_decision_email
+
+        track_app = EventApplicationTrackApplication.objects.select_related(
+            'application', 'track', 'track__event'
+        ).get(id=track_application_id)
+
+        # Check opt-out flag
+        if track_app.application.opt_out_automated_communication:
+            logger.info(f"Skipping decline email for {track_app.application.email} - opted out")
+            return {'status': 'skipped', 'reason': 'opted_out'}
+
+        # Send decline email
+        result = send_application_decision_email(track_app, 'declined')
+        if result:
+            logger.info(f"Sent decline email to {track_app.application.email}")
+            return {'status': 'sent', 'reason': 'success'}
+        else:
+            logger.warning(f"Failed to send decline email to {track_app.application.email}")
+            raise Exception("send_application_decision_email returned False")
+
+    except EventApplicationTrackApplication.DoesNotExist:
+        logger.error(f"TrackApplication {track_application_id} not found")
+        return {'status': 'failed', 'reason': 'not_found'}
+    except Exception as e:
+        logger.error(f"Error sending decline email for track app {track_application_id}: {e}", exc_info=True)
+        # Retry with exponential backoff
+        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
+
+
+@shared_task(bind=True, max_retries=2)
+def send_application_waitlist_email_task(self, track_application_id):
+    """
+    Async task to send waitlist email for a track application.
+    Non-blocking - errors are logged but don't fail the waitlist decision.
+
+    Args:
+        track_application_id: ID of EventApplicationTrackApplication
+
+    Returns:
+        dict: {'status': 'sent'|'skipped'|'failed', 'reason': str}
+    """
+    try:
+        from events.models import EventApplicationTrackApplication
+        from events.services.communication import send_application_decision_email
+
+        track_app = EventApplicationTrackApplication.objects.select_related(
+            'application', 'track', 'track__event'
+        ).get(id=track_application_id)
+
+        # Check opt-out flag
+        if track_app.application.opt_out_automated_communication:
+            logger.info(f"Skipping waitlist email for {track_app.application.email} - opted out")
+            return {'status': 'skipped', 'reason': 'opted_out'}
+
+        # Send waitlist email
+        result = send_application_decision_email(track_app, 'waitlisted')
+        if result:
+            logger.info(f"Sent waitlist email to {track_app.application.email}")
+            return {'status': 'sent', 'reason': 'success'}
+        else:
+            logger.warning(f"Failed to send waitlist email to {track_app.application.email}")
+            raise Exception("send_application_decision_email returned False")
+
+    except EventApplicationTrackApplication.DoesNotExist:
+        logger.error(f"TrackApplication {track_application_id} not found")
+        return {'status': 'failed', 'reason': 'not_found'}
+    except Exception as e:
+        logger.error(f"Error sending waitlist email for track app {track_application_id}: {e}", exc_info=True)
+        # Retry with exponential backoff
+        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
 

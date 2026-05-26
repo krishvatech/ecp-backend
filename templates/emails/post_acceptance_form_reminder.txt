@@ -1,0 +1,18 @@
+Reminder: Complete Your Participant Information Form
+
+Hello {{ first_name }},
+
+This is a friendly reminder that you haven't yet completed your Participant Information Form for {{ event_title }}.
+
+{{ event_title }}
+{% if deadline %}⏰ Due Date: {{ deadline }}{% endif %}
+⚠️ This deadline is approaching!
+
+Completing this form helps us ensure you have the best experience at the event. It takes just a few minutes!
+
+Complete Form Now:
+{{ form_url }}
+
+After the deadline, you can still view your information but won't be able to make changes.
+
+Questions? Reply to this email or contact the event organizer.

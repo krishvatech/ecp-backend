@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - import guard for local/runtime variation
 logger = logging.getLogger(__name__)
 
 ASSISTANCE_COOLDOWN_SECONDS = 60
-DISCONNECT_CLEANUP_GRACE_SECONDS = 3
+DISCONNECT_CLEANUP_GRACE_SECONDS = 20
 HEARTBEAT_INTERVAL = 5  # Send ping every 5 seconds
 HEARTBEAT_TIMEOUT = 15  # Disconnect if no pong for 15 seconds
 
@@ -37,6 +37,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     def _cache_key_moods(self) -> str:
         return f"event:{self.event_id}:moods:v1"
+
+    def _cache_key_guest_online_count(self) -> str:
+        guest_id = getattr(getattr(self.user, "guest", None), "id", None)
+        return f"event:{self.event_id}:guest:{guest_id}:online_count:v1"
 
     def _invalidate_lounge_presence_cache_sync(self) -> None:
         cache.delete_many([
@@ -91,16 +95,36 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         self._ws_closed = False
         self._disconnect_cleanup_task = None
 
-        # Join event group
-        await self.channel_layer.group_add(self.group_name, self.channel_name)
-        
-        # Join user-specific group for private messages
-        # Check for Ban Status
+        event_exists = await database_sync_to_async(lambda: Event.objects.filter(id=self.event_id).exists())()
+        if not event_exists:
+            logger.warning(
+                "WS[Event] rejected: event not found event=%s user=%s path=%s",
+                self.event_id,
+                getattr(self.user, "id", None),
+                self.scope.get("path"),
+            )
+            await self.close(code=4404)
+            return
+
+        logger.info(
+            "WS[Event] connect start event=%s user=%s channel=%s path=%s",
+            self.event_id,
+            getattr(self.user, "id", None),
+            self.channel_name,
+            self.scope.get("path"),
+        )
+
+        # Check for Ban Status before joining any groups
         is_banned = await self.check_is_banned()
         if is_banned:
             logger.warning("WS[Event] rejected: user %s is banned from event %s", self.user.id, self.event_id)
             await self.close(code=4003)
             return
+
+        # Join event group
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        
+        # Join user-specific group for private messages
 
         if self._is_guest_user():
             self.user_group_name = f"guest_user_{self.user.guest.id}"
@@ -114,6 +138,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         self.pong_timeout_task = None
 
         await self.accept()
+        logger.info(
+            "WS[Event] connect accepted event=%s user=%s channel=%s",
+            self.event_id,
+            getattr(self.user, "id", None),
+            self.channel_name,
+        )
 
         # ✅ HEARTBEAT: Start heartbeat ping task
         self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -219,6 +249,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     async def disconnect(self, code: int) -> None:
         self._ws_closed = True
+        logger.info(
+            "WS[Event] disconnect event=%s user=%s channel=%s code=%s",
+            getattr(self, "event_id", None),
+            getattr(getattr(self, "user", None), "id", None),
+            getattr(self, "channel_name", None),
+            code,
+        )
 
         # ✅ HEARTBEAT: Cancel heartbeat tasks on disconnect
         if hasattr(self, "heartbeat_task") and self.heartbeat_task:
@@ -237,6 +274,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     async def _finalize_disconnect(self) -> None:
         """Runs after disconnect returns. Handles presence, broadcasts, grace period, and RTK cleanup."""
+        logger.info(
+            "[CLEANUP] finalize start event=%s user=%s channel=%s",
+            getattr(self, "event_id", None),
+            getattr(getattr(self, "user", None), "id", None),
+            getattr(self, "channel_name", None),
+        )
         try:
             if hasattr(self, "group_name"):
                 await self.update_online_status(False)
@@ -248,6 +291,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         try:
             await asyncio.sleep(DISCONNECT_CLEANUP_GRACE_SECONDS)
             should_finalize = await self.should_finalize_disconnect_cleanup()
+            logger.info(
+                "[CLEANUP] grace check complete event=%s user=%s should_finalize=%s",
+                getattr(self, "event_id", None),
+                getattr(getattr(self, "user", None), "id", None),
+                should_finalize,
+            )
         except Exception as e:
             logger.warning(f"[CLEANUP] Grace-period check failed for user {self.user.id}: {e}")
             should_finalize = True
@@ -1600,18 +1649,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def get_user_rtk_meetings(self):
-        """Get all RTK meeting IDs where this user might be."""
+        """
+        Get RTK meeting IDs used for lounge/breakout cleanup.
+
+        Do not include the main event RTK meeting here. A transient websocket
+        disconnect should not eject attendees from the live event itself.
+        """
         tables = LoungeTable.objects.filter(event_id=self.event_id).values_list('rtk_meeting_id', flat=True)
         meeting_ids = [mid for mid in tables if mid]
-
-        try:
-            event = Event.objects.get(id=self.event_id)
-            if event.rtk_meeting_id:
-                meeting_ids.append(event.rtk_meeting_id)
-        except Event.DoesNotExist:
-            pass
-
-        return meeting_ids
+        return list(dict.fromkeys(meeting_ids))
 
     def cleanup_rtk_participants_sync(self, meeting_ids):
         """Remove user from all RTK meetings."""
@@ -1678,7 +1724,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     def update_online_status(self, increment):
         try:
             if self._is_guest_user():
-                # Guests don't have EventRegistration rows; nothing to track here.
+                cache_key = self._cache_key_guest_online_count()
+                current = int(cache.get(cache_key, 0) or 0)
+                next_count = current + 1 if increment else max(0, current - 1)
+                cache.set(cache_key, next_count, timeout=max(DISCONNECT_CLEANUP_GRACE_SECONDS * 3, 60))
+                logger.info(
+                    f"[CONSUMER] Guest {self.user.guest.id}: count={next_count}, online={next_count > 0}"
+                )
+                self._invalidate_lounge_presence_cache_sync()
                 return
 
             with transaction.atomic():
@@ -1695,6 +1748,17 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 reg.is_online = (reg.online_count > 0)
                 reg.save(update_fields=['online_count', 'is_online'])
                 print(f"[CONSUMER] User {self.user.username} (ID:{self.user.id}): count={reg.online_count}, online={reg.is_online}")
+                logger.info(
+                    "[PRESENCE] event=%s user=%s increment=%s online_count=%s is_online=%s admission=%s location=%s last_reconnect_at=%s",
+                    self.event_id,
+                    self.user.id,
+                    increment,
+                    reg.online_count,
+                    reg.is_online,
+                    reg.admission_status,
+                    reg.current_location,
+                    reg.last_reconnect_at.isoformat() if reg.last_reconnect_at else None,
+                )
 
                 online_total = EventRegistration.objects.filter(
                     event_id=self.event_id,
@@ -1720,10 +1784,35 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     @database_sync_to_async
     def should_finalize_disconnect_cleanup(self):
         if self._is_guest_user():
-            return True
+            guest_online_count = int(cache.get(self._cache_key_guest_online_count(), 0) or 0)
+            logger.info(
+                f"[CLEANUP] Guest {self.user.guest.id} grace-period check count={guest_online_count}"
+            )
+            return guest_online_count == 0
         reg = EventRegistration.objects.filter(event_id=self.event_id, user=self.user).first()
         if not reg:
+            logger.info(
+                "[CLEANUP] no registration found event=%s user=%s -> finalize",
+                self.event_id,
+                self.user.id,
+            )
             return True
+        if reg.last_reconnect_at:
+            seconds_since_reconnect = (timezone.now() - reg.last_reconnect_at).total_seconds()
+            if seconds_since_reconnect <= DISCONNECT_CLEANUP_GRACE_SECONDS:
+                logger.info(
+                    f"[CLEANUP] Skipping finalize for user {self.user.id} on event {self.event_id}; "
+                    f"recent rejoin detected {seconds_since_reconnect:.1f}s ago."
+                )
+                return False
+        logger.info(
+            "[CLEANUP] finalize decision event=%s user=%s online_count=%s is_online=%s last_reconnect_at=%s",
+            self.event_id,
+            self.user.id,
+            reg.online_count,
+            reg.is_online,
+            reg.last_reconnect_at.isoformat() if reg.last_reconnect_at else None,
+        )
         return reg.online_count == 0
 
     @database_sync_to_async
@@ -2677,7 +2766,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
             # 1. Check if breakout rooms are marked as active in the Event model
             # This is the primary source of truth.
-            event_obj = await self.get_event()
+            try:
+                event_obj = await self.get_event()
+            except Event.DoesNotExist:
+                logger.info(
+                    "[LATE_JOINER] Skipping: event not found event=%s user=%s",
+                    getattr(self, "event_id", None),
+                    getattr(getattr(self, "user", None), "id", None),
+                )
+                return
             if not event_obj.breakout_rooms_active:
                 # Double check with participant count just in case flag is out of sync (defensive)
                 has_active = await self._check_active_breakout_rooms()

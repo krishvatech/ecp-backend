@@ -1,0 +1,16 @@
+[Unit]
+Description=ECP backend startup bootstrap
+After=network-online.target docker.service amazon-ssm-agent.service
+Wants=network-online.target docker.service amazon-ssm-agent.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/ecp-startup.sh
+TimeoutStartSec=0
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

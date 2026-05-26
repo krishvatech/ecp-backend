@@ -1,0 +1,29 @@
+Complete Your Registration
+
+Dear {{ applicant_first_name }},
+
+We're excited that you've been accepted to {{ event_name }} ({{ track_label }})! To secure your spot, we need you to complete your registration.
+
+Outstanding Payment:
+Tier: {{ tier_label }}
+Amount Due: ${{ tier_price }}
+
+Please complete your payment to finalize your attendance.
+{{ payment_link_placeholder }}
+
+Event Details:
+Event: {{ event_name }}
+Track: {{ track_label }}
+Date: {{ event_date_str }}
+{% if event_location %}Location: {{ event_location }}{% endif %}
+
+If you have any questions or need assistance completing your registration, please reach out to us at {{ support_email }}.
+
+Thank you and we look forward to seeing you!
+
+Best regards,
+{{ app_name }} Team
+
+---
+© {{ app_name }}. All rights reserved.
+If you no longer wish to receive these emails, please contact us.

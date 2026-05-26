@@ -24,7 +24,10 @@ from .models import (
     EventSession, SessionParticipant, SessionAttendance, SessionBreak, EventApplication, VirtualSpeaker, GuestAttendee,
     SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup,
     EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate,
-    EventNetworkingSettings, NetworkingTable, NetworkingMeeting, EventSessionBookmark
+    EventNetworkingSettings, NetworkingTable, NetworkingMeeting, EventSessionBookmark,
+    PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer,
+    AdminAuditLog, PostAcceptanceFormDraft, EventFormCustomization, EventRole, EventApplicationTrack, EventApplicationTrackApplication, TrackPricingTier,
+    SharedQuestionCategory, SharedQuestion, FormField, EventAttendeeOrigin
 )
 from django.db.models import Prefetch as DjangoPrefetch
 from community.models import Community
@@ -334,6 +337,145 @@ def compute_public_guest_count(event, guest_qs=None):
         converted_user__isnull=True,
         email_verified=True,
     ).count()
+
+
+def serialize_tier_for_status(tier):
+    if not tier:
+        return None
+    return {
+        "id": tier.id,
+        "key": tier.key,
+        "label": tier.label,
+        "price": str(tier.price),
+        "currency": tier.currency,
+    }
+
+
+def get_confirmed_registered_count_for_event(event):
+    """Count confirmed attendees without treating payment_pending as registered."""
+    from events.models import EventAttendeeOrigin, EventRegistration
+
+    confirmed_origin_registration_ids = set(
+        EventAttendeeOrigin.objects.filter(
+            registration__event=event,
+            status="active",
+            origin_status="confirmed",
+        ).values_list("registration_id", flat=True)
+    )
+    confirmed_without_origins = set(
+        EventRegistration.objects.filter(
+            event=event,
+            status="registered",
+            attendee_status="confirmed",
+        )
+        .exclude(origins__status="active")
+        .values_list("id", flat=True)
+    )
+    return len(confirmed_origin_registration_ids | confirmed_without_origins)
+
+
+def build_current_user_event_status(event, request):
+    if not request or not request.user.is_authenticated:
+        return None
+
+    from events.models import EventApplication, EventRegistration
+
+    app = (
+        EventApplication.objects
+        .filter(event=event, user=request.user)
+        .prefetch_related("track_applications__track", "track_applications__accepted_tier")
+        .first()
+    )
+    reg = (
+        EventRegistration.objects
+        .filter(event=event, user=request.user, status__in=["registered", "cancellation_requested"])
+        .prefetch_related("origins__track", "origins__role", "origins__accepted_tier")
+        .first()
+    )
+
+    track_apps_data = []
+    assigned_tier = None
+    application_status = None
+    if app:
+        track_statuses = []
+        for ta in app.track_applications.all():
+            tier_data = serialize_tier_for_status(ta.accepted_tier)
+            if tier_data and not assigned_tier:
+                assigned_tier = tier_data
+            track_statuses.append(ta.status)
+            track_apps_data.append({
+                "track_id": ta.track.id,
+                "track_label": ta.track.label,
+                "status": ta.status,
+                "accepted_tier": tier_data,
+            })
+
+        if "accepted" in track_statuses:
+            application_status = "accepted"
+        elif track_statuses and all(status == "declined" for status in track_statuses):
+            application_status = "declined"
+        elif track_statuses and any(status == "waitlisted" for status in track_statuses):
+            application_status = "waitlisted"
+        else:
+            application_status = app.status
+
+    if reg:
+        origins_data = []
+        payment_pending = reg.attendee_status == "payment_pending"
+        for origin in reg.origins.filter(status="active").select_related("track", "role", "accepted_tier"):
+            tier_data = serialize_tier_for_status(origin.accepted_tier)
+            if origin.origin_status == "payment_pending":
+                payment_pending = True
+                if tier_data:
+                    assigned_tier = tier_data
+            elif tier_data and not assigned_tier:
+                assigned_tier = tier_data
+
+            origins_data.append({
+                "id": origin.id,
+                "track_label": origin.track.label if origin.track else None,
+                "role_label": origin.role.label,
+                "tier_label": origin.accepted_tier.label if origin.accepted_tier else None,
+                "price": str(origin.accepted_tier.price) if origin.accepted_tier else "0",
+                "currency": origin.accepted_tier.currency if origin.accepted_tier else None,
+                "origin_status": origin.origin_status,
+                "payment_reference": origin.payment_reference,
+                "marked_paid_at": origin.marked_paid_at.isoformat() if origin.marked_paid_at else None,
+            })
+
+        confirmed_count = reg.origins.filter(status="active", origin_status="confirmed").count()
+        pending_count = reg.origins.filter(status="active", origin_status="payment_pending").count()
+        is_confirmed_registered = reg.attendee_status == "confirmed" and pending_count == 0
+        origin_status = "payment_pending" if payment_pending else ("confirmed" if is_confirmed_registered or confirmed_count > 0 else None)
+
+        return {
+            "application_status": application_status,
+            "track_applications": track_apps_data,
+            "registration_status": reg.status,
+            "attendee_status": reg.attendee_status,
+            "origin_status": origin_status,
+            "payment_pending": payment_pending,
+            "is_confirmed_registered": is_confirmed_registered,
+            "assigned_tier": assigned_tier,
+            "origins": origins_data,
+            "confirmed_origins_count": confirmed_count,
+            "pending_origins_count": pending_count,
+        }
+
+    if app:
+        return {
+            "application_status": application_status,
+            "track_applications": track_apps_data,
+            "registration_status": None,
+            "attendee_status": None,
+            "origin_status": None,
+            "payment_pending": False,
+            "is_confirmed_registered": False,
+            "assigned_tier": assigned_tier,
+            "origins": [],
+        }
+
+    return None
 
 
 def safe_int(value, default=0):
@@ -854,6 +996,17 @@ class EventSerializer(serializers.ModelSerializer):
     public_registered_count = serializers.SerializerMethodField(read_only=True)
     public_guest_count = serializers.SerializerMethodField(read_only=True)
     total_registered = serializers.SerializerMethodField(read_only=True)
+    application_tracks = serializers.SerializerMethodField(read_only=True)
+    confirmed_registered_count = serializers.SerializerMethodField(read_only=True)
+    user_status = serializers.SerializerMethodField(read_only=True)
+    application_status = serializers.SerializerMethodField(read_only=True)
+    registration_status = serializers.SerializerMethodField(read_only=True)
+    attendee_status = serializers.SerializerMethodField(read_only=True)
+    origin_status = serializers.SerializerMethodField(read_only=True)
+    payment_pending = serializers.SerializerMethodField(read_only=True)
+    is_confirmed_registered = serializers.SerializerMethodField(read_only=True)
+    assigned_tier = serializers.SerializerMethodField(read_only=True)
+    origins = serializers.SerializerMethodField(read_only=True)
 
     # Access-controlled recording_url (host can always see, participants only if visible)
     recording_url = serializers.SerializerMethodField(read_only=True)
@@ -1021,6 +1174,17 @@ class EventSerializer(serializers.ModelSerializer):
             "public_registered_count",
             "public_guest_count",
             "total_registered",
+            "application_tracks",
+            "confirmed_registered_count",
+            "user_status",
+            "application_status",
+            "registration_status",
+            "attendee_status",
+            "origin_status",
+            "payment_pending",
+            "is_confirmed_registered",
+            "assigned_tier",
+            "origins",
             "preview_image",
             "cover_image",
             "waiting_room_image",
@@ -1935,6 +2099,46 @@ class EventSerializer(serializers.ModelSerializer):
         guest_users = self.get_public_guest_count(obj)
         return max(0, safe_int(registered_users) + safe_int(guest_users))
 
+    def get_application_tracks(self, obj):
+        if obj.registration_type != "apply":
+            return []
+        tracks = obj.application_tracks.all().order_by("sort_order", "label")
+        return EventApplicationTrackSerializer(tracks, many=True).data
+
+    def get_user_status(self, obj):
+        return build_current_user_event_status(obj, self.context.get("request"))
+
+    def get_confirmed_registered_count(self, obj):
+        return get_confirmed_registered_count_for_event(obj)
+
+    def _current_user_status_value(self, obj, key, default=None):
+        status = self.get_user_status(obj) or {}
+        return status.get(key, default)
+
+    def get_application_status(self, obj):
+        return self._current_user_status_value(obj, "application_status")
+
+    def get_registration_status(self, obj):
+        return self._current_user_status_value(obj, "registration_status")
+
+    def get_attendee_status(self, obj):
+        return self._current_user_status_value(obj, "attendee_status")
+
+    def get_origin_status(self, obj):
+        return self._current_user_status_value(obj, "origin_status")
+
+    def get_payment_pending(self, obj):
+        return self._current_user_status_value(obj, "payment_pending", False)
+
+    def get_is_confirmed_registered(self, obj):
+        return self._current_user_status_value(obj, "is_confirmed_registered", False)
+
+    def get_assigned_tier(self, obj):
+        return self._current_user_status_value(obj, "assigned_tier")
+
+    def get_origins(self, obj):
+        return self._current_user_status_value(obj, "origins", [])
+
     def get_has_sessions(self, obj):
         """Check if event has sessions."""
         return obj.has_sessions
@@ -2320,6 +2524,8 @@ class PublicEventSerializer(serializers.ModelSerializer):
     cpd_cpe_credits = serializers.SerializerMethodField(read_only=True)
     replay_video_url = serializers.SerializerMethodField()
     is_registered_for_event = serializers.SerializerMethodField()
+    user_status = serializers.SerializerMethodField()
+    confirmed_registered_count = serializers.SerializerMethodField()
     replay_signup_enabled = serializers.SerializerMethodField()
     can_signup_for_replay = serializers.SerializerMethodField()
     has_replay_access = serializers.SerializerMethodField()
@@ -2332,7 +2538,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "status", "is_live", "category", "format",
             "location", "location_city", "location_country",
             "price", "price_label", "price_display_label", "allow_manual_price_display", "currency", "is_free",
-            "preview_image", "cover_image", "attending_count",
+            "preview_image", "cover_image", "attending_count", "confirmed_registered_count",
             "created_at", "sessions", "speakers",
             "featured_participants", "featured_participants_total",
             "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
@@ -2341,7 +2547,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
             "external_streaming_host_link",
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
-            "is_registered_for_event", "replay_signup_enabled", "can_signup_for_replay", "has_replay_access",
+            "is_registered_for_event", "user_status", "replay_signup_enabled", "can_signup_for_replay", "has_replay_access",
         ]
         read_only_fields = fields
 
@@ -2436,8 +2642,17 @@ class PublicEventSerializer(serializers.ModelSerializer):
             return False
         return EventRegistration.objects.filter(
             event=obj, user=request.user,
-            status__in=["registered", "cancellation_requested"]
+            status__in=["registered", "cancellation_requested"],
+            attendee_status="confirmed",
         ).exists()
+
+    def get_user_status(self, obj):
+        """Get current user's application/registration status for this event with tier info."""
+        return build_current_user_event_status(obj, self.context.get('request'))
+
+    def get_confirmed_registered_count(self, obj):
+        """Count only confirmed registrations/origins, not payment_pending."""
+        return get_confirmed_registered_count_for_event(obj)
 
     def get_replay_signup_enabled(self, obj):
         """Return whether replay signup is enabled for this event."""
@@ -2583,6 +2798,101 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
         )
 
+
+class EventRoleSerializer(serializers.ModelSerializer):
+    """Serializer for EventRole model - attendee role catalog for events."""
+
+    class Meta:
+        model = EventRole
+        fields = [
+            'id', 'event_id', 'key', 'label', 'description',
+            'visibility', 'sort_priority', 'badge_color', 'badge_style',
+            'triggers_promotional_profile', 'is_system_default',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class EventApplicationTrackSerializer(serializers.ModelSerializer):
+    """Serializer for EventApplicationTrack - application track configuration."""
+
+    class Meta:
+        model = EventApplicationTrack
+        fields = [
+            'id', 'event_id', 'key', 'label', 'short_description',
+            'status', 'sort_order', 'is_active',
+            'enabled_submission_modes', 'form_schema',
+            'preapproval_configuration', 'role_mappings_on_acceptance',
+            'content_surfaces', 'landing_page_content', 'form_header_notice',
+            'confirmation_page_content', 'is_system_default',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'is_system_default', 'created_at', 'updated_at']
+
+
+class TrackPricingTierSerializer(serializers.ModelSerializer):
+    """Serializer for TrackPricingTier - track-specific pricing tiers."""
+
+    is_paid = serializers.SerializerMethodField()
+    is_free = serializers.SerializerMethodField()
+
+    def get_is_paid(self, obj):
+        return obj.is_paid()
+
+    def get_is_free(self, obj):
+        return obj.is_free()
+
+    class Meta:
+        model = TrackPricingTier
+        fields = [
+            'id', 'track_id', 'key', 'label', 'description',
+            'price', 'currency', 'visibility', 'is_default', 'is_active',
+            'sort_order', 'is_paid', 'is_free',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class EventAttendeeOriginSerializer(serializers.ModelSerializer):
+    """Phase 11: Serializer for EventAttendeeOrigin - tracks origin metadata for each attendee role."""
+    track_label = serializers.CharField(source='track.label', read_only=True)
+    role_label = serializers.CharField(source='role.label', read_only=True)
+    tier_label = serializers.CharField(source='accepted_tier.label', read_only=True)
+    accepted_tier_label = serializers.CharField(source='accepted_tier.label', read_only=True)
+    tier_price = serializers.DecimalField(
+        source='accepted_tier.price',
+        read_only=True,
+        max_digits=10,
+        decimal_places=2
+    )
+    price = serializers.DecimalField(source='accepted_tier.price', read_only=True, max_digits=10, decimal_places=2)
+    currency = serializers.CharField(source='accepted_tier.currency', read_only=True)
+    accepted_by_id = serializers.IntegerField(source='accepted_by.id', read_only=True)
+    accepted_by_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = EventAttendeeOrigin
+        fields = [
+            'id', 'registration_id', 'role_id', 'role_label',
+            'track_id', 'track_label', 'submission_mode',
+            'accepted_tier_id', 'tier_label', 'accepted_tier_label', 'tier_price', 'price', 'currency',
+            'accepted_by_id', 'accepted_by_name', 'accepted_at',
+            'nominator_name', 'nominator_email',
+            'status', 'origin_status', 'payment_reference', 'marked_paid_at',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'created_at', 'updated_at',
+            'role_label', 'track_label', 'tier_label', 'accepted_tier_label', 'tier_price', 'price', 'currency',
+            'accepted_by_id', 'accepted_by_name'
+        ]
+
+    def get_accepted_by_name(self, obj):
+        if obj.accepted_by:
+            return f"{obj.accepted_by.first_name} {obj.accepted_by.last_name}".strip()
+        return None
+
+
 class EventRegistrationSerializer(serializers.ModelSerializer):
     event = EventLiteSerializer(read_only=True)
     event_id = serializers.PrimaryKeyRelatedField(
@@ -2604,6 +2914,13 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
     attendance_duration_seconds = serializers.SerializerMethodField()
     attendance_category = serializers.SerializerMethodField()
     badge_labels = serializers.SerializerMethodField()
+    roles = EventRoleSerializer(many=True, read_only=True)
+    origins = EventAttendeeOriginSerializer(many=True, read_only=True)
+    # Phase 11: Payment tracking fields
+    marked_paid_by = UserMiniSerializer(read_only=True)
+    marked_paid_at = serializers.DateTimeField(read_only=True)
+    payment_reference = serializers.CharField(read_only=True)
+    attendee_status = serializers.CharField(read_only=True)
 
     class Meta:
         model = EventRegistration
@@ -2635,6 +2952,12 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "attendance_duration_seconds",
             "attendance_category",
             "badge_labels",
+            "roles",
+            "origins",
+            "attendee_status",
+            "marked_paid_by",
+            "marked_paid_at",
+            "payment_reference",
         )
         read_only_fields = (
             "id",
@@ -2658,6 +2981,12 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "is_host",
             "current_location",
             "badge_labels",
+            "roles",
+            "origins",
+            "marked_paid_by",
+            "marked_paid_at",
+            "payment_reference",
+            "attendee_status",
         )
 
     def get_badge_labels(self, obj):
@@ -2818,9 +3147,17 @@ class SpeedNetworkingQueueSerializer(serializers.ModelSerializer):
 class EventApplicationSerializer(serializers.ModelSerializer):
     """Serializer for EventApplication model - read-only for fetching applications."""
     applicant_name = serializers.SerializerMethodField()
+    track_applications = serializers.SerializerMethodField()
 
     def get_applicant_name(self, obj):
         return f"{obj.first_name} {obj.last_name}"
+
+    def get_track_applications(self, obj):
+        # Return nested track applications if they exist (Phase 7)
+        ta = obj.track_applications.all()
+        if ta.exists():
+            return EventApplicationTrackApplicationSerializer(ta, many=True).data
+        return []
 
     class Meta:
         model = EventApplication
@@ -2832,6 +3169,13 @@ class EventApplicationSerializer(serializers.ModelSerializer):
             'status', 'applied_at', 'reviewed_at',
             'reviewed_by_id', 'rejection_message',
             'is_preapproved', 'preapproval_source', 'preapproved_at',
+            # Phase 3: Submission modes
+            'application_track_id', 'submission_mode',
+            'nominator_name', 'nominator_email',
+            'nominee_name', 'nominee_email', 'nominee_details',
+            'sponsor_organization',
+            # Phase 7: Multi-track support
+            'selected_tracks', 'track_applications',
         ]
         read_only_fields = [
             'id', 'applied_at', 'reviewed_at', 'reviewed_by_id', 'status'
@@ -2849,6 +3193,43 @@ class EventApplicationSubmitSerializer(serializers.Serializer):
     attendee_marker_value = serializers.BooleanField(required=False, default=False)
     comments = serializers.CharField(required=False, allow_blank=True, default='')
     preapproved_code = serializers.CharField(required=False, allow_blank=True, default='')
+    pre_approval_code = serializers.CharField(required=False, allow_blank=True, default='')  # Alias for preapproved_code
+
+    # Phase 3: Submission modes
+    track_id = serializers.IntegerField(required=False, allow_null=True)
+    track_key = serializers.CharField(required=False, allow_blank=True)
+    submission_mode = serializers.ChoiceField(
+        choices=['self_submission', 'confirmed', 'self_nomination', 'third_party_nomination'],
+        default='self_submission'
+    )
+
+    # Mode-specific fields
+    nominator_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    nominator_email = serializers.EmailField(required=False, allow_blank=True, default='')
+    nominee_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    nominee_email = serializers.EmailField(required=False, allow_blank=True, default='')
+    nominee_details = serializers.JSONField(required=False, default=dict)
+    sponsor_organization = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+
+    # CRITICAL FIX: Support multiple tracks
+    track_applications = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        allow_empty=True,
+        help_text='Array of track applications with track_id/track_key, submission_mode, tier_preference'
+    )
+
+    # Form data for track applications
+    form_answers = serializers.JSONField(required=False, default=dict)
+    file_uploads = serializers.JSONField(required=False, default=dict)
+    tier_preference = serializers.IntegerField(required=False, allow_null=True)
+    requested_tier = serializers.IntegerField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        """Merge pre_approval_code into preapproved_code for compatibility."""
+        if attrs.get('pre_approval_code') and not attrs.get('preapproved_code'):
+            attrs['preapproved_code'] = attrs['pre_approval_code']
+        return attrs
 
 
 class EventPreApprovalCodeSerializer(serializers.ModelSerializer):
@@ -2857,6 +3238,8 @@ class EventPreApprovalCodeSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "event_id",
+            "track_id",
+            "submission_mode",
             "code",
             "status",
             "used_by_email",
@@ -2869,6 +3252,34 @@ class EventPreApprovalCodeSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "event_id", "status", "used_by_email", "used_at", "created_by_id", "created_at", "revoked_by_id", "revoked_at"]
 
+    def validate_track(self, value):
+        """Ensure track belongs to the event."""
+        if value is None:
+            return value  # NULL track (applies to all tracks) is allowed
+        event = self.initial_data.get('event_id')
+        if event and value.event_id != int(event):
+            raise serializers.ValidationError("Track does not belong to this event.")
+        return value
+
+    def validate_submission_mode(self, value):
+        """Ensure submission_mode is valid (either empty or in valid choices)."""
+        if not value:
+            return value  # Empty string (applies to all modes) is allowed
+        valid_modes = ['self_submission', 'confirmed', 'self_nomination', 'third_party_nomination']
+        if value not in valid_modes:
+            raise serializers.ValidationError(f"Invalid submission mode. Must be one of: {', '.join(valid_modes)}")
+        return value
+
+    def validate(self, data):
+        """Validate track and mode compatibility if track is specified."""
+        track = data.get('track')
+        submission_mode = data.get('submission_mode')
+        if track and submission_mode:
+            enabled_modes = track.enabled_submission_modes or []
+            if submission_mode not in enabled_modes:
+                raise serializers.ValidationError(f"Submission mode '{submission_mode}' is not enabled for track '{track.label}'.")
+        return data
+
 
 class EventPreApprovalAllowlistSerializer(serializers.ModelSerializer):
     class Meta:
@@ -2876,6 +3287,8 @@ class EventPreApprovalAllowlistSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "event_id",
+            "track_id",
+            "submission_mode",
             "first_name",
             "last_name",
             "email",
@@ -2887,6 +3300,230 @@ class EventPreApprovalAllowlistSerializer(serializers.ModelSerializer):
             "notes",
         ]
         read_only_fields = ["id", "event_id", "is_active", "created_by_id", "created_at", "removed_by_id", "removed_at"]
+
+    def validate_track(self, value):
+        """Ensure track belongs to the event."""
+        if value is None:
+            return value  # NULL track (applies to all tracks) is allowed
+        event = self.initial_data.get('event_id')
+        if event and value.event_id != int(event):
+            raise serializers.ValidationError("Track does not belong to this event.")
+        return value
+
+    def validate_submission_mode(self, value):
+        """Ensure submission_mode is valid (either empty or in valid choices)."""
+        if not value:
+            return value  # Empty string (applies to all modes) is allowed
+        valid_modes = ['self_submission', 'confirmed', 'self_nomination', 'third_party_nomination']
+        if value not in valid_modes:
+            raise serializers.ValidationError(f"Invalid submission mode. Must be one of: {', '.join(valid_modes)}")
+        return value
+
+    def validate(self, data):
+        """Validate track and mode compatibility if track is specified."""
+        track = data.get('track')
+        submission_mode = data.get('submission_mode')
+        if track and submission_mode:
+            enabled_modes = track.enabled_submission_modes or []
+            if submission_mode not in enabled_modes:
+                raise serializers.ValidationError(f"Submission mode '{submission_mode}' is not enabled for track '{track.label}'.")
+        return data
+
+
+# Phase 7: Multi-track applications
+class TrackApplicationDataSerializer(serializers.Serializer):
+    """Nested serializer for track-specific application data."""
+    track_id = serializers.IntegerField()
+    submission_mode = serializers.CharField(max_length=50)
+    tier_preference_id = serializers.IntegerField(required=False, allow_null=True)
+    form_answers = serializers.JSONField(required=False, default=dict)
+    file_uploads = serializers.JSONField(required=False, default=dict)
+
+    # Mode-specific fields
+    nominator_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    nominator_email = serializers.EmailField(required=False, allow_blank=True, default='')
+    nominee_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    nominee_email = serializers.EmailField(required=False, allow_blank=True, default='')
+    nominee_details = serializers.JSONField(required=False, default=dict)
+    sponsor_organization = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+
+
+class MultiTrackApplicationSubmitSerializer(serializers.Serializer):
+    """Serializer for submitting multi-track applications."""
+    # Applicant identity
+    first_name = serializers.CharField(max_length=150)
+    last_name = serializers.CharField(max_length=150)
+    email = serializers.EmailField()
+    job_title = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
+    company_name = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
+    linkedin_url = serializers.URLField(required=False, allow_blank=True, default='')
+    comments = serializers.CharField(required=False, allow_blank=True, default='')
+
+    # Pre-approval (optional)
+    preapproved_code = serializers.CharField(required=False, allow_blank=True, default='')
+
+    # Track applications (array)
+    track_applications = TrackApplicationDataSerializer(many=True)
+
+
+class EventApplicationTrackApplicationSerializer(serializers.ModelSerializer):
+    """Serializer for per-track application data."""
+    track_label = serializers.SerializerMethodField()
+    track_short_description = serializers.SerializerMethodField()
+    status_display = serializers.SerializerMethodField()
+    accepted_tier_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventApplicationTrackApplication
+        fields = [
+            'id', 'application_id', 'track_id', 'track_label', 'track_short_description',
+            'submission_mode', 'status', 'status_display', 'tier_preference_id', 'accepted_tier_label',
+            'form_answers', 'file_uploads', 'created_at', 'updated_at', 'reviewed_at', 'reviewed_by_id'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'reviewed_at', 'reviewed_by_id']
+
+    def get_track_label(self, obj):
+        return obj.track.label
+
+    def get_track_short_description(self, obj):
+        return obj.track.short_description
+
+    def get_status_display(self, obj):
+        return obj.get_status_display()
+
+    def get_accepted_tier_label(self, obj):
+        if obj.accepted_tier:
+            return obj.accepted_tier.label
+        return None
+
+
+# Phase 9: Review queue detail view
+class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializer):
+    """Detailed view of track application with all related applicant and submission data."""
+    # Track info
+    track_label = serializers.CharField(source='track.label', read_only=True)
+    track_short_description = serializers.CharField(source='track.short_description', read_only=True)
+    submission_mode_display = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    # Applicant info
+    applicant_email = serializers.CharField(source='application.email', read_only=True)
+    applicant_first_name = serializers.CharField(source='application.first_name', read_only=True)
+    applicant_last_name = serializers.CharField(source='application.last_name', read_only=True)
+    applicant_job_title = serializers.CharField(source='application.job_title', read_only=True)
+    applicant_company = serializers.CharField(source='application.company_name', read_only=True)
+    applicant_linkedin = serializers.CharField(source='application.linkedin_url', read_only=True, required=False)
+
+    # Pre-approval info
+    is_preapproved = serializers.CharField(source='application.is_preapproved', read_only=True)
+    preapproval_source = serializers.CharField(source='application.preapproval_source', read_only=True)
+
+    # Third-party nomination fields
+    nominator_name = serializers.CharField(source='application.nominator_name', read_only=True, required=False)
+    nominator_email = serializers.CharField(source='application.nominator_email', read_only=True, required=False)
+    nominee_name = serializers.CharField(source='application.nominee_name', read_only=True, required=False)
+    nominee_email = serializers.CharField(source='application.nominee_email', read_only=True, required=False)
+
+    # Sponsor fields
+    sponsor_organization = serializers.CharField(source='application.sponsor_organization', read_only=True, required=False)
+
+    # Reviewer info
+    reviewed_by_user = serializers.SerializerMethodField()
+    registration_id = serializers.SerializerMethodField()
+
+    # Tier info
+    tier_label = serializers.SerializerMethodField()
+    accepted_tier_label = serializers.SerializerMethodField()
+    accepted_tier_price = serializers.SerializerMethodField()
+    accepted_tier_currency = serializers.SerializerMethodField()
+
+    # Payment status - from EventAttendeeOrigin
+    origin_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventApplicationTrackApplication
+        fields = [
+            'id', 'application_id', 'track_id', 'track_label', 'track_short_description',
+            'submission_mode', 'submission_mode_display', 'status', 'status_display',
+            'tier_preference_id', 'tier_label', 'accepted_tier_label', 'form_answers', 'file_uploads',
+            'applicant_email', 'applicant_first_name', 'applicant_last_name',
+            'applicant_job_title', 'applicant_company', 'applicant_linkedin',
+            'is_preapproved', 'preapproval_source',
+            'nominator_name', 'nominator_email', 'nominee_name', 'nominee_email',
+            'sponsor_organization',
+            'reviewed_by_user', 'registration_id', 'reviewed_at', 'created_at', 'updated_at',
+            'accepted_tier_price', 'accepted_tier_currency', 'origin_status'
+        ]
+        read_only_fields = fields
+
+    def get_submission_mode_display(self, obj):
+        mode_labels = {
+            'self_submission': 'Self Submission',
+            'confirmed': 'Confirmed Submission',
+            'self_nomination': 'Self Nomination',
+            'third_party_nomination': 'Third-Party Nomination',
+        }
+        return mode_labels.get(obj.submission_mode, obj.submission_mode)
+
+    def get_reviewed_by_user(self, obj):
+        if obj.reviewed_by:
+            return {
+                'id': obj.reviewed_by.id,
+                'username': obj.reviewed_by.username,
+                'first_name': obj.reviewed_by.first_name,
+                'last_name': obj.reviewed_by.last_name,
+                'email': obj.reviewed_by.email,
+            }
+        return None
+
+    def get_tier_label(self, obj):
+        if obj.tier_preference:
+            return obj.tier_preference.label
+        return None
+
+    def get_accepted_tier_label(self, obj):
+        if obj.accepted_tier:
+            return obj.accepted_tier.label
+        return None
+
+    def get_accepted_tier_price(self, obj):
+        if obj.accepted_tier:
+            return str(obj.accepted_tier.price)
+        return None
+
+    def get_accepted_tier_currency(self, obj):
+        if obj.accepted_tier:
+            return obj.accepted_tier.currency
+        return None
+
+    def get_registration_id(self, obj):
+        user = obj.application.user
+        if not user:
+            return None
+        registration = EventRegistration.objects.filter(
+            event=obj.track.event,
+            user=user,
+            status__in=['registered', 'cancellation_requested']
+        ).first()
+        return registration.id if registration else None
+
+    def get_origin_status(self, obj):
+        """Get the actual origin_status from EventAttendeeOrigin for accepted applications."""
+        if obj.status != 'accepted':
+            return None
+
+        user = obj.application.user
+        if not user:
+            return None
+
+        origin = EventAttendeeOrigin.objects.filter(
+            registration__event=obj.track.event,
+            registration__user=user,
+            track=obj.track,
+            status='active'
+        ).first()
+
+        return origin.origin_status if origin else None
 
 
 class SaleorChannelSerializer(serializers.ModelSerializer):
@@ -3734,3 +4371,369 @@ class EventSessionBookmarkSerializer(serializers.ModelSerializer):
         model = EventSessionBookmark
         fields = ['id', 'event', 'session', 'created_at']
         read_only_fields = ['id', 'event', 'created_at']
+
+
+class PostAcceptanceFormTemplateSerializer(serializers.ModelSerializer):
+    """Serializer for post-acceptance form templates."""
+    form_type_display = serializers.CharField(source='get_form_type_display', read_only=True)
+
+    class Meta:
+        model = PostAcceptanceFormTemplate
+        fields = [
+            'id', 'event', 'form_type', 'form_type_display',
+            'title', 'description', 'question_schema',
+            'is_enabled', 'deadline_days', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class PostAcceptanceFormAssignmentSerializer(serializers.ModelSerializer):
+    """Serializer for form assignments."""
+    form_type_display = serializers.CharField(source='get_form_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    attendee_name = serializers.SerializerMethodField()
+    attendee_email = serializers.SerializerMethodField()
+    user_id = serializers.IntegerField(source='event_registration.user.id', read_only=True)
+    form_template = PostAcceptanceFormTemplateSerializer(read_only=True)
+    event_title = serializers.CharField(source='event.title', read_only=True)
+    event_format = serializers.CharField(source='event.format', read_only=True)
+    draft_data = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostAcceptanceFormAssignment
+        fields = [
+            'id', 'event', 'event_title', 'event_format', 'form_template', 'event_registration',
+            'form_type', 'form_type_display', 'status', 'status_display',
+            'deadline', 'started_at', 'completed_at',
+            'reminders_sent', 'last_reminder_sent_at',
+            'attendee_name', 'attendee_email', 'user_id',
+            'active_modules', 'module_completion_status',
+            'draft_data',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'event', 'form_template', 'form_type',
+            'reminders_sent', 'last_reminder_sent_at',
+            'active_modules', 'module_completion_status',
+            'created_at', 'updated_at'
+        ]
+
+    def get_attendee_name(self, obj):
+        """Get attendee full name."""
+        user = obj.event_registration.user
+        return user.get_full_name() or user.username
+
+    def get_attendee_email(self, obj):
+        """Get attendee email."""
+        return obj.event_registration.user.email
+
+    def get_draft_data(self, obj):
+        """Return draft data if it exists."""
+        try:
+            draft = PostAcceptanceFormDraft.objects.get(assignment=obj)
+            return draft.draft_data or {}
+        except PostAcceptanceFormDraft.DoesNotExist:
+            return {}
+
+
+class PostAcceptanceFormAnswerSerializer(serializers.ModelSerializer):
+    """Serializer for form answers with optional restricted field masking."""
+    # Restricted fields that require explicit permission to view
+    RESTRICTED_FIELDS = {
+        'emergency_contact_name',
+        'emergency_contact_phone',
+        'emergency_contact_relationship',
+        'emergency_contact_relationship_other',
+        'accessibility_needs_detail',
+        'mobility_seating_requirements',
+        'medical_info_emergency',
+        'food_allergies',
+        'food_allergies_other',
+        'dietary_restrictions',
+        'dietary_restrictions_other',
+        'food_notes'
+    }
+
+    class Meta:
+        model = PostAcceptanceFormAnswer
+        fields = ['id', 'question_key', 'answer_text', 'answer_data', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+    def to_representation(self, instance):
+        """Mask restricted field values if user lacks permission."""
+        data = super().to_representation(instance)
+
+        # Check if user has permission to view restricted data
+        context = self.context or {}
+        has_restricted_access = context.get('has_restricted_access', False)
+
+        # Mask restricted fields if user doesn't have permission
+        if not has_restricted_access and instance.question_key in self.RESTRICTED_FIELDS:
+            data['answer_text'] = '[RESTRICTED]'
+            data['answer_data'] = {}
+
+        return data
+
+
+class PostAcceptanceFormSubmissionSerializer(serializers.ModelSerializer):
+    """Serializer for form submissions with answers."""
+    answers = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostAcceptanceFormSubmission
+        fields = ['id', 'assignment', 'answers', 'submitted_at']
+        read_only_fields = ['id', 'submitted_at']
+
+    def get_answers(self, obj):
+        """Serialize answers with context passed for restricted field masking."""
+        return PostAcceptanceFormAnswerSerializer(
+            obj.answers.all(),
+            many=True,
+            context=self.context
+        ).data
+
+
+class AdminAuditLogSerializer(serializers.ModelSerializer):
+    """Serializer for admin audit logs."""
+    performed_by_name = serializers.CharField(source='performed_by.get_full_name', read_only=True)
+    performed_by_email = serializers.CharField(source='performed_by.email', read_only=True)
+    action_display = serializers.CharField(source='get_action_display', read_only=True)
+    event_title = serializers.CharField(source='event.title', read_only=True)
+
+    class Meta:
+        model = AdminAuditLog
+        fields = ['id', 'event', 'event_title', 'performed_by', 'performed_by_name', 'performed_by_email',
+                  'assignment', 'action', 'action_display', 'details', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class PostAcceptanceFormAssignmentAdminDetailSerializer(serializers.ModelSerializer):
+    """Detailed serializer for admin viewing assignment with submission."""
+    form_type_display = serializers.CharField(source='get_form_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    attendee_name = serializers.SerializerMethodField()
+    attendee_email = serializers.SerializerMethodField()
+    attendee_role = serializers.SerializerMethodField()
+    submission = serializers.SerializerMethodField()
+    form_template = PostAcceptanceFormTemplateSerializer(read_only=True)
+    event_title = serializers.CharField(source='event.title', read_only=True)
+    manual_completed_by_name = serializers.CharField(source='manual_completed_by.get_full_name', read_only=True, allow_null=True)
+
+    # Computed flags from registration
+    visa_support_requested = serializers.BooleanField(source='event_registration.visa_support_requested', read_only=True)
+    photo_video_consent = serializers.CharField(source='event_registration.photo_video_consent', read_only=True)
+    directory_visibility = serializers.BooleanField(source='event_registration.directory_visibility', read_only=True)
+
+    # Computed from submission data
+    attendance_mode = serializers.SerializerMethodField()
+    accessibility_need_declared = serializers.SerializerMethodField()
+    photo_consent_denied = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostAcceptanceFormAssignment
+        fields = [
+            'id', 'event', 'event_title', 'form_template', 'form_type', 'form_type_display',
+            'status', 'status_display', 'deadline', 'started_at', 'completed_at',
+            'reminders_sent', 'last_reminder_sent_at',
+            'manual_completed_by', 'manual_completed_by_name', 'manual_completed_at',
+            'attendee_name', 'attendee_email', 'attendee_role',
+            'attendance_mode', 'accessibility_need_declared', 'photo_consent_denied',
+            'submission', 'visa_support_requested', 'photo_video_consent', 'directory_visibility',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = fields
+
+    def get_attendee_name(self, obj):
+        """Get attendee full name."""
+        user = obj.event_registration.user
+        return user.get_full_name() or user.username
+
+    def get_attendee_email(self, obj):
+        """Get attendee email."""
+        return obj.event_registration.user.email
+
+    def get_attendee_role(self, obj):
+        """Get attendee role from EventParticipant."""
+        from events.models import EventParticipant
+        user = obj.event_registration.user
+        participant = EventParticipant.objects.filter(
+            event=obj.event,
+            user=user
+        ).first()
+        return participant.get_participant_type_display() if participant else 'Attendee'
+
+    def get_attendance_mode(self, obj):
+        """Extract attendance_mode from submission if completed."""
+        try:
+            submission = obj.submission
+        except:
+            return None
+        try:
+            answer = submission.answers.get(question_key='attendance_mode')
+            return answer.answer_text
+        except:
+            return None
+
+    def get_accessibility_need_declared(self, obj):
+        """Check if accessibility support needs were declared (yes value)."""
+        try:
+            submission = obj.submission
+        except:
+            return False
+        try:
+            answer = submission.answers.get(question_key='accessibility_support_needs')
+            return answer.answer_text == 'yes'
+        except:
+            return False
+
+    def get_photo_consent_denied(self, obj):
+        """Check if photo/video consent is denied."""
+        try:
+            submission = obj.submission
+        except:
+            return False
+        try:
+            answer = submission.answers.get(question_key='photo_video_consent')
+            return answer.answer_text == 'no'
+        except:
+            return False
+
+    def get_submission(self, obj):
+        """Serialize submission with context for restricted field masking."""
+        try:
+            submission = obj.submission
+        except:
+            return None
+        if not submission:
+            return None
+        return PostAcceptanceFormSubmissionSerializer(
+            submission,
+            context=self.context
+        ).data
+
+
+class EventFormCustomizationSerializer(serializers.ModelSerializer):
+    """Serializer for per-event form customization."""
+    section_config = serializers.SerializerMethodField()
+    custom_questions_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventFormCustomization
+        fields = [
+            'id', 'event', 'form_type',
+            'enable_accessibility_section',
+            'enable_emergency_contact_section',
+            'enable_food_requirements_section',
+            'enable_privacy_permissions_section',
+            'enable_travel_information_section',
+            'section_config',
+            'field_overrides',
+            'custom_questions',
+            'custom_questions_count',
+            'form_deadline',
+            'module_deadlines',
+            'file_specs',
+            'reminder_schedule',
+            'created_at',
+            'updated_at',
+            'updated_by'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_section_config(self, obj):
+        """Return all section settings."""
+        return obj.get_section_config()
+
+    def get_custom_questions_count(self, obj):
+        """Return count of custom questions."""
+        return len(obj.custom_questions or [])
+
+    def create(self, validated_data):
+        """Create form customization."""
+        from events.models import EventFormCustomization
+        return EventFormCustomization.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+        """Update form customization."""
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.updated_by = self.context['request'].user
+        instance.save()
+        return instance
+
+
+class CustomQuestionSerializer(serializers.Serializer):
+    """Serializer for custom question within form customization."""
+    id = serializers.CharField(required=False)
+    type = serializers.ChoiceField(choices=['text', 'textarea', 'select', 'multi_select', 'checkbox', 'radio'])
+    label = serializers.CharField(max_length=500)
+    help_text = serializers.CharField(required=False, allow_blank=True)
+    required = serializers.BooleanField(default=False)
+    options = serializers.ListField(child=serializers.CharField(), required=False, allow_empty=True)
+    show_if = serializers.JSONField(required=False, allow_null=True)
+    placeholder = serializers.CharField(required=False, allow_blank=True)
+    rows = serializers.IntegerField(required=False, min_value=1, max_value=20)
+
+    def validate(self, data):
+        """Validate custom question."""
+        # Multi-select and select fields require options
+        if data['type'] in ['select', 'multi_select', 'radio'] and not data.get('options'):
+            raise serializers.ValidationError("Options required for select/multi_select/radio fields")
+        return data
+
+
+class FormFieldOverrideSerializer(serializers.Serializer):
+    """Serializer for field-level overrides."""
+    required = serializers.BooleanField(required=False)
+    help_text = serializers.CharField(required=False, allow_blank=True)
+    label = serializers.CharField(required=False, max_length=500)
+    options = serializers.ListField(child=serializers.CharField(), required=False)
+    hidden = serializers.BooleanField(required=False, default=False)
+
+
+# Phase 5: Form Schema Primitives and Shared Question Library
+
+class SharedQuestionCategorySerializer(serializers.ModelSerializer):
+    """Serializer for shared question categories."""
+    questions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SharedQuestionCategory
+        fields = ['id', 'name', 'description', 'sort_order', 'questions', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_questions(self, obj):
+        """Get questions in this category."""
+        questions = obj.questions.all()
+        return SharedQuestionSerializer(questions, many=True).data
+
+
+class SharedQuestionSerializer(serializers.ModelSerializer):
+    """Serializer for shared reusable form questions."""
+    category_name = serializers.CharField(source='category.name', read_only=True)
+
+    class Meta:
+        model = SharedQuestion
+        fields = [
+            'id', 'category', 'category_name', 'label', 'field_type',
+            'help_text', 'placeholder', 'options', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class FormFieldSerializer(serializers.ModelSerializer):
+    """Serializer for form fields in application tracks."""
+    field_type_display = serializers.CharField(source='get_field_type_display', read_only=True)
+    shared_question_label = serializers.CharField(source='shared_question.label', read_only=True, allow_null=True)
+
+    class Meta:
+        model = FormField
+        fields = [
+            'id', 'track', 'shared_question', 'shared_question_label',
+            'field_type', 'field_type_display', 'label', 'help_text', 'placeholder',
+            'required', 'options', 'min_length', 'max_length', 'min_value', 'max_value',
+            'profile_binding', 'profile_binding_mode', 'conditional_visibility',
+            'visibility_per_mode', 'visible_in_review_list', 'visible_in_review_detail',
+            'sort_order', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'track', 'created_at', 'updated_at']

@@ -64,3 +64,4 @@ def public_event_meta(request, slug):
         "event_url": event_url,
     }
     return TemplateResponse(request, "public_event_meta.html", context)
+

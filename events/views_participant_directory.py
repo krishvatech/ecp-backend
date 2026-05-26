@@ -11,6 +11,7 @@ from django.shortcuts import get_object_or_404
 from django.db.models import Prefetch, Q
 from .models import Event, EventRegistration, EventBadgeLabel
 from .serializers import EventParticipantDirectorySerializer
+from .services.post_acceptance_forms import is_online_event
 import logging
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ class ParticipantDirectoryViewSet(viewsets.ReadOnlyModelViewSet):
         event = get_object_or_404(Event, id=event_id)
 
         # Only allow directory access for in-person events
-        if event.format not in ['in_person', 'hybrid']:
+        if is_online_event(event):
             return Response(
                 {
                     'detail': 'Participant directory is only available for in-person events.',
@@ -132,7 +133,7 @@ class ParticipantDirectoryViewSet(viewsets.ReadOnlyModelViewSet):
         event = get_object_or_404(Event, id=event_id)
 
         # Only allow for in-person events
-        if event.format not in ['in_person', 'hybrid']:
+        if is_online_event(event):
             return Response({'results': []})
 
         search_query = request.query_params.get('q', '').strip()

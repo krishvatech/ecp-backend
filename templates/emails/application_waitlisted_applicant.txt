@@ -1,0 +1,26 @@
+Application Status Update
+
+Dear {{ applicant_first_name }},
+
+Thank you for applying to {{ event_name }}. We have reviewed your application for the {{ track_label }} track.
+
+Due to high demand, we have placed your application on our WAITLIST. This means we are very interested in your participation, but our current capacity is limited.
+
+Event: {{ event_name }}
+Track: {{ track_label }}
+{% if event_date_str %}Event Date: {{ event_date_str }}{% endif %}
+
+We will contact you as soon as a spot becomes available. In the meantime, if you have any questions, please don't hesitate to reach out to us at {{ support_email }}.
+
+{% if custom_message %}
+{{ custom_message }}
+{% endif %}
+
+Thank you for your interest in {{ event_name }}!
+
+Best regards,
+{{ app_name }} Team
+
+---
+© {{ app_name }}. All rights reserved.
+If you no longer wish to receive these emails, please contact us.

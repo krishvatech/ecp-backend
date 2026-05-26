@@ -10,6 +10,12 @@ from .views import (
     SessionBreakViewSet,
     VirtualSpeakerViewSet,
     SeriesViewSet,
+    PostAcceptanceFormAssignmentViewSet,
+    PostAcceptanceFormAssignmentAdminViewSet,
+    EventApplicationTrackViewSet,
+    EventRoleViewSet,
+    FormFieldViewSet,
+    TrackPricingTierViewSet,
     SaleorChannelListView,
     SaleorChannelSyncView,
     SaleorChannelCreateView,
@@ -46,6 +52,9 @@ from .views import (
     EventScheduleView,
     SessionBookmarkToggleView,
 )
+from .admin_promotional_profiles import (
+    PromotionalProfileAdminViewSet,
+)
 from .guest_views import (
     GuestJoinView,
     GuestVerifyOTPView,
@@ -80,6 +89,7 @@ router.register(r"event-registrations", EventRegistrationViewSet, basename="even
 router.register(r"event-badge-labels", EventBadgeLabelViewSet, basename="eventbadgelabel")
 router.register(r"series", SeriesViewSet, basename="series")
 router.register(r"virtual-speakers", VirtualSpeakerViewSet, basename="virtual-speaker")
+router.register(r"post-acceptance-form-assignments", PostAcceptanceFormAssignmentViewSet, basename="post-acceptance-form-assignment")
 
 
 urlpatterns = [
@@ -113,6 +123,210 @@ urlpatterns = [
     path("auth/guest-register/", GuestRegisterView.as_view(), name="guest-register"),
     path("auth/guest-register/link/", GuestRegisterLinkView.as_view(), name="guest-register-link"),
 ] + router.urls + [
+    # Admin form assignments endpoints
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({
+            'get': 'list',
+            'post': 'send_reminders'
+        }),
+        name='admin-form-assignments-list'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/send-reminders/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'post': 'send_reminders'}),
+        name='admin-form-assignments-send-reminders'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'post': 'export'}),
+        name='admin-form-assignments-export'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'post': 'export_promotional'}),
+        name='admin-form-assignments-export-promotional'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional-completed/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'export_promotional_completed'}),
+        name='admin-form-assignments-export-promotional-completed'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional-speakers/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'export_speakers'}),
+        name='admin-form-assignments-export-speakers'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional-sponsors/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'export_sponsors'}),
+        name='admin-form-assignments-export-sponsors'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional-startups/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'export_startups'}),
+        name='admin-form-assignments-export-startups'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/export-promotional-investors/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'export_investors'}),
+        name='admin-form-assignments-export-investors'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/summary/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'summary'}),
+        name='admin-form-assignments-summary'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/<int:pk>/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({
+            'get': 'retrieve'
+        }),
+        name='admin-form-assignments-detail'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/<int:pk>/details/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'get': 'details'}),
+        name='admin-form-assignments-full-details'
+    ),
+    path(
+        "events/<int:event_id>/post-acceptance-form-assignments-admin/<int:pk>/mark-complete/",
+        PostAcceptanceFormAssignmentAdminViewSet.as_view({'post': 'mark_complete'}),
+        name='admin-form-assignments-mark-complete'
+    ),
+
+    # Application Tracks Endpoints
+    path(
+        "events/<int:event_id>/application-tracks/",
+        EventApplicationTrackViewSet.as_view({
+            'get': 'list',
+            'post': 'create'
+        }),
+        name='application-tracks-list'
+    ),
+    path(
+        "events/<int:pk>/review-queue/export/",
+        EventViewSet.as_view({'get': 'review_queue_export'}),
+        name='event-review-queue-export'
+    ),
+    path(
+        "events/<int:event_id>/application-tracks/<int:pk>/",
+        EventApplicationTrackViewSet.as_view({
+            'get': 'retrieve',
+            'put': 'update',
+            'patch': 'partial_update',
+            'delete': 'destroy'
+        }),
+        name='application-tracks-detail'
+    ),
+
+    # Event Roles Endpoints
+    path(
+        "events/<int:event_id>/roles/",
+        EventRoleViewSet.as_view({
+            'get': 'list',
+            'post': 'create'
+        }),
+        name='event-roles-list'
+    ),
+    path(
+        "events/<int:event_id>/roles/<int:pk>/",
+        EventRoleViewSet.as_view({
+            'get': 'retrieve',
+            'put': 'update',
+            'patch': 'partial_update',
+            'delete': 'destroy'
+        }),
+        name='event-roles-detail'
+    ),
+
+    # Form Fields Endpoints (nested under application tracks)
+    path(
+        "events/<int:event_id>/application-tracks/<int:track_id>/form-fields/",
+        FormFieldViewSet.as_view({
+            'get': 'list',
+            'post': 'create'
+        }),
+        name='form-fields-list'
+    ),
+    path(
+        "events/<int:event_id>/application-tracks/<int:track_id>/form-fields/<int:pk>/",
+        FormFieldViewSet.as_view({
+            'get': 'retrieve',
+            'put': 'update',
+            'patch': 'partial_update',
+            'delete': 'destroy'
+        }),
+        name='form-fields-detail'
+    ),
+
+    # FIX 3: Pricing Tiers Endpoints (nested under application tracks)
+    path(
+        "events/<int:event_id>/application-tracks/<int:track_id>/pricing-tiers/",
+        TrackPricingTierViewSet.as_view({
+            'get': 'list',
+            'post': 'create'
+        }),
+        name='pricing-tiers-list'
+    ),
+    path(
+        "events/<int:event_id>/application-tracks/<int:track_id>/pricing-tiers/<int:pk>/",
+        TrackPricingTierViewSet.as_view({
+            'get': 'retrieve',
+            'put': 'update',
+            'patch': 'partial_update',
+            'delete': 'destroy'
+        }),
+        name='pricing-tiers-detail'
+    ),
+
+    # Promotional Profile Admin Endpoints
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/",
+        PromotionalProfileAdminViewSet.as_view({'get': 'list'}),
+        name='promotional-profiles-admin-list'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/summary/",
+        PromotionalProfileAdminViewSet.as_view({'get': 'summary'}),
+        name='promotional-profiles-admin-summary'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/reminders/",
+        PromotionalProfileAdminViewSet.as_view({'post': 'bulk_send_reminders'}),
+        name='promotional-profiles-admin-reminders'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/mark-complete/",
+        PromotionalProfileAdminViewSet.as_view({'post': 'bulk_mark_complete'}),
+        name='promotional-profiles-admin-mark-complete'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/export-csv/",
+        PromotionalProfileAdminViewSet.as_view({'get': 'export_csv'}),
+        name='promotional-profiles-admin-export-csv'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/export-by-role/",
+        PromotionalProfileAdminViewSet.as_view({'get': 'export_by_role'}),
+        name='promotional-profiles-admin-export-by-role'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/notify-production/",
+        PromotionalProfileAdminViewSet.as_view({'post': 'notify_production_lead'}),
+        name='promotional-profiles-admin-notify-production'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/missing-assets/",
+        PromotionalProfileAdminViewSet.as_view({'get': 'missing_assets_report'}),
+        name='promotional-profiles-admin-missing-assets'
+    ),
+    path(
+        "events/<int:event_id>/promotional-profiles-admin/export-production/",
+        PromotionalProfileAdminViewSet.as_view({'post': 'export_production'}),
+        name='promotional-profiles-admin-export-production'
+    ),
+
     path("events/recording/webhook/", RecordingWebhookView.as_view(), name="rtk-recording-webhook"),
     path("realtime/webhook/", realtime_webhook, name="realtime-webhook"),
     path(

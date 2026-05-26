@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background-color: #FF9800; color: white; padding: 20px; text-align: center; border-radius: 4px; }
+        .content { padding: 20px 0; }
+        .section { margin: 15px 0; }
+        .label { font-weight: bold; color: #FF9800; }
+        .footer { background-color: #f5f5f5; padding: 15px; text-align: center; font-size: 12px; margin-top: 20px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Application Status Update</h1>
+        </div>
+
+        <div class="content">
+            <p>Dear {{ applicant_first_name }},</p>
+
+            <p>Thank you for applying to <strong>{{ event_name }}</strong>. We have reviewed your application for the <strong>{{ track_label }}</strong> track.</p>
+
+            <p>Due to high demand, we have placed your application on our <strong style="color: #FF9800;">WAITLIST</strong>. This means we are very interested in your participation, but our current capacity is limited.</p>
+
+            <div class="section">
+                <p><span class="label">Event:</span> {{ event_name }}</p>
+                <p><span class="label">Track:</span> {{ track_label }}</p>
+                {% if event_date_str %}
+                <p><span class="label">Event Date:</span> {{ event_date_str }}</p>
+                {% endif %}
+            </div>
+
+            <p>We will contact you as soon as a spot becomes available. In the meantime, if you have any questions, please don't hesitate to reach out to us at <strong>{{ support_email }}</strong>.</p>
+
+            {% if custom_message %}
+            <div class="section">
+                <p>{{ custom_message }}</p>
+            </div>
+            {% endif %}
+
+            <p>Thank you for your interest in {{ event_name }}!</p>
+
+            <p>Best regards,<br>{{ app_name }} Team</p>
+        </div>
+
+        <div class="footer">
+            <p>&copy; {{ app_name }}. All rights reserved.</p>
+            <p>If you no longer wish to receive these emails, please contact us.</p>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,41 @@
+Congratulations!
+
+Dear {{ applicant_first_name }},
+
+We are delighted to inform you that your application to {{ event_name }} has been ACCEPTED!
+
+Track: {{ track_label }}
+Date: {{ event_date_str }}
+{% if event_location %}Location: {{ event_location }}{% endif %}
+
+{% if tier_label %}
+Tier: {{ tier_label }}
+{% if tier_cost_type == 'paid' %}
+Cost: ${{ tier_price }}
+
+To complete your registration, please process payment using the link below:
+{{ payment_link_placeholder }}
+{% else %}
+Your spot is confirmed and there is no payment required!
+{% endif %}
+{% endif %}
+
+{% if completion_link %}
+Please complete your registration profile:
+{{ completion_link }}
+{% endif %}
+
+{% if custom_message %}
+{{ custom_message }}
+{% endif %}
+
+If you have any questions, please don't hesitate to reach out to us at {{ support_email }}.
+
+Thank you for your interest in {{ event_name }}!
+
+Best regards,
+{{ app_name }} Team
+
+---
+© {{ app_name }}. All rights reserved.
+If you no longer wish to receive these emails, please contact us.

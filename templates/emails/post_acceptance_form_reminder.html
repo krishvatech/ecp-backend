@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reminder: Complete Your Participant Information Form</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div style="background-color: #f8f9fa; border-radius: 8px; padding: 30px; margin-bottom: 20px;">
+        <h1 style="color: #ff9800; margin-top: 0;">⏰ Reminder: Form Incomplete</h1>
+
+        <p>Hello {{ first_name }},</p>
+
+        <p>This is a friendly reminder that you haven't yet completed your Participant Information Form for <strong>{{ event_title }}</strong>.</p>
+
+        <div style="background-color: #fff3cd; border-left: 4px solid #ff9800; padding: 20px; margin: 20px 0; border-radius: 5px;">
+            <h2 style="margin-top: 0; color: #2c3e50;">{{ event_title }}</h2>
+            {% if deadline %}
+            <p style="margin: 5px 0;"><strong>⏰ Due Date:</strong> {{ deadline }}</p>
+            {% endif %}
+            <p style="margin: 5px 0; color: #d9534f;"><strong>⚠️ This deadline is approaching!</strong></p>
+        </div>
+
+        <p>Completing this form helps us ensure you have the best experience at the event. It takes just a few minutes!</p>
+
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{{ form_url }}" style="background-color: #ff9800; color: white; padding: 14px 28px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Complete Form Now</a>
+        </div>
+
+        <p style="color: #6c757d; font-size: 13px; text-align: center;">
+            or copy and paste this link: <br>
+            <code style="background-color: #f0f0f0; padding: 5px 10px; border-radius: 3px; word-break: break-all;">{{ form_url }}</code>
+        </p>
+
+        <hr style="border: none; border-top: 1px solid #dee2e6; margin: 30px 0;">
+
+        <p style="color: #6c757d; font-size: 13px; margin: 10px 0;">
+            After the deadline, you can still view your information but won't be able to make changes.
+        </p>
+    </div>
+</body>
+</html>

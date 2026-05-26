@@ -1,0 +1,27 @@
+Application Status Update
+
+Dear {{ applicant_first_name }},
+
+Thank you for applying to {{ event_name }}. We appreciate your interest and the time you spent on your application.
+
+Unfortunately, we have decided not to move forward with your application at this time for the {{ track_label }} track.
+
+Event: {{ event_name }}
+Track: {{ track_label }}
+{% if event_date_str %}Event Date: {{ event_date_str }}{% endif %}
+
+{% if custom_message %}
+Feedback:
+{{ custom_message }}
+{% endif %}
+
+We encourage you to apply again in the future. If you have any questions about this decision, please feel free to reach out to us at {{ support_email }}.
+
+Thank you for considering {{ event_name }}.
+
+Best regards,
+{{ app_name }} Team
+
+---
+© {{ app_name }}. All rights reserved.
+If you no longer wish to receive these emails, please contact us.

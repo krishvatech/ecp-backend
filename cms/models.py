@@ -385,6 +385,8 @@ TEMPLATE_KEY_CHOICES = [
     ("networking_meeting_suggested", "Networking Meeting Suggested"),
     ("networking_meeting_cancelled", "Networking Meeting Cancelled"),
     ("networking_meeting_reminder", "Networking Meeting Reminder"),
+    ("post_acceptance_form_sent", "Post-Acceptance Form Sent"),
+    ("post_acceptance_form_reminder", "Post-Acceptance Form Reminder"),
 ]
 
 # Per-template-key required placeholders — used in clean() validation
@@ -423,6 +425,8 @@ REQUIRED_PLACEHOLDERS = {
     "networking_meeting_suggested": ["{{ first_name }}", "{{ other_party_name }}", "{{ event_title }}", "{{ companion_url }}"],
     "networking_meeting_cancelled": ["{{ first_name }}", "{{ other_party_name }}", "{{ event_title }}", "{{ companion_url }}"],
     "networking_meeting_reminder": ["{{ first_name }}", "{{ other_party_name }}", "{{ event_title }}", "{{ reminder_minutes }}", "{{ companion_url }}"],
+    "post_acceptance_form_sent": ["{{ first_name }}", "{{ event_title }}", "{{ form_url }}"],
+    "post_acceptance_form_reminder": ["{{ first_name }}", "{{ event_title }}", "{{ form_url }}", "{{ deadline }}"],
 }
 
 
