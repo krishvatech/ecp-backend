@@ -3048,6 +3048,7 @@ class EventApplication(models.Model):
         ('pending', 'Pending'),
         ('approved', 'Approved'),
         ('declined', 'Declined'),
+        ('cancelled', 'Cancelled/Withdrawn'),
     ]
 
     event = models.ForeignKey(
@@ -3185,6 +3186,11 @@ class EventApplication(models.Model):
         related_name="applications",
     )
     preapproved_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When this application was cancelled/withdrawn by applicant'
+    )
 
     # Phase 7: Multi-track support
     selected_tracks = models.JSONField(
@@ -3378,6 +3384,7 @@ class EventApplicationTrackApplication(models.Model):
     STATUS_ACCEPTED = 'accepted'
     STATUS_DECLINED = 'declined'
     STATUS_WAITLISTED = 'waitlisted'
+    STATUS_CANCELLED = 'cancelled'
 
     STATUS_CHOICES = [
         (STATUS_PENDING, 'Pending'),
@@ -3385,6 +3392,7 @@ class EventApplicationTrackApplication(models.Model):
         (STATUS_ACCEPTED, 'Accepted'),
         (STATUS_DECLINED, 'Declined'),
         (STATUS_WAITLISTED, 'Waitlisted'),
+        (STATUS_CANCELLED, 'Cancelled/Withdrawn'),
     ]
 
     # Core relationships
@@ -3470,6 +3478,22 @@ class EventApplicationTrackApplication(models.Model):
         null=True,
         blank=True,
         help_text='When this application was waitlisted'
+    )
+    cancelled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When this application was cancelled/withdrawn by applicant'
+    )
+    cancellation_reason = models.CharField(
+        max_length=50,
+        blank=True,
+        default='',
+        choices=[
+            ('registration_cancelled', 'Registration Cancelled'),
+            ('user_withdrawal', 'User Withdrawal'),
+            ('admin_cancellation', 'Admin Cancellation'),
+        ],
+        help_text='Reason for cancellation'
     )
 
     # Timestamps

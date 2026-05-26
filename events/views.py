@@ -2614,8 +2614,43 @@ class EventViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             locked_event = Event.objects.select_for_update().get(pk=event.pk)
-            if EventApplication.objects.filter(event=locked_event, email=email).exists():
-                return Response({'detail': 'An application with this email already exists.'}, status=409)
+
+            # Check for existing applications
+            # 1. Active (pending, approved) → block reapplication
+            # 2. Cancelled → reuse (reset to pending)
+            # 3. Declined → block reapplication
+            active_statuses = ['pending', 'approved']
+            existing_active = EventApplication.objects.filter(
+                event=locked_event,
+                email=email,
+                status__in=active_statuses
+            ).first()
+
+            if existing_active:
+                return Response(
+                    {'detail': 'You already have an active application for this event.'},
+                    status=400
+                )
+
+            # Check if cancelled application exists - if so, reuse it
+            existing_cancelled = EventApplication.objects.filter(
+                event=locked_event,
+                email=email,
+                status='cancelled'
+            ).first()
+
+            # Check if declined application exists - block reapplication
+            existing_declined = EventApplication.objects.filter(
+                event=locked_event,
+                email=email,
+                status='declined'
+            ).first()
+
+            if existing_declined:
+                return Response(
+                    {'detail': 'Your application was declined. You cannot reapply for this event.'},
+                    status=400
+                )
 
             # Resolve and validate target tracks before creating the parent application.
             # This prevents legacy parent-only EventApplication rows that never appear in Review Queue.
@@ -2738,35 +2773,70 @@ class EventViewSet(viewsets.ModelViewSet):
             reviewed_at = now if is_preapproved else None
             reviewed_by = request.user if is_preapproved and request.user.is_authenticated else None
 
-            app = EventApplication.objects.create(
-                event=locked_event,
-                user=request.user if request.user.is_authenticated else None,
-                first_name=(data.get("first_name") or "").strip(),
-                last_name=(data.get("last_name") or "").strip(),
-                email=email,
-                job_title=(data.get("job_title") or "").strip(),
-                company_name=(data.get("company_name") or "").strip(),
-                linkedin_url=(data.get("linkedin_url") or "").strip(),
-                attendee_marker_value=attendee_marker_value,
-                comments=comments,
-                status=status_value,
-                reviewed_at=reviewed_at,
-                reviewed_by=reviewed_by,
-                is_preapproved=is_preapproved,
-                preapproval_source=preapproval_source,
-                preapproval_code=code_obj,
-                preapproval_allowlist_entry=allowlist_entry,
-                preapproved_at=now if is_preapproved else None,
-                # Phase 3: Submission modes
-                application_track=application_track,
-                submission_mode=submission_mode,
-                nominator_name=(data.get("nominator_name") or "").strip(),
-                nominator_email=(data.get("nominator_email") or "").strip(),
-                nominee_name=(data.get("nominee_name") or "").strip(),
-                nominee_email=(data.get("nominee_email") or "").strip(),
-                nominee_details=data.get("nominee_details") or {},
-                sponsor_organization=(data.get("sponsor_organization") or "").strip(),
-            )
+            # Reuse cancelled application if it exists, otherwise create new
+            if existing_cancelled:
+                # Update the cancelled application back to pending/approved
+                app = existing_cancelled
+                app.user = request.user if request.user.is_authenticated else app.user
+                app.first_name = (data.get("first_name") or "").strip()
+                app.last_name = (data.get("last_name") or "").strip()
+                app.email = email
+                app.job_title = (data.get("job_title") or "").strip()
+                app.company_name = (data.get("company_name") or "").strip()
+                app.linkedin_url = (data.get("linkedin_url") or "").strip()
+                app.attendee_marker_value = attendee_marker_value
+                app.comments = comments
+                app.status = status_value
+                app.reviewed_at = reviewed_at
+                app.reviewed_by = reviewed_by
+                app.is_preapproved = is_preapproved
+                app.preapproval_source = preapproval_source
+                app.preapproval_code = code_obj
+                app.preapproval_allowlist_entry = allowlist_entry
+                app.preapproved_at = now if is_preapproved else None
+                app.application_track = application_track
+                app.submission_mode = submission_mode
+                app.nominator_name = (data.get("nominator_name") or "").strip()
+                app.nominator_email = (data.get("nominator_email") or "").strip()
+                app.nominee_name = (data.get("nominee_name") or "").strip()
+                app.nominee_email = (data.get("nominee_email") or "").strip()
+                app.nominee_details = data.get("nominee_details") or {}
+                app.sponsor_organization = (data.get("sponsor_organization") or "").strip()
+                app.save()
+
+                # Delete old cancelled track applications so we can create fresh ones
+                app.track_applications.filter(status='cancelled').delete()
+            else:
+                # Create new application
+                app = EventApplication.objects.create(
+                    event=locked_event,
+                    user=request.user if request.user.is_authenticated else None,
+                    first_name=(data.get("first_name") or "").strip(),
+                    last_name=(data.get("last_name") or "").strip(),
+                    email=email,
+                    job_title=(data.get("job_title") or "").strip(),
+                    company_name=(data.get("company_name") or "").strip(),
+                    linkedin_url=(data.get("linkedin_url") or "").strip(),
+                    attendee_marker_value=attendee_marker_value,
+                    comments=comments,
+                    status=status_value,
+                    reviewed_at=reviewed_at,
+                    reviewed_by=reviewed_by,
+                    is_preapproved=is_preapproved,
+                    preapproval_source=preapproval_source,
+                    preapproval_code=code_obj,
+                    preapproval_allowlist_entry=allowlist_entry,
+                    preapproved_at=now if is_preapproved else None,
+                    # Phase 3: Submission modes
+                    application_track=application_track,
+                    submission_mode=submission_mode,
+                    nominator_name=(data.get("nominator_name") or "").strip(),
+                    nominator_email=(data.get("nominator_email") or "").strip(),
+                    nominee_name=(data.get("nominee_name") or "").strip(),
+                    nominee_email=(data.get("nominee_email") or "").strip(),
+                    nominee_details=data.get("nominee_details") or {},
+                    sponsor_organization=(data.get("sponsor_organization") or "").strip(),
+                )
 
             if code_obj and is_preapproved:
                 code_obj.status = EventPreApprovalCode.STATUS_USED
@@ -9746,6 +9816,27 @@ class PublicEventDetailView(generics.RetrieveAPIView):
 # ============================================================
 # ================= Event Registration ViewSet ===============
 # ============================================================
+
+def _recalculate_event_attending_count(event_id):
+    """
+    Safely recalculate attending_count from active confirmed registrations.
+    Prevents negative counts and handles race conditions.
+    Used when canceling/deregistering to avoid blind decrements.
+    """
+    with transaction.atomic():
+        event = Event.objects.select_for_update().get(pk=event_id)
+
+        true_count = EventRegistration.objects.filter(
+            event=event,
+            status='registered',
+            attendee_status__in=['confirmed', 'payment_pending']
+        ).count()
+
+        if event.attending_count != true_count:
+            event.attending_count = true_count
+            event.save(update_fields=['attending_count'])
+
+
 class EventRegistrationViewSet(viewsets.ModelViewSet):
     """
     CRUD for a user's event registrations + Actions for cancellation.
@@ -9755,13 +9846,17 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         """
-        Soft delete:
-        - If user -> 'cancelled'
-        - If admin/owner -> 'deregistered'
+        Soft delete registration and cancel related applications:
+        - If user -> 'cancelled' + cancel application
+        - If admin/owner -> 'deregistered' + cancel application
+
+        Safe cancellation using recalculated attending_count instead of blind decrement.
+        Updates EventApplication and EventApplicationTrackApplication to cancelled status.
+        Handles edge cases: double cancel, race conditions, corrupt state.
         """
         reg = self.get_object()
         user = request.user
-        
+
         # Determine strict permissions if not already handled by 'get_queryset' or permission_classes
         is_owner_of_reg = (reg.user_id == user.id)
         is_event_owner = (reg.event.created_by_id == user.id)
@@ -9770,21 +9865,19 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         if not (is_owner_of_reg or is_event_owner or is_staff):
             return Response({"detail": "Not authorized."}, status=403)
 
-        if is_owner_of_reg and not (is_event_owner or is_staff):
-            # User cancelling their own
-            reg.status = "cancelled"
-            reg.save(update_fields=["status"])
-            Event.objects.filter(pk=reg.event_id).update(attending_count=F("attending_count") - 1)
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        
-        # Host/Admin deregistering
-        reg.status = "deregistered"
-        reg.save(update_fields=["status"])
-        Event.objects.filter(pk=reg.event_id).update(attending_count=F("attending_count") - 1)
-        
-        # Optional: Kick from live meeting if active?
-        # Use helper from EventViewSet if needed, or just rely on 'status' check in join/poll APIs.
-        
+        # Use application cancellation service for consistent state management
+        from events.services.application_cancellation import cancel_registration_for_application
+        cancel_registration_for_application(
+            reg,
+            cancellation_reason='registration_cancelled'
+        )
+
+        # If admin deregistering, update status to 'deregistered' instead of 'cancelled'
+        if not (is_owner_of_reg and not (is_event_owner or is_staff)):
+            with transaction.atomic():
+                reg.status = "deregistered"
+                reg.save(update_fields=["status"])
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def get_queryset(self):
@@ -9906,43 +9999,72 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
     def approve_cancellation(self, request, pk=None):
         """
         Admin/Owner approves cancellation -> sets status=cancelled.
+        Uses cancellation service to update applications consistently.
+        Uses safe recalculation for attending_count to prevent going negative.
         Future: Trigger refund.
         """
         reg = self.get_object()
         # Check permission: Admins or Event Owner
         is_admin = request.user.is_staff or getattr(request.user, "is_superuser", False)
         is_owner = (reg.event.created_by_id == request.user.id)
-        
+
         if not (is_admin or is_owner):
             return Response({"error": "permission_denied"}, status=403)
 
-        reg.status = "cancelled"
-        reg.save(update_fields=["status"])
-        Event.objects.filter(pk=reg.event_id).update(attending_count=F("attending_count") - 1)
+        # Use application cancellation service for consistent state management
+        from events.services.application_cancellation import cancel_registration_for_application
+        cancel_registration_for_application(
+            reg,
+            cancellation_reason='registration_cancelled'
+        )
         # TODO: Process Refund Logic Here
-        
+
         return Response({"ok": True, "status": reg.status})
 
     @action(detail=True, methods=["post"], url_path="reject_cancellation")
     def reject_cancellation(self, request, pk=None):
         """
         Admin/Owner rejects cancellation -> reverts to registered.
+        Restores EventAttendeeOrigin status and recalculates attending_count.
         """
         reg = self.get_object()
         is_admin = request.user.is_staff or getattr(request.user, "is_superuser", False)
         is_owner = (reg.event.created_by_id == request.user.id)
-        
+
         if not (is_admin or is_owner):
             return Response({"error": "permission_denied"}, status=403)
 
-        reg.status = "registered"
-        reg.save(update_fields=["status"])
+        with transaction.atomic():
+            reg.status = "registered"
+            # Restore attendee_status: recalculate based on all origins
+            from events.services.attendee_directory import _recalculate_registration_status
+            reg.save(update_fields=["status"])
+
+            # Restore EventAttendeeOrigin status from cancelled back to active
+            # Origin status was cancelled along with registration - restore it
+            # Get the tier info to restore proper origin_status
+            for origin in reg.origins.filter(status='cancelled'):
+                origin.status = 'active'
+                # Restore origin_status based on the tier (if paid, payment_pending; if free, confirmed)
+                if origin.accepted_tier and origin.accepted_tier.price and origin.accepted_tier.price > 0:
+                    origin.origin_status = 'payment_pending'
+                else:
+                    origin.origin_status = 'confirmed'
+                origin.save(update_fields=['status', 'origin_status'])
+
+            # Recalculate registration attendee_status based on all origins
+            _recalculate_registration_status(reg)
+
+        # Recalculate attending_count safely from real data
+        _recalculate_event_attending_count(reg.event_id)
+
         return Response({"ok": True, "status": reg.status})
 
     @action(detail=True, methods=["post"], url_path="deregister")
     def deregister(self, request, pk=None):
         """
         Admin/Owner deregisters a user -> sets status=deregistered (Soft Delete).
+        Uses safe recalculation for attending_count to prevent going negative.
         """
         reg = self.get_object()
         is_admin = request.user.is_staff or getattr(request.user, "is_superuser", False)
@@ -9951,20 +10073,31 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         if not (is_admin or is_owner):
             return Response({"error": "permission_denied"}, status=403)
 
-        reg.status = "deregistered"
-        # Reset admission status so they aren't stuck in "waiting" or "admitted" state if they rejoin later
-        reg.admission_status = "waiting" if reg.event.waiting_room_enabled else "admitted"
-        reg.joined_live = False
-        reg.is_online = False
-        reg.save(update_fields=["status", "admission_status", "joined_live", "is_online"])
-        Event.objects.filter(pk=reg.event_id).update(attending_count=F("attending_count") - 1)
-        
+        with transaction.atomic():
+            reg.status = "deregistered"
+            reg.attendee_status = "cancelled"
+            # Reset admission status so they aren't stuck in "waiting" or "admitted" state if they rejoin later
+            reg.admission_status = "waiting" if reg.event.waiting_room_enabled else "admitted"
+            reg.joined_live = False
+            reg.is_online = False
+            reg.save(update_fields=["status", "attendee_status", "admission_status", "joined_live", "is_online"])
+
+            # Mark EventAttendeeOrigin records as cancelled
+            reg.origins.filter(status='active').update(
+                status='cancelled',
+                origin_status='cancelled'
+            )
+
+        # Recalculate attending_count safely from real data
+        _recalculate_event_attending_count(reg.event_id)
+
         return Response({"ok": True, "status": reg.status})
 
     @action(detail=True, methods=["post"], url_path="reinstate")
     def reinstate(self, request, pk=None):
         """
         Admin/Owner reinstates a deregistered/cancelled user -> sets status=registered.
+        Restores EventAttendeeOrigin status and recalculates attending_count.
         """
         reg = self.get_object()
         is_admin = request.user.is_staff or getattr(request.user, "is_superuser", False)
@@ -9973,12 +10106,29 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         if not (is_admin or is_owner):
             return Response({"error": "permission_denied"}, status=403)
 
-        reg.status = "registered"
-        # Re-evaluate admission status
-        reg.admission_status = "waiting" if reg.event.waiting_room_enabled else "admitted"
-        reg.save(update_fields=["status", "admission_status"])
-        Event.objects.filter(pk=reg.event_id).update(attending_count=F("attending_count") + 1)
-        
+        with transaction.atomic():
+            reg.status = "registered"
+            # Re-evaluate admission status
+            reg.admission_status = "waiting" if reg.event.waiting_room_enabled else "admitted"
+            reg.save(update_fields=["status", "admission_status"])
+
+            # Restore EventAttendeeOrigin status from cancelled back to active
+            for origin in reg.origins.filter(status='cancelled'):
+                origin.status = 'active'
+                # Restore origin_status based on the tier
+                if origin.accepted_tier and origin.accepted_tier.price and origin.accepted_tier.price > 0:
+                    origin.origin_status = 'payment_pending'
+                else:
+                    origin.origin_status = 'confirmed'
+                origin.save(update_fields=['status', 'origin_status'])
+
+            # Recalculate registration attendee_status based on all origins
+            from events.services.attendee_directory import _recalculate_registration_status
+            _recalculate_registration_status(reg)
+
+        # Recalculate attending_count safely from real data
+        _recalculate_event_attending_count(reg.event_id)
+
         return Response({"ok": True, "status": reg.status})
 
     @action(detail=True, methods=["post"], url_path="assign-labels")

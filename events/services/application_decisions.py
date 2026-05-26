@@ -101,6 +101,14 @@ def accept_track_application(
                 }
             )
 
+            # Increment attending_count only when a new registration is created
+            if created:
+                from django.db.models import F
+                from events.models import Event
+                Event.objects.filter(pk=event.pk).update(
+                    attending_count=F('attending_count') + 1
+                )
+
             if not created:
                 registration.status = 'registered'
                 # FIX 4: Do NOT set attendee_status directly - will recalculate after creating origins
