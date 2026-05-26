@@ -138,15 +138,9 @@ def trigger_post_acceptance_forms(event_registration, form_template_cache=None):
                 )
                 return created_assignments
 
-            # Trigger Participant Information Form if has confirmed non-speaker origins AND in-person/hybrid
-            has_participant_role = confirmed_origins.exclude(
-                role__key__in=['speaker', 'moderator', 'host']
-            ).exists()
-
-            if (
-                has_participant_role
-                and (is_in_person_event(event) or is_hybrid_event(event))
-            ):
+            # Trigger Participant Information Form for ALL confirmed attendees in in-person/hybrid events
+            # Per Jira: Form is role-agnostic. One form per attendee regardless of roles.
+            if is_in_person_event(event) or is_hybrid_event(event):
                 try:
                     assignment = _create_form_assignment(
                         event_registration,
@@ -166,9 +160,10 @@ def trigger_post_acceptance_forms(event_registration, form_template_cache=None):
                         exc_info=True
                     )
 
-            # Trigger Promotional Profile if has confirmed speaker/moderator/host roles
+            # Trigger Promotional Profile if has confirmed roles with triggers_promotional_profile=true
+            # Per Jira §1: Fires when attendee has at least one role flagged triggers_promotional_profile=true
             has_promotional_role = confirmed_origins.filter(
-                role__key__in=['speaker', 'moderator', 'host']
+                role__triggers_promotional_profile=True
             ).exists()
 
             if has_promotional_role:
