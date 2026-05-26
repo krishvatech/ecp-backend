@@ -1,3 +1,6 @@
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 from django.conf import settings
@@ -222,38 +225,70 @@ def compile_mjml(mjml_body):
     if not mjml_body:
         return ""
 
+    compiler_errors = []
+
     try:
         import mrml
     except ImportError as exc:
+        compiler_errors.append(str(exc))
         try:
             import mrml_python as mrml
-        except ImportError:
-            raise serializers.ValidationError({
-                "mjml_body": "MJML compiler is not installed. Install mrml-python/mrml to save MJML templates."
-            }) from exc
+        except ImportError as mrml_python_exc:
+            compiler_errors.append(str(mrml_python_exc))
+            mrml = None
 
-    try:
-        if hasattr(mrml, "to_html"):
-            result = mrml.to_html(mjml_body)
-        elif hasattr(mrml, "mjml_to_html"):
-            result = mrml.mjml_to_html(mjml_body)
-        else:
-            raise RuntimeError("No supported MJML compile function found.")
+    if mrml is not None:
+        try:
+            if hasattr(mrml, "to_html"):
+                result = mrml.to_html(mjml_body)
+            elif hasattr(mrml, "mjml_to_html"):
+                result = mrml.mjml_to_html(mjml_body)
+            else:
+                raise RuntimeError("No supported MJML compile function found.")
 
-        if isinstance(result, str):
-            return result
-        if isinstance(result, dict):
-            errors = result.get("errors")
-            if errors:
-                raise RuntimeError(errors)
-            return result.get("html") or result.get("content") or ""
-        if isinstance(result, tuple):
-            return result[0]
-        return str(result)
-    except serializers.ValidationError:
-        raise
-    except Exception as exc:
-        raise serializers.ValidationError({"mjml_body": f"MJML compilation failed: {exc}"}) from exc
+            if isinstance(result, str):
+                return result
+            if isinstance(result, dict):
+                errors = result.get("errors")
+                if errors:
+                    raise RuntimeError(errors)
+                return result.get("html") or result.get("content") or ""
+            if isinstance(result, tuple):
+                return result[0]
+            return str(result)
+        except serializers.ValidationError:
+            raise
+        except Exception as exc:
+            raise serializers.ValidationError({"mjml_body": f"MJML compilation failed: {exc}"}) from exc
+
+    mjml_cli = shutil.which("mjml")
+    if mjml_cli:
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".mjml", delete=True) as tmp:
+                tmp.write(mjml_body)
+                tmp.flush()
+                result = subprocess.run(
+                    [mjml_cli, tmp.name, "-s"],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    check=False,
+                )
+        except subprocess.TimeoutExpired as exc:
+            raise serializers.ValidationError({"mjml_body": "MJML compilation timed out."}) from exc
+
+        if result.returncode == 0 and result.stdout:
+            return result.stdout
+
+        error = result.stderr.strip() or result.stdout.strip() or "Unknown MJML CLI error."
+        raise serializers.ValidationError({"mjml_body": f"MJML compilation failed: {error}"})
+
+    raise serializers.ValidationError({
+        "mjml_body": (
+            "MJML compiler is not installed. Install the Node MJML CLI with "
+            "`npm install -g mjml`, or install a Python mrml package if available for your platform."
+        )
+    })
 
 
 def validate_template_syntax(subject, html_body, text_body):
