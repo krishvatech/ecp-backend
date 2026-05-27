@@ -2845,9 +2845,10 @@ class EventViewSet(viewsets.ModelViewSet):
                 return Response({'detail': 'Application track not found.'}, status=404)
 
         # Validate mode-specific required fields
+        # Note: For confirmed mode, pre_approval_code is conditionally required - only if email is not allowlisted
         mode_required_fields = {
             EventApplication.SUBMISSION_MODE_SELF: ['first_name', 'last_name', 'email'],
-            EventApplication.SUBMISSION_MODE_CONFIRMED: ['first_name', 'last_name', 'email', 'sponsor_organization', 'pre_approval_code'],
+            EventApplication.SUBMISSION_MODE_CONFIRMED: ['first_name', 'last_name', 'email', 'sponsor_organization'],
             EventApplication.SUBMISSION_MODE_SELF_NOMINATION: ['first_name', 'last_name', 'email'],
             EventApplication.SUBMISSION_MODE_THIRD_PARTY: ['nominator_name', 'nominator_email', 'nominee_name', 'nominee_email'],
         }
@@ -3063,7 +3064,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
             per_track_required_fields = {
                 EventApplication.SUBMISSION_MODE_SELF: ['first_name', 'last_name', 'email'],
-                EventApplication.SUBMISSION_MODE_CONFIRMED: ['first_name', 'last_name', 'email', 'sponsor_organization', 'pre_approval_code'],
+                EventApplication.SUBMISSION_MODE_CONFIRMED: ['first_name', 'last_name', 'email', 'sponsor_organization'],
                 EventApplication.SUBMISSION_MODE_SELF_NOMINATION: ['first_name', 'last_name', 'email'],
                 EventApplication.SUBMISSION_MODE_THIRD_PARTY: ['nominator_name', 'nominator_email', 'nominee_name', 'nominee_email'],
             }
@@ -3083,11 +3084,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
                 track_errors = []
                 for field in per_track_required_fields.get(track_submission_mode, []):
-                    field_value = (
-                        track_config.get('pre_approval_code') or data.get('preapproved_code') or data.get('pre_approval_code')
-                        if field == 'pre_approval_code'
-                        else track_config.get(field)
-                    )
+                    field_value = track_config.get(field)
                     if field_value is None or field_value == '':
                         field_value = data.get(field)
                     if not (field_value or '').strip():
@@ -3109,6 +3106,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 track_preapproval_code = (track_config.get('pre_approval_code') or submitted_code or '').strip()
 
                 # For confirmed mode, must validate pre-approval NOW (before creating app)
+                # Use OR logic: valid code OR valid allowlist entry
                 if track_submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED:
                     track_is_preapproved = False
 
@@ -3185,11 +3183,11 @@ class EventViewSet(viewsets.ModelViewSet):
                         if track_allowlist:
                             track_is_preapproved = True
 
-                    # If still not pre-approved, reject confirmed mode submission
+                    # If still not pre-approved, reject confirmed mode submission (no code and no allowlist)
                     if not track_is_preapproved:
                         if not track_preapproval_code:
                             return Response({
-                                'detail': f'Pre-approval code is required for confirmed submission mode on track "{track.label}".',
+                                'detail': f'Pre-approval code is required for confirmed submission mode on track "{track.label}" or email must be pre-approved.',
                                 'code_error': 'missing',
                                 'track_id': track.id,
                                 'submission_mode': track_submission_mode
@@ -3391,11 +3389,6 @@ class EventViewSet(viewsets.ModelViewSet):
                         sponsor_org = (track_config.get('sponsor_organization') or data.get(field) or '').strip()
                         if not sponsor_org:
                             track_errors.append(field)
-                    # For confirmed mode, check pre_approval_code in track_config first
-                    elif field == 'pre_approval_code' and track_submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED:
-                        pre_app_code = (track_config.get('pre_approval_code') or data.get('preapproved_code') or '').strip()
-                        if not pre_app_code:
-                            track_errors.append(field)
                     else:
                         if not (data.get(field) or '').strip():
                             track_errors.append(field)
@@ -3431,9 +3424,10 @@ class EventViewSet(viewsets.ModelViewSet):
                 # Get pre_approval_code from track_config first (multi-track), then root level
                 track_preapproval_code = (track_config.get('pre_approval_code') or submitted_code or '').strip()
 
-                # For confirmed mode, pre_approval_code is required and must be validated
-                if track_submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED and track_preapproval_code:
-                    if locked_event.preapproval_code_enabled:
+                # For confirmed mode, pre_approval_code is optional if email is allowlisted
+                # Check both code and allowlist (OR logic)
+                if track_submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED:
+                    if track_preapproval_code and locked_event.preapproval_code_enabled:
                         from django.db.models import Q
                         # First check if code exists (any status)
                         existing_code = EventPreApprovalCode.objects.filter(
@@ -3474,6 +3468,20 @@ class EventViewSet(viewsets.ModelViewSet):
                             track_preapproval_source = EventApplication.PREAPPROVAL_SOURCE_CODE
                             track_preapproval_code_obj = existing_code
 
+                    # Check email allowlist for confirmed mode too (if code didn't pre-approve)
+                    if not track_is_preapproved and email and locked_event.preapproval_allowlist_enabled:
+                        from django.db.models import Q
+                        track_allowlist = EventPreApprovalAllowlist.objects.filter(
+                            Q(track_id=track.id) | Q(track_id__isnull=True),
+                            Q(submission_mode=track_submission_mode) | Q(submission_mode=''),
+                            event=locked_event,
+                            email=email,
+                            is_active=True,
+                        ).first()
+                        if track_allowlist:
+                            track_is_preapproved = True
+                            track_preapproval_source = EventApplication.PREAPPROVAL_SOURCE_EMAIL
+
                 # For non-confirmed modes, check optional pre-approval code and email allowlist
                 elif track_submission_mode != EventApplication.SUBMISSION_MODE_CONFIRMED:
                     if track_preapproval_code and locked_event.preapproval_code_enabled:
@@ -3503,14 +3511,14 @@ class EventViewSet(viewsets.ModelViewSet):
                             track_is_preapproved = True
                             track_preapproval_source = EventApplication.PREAPPROVAL_SOURCE_EMAIL
 
-                # FIX 3: Strict validation for confirmed mode - must have valid pre-approval
+                # FIX 3: Strict validation for confirmed mode - must have valid pre-approval (code OR allowlist)
                 if track_submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED:
                     if not track_is_preapproved:
-                        # Confirmed mode has no valid pre-approval - return clear error
+                        # Confirmed mode has no valid pre-approval (neither code nor allowlist) - return clear error
                         if not track_preapproval_code:
-                            # No code provided at all
+                            # No code provided at all - email not in allowlist either
                             return Response({
-                                'detail': f'Pre-approval code is required for confirmed submission mode on track "{track.label}".',
+                                'detail': f'Your email is not pre-approved for track "{track.label}". Please provide a pre-approval code or contact the event organizer.',
                                 'code_error': 'missing',
                                 'track_id': track.id,
                                 'submission_mode': track_submission_mode
