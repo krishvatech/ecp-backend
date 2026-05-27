@@ -192,6 +192,16 @@ def decline_track_application(
             'status', 'declined_at', 'reviewed_by', 'reviewed_at'
         ])
 
+        # Update parent application status if ALL track applications are now declined
+        parent_app = track_application.application
+        all_track_apps = parent_app.track_applications.all()
+        if all_track_apps.exists() and all(
+            ta.status == EventApplicationTrackApplication.STATUS_DECLINED
+            for ta in all_track_apps
+        ):
+            parent_app.status = 'declined'
+            parent_app.save(update_fields=['status'])
+
         # Queue email asynchronously if enabled (non-blocking)
         if send_email:
             try:

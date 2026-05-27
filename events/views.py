@@ -2762,22 +2762,24 @@ class EventViewSet(viewsets.ModelViewSet):
                 )
 
         if request.method == 'GET':
-            # Authenticated users: return their own application
+            # Authenticated users: return their latest active application
             if request.user.is_authenticated:
-                try:
-                    app = EventApplication.objects.get(event=event, user=request.user)
+                app = EventApplication.get_latest_active_application(event=event, user=request.user)
+                if app:
+                    # Fetch fresh with prefetch for latest track applications
+                    app = EventApplication.objects.prefetch_related('track_applications').get(pk=app.pk)
                     return Response(EventApplicationSerializer(app).data)
-                except EventApplication.DoesNotExist:
-                    return Response({'status': 'none'})
+                return Response({'status': 'none'})
 
             # Unauthenticated users: check by email (passed as query param)
             email = request.query_params.get('email', '').strip().lower()
             if email:
-                try:
-                    app = EventApplication.objects.get(event=event, email=email)
+                app = EventApplication.get_latest_active_application(event=event, email=email)
+                if app:
+                    # Fetch fresh with prefetch for latest track applications
+                    app = EventApplication.objects.prefetch_related('track_applications').get(pk=app.pk)
                     return Response(EventApplicationSerializer(app).data)
-                except EventApplication.DoesNotExist:
-                    return Response({'status': 'none'})
+                return Response({'status': 'none'})
 
             return Response({'status': 'none'})
 
@@ -2875,42 +2877,108 @@ class EventViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             locked_event = Event.objects.select_for_update().get(pk=event.pk)
 
-            # Check for existing applications
-            # 1. Active (pending, approved) → block reapplication
-            # 2. Cancelled → reuse (reset to pending)
-            # 3. Declined → block reapplication
-            active_statuses = ['pending', 'approved']
-            existing_active = EventApplication.objects.filter(
-                event=locked_event,
-                email=email,
-                status__in=active_statuses
-            ).first()
+            # Check for existing applications and registrations
+            # Strategy: Check child EventApplicationTrackApplication statuses instead of parent status
+            #
+            # Active (blocks reapplication) - ANY child with these statuses:
+            #   - pending: still under review
+            #   - pre_approved: pre-approved by admin
+            #   - accepted: already accepted
+            #   - waitlisted: on waitlist (active state)
+            #
+            # Reusable (allows reapplication) - ALL children with these statuses:
+            #   - declined: user rejected
+            #   - cancelled: user withdrew
+            #   - withdrawn: user withdrew (alias for cancelled)
+            #
+            # Also update parent status:
+            #   - If all children are declined/cancelled/withdrawn, set parent to 'declined'
 
-            if existing_active:
+            # Get all EventApplications for this user/email/event
+            existing_apps = list(EventApplication.objects.filter(
+                event=locked_event,
+                email=email
+            ).prefetch_related('track_applications').order_by('-applied_at'))
+
+            # Blocking statuses: if ANY child has these, block reapplication
+            blocking_child_statuses = ['pending', 'pre_approved', 'accepted', 'waitlisted']
+            reusable_child_statuses = ['declined', 'cancelled']
+
+            active_app_for_blocking = None
+            reusable_app = None
+
+            for app in existing_apps:
+                track_apps = list(app.track_applications.all())
+
+                # If no track applications yet, check parent status for legacy compatibility
+                if not track_apps:
+                    if app.status in ['pending', 'approved']:
+                        active_app_for_blocking = app
+                        break
+                    elif app.status in ['declined', 'cancelled']:
+                        if not reusable_app:
+                            reusable_app = app
+
+                # Check child statuses
+                child_statuses = [ta.status for ta in track_apps]
+                has_active_child = any(status in blocking_child_statuses for status in child_statuses)
+                all_children_reusable = all(status in reusable_child_statuses for status in child_statuses)
+
+                if has_active_child:
+                    # This application has active children - block reapplication
+                    active_app_for_blocking = app
+                    break
+                elif all_children_reusable and track_apps:
+                    # All children are declined/cancelled - this is reusable
+                    if not reusable_app:
+                        reusable_app = app
+
+            if active_app_for_blocking:
                 return Response(
                     {'detail': 'You already have an active application for this event.'},
                     status=400
                 )
 
-            # Check if cancelled application exists - if so, reuse it
-            existing_cancelled = EventApplication.objects.filter(
-                event=locked_event,
-                email=email,
-                status='cancelled'
-            ).first()
+            # Check pre-approved applications (cannot reapply, must use pre-approval code)
+            # Only block if is_preapproved=True AND has active children
+            existing_preapproved = None
+            for app in existing_apps:
+                if app.is_preapproved:
+                    track_apps = list(app.track_applications.all())
+                    if not track_apps:
+                        # Legacy: no track apps, check parent status
+                        if app.status not in ['declined', 'cancelled']:
+                            existing_preapproved = app
+                            break
+                    else:
+                        # Check if has active children
+                        child_statuses = [ta.status for ta in track_apps]
+                        if any(status in blocking_child_statuses for status in child_statuses):
+                            existing_preapproved = app
+                            break
 
-            # Check if declined application exists - block reapplication
-            existing_declined = EventApplication.objects.filter(
-                event=locked_event,
-                email=email,
-                status='declined'
-            ).first()
-
-            if existing_declined:
+            if existing_preapproved:
                 return Response(
-                    {'detail': 'Your application was declined. You cannot reapply for this event.'},
+                    {'detail': 'You have a pre-approved application for this event. Use your pre-approval code to apply.'},
                     status=400
                 )
+
+            # Check active registrations (user already attending, cannot reapply)
+            from events.models import EventRegistration
+            existing_registration = EventRegistration.objects.filter(
+                event=locked_event,
+                user__email=email if request.user.is_authenticated else None,
+                status__in=['registered', 'cancellation_requested']
+            ).first() if request.user.is_authenticated else None
+
+            if existing_registration:
+                return Response(
+                    {'detail': 'You are already registered for this event.'},
+                    status=400
+                )
+
+            # Use the reusable_app we found earlier (cancelled, declined, or approved-all-declined)
+            # No need to query again - we already have it from the check above
 
             # Resolve and validate target tracks before creating the parent application.
             # This prevents legacy parent-only EventApplication rows that never appear in Review Queue.
@@ -3163,10 +3231,10 @@ class EventViewSet(viewsets.ModelViewSet):
                             sponsor_organization_value = sponsor_org_from_track
                             break
 
-            # Reuse cancelled application if it exists, otherwise create new
-            if existing_cancelled:
-                # Update the cancelled application back to pending/approved
-                app = existing_cancelled
+            # Reuse reusable application (cancelled/declined/approved-all-declined) if it exists, otherwise create new
+            if reusable_app:
+                # Update the cancelled/declined application back to pending/approved
+                app = reusable_app
                 app.user = request.user if request.user.is_authenticated else app.user
                 app.first_name = (data.get("first_name") or "").strip()
                 app.last_name = (data.get("last_name") or "").strip()
@@ -3186,16 +3254,16 @@ class EventViewSet(viewsets.ModelViewSet):
                 app.preapproved_at = now if is_preapproved else None
                 app.application_track = application_track
                 app.submission_mode = submission_mode
-                app.nominator_name = first_non_empty("nominator_name", nomination_config).strip()
-                app.nominator_email = first_non_empty("nominator_email", nomination_config).strip()
-                app.nominee_name = first_non_empty("nominee_name", nomination_config).strip()
-                app.nominee_email = first_non_empty("nominee_email", nomination_config).strip()
-                app.nominee_details = data.get("nominee_details") or nomination_config.get("nominee_details") or {}
-                app.sponsor_organization = first_non_empty("sponsor_organization", confirmed_config).strip()
+                app.nominator_name = (data.get("nominator_name") or "").strip()
+                app.nominator_email = (data.get("nominator_email") or "").strip()
+                app.nominee_name = (data.get("nominee_name") or "").strip()
+                app.nominee_email = (data.get("nominee_email") or "").strip()
+                app.nominee_details = data.get("nominee_details") or {}
+                app.sponsor_organization = sponsor_organization_value
                 app.save()
 
-                # Delete old cancelled track applications so we can create fresh ones
-                app.track_applications.filter(status='cancelled').delete()
+                # Delete old cancelled/declined track applications so we can create fresh ones
+                app.track_applications.filter(status__in=['cancelled', 'declined']).delete()
             else:
                 # Create new application
                 app = EventApplication.objects.create(
@@ -3220,12 +3288,12 @@ class EventViewSet(viewsets.ModelViewSet):
                     # Phase 3: Submission modes
                     application_track=application_track,
                     submission_mode=submission_mode,
-                    nominator_name=first_non_empty("nominator_name", nomination_config).strip(),
-                    nominator_email=first_non_empty("nominator_email", nomination_config).strip(),
-                    nominee_name=first_non_empty("nominee_name", nomination_config).strip(),
-                    nominee_email=first_non_empty("nominee_email", nomination_config).strip(),
-                    nominee_details=data.get("nominee_details") or nomination_config.get("nominee_details") or {},
-                    sponsor_organization=first_non_empty("sponsor_organization", confirmed_config).strip(),
+                    nominator_name=(data.get("nominator_name") or "").strip(),
+                    nominator_email=(data.get("nominator_email") or "").strip(),
+                    nominee_name=(data.get("nominee_name") or "").strip(),
+                    nominee_email=(data.get("nominee_email") or "").strip(),
+                    nominee_details=data.get("nominee_details") or {},
+                    sponsor_organization=sponsor_organization_value,
                 )
 
             if code_obj and is_preapproved:
@@ -3263,14 +3331,19 @@ class EventViewSet(viewsets.ModelViewSet):
                 required_fields_for_mode = per_track_required_fields.get(track_submission_mode, [])
                 track_errors = []
                 for field in required_fields_for_mode:
-                    if field == 'pre_approval_code':
-                        field_value = track_config.get('pre_approval_code') or data.get('preapproved_code') or data.get('pre_approval_code')
+                    # For confirmed mode with multi-track, check sponsor_organization in track_config first
+                    if field == 'sponsor_organization' and track_submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED:
+                        sponsor_org = (track_config.get('sponsor_organization') or data.get(field) or '').strip()
+                        if not sponsor_org:
+                            track_errors.append(field)
+                    # For confirmed mode, check pre_approval_code in track_config first
+                    elif field == 'pre_approval_code' and track_submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED:
+                        pre_app_code = (track_config.get('pre_approval_code') or data.get('preapproved_code') or '').strip()
+                        if not pre_app_code:
+                            track_errors.append(field)
                     else:
-                        field_value = track_config.get(field)
-                        if field_value is None or field_value == '':
-                            field_value = data.get(field)
-                    if not (field_value or '').strip():
-                        track_errors.append(field)
+                        if not (data.get(field) or '').strip():
+                            track_errors.append(field)
 
                 # FIX 2: Return error if any required fields missing - do NOT skip silently
                 if track_errors:
@@ -3298,32 +3371,82 @@ class EventViewSet(viewsets.ModelViewSet):
                 # FIX 4: Check pre-approval per track + submission_mode inside loop
                 track_is_preapproved = False
                 track_preapproval_source = EventApplication.PREAPPROVAL_SOURCE_NONE
+                track_preapproval_code_obj = None
 
-                if submitted_code and locked_event.preapproval_code_enabled:
-                    from django.db.models import Q
-                    track_code = EventPreApprovalCode.objects.filter(
-                        Q(track_id=track.id) | Q(track_id__isnull=True),
-                        Q(submission_mode=track_submission_mode) | Q(submission_mode=''),
-                        event=locked_event,
-                        code=submitted_code,
-                        status=EventPreApprovalCode.STATUS_ACTIVE,
-                    ).first()
-                    if track_code:
-                        track_is_preapproved = True
-                        track_preapproval_source = EventApplication.PREAPPROVAL_SOURCE_CODE
+                # Get pre_approval_code from track_config first (multi-track), then root level
+                track_preapproval_code = (track_config.get('pre_approval_code') or submitted_code or '').strip()
 
-                if not track_is_preapproved and email and locked_event.preapproval_allowlist_enabled:
-                    from django.db.models import Q
-                    track_allowlist = EventPreApprovalAllowlist.objects.filter(
-                        Q(track_id=track.id) | Q(track_id__isnull=True),
-                        Q(submission_mode=track_submission_mode) | Q(submission_mode=''),
-                        event=locked_event,
-                        email=email,
-                        is_active=True,
-                    ).first()
-                    if track_allowlist:
-                        track_is_preapproved = True
-                        track_preapproval_source = EventApplication.PREAPPROVAL_SOURCE_EMAIL
+                # For confirmed mode, pre_approval_code is required and must be validated
+                if track_submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED and track_preapproval_code:
+                    if locked_event.preapproval_code_enabled:
+                        from django.db.models import Q
+                        # First check if code exists (any status)
+                        existing_code = EventPreApprovalCode.objects.filter(
+                            Q(track_id=track.id) | Q(track_id__isnull=True),
+                            Q(submission_mode=track_submission_mode) | Q(submission_mode=''),
+                            event=locked_event,
+                            code=track_preapproval_code,
+                        ).first()
+
+                        if not existing_code:
+                            # Code doesn't exist for this track/mode combination
+                            return Response({
+                                'detail': f'Pre-approval code is not valid for track "{track.label}" with {track_submission_mode} submission mode.',
+                                'code_error': 'invalid',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+
+                        # Code exists, check its status
+                        if existing_code.status == EventPreApprovalCode.STATUS_REVOKED:
+                            return Response({
+                                'detail': 'Pre-approval code has been revoked and can no longer be used.',
+                                'code_error': 'revoked',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+
+                        if existing_code.status == EventPreApprovalCode.STATUS_USED:
+                            return Response({
+                                'detail': 'Pre-approval code has already been used.',
+                                'code_error': 'used',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+
+                        if existing_code.status == EventPreApprovalCode.STATUS_ACTIVE:
+                            track_is_preapproved = True
+                            track_preapproval_source = EventApplication.PREAPPROVAL_SOURCE_CODE
+                            track_preapproval_code_obj = existing_code
+
+                # For non-confirmed modes, check optional pre-approval code and email allowlist
+                elif track_submission_mode != EventApplication.SUBMISSION_MODE_CONFIRMED:
+                    if track_preapproval_code and locked_event.preapproval_code_enabled:
+                        from django.db.models import Q
+                        track_code = EventPreApprovalCode.objects.filter(
+                            Q(track_id=track.id) | Q(track_id__isnull=True),
+                            Q(submission_mode=track_submission_mode) | Q(submission_mode=''),
+                            event=locked_event,
+                            code=track_preapproval_code,
+                            status=EventPreApprovalCode.STATUS_ACTIVE,
+                        ).first()
+                        if track_code:
+                            track_is_preapproved = True
+                            track_preapproval_source = EventApplication.PREAPPROVAL_SOURCE_CODE
+                            track_preapproval_code_obj = track_code
+
+                    if not track_is_preapproved and email and locked_event.preapproval_allowlist_enabled:
+                        from django.db.models import Q
+                        track_allowlist = EventPreApprovalAllowlist.objects.filter(
+                            Q(track_id=track.id) | Q(track_id__isnull=True),
+                            Q(submission_mode=track_submission_mode) | Q(submission_mode=''),
+                            event=locked_event,
+                            email=email,
+                            is_active=True,
+                        ).first()
+                        if track_allowlist:
+                            track_is_preapproved = True
+                            track_preapproval_source = EventApplication.PREAPPROVAL_SOURCE_EMAIL
 
                 # FIX 2: Use "pre_approved" instead of "approved" for pre-approved status
                 track_status = 'pre_approved' if track_is_preapproved else 'pending'
@@ -3342,6 +3465,32 @@ class EventViewSet(viewsets.ModelViewSet):
                 )
                 track_app_objects.append(track_app)
                 logger.info(f"Created EventApplicationTrackApplication {track_app.id} for track {track.id} with mode={track_submission_mode}")
+
+            # Mark pre-approval codes as used for confirmed mode tracks
+            for track_app in track_app_objects:
+                if track_app.status == 'pre_approved' and track_app.submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED:
+                    # Get the pre-approval code for this track from track_configs
+                    track = track_app.track
+                    track_config = track_configs.get(track, {})
+                    track_preapproval_code_to_mark = (track_config.get('pre_approval_code') or submitted_code or '').strip()
+
+                    if track_preapproval_code_to_mark and locked_event.preapproval_code_enabled:
+                        from django.db.models import Q
+                        code_to_mark = EventPreApprovalCode.objects.filter(
+                            Q(track_id=track.id) | Q(track_id__isnull=True),
+                            Q(submission_mode=EventApplication.SUBMISSION_MODE_CONFIRMED) | Q(submission_mode=''),
+                            event=locked_event,
+                            code=track_preapproval_code_to_mark,
+                            status=EventPreApprovalCode.STATUS_ACTIVE,
+                        ).first()
+                        if code_to_mark:
+                            code_to_mark.status = EventPreApprovalCode.STATUS_USED
+                            code_to_mark.used_by_application = app
+                            code_to_mark.used_by_user = request.user if request.user.is_authenticated else None
+                            code_to_mark.used_by_email = email
+                            code_to_mark.used_at = now
+                            code_to_mark.save(update_fields=["status", "used_by_application", "used_by_user", "used_by_email", "used_at"])
+                            logger.info(f"Marked pre-approval code as used for application {app.id}")
 
             # FIX 2: Auto-accept pre-approved track applications independently (per-track, not global)
             # Do NOT depend on global is_preapproved flag - check each track's individual status
@@ -3374,6 +3523,14 @@ class EventViewSet(viewsets.ModelViewSet):
         # Guest will verify via OTP on event day when checking application status
         # GuestAttendee is created during guest-join (OTP) endpoint instead
 
+        # Update parent application status to 'declined' if all child track applications are declined
+        track_apps = list(app.track_applications.all())
+        if track_apps:
+            child_statuses = [ta.status for ta in track_apps]
+            if all(status == 'declined' for status in child_statuses):
+                app.status = 'declined'
+                app.save(update_fields=['status'])
+
         if app.status == "pending":
             from users.email_utils import send_application_acknowledgement_email
             try:
@@ -3382,9 +3539,13 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 logger.error(f"Failed to send acknowledgement email for application {app.id}: {e}")
 
-        # Return application without guest token
+        # Fetch fresh from database with prefetch_related to ensure serializer gets latest track applications
+        # Critical after reapply: old track app cache is stale, need fresh prefetch
+        app = EventApplication.objects.prefetch_related('track_applications').get(pk=app.pk)
+
+        # Return application with computed status from latest track applications
         response_data = EventApplicationSerializer(app).data
-        logger.info(f"Guest application {app.id} created. Guest will verify via OTP on event day.")
+        logger.info(f"Application {app.id} submitted with status: {response_data.get('application_status')}")
 
         return Response(response_data, status=201)
 
@@ -4245,10 +4406,16 @@ class EventViewSet(viewsets.ModelViewSet):
                 send_email=send_email,
                 notes=notes
             )
+            # Refresh parent application to get updated status
+            track_app.application.refresh_from_db()
             return Response({
                 'success': True,
-                'status': track_app.status,
-                'declined_at': track_app.declined_at,
+                'track_application': {
+                    'id': track_app.id,
+                    'status': track_app.status,
+                    'declined_at': track_app.declined_at,
+                },
+                'application_status': track_app.application.status,
                 'message': 'Application declined successfully'
             })
         except Exception as e:

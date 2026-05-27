@@ -380,12 +380,39 @@ def build_current_user_event_status(event, request):
 
     from events.models import EventApplication, EventRegistration
 
-    app = (
+    # Get applications ordered by applied_at DESC (newest first)
+    # Prioritize active applications (pending, pre_approved, accepted) over declined/cancelled
+    all_apps = list(
         EventApplication.objects
         .filter(event=event, user=request.user)
         .prefetch_related("track_applications__track", "track_applications__accepted_tier")
-        .first()
+        .order_by('-applied_at')
     )
+
+    # Find the best application to use: prefer active statuses over declined/cancelled
+    app = None
+    for candidate_app in all_apps:
+        # Get child statuses if any
+        track_statuses = [ta.status for ta in candidate_app.track_applications.all()]
+
+        # Determine if this application is "active"
+        is_active = False
+        if not track_statuses:
+            # Legacy app without children - check parent status
+            is_active = candidate_app.status in ['pending', 'approved']
+        else:
+            # Check child statuses
+            blocking_statuses = ['pending', 'pre_approved', 'accepted', 'waitlisted']
+            is_active = any(status in blocking_statuses for status in track_statuses)
+
+        if is_active:
+            # Found an active application - use it
+            app = candidate_app
+            break
+        elif not app:
+            # No active app found yet, keep first (most recent) as fallback
+            app = candidate_app
+
     reg = (
         EventRegistration.objects
         .filter(event=event, user=request.user, status__in=["registered", "cancellation_requested"])
@@ -412,10 +439,13 @@ def build_current_user_event_status(event, request):
 
         if "accepted" in track_statuses:
             application_status = "accepted"
-        elif track_statuses and all(status == "declined" for status in track_statuses):
-            application_status = "declined"
+        elif "pending" in track_statuses or "pre_approved" in track_statuses:
+            # Prioritize pending/pre_approved over declined/cancelled
+            application_status = "pending"
         elif track_statuses and any(status == "waitlisted" for status in track_statuses):
             application_status = "waitlisted"
+        elif track_statuses and all(status == "declined" for status in track_statuses):
+            application_status = "declined"
         else:
             application_status = app.status
 
@@ -3148,6 +3178,7 @@ class EventApplicationSerializer(serializers.ModelSerializer):
     """Serializer for EventApplication model - read-only for fetching applications."""
     applicant_name = serializers.SerializerMethodField()
     track_applications = serializers.SerializerMethodField()
+    application_status = serializers.SerializerMethodField()
 
     def get_applicant_name(self, obj):
         return f"{obj.first_name} {obj.last_name}"
@@ -3159,6 +3190,28 @@ class EventApplicationSerializer(serializers.ModelSerializer):
             return EventApplicationTrackApplicationSerializer(ta, many=True).data
         return []
 
+    def get_application_status(self, obj):
+        """Compute application status from track applications.
+        Prioritizes active statuses (pending/pre_approved/accepted) over declined/cancelled."""
+        track_apps = obj.track_applications.all()
+        if not track_apps.exists():
+            return obj.status
+
+        track_statuses = [ta.status for ta in track_apps]
+
+        # Prioritize active statuses - return immediately if found
+        if "accepted" in track_statuses:
+            return "accepted"
+        elif "pending" in track_statuses or "pre_approved" in track_statuses:
+            return "pending"
+        elif track_statuses and any(status == "waitlisted" for status in track_statuses):
+            return "waitlisted"
+        elif track_statuses and all(status == "declined" for status in track_statuses):
+            return "declined"
+        else:
+            # Fallback to parent status
+            return obj.status
+
     class Meta:
         model = EventApplication
         fields = [
@@ -3166,7 +3219,7 @@ class EventApplicationSerializer(serializers.ModelSerializer):
             'first_name', 'last_name', 'email',
             'job_title', 'company_name', 'linkedin_url',
             'attendee_marker_value', 'comments',
-            'status', 'applied_at', 'reviewed_at',
+            'status', 'application_status', 'applied_at', 'reviewed_at',
             'reviewed_by_id', 'rejection_message',
             'is_preapproved', 'preapproval_source', 'preapproved_at',
             # Phase 3: Submission modes
@@ -3178,7 +3231,7 @@ class EventApplicationSerializer(serializers.ModelSerializer):
             'selected_tracks', 'track_applications',
         ]
         read_only_fields = [
-            'id', 'applied_at', 'reviewed_at', 'reviewed_by_id', 'status'
+            'id', 'applied_at', 'reviewed_at', 'reviewed_by_id', 'status', 'application_status'
         ]
 
 

@@ -3226,6 +3226,41 @@ class EventApplication(models.Model):
         help_text='If True, applicant has opted out of automated emails (accept/decline/waitlist notifications)'
     )
 
+    @classmethod
+    def get_latest_active_application(cls, event, user=None, email=None):
+        """
+        Get the latest active application for a user/email to an event.
+        Prioritizes active statuses (pending/pre_approved/accepted) over declined/cancelled.
+
+        Active child statuses: pending, pre_approved, accepted, waitlisted
+        Reusable (terminal) statuses: declined, cancelled
+        """
+        if user:
+            apps = cls.objects.filter(event=event, user=user).prefetch_related('track_applications')
+        elif email:
+            apps = cls.objects.filter(event=event, email=email).prefetch_related('track_applications')
+        else:
+            return None
+
+        apps = apps.order_by('-applied_at')
+
+        # Find the first app with active children, or fallback to most recent
+        for app in apps:
+            track_apps = list(app.track_applications.all())
+            if not track_apps:
+                # Legacy app without children - check parent status
+                if app.status in ['pending', 'approved', 'pre_approved']:
+                    return app
+            else:
+                # Check child statuses
+                child_statuses = [ta.status for ta in track_apps]
+                blocking_statuses = ['pending', 'pre_approved', 'accepted', 'waitlisted']
+                if any(status in blocking_statuses for status in child_statuses):
+                    return app
+
+        # No active app found - return most recent as fallback
+        return apps.first() if apps.exists() else None
+
     class Meta:
         db_table = 'event_applications'
         unique_together = ('event', 'email')
