@@ -285,8 +285,8 @@ def compile_mjml(mjml_body):
 
     raise serializers.ValidationError({
         "mjml_body": (
-            "MJML compiler is not installed. Install the Node MJML CLI with "
-            "`npm install -g mjml`, or install a Python mrml package if available for your platform."
+            "MJML compiler is not installed. Install the Python package `mrml` (recommended), "
+            "or install the Node MJML CLI with `npm install -g mjml`."
         )
     })
 
