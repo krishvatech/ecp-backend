@@ -51,6 +51,13 @@ celery -A ecp_backend.celery_app worker -l info
 celery -A ecp_backend.celery_app beat -l info
 ```
 
+## MJML Email Templates
+
+The CMS email template endpoints accept `mjml_body` and compile it to HTML server-side.
+
+- Recommended: the Python package `mrml` (included in `requirements.txt`).
+- Fallback: the Node MJML CLI (`mjml`) must be available on `PATH`. The provided Docker image installs it automatically; for non-Docker local dev you can install it with `npm install -g mjml`.
+
 ## Tests
 
 Run the Django tests using pytest:

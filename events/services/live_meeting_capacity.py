@@ -144,6 +144,21 @@ def get_session_end_time(session):
     return None
 
 
+def is_session_live(session):
+    status = getattr(session, "status", None)
+    return bool(getattr(session, "is_live", False)) or status == "live"
+
+
+def has_live_session(event):
+    sessions = get_event_sessions(event)
+
+    for session in sessions:
+        if is_session_live(session):
+            return True
+
+    return False
+
+
 def get_capacity_windows_for_event(event):
     """
     Returns time windows where this event needs backend capacity.
@@ -195,7 +210,7 @@ def get_capacity_relevant_events():
 
         is_live = bool(getattr(event, "is_live", False)) or status == "live"
 
-        if is_live:
+        if is_live or has_live_session(event):
             relevant.append(event)
             continue
 

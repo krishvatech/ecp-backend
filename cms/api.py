@@ -227,6 +227,41 @@ def compile_mjml(mjml_body):
 
     compiler_errors = []
 
+    def _coerce_compiled_result_to_html(result):
+        if result is None:
+            return ""
+        if isinstance(result, str):
+            return result
+        if isinstance(result, (bytes, bytearray)):
+            return bytes(result).decode("utf-8", errors="replace")
+        if isinstance(result, dict):
+            errors = result.get("errors")
+            if errors:
+                raise RuntimeError(errors)
+            return result.get("html") or result.get("content") or ""
+        if isinstance(result, tuple):
+            return _coerce_compiled_result_to_html(result[0])
+
+        for attr in ("html", "content"):
+            if hasattr(result, attr):
+                value = getattr(result, attr)
+                if callable(value):
+                    value = value()
+                if isinstance(value, str):
+                    return value
+                if isinstance(value, (bytes, bytearray)):
+                    return bytes(value).decode("utf-8", errors="replace")
+
+        if hasattr(result, "errors"):
+            errors = getattr(result, "errors")
+            if callable(errors):
+                errors = errors()
+            if errors:
+                raise RuntimeError(errors)
+
+        # Avoid returning an opaque object repr like "<builtins.Output object at ...>".
+        raise RuntimeError(f"Unsupported MJML compiler output type: {type(result)}")
+
     try:
         import mrml
     except ImportError as exc:
@@ -246,16 +281,7 @@ def compile_mjml(mjml_body):
             else:
                 raise RuntimeError("No supported MJML compile function found.")
 
-            if isinstance(result, str):
-                return result
-            if isinstance(result, dict):
-                errors = result.get("errors")
-                if errors:
-                    raise RuntimeError(errors)
-                return result.get("html") or result.get("content") or ""
-            if isinstance(result, tuple):
-                return result[0]
-            return str(result)
+            return _coerce_compiled_result_to_html(result)
         except serializers.ValidationError:
             raise
         except Exception as exc:
@@ -286,7 +312,8 @@ def compile_mjml(mjml_body):
     raise serializers.ValidationError({
         "mjml_body": (
             "MJML compiler is not installed. Install the Python package `mrml` (recommended), "
-            "or install the Node MJML CLI with `npm install -g mjml`."
+            "or make the Node MJML CLI available on PATH (e.g. `npm install -g mjml`). "
+            "If you're using the provided Docker image, rebuild it so the bundled MJML CLI is installed."
         )
     })
 
@@ -465,8 +492,8 @@ class EmailTemplatePreviewView(APIView):
         subject = data.get("subject", payload["subject"])
         html_body = data.get("html_body", payload["html_body"])
         text_body = data.get("text_body", payload["text_body"])
-        mjml_body = data.get("mjml_body", "")
-        if mjml_body:
+        mjml_body = data.get("mjml_body") if "mjml_body" in data else (payload.get("mjml_body") or "")
+        if mjml_body and (not html_body or "<mjml" in (html_body or "")):
             html_body = compile_mjml(mjml_body)
 
         metadata = get_template_metadata(template_key)
@@ -487,6 +514,8 @@ class EmailTemplateSendTestView(APIView):
         serializer.is_valid(raise_exception=True)
         payload = get_email_template_payload(template_key)
         metadata = get_template_metadata(template_key)
+        if payload.get("mjml_body") and (not payload.get("html_body") or "<mjml" in (payload.get("html_body") or "")):
+            payload["html_body"] = compile_mjml(payload["mjml_body"])
         rendered = render_template_parts(
             payload["subject"],
             payload["html_body"],

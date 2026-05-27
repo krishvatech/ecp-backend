@@ -45,3 +45,6 @@ whitenoise==6.7.0
 # PDF generation
 reportlab>=4.2,<5
 cryptography>=42,<46
+
+# MJML compilation (used for email templates in cms/api.py)
+mrml
