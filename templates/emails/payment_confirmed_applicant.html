@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background-color: #16a34a; color: white; padding: 20px; text-align: center; border-radius: 4px; }
+        .content { padding: 20px 0; }
+        .section { margin: 15px 0; padding: 15px; background: #f0fdf4; border-left: 4px solid #16a34a; border-radius: 4px; }
+        .label { font-weight: bold; color: #166534; }
+        .footer { background-color: #f5f5f5; padding: 15px; text-align: center; font-size: 12px; margin-top: 20px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Payment Confirmed</h1>
+        </div>
+
+        <div class="content">
+            <p>Dear {{ user_first_name }},</p>
+
+            <p>{{ confirmation_message|default:"Your registration is confirmed. You are all set for the event." }}</p>
+
+            <div class="section">
+                <p><span class="label">Event:</span> {{ event_name }}</p>
+                <p><span class="label">Track:</span> {{ track_label }}</p>
+                {% if tier_label %}<p><span class="label">Tier:</span> {{ tier_label }}</p>{% endif %}
+                {% if amount_paid %}<p><span class="label">Amount paid:</span> {{ currency }} {{ amount_paid }}</p>{% endif %}
+            </div>
+
+            <p>You are now registered for this event.</p>
+
+            <p>If you have any questions, please contact <strong>{{ support_email }}</strong>.</p>
+
+            <p>Best regards,<br>{{ app_name }} Team</p>
+        </div>
+
+        <div class="footer">
+            <p>&copy; {{ app_name }}. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

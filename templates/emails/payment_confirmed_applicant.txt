@@ -1,0 +1,17 @@
+Payment Confirmed
+
+Dear {{ user_first_name }},
+
+{{ confirmation_message|default:"Your registration is confirmed. You are all set for the event." }}
+
+Event: {{ event_name }}
+Track: {{ track_label }}
+{% if tier_label %}Tier: {{ tier_label }}{% endif %}
+{% if amount_paid %}Amount paid: {{ currency }} {{ amount_paid }}{% endif %}
+
+You are now registered for this event.
+
+If you have any questions, please contact {{ support_email }}.
+
+Best regards,
+{{ app_name }} Team

@@ -1,0 +1,19 @@
+Application Approved - Payment Pending
+
+Dear {{ applicant_first_name|default:applicant_name }},
+
+Your application for {{ event_name }} has been approved.
+
+Track: {{ track_label }}
+{% if accepted_tier_label %}Assigned tier: {{ accepted_tier_label }}{% endif %}
+{% if amount_due %}Amount due: {{ currency }} {{ amount_due }}{% endif %}
+{% if event_date_str %}Date: {{ event_date_str }}{% endif %}
+
+{{ payment_message|default:"Your registration is pending payment. You will be confirmed after payment is marked as received." }}
+
+You are not counted as a confirmed attendee until payment is completed.
+
+If you have any questions, please contact {{ support_email }}.
+
+Best regards,
+{{ app_name }} Team

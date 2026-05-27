@@ -630,6 +630,8 @@ class EventEmailTemplate(models.Model):
 
         # Phase 12: Application decision templates (Applicant)
         ("application_accepted_applicant", "Application Accepted (Applicant)"),
+        ("application_accepted_payment_pending", "Application Accepted - Payment Pending (Applicant)"),
+        ("payment_confirmed_applicant", "Payment Confirmed (Applicant)"),
         ("application_declined_applicant", "Application Declined (Applicant)"),
         ("application_waitlisted_applicant", "Application Waitlisted (Applicant)"),
         ("application_reminder_to_complete", "Reminder to Complete Registration"),

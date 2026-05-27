@@ -178,6 +178,10 @@ def send_application_decision_email(track_application, outcome, custom_message=N
             template_key=template_key,
             to_email=recipient_email,
             context=context,
+            subject_override=(
+                f"Application approved - payment pending for {event.title}"
+                if is_payment_pending else None
+            ),
             event=event,
             fail_silently=False
         )
@@ -208,10 +212,12 @@ def send_payment_confirmed_email(origin):
 
     # Build context
     context = {
+        'app_name': 'IMAA Connect',
         'event_name': event.title,
         'track_label': origin.track.label if origin.track else 'Event',
         'user_first_name': user.first_name or user.username,
         'confirmation_message': 'Your registration is confirmed! You are all set for the event.',
+        'support_email': get_support_email(),
     }
 
     # Add tier information if available
@@ -227,6 +233,7 @@ def send_payment_confirmed_email(origin):
             template_key='payment_confirmed_applicant',
             to_email=user.email,
             context=context,
+            subject_override=f"Payment confirmed - you are registered for {event.title}",
             event=event,
             fail_silently=False
         )
