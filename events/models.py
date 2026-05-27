@@ -602,6 +602,31 @@ class Event(models.Model):
         )
         return badge
 
+    def has_valid_application_tracks(self):
+        """
+        Check if this event has at least one valid application track.
+        A valid track must have:
+        - is_active = True
+        - label and key (non-empty)
+        - at least one submission mode in enabled_submission_modes
+        - at least one active pricing tier
+        - at least one role mapping
+        """
+        if self.registration_type != 'apply':
+            return True
+
+        for track in self.application_tracks.filter(is_active=True):
+            has_label = bool(track.label and track.label.strip())
+            has_key = bool(track.key and track.key.strip())
+            has_modes = bool(track.enabled_submission_modes and len(track.enabled_submission_modes) > 0)
+            has_pricing = track.pricing_tiers.filter(is_active=True).exists()
+            has_roles = bool(track.role_mappings_on_acceptance and len(track.role_mappings_on_acceptance) > 0)
+
+            if has_label and has_key and has_modes and has_pricing and has_roles:
+                return True
+
+        return False
+
 
 class EventEmailTemplate(models.Model):
     """Per-event customizable email templates for registration confirmations and application decisions."""

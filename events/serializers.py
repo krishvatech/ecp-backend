@@ -1820,11 +1820,17 @@ class EventSerializer(serializers.ModelSerializer):
         # attach creator
         validated_data["created_by_id"] = self.context["request"].user.id
 
+        # Force Application Required events to Draft status until valid tracks are configured
+        if validated_data.get('registration_type') == 'apply':
+            validated_data['status'] = 'draft'
+
         print(f"\n🔴 BACKEND CREATE METHOD:")
         print(f"  validated_data['start_time']: {validated_data.get('start_time')}")
         print(f"  validated_data['end_time']: {validated_data.get('end_time')}")
         print(f"  validated_data['timezone']: {validated_data.get('timezone')}")
         print(f"  sessions_input count: {len(sessions_input)}")
+        print(f"  registration_type: {validated_data.get('registration_type')}")
+        print(f"  status: {validated_data.get('status')}")
 
         # Wrap entire creation in atomic transaction
         with transaction.atomic():
@@ -2024,6 +2030,17 @@ class EventSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"hours_calculation_session_types": "Only platform administrators can modify session types for hours calculation."}
                 )
+
+        # Force Application Required events to Draft status if trying to publish without valid tracks
+        if 'registration_type' in validated_data or instance.registration_type == 'apply':
+            reg_type = validated_data.get('registration_type', instance.registration_type)
+            if reg_type == 'apply' and 'status' in validated_data and validated_data['status'] == 'published':
+                # Check if event has valid application tracks
+                temp_instance = instance
+                if 'registration_type' in validated_data:
+                    temp_instance.registration_type = validated_data['registration_type']
+                if not temp_instance.has_valid_application_tracks():
+                    validated_data['status'] = 'draft'
 
         # Handle one-featured-at-a-time constraint: unfeature all other events
         if validated_data.get('is_featured') is True:

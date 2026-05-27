@@ -2259,8 +2259,9 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsCreatorOrReadOnly], url_path="publish")
     def publish_event(self, request, pk=None):
         """
-        Publish a draft paid event.
-        Validates that price and stock are configured in Saleor, then updates event.status to 'published'.
+        Publish a draft paid event or an Application Required event.
+        For Application Required events: validates that at least one valid application track exists.
+        For paid events: validates that price and stock are configured in Saleor.
         """
         event = self.get_object()
 
@@ -2270,6 +2271,15 @@ class EventViewSet(viewsets.ModelViewSet):
 
         if event.status != "draft":
             return Response({"error": f"Event is already '{event.status}'."}, status=400)
+
+        # Validate Application Required events
+        if event.registration_type == 'apply':
+            if not event.has_valid_application_tracks():
+                return Response({
+                    "error": "Application Required events must have at least one valid application track before publishing.",
+                    "details": "Each track requires: label, key, submission mode(s), pricing tier(s), and role mapping(s)"
+                }, status=400)
+
         if event.is_free:
             return Response({"error": "Free events are published automatically on creation."}, status=400)
         if not event.saleor_product_id:
