@@ -47,7 +47,7 @@ def public_event_meta(request, slug):
         description = "Join this event."
 
     image_url = ""
-    image_field = event.preview_image or event.cover_image
+    image_field = event.cover_image or event.preview_image
     if image_field:
         try:
             image_url = request.build_absolute_uri(image_field.url)
