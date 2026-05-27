@@ -3101,23 +3101,122 @@ class EventViewSet(viewsets.ModelViewSet):
                         'submission_mode': track_submission_mode
                     }, status=400)
 
-            # Phase 8: Check pre-approval with track + submission_mode scoping
+            # FIX: Validate pre-approval for all tracks BEFORE creating application
+            # This prevents creating a Pending application when code is wrong
+            for track in tracks_to_apply:
+                track_config = track_configs.get(track, {})
+                track_submission_mode = track_config.get('submission_mode', submission_mode)
+                track_preapproval_code = (track_config.get('pre_approval_code') or submitted_code or '').strip()
+
+                # For confirmed mode, must validate pre-approval NOW (before creating app)
+                if track_submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED:
+                    track_is_preapproved = False
+
+                    # Check if feature is enabled when code is submitted
+                    if track_preapproval_code and not locked_event.preapproval_code_enabled:
+                        return Response({
+                            'detail': f'Pre-approval codes are not enabled for this event. Contact the event organizer to enable pre-approval codes.',
+                            'code_error': 'feature_disabled',
+                            'track_id': track.id,
+                            'submission_mode': track_submission_mode
+                        }, status=400)
+
+                    # Check pre-approval code first
+                    if track_preapproval_code and locked_event.preapproval_code_enabled:
+                        from django.db.models import Q
+                        existing_code = EventPreApprovalCode.objects.filter(
+                            event=locked_event,
+                            code=track_preapproval_code
+                        ).first()
+
+                        if not existing_code:
+                            return Response({
+                                'detail': f'Invalid pre-approval code for track "{track.label}".',
+                                'code_error': 'invalid',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+
+                        if existing_code.status == EventPreApprovalCode.STATUS_REVOKED:
+                            return Response({
+                                'detail': f'Pre-approval code has been revoked and cannot be used for track "{track.label}".',
+                                'code_error': 'revoked',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+
+                        if existing_code.status == EventPreApprovalCode.STATUS_USED:
+                            return Response({
+                                'detail': f'Pre-approval code has already been used for track "{track.label}".',
+                                'code_error': 'used',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+
+                        # Check if code is valid for this track + mode combination
+                        code_valid_for_track = EventPreApprovalCode.objects.filter(
+                            Q(track_id=track.id) | Q(track_id__isnull=True),
+                            Q(submission_mode=track_submission_mode) | Q(submission_mode=''),
+                            event=locked_event,
+                            code=track_preapproval_code,
+                            status=EventPreApprovalCode.STATUS_ACTIVE,
+                        ).exists()
+
+                        if not code_valid_for_track:
+                            return Response({
+                                'detail': f'Pre-approval code is not valid for "{track.label}" with {track_submission_mode} submission mode.',
+                                'code_error': 'wrong_track_mode',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+
+                        track_is_preapproved = True
+
+                    # Check email allowlist if code didn't pre-approve
+                    if not track_is_preapproved and email and locked_event.preapproval_allowlist_enabled:
+                        from django.db.models import Q
+                        track_allowlist = EventPreApprovalAllowlist.objects.filter(
+                            Q(track_id=track.id) | Q(track_id__isnull=True),
+                            Q(submission_mode=track_submission_mode) | Q(submission_mode=''),
+                            event=locked_event,
+                            email=email,
+                            is_active=True,
+                        ).first()
+                        if track_allowlist:
+                            track_is_preapproved = True
+
+                    # If still not pre-approved, reject confirmed mode submission
+                    if not track_is_preapproved:
+                        if not track_preapproval_code:
+                            return Response({
+                                'detail': f'Pre-approval code is required for confirmed submission mode on track "{track.label}".',
+                                'code_error': 'missing',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+                        # Code was provided but neither condition above matched
+                        return Response({
+                            'detail': f'Pre-approval code is not valid for "{track.label}" with {track_submission_mode} submission mode.',
+                            'code_error': 'wrong_track_mode',
+                            'track_id': track.id,
+                            'submission_mode': track_submission_mode
+                        }, status=400)
+
+            # Phase 8: Global pre-approval validation (legacy/backward compatibility only)
+            # For single-track or old clients submitting at root level
+            # Real validation happens PER-TRACK inside the loop below
             preapproval_source = EventApplication.PREAPPROVAL_SOURCE_NONE
             code_obj = None
             allowlist_entry = None
 
-            track_id_for_preapproval = application_track.id if application_track else None
-
-            if locked_event.preapproval_code_enabled and submitted_code:
+            # Only use global validation for single-track (not multi-track)
+            if application_track and submitted_code and locked_event.preapproval_code_enabled:
                 from django.db.models import Q
                 code_obj = (
                     EventPreApprovalCode.objects
                     .select_for_update()
                     .filter(
-                        # Phase 8: Filter by track + submission_mode (with backward compatibility)
-                        # Match if: specific track OR event-level (track=NULL)
-                        Q(track_id=track_id_for_preapproval) | Q(track_id__isnull=True),
-                        # Match if: specific submission_mode OR all-modes (submission_mode='')
+                        Q(track_id=application_track.id) | Q(track_id__isnull=True),
                         Q(submission_mode=submission_mode) | Q(submission_mode=''),
                         event=locked_event,
                         code=submitted_code,
@@ -3128,8 +3227,10 @@ class EventViewSet(viewsets.ModelViewSet):
                 if code_obj:
                     preapproval_source = EventApplication.PREAPPROVAL_SOURCE_CODE
 
+            # Email allowlist for global (single-track)
             if (
                 preapproval_source == EventApplication.PREAPPROVAL_SOURCE_NONE
+                and application_track
                 and locked_event.preapproval_allowlist_enabled
                 and email
             ):
@@ -3137,8 +3238,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 allowlist_entry = (
                     EventPreApprovalAllowlist.objects
                     .filter(
-                        # Phase 8: Filter by track + submission_mode
-                        Q(track_id=track_id_for_preapproval) | Q(track_id__isnull=True),
+                        Q(track_id=application_track.id) | Q(track_id__isnull=True),
                         Q(submission_mode=submission_mode) | Q(submission_mode=''),
                         event=locked_event,
                         email=email,
@@ -3149,53 +3249,8 @@ class EventViewSet(viewsets.ModelViewSet):
                 if allowlist_entry:
                     preapproval_source = EventApplication.PREAPPROVAL_SOURCE_EMAIL
 
-            # Validate pre-approval requirements for confirmed mode
-            if submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED:
-                if not preapproval_source or preapproval_source == EventApplication.PREAPPROVAL_SOURCE_NONE:
-                    # Check if pre-approval was intended but failed for a specific reason
-                    from django.db.models import Q
-
-                    if submitted_code:
-                        # Code was provided but not found or invalid
-                        existing_code = EventPreApprovalCode.objects.filter(
-                            event=locked_event,
-                            code=submitted_code
-                        ).first()
-
-                        if not existing_code:
-                            return Response({
-                                'detail': 'Invalid pre-approval code.',
-                                'code_error': 'invalid',
-                                'submission_mode': submission_mode
-                            }, status=400)
-
-                        if existing_code.status == EventPreApprovalCode.STATUS_REVOKED:
-                            return Response({
-                                'detail': 'Pre-approval code has been revoked.',
-                                'code_error': 'revoked',
-                                'submission_mode': submission_mode
-                            }, status=400)
-
-                        if existing_code.status == EventPreApprovalCode.STATUS_USED:
-                            return Response({
-                                'detail': 'Pre-approval code has already been used.',
-                                'code_error': 'already_used',
-                                'submission_mode': submission_mode
-                            }, status=400)
-
-                        # Code exists but not for this track/mode combination
-                        return Response({
-                            'detail': 'Pre-approval code is not valid for this track or submission mode.',
-                            'code_error': 'wrong_track_mode',
-                            'submission_mode': submission_mode
-                        }, status=400)
-                    else:
-                        # No code provided for confirmed mode
-                        return Response({
-                            'detail': 'Pre-approval code is required for confirmed submission mode.',
-                            'missing_fields': ['pre_approval_code'],
-                            'submission_mode': submission_mode
-                        }, status=400)
+            # Note: For multi-track submissions, per-track pre-approval is checked in the loop below
+            # This global flag is only used for legacy single-track submissions
 
             is_preapproved = preapproval_source != EventApplication.PREAPPROVAL_SOURCE_NONE
             now = timezone.now()
@@ -3448,8 +3503,63 @@ class EventViewSet(viewsets.ModelViewSet):
                             track_is_preapproved = True
                             track_preapproval_source = EventApplication.PREAPPROVAL_SOURCE_EMAIL
 
+                # FIX 3: Strict validation for confirmed mode - must have valid pre-approval
+                if track_submission_mode == EventApplication.SUBMISSION_MODE_CONFIRMED:
+                    if not track_is_preapproved:
+                        # Confirmed mode has no valid pre-approval - return clear error
+                        if not track_preapproval_code:
+                            # No code provided at all
+                            return Response({
+                                'detail': f'Pre-approval code is required for confirmed submission mode on track "{track.label}".',
+                                'code_error': 'missing',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+
+                        # Code was provided but not valid - check why
+                        existing_code = EventPreApprovalCode.objects.filter(
+                            event=locked_event,
+                            code=track_preapproval_code
+                        ).first()
+
+                        if not existing_code:
+                            return Response({
+                                'detail': f'Invalid pre-approval code for track "{track.label}".',
+                                'code_error': 'invalid',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+
+                        if existing_code.status == EventPreApprovalCode.STATUS_REVOKED:
+                            return Response({
+                                'detail': f'Pre-approval code has been revoked and cannot be used for track "{track.label}".',
+                                'code_error': 'revoked',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+
+                        if existing_code.status == EventPreApprovalCode.STATUS_USED:
+                            return Response({
+                                'detail': f'Pre-approval code has already been used for track "{track.label}".',
+                                'code_error': 'used',
+                                'track_id': track.id,
+                                'submission_mode': track_submission_mode
+                            }, status=400)
+
+                        # Code exists but not for this specific track/mode combination
+                        return Response({
+                            'detail': f'Pre-approval code is not valid for "{track.label}" with {track_submission_mode} submission mode.',
+                            'code_error': 'wrong_track_mode',
+                            'track_id': track.id,
+                            'submission_mode': track_submission_mode
+                        }, status=400)
+
                 # FIX 2: Use "pre_approved" instead of "approved" for pre-approved status
                 track_status = 'pre_approved' if track_is_preapproved else 'pending'
+
+                # FIX 7: Use track-specific pre-approval flags, not global is_preapproved
+                track_reviewed_at = now if track_is_preapproved else None
+                track_reviewed_by = request.user if track_is_preapproved and request.user.is_authenticated else None
 
                 # Create track application
                 track_app = EventApplicationTrackApplication.objects.create(
@@ -3460,8 +3570,8 @@ class EventViewSet(viewsets.ModelViewSet):
                     tier_preference=tier_preference,
                     form_answers=form_answers,
                     file_uploads=file_uploads,
-                    reviewed_at=reviewed_at if is_preapproved else None,
-                    reviewed_by=reviewed_by if is_preapproved else None,
+                    reviewed_at=track_reviewed_at,
+                    reviewed_by=track_reviewed_by,
                 )
                 track_app_objects.append(track_app)
                 logger.info(f"Created EventApplicationTrackApplication {track_app.id} for track {track.id} with mode={track_submission_mode}")
