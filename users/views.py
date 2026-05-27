@@ -2088,10 +2088,14 @@ class MeProfileView(APIView):
 
         job_title = ""
         company = ""
+        location = ""
+        links = {}
         try:
             if hasattr(user, 'profile') and user.profile:
                 job_title = user.profile.job_title or ""
                 company = user.profile.company or ""
+                location = user.profile.location or ""
+                links = user.profile.links or {}
         except:
             pass
 
@@ -2114,6 +2118,8 @@ class MeProfileView(APIView):
             "username": user.username or "",
             "job_title": job_title,
             "company": company,
+            "location": location,
+            "links": links,
             "educations": edus,
             "experiences": exps,
             "trainings": trainings,
