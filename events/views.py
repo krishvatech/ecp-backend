@@ -10655,9 +10655,10 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         Admins/Staff/Event Owners -> See all relevant.
         Normal users -> See only their own.
         Supports ?event=, ?user=, and ?attendance_status= filters.
+        Supports ?ordering= for server-side sorting (registered_at or -registered_at).
         """
         user = self.request.user
-        qs = EventRegistration.objects.select_related("event").order_by("-registered_at")
+        qs = EventRegistration.objects.select_related("event")
 
         if getattr(user, "is_guest", False):
             return qs.none()
@@ -10690,6 +10691,16 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(watched_replay=True, joined_live=False)
             elif attendance_status == "did_not_attend":
                 qs = qs.filter(joined_live=False, watched_replay=False)
+
+        # Apply ?ordering= for server-side sorting with stable secondary ordering by id
+        ordering = self.request.query_params.get("ordering", "-registered_at")
+        if ordering == "registered_at":
+            qs = qs.order_by("registered_at", "id")
+        elif ordering == "-registered_at":
+            qs = qs.order_by("-registered_at", "-id")
+        else:
+            # Default to newest first
+            qs = qs.order_by("-registered_at", "-id")
 
         return qs
 
