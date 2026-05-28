@@ -84,6 +84,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             raise
 
     async def connect(self) -> None:
+        # Ensure attributes referenced in `disconnect()` exist even if we early-return
+        # (e.g., anonymous users rejected before completing handshake).
+        self._disconnect_cleanup_task = None
+
         self.user = self.scope.get("user")
         if not self.user or self.user.is_anonymous:
             logger.warning("WS[Event] rejected: anonymous user path=%s", self.scope.get("path"))
@@ -93,7 +97,6 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         self.event_id = self.scope["url_route"]["kwargs"]["event_id"]
         self.group_name = f"event_{self.event_id}"
         self._ws_closed = False
-        self._disconnect_cleanup_task = None
 
         event_exists = await database_sync_to_async(lambda: Event.objects.filter(id=self.event_id).exists())()
         if not event_exists:
@@ -269,7 +272,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         if hasattr(self, "user_group_name"):
             await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
 
-        if not self._disconnect_cleanup_task:
+        cleanup_task = getattr(self, "_disconnect_cleanup_task", None)
+        user = getattr(self, "user", None)
+        should_cleanup = (
+            hasattr(self, "group_name")
+            and user is not None
+            and not getattr(user, "is_anonymous", True)
+        )
+        if should_cleanup and not cleanup_task:
             self._disconnect_cleanup_task = asyncio.create_task(self._finalize_disconnect())
 
     async def _finalize_disconnect(self) -> None:
@@ -286,7 +296,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 await self.schedule_lounge_update()
                 await self.broadcast_main_room_support_status()
         except Exception as e:
-            logger.warning(f"[CLEANUP] Presence/broadcast cleanup failed for user {self.user.id}: {e}")
+            logger.warning(
+                "[CLEANUP] Presence/broadcast cleanup failed for user %s: %s",
+                getattr(getattr(self, "user", None), "id", None),
+                e,
+            )
 
         try:
             await asyncio.sleep(DISCONNECT_CLEANUP_GRACE_SECONDS)
@@ -298,7 +312,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 should_finalize,
             )
         except Exception as e:
-            logger.warning(f"[CLEANUP] Grace-period check failed for user {self.user.id}: {e}")
+            logger.warning(
+                "[CLEANUP] Grace-period check failed for user %s: %s",
+                getattr(getattr(self, "user", None), "id", None),
+                e,
+            )
             should_finalize = True
 
         if not should_finalize:
@@ -313,7 +331,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             # when the client briefly reconnects during page transitions/reloads.
             await self.leave_current_table()
         except Exception as e:
-            logger.error(f"[CLEANUP] leave_current_table failed for user {self.user.id}: {e}")
+            logger.error(
+                "[CLEANUP] leave_current_table failed for user %s: %s",
+                getattr(getattr(self, "user", None), "id", None),
+                e,
+            )
 
         # Cleanup RTK participants
         try:
@@ -322,7 +344,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, self.cleanup_rtk_participants_sync, meeting_ids)
         except Exception as e:
-            logger.error(f"[CLEANUP] RTK cleanup failed for user {self.user.id}: {e}")
+            logger.error(
+                "[CLEANUP] RTK cleanup failed for user %s: %s",
+                getattr(getattr(self, "user", None), "id", None),
+                e,
+            )
 
     # ✅ HEARTBEAT: Send periodic pings to detect dead connections
     async def _heartbeat_loop(self):
