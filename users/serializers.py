@@ -508,6 +508,11 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
                 profile.timezone = tz_value
                 profile.save(update_fields=["timezone"])
 
+        # Update last_login on successful authentication
+        from django.utils import timezone
+        user.last_login = timezone.now()
+        user.save(update_fields=["last_login"])
+
         refresh = self.get_token(user)
         return {"refresh": str(refresh), "access": str(refresh.access_token)}
 

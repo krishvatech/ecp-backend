@@ -12,6 +12,7 @@ from rest_framework.exceptions import AuthenticationFailed
 from django.db import transaction
 from django.db import IntegrityError
 from django.utils.crypto import get_random_string
+from django.utils import timezone
 
 from .models import CognitoIdentity
 
@@ -432,6 +433,11 @@ class CognitoJWTAuthentication(BaseAuthentication):
                         profile.save(update_fields=["full_name"])
                     else:
                         profile.save()
+
+            # --- Update last_login on successful authentication ---
+            user.last_login = timezone.now()
+            user.save(update_fields=["last_login"])
+            # ---------------------------------------------------
 
             # --- ECP <-> Saleor Sync (Async Background Task) ---
             from .tasks import sync_user_to_saleor_async

@@ -1577,6 +1577,10 @@ class SessionLoginView(APIView):
                 profile.timezone = tz_value
                 profile.save(update_fields=["timezone"])
 
+        # Update last_login on successful session login
+        user.last_login = django_timezone.now()
+        user.save(update_fields=["last_login"])
+
         django_login(request, user)          # <- creates session
         request.session.cycle_key()          # optional: rotate session id
 
