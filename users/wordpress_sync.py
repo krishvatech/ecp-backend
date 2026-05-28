@@ -10,6 +10,7 @@ import logging
 from typing import Dict, Optional, Any, Tuple
 from django.contrib.auth.models import User
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from .models import UserProfile
 from .wordpress_api import get_wordpress_client
 from .email_utils import create_cognito_user, generate_temporary_password
@@ -459,6 +460,19 @@ class WordPressProfileSyncService:
                 profile.location = location_str
                 profile_updated = True
                 logger.info(f"Updated location for user {user.id}: {location_str}")
+
+        # Capture the original WordPress registration date (registered_date in WP REST payload).
+        # Set once when missing; WordPress registration date does not change after signup.
+        wp_registered_raw = wp_user_data.get("registered_date") or wp_user_data.get("user_registered")
+        if wp_registered_raw and not profile.wordpress_registered_at:
+            parsed_registered = parse_datetime(wp_registered_raw)
+            if parsed_registered is not None:
+                if timezone.is_naive(parsed_registered):
+                    parsed_registered = timezone.make_aware(
+                        parsed_registered, timezone.get_default_timezone()
+                    )
+                profile.wordpress_registered_at = parsed_registered
+                profile_updated = True
 
         if not profile.wordpress_synced_at or profile.wordpress_sync_status != "synced":
             profile.wordpress_synced_at = timezone.now()

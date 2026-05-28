@@ -201,6 +201,7 @@ class UserProfile(models.Model):
     )
     wordpress_avatar_url = models.URLField(blank=True, help_text="Avatar URL from WordPress")
     wordpress_synced_at = models.DateTimeField(null=True, blank=True, help_text="Last sync timestamp from WordPress")
+    wordpress_registered_at = models.DateTimeField(null=True, blank=True, help_text="Original registration date on WordPress (registered_date from WP)")
 
     # --- Cognito Integration ---
     cognito_temp_password = models.CharField(max_length=255, blank=True, default="", help_text="Temporary password for Cognito user authentication")

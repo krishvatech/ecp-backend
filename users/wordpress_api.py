@@ -42,6 +42,31 @@ class WordPressAPIClient:
             return HTTPBasicAuth(self.api_user, self.api_password)
         return None
 
+    def _get_user_resource(self, url: str, params: Optional[Dict[str, Any]] = None):
+        """
+        GET a WordPress user/users resource preferring context=edit so privileged
+        fields (e.g. registered_date) are included in the payload.
+
+        If the authenticated account lacks edit capability, WordPress rejects the
+        edit context; in that case we transparently fall back to the default (view)
+        context so existing behavior is fully preserved.
+        """
+        headers = self._get_headers()
+        auth = self._get_auth()
+        base_params = dict(params or {})
+        edit_params = {**base_params, "context": "edit"}
+
+        response = requests.get(
+            url, params=edit_params, headers=headers, auth=auth, timeout=10
+        )
+        if response.status_code in (400, 401, 403):
+            # Account may not have edit capability for this resource; retry as view.
+            response = requests.get(
+                url, params=base_params, headers=headers, auth=auth, timeout=10
+            )
+        response.raise_for_status()
+        return response.json()
+
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """
         Fetch user from WordPress by email.
@@ -53,8 +78,6 @@ class WordPressAPIClient:
         """
         try:
             url = f"{self.base_url}/wp/v2/users"
-            headers = self._get_headers()
-            auth = self._get_auth()
 
             # Strategy 1: Search by username FIRST (WordPress often doesn't expose email field)
             username = email.split("@")[0] if "@" in email else email
@@ -63,16 +86,7 @@ class WordPressAPIClient:
                 "search": username,
                 "per_page": 100,
             }
-            response = requests.get(
-                url,
-                params=params,
-                headers=headers,
-                auth=auth,
-                timeout=10
-            )
-            response.raise_for_status()
-
-            users = response.json()
+            users = self._get_user_resource(url, params=params)
             logger.debug(f"Username search returned {len(users)} results")
             # Filter for exact username match (search returns partial matches)
             exact_match = None
@@ -95,16 +109,7 @@ class WordPressAPIClient:
                 "search": email,
                 "per_page": 100,
             }
-            response = requests.get(
-                url,
-                params=params,
-                headers=headers,
-                auth=auth,
-                timeout=10
-            )
-            response.raise_for_status()
-
-            users = response.json()
+            users = self._get_user_resource(url, params=params)
             logger.debug(f"Email search returned {len(users)} results")
             if users and len(users) > 0 and users[0].get("id"):
                 logger.debug(f"Found user by email search: {users[0].get('id')}, fields: {list(users[0].keys())}")
@@ -125,18 +130,7 @@ class WordPressAPIClient:
         """
         try:
             url = f"{self.base_url}/wp/v2/users/{user_id}"
-            headers = self._get_headers()
-            auth = self._get_auth()
-
-            response = requests.get(
-                url,
-                headers=headers,
-                auth=auth,
-                timeout=10
-            )
-            response.raise_for_status()
-
-            user_data = response.json()
+            user_data = self._get_user_resource(url)
             logger.debug(f"Fetched WordPress user {user_id} with fields: {list(user_data.keys())}")
             return user_data
 
