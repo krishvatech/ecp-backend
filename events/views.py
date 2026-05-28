@@ -11,9 +11,11 @@ belonging to the target community.
 # ============================================================
 from collections import defaultdict
 from datetime import timedelta
+from contextlib import contextmanager
 import logging
 import csv
-from django.http import HttpResponse
+from functools import wraps
+from django.http import Http404, HttpResponse
 import os                          # NOTE: intentionally kept even if duplicated later
 import base64                      # NOTE: currently unused; kept as requested
 import requests
@@ -989,6 +991,192 @@ def _serialize_event_summary(event, request=None) -> dict:
     }
 
 
+def _current_user_event_participant_role(event, user) -> str:
+    """
+    Return current user's explicit live role for this event:
+    Host / Moderator / Speaker / ""
+    Does not return full event_participants list.
+    """
+    if not (user and getattr(user, "is_authenticated", False)):
+        return ""
+
+    role_filter = Q()
+
+    if getattr(user, "is_guest", False):
+        guest = getattr(user, "guest", None)
+        guest_email = (getattr(guest, "email", "") or getattr(user, "email", "") or "").strip()
+        if guest_email:
+            role_filter |= Q(
+                participant_type=EventParticipant.PARTICIPANT_TYPE_GUEST,
+                guest_email__iexact=guest_email,
+            )
+    else:
+        if getattr(user, "id", None):
+            role_filter |= Q(
+                participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+                user_id=user.id,
+            )
+
+        user_email = (getattr(user, "email", "") or "").strip()
+        if user_email:
+            role_filter |= Q(
+                participant_type=EventParticipant.PARTICIPANT_TYPE_GUEST,
+                guest_email__iexact=user_email,
+            )
+
+    if not role_filter:
+        return ""
+
+    roles = set(
+        EventParticipant.objects.filter(event_id=event.id)
+        .filter(role_filter)
+        .filter(
+            role__in=[
+                EventParticipant.ROLE_HOST,
+                EventParticipant.ROLE_MODERATOR,
+                EventParticipant.ROLE_SPEAKER,
+            ]
+        )
+        .values_list("role", flat=True)
+    )
+
+    if EventParticipant.ROLE_HOST in roles:
+        return "Host"
+    if EventParticipant.ROLE_MODERATOR in roles:
+        return "Moderator"
+    if EventParticipant.ROLE_SPEAKER in roles:
+        return "Speaker"
+
+    return ""
+
+
+def _serialize_event_participant_roles(event) -> list[dict]:
+    """
+    Compact role list for LiveMeetingPage.
+
+    This intentionally avoids returning full event_participants payload.
+    It only returns identity keys needed by frontend assignedRoleByIdentity.
+    """
+    rows = (
+        EventParticipant.objects.filter(
+            event_id=event.id,
+            role__in=[
+                EventParticipant.ROLE_HOST,
+                EventParticipant.ROLE_MODERATOR,
+                EventParticipant.ROLE_SPEAKER,
+            ],
+        )
+        .select_related("user")
+        .only(
+            "id",
+            "event_id",
+            "role",
+            "participant_type",
+            "user_id",
+            "guest_email",
+            "guest_name",
+            "user__id",
+            "user__email",
+            "user__first_name",
+            "user__last_name",
+        )
+    )
+
+    data = []
+
+    for participant in rows:
+        user = getattr(participant, "user", None)
+        user_id = getattr(user, "id", None) or participant.user_id
+        user_email = (getattr(user, "email", "") or "").strip()
+        guest_email = (getattr(participant, "guest_email", "") or "").strip()
+        role_value = participant.role
+
+        if role_value == EventParticipant.ROLE_HOST:
+            role_value = "Host"
+        elif role_value == EventParticipant.ROLE_MODERATOR:
+            role_value = "Moderator"
+        elif role_value == EventParticipant.ROLE_SPEAKER:
+            role_value = "Speaker"
+
+        user_name = " ".join(
+            part for part in [
+                getattr(user, "first_name", "") or "",
+                getattr(user, "last_name", "") or "",
+            ]
+            if part
+        ).strip()
+
+        guest_name = (getattr(participant, "guest_name", "") or "").strip()
+        name = user_name or guest_name or user_email or guest_email or ""
+
+        data.append({
+            "user_id": user_id,
+            "email": user_email,
+            "guest_email": guest_email,
+            "name": name,
+            "role": role_value,
+        })
+
+    return data
+
+
+def _serialize_event_live_context(event, request=None) -> dict:
+    """
+    Lightweight payload for LiveMeetingPage.
+
+    Important:
+    - Does not return full event_participants.
+    - Computes current user's permissions server-side.
+    - Does not cache globally because permissions are user-specific.
+    """
+    user = getattr(request, "user", None) if request else None
+
+    is_authenticated = bool(user and getattr(user, "is_authenticated", False))
+    is_guest = bool(getattr(user, "is_guest", False)) if is_authenticated else False
+
+    is_owner = _is_event_owner(user, event) if is_authenticated and not is_guest else False
+    is_manager = _is_event_manager(user, event) if is_authenticated and not is_guest else False
+
+    explicit_role = _current_user_event_participant_role(event, user) if is_authenticated else ""
+
+    current_user_live_role = "Host" if is_manager else explicit_role
+
+    is_host = current_user_live_role == "Host"
+    is_moderator = current_user_live_role == "Moderator"
+    is_speaker = current_user_live_role == "Speaker"
+
+    can_receive_support_requests = bool(is_host or is_moderator)
+    can_manage_participant_mic = bool(is_host or is_moderator or is_speaker)
+    can_manage_recording = bool(is_host or is_manager)
+    can_moderate_qna = bool(is_host or is_moderator)
+    can_publish_qna = bool(is_host or is_moderator)
+
+    data = _serialize_event_summary(event, request=request)
+
+    data.update({
+        "current_user_live_role": current_user_live_role,
+        "current_user_role": current_user_live_role,
+        "event_participant_roles": _serialize_event_participant_roles(event),
+        "is_owner": is_owner,
+        "is_host": is_host,
+        "is_moderator": is_moderator,
+        "is_speaker": is_speaker,
+        "is_guest": is_guest,
+        "current_user_permissions": {
+            "can_receive_support_requests": can_receive_support_requests,
+            "can_manage_participant_mic": can_manage_participant_mic,
+            "can_manage_recording": can_manage_recording,
+            "can_moderate_qna": can_moderate_qna,
+            "can_publish_qna": can_publish_qna,
+        },
+        "is_recording": bool(getattr(event, "is_recording", False)) if can_manage_recording else False,
+        "rtk_recording_id": (getattr(event, "rtk_recording_id", "") or "") if can_manage_recording else "",
+        "recording_paused_at": getattr(event, "recording_paused_at", None) if can_manage_recording else None,
+    })
+
+    return data
+
+
 EVENT_SUMMARY_CACHE_TTL_SECONDS = 2
 
 
@@ -1016,6 +1204,90 @@ def _cache_event_summary(event, data: dict) -> None:
 def _delete_event_summary_cache(event_id) -> None:
     cache.delete(_event_summary_cache_key(event_id))
     cache.delete(_public_event_summary_cache_key(event_id))
+
+
+@contextmanager
+def live_join_slot(event_id, limit=None, ttl=None):
+    """
+    Redis-backed soft limiter for /rtk/join/.
+
+    This limits how many users per event can run heavy join logic at the same time.
+    If Redis/cache has any issue, it fails open and allows join instead of blocking live meeting.
+    """
+    limit = int(limit or getattr(settings, "LIVE_JOIN_CONCURRENT_LIMIT", 60))
+    ttl = int(ttl or getattr(settings, "LIVE_JOIN_SLOT_TTL_SECONDS", 30))
+
+    if not event_id or limit <= 0:
+        yield True
+        return
+
+    key = f"event:{event_id}:rtk_join_slots"
+    acquired = False
+
+    try:
+        cache.add(key, 0, timeout=ttl)
+        count = cache.incr(key)
+
+        try:
+            cache.touch(key, timeout=ttl)
+        except Exception:
+            pass
+
+        if count <= limit:
+            acquired = True
+            yield True
+        else:
+            try:
+                cache.decr(key)
+            except Exception:
+                pass
+
+            yield False
+
+    except Exception:
+        # Fail open: if Redis/cache fails, do not block users from joining.
+        yield True
+
+    finally:
+        if acquired:
+            try:
+                remaining = cache.decr(key)
+                if remaining <= 0:
+                    cache.delete(key)
+            except Exception:
+                pass
+
+
+def live_join_queue(view_func):
+    """
+    Decorator for rtk_join.
+
+    Returns 202 queued when too many users are joining same event at once.
+    Frontend should wait and retry automatically.
+    """
+
+    @wraps(view_func)
+    def _wrapped(self, request, *args, **kwargs):
+        event_id = kwargs.get("pk") or (args[0] if args else None)
+
+        limit = int(getattr(settings, "LIVE_JOIN_CONCURRENT_LIMIT", 60))
+        retry_after = int(getattr(settings, "LIVE_JOIN_RETRY_AFTER_SECONDS", 2))
+
+        with live_join_slot(event_id, limit=limit) as allowed:
+            if not allowed:
+                return Response(
+                    {
+                        "queued": True,
+                        "reason": "join_capacity_busy",
+                        "message": "Joining meeting, please wait...",
+                        "retry_after": retry_after,
+                    },
+                    status=202,
+                )
+
+            return view_func(self, request, *args, **kwargs)
+
+    return _wrapped
 
 
 def _grant_invited_event_access(event, user, invited_by=None):
@@ -1437,7 +1709,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # ✅ FOR DETAIL VIEWS: default to including ended/past events so hosts/participants don't 404
         # Also include "register" and "apply" so users can register/apply for replay events (which are "ended")
-        if self.action in ["retrieve", "update", "partial_update", "destroy", "register", "apply"]:
+        if self.action in ["retrieve", "update", "partial_update", "destroy", "register", "apply", "live_context"]:
             include_ended = True
 
         # ✅ DRAFT EVENTS: Always visible to creator, regardless of include_ended
@@ -1651,6 +1923,50 @@ class EventViewSet(viewsets.ModelViewSet):
         )
         return qs
 
+    def _get_join_event_or_404(self, event_id):
+        """
+        Lightweight event fetch for the hot /rtk/join/ path.
+
+        Safety:
+        - First preserves existing visibility checks via the ViewSet queryset.
+        - Then fetches only the fields needed by rtk_join.
+        - Keeps object permission checks intact.
+        """
+        if not event_id:
+            raise Http404("Event not found")
+
+        visible_qs = self.filter_queryset(self.get_queryset()).filter(pk=event_id)
+        if not visible_qs.only("id").exists():
+            raise Http404("Event not found")
+
+        event = get_object_or_404(
+            Event.objects.select_related("community").only(
+                "id",
+                "title",
+                "slug",
+                "created_by_id",
+                "community_id",
+                "community__id",
+                "community__owner_id",
+                "status",
+                "is_live",
+                "is_on_break",
+                "waiting_room_enabled",
+                "waiting_room_grace_period_minutes",
+                "start_time",
+                "end_time",
+                "timezone",
+                "rtk_meeting_id",
+                "rtk_meeting_title",
+                "replay_available",
+                "lounge_enabled_waiting_room",
+                "networking_tables_enabled_waiting_room",
+            ),
+            pk=event_id,
+        )
+        self.check_object_permissions(self.request, event)
+        return event
+
     def retrieve(self, request, *args, **kwargs):
         """
         ⚡ OPTIMIZED: Add prefetches only for detail views (not list).
@@ -1702,7 +2018,7 @@ class EventViewSet(viewsets.ModelViewSet):
             if cached_public is not None:
                 return Response(cached_public)
 
-        event = self.get_object()
+        event = self._get_join_event_or_404(pk)
         cache_key = _event_summary_cache_key(event.id)
         cached = cache.get(cache_key)
         if cached is not None:
@@ -1710,6 +2026,18 @@ class EventViewSet(viewsets.ModelViewSet):
 
         data = _serialize_event_summary(event, request=request)
         _cache_event_summary(event, data)
+        return Response(data)
+
+    @action(detail=True, methods=["get"], permission_classes=[AllowAny], url_path="live-context")
+    def live_context(self, request, pk=None):
+        """
+        Lightweight authenticated/user-aware payload for LiveMeetingPage.
+
+        This avoids using the heavy full event detail endpoint during live join.
+        It also avoids returning full event_participants just to calculate current user's permissions.
+        """
+        event = self.get_object()
+        data = _serialize_event_live_context(event, request=request)
         return Response(data)
 
     # ---------------------- Permissions ----------------------
@@ -8394,6 +8722,7 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="rtk/join")
+    @live_join_queue
     def rtk_join(self, request, pk=None):
         """
         Join this event's RTK meeting.
@@ -8403,7 +8732,7 @@ class EventViewSet(viewsets.ModelViewSet):
         - Returns authToken for the frontend RTK SDK.
         - Supports both registered users and guest participants (via GuestJWTAuthentication)
         """
-        event = self.get_object()
+        event = self._get_join_event_or_404(pk)
         user = request.user
 
         # Capacity protection before issuing main-room meeting token.
@@ -8418,20 +8747,30 @@ class EventViewSet(viewsets.ModelViewSet):
         if getattr(settings, "LIVE_MEETING_ASG_AUTOSCALE_ENABLED", False) and not is_host:
             try:
                 from events.services.live_meeting_capacity import (
-                    calculate_required_capacity,
-                    get_current_asg_capacity,
+                    acquire_asg_scale_lock,
+                    clear_capacity_status_cache,
+                    get_capacity_status_cached,
+                    scale_asg_if_needed,
                 )
 
-                required = calculate_required_capacity()
-                current = get_current_asg_capacity()
+                capacity_status = get_capacity_status_cached()
+                required = capacity_status["required"]
+                current = capacity_status["current"]
 
                 if current["desired"] < required["desired_instances"]:
-                    from events.services.live_meeting_capacity import scale_asg_if_needed
-
-                    scale_asg_if_needed(
-                        reason=f"participant_waiting_capacity_event_{event.id}",
-                        scale_down_allowed=False,
-                    )
+                    if acquire_asg_scale_lock():
+                        try:
+                            scale_asg_if_needed(
+                                reason=f"participant_waiting_capacity_event_{event.id}",
+                                scale_down_allowed=False,
+                            )
+                            clear_capacity_status_cache()
+                        except Exception as scale_error:
+                            logger.warning(
+                                "Capacity scale trigger failed for event %s: %s",
+                                event.id,
+                                scale_error,
+                            )
 
                     return Response(
                         {

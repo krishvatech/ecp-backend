@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import boto3
 from django.conf import settings
+from django.core.cache import cache
 from django.utils import timezone
 
 from events.models import Event
@@ -276,6 +277,67 @@ def get_current_asg_capacity():
         "desired": group["DesiredCapacity"],
         "max": group["MaxSize"],
     }
+
+
+LIVE_MEETING_CAPACITY_STATUS_CACHE_KEY = "live_meeting:capacity_status:v1"
+LIVE_MEETING_ASG_SCALE_LOCK_CACHE_KEY = "live_meeting:asg_scale_lock:v1"
+
+
+def get_capacity_status_cached():
+    """
+    Cache expensive capacity calculation + ASG current capacity lookup.
+
+    This prevents every /rtk/join/ request from re-running the capacity scan and AWS query.
+    """
+    ttl = int(getattr(settings, "LIVE_MEETING_CAPACITY_CHECK_CACHE_TTL_SECONDS", 15))
+
+    try:
+        cached = cache.get(LIVE_MEETING_CAPACITY_STATUS_CACHE_KEY)
+        if cached:
+            return cached
+    except Exception:
+        logger.warning("Failed to read live meeting capacity cache", exc_info=True)
+
+    required = calculate_required_capacity()
+    current = get_current_asg_capacity()
+
+    status = {
+        "required": required,
+        "current": current,
+        "checked_at": timezone.now().isoformat(),
+    }
+
+    try:
+        cache.set(LIVE_MEETING_CAPACITY_STATUS_CACHE_KEY, status, timeout=ttl)
+    except Exception:
+        logger.warning("Failed to write live meeting capacity cache", exc_info=True)
+
+    return status
+
+
+def clear_capacity_status_cache():
+    try:
+        cache.delete(LIVE_MEETING_CAPACITY_STATUS_CACHE_KEY)
+    except Exception:
+        logger.warning("Failed to clear live meeting capacity cache", exc_info=True)
+
+
+def acquire_asg_scale_lock():
+    """
+    Allow only one request/process to trigger ASG scaling within lock TTL.
+    """
+    ttl = int(getattr(settings, "LIVE_MEETING_ASG_SCALE_LOCK_TTL_SECONDS", 60))
+
+    try:
+        return cache.add(
+            LIVE_MEETING_ASG_SCALE_LOCK_CACHE_KEY,
+            timezone.now().isoformat(),
+            timeout=ttl,
+        )
+    except Exception:
+        # Fail open: if cache is down, allow scaling attempt rather than blocking capacity preparation.
+        logger.warning("Failed to acquire ASG scale lock; allowing scale attempt", exc_info=True)
+        return True
 
 
 def scale_asg_if_needed(reason="scheduled_check", scale_down_allowed=True):
