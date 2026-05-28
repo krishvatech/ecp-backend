@@ -44,7 +44,7 @@ from django.utils.crypto import get_random_string
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import LinkedInAccount,EscoSkill
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q, F
+from django.db.models import Q, F, Case, When, Value, IntegerField
 from activity_feed.models import FeedItem
 from friends.models import Friendship
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -288,6 +288,7 @@ class UserViewSet(
     queryset = User.objects.all().order_by("id")
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = LimitOffsetPagination
 
     # enable advanced search via django-filter
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
@@ -781,23 +782,116 @@ class UserViewSet(
     def roster(self, request):
         # Exclude suspended/fake/deceased users from roster
         BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
-        
+
         # Base query: active users, excluding blocked profiles
         qs = (
             UserModel.objects
             .filter(is_superuser=False)
-            .exclude(profile__profile_status__in=BLOCKED_PROFILE_STATUSES)  # Hide suspended users
+            .exclude(profile__profile_status__in=BLOCKED_PROFILE_STATUSES)
             .select_related("profile")
             .prefetch_related("experiences")
-            .order_by("first_name", "last_name")
         )
 
         # Only hide opted-out users if the request user is NOT staff/superuser
         if not (request.user.is_staff or request.user.is_superuser):
             qs = qs.exclude(profile__directory_hidden=True)
 
-        # Limit to 500
-        qs = qs[:500]
+        # Server-side search: across all member fields
+        search_query = (request.query_params.get("search") or "").strip()
+        if search_query:
+            search_q = Q(
+                first_name__icontains=search_query
+            ) | Q(
+                last_name__icontains=search_query
+            ) | Q(
+                email__icontains=search_query
+            ) | Q(
+                profile__full_name__icontains=search_query
+            ) | Q(
+                profile__company__icontains=search_query
+            ) | Q(
+                profile__location__icontains=search_query
+            ) | Q(
+                profile__job_title__icontains=search_query
+            ) | Q(
+                experiences__community_name__icontains=search_query
+            ) | Q(
+                experiences__position__icontains=search_query
+            )
+            qs = qs.filter(search_q)
+
+        # Quality scoring: prioritize complete, verified, professional profiles
+        # Score calculation (applied BEFORE pagination):
+        # +3: KYC approved | +2: Has profile photo | +2: Profile is active
+        # +1 each: company, job_title, location, bio | +1: has experience/industry
+        from django.db.models import ExpressionWrapper
+
+        qs = qs.annotate(
+            has_photo=Case(
+                When(Q(profile__user_image__isnull=False) & ~Q(profile__user_image=''), then=Value(2)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            kyc_bonus=Case(
+                When(profile__kyc_status='approved', then=Value(3)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            active_bonus=Case(
+                When(profile__profile_status='active', then=Value(2)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_company=Case(
+                When(Q(profile__company__isnull=False) & ~Q(profile__company=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_title=Case(
+                When(Q(profile__job_title__isnull=False) & ~Q(profile__job_title=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_location=Case(
+                When(Q(profile__location__isnull=False) & ~Q(profile__location=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_bio=Case(
+                When(Q(profile__bio__isnull=False) & ~Q(profile__bio=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_experience=Case(
+                When(experiences__isnull=False, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+        ).annotate(
+            profile_quality_score=ExpressionWrapper(
+                F('kyc_bonus') + F('has_photo') + F('active_bonus') +
+                F('has_company') + F('has_title') + F('has_location') +
+                F('has_bio') + F('has_experience'),
+                output_field=IntegerField()
+            )
+        )
+
+        # Order by quality score (descending), then alphabetically by name
+        qs = qs.order_by("-profile_quality_score", "first_name", "last_name").distinct()
+
+        # Apply pagination with page and page_size parameters
+        from rest_framework.pagination import PageNumberPagination
+
+        class RosterPagination(PageNumberPagination):
+            page_size_query_param = 'page_size'
+            page_size = 50  # Default page size
+            max_page_size = 200
+
+        paginator = RosterPagination()
+        page = paginator.paginate_queryset(qs, request)
+        if page is not None:
+            data = UserRosterSerializer(page, many=True, context={"request": request}).data
+            return paginator.get_paginated_response(data)
 
         data = UserRosterSerializer(qs, many=True, context={"request": request}).data
         return Response(data)
@@ -1482,6 +1576,10 @@ class SessionLoginView(APIView):
             if profile is not None and profile.timezone != tz_value:
                 profile.timezone = tz_value
                 profile.save(update_fields=["timezone"])
+
+        # Update last_login on successful session login
+        user.last_login = django_timezone.now()
+        user.save(update_fields=["last_login"])
 
         django_login(request, user)          # <- creates session
         request.session.cycle_key()          # optional: rotate session id
@@ -3625,6 +3723,7 @@ class DiditWebhookView(APIView):
             "Declined": UserProfile.KYC_STATUS_DECLINED,
             "Review": UserProfile.KYC_STATUS_REVIEW,
             "Pending": UserProfile.KYC_STATUS_PENDING,
+            "Not Started": UserProfile.KYC_STATUS_NOT_STARTED,
         }
 
         if status_text != "Approved":
@@ -3755,6 +3854,7 @@ class DiditWebhookView(APIView):
             "Declined": NameChangeRequest.DIDIT_STATUS_DECLINED,
             "Review": NameChangeRequest.DIDIT_STATUS_REVIEW,
             "Pending": NameChangeRequest.DIDIT_STATUS_PENDING,
+            "Not Started": NameChangeRequest.DIDIT_STATUS_NOT_STARTED,
         }
         prev_status = ncr.status
         prev_didit_status = ncr.didit_status

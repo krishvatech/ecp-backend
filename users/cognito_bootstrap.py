@@ -51,6 +51,9 @@ class CognitoBootstrapView(APIView):
             user.last_name = last_name
             update_fields.append("last_name")
 
+        user.last_login = timezone.now()
+        update_fields.append("last_login")
+
         if update_fields:
             user.save(update_fields=update_fields)
 
