@@ -3719,6 +3719,7 @@ class DiditWebhookView(APIView):
             "Declined": UserProfile.KYC_STATUS_DECLINED,
             "Review": UserProfile.KYC_STATUS_REVIEW,
             "Pending": UserProfile.KYC_STATUS_PENDING,
+            "Not Started": UserProfile.KYC_STATUS_NOT_STARTED,
         }
 
         if status_text != "Approved":
@@ -3849,6 +3850,7 @@ class DiditWebhookView(APIView):
             "Declined": NameChangeRequest.DIDIT_STATUS_DECLINED,
             "Review": NameChangeRequest.DIDIT_STATUS_REVIEW,
             "Pending": NameChangeRequest.DIDIT_STATUS_PENDING,
+            "Not Started": NameChangeRequest.DIDIT_STATUS_NOT_STARTED,
         }
         prev_status = ncr.status
         prev_didit_status = ncr.didit_status
