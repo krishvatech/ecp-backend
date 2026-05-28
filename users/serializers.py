@@ -834,10 +834,11 @@ class StaffUserSerializer(serializers.ModelSerializer):
     is_active = serializers.BooleanField(required=False)
     is_superuser = serializers.BooleanField(required=False)
     can_edit_profiles = serializers.BooleanField(source="profile.can_edit_profiles", required=False)
+    wordpress_registered_at = serializers.DateTimeField(source="profile.wordpress_registered_at", read_only=True)
     email = serializers.EmailField(required=True)
     first_name = serializers.CharField(required=True)
     last_name = serializers.CharField(required=True)
-    
+
     profile = UserProfileMiniSerializer(read_only=True)
     avatar_url = serializers.SerializerMethodField()
 
@@ -847,7 +848,7 @@ class StaffUserSerializer(serializers.ModelSerializer):
             "id", "username", "first_name", "last_name",
             "email", "is_active", "is_superuser",
             "is_staff", "can_edit_profiles", "date_joined", "last_login",
-            "profile", "avatar_url",
+            "wordpress_registered_at", "profile", "avatar_url",
         )
         read_only_fields = (
             "id", "date_joined", "last_login",
