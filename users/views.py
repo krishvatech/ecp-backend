@@ -44,7 +44,7 @@ from django.utils.crypto import get_random_string
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import LinkedInAccount,EscoSkill
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q, F
+from django.db.models import Q, F, Case, When, Value, IntegerField
 from activity_feed.models import FeedItem
 from friends.models import Friendship
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -781,22 +781,80 @@ class UserViewSet(
     def roster(self, request):
         # Exclude suspended/fake/deceased users from roster
         BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
-        
+
         # Base query: active users, excluding blocked profiles
         qs = (
             UserModel.objects
             .filter(is_superuser=False)
-            .exclude(profile__profile_status__in=BLOCKED_PROFILE_STATUSES)  # Hide suspended users
+            .exclude(profile__profile_status__in=BLOCKED_PROFILE_STATUSES)
             .select_related("profile")
             .prefetch_related("experiences")
-            .order_by("first_name", "last_name")
         )
 
         # Only hide opted-out users if the request user is NOT staff/superuser
         if not (request.user.is_staff or request.user.is_superuser):
             qs = qs.exclude(profile__directory_hidden=True)
 
-        # Limit to 500
+        # Quality scoring: prioritize complete, verified, professional profiles
+        # Score calculation (applied BEFORE 500-limit slice):
+        # +3: KYC approved | +2: Has profile photo | +2: Profile is active
+        # +1 each: company, job_title, location, bio | +1: has experience/industry
+        from django.db.models import ExpressionWrapper
+
+        qs = qs.annotate(
+            has_photo=Case(
+                When(Q(profile__user_image__isnull=False) & ~Q(profile__user_image=''), then=Value(2)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            kyc_bonus=Case(
+                When(profile__kyc_status='approved', then=Value(3)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            active_bonus=Case(
+                When(profile__profile_status='active', then=Value(2)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_company=Case(
+                When(Q(profile__company__isnull=False) & ~Q(profile__company=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_title=Case(
+                When(Q(profile__job_title__isnull=False) & ~Q(profile__job_title=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_location=Case(
+                When(Q(profile__location__isnull=False) & ~Q(profile__location=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_bio=Case(
+                When(Q(profile__bio__isnull=False) & ~Q(profile__bio=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_experience=Case(
+                When(experiences__isnull=False, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+        ).annotate(
+            profile_quality_score=ExpressionWrapper(
+                F('kyc_bonus') + F('has_photo') + F('active_bonus') +
+                F('has_company') + F('has_title') + F('has_location') +
+                F('has_bio') + F('has_experience'),
+                output_field=IntegerField()
+            )
+        )
+
+        # Order by quality score (descending), then alphabetically by name
+        qs = qs.order_by("-profile_quality_score", "first_name", "last_name").distinct()
+
+        # Limit to 500 AFTER quality ranking
         qs = qs[:500]
 
         data = UserRosterSerializer(qs, many=True, context={"request": request}).data
