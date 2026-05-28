@@ -288,6 +288,7 @@ class UserViewSet(
     queryset = User.objects.all().order_by("id")
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = LimitOffsetPagination
 
     # enable advanced search via django-filter
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
@@ -795,8 +796,32 @@ class UserViewSet(
         if not (request.user.is_staff or request.user.is_superuser):
             qs = qs.exclude(profile__directory_hidden=True)
 
+        # Server-side search: across all member fields
+        search_query = (request.query_params.get("search") or "").strip()
+        if search_query:
+            search_q = Q(
+                first_name__icontains=search_query
+            ) | Q(
+                last_name__icontains=search_query
+            ) | Q(
+                email__icontains=search_query
+            ) | Q(
+                profile__full_name__icontains=search_query
+            ) | Q(
+                profile__company__icontains=search_query
+            ) | Q(
+                profile__location__icontains=search_query
+            ) | Q(
+                profile__job_title__icontains=search_query
+            ) | Q(
+                experiences__community_name__icontains=search_query
+            ) | Q(
+                experiences__position__icontains=search_query
+            )
+            qs = qs.filter(search_q)
+
         # Quality scoring: prioritize complete, verified, professional profiles
-        # Score calculation (applied BEFORE 500-limit slice):
+        # Score calculation (applied BEFORE pagination):
         # +3: KYC approved | +2: Has profile photo | +2: Profile is active
         # +1 each: company, job_title, location, bio | +1: has experience/industry
         from django.db.models import ExpressionWrapper
@@ -854,8 +879,19 @@ class UserViewSet(
         # Order by quality score (descending), then alphabetically by name
         qs = qs.order_by("-profile_quality_score", "first_name", "last_name").distinct()
 
-        # Limit to 500 AFTER quality ranking
-        qs = qs[:500]
+        # Apply pagination with page and page_size parameters
+        from rest_framework.pagination import PageNumberPagination
+
+        class RosterPagination(PageNumberPagination):
+            page_size_query_param = 'page_size'
+            page_size = 50  # Default page size
+            max_page_size = 200
+
+        paginator = RosterPagination()
+        page = paginator.paginate_queryset(qs, request)
+        if page is not None:
+            data = UserRosterSerializer(page, many=True, context={"request": request}).data
+            return paginator.get_paginated_response(data)
 
         data = UserRosterSerializer(qs, many=True, context={"request": request}).data
         return Response(data)
