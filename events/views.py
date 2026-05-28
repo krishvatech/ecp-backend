@@ -2279,6 +2279,10 @@ class EventViewSet(viewsets.ModelViewSet):
                     "error": "Application Required events must have at least one valid application track before publishing.",
                     "details": "Each track requires: label, key, submission mode(s), pricing tier(s), and role mapping(s)"
                 }, status=400)
+            event.status = "published"
+            event.save(update_fields=["status"])
+            serializer = self.get_serializer(event)
+            return Response({"event": serializer.data}, status=200)
 
         if event.is_free:
             return Response({"error": "Free events are published automatically on creation."}, status=400)
@@ -14037,6 +14041,19 @@ class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
         return self._export_by_role_helper(request, event_id, 'investor', 'investors')
 
 
+def _publish_draft_application_event_if_tracks_ready(event):
+    """
+    Publish an Application Required event once at least one valid open track exists.
+
+    This intentionally does not unpublish events if tracks later become invalid.
+    """
+    if event.registration_type == 'apply' and event.status == 'draft' and event.has_valid_application_tracks():
+        Event.objects.filter(pk=event.pk, status='draft').update(status='published')
+        event.status = 'published'
+        return True
+    return False
+
+
 class EventApplicationTrackViewSet(viewsets.ModelViewSet):
     """ViewSet for managing EventApplicationTrack - application track configuration per event."""
 
@@ -14063,6 +14080,12 @@ class EventApplicationTrackViewSet(viewsets.ModelViewSet):
         event_id = self.kwargs.get('event_id')
         event = Event.objects.get(pk=event_id)
         serializer.save(event=event)
+        _publish_draft_application_event_if_tracks_ready(event)
+
+    def perform_update(self, serializer):
+        """Update track and auto-publish draft Application Required events when ready."""
+        track = serializer.save()
+        _publish_draft_application_event_if_tracks_ready(track.event)
 
     @action(detail=True, methods=['get'], url_path='form-schema')
     def form_schema(self, request, *args, **kwargs):
@@ -14164,10 +14187,12 @@ class TrackPricingTierViewSet(viewsets.ModelViewSet):
             })
 
         serializer.save(track=track)
+        _publish_draft_application_event_if_tracks_ready(track.event)
 
     def perform_update(self, serializer):
         """Update pricing tier."""
-        serializer.save()
+        tier = serializer.save()
+        _publish_draft_application_event_if_tracks_ready(tier.track.event)
 
 
 # Phase 5: Form Schema Primitives and Shared Question Library

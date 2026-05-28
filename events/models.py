@@ -607,6 +607,7 @@ class Event(models.Model):
         Check if this event has at least one valid application track.
         A valid track must have:
         - is_active = True
+        - status = open
         - label and key (non-empty)
         - at least one submission mode in enabled_submission_modes
         - at least one active pricing tier
@@ -615,7 +616,7 @@ class Event(models.Model):
         if self.registration_type != 'apply':
             return True
 
-        for track in self.application_tracks.filter(is_active=True):
+        for track in self.application_tracks.filter(is_active=True, status='open'):
             has_label = bool(track.label and track.label.strip())
             has_key = bool(track.key and track.key.strip())
             has_modes = bool(track.enabled_submission_modes and len(track.enabled_submission_modes) > 0)
