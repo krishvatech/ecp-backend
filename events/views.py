@@ -1290,6 +1290,102 @@ def live_join_queue(view_func):
     return _wrapped
 
 
+@contextmanager
+def live_rejoin_slot(event_id, limit=None, ttl=None):
+    """
+    Redis-backed soft limiter for /live/rejoin/.
+
+    This limits how many users per event can run heavy live rejoin logic at the same time.
+    If Redis/cache has any issue, it fails open and allows rejoin instead of blocking users.
+    """
+    limit = int(limit or getattr(settings, "LIVE_REJOIN_CONCURRENT_LIMIT", 80))
+    ttl = int(ttl or getattr(settings, "LIVE_REJOIN_SLOT_TTL_SECONDS", 30))
+
+    if not event_id or limit <= 0:
+        yield True
+        return
+
+    key = f"event:{event_id}:live_rejoin_slots"
+    acquired = False
+
+    try:
+        cache.add(key, 0, timeout=ttl)
+        count = cache.incr(key)
+
+        try:
+            cache.touch(key, timeout=ttl)
+        except Exception:
+            pass
+
+        allowed = count <= limit
+        logger.info(
+            "[LIVE_REJOIN_QUEUE] event=%s allowed=%s limit=%s",
+            event_id,
+            str(allowed).lower(),
+            limit,
+        )
+
+        if allowed:
+            acquired = True
+            yield True
+        else:
+            try:
+                cache.decr(key)
+            except Exception:
+                pass
+
+            yield False
+
+    except Exception:
+        logger.info(
+            "[LIVE_REJOIN_QUEUE] event=%s allowed=true limit=%s",
+            event_id,
+            limit,
+        )
+        yield True
+
+    finally:
+        if acquired:
+            try:
+                remaining = cache.decr(key)
+                if remaining <= 0:
+                    cache.delete(key)
+            except Exception:
+                pass
+
+
+def live_rejoin_queue(view_func):
+    """
+    Decorator for live_rejoin.
+
+    Returns 202 queued when too many users are restoring a live session at once.
+    Frontend should wait and retry automatically.
+    """
+
+    @wraps(view_func)
+    def _wrapped(self, request, *args, **kwargs):
+        event_id = kwargs.get("pk") or (args[0] if args else None)
+
+        limit = int(getattr(settings, "LIVE_REJOIN_CONCURRENT_LIMIT", 80))
+        retry_after = int(getattr(settings, "LIVE_REJOIN_RETRY_AFTER_SECONDS", 2))
+
+        with live_rejoin_slot(event_id, limit=limit) as allowed:
+            if not allowed:
+                return Response(
+                    {
+                        "queued": True,
+                        "reason": "live_rejoin_busy",
+                        "message": "Restoring live session, please wait...",
+                        "retry_after": retry_after,
+                    },
+                    status=202,
+                )
+
+            return view_func(self, request, *args, **kwargs)
+
+    return _wrapped
+
+
 def _grant_invited_event_access(event, user, invited_by=None):
     """
     Grant Companion access to an invited user by creating/reactivating EventRegistration.
@@ -9298,6 +9394,7 @@ class EventViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @live_rejoin_queue
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="live/rejoin")
     def live_rejoin(self, request, pk=None):
         """

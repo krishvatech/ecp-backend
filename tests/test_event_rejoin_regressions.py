@@ -1,11 +1,14 @@
 from datetime import timedelta
 
+from contextlib import contextmanager
+
 import pytest
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.utils import timezone
 
 from events.models import Event
+import events.views as event_views
 
 
 @pytest.fixture(autouse=True)
@@ -118,8 +121,6 @@ def test_live_rejoin_denial_is_terminal_for_unregistered_user(other_auth_client,
 
 
 def test_live_rejoin_still_allows_event_host_without_registration(auth_client, live_event, monkeypatch):
-    import events.views as event_views
-
     class DummyResponse:
         status_code = 201
 
@@ -143,3 +144,36 @@ def test_live_rejoin_still_allows_event_host_without_registration(auth_client, l
     assert payload["room_type"] == "main_room"
     assert payload["rtk_meeting_id"] == "meeting-123"
     assert payload["rtk_token"] == "rtk-token-123"
+
+
+def test_live_rejoin_returns_202_when_queue_is_busy(auth_client, live_event, monkeypatch):
+    @contextmanager
+    def busy_slot(*args, **kwargs):
+        yield False
+
+    monkeypatch.setattr(event_views, "live_rejoin_slot", busy_slot)
+
+    response = auth_client.post(
+        f"/api/events/{live_event.id}/live/rejoin/",
+        data={},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload == {
+        "queued": True,
+        "reason": "live_rejoin_busy",
+        "message": "Restoring live session, please wait...",
+        "retry_after": 2,
+    }
+
+
+def test_live_rejoin_slot_fails_open_on_cache_error(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(event_views.cache, "add", boom)
+
+    with event_views.live_rejoin_slot(696) as allowed:
+        assert allowed is True
