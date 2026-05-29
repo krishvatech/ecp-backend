@@ -3,11 +3,13 @@ from channels.db import database_sync_to_async
 from django.core.cache import cache
 from .models import LoungeTable, LoungeParticipant, Event, EventRegistration, EventParticipant, AssistanceRequestLog, GuestAttendee
 from django.contrib.auth.models import User
+from django.db import close_old_connections
 from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 import random
 import asyncio
+import time
 import requests
 import logging
 from .utils import create_rtk_meeting, RTK_API_BASE, _rtk_headers
@@ -22,6 +24,160 @@ ASSISTANCE_COOLDOWN_SECONDS = 60
 DISCONNECT_CLEANUP_GRACE_SECONDS = 20
 HEARTBEAT_INTERVAL = 5  # Send ping every 5 seconds
 HEARTBEAT_TIMEOUT = 15  # Disconnect if no pong for 15 seconds
+WS_EVENT_EXISTS_CACHE_TTL_SECONDS = 30
+WS_EVENT_EXISTS_LOCK_TTL_SECONDS = 5
+WS_EVENT_EXISTS_WAIT_RETRIES = 5
+WS_EVENT_EXISTS_WAIT_BASE_DELAY_SECONDS = 0.05
+
+
+def _ws_event_exists_cache_key(event_id) -> str:
+    return f"ws:event_exists:{event_id}"
+
+
+def _ws_event_exists_lock_key(event_id) -> str:
+    return f"ws:event_exists_lock:{event_id}"
+
+
+def _event_exists_db_sync(event_id) -> bool:
+    close_old_connections()
+    try:
+        return Event.objects.filter(id=event_id).exists()
+    finally:
+        close_old_connections()
+
+
+def _event_exists_cached_sync(event_id):
+    """
+    Cache event existence so websocket connect storms do not fan out into
+    hundreds of simultaneous Event.exists() queries.
+    """
+    cache_key = _ws_event_exists_cache_key(event_id)
+    lock_key = _ws_event_exists_lock_key(event_id)
+
+    try:
+        cached = cache.get(cache_key)
+    except Exception as exc:
+        logger.warning(
+            "[WS_EVENT_EXISTS_CACHE] fail cache_get event=%s error=%s",
+            event_id,
+            exc,
+        )
+        try:
+            return _event_exists_db_sync(event_id)
+        except Exception as db_exc:
+            logger.warning(
+                "[WS_EVENT_EXISTS_CACHE] fail db event=%s error=%s",
+                event_id,
+                db_exc,
+            )
+            return None
+
+    if cached is not None:
+        logger.info(
+            "[WS_EVENT_EXISTS_CACHE] hit event=%s cached=%s",
+            event_id,
+            cached,
+        )
+        return bool(cached)
+
+    logger.info("[WS_EVENT_EXISTS_CACHE] miss event=%s", event_id)
+
+    try:
+        acquired = cache.add(lock_key, "1", timeout=WS_EVENT_EXISTS_LOCK_TTL_SECONDS)
+    except Exception as exc:
+        logger.warning(
+            "[WS_EVENT_EXISTS_CACHE] fail lock event=%s error=%s",
+            event_id,
+            exc,
+        )
+        try:
+            return _event_exists_db_sync(event_id)
+        except Exception as db_exc:
+            logger.warning(
+                "[WS_EVENT_EXISTS_CACHE] fail db event=%s error=%s",
+                event_id,
+                db_exc,
+            )
+            return None
+
+    if not acquired:
+        for attempt in range(1, WS_EVENT_EXISTS_WAIT_RETRIES + 1):
+            time.sleep(WS_EVENT_EXISTS_WAIT_BASE_DELAY_SECONDS * attempt)
+            try:
+                cached = cache.get(cache_key)
+            except Exception as exc:
+                logger.warning(
+                    "[WS_EVENT_EXISTS_CACHE] fail retry event=%s attempt=%s error=%s",
+                    event_id,
+                    attempt,
+                    exc,
+                )
+                try:
+                    return _event_exists_db_sync(event_id)
+                except Exception as db_exc:
+                    logger.warning(
+                        "[WS_EVENT_EXISTS_CACHE] fail db event=%s error=%s",
+                        event_id,
+                        db_exc,
+                    )
+                    return None
+
+            if cached is not None:
+                logger.info(
+                    "[WS_EVENT_EXISTS_CACHE] hit event=%s attempt=%s cached=%s",
+                    event_id,
+                    attempt,
+                    cached,
+                )
+                return bool(cached)
+
+        logger.info("[WS_EVENT_EXISTS_CACHE] miss_wait event=%s", event_id)
+        try:
+            return _event_exists_db_sync(event_id)
+        except Exception as db_exc:
+            logger.warning(
+                "[WS_EVENT_EXISTS_CACHE] fail db event=%s error=%s",
+                event_id,
+                db_exc,
+            )
+            return None
+
+    try:
+        exists = _event_exists_db_sync(event_id)
+        if exists is None:
+            return None
+
+        try:
+            cache.set(cache_key, exists, timeout=WS_EVENT_EXISTS_CACHE_TTL_SECONDS)
+        except Exception as exc:
+            logger.warning(
+                "[WS_EVENT_EXISTS_CACHE] fail cache_set event=%s error=%s",
+                event_id,
+                exc,
+            )
+
+        logger.info(
+            "[WS_EVENT_EXISTS_CACHE] refresh event=%s exists=%s",
+            event_id,
+            exists,
+        )
+        return exists
+    except Exception as exc:
+        logger.warning(
+            "[WS_EVENT_EXISTS_CACHE] fail db event=%s error=%s",
+            event_id,
+            exc,
+        )
+        return None
+    finally:
+        try:
+            cache.delete(lock_key)
+        except Exception as exc:
+            logger.warning(
+                "[WS_EVENT_EXISTS_CACHE] fail unlock event=%s error=%s",
+                event_id,
+                exc,
+            )
 
 class EventConsumer(AsyncJsonWebsocketConsumer):
     """Consumer to handle real-time communication within an event, including Social Lounge state."""
@@ -83,6 +239,9 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 return
             raise
 
+    async def event_exists_cached(self, event_id):
+        return await database_sync_to_async(_event_exists_cached_sync)(event_id)
+
     async def connect(self) -> None:
         # Ensure attributes referenced in `disconnect()` exist even if we early-return
         # (e.g., anonymous users rejected before completing handshake).
@@ -98,7 +257,16 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         self.group_name = f"event_{self.event_id}"
         self._ws_closed = False
 
-        event_exists = await database_sync_to_async(lambda: Event.objects.filter(id=self.event_id).exists())()
+        event_exists = await self.event_exists_cached(self.event_id)
+        if event_exists is None:
+            logger.warning(
+                "WS[Event] rejected: existence check failed event=%s user=%s path=%s",
+                self.event_id,
+                getattr(self.user, "id", None),
+                self.scope.get("path"),
+            )
+            await self.close(code=1011)
+            return
         if not event_exists:
             logger.warning(
                 "WS[Event] rejected: event not found event=%s user=%s path=%s",

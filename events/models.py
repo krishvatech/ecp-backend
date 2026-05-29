@@ -6,6 +6,8 @@ generated based on the title and community ID.  The creator of the
 event is stored in the `created_by` field.
 """
 from django.db import models
+from django.db.models import F
+from django.db.models.functions import Upper
 from django.contrib.auth.models import User
 from community.models import Community
 from django.utils.text import slugify
@@ -733,6 +735,9 @@ class LoungeParticipant(models.Model):
         unique_together = ("table", "seat_index")
         # Also ensure a user can only be at one table per event if required,
         # but for now we'll enforce unique seating via seat_index.
+        indexes = [
+            models.Index(fields=["user", "table"], name="lpart_user_table_idx"),
+        ]
 
     def __str__(self):
         return f"{self.user.username} at {self.table.name}"
@@ -969,6 +974,8 @@ class EventRegistration(models.Model):
         indexes = [
             models.Index(fields=['event', 'user']),
             models.Index(fields=['user']),
+            models.Index(fields=["event", "user", "status", "is_banned"], name="evtreg_user_status_ban_idx"),
+            models.Index(fields=["event", "admission_status", "waiting_started_at"], name="evtreg_wait_queue_idx"),
         ]
     def __str__(self):
         return f'{self.user_id} -> {self.event_id}'
@@ -2171,6 +2178,14 @@ class EventParticipant(models.Model):
             models.Index(fields=['event', 'role']),
             models.Index(fields=['participant_type']),
             models.Index(fields=['event', 'display_order']),
+            models.Index(fields=["event", "role", "participant_type", "user"], name="evtpart_host_user_idx"),
+            models.Index(
+                F("event"),
+                F("role"),
+                F("participant_type"),
+                Upper("guest_email"),
+                name="evtpart_guest_up_idx",
+            ),
         ]
         verbose_name = 'Event Participant'
         verbose_name_plural = 'Event Participants'
