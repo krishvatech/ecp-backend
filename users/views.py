@@ -896,6 +896,112 @@ class UserViewSet(
         data = UserRosterSerializer(qs, many=True, context={"request": request}).data
         return Response(data)
 
+    @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="roster-map")
+    def roster_map(self, request):
+        """
+        Returns all roster members (no pagination) with lightweight fields for map visualization.
+        Applies same filtering as roster: active users, exclude superusers, exclude blocked profiles,
+        respect directory_hidden, and apply search query.
+        """
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+
+        # Base query: active users, excluding blocked profiles
+        qs = (
+            UserModel.objects
+            .filter(is_superuser=False)
+            .exclude(profile__profile_status__in=BLOCKED_PROFILE_STATUSES)
+            .select_related("profile")
+            .prefetch_related("experiences")
+        )
+
+        # Only hide opted-out users if the request user is NOT staff/superuser
+        if not (request.user.is_staff or request.user.is_superuser):
+            qs = qs.exclude(profile__directory_hidden=True)
+
+        # Server-side search: same as roster endpoint
+        search_query = (request.query_params.get("search") or "").strip()
+        if search_query:
+            search_q = Q(
+                first_name__icontains=search_query
+            ) | Q(
+                last_name__icontains=search_query
+            ) | Q(
+                email__icontains=search_query
+            ) | Q(
+                profile__full_name__icontains=search_query
+            ) | Q(
+                profile__company__icontains=search_query
+            ) | Q(
+                profile__location__icontains=search_query
+            ) | Q(
+                profile__job_title__icontains=search_query
+            ) | Q(
+                experiences__community_name__icontains=search_query
+            ) | Q(
+                experiences__position__icontains=search_query
+            )
+            qs = qs.filter(search_q)
+
+        # Order by quality score (same as roster, but no pagination)
+        from django.db.models import ExpressionWrapper
+
+        qs = qs.annotate(
+            has_photo=Case(
+                When(Q(profile__user_image__isnull=False) & ~Q(profile__user_image=''), then=Value(2)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            kyc_bonus=Case(
+                When(profile__kyc_status='approved', then=Value(3)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            active_bonus=Case(
+                When(profile__profile_status='active', then=Value(2)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_company=Case(
+                When(Q(profile__company__isnull=False) & ~Q(profile__company=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_title=Case(
+                When(Q(profile__job_title__isnull=False) & ~Q(profile__job_title=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_location=Case(
+                When(Q(profile__location__isnull=False) & ~Q(profile__location=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_bio=Case(
+                When(Q(profile__bio__isnull=False) & ~Q(profile__bio=''), then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+            has_experience=Case(
+                When(experiences__isnull=False, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+        ).annotate(
+            profile_quality_score=ExpressionWrapper(
+                F('kyc_bonus') + F('has_photo') + F('active_bonus') +
+                F('has_company') + F('has_title') + F('has_location') +
+                F('has_bio') + F('has_experience'),
+                output_field=IntegerField()
+            )
+        )
+
+        # Order by quality score (descending), then alphabetically by name
+        qs = qs.order_by("-profile_quality_score", "first_name", "last_name").distinct()
+
+        # Return all results without pagination
+        data = UserRosterSerializer(qs, many=True, context={"request": request}).data
+        return Response(data)
+
     @action(detail=False, methods=["post"], url_path="me/name-change-request")
     def create_name_change_request(self, request):
         """
