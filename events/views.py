@@ -12828,6 +12828,86 @@ class SaleorPermissionGroupDeleteView(views.APIView):
 
 # WebinarSeries ViewSet
 
+def _series_child_admission_status(event):
+    return "waiting" if event.waiting_room_enabled else "admitted"
+
+
+def _restore_cancelled_origin(origin):
+    origin.status = 'active'
+    if origin.accepted_tier and origin.accepted_tier.price and origin.accepted_tier.price > 0:
+        origin.origin_status = 'payment_pending'
+    else:
+        origin.origin_status = 'confirmed'
+    origin.save(update_fields=['status', 'origin_status'])
+
+
+def _sync_series_child_event_registrations(series, user):
+    for event in series.child_events.all():
+        registration, created = EventRegistration.objects.get_or_create(
+            event=event,
+            user=user,
+            defaults={
+                'status': 'registered',
+                'attendee_status': 'confirmed',
+                'admission_status': _series_child_admission_status(event),
+            }
+        )
+
+        if not created and registration.status in ['cancelled', 'deregistered']:
+            registration.status = 'registered'
+            registration.attendee_status = 'confirmed'
+            registration.admission_status = _series_child_admission_status(event)
+            registration.is_online = False
+            registration.save(update_fields=['status', 'attendee_status', 'admission_status', 'is_online'])
+
+            for origin in registration.origins.filter(status='cancelled'):
+                _restore_cancelled_origin(origin)
+
+            if registration.origins.filter(status='active').exists():
+                from events.services.attendee_directory import _recalculate_registration_status
+                _recalculate_registration_status(registration)
+
+        if not registration.badge_labels.exists():
+            participant_badge = event.get_or_create_participant_badge()
+            registration.badge_labels.add(participant_badge)
+
+        _recalculate_event_attending_count(event.id)
+
+
+def _cancel_full_series_child_event_registrations(series, user):
+    registrations = (
+        EventRegistration.objects
+        .filter(
+            event__series=series,
+            user=user,
+            status__in=['registered', 'cancellation_requested'],
+        )
+        .select_related('event')
+        .prefetch_related('origins')
+    )
+
+    for registration in registrations:
+        registration.status = 'cancelled'
+        registration.attendee_status = 'cancelled'
+        registration.admission_status = _series_child_admission_status(registration.event)
+        registration.joined_live = False
+        registration.is_online = False
+        registration.save(update_fields=[
+            'status',
+            'attendee_status',
+            'admission_status',
+            'joined_live',
+            'is_online',
+        ])
+
+        registration.origins.filter(status='active').update(
+            status='cancelled',
+            origin_status='cancelled'
+        )
+
+        _recalculate_event_attending_count(registration.event_id)
+
+
 class SeriesViewSet(viewsets.ModelViewSet):
     permission_classes = [IsCreatorOrReadOnly]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
@@ -12993,24 +13073,20 @@ class SeriesViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_401_UNAUTHORIZED
             )
         
-        registration, created = SeriesRegistration.objects.get_or_create(
-            series=series,
-            user=request.user,
-            defaults={'status': 'registered'}
-        )
-        
-        if not created and registration.status == 'cancelled':
-            registration.status = 'registered'
-            registration.save()
-        
-        # Auto-register user for all child events (per design decision)
-        from events.models import EventRegistration
-        for event in series.child_events.all():
-            EventRegistration.objects.get_or_create(
-                event=event,
+        with transaction.atomic():
+            registration, created = SeriesRegistration.objects.get_or_create(
+                series=series,
                 user=request.user,
                 defaults={'status': 'registered'}
             )
+            
+            if not created and registration.status == 'cancelled':
+                registration.status = 'registered'
+                registration.save(update_fields=['status'])
+            
+            # Preserve existing behavior: series registration grants access to
+            # all child events. Re-registering must reactivate cancelled rows.
+            _sync_series_child_event_registrations(series, request.user)
         
         serializer = SeriesRegistrationSerializer(registration, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
@@ -13026,9 +13102,16 @@ class SeriesViewSet(viewsets.ModelViewSet):
             )
         
         try:
-            registration = SeriesRegistration.objects.get(series=series, user=request.user)
-            registration.status = 'cancelled'
-            registration.save()
+            with transaction.atomic():
+                registration = SeriesRegistration.objects.get(series=series, user=request.user)
+                registration.status = 'cancelled'
+                registration.save(update_fields=['status'])
+
+                # Only full-series mode should cascade to child events. Other
+                # modes can contain independently registered event sessions.
+                if series.registration_mode == 'full_series_only':
+                    _cancel_full_series_child_event_registrations(series, request.user)
+
             return Response({'message': 'Successfully unregistered from series.'}, status=status.HTTP_200_OK)
         except SeriesRegistration.DoesNotExist:
             return Response(

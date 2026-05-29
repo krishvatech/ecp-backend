@@ -3670,6 +3670,13 @@ class SaleorPermissionGroupSerializer(serializers.ModelSerializer):
 
 # WebinarSeries Serializers
 
+def _is_current_user_registered_for_series(obj, request):
+    user = getattr(request, 'user', None)
+    if not user or not user.is_authenticated:
+        return False
+    return obj.series_registrations.filter(user_id=user.id, status='registered').exists()
+
+
 class SeriesEventNestedSerializer(serializers.ModelSerializer):
     """Nested event representation for series detail view"""
     registrations_count = serializers.SerializerMethodField()
@@ -3693,16 +3700,18 @@ class EventSeriesListSerializer(serializers.ModelSerializer):
     events_count = serializers.SerializerMethodField()
     registrations_count = serializers.SerializerMethodField()
     cover_image_url = serializers.SerializerMethodField()
+    is_registered = serializers.SerializerMethodField()
 
     class Meta:
         model = EventSeries
         fields = [
             'id', 'title', 'slug', 'description', 'status', 'is_free',
             'price', 'visibility', 'events_count', 'registrations_count',
-            'created_by_name', 'cover_image_url', 'created_at'
+            'created_by_name', 'cover_image_url', 'is_registered', 'created_at'
         ]
         read_only_fields = [
-            'id', 'slug', 'created_at', 'events_count', 'registrations_count'
+            'id', 'slug', 'created_at', 'events_count', 'registrations_count',
+            'is_registered'
         ]
 
     def get_events_count(self, obj):
@@ -3719,6 +3728,9 @@ class EventSeriesListSerializer(serializers.ModelSerializer):
             return obj.cover_image.url
         return None
 
+    def get_is_registered(self, obj):
+        return _is_current_user_registered_for_series(obj, self.context.get('request'))
+
 
 class EventSeriesDetailSerializer(serializers.ModelSerializer):
     """Series detail view - full information with nested events"""
@@ -3731,6 +3743,7 @@ class EventSeriesDetailSerializer(serializers.ModelSerializer):
     registrations_count = serializers.SerializerMethodField()
     cover_image_url = serializers.SerializerMethodField()
     is_owner = serializers.SerializerMethodField()
+    is_registered = serializers.SerializerMethodField()
 
     class Meta:
         model = EventSeries
@@ -3739,11 +3752,11 @@ class EventSeriesDetailSerializer(serializers.ModelSerializer):
             'price', 'currency', 'visibility', 'registration_mode',
             'metadata', 'events', 'events_count', 'registrations_count',
             'created_by_id', 'created_by_name', 'community_id', 'community_name',
-            'cover_image_url', 'is_owner', 'created_at', 'updated_at'
+            'cover_image_url', 'is_owner', 'is_registered', 'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'slug', 'currency', 'created_at', 'updated_at',
-            'events_count', 'registrations_count', 'is_owner'
+            'events_count', 'registrations_count', 'is_owner', 'is_registered'
         ]
 
     def get_events_count(self, obj):
@@ -3771,6 +3784,9 @@ class EventSeriesDetailSerializer(serializers.ModelSerializer):
                 or getattr(request.user, 'is_superuser', False)
             )
         )
+
+    def get_is_registered(self, obj):
+        return _is_current_user_registered_for_series(obj, self.context.get('request'))
 
 
 class EventSeriesCreateUpdateSerializer(serializers.ModelSerializer):
@@ -3858,13 +3874,15 @@ class PublicEventSeriesSerializer(serializers.ModelSerializer):
     events_count = serializers.SerializerMethodField()
     registrations_count = serializers.SerializerMethodField()
     cover_image_url = serializers.SerializerMethodField()
+    is_registered = serializers.SerializerMethodField()
 
     class Meta:
         model = EventSeries
         fields = [
             'id', 'title', 'slug', 'description', 'status',
             'registration_mode', 'events', 'events_count',
-            'registrations_count', 'created_by_name', 'cover_image_url'
+            'registrations_count', 'created_by_name', 'cover_image_url',
+            'is_registered'
         ]
         read_only_fields = fields
 
@@ -3881,6 +3899,9 @@ class PublicEventSeriesSerializer(serializers.ModelSerializer):
                 return request.build_absolute_uri(obj.cover_image.url)
             return obj.cover_image.url
         return None
+
+    def get_is_registered(self, obj):
+        return _is_current_user_registered_for_series(obj, self.context.get('request'))
 
 
 class EventSaleorDiscountSerializer(serializers.ModelSerializer):
