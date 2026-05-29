@@ -759,3 +759,25 @@ LEGAL_ENTITIES = {
         'vat_exempt': True,
     },
 }
+
+# ============================================================================
+# MERGERS.AI VIDEO SEARCH WIDGET INTEGRATION
+# ============================================================================
+# Shared HMAC secret for signing embed tokens (15-min expiry)
+# Share via 1Password, not Slack/email. Rotate quarterly.
+MERGERSAI_EMBED_SECRET = os.getenv(
+    "MERGERSAI_EMBED_SECRET",
+    "",  # Empty string = feature disabled until secret is provided
+)
+
+# Widget iframe URL — full HTML page with search box, course dropdown, Vimeo player
+MERGERSAI_WIDGET_URL = os.getenv(
+    "MERGERSAI_WIDGET_URL",
+    "https://app.mergers.ai/embed/widget",
+)
+
+# Mergers.AI API base URL — for future direct calls (currently used via frontend only)
+MERGERSAI_API_BASE_URL = os.getenv(
+    "MERGERSAI_API_BASE_URL",
+    "https://api.mergers.ai",
+)
