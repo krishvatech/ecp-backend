@@ -13,6 +13,7 @@ Endpoints:
   GET  /api/courses/my-courses/          — Authenticated user's enrollments
   POST /api/courses/my-courses/refresh/  — Trigger background enrollment re-sync
   GET  /api/courses/{id}/launch          — Direct LMS URL for a course
+  GET  /api/courses/{id}/mergersai/token/ — Generate Mergers.AI embed token
   POST /api/courses/admin/sync/          — Admin: trigger full background sync
   GET  /api/courses/image-proxy/         — Proxy IMAA images (bypasses hotlink protection)
 """
@@ -625,6 +626,156 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
             "sso": sso_url is not None,
             "module_url": module_url,
         })
+
+    # ------------------------------------------------------------------
+    # Mergers.AI token  —  GET /api/courses/{id}/mergersai/token/
+    # ------------------------------------------------------------------
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="mergersai/token",
+        permission_classes=[IsAuthenticated],
+    )
+    def mergersai_token(self, request, pk=None):
+        """
+        Generate a Mergers.AI embed token for this course.
+
+        Generates a short-lived (15-min) HMAC-signed token scoped to the
+        authenticated user and the requested course. Frontend uses this to
+        embed the Mergers.AI video search widget in an iframe.
+
+        Query params:
+            ?course_slug=<slug>  (optional; defaults to course shortname)
+
+        Returns:
+            {
+                "token": "eyJ....",
+                "widget_url": "https://app.mergers.ai/embed/widget?token=....&course=....",
+                "course_slug": "cpmi-virtual-live-march-2024",
+                "expires_in_seconds": 900
+            }
+
+        Response codes:
+            200 OK — token generated successfully
+            403 Forbidden — user not enrolled in this course
+            500 Internal Server Error — MERGERSAI_EMBED_SECRET not configured
+        """
+        from .mergersai_utils import mergersai_make_token, build_mergersai_widget_url
+
+        course = self.get_object()
+        user = request.user
+
+        # Verify user is enrolled in this course
+        try:
+            MoodleEnrollment.objects.get(user=user, course=course)
+        except MoodleEnrollment.DoesNotExist:
+            logger.warning(
+                "Unauthorized Mergers.AI token request: user=%s not enrolled in course=%s",
+                user.email,
+                course.id,
+            )
+            return Response(
+                {"detail": "Not enrolled in this course"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        course_slug = request.query_params.get("course_slug", course.short_name)
+
+        try:
+            token = mergersai_make_token(user.email, course_slug)
+            widget_url = build_mergersai_widget_url(token, course_slug)
+
+            logger.info(
+                "Generated Mergers.AI token for user=%s course_id=%s course_slug=%s",
+                user.email,
+                course.id,
+                course_slug,
+            )
+
+            return Response(
+                {
+                    "token": token,
+                    "widget_url": widget_url,
+                    "course_slug": course_slug,
+                    "expires_in_seconds": 900,
+                }
+            )
+        except ValueError as e:
+            logger.error("Mergers.AI token generation failed: %s", e)
+            return Response(
+                {"detail": "Could not generate token: MERGERSAI_EMBED_SECRET not configured"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        except Exception as e:
+            logger.exception("Unexpected error generating Mergers.AI token: %s", e)
+            return Response(
+                {"detail": "Could not generate token"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    # ------------------------------------------------------------------
+    # Mergers.AI my courses  —  GET /api/courses/mergersai/my-courses/
+    # ------------------------------------------------------------------
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="mergersai/my-courses",
+        permission_classes=[IsAuthenticated],
+    )
+    def mergersai_my_courses(self, request):
+        """
+        Return user's enrolled courses with metadata for Mergers.AI widget.
+
+        Used by the Mergers.AI widget to populate the course dropdown and
+        enforce enrollment gating (only show courses the learner is enrolled in).
+
+        Returns:
+            {
+                "courses": [
+                    {
+                        "id": 42,
+                        "slug": "cpmi-virtual-live-march-2024",
+                        "name": "CPMI Virtual Live - March 2024",
+                        "has_vector_content": true,
+                        "enrolled": true
+                    }
+                ]
+            }
+        """
+        user = request.user
+        enrollments = (
+            MoodleEnrollment.objects.filter(user=user)
+            .select_related("course", "course__category")
+            .values(
+                "course__id",
+                "course__short_name",
+                "course__full_name",
+                "course__moodle_id",
+            )
+            .order_by("-synced_at")
+        )
+
+        courses = []
+        for e in enrollments:
+            courses.append(
+                {
+                    "id": e["course__id"],
+                    "slug": e["course__short_name"],
+                    "name": decodeEntities(e["course__full_name"]),
+                    "moodle_id": e["course__moodle_id"],
+                    "has_vector_content": True,  # TODO: fetch from Mergers.AI /api/v1/embed/status after go-live
+                    "enrolled": True,
+                }
+            )
+
+        logger.debug(
+            "Mergers.AI my-courses for user=%s returned %d courses",
+            user.email,
+            len(courses),
+        )
+        return Response({"courses": courses})
 
     # ------------------------------------------------------------------
     # Mark module complete  —  POST /api/courses/{id}/modules/{cmid}/complete/
