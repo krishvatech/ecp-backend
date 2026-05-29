@@ -201,6 +201,7 @@ def serialize_featured_participants(event, context=None, skip_visibility_filter=
 
         # Get professional info/experience based on participant type
         professional_info = ""
+        bio_text = ""
         if participant.participant_type == "staff" and participant.user and hasattr(participant.user, 'profile'):
             profile = participant.user.profile
             # Priority: headline > latest_experience > (job_title + company) > event_bio
@@ -246,7 +247,12 @@ def serialize_featured_participants(event, context=None, skip_visibility_filter=
         elif participant.participant_type == "guest":
             professional_info = participant.guest_bio
         elif participant.participant_type == "virtual" and participant.virtual_speaker:
-            professional_info = participant.virtual_speaker.bio
+            # For virtual speakers: use job_title and company as professional_info
+            virtual_speaker = participant.virtual_speaker
+            parts = [virtual_speaker.job_title, virtual_speaker.company]
+            professional_info = ", ".join([p for p in parts if p]).strip()
+            # Preserve bio separately for expanded view
+            bio_text = virtual_speaker.bio
 
         featured.append(
             {
@@ -260,6 +266,7 @@ def serialize_featured_participants(event, context=None, skip_visibility_filter=
                 "professional_info": professional_info or "",
                 "profile_url": build_profile_url(participant.user_id),
                 "is_profile_clickable": bool(participant.user_id),
+                "bio": bio_text or professional_info or "",
             }
         )
     return featured
@@ -654,6 +661,7 @@ class FeaturedParticipantSerializer(serializers.Serializer):
     professional_info = serializers.CharField(allow_blank=True, default='')
     profile_url = serializers.CharField(allow_null=True, allow_blank=True)
     is_profile_clickable = serializers.BooleanField()
+    bio = serializers.CharField(allow_blank=True, default='', required=False)
 
 
 class EventParticipantListItemSerializer(serializers.Serializer):
