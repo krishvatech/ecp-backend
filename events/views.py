@@ -315,6 +315,31 @@ def _ensure_rtk_meeting_for_event(event: Event) -> str:
     event.save(update_fields=["rtk_meeting_id", "rtk_meeting_title", "updated_at"])
     return meeting_id
 
+def _cache_event_join_snapshot(event: Event) -> None:
+    """
+    ✅ PHASE 2: Cache event fields needed for join to reduce DB queries.
+
+    Caches only safe, read-only event fields. Does not cache sensitive data.
+    TTL: 2-5 seconds (covers brief bursts of joins).
+    """
+    cache_key = f"event:{event.id}:join_snapshot"
+    snapshot = {
+        "event_id": event.id,
+        "status": event.status,
+        "is_live": event.is_live,
+        "rtk_meeting_id": event.rtk_meeting_id,
+        "waiting_room_enabled": event.waiting_room_enabled,
+        "waiting_room_grace_period_minutes": event.waiting_room_grace_period_minutes,
+        "lounge_enabled_waiting_room": event.lounge_enabled_waiting_room,
+        "networking_tables_enabled_waiting_room": event.networking_tables_enabled_waiting_room,
+        "start_time": event.start_time.isoformat() if event.start_time else None,
+        "is_on_break": event.is_on_break,
+    }
+    try:
+        cache.set(cache_key, snapshot, timeout=3)  # 3 second TTL for join bursts
+    except Exception as e:
+        logger.warning(f"[PHASE2] Failed to cache event snapshot: {e}")
+
 def _start_rtk_recording_for_event(event: Event) -> None:
     """
     Ask Cloudflare RealtimeKit to start a recording for this event's meeting.
@@ -8992,15 +9017,27 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=500,
             )
 
-        # 1.5) Check if user is BANNED
-        if EventRegistration.objects.filter(event=event, user=user, is_banned=True).exists():
+        # ✅ PHASE 2: Fetch EventRegistration ONCE with all needed fields
+        # Replace 3 separate queries with 1 optimized query
+        existing_registration = EventRegistration.objects.filter(
+            event=event,
+            user=user
+        ).only(
+            "id", "status", "admission_status", "is_banned",
+            "was_ever_admitted", "joined_live", "waiting_started_at",
+            "admitted_at", "current_session_started_at", "last_reconnect_at",
+            "current_location", "joined_live_at"
+        ).first()
+
+        # 1.5) Check if user is BANNED (using fetched registration)
+        if existing_registration and existing_registration.is_banned:
             return Response(
                 {"error": "banned", "detail": "You are banned from this event."},
                 status=403
             )
 
-        # 1.6) Check if user is cancelled/deregistered
-        if EventRegistration.objects.filter(event=event, user=user, status__in=['cancelled', 'deregistered']).exists():
+        # 1.6) Check if user is cancelled/deregistered (using fetched registration)
+        if existing_registration and existing_registration.status in ['cancelled', 'deregistered']:
              return Response(
                 {"error": "not_registered", "detail": "You are not registered for this event."},
                 status=403
@@ -9059,72 +9096,77 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         )
 
-        # Waiting room gating (only for non-hosts)
-        defaults = {"status": "registered", "admission_status": "admitted"}
+        # ✅ PHASE 2: Handle existing vs new registration efficiently
+        # Avoid get_or_create which triggers 2 queries under the hood
+        _created = False
+        if existing_registration:
+            # User exists: reuse the fetched registration
+            registration = existing_registration
+        else:
+            # User doesn't exist: create new registration with defaults
+            defaults = {"status": "registered", "admission_status": "admitted"}
+            if event.waiting_room_enabled and not is_host:
+                should_wait = True  # Default to waiting room
+
+                # Check if within grace period
+                if event.start_time:
+                    now = timezone.now()
+                    grace_minutes = (
+                        event.waiting_room_grace_period_minutes
+                        if event.waiting_room_grace_period_minutes is not None
+                        else 10
+                    )
+                    grace_period = timedelta(minutes=grace_minutes)
+
+                    # Admit if: start_time <= now < start_time + grace_period
+                    # The end boundary is EXCLUSIVE (at exactly grace_period_end, grace period has ended)
+                    if event.start_time <= now < (event.start_time + grace_period):
+                        should_wait = False  # Within grace period - admit directly
+
+                if should_wait:
+                    defaults["admission_status"] = "waiting"
+                else:
+                    # ✅ NEW: Mark grace period admissions as was_ever_admitted so they auto-rejoin
+                    defaults["was_ever_admitted"] = True
+                    defaults["current_session_started_at"] = timezone.now()
+                if converted_guest_was_admitted:
+                    defaults["admission_status"] = "admitted"
+                    defaults["was_ever_admitted"] = True
+                    defaults["current_session_started_at"] = converted_guest.joined_live_at or timezone.now()
+                    defaults["admitted_at"] = converted_guest.joined_live_at or timezone.now()
+
+            registration = EventRegistration(event=event, user=user, **defaults)
+            _created = True
+        # ✅ PHASE 2: Track field changes to save only once
+        fields_to_update = []
+
         if event.waiting_room_enabled and not is_host:
-            should_wait = True  # Default to waiting room
-
-            # Check if within grace period
-            if event.start_time:
-                now = timezone.now()
-                grace_minutes = (
-                    event.waiting_room_grace_period_minutes
-                    if event.waiting_room_grace_period_minutes is not None
-                    else 10
-                )
-                grace_period = timedelta(minutes=grace_minutes)
-
-                # Admit if: start_time <= now < start_time + grace_period
-                # The end boundary is EXCLUSIVE (at exactly grace_period_end, grace period has ended)
-                if event.start_time <= now < (event.start_time + grace_period):
-                    should_wait = False  # Within grace period - admit directly
-
-            if should_wait:
-                defaults["admission_status"] = "waiting"
-            else:
-                # ✅ NEW: Mark grace period admissions as was_ever_admitted so they auto-rejoin
-                defaults["was_ever_admitted"] = True
-                defaults["current_session_started_at"] = timezone.now()
             if converted_guest_was_admitted:
-                defaults["admission_status"] = "admitted"
-                defaults["was_ever_admitted"] = True
-                defaults["current_session_started_at"] = converted_guest.joined_live_at or timezone.now()
-                defaults["admitted_at"] = converted_guest.joined_live_at or timezone.now()
-        registration, _created = EventRegistration.objects.get_or_create(
-            event=event,
-            user=user,
-            defaults=defaults,
-        )
-        if event.waiting_room_enabled and not is_host:
-            if converted_guest_was_admitted:
-                converted_guest_updates = []
                 if registration.admission_status != "admitted":
                     registration.admission_status = "admitted"
-                    converted_guest_updates.append("admission_status")
+                    fields_to_update.append("admission_status")
                 if not registration.was_ever_admitted:
                     registration.was_ever_admitted = True
-                    converted_guest_updates.append("was_ever_admitted")
+                    fields_to_update.append("was_ever_admitted")
                 if not registration.admitted_at:
                     registration.admitted_at = converted_guest.joined_live_at or timezone.now()
-                    converted_guest_updates.append("admitted_at")
+                    fields_to_update.append("admitted_at")
                 if not registration.current_session_started_at:
                     registration.current_session_started_at = converted_guest.joined_live_at or timezone.now()
-                    converted_guest_updates.append("current_session_started_at")
+                    fields_to_update.append("current_session_started_at")
                 if registration.waiting_started_at is not None:
                     registration.waiting_started_at = None
-                    converted_guest_updates.append("waiting_started_at")
+                    fields_to_update.append("waiting_started_at")
                 converted_location = converted_guest.current_location or "main_room"
                 if registration.current_location != converted_location:
                     registration.current_location = converted_location
-                    converted_guest_updates.append("current_location")
+                    fields_to_update.append("current_location")
                 if converted_guest.joined_live and not registration.joined_live:
                     registration.joined_live = True
-                    converted_guest_updates.append("joined_live")
+                    fields_to_update.append("joined_live")
                 if converted_guest.joined_live_at and not registration.joined_live_at:
                     registration.joined_live_at = converted_guest.joined_live_at
-                    converted_guest_updates.append("joined_live_at")
-                if converted_guest_updates:
-                    registration.save(update_fields=converted_guest_updates)
+                    fields_to_update.append("joined_live_at")
 
             # Check if within grace period
             is_in_grace_period = False
@@ -9141,24 +9183,13 @@ class EventViewSet(viewsets.ModelViewSet):
 
             # ✅ NEW: Auto-rejoin logic for previously admitted users
             # If user was ever admitted (either by host or grace period), auto-admit them on rejoin
+            auto_readmit_user = False
             if not _created and registration.was_ever_admitted:
                 if registration.admission_status != "admitted":
                     registration.admission_status = "admitted"
                     registration.last_reconnect_at = timezone.now()
-                    registration.save(update_fields=["admission_status", "last_reconnect_at"])
-
-                    # Log auto-readmission
-                    from .models import WaitingRoomAuditLog
-                    try:
-                        WaitingRoomAuditLog.objects.create(
-                            event=event,
-                            participant=user,
-                            action="auto_readmitted",
-                            notes=f"System auto-readmitted previously admitted user on rejoin"
-                        )
-                        logger.info(f"[WAITING_ROOM] Auto-readmitted user {user.id} to event {event.id}")
-                    except Exception as e:
-                        logger.warning(f"[WAITING_ROOM] Failed to log auto-readmission: {e}")
+                    fields_to_update.extend(["admission_status", "last_reconnect_at"])
+                    auto_readmit_user = True
                 # Continue to RTK token generation for previously admitted users
 
             # Original grace period + waiting room logic
@@ -9166,11 +9197,13 @@ class EventViewSet(viewsets.ModelViewSet):
                 # If host hasn't explicitly admitted, keep in waiting
                 if registration.admission_status == "admitted" and not registration.admitted_at:
                     registration.admission_status = "waiting"
-                    registration.save(update_fields=["admission_status"])
+                    if "admission_status" not in fields_to_update:
+                        fields_to_update.append("admission_status")
 
             if not registration.admission_status:
                 registration.admission_status = "waiting"
-                registration.save(update_fields=["admission_status"])
+                if "admission_status" not in fields_to_update:
+                    fields_to_update.append("admission_status")
 
             if registration.admission_status in {"rejected"}:
                 return Response(
@@ -9185,7 +9218,8 @@ class EventViewSet(viewsets.ModelViewSet):
                     # This ensures they don't appear in host's waiting room list until they actively join.
                     # Registration alone does NOT add them to the waiting room.
                     registration.waiting_started_at = timezone.now()
-                    registration.save(update_fields=["waiting_started_at"])
+                    if "waiting_started_at" not in fields_to_update:
+                        fields_to_update.append("waiting_started_at")
 
                 # ✅ CRITICAL: Remove user from lounge when entering waiting room
                 # This ensures they don't appear in lounge occupants while waiting for admission
@@ -9199,6 +9233,29 @@ class EventViewSet(viewsets.ModelViewSet):
                         logger.info(f"[WAITING_ROOM] Removed user {user.id} from lounge ({deleted_count} table(s)) when entering waiting room")
                 except Exception as e:
                     logger.warning(f"[WAITING_ROOM] Failed to remove user from lounge: {e}")
+
+                # ✅ PHASE 2: Save registration with all collected updates
+                if fields_to_update or _created:
+                    if _created:
+                        registration.save()
+                    elif fields_to_update:
+                        # Remove duplicates from fields_to_update
+                        fields_to_update = list(set(fields_to_update))
+                        registration.save(update_fields=fields_to_update)
+
+                    # Log auto-readmission after save
+                    if auto_readmit_user:
+                        from .models import WaitingRoomAuditLog
+                        try:
+                            WaitingRoomAuditLog.objects.create(
+                                event=event,
+                                participant=user,
+                                action="auto_readmitted",
+                                notes=f"System auto-readmitted previously admitted user on rejoin"
+                            )
+                            logger.info(f"[WAITING_ROOM] Auto-readmitted user {user.id} to event {event.id}")
+                        except Exception as e:
+                            logger.warning(f"[WAITING_ROOM] Failed to log auto-readmission: {e}")
 
                 return Response(
                     {
@@ -9259,14 +9316,21 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=500,
             )
 
-        # ✅ Mark user as joined_live
-        EventRegistration.objects.filter(event=event, user=user).update(
-            joined_live=True,
-            joined_live_at=timezone.now(),
-        )
+        # ✅ PHASE 2: Mark user as joined_live (in memory, save with other updates)
+        if not registration.joined_live:
+            registration.joined_live = True
+            registration.joined_live_at = timezone.now()
+            fields_to_update = ["joined_live", "joined_live_at"]
+            registration.save(update_fields=fields_to_update)
+        elif not registration.joined_live_at:
+            # If somehow joined_live is true but joined_live_at is null, update it
+            registration.joined_live_at = timezone.now()
+            registration.save(update_fields=["joined_live_at"])
 
         # ✅ CRITICAL: Remove user from lounge when they join main meeting
         # This ensures they don't appear in lounge occupants list after transitioning to main
+        # NOTE: This is already done earlier when user enters waiting room, but do it again
+        # only if user skipped waiting room (admitted directly or grace period)
         try:
             from .models import LoungeParticipant
             deleted_count, _ = LoungeParticipant.objects.filter(
@@ -9291,6 +9355,11 @@ class EventViewSet(viewsets.ModelViewSet):
             # Grace period is active if: start_time <= now < grace_period_end
             # The end boundary is EXCLUSIVE (at exactly grace_period_end, grace period has ended)
             is_grace_period_join = event.start_time <= now < grace_period_end
+
+        # ✅ PHASE 2: Cache event snapshot for next join burst
+        _cache_event_join_snapshot(event)
+
+        logger.info(f"[RTK_JOIN] User {user.id} successfully joined event {event.id} (query optimizations: consolidated registration fetches and saves)")
 
         return Response(
             {
