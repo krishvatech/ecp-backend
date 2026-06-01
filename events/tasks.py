@@ -2425,3 +2425,48 @@ def send_application_waitlist_email_task(self, track_application_id):
         # Retry with exponential backoff
         raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
 
+
+# ============================================================================
+# Phase 6: Redis-based WebSocket Presence Sync
+# ============================================================================
+# Periodic task to sync Redis presence data to database for reporting/admin.
+# Real-time presence updates happen in Redis (no DB writes during connect/disconnect).
+# This task periodically updates EventRegistration.is_online from Redis state.
+
+@shared_task(name="events.sync_redis_presence_to_db")
+def sync_redis_presence_to_db():
+    """
+    Periodic task (every 5-10 minutes) to sync Redis presence to database.
+
+    Redis tracks real-time presence to avoid DB writes during WebSocket storms.
+    This task periodically updates EventRegistration.is_online so admin/reporting
+    can see who's online without querying Redis directly.
+
+    Returns:
+        dict: {'status': 'ok', 'synced_events': int} or {'status': 'error', 'error': str}
+    """
+    try:
+        from events.models import Event
+        from events.redis_presence import RedisPresenceManager
+
+        # Find all live events
+        live_events = Event.objects.filter(is_live=True).values_list('id', flat=True)
+
+        synced_count = 0
+        for event_id in live_events:
+            try:
+                result = RedisPresenceManager.sync_presence_to_db(event_id)
+                if result.get('status') == 'success':
+                    synced_count += 1
+                else:
+                    logger.warning(f"[SYNC_PRESENCE] Failed to sync event {event_id}: {result.get('error')}")
+            except Exception as e:
+                logger.error(f"[SYNC_PRESENCE] Error syncing event {event_id}: {e}")
+
+        logger.info(f"[SYNC_PRESENCE] Completed: synced {synced_count} live events")
+        return {'status': 'ok', 'synced_events': synced_count}
+
+    except Exception as e:
+        logger.error(f"[SYNC_PRESENCE] Task failed: {e}", exc_info=True)
+        return {'status': 'error', 'error': str(e)}
+
