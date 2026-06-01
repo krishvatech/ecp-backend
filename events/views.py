@@ -9487,6 +9487,9 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         user = request.user
 
+        # ✅ PHASE 3: Cache RTK meeting ID to avoid duplicate _ensure_rtk_meeting_for_event calls
+        rtk_meeting_id_cache = {}  # Request-scoped cache
+
         # Log rejoin attempt
         is_guest = getattr(user, "is_guest", False)
         user_identifier = f"guest_{user.guest.id}" if is_guest else str(user.id)
@@ -9578,19 +9581,24 @@ class EventViewSet(viewsets.ModelViewSet):
             else:
                 response_data["room_type"] = "main_room"
 
-            # Add RTK meeting ID (always needed)
-            try:
-                meeting_id = _ensure_rtk_meeting_for_event(event)
+            # ✅ PHASE 3: Get RTK meeting ID (cached in request scope)
+            if "meeting_id" not in rtk_meeting_id_cache:
+                try:
+                    rtk_meeting_id_cache["meeting_id"] = _ensure_rtk_meeting_for_event(event)
+                except RuntimeError as e:
+                    logger.warning(f"[LIVE_REJOIN] RTK meeting error for event {event.id}: {e}")
+                    rtk_meeting_id_cache["meeting_id"] = None
+
+            meeting_id = rtk_meeting_id_cache["meeting_id"]
+            if meeting_id:
                 response_data["rtk_meeting_id"] = meeting_id
-            except RuntimeError as e:
-                logger.warning(f"[LIVE_REJOIN] RTK meeting error for event {event.id}: {e}")
+            else:
                 response_data["rtk_meeting_id"] = None
                 response_data["rtk_token"] = None
 
             # Generate RTK token if guest is admitted to main room
-            if is_admitted and event.status == "live":
+            if is_admitted and event.status == "live" and meeting_id:
                 try:
-                    meeting_id = _ensure_rtk_meeting_for_event(event)
                     rtk_participant_id = f"guest_{guest.id}"
                     rtk_resp = add_rtk_participant(
                         meeting_id=meeting_id,
@@ -9627,25 +9635,33 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # ──── REGISTERED USER BRANCH ──────────────────────────────────────────
 
-        # Check if user is banned
-        if EventRegistration.objects.filter(event=event, user=user, is_banned=True).exists():
+        # ✅ PHASE 3: Fetch EventRegistration ONCE with all needed fields
+        # Replace 3 separate queries with 1 optimized query
+        registration = EventRegistration.objects.filter(
+            event=event,
+            user=user
+        ).only(
+            "id", "status", "admission_status", "is_banned",
+            "was_ever_admitted", "joined_live", "current_location",
+            "last_breakout_table_id", "last_reconnect_at"
+        ).first()
+
+        # Check if user is banned (using fetched registration)
+        if registration and registration.is_banned:
             logger.warning(f"[LIVE_REJOIN] user {user.id} is banned")
             return _deny("user_banned", "You are banned from this event.", 403, cacheable=True)
 
-        # Check if user is cancelled/deregistered
-        if EventRegistration.objects.filter(event=event, user=user, status__in=["cancelled", "deregistered"]).exists():
+        # Check if user is cancelled/deregistered (using fetched registration)
+        if registration and registration.status in ["cancelled", "deregistered"]:
             logger.warning(f"[LIVE_REJOIN] user {user.id} status not registered")
             return _deny("user_not_registered", "You are not registered for this event.", 403)
 
-        # Get or create registration
-        try:
-            registration = EventRegistration.objects.get(event=event, user=user)
-        except EventRegistration.DoesNotExist:
-            # Allow event host/creator to rejoin even without explicit registration
+        # Allow event host/creator to rejoin even without explicit registration
+        if not registration:
             if not _is_event_host(user, event):
                 logger.warning(f"[LIVE_REJOIN] user {user.id} not registered for event {event.id}")
                 return _deny("user_not_registered", "You are not registered for this event.", 403)
-            registration = None
+            # Host without registration: continue with None registration
 
         # Determine admission status and location
         if registration:
@@ -9701,19 +9717,24 @@ class EventViewSet(viewsets.ModelViewSet):
         else:
             response_data["room_type"] = "main_room"
 
-        # Add RTK meeting ID (always needed)
-        try:
-            meeting_id = _ensure_rtk_meeting_for_event(event)
+        # ✅ PHASE 3: Get RTK meeting ID (cached in request scope)
+        if "meeting_id" not in rtk_meeting_id_cache:
+            try:
+                rtk_meeting_id_cache["meeting_id"] = _ensure_rtk_meeting_for_event(event)
+            except RuntimeError as e:
+                logger.warning(f"[LIVE_REJOIN] RTK meeting error for event {event.id}: {e}")
+                rtk_meeting_id_cache["meeting_id"] = None
+
+        meeting_id = rtk_meeting_id_cache["meeting_id"]
+        if meeting_id:
             response_data["rtk_meeting_id"] = meeting_id
-        except RuntimeError as e:
-            logger.warning(f"[LIVE_REJOIN] RTK meeting error for event {event.id}: {e}")
+        else:
             response_data["rtk_meeting_id"] = None
             response_data["rtk_token"] = None
 
         # Generate RTK token if user is admitted and event is live
-        if admission_status == "admitted" and event.status == "live":
+        if admission_status == "admitted" and event.status == "live" and meeting_id:
             try:
-                meeting_id = _ensure_rtk_meeting_for_event(event)
                 preset_name = RTK_PRESET_HOST if is_host else RTK_PRESET_PARTICIPANT
 
                 profile = getattr(user, "profile", None)
@@ -9733,11 +9754,12 @@ class EventViewSet(viewsets.ModelViewSet):
                 if picture:
                     body["picture"] = picture
 
+                # ✅ PHASE 3: Reduce timeout from 10s to 5s for faster rejoin
                 resp = requests.post(
                     f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
                     headers=_rtk_headers(),
                     json=body,
-                    timeout=10,
+                    timeout=5,
                 )
 
                 if resp.status_code in (200, 201):
