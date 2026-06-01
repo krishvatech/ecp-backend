@@ -505,15 +505,19 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 e,
             )
 
-        # Cleanup RTK participants
+        # Enqueue async RTK cleanup task (don't block disconnect)
         try:
             meeting_ids = await self.get_user_rtk_meetings()
             if meeting_ids:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, self.cleanup_rtk_participants_sync, meeting_ids)
+                from .tasks import cleanup_rtk_user_on_disconnect_task
+                user_id = self.user.id
+                event_id = self.event_id
+                # Enqueue task and let it run in background
+                cleanup_rtk_user_on_disconnect_task.delay(user_id, event_id, meeting_ids)
+                logger.info(f"[CLEANUP] Enqueued RTK cleanup task for user {user_id} from {len(meeting_ids)} meetings")
         except Exception as e:
             logger.error(
-                "[CLEANUP] RTK cleanup failed for user %s: %s",
+                "[CLEANUP] Failed to enqueue RTK cleanup for user %s: %s",
                 getattr(getattr(self, "user", None), "id", None),
                 e,
             )

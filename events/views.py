@@ -8027,21 +8027,15 @@ class EventViewSet(viewsets.ModelViewSet):
                 rtk_meeting_id = stale.table.rtk_meeting_id
                 rtk_participant_id = stale.rtk_participant_id
 
-                # Delete the stale DB record first (quick operation)
+                # Delete the stale DB record first (quick operation, synchronous)
                 stale.delete()
                 logger.info(f"[LOUNGE_JOIN] Cleaned up stale LoungeParticipant record for user {user.id}")
 
-                # Try to remove from RTK asynchronously (don't block if it fails)
+                # Enqueue RTK cleanup as async task (don't block user request)
                 if rtk_participant_id and rtk_meeting_id:
-                    try:
-                        requests.delete(
-                            f"{RTK_API_BASE}/meetings/{rtk_meeting_id}/participants/{rtk_participant_id}",
-                            headers=_rtk_headers(),
-                            timeout=5,  # Shorter timeout for cleanup, don't block
-                        )
-                        logger.info(f"[LOUNGE_JOIN] Cleaned up stale RTK participant {rtk_participant_id}")
-                    except Exception as e:
-                        logger.warning(f"[LOUNGE_JOIN] Failed to remove stale RTK participant (non-blocking): {e}")
+                    from .tasks import cleanup_rtk_participant_task
+                    cleanup_rtk_participant_task.delay(rtk_meeting_id, rtk_participant_id)
+                    logger.info(f"[LOUNGE_JOIN] Enqueued RTK cleanup task for participant {rtk_participant_id}")
             except Exception as e:
                 logger.warning(f"[LOUNGE_JOIN] Error cleaning stale record: {e}")
 
@@ -8062,22 +8056,14 @@ class EventViewSet(viewsets.ModelViewSet):
                     if cid == str(user.id):
                         duplicate_found = True
                         logger.warning(f"[LOUNGE_JOIN] Duplicate detected: user {user.id}")
-                        # Try to remove them from RTK and allow rejoin
-                        try:
-                            rtk_id = p.get("id")
-                            if rtk_id:
-                                requests.delete(
-                                    f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{rtk_id}",
-                                    headers=_rtk_headers(),
-                                    timeout=5,
-                                )
-                                logger.info(f"[LOUNGE_JOIN] Removed stale participant {rtk_id} from RTK, allowing rejoin")
-                                duplicate_found = False  # Successfully removed, proceed with join
-                                break
-                        except Exception as e:
-                            logger.warning(f"[LOUNGE_JOIN] Failed to remove stale RTK participant: {e}")
-                            # Don't block, try to join anyway
-                            duplicate_found = False
+                        # Enqueue async task to remove duplicate from RTK and allow rejoin
+                        rtk_id = p.get("id")
+                        if rtk_id:
+                            from .tasks import cleanup_rtk_participant_task
+                            cleanup_rtk_participant_task.delay(meeting_id, rtk_id)
+                            logger.info(f"[LOUNGE_JOIN] Enqueued cleanup task for stale participant {rtk_id}, allowing rejoin")
+                            duplicate_found = False  # Allow rejoin while cleanup happens async
+                            break
         except requests.exceptions.Timeout:
             logger.warning(f"[LOUNGE_JOIN] Duplicate check timed out, proceeding with join")
             # Don't block on timeout, proceed with join
@@ -8189,16 +8175,13 @@ class EventViewSet(viewsets.ModelViewSet):
             meeting_id = getattr(table, "rtk_meeting_id", None) if table else None
             rtk_participant_id = guest.rtk_participant_id
             try:
+                # Enqueue RTK cleanup as async task (don't block user request)
                 if meeting_id and rtk_participant_id:
-                    try:
-                        requests.delete(
-                            f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{rtk_participant_id}",
-                            headers=_rtk_headers(),
-                            timeout=10,
-                        )
-                    except Exception as e:
-                        logger.warning(f"[LOUNGE_LEAVE][GUEST] Failed to remove from RTK: {e}")
+                    from .tasks import cleanup_rtk_participant_task
+                    cleanup_rtk_participant_task.delay(meeting_id, rtk_participant_id)
+                    logger.info(f"[LOUNGE_LEAVE][GUEST] Enqueued RTK cleanup for participant {rtk_participant_id}")
 
+                # Update guest state immediately (synchronous, quick)
                 # Leaving a table from the live UI means returning to the main room context.
                 guest.current_location = "main_room"
                 guest.lounge_table = None
@@ -8227,49 +8210,20 @@ class EventViewSet(viewsets.ModelViewSet):
             meeting_id = table.rtk_meeting_id
             rtk_participant_id = lounge_record.rtk_participant_id
 
-            # 2. Remove from RTK meeting
+            # 2. Enqueue RTK cleanup as async task (don't block user request)
             if meeting_id:
-                try:
-                    # If we have the RTK participant ID, use it directly for faster removal
-                    if rtk_participant_id:
-                        delete_resp = requests.delete(
-                            f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{rtk_participant_id}",
-                            headers=_rtk_headers(),
-                            timeout=10,
-                        )
-                        if delete_resp.ok:
-                            logger.info(f"[LOUNGE_LEAVE] Removed user {user.id} from RTK meeting {meeting_id} "
-                                      f"(participant_id: {rtk_participant_id})")
-                        else:
-                            logger.warning(f"[LOUNGE_LEAVE] Failed to remove user from RTK: {delete_resp.status_code}")
-                    else:
-                        # Fallback: Query RTK to find the participant by client_specific_id
-                        resp = requests.get(
-                            f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
-                            headers=_rtk_headers(),
-                            params={"limit": 100},
-                            timeout=10,
-                        )
-                        if resp.ok:
-                            participants = resp.json().get("data", [])
-                            for p in participants:
-                                cid = p.get("client_specific_id") or p.get("custom_participant_id")
-                                if cid == str(user.id):
-                                    # Found the user in RTK, now remove them
-                                    participant_id = p.get("id")
-                                    delete_resp = requests.delete(
-                                        f"{RTK_API_BASE}/meetings/{meeting_id}/participants/{participant_id}",
-                                        headers=_rtk_headers(),
-                                        timeout=10,
-                                    )
-                                    if delete_resp.ok:
-                                        logger.info(f"[LOUNGE_LEAVE] Removed user {user.id} from RTK meeting {meeting_id}")
-                                    else:
-                                        logger.warning(f"[LOUNGE_LEAVE] Failed to remove user from RTK: {delete_resp.status_code}")
-                                    break
-                except Exception as e:
-                    logger.warning(f"[LOUNGE_LEAVE] Error removing from RTK: {e}")
-                    # Don't fail the entire leave operation if RTK removal fails
+                from .tasks import cleanup_rtk_participant_task, cleanup_rtk_participant_by_client_id_task
+
+                if rtk_participant_id:
+                    # Main path: we have the participant ID
+                    cleanup_rtk_participant_task.delay(meeting_id, rtk_participant_id)
+                    logger.info(f"[LOUNGE_LEAVE] Enqueued RTK cleanup for user {user.id} "
+                              f"(participant_id: {rtk_participant_id})")
+                else:
+                    # Fallback: cleanup by client_specific_id (will fetch meeting and find participant)
+                    cleanup_rtk_participant_by_client_id_task.delay(meeting_id, str(user.id))
+                    logger.info(f"[LOUNGE_LEAVE] Enqueued RTK cleanup for user {user.id} "
+                              f"(by client_id)")
 
             # 3. Delete from Django DB
             lounge_record.delete()

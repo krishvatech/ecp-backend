@@ -2039,6 +2039,262 @@ def auto_sync_saleor_permission_groups(self):
     return _run_saleor_sync_task(self, "Permission groups", sync_permission_groups_from_saleor)
 
 
+# ============================================================================
+# Phase 4: RTK Cleanup Tasks (Async, Non-Blocking)
+# ============================================================================
+# Move slow RTK API cleanup out of user-facing request paths.
+# Tasks are idempotent: handle case where RTK participant already deleted.
+
+@shared_task(bind=True, max_retries=3)
+def cleanup_rtk_participant_task(self, meeting_id, participant_id):
+    """
+    Async cleanup task to remove a participant from RTK meeting.
+    Called when user leaves lounge or disconnects.
+
+    Idempotent: if participant already deleted, logs warning and exits safely.
+
+    Args:
+        meeting_id: RTK meeting UUID
+        participant_id: RTK participant UUID
+
+    Returns:
+        dict: {'status': 'deleted'|'already_deleted'|'failed', 'reason': str}
+    """
+    import requests as requests_lib
+    from django.conf import settings
+
+    try:
+        rtk_api_base = getattr(settings, 'RTK_API_BASE', 'https://api.realtime.cloudflare.com/v2')
+        rtk_auth_header = getattr(settings, 'RTK_AUTH_HEADER', '')
+
+        if not rtk_auth_header:
+            logger.error(f"[RTK_CLEANUP] RTK_AUTH_HEADER not configured")
+            return {'status': 'failed', 'reason': 'auth_header_missing'}
+
+        # Call RTK API to delete the participant
+        url = f"{rtk_api_base}/meetings/{meeting_id}/participants/{participant_id}"
+        headers = {
+            "Authorization": rtk_auth_header,
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = requests_lib.delete(url, headers=headers, timeout=5)
+
+            # 404 = participant already deleted (idempotent success)
+            if response.status_code == 404:
+                logger.info(f"[RTK_CLEANUP] Participant {participant_id} already deleted from meeting {meeting_id}")
+                return {'status': 'already_deleted', 'reason': 'not_found'}
+
+            # 204 = success (no content)
+            if response.status_code == 204:
+                logger.info(f"[RTK_CLEANUP] Successfully deleted participant {participant_id} from meeting {meeting_id}")
+                return {'status': 'deleted', 'reason': 'success'}
+
+            # Unexpected status code
+            logger.warning(f"[RTK_CLEANUP] Unexpected status {response.status_code} deleting participant {participant_id}: {response.text}")
+            raise Exception(f"Unexpected status {response.status_code}")
+
+        except requests_lib.Timeout:
+            logger.warning(f"[RTK_CLEANUP] Timeout deleting participant {participant_id} from meeting {meeting_id}")
+            raise
+        except requests_lib.RequestException as e:
+            logger.warning(f"[RTK_CLEANUP] Request failed deleting participant {participant_id}: {e}")
+            raise
+
+    except Exception as exc:
+        retry_count = self.request.retries
+        if retry_count < self.max_retries:
+            logger.warning(f"[RTK_CLEANUP] Retrying delete (attempt {retry_count + 1}/{self.max_retries + 1}): {exc}")
+            # Exponential backoff: 5s → 10s → 20s
+            delay = 5 * (2 ** retry_count)
+            raise self.retry(exc=exc, countdown=delay)
+        else:
+            logger.error(f"[RTK_CLEANUP] Failed to delete participant {participant_id} after {self.max_retries + 1} attempts: {exc}")
+            return {'status': 'failed', 'reason': 'max_retries_exceeded'}
+
+
+@shared_task(bind=True, max_retries=3)
+def cleanup_rtk_participant_by_client_id_task(self, meeting_id, client_specific_id):
+    """
+    Async cleanup task to remove a participant from RTK meeting by client ID.
+    Used when participant's participant_id is not known, but client_specific_id is.
+
+    Idempotent: if participant already deleted, logs warning and exits safely.
+
+    Args:
+        meeting_id: RTK meeting UUID
+        client_specific_id: Client-specific ID (user_id or participant reference)
+
+    Returns:
+        dict: {'status': 'deleted'|'already_deleted'|'failed'|'not_found', 'reason': str}
+    """
+    import requests as requests_lib
+    from django.conf import settings
+
+    try:
+        rtk_api_base = getattr(settings, 'RTK_API_BASE', 'https://api.realtime.cloudflare.com/v2')
+        rtk_auth_header = getattr(settings, 'RTK_AUTH_HEADER', '')
+
+        if not rtk_auth_header:
+            logger.error(f"[RTK_CLEANUP] RTK_AUTH_HEADER not configured")
+            return {'status': 'failed', 'reason': 'auth_header_missing'}
+
+        # First, fetch the meeting to find the participant by client_specific_id
+        url = f"{rtk_api_base}/meetings/{meeting_id}"
+        headers = {
+            "Authorization": rtk_auth_header,
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = requests_lib.get(url, headers=headers, timeout=5)
+
+            if response.status_code != 200:
+                logger.warning(f"[RTK_CLEANUP] Failed to fetch meeting {meeting_id}: {response.status_code}")
+                return {'status': 'failed', 'reason': 'fetch_meeting_failed'}
+
+            meeting_data = response.json()
+            participants = meeting_data.get('participants', [])
+
+            # Find participant by client_specific_id
+            participant_id = None
+            for p in participants:
+                if p.get('client_specific_id') == client_specific_id or p.get('id') == client_specific_id:
+                    participant_id = p.get('id')
+                    break
+
+            if not participant_id:
+                logger.info(f"[RTK_CLEANUP] Participant with client_id {client_specific_id} not found in meeting {meeting_id}")
+                return {'status': 'not_found', 'reason': 'participant_not_in_meeting'}
+
+            # Now delete the participant by ID
+            delete_url = f"{rtk_api_base}/meetings/{meeting_id}/participants/{participant_id}"
+            delete_response = requests_lib.delete(delete_url, headers=headers, timeout=5)
+
+            # 204 = success
+            if delete_response.status_code == 204:
+                logger.info(f"[RTK_CLEANUP] Successfully deleted participant (client_id={client_specific_id}) from meeting {meeting_id}")
+                return {'status': 'deleted', 'reason': 'success'}
+
+            # 404 = participant already deleted (idempotent)
+            if delete_response.status_code == 404:
+                logger.info(f"[RTK_CLEANUP] Participant (client_id={client_specific_id}) already deleted from meeting {meeting_id}")
+                return {'status': 'already_deleted', 'reason': 'not_found'}
+
+            logger.warning(f"[RTK_CLEANUP] Unexpected status {delete_response.status_code} deleting participant: {delete_response.text}")
+            raise Exception(f"Unexpected status {delete_response.status_code}")
+
+        except requests_lib.Timeout:
+            logger.warning(f"[RTK_CLEANUP] Timeout cleaning up client_id {client_specific_id} from meeting {meeting_id}")
+            raise
+        except requests_lib.RequestException as e:
+            logger.warning(f"[RTK_CLEANUP] Request failed cleaning up client_id {client_specific_id}: {e}")
+            raise
+
+    except Exception as exc:
+        retry_count = self.request.retries
+        if retry_count < self.max_retries:
+            logger.warning(f"[RTK_CLEANUP] Retrying cleanup (attempt {retry_count + 1}/{self.max_retries + 1}): {exc}")
+            delay = 5 * (2 ** retry_count)
+            raise self.retry(exc=exc, countdown=delay)
+        else:
+            logger.error(f"[RTK_CLEANUP] Failed to cleanup client_id {client_specific_id} after {self.max_retries + 1} attempts: {exc}")
+            return {'status': 'failed', 'reason': 'max_retries_exceeded'}
+
+
+@shared_task(bind=True, max_retries=2)
+def cleanup_rtk_user_on_disconnect_task(self, user_id, event_id, meeting_ids):
+    """
+    Async cleanup task for user disconnect from WebSocket.
+    Removes user from multiple RTK meetings across lounge/breakout rooms.
+
+    Called from consumers.py _finalize_disconnect after grace period.
+    Idempotent: handles case where user already removed or meeting doesn't exist.
+
+    Args:
+        user_id: User ID (string, used as client_specific_id)
+        event_id: Event ID (for logging context)
+        meeting_ids: List of RTK meeting UUIDs to clean from
+
+    Returns:
+        dict: {'status': 'ok', 'removed': int, 'reason': str}
+    """
+    import requests as requests_lib
+    from django.conf import settings
+
+    rtk_api_base = getattr(settings, 'RTK_API_BASE', 'https://api.realtime.cloudflare.com/v2')
+    rtk_auth_header = getattr(settings, 'RTK_AUTH_HEADER', '')
+
+    if not rtk_auth_header:
+        logger.error(f"[RTK_CLEANUP] RTK_AUTH_HEADER not configured")
+        return {'status': 'failed', 'reason': 'auth_header_missing'}
+
+    removed = 0
+    failed_meetings = []
+
+    for meeting_id in meeting_ids:
+        try:
+            logger.info(f"[RTK_DISCONNECT_CLEANUP] Checking meeting {meeting_id} for user {user_id}")
+            headers = {
+                "Authorization": rtk_auth_header,
+                "Content-Type": "application/json",
+            }
+
+            # Fetch all participants in this meeting
+            resp = requests_lib.get(
+                f"{rtk_api_base}/meetings/{meeting_id}/participants",
+                headers=headers,
+                params={"limit": 100},
+                timeout=10,
+            )
+
+            if not resp.ok:
+                logger.warning(f"[RTK_DISCONNECT_CLEANUP] Failed to fetch participants from meeting {meeting_id}: {resp.status_code}")
+                failed_meetings.append(meeting_id)
+                continue
+
+            participants = resp.json().get("data", [])
+
+            # Find and remove user from this meeting
+            for p in participants:
+                cid = p.get("client_specific_id") or p.get("custom_participant_id")
+                if cid == str(user_id):
+                    pid = p.get("id")
+                    if pid:
+                        logger.info(f"[RTK_DISCONNECT_CLEANUP] Removing participant {pid} from meeting {meeting_id}")
+                        del_resp = requests_lib.delete(
+                            f"{rtk_api_base}/meetings/{meeting_id}/participants/{pid}",
+                            headers=headers,
+                            timeout=5,
+                        )
+                        if del_resp.status_code in (204, 404):  # 204=deleted, 404=already gone
+                            removed += 1
+                            logger.info(f"[RTK_DISCONNECT_CLEANUP] Successfully removed participant from meeting {meeting_id}")
+                        else:
+                            logger.warning(f"[RTK_DISCONNECT_CLEANUP] Failed to remove participant: {del_resp.status_code}")
+                            failed_meetings.append(meeting_id)
+                    break
+
+        except requests_lib.Timeout:
+            logger.warning(f"[RTK_DISCONNECT_CLEANUP] Timeout processing meeting {meeting_id}")
+            failed_meetings.append(meeting_id)
+        except Exception as e:
+            logger.error(f"[RTK_DISCONNECT_CLEANUP] Error processing meeting {meeting_id}: {e}")
+            failed_meetings.append(meeting_id)
+
+    logger.info(f"[RTK_DISCONNECT_CLEANUP] Event {event_id}: Removed {removed} participants for user {user_id}")
+
+    if failed_meetings:
+        # Retry if we had failures
+        if self.request.retries < self.max_retries:
+            logger.warning(f"[RTK_DISCONNECT_CLEANUP] Retrying failed meetings: {failed_meetings}")
+            delay = 30 * (2 ** self.request.retries)  # 30s, 60s
+            raise self.retry(exc=Exception(f"Some meetings failed: {failed_meetings}"), countdown=delay)
+
+    return {'status': 'ok', 'removed': removed, 'failed_count': len(failed_meetings)}
+
+
 # Phase 13: Application decision email tasks (async, non-blocking)
 
 @shared_task(bind=True, max_retries=2)
