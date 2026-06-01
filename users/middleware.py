@@ -4,7 +4,23 @@ from django.utils import timezone
 class LastActivityMiddleware:
     """
     Update profile.last_activity_at for every authenticated request.
+
+    ✅ Phase 5: Skip tracking for live meeting hot endpoints to reduce DB writes.
+    These endpoints are called frequently during active meetings and don't need
+    real-time activity updates.
     """
+
+    # Phase 5: Hot endpoints that should skip last_activity_at updates
+    # These are called frequently during live meetings
+    LIVE_ACTIVITY_SKIP_PATHS = [
+        "/rtk/join/",
+        "/rtk/rejoin/",
+        "/live/rejoin/",
+        "/waiting-room/status/",
+        "/lounge-state/",
+        "/lounge-join-table/",
+        "/lounge-leave-table/",
+    ]
 
     def __init__(self, get_response):
         self.get_response = get_response
@@ -14,6 +30,10 @@ class LastActivityMiddleware:
 
         user = getattr(request, "user", None)
         if user and user.is_authenticated:
+            # ✅ Phase 5: Skip activity tracking for hot endpoints
+            if any(skip_path in request.path for skip_path in self.LIVE_ACTIVITY_SKIP_PATHS):
+                return response
+
             profile = getattr(user, "profile", None)
             if profile is not None:
                 now = timezone.now()
