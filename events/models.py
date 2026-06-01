@@ -459,6 +459,7 @@ class Event(models.Model):
     )
     external_streaming_url = models.URLField(
         blank=True,
+        max_length=2048,
         help_text="Direct join URL for the external streaming platform"
     )
     external_streaming_meeting_id = models.CharField(
@@ -477,6 +478,7 @@ class Event(models.Model):
     )
     external_streaming_host_link = models.URLField(
         blank=True,
+        max_length=2048,
         help_text="Separate host/moderator join link for the external platform"
     )
 
