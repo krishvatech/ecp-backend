@@ -3530,6 +3530,7 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
             'nominator_name', 'nominator_email', 'nominee_name', 'nominee_email',
             'sponsor_organization',
             'reviewed_by_user', 'registration_id', 'reviewed_at', 'created_at', 'updated_at',
+            'accepted_at', 'declined_at', 'waitlisted_at', 'cancelled_at',
             'accepted_tier_price', 'accepted_tier_currency', 'origin_status'
         ]
         read_only_fields = fields
