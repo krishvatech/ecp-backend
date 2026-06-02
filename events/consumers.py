@@ -379,7 +379,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         # Send welcome message with current lounge state
         lounge_state = await self.get_lounge_state()
         await self.update_online_status(True)
-        await self.sync_current_location_on_connect()  # ✅ NEW: Sync current_location from DB state
+        # ✅  : Store location in Redis instead of syncing to DB
+        await self.set_user_location_from_state()
         await self.schedule_lounge_update()  # Coalesce reconnect/join bursts
 
         # Prepare break state for reconnecting participants
@@ -1392,8 +1393,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             logger.warning(f"[CONSUMER] exit_lounge error: {e}")
 
     @database_sync_to_async
-    def sync_current_location_on_connect(self):
-        """Sync current_location field based on existing DB state on reconnect."""
+    def set_user_location_from_state(self):
+        """
+        ✅  : Determine and store user's current location in Redis (NO DB WRITE).
+
+        Replaces sync_current_location_on_connect() which was writing to database.
+        """
+        from events.redis_presence import RedisPresenceManager
+
         try:
             if self._is_guest_user():
                 guest = self.user.guest
@@ -1401,15 +1408,17 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     location = "breakout_room" if (guest.lounge_table and guest.lounge_table.category == "BREAKOUT") else "social_lounge"
                 else:
                     location = "main_room"
-                if guest.current_location != location:
-                    guest.current_location = location
-                    guest.save(update_fields=["current_location"])
-                    print(f"[CONSUMER] Synced {self.user.username} location: {location} (guest)")
+                # ✅  : Store in Redis only (not DB)
+                RedisPresenceManager.set_user_location(self.event_id, self.user.guest.id, location)
+                logger.debug(f"[CONSUMER] ✅   set Redis location user=guest_{self.user.guest.id} location={location}")
                 return
 
-            reg = EventRegistration.objects.get(event_id=self.event_id, user=self.user)
-
             # Determine location from existing signals
+            reg = EventRegistration.objects.filter(event_id=self.event_id, user=self.user).first()
+            if not reg:
+                logger.debug(f"[CONSUMER] No registration found for user={self.user.id}, skipping location")
+                return
+
             in_lounge = LoungeParticipant.objects.filter(
                 table__event_id=self.event_id, user=self.user
             ).exists()
@@ -1423,22 +1432,25 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             else:
                 location = "pre_event"
 
-            if reg.current_location != location:
-                reg.current_location = location
-                reg.save(update_fields=["current_location"])
-                print(f"[CONSUMER] Synced {self.user.username} location: {location}")
-        except EventRegistration.DoesNotExist:
-            pass
+            # ✅  : Store in Redis only (not DB)
+            RedisPresenceManager.set_user_location(self.event_id, self.user.id, location)
+            logger.debug(f"[CONSUMER] ✅   set Redis location user={self.user.id} location={location}")
+
         except Exception as e:
-            print(f"[CONSUMER] Error syncing current_location for {self.user.username}: {e}")
+            logger.error(f"[CONSUMER] Error setting location in Redis for user={self.user.id}: {e}")
 
     @database_sync_to_async
     def get_user_presence_context(self):
         """Return (user_lounge_table_id, current_location, admission_status) for welcome payload."""
+        from events.redis_presence import RedisPresenceManager
+
         if self._is_guest_user():
             guest = self.user.guest
             table_id = guest.lounge_table_id
-            location = guest.current_location or "main_room"
+            # ✅  : Try to get location from Redis first (real-time), fallback to DB
+            location = RedisPresenceManager.get_user_location(self.event_id, guest.id)
+            if not location:
+                location = guest.current_location or "main_room"
             # Guest sessions are effectively admitted for live-room UX.
             return table_id, location, "admitted"
 
@@ -1452,7 +1464,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             user_lounge_table_id = participant.table_id
 
         user_reg = EventRegistration.objects.filter(event_id=self.event_id, user=self.user).first()
-        user_current_location = user_reg.current_location if user_reg else "pre_event"
+        # ✅  : Try to get location from Redis first (real-time), fallback to DB
+        user_current_location = RedisPresenceManager.get_user_location(self.event_id, self.user.id)
+        if not user_current_location and user_reg:
+            user_current_location = user_reg.current_location or "pre_event"
+        elif not user_current_location:
+            user_current_location = "pre_event"
         user_admission_status = user_reg.admission_status if user_reg else "waiting"
         return user_lounge_table_id, user_current_location, user_admission_status
 
@@ -1932,7 +1949,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 self._invalidate_lounge_presence_cache_sync()
                 return
 
-            #  Use Redis for presence tracking instead of database writes
+            # ✅  : Use Redis for presence tracking instead of database writes
             from events.redis_presence import RedisPresenceManager
 
             if increment:
@@ -1950,16 +1967,24 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     user_id=self.user.id
                 )
 
+            # ✅  : Check for Redis errors (count == -1)
+            if online_count == -1:
+                logger.error(
+                    "[PRESENCE] ❌   Redis error user=%s increment=%s",
+                    self.user.id,
+                    increment
+                )
+                return
+
             logger.info(
-                "[PRESENCE] ✅ PHASE 7 Redis user=%s increment=%s online_count=%s",
+                "[PRESENCE] ✅   Redis user=%s increment=%s online_count=%s",
                 self.user.id,
                 increment,
                 online_count
             )
 
-            #  Update Event.idle_started_at based on Redis online count
-            # Use Celery task instead of synchronous update to avoid blocking
-            # For immediate effect, we update based on count with DB write only when transitioning
+            # ✅  : Update Event.idle_started_at based on Redis online count
+            # Minimal DB writes: only on transitions to/from 0
             if online_count == 0:
                 # All users gone, mark event as idle
                 Event.objects.filter(
@@ -1983,12 +2008,29 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def should_finalize_disconnect_cleanup(self):
+        """
+        ✅  : Check if user should be finalized for disconnect cleanup.
+        Uses Redis connection count instead of DB online_count.
+        """
+        from events.redis_presence import RedisPresenceManager
+
         if self._is_guest_user():
             guest_online_count = int(cache.get(self._cache_key_guest_online_count(), 0) or 0)
             logger.info(
                 f"[CLEANUP] Guest {self.user.guest.id} grace-period check count={guest_online_count}"
             )
             return guest_online_count == 0
+
+        # ✅  : Check Redis connection count instead of DB
+        conn_count = RedisPresenceManager.get_connection_count(self.event_id, self.user.id)
+        if conn_count > 0:
+            # Still have connections open (multi-tab case)
+            logger.info(
+                f"[CLEANUP] user={self.user.id} event={self.event_id} has {conn_count} open connections, skip finalize"
+            )
+            return False
+
+        # Check for grace period reconnect
         reg = EventRegistration.objects.filter(event_id=self.event_id, user=self.user).first()
         if not reg:
             logger.info(
@@ -2006,14 +2048,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 )
                 return False
         logger.info(
-            "[CLEANUP] finalize decision event=%s user=%s online_count=%s is_online=%s last_reconnect_at=%s",
+            "[CLEANUP] finalize decision event=%s user=%s conn_count=%s last_reconnect_at=%s",
             self.event_id,
             self.user.id,
-            reg.online_count,
-            reg.is_online,
+            conn_count,
             reg.last_reconnect_at.isoformat() if reg.last_reconnect_at else None,
         )
-        return reg.online_count == 0
+        return True  # No open connections, safe to finalize
 
     @database_sync_to_async
     def check_is_banned(self):

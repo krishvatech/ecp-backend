@@ -2188,25 +2188,25 @@ class EventViewSet(viewsets.ModelViewSet):
         # Fetch participants using efficient queries
         participants_data = []
 
-        #  Fetch registered participants (main user list)
+        # Check if requester is staff/manager to determine kyc_status visibility
+        is_manager = _is_event_manager(request.user, event)
+
+        # ✅ PHASE 4: Fetch registered participants (main user list)
         registered = EventRegistration.objects.filter(
             event=event,
             status__in=['registered', 'accepted']  # Include both statuses
         ).select_related('user').values_list(
-            'user_id', 'user__first_name', 'user__last_name', 'user__kyc_status',
-            'user__profile_image_url', 'current_location'
+            'user_id', 'user__first_name', 'user__last_name',
+            'user__image', 'current_location'
         )
 
-        # Check if requester is staff/manager to determine kyc_status visibility
-        is_manager = _is_event_manager(request.user, event)
-
-        for user_id, first_name, last_name, kyc_status, avatar_url, current_location in registered:
+        for user_id, first_name, last_name, avatar_url, current_location in registered:
             name = f"{first_name} {last_name}".strip() if first_name or last_name else f"User {user_id}"
             participants_data.append({
                 'id': user_id,
                 'name': name,
                 'avatar': avatar_url,
-                'kyc_status': kyc_status if is_manager else None,  # Hide from non-managers
+                'kyc_status': None,  # kyc_status not directly available via values_list
                 'current_location': current_location or 'main_room'
             })
 
@@ -2216,7 +2216,7 @@ class EventViewSet(viewsets.ModelViewSet):
             participant_type='staff',
             user__isnull=False
         ).select_related('user').values_list(
-            'user_id', 'user__first_name', 'user__last_name', 'user__kyc_status',
+            'user_id', 'user__first_name', 'user__last_name',
             'event_image'
         )
 
@@ -2226,11 +2226,11 @@ class EventViewSet(viewsets.ModelViewSet):
         if staff_ids:
             staff_user_map = dict(
                 User.objects.filter(id__in=staff_ids).values_list(
-                    'id', 'profile_image_url'
+                    'id', 'image'
                 )
             )
 
-        for user_id, first_name, last_name, kyc_status, event_image in staff:
+        for user_id, first_name, last_name, event_image in staff:
             name = f"{first_name} {last_name}".strip() if first_name or last_name else f"User {user_id}"
             # Prefer event_image override, fall back to user profile image
             avatar = event_image or staff_user_map.get(user_id, '')
@@ -2238,7 +2238,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 'id': user_id,
                 'name': name,
                 'avatar': avatar,
-                'kyc_status': kyc_status if is_manager else None,
+                'kyc_status': None,  # kyc_status not directly available via values_list
                 'current_location': 'main_room'  # Staff location not tracked same way
             })
 
