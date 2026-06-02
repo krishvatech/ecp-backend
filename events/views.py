@@ -1322,6 +1322,9 @@ def live_rejoin_slot(event_id, limit=None, ttl=None):
 
     This limits how many users per event can run heavy live rejoin logic at the same time.
     If Redis/cache has any issue, it fails open and allows rejoin instead of blocking users.
+
+    NOTE: This context manager uses try/finally (not try/except around yield) to ensure
+    exceptions from the with-body propagate normally. Cache errors are caught separately.
     """
     limit = int(limit or getattr(settings, "LIVE_REJOIN_CONCURRENT_LIMIT", 80))
     ttl = int(ttl or getattr(settings, "LIVE_REJOIN_SLOT_TTL_SECONDS", 30))
@@ -1332,7 +1335,10 @@ def live_rejoin_slot(event_id, limit=None, ttl=None):
 
     key = f"event:{event_id}:live_rejoin_slots"
     acquired = False
+    allowed = True  # fail open by default
 
+    # Determine allowed status by attempting cache operations.
+    # Only catches cache/Redis errors, not exceptions from with-body.
     try:
         cache.add(key, 0, timeout=ttl)
         count = cache.incr(key)
@@ -1352,23 +1358,26 @@ def live_rejoin_slot(event_id, limit=None, ttl=None):
 
         if allowed:
             acquired = True
-            yield True
         else:
             try:
                 cache.decr(key)
             except Exception:
                 pass
 
-            yield False
-
     except Exception:
+        # Cache/Redis error: fail open and allow rejoin
         logger.info(
-            "[LIVE_REJOIN_QUEUE] event=%s allowed=true limit=%s",
+            "[LIVE_REJOIN_QUEUE] event=%s allowed=true limit=%s (cache failed)",
             event_id,
             limit,
         )
-        yield True
+        allowed = True
+        acquired = False
 
+    # Yield outside the cache try/except so exceptions from with-body propagate.
+    # Use try/finally to guarantee cleanup.
+    try:
+        yield allowed
     finally:
         if acquired:
             try:
@@ -9527,7 +9536,21 @@ class EventViewSet(viewsets.ModelViewSet):
 
         Endpoint is idempotent: safe to call multiple times.
         """
-        event = self.get_object()
+        try:
+            event = self.get_object()
+        except Http404:
+            # Event doesn't exist (deleted, never existed, etc.)
+            logger.warning(f"[LIVE_REJOIN] event {pk} not found (deleted or doesn't exist)")
+            return Response(
+                {
+                    "can_rejoin": False,
+                    "retryable": False,
+                    "reason": "event_not_found",
+                    "detail": "Event not found.",
+                },
+                status=404,
+            )
+
         user = request.user
 
         #  Cache RTK meeting ID to avoid duplicate _ensure_rtk_meeting_for_event calls

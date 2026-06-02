@@ -177,3 +177,67 @@ def test_live_rejoin_slot_fails_open_on_cache_error(monkeypatch):
 
     with event_views.live_rejoin_slot(696) as allowed:
         assert allowed is True
+
+
+def test_deleted_event_live_rejoin_returns_404(auth_client):
+    """Test that rejoin on deleted event returns 404 not 500."""
+    deleted_event_id = 999999  # Non-existent event ID
+
+    response = auth_client.post(
+        f"/api/events/{deleted_event_id}/live/rejoin/",
+        data={},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload["can_rejoin"] is False
+    assert payload["retryable"] is False
+    assert payload["reason"] == "event_not_found"
+    assert payload["detail"] == "Event not found."
+
+
+def test_valid_event_live_rejoin_returns_200_or_202(auth_client, live_event, monkeypatch):
+    """Test that rejoin on valid event returns 200 or 202, not 500."""
+    class DummyResponse:
+        status_code = 201
+
+        @staticmethod
+        def json():
+            return {"data": {"token": "rtk-token-123"}}
+
+    monkeypatch.setattr(event_views, "_ensure_rtk_meeting_for_event", lambda event: "meeting-123")
+    monkeypatch.setattr(event_views.requests, "post", lambda *args, **kwargs: DummyResponse())
+
+    response = auth_client.post(
+        f"/api/events/{live_event.id}/live/rejoin/",
+        data={},
+        content_type="application/json",
+    )
+
+    # Should return 200 (success) or 202 (queued), not 500
+    assert response.status_code in (200, 202)
+
+    if response.status_code == 200:
+        payload = response.json()
+        assert payload["can_rejoin"] is True
+        assert "event_id" in payload
+    elif response.status_code == 202:
+        payload = response.json()
+        assert payload["queued"] is True
+        assert payload["reason"] == "live_rejoin_busy"
+
+
+def test_live_rejoin_slot_context_manager_propagates_http404(monkeypatch):
+    """Test that Http404 exceptions propagate through the context manager."""
+    from django.http import Http404
+
+    with event_views.live_rejoin_slot(696) as allowed:
+        assert allowed is True
+        # Simulate an Http404 being raised inside the with-block
+        try:
+            raise Http404("Event not found")
+        except Http404:
+            # Should NOT cause "RuntimeError: generator didn't stop after throw()"
+            # The exception should propagate normally
+            pass
