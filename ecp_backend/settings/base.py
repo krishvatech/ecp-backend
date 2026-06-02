@@ -284,7 +284,9 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "users.middleware.LastActivityMiddleware",
-    "wagtail.contrib.redirects.middleware.RedirectMiddleware",
+    # ✅ PHASE 6: Safe Wagtail redirect middleware that skips /api/* paths
+    # Prevents unnecessary Site.find_for_request() DB queries during API errors
+    "common.middleware.SafeWagtailRedirectMiddleware",
     "users.middleware.WagtailPlatformAdminOnlyMiddleware",
 ]
 
