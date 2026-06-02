@@ -683,6 +683,16 @@ class EventParticipantListItemSerializer(serializers.Serializer):
     display_order = serializers.IntegerField(allow_null=True)
 
 
+#  Lightweight participant serializer for live meeting (batched endpoint)
+class ParticipantsLiteSerializer(serializers.Serializer):
+    """Minimal participant data for live meeting participant list/cards."""
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    avatar = serializers.URLField(allow_null=True, allow_blank=True)
+    kyc_status = serializers.CharField(allow_null=True, allow_blank=True)
+    current_location = serializers.CharField(default="main_room")
+
+
 class SessionParticipantSerializer(serializers.ModelSerializer):
     """Read-only serializer for session participants (mirrors EventParticipantSerializer)."""
 

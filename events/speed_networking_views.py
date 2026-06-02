@@ -517,7 +517,7 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         return SpeedNetworkingSession.objects.all()
 
     def list(self, request, *args, **kwargs):
-        # ✅ PHASE 3: Cache speed networking state with 10-30 second TTL
+        #  Cache speed networking state with 10-30 second TTL
         event_id = self.kwargs.get('event_id')
         cache_key = f"event:{event_id}:speed_networking_state" if event_id else None
 
@@ -545,7 +545,7 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         # Create interest tag objects from criteria_config
         self._create_interest_tags_from_criteria_config(session)
 
-        # ✅ PHASE 3: Invalidate speed networking cache on create
+        #  Invalidate speed networking cache on create
         cache_key = f"event:{event_id}:speed_networking_state"
         cache.delete(cache_key)
         logger.debug(f"[SpeedNetworkingSessionViewSet] Invalidated speed networking cache for event={event_id}")
@@ -556,7 +556,7 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         # Recreate interest tags from criteria_config (soft-delete old ones first)
         self._create_interest_tags_from_criteria_config(session)
 
-        # ✅ PHASE 3: Invalidate speed networking cache on update
+        #  Invalidate speed networking cache on update
         event_id = self.kwargs.get('event_id') or session.event_id
         cache_key = f"event:{event_id}:speed_networking_state"
         cache.delete(cache_key)

@@ -317,7 +317,7 @@ def _ensure_rtk_meeting_for_event(event: Event) -> str:
 
 def _cache_event_join_snapshot(event: Event) -> None:
     """
-    ✅ PHASE 2: Cache event fields needed for join to reduce DB queries.
+     Cache event fields needed for join to reduce DB queries.
 
     Caches only safe, read-only event fields. Does not cache sensitive data.
     TTL: 2-5 seconds (covers brief bursts of joins).
@@ -2160,6 +2160,95 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         data = _serialize_event_live_context(event, request=request)
         return Response(data)
+
+    #  Batched participant endpoint to replace individual user/<id> calls
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="participants-lite")
+    def participants_lite(self, request, pk=None):
+        """
+        Batched lightweight participant data for live meeting UI.
+
+        Returns: id, name, avatar, kyc_status (permission-aware), current_location
+
+        Replaces many individual /api/users/<id>/?ecp_lite=kyc calls.
+        Cached per event + user (user-aware for permission visibility).
+        Cache TTL: 45 seconds.
+        """
+        from events.serializers import ParticipantsLiteSerializer
+
+        event = self.get_object()
+
+        #  Cache key includes user_id because kyc_status visibility differs per user
+        cache_key = f"event:{event.id}:participants_lite:user:{request.user.id}"
+        cached_data = cache.get(cache_key)
+
+        if cached_data is not None:
+            logger.debug(f"[ParticipantsLite] Cache hit for event={event.id}, user={request.user.id}")
+            return Response(cached_data)
+
+        # Fetch participants using efficient queries
+        participants_data = []
+
+        #  Fetch registered participants (main user list)
+        registered = EventRegistration.objects.filter(
+            event=event,
+            status__in=['registered', 'accepted']  # Include both statuses
+        ).select_related('user').values_list(
+            'user_id', 'user__first_name', 'user__last_name', 'user__kyc_status',
+            'user__profile_image_url', 'current_location'
+        )
+
+        # Check if requester is staff/manager to determine kyc_status visibility
+        is_manager = _is_event_manager(request.user, event)
+
+        for user_id, first_name, last_name, kyc_status, avatar_url, current_location in registered:
+            name = f"{first_name} {last_name}".strip() if first_name or last_name else f"User {user_id}"
+            participants_data.append({
+                'id': user_id,
+                'name': name,
+                'avatar': avatar_url,
+                'kyc_status': kyc_status if is_manager else None,  # Hide from non-managers
+                'current_location': current_location or 'main_room'
+            })
+
+        #  Also fetch staff participants (EventParticipant with type='staff')
+        staff = EventParticipant.objects.filter(
+            event=event,
+            participant_type='staff',
+            user__isnull=False
+        ).select_related('user').values_list(
+            'user_id', 'user__first_name', 'user__last_name', 'user__kyc_status',
+            'event_image'
+        )
+
+        # Get default user profile images for staff
+        staff_ids = [s[0] for s in staff]
+        staff_user_map = {}
+        if staff_ids:
+            staff_user_map = dict(
+                User.objects.filter(id__in=staff_ids).values_list(
+                    'id', 'profile_image_url'
+                )
+            )
+
+        for user_id, first_name, last_name, kyc_status, event_image in staff:
+            name = f"{first_name} {last_name}".strip() if first_name or last_name else f"User {user_id}"
+            # Prefer event_image override, fall back to user profile image
+            avatar = event_image or staff_user_map.get(user_id, '')
+            participants_data.append({
+                'id': user_id,
+                'name': name,
+                'avatar': avatar,
+                'kyc_status': kyc_status if is_manager else None,
+                'current_location': 'main_room'  # Staff location not tracked same way
+            })
+
+        #  Cache with 45-second TTL (balance between freshness and performance)
+        cache.set(cache_key, participants_data, timeout=45)
+        logger.info(
+            f"[ParticipantsLite] Cached {len(participants_data)} participants for event={event.id}, user={request.user.id} (45s TTL)"
+        )
+
+        return Response(participants_data)
 
     # ---------------------- Permissions ----------------------
     def get_permissions(self):
@@ -8971,7 +9060,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=500,
             )
 
-        # ✅ PHASE 2: Fetch EventRegistration ONCE with all needed fields
+        #  Fetch EventRegistration ONCE with all needed fields
         # Replace 3 separate queries with 1 optimized query
         existing_registration = EventRegistration.objects.filter(
             event=event,
@@ -9050,7 +9139,7 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         )
 
-        # ✅ PHASE 2: Handle existing vs new registration efficiently
+        #  Handle existing vs new registration efficiently
         # Avoid get_or_create which triggers 2 queries under the hood
         _created = False
         if existing_registration:
@@ -9091,7 +9180,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
             registration = EventRegistration(event=event, user=user, **defaults)
             _created = True
-        # ✅ PHASE 2: Track field changes to save only once
+        #  Track field changes to save only once
         fields_to_update = []
 
         if event.waiting_room_enabled and not is_host:
@@ -9188,7 +9277,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 except Exception as e:
                     logger.warning(f"[WAITING_ROOM] Failed to remove user from lounge: {e}")
 
-                # ✅ PHASE 2: Save registration with all collected updates
+                #  Save registration with all collected updates
                 if fields_to_update or _created:
                     if _created:
                         registration.save()
@@ -9270,7 +9359,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=500,
             )
 
-        # ✅ PHASE 2: Mark user as joined_live (in memory, save with other updates)
+        #  Mark user as joined_live (in memory, save with other updates)
         if not registration.joined_live:
             registration.joined_live = True
             registration.joined_live_at = timezone.now()
@@ -9310,7 +9399,7 @@ class EventViewSet(viewsets.ModelViewSet):
             # The end boundary is EXCLUSIVE (at exactly grace_period_end, grace period has ended)
             is_grace_period_join = event.start_time <= now < grace_period_end
 
-        # ✅ PHASE 2: Cache event snapshot for next join burst
+        #  Cache event snapshot for next join burst
         _cache_event_join_snapshot(event)
 
         logger.info(f"[RTK_JOIN] User {user.id} successfully joined event {event.id} (query optimizations: consolidated registration fetches and saves)")
@@ -9441,7 +9530,7 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         user = request.user
 
-        # ✅ PHASE 3: Cache RTK meeting ID to avoid duplicate _ensure_rtk_meeting_for_event calls
+        #  Cache RTK meeting ID to avoid duplicate _ensure_rtk_meeting_for_event calls
         rtk_meeting_id_cache = {}  # Request-scoped cache
 
         # Log rejoin attempt
@@ -9535,7 +9624,7 @@ class EventViewSet(viewsets.ModelViewSet):
             else:
                 response_data["room_type"] = "main_room"
 
-            # ✅ PHASE 3: Get RTK meeting ID (cached in request scope)
+            #  Get RTK meeting ID (cached in request scope)
             if "meeting_id" not in rtk_meeting_id_cache:
                 try:
                     rtk_meeting_id_cache["meeting_id"] = _ensure_rtk_meeting_for_event(event)
@@ -9589,7 +9678,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # ──── REGISTERED USER BRANCH ──────────────────────────────────────────
 
-        # ✅ PHASE 3: Fetch EventRegistration ONCE with all needed fields
+        #  Fetch EventRegistration ONCE with all needed fields
         # Replace 3 separate queries with 1 optimized query
         registration = EventRegistration.objects.filter(
             event=event,
@@ -9671,7 +9760,7 @@ class EventViewSet(viewsets.ModelViewSet):
         else:
             response_data["room_type"] = "main_room"
 
-        # ✅ PHASE 3: Get RTK meeting ID (cached in request scope)
+        #  Get RTK meeting ID (cached in request scope)
         if "meeting_id" not in rtk_meeting_id_cache:
             try:
                 rtk_meeting_id_cache["meeting_id"] = _ensure_rtk_meeting_for_event(event)
@@ -9708,7 +9797,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 if picture:
                     body["picture"] = picture
 
-                # ✅ PHASE 3: Reduce timeout from 10s to 5s for faster rejoin
+                #  Reduce timeout from 10s to 5s for faster rejoin
                 resp = requests.post(
                     f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
                     headers=_rtk_headers(),

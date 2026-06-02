@@ -274,7 +274,7 @@ def create_notification_once(*, recipient, kind, title, description="", state=""
         data={**data, **unique},
     )
 
-    # ✅ PHASE 3: Invalidate unread notification count cache on create
+    #  Invalidate unread notification count cache on create
     cache_key = f"user:{recipient.id}:notifications:unread:count"
     cache.delete(cache_key)
     logger.debug(f"[create_notification_once] Invalidated unread count cache for user={recipient.id}")
@@ -4227,7 +4227,7 @@ class MeSkillViewSet(viewsets.ModelViewSet):
         )
 
     def list(self, request, *args, **kwargs):
-        # ✅ PHASE 3: Cache user skills with 5-10 minute TTL
+        #  Cache user skills with 5-10 minute TTL
         cache_key = f"user:{request.user.id}:skills"
         cached_data = cache.get(cache_key)
 
@@ -4255,21 +4255,21 @@ class MeSkillViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save()
-        # ✅ PHASE 3: Invalidate skills cache on create
+        #  Invalidate skills cache on create
         cache_key = f"user:{self.request.user.id}:skills"
         cache.delete(cache_key)
         logger.debug(f"[MeSkillViewSet] Invalidated skills cache for user={self.request.user.id}")
 
     def perform_update(self, serializer):
         serializer.save()
-        # ✅ PHASE 3: Invalidate skills cache on update
+        #  Invalidate skills cache on update
         cache_key = f"user:{self.request.user.id}:skills"
         cache.delete(cache_key)
         logger.debug(f"[MeSkillViewSet] Invalidated skills cache for user={self.request.user.id}")
 
     def perform_destroy(self, instance):
         instance.delete()
-        # ✅ PHASE 3: Invalidate skills cache on delete
+        #  Invalidate skills cache on delete
         cache_key = f"user:{self.request.user.id}:skills"
         cache.delete(cache_key)
         logger.debug(f"[MeSkillViewSet] Invalidated skills cache for user={self.request.user.id}")
@@ -4400,7 +4400,7 @@ class MeLanguageViewSet(viewsets.ModelViewSet):
         )
 
     def list(self, request, *args, **kwargs):
-        # ✅ PHASE 3: Cache user languages with 5-10 minute TTL
+        #  Cache user languages with 5-10 minute TTL
         cache_key = f"user:{request.user.id}:languages"
         cached_data = cache.get(cache_key)
 
@@ -4428,21 +4428,21 @@ class MeLanguageViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save()
-        # ✅ PHASE 3: Invalidate languages cache on create
+        #  Invalidate languages cache on create
         cache_key = f"user:{self.request.user.id}:languages"
         cache.delete(cache_key)
         logger.debug(f"[MeLanguageViewSet] Invalidated languages cache for user={self.request.user.id}")
 
     def perform_update(self, serializer):
         serializer.save()
-        # ✅ PHASE 3: Invalidate languages cache on update
+        #  Invalidate languages cache on update
         cache_key = f"user:{self.request.user.id}:languages"
         cache.delete(cache_key)
         logger.debug(f"[MeLanguageViewSet] Invalidated languages cache for user={self.request.user.id}")
 
     def perform_destroy(self, instance):
         instance.delete()
-        # ✅ PHASE 3: Invalidate languages cache on delete
+        #  Invalidate languages cache on delete
         cache_key = f"user:{self.request.user.id}:languages"
         cache.delete(cache_key)
         logger.debug(f"[MeLanguageViewSet] Invalidated languages cache for user={self.request.user.id}")

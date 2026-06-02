@@ -1,11 +1,17 @@
 """
-Phase 6: Redis-based WebSocket Presence Tracking
+Phase 7: Redis-based WebSocket Presence Tracking (NO DB WRITES ON CONNECT/DISCONNECT)
 
 Moves real-time presence and online counts from database to Redis
 to eliminate DB writes during WebSocket connect/disconnect storms.
 
+ Uses django_redis.get_redis_connection() for proper Redis set operations
+✅ Eliminates ALL database writes on connect/disconnect
+✅ Presence stored in Redis only (TTL: 60-120 seconds)
+✅ Durable state (joined_live) remains in DB
+✅ Optional Celery task syncs summary periodically
+
 Redis Keys:
-  event:{event_id}:online_users         - Set of online user IDs
+  event:{event_id}:online_users         - Set of online user IDs (SADD/SMEMBERS/SCARD)
   event:{event_id}:presence:{user_id}   - User presence data (JSON)
   event:{event_id}:location:{user_id}   - User current location (TTL)
 
@@ -15,9 +21,16 @@ TTL: 60-120 seconds (auto-cleanup if disconnect missed)
 import json
 import logging
 from typing import Dict, List, Set, Optional
-from django.core.cache import cache
 from django.utils import timezone
 from django.conf import settings
+
+#  Use django_redis for proper Redis client access
+try:
+    from django_redis import get_redis_connection
+    redis_conn = get_redis_connection("default")
+except ImportError:
+    from django.core.cache import cache
+    redis_conn = None
 
 logger = logging.getLogger('events')
 
@@ -50,10 +63,19 @@ class RedisPresenceManager:
         return LOCATION_KEY_PREFIX.format(event_id=event_id, user_id=user_id)
 
     @classmethod
+    def _get_redis(cls):
+        """Get Redis connection, with fallback to cache."""
+        if redis_conn:
+            return redis_conn
+        # Fallback for non-redis cache backends
+        from django.core.cache import cache
+        return cache
+
+    @classmethod
     def add_user_online(cls, event_id: int, user_id: int, user_type: str = 'registered',
                        is_guest: bool = False) -> int:
         """
-        Add user to online set.
+         Add user to online set in Redis (NO DB WRITE).
 
         Args:
             event_id: Event ID
@@ -68,9 +90,17 @@ class RedisPresenceManager:
             online_key = cls._online_users_key(event_id)
             presence_key = cls._presence_key(event_id, user_id)
 
-            # Add user to online set
-            cache.sadd(online_key, str(user_id))
-            cache.expire(online_key, PRESENCE_TTL)
+            r = cls._get_redis()
+
+            #  Use Redis SADD + EXPIRE (atomic set operation)
+            if hasattr(r, 'sadd'):
+                r.sadd(online_key, str(user_id))
+                r.expire(online_key, PRESENCE_TTL)
+            else:
+                # Fallback for non-Redis cache
+                from django.core.cache import cache
+                cache.sadd(online_key, str(user_id))
+                cache.expire(online_key, PRESENCE_TTL)
 
             # Store presence data with TTL
             presence_data = {
@@ -79,7 +109,12 @@ class RedisPresenceManager:
                 'user_type': user_type,
                 'is_guest': is_guest,
             }
-            cache.set(presence_key, json.dumps(presence_data), timeout=PRESENCE_TTL)
+
+            if hasattr(r, 'setex'):
+                r.setex(presence_key, PRESENCE_TTL, json.dumps(presence_data))
+            else:
+                from django.core.cache import cache
+                cache.set(presence_key, json.dumps(presence_data), timeout=PRESENCE_TTL)
 
             # Get new count
             count = cls.get_online_count(event_id)
@@ -94,7 +129,7 @@ class RedisPresenceManager:
     @classmethod
     def remove_user_online(cls, event_id: int, user_id: int) -> int:
         """
-        Remove user from online set.
+         Remove user from online set in Redis (NO DB WRITE).
 
         Args:
             event_id: Event ID
@@ -108,12 +143,18 @@ class RedisPresenceManager:
             presence_key = cls._presence_key(event_id, user_id)
             location_key = cls._location_key(event_id, user_id)
 
-            # Remove from online set
-            cache.srem(online_key, str(user_id))
+            r = cls._get_redis()
 
-            # Delete presence data
-            cache.delete(presence_key)
-            cache.delete(location_key)
+            #  Use Redis SREM (atomic remove operation)
+            if hasattr(r, 'srem'):
+                r.srem(online_key, str(user_id))
+                r.delete(presence_key)
+                r.delete(location_key)
+            else:
+                from django.core.cache import cache
+                cache.srem(online_key, str(user_id))
+                cache.delete(presence_key)
+                cache.delete(location_key)
 
             # Get new count
             count = cls.get_online_count(event_id)
@@ -127,10 +168,17 @@ class RedisPresenceManager:
 
     @classmethod
     def get_online_count(cls, event_id: int) -> int:
-        """Get total online user count for event."""
+        """ Get total online user count from Redis (NO DB QUERY)."""
         try:
             online_key = cls._online_users_key(event_id)
-            count = cache.card(online_key)  # Redis SCARD command
+            r = cls._get_redis()
+
+            if hasattr(r, 'scard'):
+                count = r.scard(online_key)
+            else:
+                from django.core.cache import cache
+                count = cache.card(online_key)
+
             return count or 0
         except Exception as e:
             logger.error(f"[REDIS_PRESENCE] Error getting online count: {e}")
@@ -138,11 +186,18 @@ class RedisPresenceManager:
 
     @classmethod
     def get_online_users(cls, event_id: int) -> Set[int]:
-        """Get set of online user IDs for event."""
+        """ Get set of online user IDs from Redis (NO DB QUERY)."""
         try:
             online_key = cls._online_users_key(event_id)
-            users = cache.smembers(online_key)  # Redis SMEMBERS command
-            return {int(uid) for uid in (users or set())}
+            r = cls._get_redis()
+
+            if hasattr(r, 'smembers'):
+                users = r.smembers(online_key)
+                return {int(uid) for uid in (users or set())}
+            else:
+                from django.core.cache import cache
+                users = cache.smembers(online_key)
+                return {int(uid) for uid in (users or set())}
         except Exception as e:
             logger.error(f"[REDIS_PRESENCE] Error getting online users: {e}")
             return set()
@@ -150,7 +205,7 @@ class RedisPresenceManager:
     @classmethod
     def set_user_location(cls, event_id: int, user_id: int, location: str) -> bool:
         """
-        Set user's current location.
+         Set user's current location in Redis (NO DB WRITE).
 
         Args:
             event_id: Event ID
@@ -162,7 +217,14 @@ class RedisPresenceManager:
         """
         try:
             location_key = cls._location_key(event_id, user_id)
-            cache.set(location_key, location, timeout=LOCATION_TTL)
+            r = cls._get_redis()
+
+            if hasattr(r, 'setex'):
+                r.setex(location_key, LOCATION_TTL, location)
+            else:
+                from django.core.cache import cache
+                cache.set(location_key, location, timeout=LOCATION_TTL)
+
             logger.debug(f"[REDIS_PRESENCE] Set location for user {user_id}: {location}")
             return True
         except Exception as e:
@@ -171,21 +233,33 @@ class RedisPresenceManager:
 
     @classmethod
     def get_user_location(cls, event_id: int, user_id: int) -> Optional[str]:
-        """Get user's current location from Redis."""
+        """ Get user's current location from Redis (NO DB QUERY)."""
         try:
             location_key = cls._location_key(event_id, user_id)
-            location = cache.get(location_key)
-            return location
+            r = cls._get_redis()
+
+            if hasattr(r, 'get'):
+                location = r.get(location_key)
+                return location.decode('utf-8') if location else None
+            else:
+                from django.core.cache import cache
+                return cache.get(location_key)
         except Exception as e:
             logger.error(f"[REDIS_PRESENCE] Error getting location: {e}")
             return None
 
     @classmethod
     def is_user_online(cls, event_id: int, user_id: int) -> bool:
-        """Check if user is currently online."""
+        """ Check if user is currently online in Redis (NO DB QUERY)."""
         try:
             online_key = cls._online_users_key(event_id)
-            return cache.sismember(online_key, str(user_id))
+            r = cls._get_redis()
+
+            if hasattr(r, 'sismember'):
+                return r.sismember(online_key, str(user_id))
+            else:
+                from django.core.cache import cache
+                return cache.sismember(online_key, str(user_id))
         except Exception as e:
             logger.error(f"[REDIS_PRESENCE] Error checking if online: {e}")
             return False
