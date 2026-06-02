@@ -1932,51 +1932,53 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 self._invalidate_lounge_presence_cache_sync()
                 return
 
-            with transaction.atomic():
-                reg, _ = EventRegistration.objects.select_for_update().get_or_create(
-                    event_id=self.event_id, 
-                    user=self.user,
-                    defaults={'status': 'registered'}
-                )
-                if increment:
-                    reg.online_count += 1
-                else:
-                    reg.online_count = max(0, reg.online_count - 1)
-                
-                reg.is_online = (reg.online_count > 0)
-                reg.save(update_fields=['online_count', 'is_online'])
-                print(f"[CONSUMER] User {self.user.username} (ID:{self.user.id}): count={reg.online_count}, online={reg.is_online}")
-                logger.info(
-                    "[PRESENCE] event=%s user=%s increment=%s online_count=%s is_online=%s admission=%s location=%s last_reconnect_at=%s",
-                    self.event_id,
-                    self.user.id,
-                    increment,
-                    reg.online_count,
-                    reg.is_online,
-                    reg.admission_status,
-                    reg.current_location,
-                    reg.last_reconnect_at.isoformat() if reg.last_reconnect_at else None,
-                )
+            # ✅ PHASE 7: Use Redis for presence tracking instead of database writes
+            from events.redis_presence import RedisPresenceManager
 
-                online_total = EventRegistration.objects.filter(
+            if increment:
+                # User connecting: add to Redis online set
+                online_count = RedisPresenceManager.add_user_online(
                     event_id=self.event_id,
-                    is_online=True,
-                ).count()
+                    user_id=self.user.id,
+                    user_type='registered',
+                    is_guest=False
+                )
+            else:
+                # User disconnecting: remove from Redis online set
+                online_count = RedisPresenceManager.remove_user_online(
+                    event_id=self.event_id,
+                    user_id=self.user.id
+                )
 
-                if online_total == 0:
-                    Event.objects.filter(
-                        id=self.event_id,
-                        is_live=True,
-                        idle_started_at__isnull=True,
-                    ).update(idle_started_at=timezone.now())
-                else:
-                    Event.objects.filter(
-                        id=self.event_id,
-                        is_live=True,
-                        idle_started_at__isnull=False,
-                    ).update(idle_started_at=None)
-                self._invalidate_lounge_presence_cache_sync()
+            logger.info(
+                "[PRESENCE] ✅ PHASE 7 Redis user=%s increment=%s online_count=%s",
+                self.user.id,
+                increment,
+                online_count
+            )
+
+            # ✅ PHASE 7: Update Event.idle_started_at based on Redis online count
+            # Use Celery task instead of synchronous update to avoid blocking
+            # For immediate effect, we update based on count with DB write only when transitioning
+            if online_count == 0:
+                # All users gone, mark event as idle
+                Event.objects.filter(
+                    id=self.event_id,
+                    is_live=True,
+                    idle_started_at__isnull=True,
+                ).update(idle_started_at=timezone.now())
+            elif online_count == 1 and increment:
+                # First user rejoining, clear idle state
+                Event.objects.filter(
+                    id=self.event_id,
+                    is_live=True,
+                    idle_started_at__isnull=False,
+                ).update(idle_started_at=None)
+
+            self._invalidate_lounge_presence_cache_sync()
+
         except Exception as e:
+            logger.error(f"[CONSUMER] Error updating online status for {self.user.username}: {e}")
             print(f"[CONSUMER] Error updating online status for {self.user.username}: {e}")
 
     @database_sync_to_async
