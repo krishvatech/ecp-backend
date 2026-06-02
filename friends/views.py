@@ -1,12 +1,16 @@
 from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.conf import settings
+from django.core.cache import cache
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 from django.db.models import Count, F
+import logging
+
+logger = logging.getLogger(__name__)
 from .models import Friendship, FriendRequest,Notification
 from .serializers import (
     friendserializer,
@@ -516,10 +520,43 @@ class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             qs = qs.filter(is_read=False)
         return qs
 
+    def list(self, request, *args, **kwargs):
+        # ✅ PHASE 3: Cache unread notification count with 20 second TTL
+        unread = request.query_params.get("unread")
+        if unread in {"1", "true", "True"}:
+            cache_key = f"user:{request.user.id}:notifications:unread:count"
+            cached_count = cache.get(cache_key)
+            if cached_count is not None:
+                logger.debug(f"[NotificationViewSet.list] Cache hit for unread count, user={request.user.id}")
+                # Return cached count in response
+                return Response({
+                    "count": cached_count,
+                    "results": [],
+                    "next": None,
+                    "previous": None
+                })
+
+        response = super().list(request, *args, **kwargs)
+
+        # Cache unread count if this was an unread-only query
+        if unread in {"1", "true", "True"} and response.status_code == 200 and hasattr(response, 'data'):
+            unread_count = len(response.data.get('results', []))
+            cache_key = f"user:{request.user.id}:notifications:unread:count"
+            cache.set(cache_key, unread_count, timeout=20)
+            logger.debug(f"[NotificationViewSet.list] Cached unread count={unread_count} for user={request.user.id} (20s TTL)")
+
+        return response
+
     @action(detail=False, methods=["post"], url_path="mark-read")
     def mark_read(self, request):
         if _is_guest_user(request.user):
             return Response({"ok": True})
         ids = request.data.get("ids", [])
         Notification.objects.filter(recipient=request.user, id__in=ids).update(is_read=True)
+
+        # ✅ PHASE 3: Invalidate unread count cache on mark-read
+        cache_key = f"user:{request.user.id}:notifications:unread:count"
+        cache.delete(cache_key)
+        logger.debug(f"[NotificationViewSet] Invalidated unread count cache for user={request.user.id}")
+
         return Response({"ok": True})

@@ -515,7 +515,28 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         if event_id:
             return SpeedNetworkingSession.objects.filter(event_id=event_id)
         return SpeedNetworkingSession.objects.all()
-    
+
+    def list(self, request, *args, **kwargs):
+        # ✅ PHASE 3: Cache speed networking state with 10-30 second TTL
+        event_id = self.kwargs.get('event_id')
+        cache_key = f"event:{event_id}:speed_networking_state" if event_id else None
+
+        if cache_key:
+            cached_data = cache.get(cache_key)
+            if cached_data is not None:
+                logger.debug(f"[SpeedNetworkingSessionViewSet.list] Cache hit for event={event_id}")
+                return Response(cached_data)
+
+        # Cache miss - fetch from DB
+        response = super().list(request, *args, **kwargs)
+
+        # Cache the response data with 20 second TTL
+        if cache_key and response.status_code == 200 and hasattr(response, 'data'):
+            cache.set(cache_key, response.data, timeout=20)
+            logger.debug(f"[SpeedNetworkingSessionViewSet.list] Cached state for event={event_id} (20s TTL)")
+
+        return response
+
     def perform_create(self, serializer):
         event_id = self.kwargs.get('event_id')
         event = Event.objects.get(id=event_id)
@@ -524,11 +545,22 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         # Create interest tag objects from criteria_config
         self._create_interest_tags_from_criteria_config(session)
 
+        # ✅ PHASE 3: Invalidate speed networking cache on create
+        cache_key = f"event:{event_id}:speed_networking_state"
+        cache.delete(cache_key)
+        logger.debug(f"[SpeedNetworkingSessionViewSet] Invalidated speed networking cache for event={event_id}")
+
     def perform_update(self, serializer):
         """Override update to also sync interest tags from criteria_config."""
         session = serializer.save()
         # Recreate interest tags from criteria_config (soft-delete old ones first)
         self._create_interest_tags_from_criteria_config(session)
+
+        # ✅ PHASE 3: Invalidate speed networking cache on update
+        event_id = self.kwargs.get('event_id') or session.event_id
+        cache_key = f"event:{event_id}:speed_networking_state"
+        cache.delete(cache_key)
+        logger.debug(f"[SpeedNetworkingSessionViewSet] Invalidated speed networking cache for event={event_id}")
 
     def _create_interest_tags_from_criteria_config(self, session):
         """Create SpeedNetworkingInterestTag objects from criteria_config tags."""

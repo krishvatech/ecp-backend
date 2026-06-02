@@ -274,6 +274,11 @@ def create_notification_once(*, recipient, kind, title, description="", state=""
         data={**data, **unique},
     )
 
+    # ✅ PHASE 3: Invalidate unread notification count cache on create
+    cache_key = f"user:{recipient.id}:notifications:unread:count"
+    cache.delete(cache_key)
+    logger.debug(f"[create_notification_once] Invalidated unread count cache for user={recipient.id}")
+
 class UserViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
@@ -4170,21 +4175,11 @@ class EscoSkillSearchView(APIView):
         q = request.query_params.get("q", "").strip()
 
         # ---------------------------------------------------------
-        # CASE 1: Empty Query -> Return Local DB Skills
+        # PHASE 3: Early return if q is empty or too short
+        # Avoid unnecessary DB queries during live meeting load
         # ---------------------------------------------------------
-        if not q:
-            # Fetch, for example, the first 50 skills from your DB.
-            # You can order by usage count or alphabetical if preferred.
-            local_skills = EscoSkill.objects.all().order_by("preferred_label")[:50]
-            
-            results = [
-                {
-                    "uri": skill.uri, 
-                    "label": skill.preferred_label
-                }
-                for skill in local_skills
-            ]
-            return Response({"results": results})
+        if not q or len(q) < 2:
+            return Response({"results": []})
 
         # ---------------------------------------------------------
         # CASE 2: Query Present -> Search External ESCO API
@@ -4232,16 +4227,52 @@ class MeSkillViewSet(viewsets.ModelViewSet):
         )
 
     def list(self, request, *args, **kwargs):
+        # ✅ PHASE 3: Cache user skills with 5-10 minute TTL
+        cache_key = f"user:{request.user.id}:skills"
+        cached_data = cache.get(cache_key)
+
+        if cached_data is not None:
+            logger.debug(f"[MeSkillViewSet.list] Cache hit for user={request.user.id}")
+            return Response(cached_data)
+
+        # Cache miss - fetch from DB
         qs = self.get_queryset()
+        skill_count = qs.count()
         logger.info(
-            "[MeSkillViewSet.list] Returning %d skills for user=%s",
-            qs.count(),
+            "[MeSkillViewSet.list] Cache miss - returning %d skills for user=%s",
+            skill_count,
             getattr(request.user, "id", None),
         )
-        return super().list(request, *args, **kwargs)
+
+        response = super().list(request, *args, **kwargs)
+
+        # Cache the response data with 5 minute TTL (300 seconds)
+        if response.status_code == 200 and hasattr(response, 'data'):
+            cache.set(cache_key, response.data, timeout=300)
+            logger.debug(f"[MeSkillViewSet.list] Cached skills for user={request.user.id} (5min TTL)")
+
+        return response
 
     def perform_create(self, serializer):
         serializer.save()
+        # ✅ PHASE 3: Invalidate skills cache on create
+        cache_key = f"user:{self.request.user.id}:skills"
+        cache.delete(cache_key)
+        logger.debug(f"[MeSkillViewSet] Invalidated skills cache for user={self.request.user.id}")
+
+    def perform_update(self, serializer):
+        serializer.save()
+        # ✅ PHASE 3: Invalidate skills cache on update
+        cache_key = f"user:{self.request.user.id}:skills"
+        cache.delete(cache_key)
+        logger.debug(f"[MeSkillViewSet] Invalidated skills cache for user={self.request.user.id}")
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        # ✅ PHASE 3: Invalidate skills cache on delete
+        cache_key = f"user:{self.request.user.id}:skills"
+        cache.delete(cache_key)
+        logger.debug(f"[MeSkillViewSet] Invalidated skills cache for user={self.request.user.id}")
 
 
 class GeoCitySearchView(APIView):
@@ -4368,8 +4399,53 @@ class MeLanguageViewSet(viewsets.ModelViewSet):
             .order_by("-proficiency_cefr", "-updated_at")
         )
 
+    def list(self, request, *args, **kwargs):
+        # ✅ PHASE 3: Cache user languages with 5-10 minute TTL
+        cache_key = f"user:{request.user.id}:languages"
+        cached_data = cache.get(cache_key)
+
+        if cached_data is not None:
+            logger.debug(f"[MeLanguageViewSet.list] Cache hit for user={request.user.id}")
+            return Response(cached_data)
+
+        # Cache miss - fetch from DB
+        qs = self.get_queryset()
+        language_count = qs.count()
+        logger.info(
+            "[MeLanguageViewSet.list] Cache miss - returning %d languages for user=%s",
+            language_count,
+            getattr(request.user, "id", None),
+        )
+
+        response = super().list(request, *args, **kwargs)
+
+        # Cache the response data with 5 minute TTL (300 seconds)
+        if response.status_code == 200 and hasattr(response, 'data'):
+            cache.set(cache_key, response.data, timeout=300)
+            logger.debug(f"[MeLanguageViewSet.list] Cached languages for user={request.user.id} (5min TTL)")
+
+        return response
+
     def perform_create(self, serializer):
         serializer.save()
+        # ✅ PHASE 3: Invalidate languages cache on create
+        cache_key = f"user:{self.request.user.id}:languages"
+        cache.delete(cache_key)
+        logger.debug(f"[MeLanguageViewSet] Invalidated languages cache for user={self.request.user.id}")
+
+    def perform_update(self, serializer):
+        serializer.save()
+        # ✅ PHASE 3: Invalidate languages cache on update
+        cache_key = f"user:{self.request.user.id}:languages"
+        cache.delete(cache_key)
+        logger.debug(f"[MeLanguageViewSet] Invalidated languages cache for user={self.request.user.id}")
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        # ✅ PHASE 3: Invalidate languages cache on delete
+        cache_key = f"user:{self.request.user.id}:languages"
+        cache.delete(cache_key)
+        logger.debug(f"[MeLanguageViewSet] Invalidated languages cache for user={self.request.user.id}")
 
 
 class MeLanguageCertificateViewSet(viewsets.ModelViewSet):
