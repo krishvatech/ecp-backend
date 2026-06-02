@@ -1932,7 +1932,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 self._invalidate_lounge_presence_cache_sync()
                 return
 
-            # ✅ PHASE 7: Use Redis for presence tracking instead of database writes
+            #  Use Redis for presence tracking instead of database writes
             from events.redis_presence import RedisPresenceManager
 
             if increment:
@@ -1957,7 +1957,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 online_count
             )
 
-            # ✅ PHASE 7: Update Event.idle_started_at based on Redis online count
+            #  Update Event.idle_started_at based on Redis online count
             # Use Celery task instead of synchronous update to avoid blocking
             # For immediate effect, we update based on count with DB write only when transitioning
             if online_count == 0:

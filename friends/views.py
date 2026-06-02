@@ -521,7 +521,7 @@ class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         return qs
 
     def list(self, request, *args, **kwargs):
-        # ✅ PHASE 3: Cache unread notification count with 20 second TTL
+        #  Cache unread notification count with 20 second TTL
         unread = request.query_params.get("unread")
         if unread in {"1", "true", "True"}:
             cache_key = f"user:{request.user.id}:notifications:unread:count"
@@ -554,7 +554,7 @@ class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         ids = request.data.get("ids", [])
         Notification.objects.filter(recipient=request.user, id__in=ids).update(is_read=True)
 
-        # ✅ PHASE 3: Invalidate unread count cache on mark-read
+        #  Invalidate unread count cache on mark-read
         cache_key = f"user:{request.user.id}:notifications:unread:count"
         cache.delete(cache_key)
         logger.debug(f"[NotificationViewSet] Invalidated unread count cache for user={request.user.id}")

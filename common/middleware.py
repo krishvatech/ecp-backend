@@ -11,7 +11,7 @@ from wagtail.contrib.redirects.middleware import RedirectMiddleware
 logger = logging.getLogger(__name__)
 
 
-# ✅ PHASE 6: Safe Wagtail redirect middleware
+#  Safe Wagtail redirect middleware
 class SafeWagtailRedirectMiddleware(RedirectMiddleware):
     """
     Safe wrapper around Wagtail RedirectMiddleware that skips API paths.
@@ -43,7 +43,7 @@ class SafeWagtailRedirectMiddleware(RedirectMiddleware):
             Original response if API path (skip Wagtail redirect check)
             Otherwise, result of Wagtail's redirect processing
         """
-        # ✅ PHASE 6: Skip Wagtail redirect lookup for API paths
+        #  Skip Wagtail redirect lookup for API paths
         # API endpoints never return redirects, so this is safe
         # Avoids Site.find_for_request() database query during errors
         if request.path.startswith("/api/"):
@@ -53,6 +53,6 @@ class SafeWagtailRedirectMiddleware(RedirectMiddleware):
                 )
             return response
 
-        # ✅ PHASE 6: For non-API paths, use normal Wagtail redirect logic
+        #  For non-API paths, use normal Wagtail redirect logic
         # This preserves CMS page redirects and all existing functionality
         return super().process_response(request, response)

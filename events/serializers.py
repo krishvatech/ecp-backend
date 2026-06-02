@@ -683,7 +683,7 @@ class EventParticipantListItemSerializer(serializers.Serializer):
     display_order = serializers.IntegerField(allow_null=True)
 
 
-# ✅ PHASE 4: Lightweight participant serializer for live meeting (batched endpoint)
+#  Lightweight participant serializer for live meeting (batched endpoint)
 class ParticipantsLiteSerializer(serializers.Serializer):
     """Minimal participant data for live meeting participant list/cards."""
     id = serializers.IntegerField()

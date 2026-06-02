@@ -4,7 +4,7 @@ Phase 7: Redis-based WebSocket Presence Tracking (NO DB WRITES ON CONNECT/DISCON
 Moves real-time presence and online counts from database to Redis
 to eliminate DB writes during WebSocket connect/disconnect storms.
 
-✅ PHASE 7: Uses django_redis.get_redis_connection() for proper Redis set operations
+ Uses django_redis.get_redis_connection() for proper Redis set operations
 ✅ Eliminates ALL database writes on connect/disconnect
 ✅ Presence stored in Redis only (TTL: 60-120 seconds)
 ✅ Durable state (joined_live) remains in DB
@@ -24,7 +24,7 @@ from typing import Dict, List, Set, Optional
 from django.utils import timezone
 from django.conf import settings
 
-# ✅ PHASE 7: Use django_redis for proper Redis client access
+#  Use django_redis for proper Redis client access
 try:
     from django_redis import get_redis_connection
     redis_conn = get_redis_connection("default")
@@ -75,7 +75,7 @@ class RedisPresenceManager:
     def add_user_online(cls, event_id: int, user_id: int, user_type: str = 'registered',
                        is_guest: bool = False) -> int:
         """
-        ✅ PHASE 7: Add user to online set in Redis (NO DB WRITE).
+         Add user to online set in Redis (NO DB WRITE).
 
         Args:
             event_id: Event ID
@@ -92,7 +92,7 @@ class RedisPresenceManager:
 
             r = cls._get_redis()
 
-            # ✅ PHASE 7: Use Redis SADD + EXPIRE (atomic set operation)
+            #  Use Redis SADD + EXPIRE (atomic set operation)
             if hasattr(r, 'sadd'):
                 r.sadd(online_key, str(user_id))
                 r.expire(online_key, PRESENCE_TTL)
@@ -129,7 +129,7 @@ class RedisPresenceManager:
     @classmethod
     def remove_user_online(cls, event_id: int, user_id: int) -> int:
         """
-        ✅ PHASE 7: Remove user from online set in Redis (NO DB WRITE).
+         Remove user from online set in Redis (NO DB WRITE).
 
         Args:
             event_id: Event ID
@@ -145,7 +145,7 @@ class RedisPresenceManager:
 
             r = cls._get_redis()
 
-            # ✅ PHASE 7: Use Redis SREM (atomic remove operation)
+            #  Use Redis SREM (atomic remove operation)
             if hasattr(r, 'srem'):
                 r.srem(online_key, str(user_id))
                 r.delete(presence_key)
@@ -168,7 +168,7 @@ class RedisPresenceManager:
 
     @classmethod
     def get_online_count(cls, event_id: int) -> int:
-        """✅ PHASE 7: Get total online user count from Redis (NO DB QUERY)."""
+        """ Get total online user count from Redis (NO DB QUERY)."""
         try:
             online_key = cls._online_users_key(event_id)
             r = cls._get_redis()
@@ -186,7 +186,7 @@ class RedisPresenceManager:
 
     @classmethod
     def get_online_users(cls, event_id: int) -> Set[int]:
-        """✅ PHASE 7: Get set of online user IDs from Redis (NO DB QUERY)."""
+        """ Get set of online user IDs from Redis (NO DB QUERY)."""
         try:
             online_key = cls._online_users_key(event_id)
             r = cls._get_redis()
@@ -205,7 +205,7 @@ class RedisPresenceManager:
     @classmethod
     def set_user_location(cls, event_id: int, user_id: int, location: str) -> bool:
         """
-        ✅ PHASE 7: Set user's current location in Redis (NO DB WRITE).
+         Set user's current location in Redis (NO DB WRITE).
 
         Args:
             event_id: Event ID
@@ -233,7 +233,7 @@ class RedisPresenceManager:
 
     @classmethod
     def get_user_location(cls, event_id: int, user_id: int) -> Optional[str]:
-        """✅ PHASE 7: Get user's current location from Redis (NO DB QUERY)."""
+        """ Get user's current location from Redis (NO DB QUERY)."""
         try:
             location_key = cls._location_key(event_id, user_id)
             r = cls._get_redis()
@@ -250,7 +250,7 @@ class RedisPresenceManager:
 
     @classmethod
     def is_user_online(cls, event_id: int, user_id: int) -> bool:
-        """✅ PHASE 7: Check if user is currently online in Redis (NO DB QUERY)."""
+        """ Check if user is currently online in Redis (NO DB QUERY)."""
         try:
             online_key = cls._online_users_key(event_id)
             r = cls._get_redis()
