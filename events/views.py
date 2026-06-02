@@ -2161,6 +2161,95 @@ class EventViewSet(viewsets.ModelViewSet):
         data = _serialize_event_live_context(event, request=request)
         return Response(data)
 
+    # ✅ PHASE 4: Batched participant endpoint to replace individual user/<id> calls
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="participants-lite")
+    def participants_lite(self, request, pk=None):
+        """
+        Batched lightweight participant data for live meeting UI.
+
+        Returns: id, name, avatar, kyc_status (permission-aware), current_location
+
+        Replaces many individual /api/users/<id>/?ecp_lite=kyc calls.
+        Cached per event + user (user-aware for permission visibility).
+        Cache TTL: 45 seconds.
+        """
+        from events.serializers import ParticipantsLiteSerializer
+
+        event = self.get_object()
+
+        # ✅ PHASE 4: Cache key includes user_id because kyc_status visibility differs per user
+        cache_key = f"event:{event.id}:participants_lite:user:{request.user.id}"
+        cached_data = cache.get(cache_key)
+
+        if cached_data is not None:
+            logger.debug(f"[ParticipantsLite] Cache hit for event={event.id}, user={request.user.id}")
+            return Response(cached_data)
+
+        # Fetch participants using efficient queries
+        participants_data = []
+
+        # ✅ PHASE 4: Fetch registered participants (main user list)
+        registered = EventRegistration.objects.filter(
+            event=event,
+            status__in=['registered', 'accepted']  # Include both statuses
+        ).select_related('user').values_list(
+            'user_id', 'user__first_name', 'user__last_name', 'user__kyc_status',
+            'user__profile_image_url', 'current_location'
+        )
+
+        # Check if requester is staff/manager to determine kyc_status visibility
+        is_manager = _is_event_manager(request.user, event)
+
+        for user_id, first_name, last_name, kyc_status, avatar_url, current_location in registered:
+            name = f"{first_name} {last_name}".strip() if first_name or last_name else f"User {user_id}"
+            participants_data.append({
+                'id': user_id,
+                'name': name,
+                'avatar': avatar_url,
+                'kyc_status': kyc_status if is_manager else None,  # Hide from non-managers
+                'current_location': current_location or 'main_room'
+            })
+
+        # ✅ PHASE 4: Also fetch staff participants (EventParticipant with type='staff')
+        staff = EventParticipant.objects.filter(
+            event=event,
+            participant_type='staff',
+            user__isnull=False
+        ).select_related('user').values_list(
+            'user_id', 'user__first_name', 'user__last_name', 'user__kyc_status',
+            'event_image'
+        )
+
+        # Get default user profile images for staff
+        staff_ids = [s[0] for s in staff]
+        staff_user_map = {}
+        if staff_ids:
+            staff_user_map = dict(
+                User.objects.filter(id__in=staff_ids).values_list(
+                    'id', 'profile_image_url'
+                )
+            )
+
+        for user_id, first_name, last_name, kyc_status, event_image in staff:
+            name = f"{first_name} {last_name}".strip() if first_name or last_name else f"User {user_id}"
+            # Prefer event_image override, fall back to user profile image
+            avatar = event_image or staff_user_map.get(user_id, '')
+            participants_data.append({
+                'id': user_id,
+                'name': name,
+                'avatar': avatar,
+                'kyc_status': kyc_status if is_manager else None,
+                'current_location': 'main_room'  # Staff location not tracked same way
+            })
+
+        # ✅ PHASE 4: Cache with 45-second TTL (balance between freshness and performance)
+        cache.set(cache_key, participants_data, timeout=45)
+        logger.info(
+            f"[ParticipantsLite] Cached {len(participants_data)} participants for event={event.id}, user={request.user.id} (45s TTL)"
+        )
+
+        return Response(participants_data)
+
     # ---------------------- Permissions ----------------------
     def get_permissions(self):
         """
