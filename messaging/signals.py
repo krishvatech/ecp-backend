@@ -49,42 +49,23 @@ def on_message_created(sender, instance: Message, created: bool, **kwargs) -> No
 
 def _broadcast_message_event(message: Message, event_type: str = "message.created") -> None:
     """
-    Broadcast a message event to the appropriate WebSocket group.
+    Broadcast a message event to the appropriate WebSocket group using Redis Channel Layer.
 
-    For event conversations: broadcasts to event_chat_{event_id} group
-    For lounge conversations: broadcasts to event_chat_{event_id}_lounge group
-    For group conversations: broadcasts to event_chat_{group_id}_group group
-    For DMs: broadcasts to conversation_{conversation_id} group (already handled by DirectMessageConsumer)
+    Groups: messaging_conversation_{conversation_id} (one safe group per conversation)
+    Events: message.created, message.edited, message.deleted
+
+    All conversation types (DM, event, lounge, group) use the same shared group.
+    This ensures all connected WebSocket clients for a conversation receive real-time updates.
     """
     from .serializers import MessageSerializer
     from asgiref.sync import async_to_sync
     from channels.layers import get_channel_layer
 
     try:
-        # Skip DM broadcasts - already handled by WebSocket consumer
-        if message.conversation.user1_id and message.conversation.user2_id:
-            logger.debug(f"[Broadcast] Skipping DM broadcast for msg_id={message.id}")
-            return
-
-        # Determine group name based on conversation type
         conversation = message.conversation
-        group_name = None
+        group_name = f"messaging_conversation_{conversation.id}"
 
-        if conversation.event_id:
-            # Event chat
-            group_name = f"event_chat_{conversation.event_id}"
-        elif conversation.lounge_table_id:
-            # Lounge table chat
-            group_name = f"event_chat_{conversation.lounge_table.event_id}_lounge"
-        elif conversation.group_id:
-            # Group chat
-            group_name = f"event_chat_{conversation.group_id}_group"
-        else:
-            # Unknown conversation type, skip
-            logger.warning(f"[Broadcast] Unknown conversation type for msg_id={message.id}, conv_id={message.conversation_id}")
-            return
-
-        logger.info(f"[Broadcast] Starting broadcast for {event_type} to group {group_name}, msg_id={message.id}")
+        logger.info(f"[Broadcast] Broadcasting {event_type} to group {group_name}, msg_id={message.id}")
 
         # Serialize message
         try:
@@ -101,8 +82,8 @@ def _broadcast_message_event(message: Message, event_type: str = "message.create
             logger.error(f"[Broadcast] Channel layer is None! Redis may not be configured.")
             return
 
-        # Broadcast via Django Channels
-        event_type_underscore = event_type.replace(".", "_")  # Convert "message.created" to "message_created"
+        # Broadcast via Django Channels (use underscore format for type field)
+        event_type_underscore = event_type.replace(".", "_")
         payload = {
             "type": event_type_underscore,
             "message": message_data,

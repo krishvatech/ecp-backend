@@ -173,22 +173,16 @@ class DirectMessageConsumer(AsyncJsonWebsocketConsumer):
 
 class ConversationConsumer(AsyncJsonWebsocketConsumer):
     """
-    Real-time WebSocket consumer for event/lounge/group conversations.
+    Real-time WebSocket consumer for all conversations (DM, event, lounge, group).
 
-    This consumer bridges REST API messages (created via /messaging/conversations/{id}/messages/)
-    to WebSocket subscribers by listening to broadcast signals from the signal handler.
+    Connects to shared Redis channel layer group: messaging_conversation_{conversation_id}
+    Receives broadcast events from REST API via signal handlers:
+    - message.created: new message
+    - message.edited: message edited
+    - message.deleted: message deleted
 
     Path: ws/messaging/conversations/<conversation_id>/
-
     Authentication: JWT token via JWTAuthMiddleware
-    Groups:
-    - event_chat_{event_id}: Event conversations
-    - event_chat_{event_id}_lounge: Lounge table conversations
-    - event_chat_{group_id}_group: Group conversations
-
-    Events received from signal broadcast:
-    - type: "message.created" / "message.edited" / "message.deleted"
-    - message: MessageSerializer data
     """
 
     async def connect(self) -> None:
@@ -211,28 +205,16 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=4403)
             return
 
-        # Determine group name based on conversation type
-        conv = await database_sync_to_async(Conversation.objects.get)(pk=self.conversation_id)
-        self.conversation = conv
-
-        if conv.event_id:
-            self.group_name = f"event_chat_{conv.event_id}"
-        elif conv.lounge_table_id:
-            self.group_name = f"event_chat_{conv.lounge_table.event_id}_lounge"
-        elif conv.group_id:
-            self.group_name = f"event_chat_{conv.group_id}_group"
-        else:
-            # DM - don't subscribe to broadcast groups
-            self.group_name = None
+        # Shared group name for all conversation types
+        self.group_name = f"messaging_conversation_{self.conversation_id}"
 
         await self.accept()
 
-        # Join group if applicable (event/lounge/group chat)
-        if self.group_name:
-            await self.channel_layer.group_add(self.group_name, self.channel_name)
-            logger.debug(
-                f"[WS Conv] User {user.id} subscribed to {self.group_name} for conv {self.conversation_id}"
-            )
+        # Subscribe to Redis channel for this conversation
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        logger.info(
+            f"[WS Conv] User {user.id} connected to {self.group_name} for conv {self.conversation_id}"
+        )
 
     async def disconnect(self, code: int) -> None:
         if hasattr(self, "group_name") and self.group_name:
