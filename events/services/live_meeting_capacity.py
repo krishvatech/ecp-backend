@@ -159,26 +159,51 @@ def has_live_session(event):
 
     return False
 
+def is_multi_day_event(event):
+    """
+    Treat an event as multi-day if either:
+    - explicit is_multi_day=True, or
+    - event start/end fall on different calendar dates.
+    """
+    if bool(getattr(event, "is_multi_day", False)):
+        return True
+
+    start = event_start_time(event)
+    end = event_end_time(event)
+    if start and end:
+        return start.date() != end.date()
+
+    return False
 
 def get_capacity_windows_for_event(event):
     """
     Returns time windows where this event needs backend capacity.
 
     Single-day event:
-      use event start/end.
+      use parent event start/end time.
 
     Multi-day event:
-      use session start/end times (one window per session).
+      use ONLY session start/end times.
+      If there are no sessions, return no capacity window so ASG can downscale.
     """
-    sessions = get_event_sessions(event)
+    if is_multi_day_event(event):
+        sessions = get_event_sessions(event)
 
-    if sessions:
+        if not sessions:
+            logger.info(
+                "Multi-day event has no sessions; skipping ASG capacity window. event_id=%s title=%s",
+                getattr(event, "id", None),
+                getattr(event, "title", ""),
+            )
+            return []
+
         windows = []
         for session in sessions:
             start = get_session_start_time(session)
             end = get_session_end_time(session)
             if start and end:
                 windows.append((start, end))
+
         return windows
 
     start = event_start_time(event)
@@ -209,13 +234,23 @@ def get_capacity_relevant_events():
         if status in ["draft", "cancelled", "canceled", "deleted", "archived"]:
             continue
 
+        multi_day = is_multi_day_event(event)
         is_live = bool(getattr(event, "is_live", False)) or status == "live"
 
-        if is_live or has_live_session(event):
-            relevant.append(event)
-            continue
+        if multi_day:
+            # For multi-day events, parent event time/live flag should NOT hold capacity.
+            # Only real sessions should protect capacity. No sessions => allow downscale.
+            if has_live_session(event):
+                relevant.append(event)
+                continue
+        else:
+            # For single-day events, parent event live flag/start/end is valid.
+            if is_live:
+                relevant.append(event)
+                continue
 
         windows = get_capacity_windows_for_event(event)
+
         for start, end in windows:
             window_start = start - timedelta(
                 minutes=max(
@@ -255,8 +290,8 @@ def calculate_required_capacity():
     return {
         "total_expected_users": total_expected_users,
         "desired_instances": desired,
-        "min_instances": desired,
-        "max_instances": max(desired, settings.LIVE_MEETING_ASG_MAX_CAPACITY),
+        "min_instances": settings.LIVE_MEETING_ASG_MIN_CAPACITY,
+        "max_instances": settings.LIVE_MEETING_ASG_MAX_CAPACITY,
         "events": event_details,
     }
 
@@ -362,6 +397,80 @@ def scale_asg_if_needed(reason="scheduled_check", scale_down_allowed=True):
             desired,
             has_capacity_window,
         )
+
+        # Safe scale-in: during an active capacity window we never reduce desired
+        # directly. Instead, when the feature flag is enabled, delegate to the
+        # safe scale-in functions which only ever drain/terminate a single
+        # already-idle instance (and only when dry_run is False). This branch
+        # never calls update_auto_scaling_group to downscale.
+        if has_capacity_window and getattr(settings, "LIVE_MEETING_SAFE_SCALE_IN_ENABLED", False):
+            # Imported lazily to avoid a circular import: live_safe_scale_in
+            # imports calculate_required_capacity/get_current_asg_capacity from
+            # this module.
+            from events.services.live_safe_scale_in import (
+                continue_safe_scale_in_draining_instances,
+                execute_safe_scale_in_one_step,
+            )
+
+            dry_run = getattr(settings, "LIVE_MEETING_SAFE_SCALE_IN_DRY_RUN", True)
+
+            try:
+                # Stage 1: finish off any instance already draining from a prior cycle.
+                continue_result = continue_safe_scale_in_draining_instances(
+                    reason=reason,
+                    dry_run=dry_run,
+                )
+                logger.info(
+                    "Safe scale-in continue-draining reason=%s dry_run=%s changed=%s result_reason=%s",
+                    reason,
+                    dry_run,
+                    continue_result.get("changed"),
+                    continue_result.get("reason"),
+                )
+
+                if continue_result.get("changed"):
+                    return {
+                        "changed": True,
+                        "safe_scale_in": True,
+                        "stage": "continue_draining",
+                        "result": continue_result,
+                        "current": current,
+                        "required": required,
+                    }
+
+                # Stage 2: nothing was draining (or nothing changed) — try to start
+                # or complete one safe scale-in step on a fresh candidate.
+                start_result = execute_safe_scale_in_one_step(
+                    reason=reason,
+                    dry_run=dry_run,
+                )
+                logger.info(
+                    "Safe scale-in one-step reason=%s dry_run=%s changed=%s result_reason=%s",
+                    reason,
+                    dry_run,
+                    start_result.get("changed"),
+                    start_result.get("reason"),
+                )
+
+                if start_result.get("changed"):
+                    return {
+                        "changed": True,
+                        "safe_scale_in": True,
+                        "stage": "start_or_complete_one_step",
+                        "result": start_result,
+                        "current": current,
+                        "required": required,
+                    }
+            except Exception:
+                # The safe scale-in helpers are already defensive; this is a final
+                # guard so the autoscaler can never be broken by them.
+                logger.warning(
+                    "Safe scale-in execution failed; keeping current capacity", exc_info=True
+                )
+
+        # Conservative fallback (unchanged behavior): during a capacity window, or
+        # when safe scale-in is disabled / dry-run / waiting for a drain, never
+        # reduce desired capacity below the current value.
         desired = current["desired"]
 
     if desired == current["desired"] and desired == current["min"]:
@@ -381,20 +490,23 @@ def scale_asg_if_needed(reason="scheduled_check", scale_down_allowed=True):
         required,
     )
 
+    target_min = settings.LIVE_MEETING_ASG_MIN_CAPACITY
+    target_max = settings.LIVE_MEETING_ASG_MAX_CAPACITY
+
     client.update_auto_scaling_group(
         AutoScalingGroupName=settings.LIVE_MEETING_ASG_NAME,
-        MinSize=desired,
+        MinSize=target_min,
         DesiredCapacity=desired,
-        MaxSize=max(desired, settings.LIVE_MEETING_ASG_MAX_CAPACITY),
+        MaxSize=target_max,
     )
 
     return {
         "changed": True,
         "from": current,
         "to": {
-            "min": desired,
+            "min": target_min,
             "desired": desired,
-            "max": max(desired, settings.LIVE_MEETING_ASG_MAX_CAPACITY),
+            "max": target_max,
         },
         "required": required,
     }

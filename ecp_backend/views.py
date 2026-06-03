@@ -6,9 +6,14 @@ from django.utils.html import strip_tags
 
 from events.models import Event
 from ecp_backend.health_checks import get_health_status
+from events.services.live_instance_state import heartbeat_instance
 
 def health(request):
     """Simple health check for ALB. Must only return {"status": "ok"} without deep checks."""
+    try:
+        heartbeat_instance()
+    except Exception:
+        pass
     return JsonResponse({"status": "ok"})
 
 def live_health(request):

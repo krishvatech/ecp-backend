@@ -13,6 +13,11 @@ import time
 import requests
 import logging
 from .utils import create_rtk_meeting, RTK_API_BASE, _rtk_headers
+from events.services.live_instance_state import (
+    increment_live_session,
+    decrement_live_session,
+    is_instance_draining,
+)
 try:
     from autobahn.exception import Disconnected
 except Exception:  # pragma: no cover - import guard for local/runtime variation
@@ -246,6 +251,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         # Ensure attributes referenced in `disconnect()` exist even if we early-return
         # (e.g., anonymous users rejected before completing handshake).
         self._disconnect_cleanup_task = None
+        self._live_session_tracked = False
 
         self.user = self.scope.get("user")
         if not self.user or self.user.is_anonymous:
@@ -292,6 +298,28 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=4003)
             return
 
+        # Safe scale-in: reject new sessions on a draining instance. Defensive —
+        # if the check itself fails, allow the connection rather than block users.
+        try:
+            if await database_sync_to_async(is_instance_draining)():
+                logger.warning(
+                    "WS[Event] rejected: backend instance draining event=%s user=%s channel=%s path=%s",
+                    self.event_id,
+                    getattr(self.user, "id", None),
+                    self.channel_name,
+                    self.scope.get("path"),
+                )
+                await self.close(code=1013)
+                return
+        except Exception:
+            logger.warning(
+                "WS[Event] draining check failed; allowing connection event=%s user=%s channel=%s",
+                self.event_id,
+                getattr(self.user, "id", None),
+                self.channel_name,
+                exc_info=True,
+            )
+
         # Join event group
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         
@@ -315,6 +343,43 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             getattr(self.user, "id", None),
             self.channel_name,
         )
+
+        # Track this live WebSocket session for safe scale-in. Tracking failures
+        # must never block the connection.
+        try:
+            result = await database_sync_to_async(increment_live_session)(
+                event_id=self.event_id,
+                session_id=self.channel_name,
+            )
+            # increment_live_session() is defensive and returns
+            # {"active_sessions": None} when the cache write failed. Only mark
+            # this session as tracked when the increment actually succeeded, so
+            # disconnect won't decrement a counter that was never incremented.
+            self._live_session_tracked = result.get("active_sessions") is not None
+            if self._live_session_tracked:
+                logger.info(
+                    "WS[Event] live session tracked event=%s user=%s channel=%s result=%s",
+                    self.event_id,
+                    getattr(self.user, "id", None),
+                    self.channel_name,
+                    result,
+                )
+            else:
+                logger.warning(
+                    "WS[Event] live session tracking returned unsafe result event=%s user=%s channel=%s result=%s",
+                    self.event_id,
+                    getattr(self.user, "id", None),
+                    self.channel_name,
+                    result,
+                )
+        except Exception:
+            logger.warning(
+                "WS[Event] failed to track live session event=%s user=%s channel=%s",
+                self.event_id,
+                getattr(self.user, "id", None),
+                self.channel_name,
+                exc_info=True,
+            )
 
         # ✅ HEARTBEAT: Start heartbeat ping task
         self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -428,6 +493,33 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             getattr(self, "channel_name", None),
             code,
         )
+
+        # Untrack the live WebSocket session immediately for safe scale-in. The
+        # socket is already closed here, so Redis must decrement now rather than
+        # waiting for the grace period in _finalize_disconnect(). Defensive: never
+        # let tracking failure block disconnect.
+        if getattr(self, "_live_session_tracked", False) and hasattr(self, "event_id"):
+            try:
+                result = await database_sync_to_async(decrement_live_session)(
+                    event_id=self.event_id,
+                    session_id=getattr(self, "channel_name", None),
+                )
+                self._live_session_tracked = False
+                logger.info(
+                    "WS[Event] live session untracked event=%s user=%s channel=%s result=%s",
+                    getattr(self, "event_id", None),
+                    getattr(getattr(self, "user", None), "id", None),
+                    getattr(self, "channel_name", None),
+                    result,
+                )
+            except Exception:
+                logger.warning(
+                    "WS[Event] failed to untrack live session event=%s user=%s channel=%s",
+                    getattr(self, "event_id", None),
+                    getattr(getattr(self, "user", None), "id", None),
+                    getattr(self, "channel_name", None),
+                    exc_info=True,
+                )
 
         # ✅ HEARTBEAT: Cancel heartbeat tasks on disconnect
         if hasattr(self, "heartbeat_task") and self.heartbeat_task:

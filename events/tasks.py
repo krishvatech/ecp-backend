@@ -4,6 +4,7 @@ from django.conf import settings
 from django.utils import timezone
 from django.db import transaction
 from .models import Event, EventRegistration
+from events.services.live_instance_state import heartbeat_instance
 import requests
 import logging
 
@@ -2469,4 +2470,11 @@ def sync_redis_presence_to_db():
     except Exception as e:
         logger.error(f"[SYNC_PRESENCE] Task failed: {e}", exc_info=True)
         return {'status': 'error', 'error': str(e)}
+
+
+@shared_task
+def heartbeat_live_instance():
+    result = heartbeat_instance()
+    logger.info("Live instance heartbeat recorded: %s", result)
+    return result
 
