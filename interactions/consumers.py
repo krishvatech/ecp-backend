@@ -8,6 +8,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
+from uuid import uuid4
 
 from asgiref.sync import async_to_sync
 from channels.db import database_sync_to_async
@@ -261,18 +262,39 @@ class ChatConsumer(BaseEventConsumer):
             await self.send_error("Field 'message' (string) is required.", code="invalid_payload")
             return
 
-        cm = await _create_chat_message(self.event_id, self.user.id, msg)
+        ## Generate UUID for tracking
+        message_uuid = uuid4()
+        created_at = datetime.now(timezone.utc)
 
+        # Create message dict for Redis/Celery
+        message_dict = {
+            'user_id': self.user.id,
+            'content': msg.strip(),
+            'created_at': created_at.isoformat(),
+            'uuid': str(message_uuid),
+        }
+
+        # Save to Redis immediately
+        from events.redis_messages import save_message_to_redis
+        await database_sync_to_async(save_message_to_redis)(self.event_id, message_dict)
+
+        # Broadcast to WebSocket clients immediately (Redis-first, no DB wait)
         payload = {
             "type": "chat.message",
             "event_id": self.event_id,
             "user_id": self.user.id,
-            "uid": self.user.id,               # for client-side "You" tag
+            "uid": self.user.id,
             "user": _display_name(self.user),
-            "message": cm.content,
-            "created_at": cm.created_at.isoformat(),
+            "message": msg.strip(),
+            "created_at": created_at.isoformat(),
+            "uuid": str(message_uuid),
+            "status": "pending",  # Mark as pending until DB save completes
         }
         await self.channel_layer.group_send(self.group_name, {"type": "chat.message", "payload": payload})
+
+        ##Queue Celery task to persist to DB (no await - fire and forget)
+        from interactions.tasks import persist_chat_message_to_db
+        persist_chat_message_to_db.delay(self.event_id, str(message_uuid), message_dict)
 
     async def chat_message(self, event: Dict[str, Any]) -> None:
         await self.send_json(event.get("payload", {}))
@@ -420,28 +442,53 @@ class QnAConsumer(BaseEventConsumer):
             await self.send_error("Provide 'content' to ask a question.", code="invalid_payload")
             return
 
-        # Use the table ID from the connection scope
-        q = await _create_question(self.event_id, self.user, text, self.lounge_table_id)
+        # Generate UUID for tracking
+        question_uuid = uuid4()
+        created_at = datetime.now(timezone.utc)
+
+        # Create question dict for Redis/Celery
+        question_dict = {
+            'user_id': self.user.id if not getattr(self.user, "is_guest", False) else None,
+            'guest_asker_id': self.user.guest.id if (getattr(self.user, "is_guest", False) and getattr(self.user, "guest", None)) else None,
+            'content': text.strip(),
+            'lounge_table_id': self.lounge_table_id,
+            'created_at': created_at.isoformat(),
+            'uuid': str(question_uuid),
+            'moderation_status': 'pending',
+        }
+
+        # Save to Redis immediately
+        from events.redis_messages import save_question_to_redis
+        await database_sync_to_async(save_question_to_redis)(self.event_id, question_dict)
+
+        # Determine asker ID for payload
         asker_id = self.user.id
         if bool(getattr(self.user, "is_guest", False)) and getattr(self.user, "guest", None):
             asker_id = f"guest_{self.user.guest.id}"
 
+        # Broadcast to WebSocket clients immediately (Redis-first, no DB wait)
         payload = {
             "type": "qna.question",
             "event_id": self.event_id,
             "lounge_table_id": self.lounge_table_id,
-            "question_id": q.id,
+            "question_id": None,  # Will be set after DB save
+            "uuid": str(question_uuid),  # Track by UUID until DB ID available
             "user_id": asker_id,
             "uid": asker_id,
             "user": _display_name(self.user),
-            "content": q.content,
+            "content": text.strip(),
             "upvote_count": 0,
-            "created_at": q.created_at.isoformat(),
+            "created_at": created_at.isoformat(),
+            "status": "pending",  # Mark as pending until DB save completes
         }
         await self.channel_layer.group_send(
             self.group_name,
             {"type": "qna.question", "payload": payload},
         )
+
+        # Queue Celery task to persist to DB (no await - fire and forget)
+        from interactions.tasks import persist_qna_question_to_db
+        persist_qna_question_to_db.delay(self.event_id, str(question_uuid), question_dict)
 
     async def qna_question(self, event: Dict[str, Any]) -> None:
         """

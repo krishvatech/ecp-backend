@@ -702,6 +702,54 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 "replies": replies_data,
                 "reply_count": len(replies_data),
             })
+
+        # Add pending questions from Redis (not yet persisted to DB)
+        if event_id:
+            from events.redis_messages import get_pending_messages, get_question_from_redis
+            from django.contrib.auth import get_user_model
+
+            User = get_user_model()
+            pending_uuids = get_pending_messages(int(event_id), is_qna=True)
+            for uuid in pending_uuids:
+                pending_q = get_question_from_redis(int(event_id), uuid)
+                if pending_q:
+                    # Only show pending questions to host or to the question asker
+                    show_pending = is_host
+                    asker_user_id = pending_q.get('user_id')
+                    if not show_pending and asker_user_id == user.id:
+                        show_pending = True
+                    if show_pending:
+                        # Get asker name from user object if available
+                        asker_name = "Anonymous"
+                        if asker_user_id:
+                            try:
+                                asker_user = User.objects.get(id=asker_user_id)
+                                asker_name = (asker_user.get_full_name() or asker_user.username or asker_user.email.split('@')[0] if asker_user.email else "User")
+                            except User.DoesNotExist:
+                                asker_name = f"User {asker_user_id}"
+
+                        asker_snapshot = {
+                            "asker_id": asker_user_id,
+                            "asker_name": asker_name,
+                            "asker_avatar_url": "",
+                        }
+                        data.append({
+                            "id": None,
+                            "uuid": uuid,
+                            "content": pending_q.get('content', ''),
+                            "created_at": pending_q.get('created_at'),
+                            "is_hidden": False,
+                            "is_anonymous": pending_q.get('is_anonymous', False),
+                            "is_pinned": False,
+                            "upvote_count": 0,
+                            "asker": asker_snapshot,
+                            "status": "pending",
+                            "replies": [],
+                            "reply_count": 0,
+                        })
+
+        # Sort by created_at descending
+        data.sort(key=lambda x: x.get('created_at', ''), reverse=True)
         return Response(data)
 
     @action(detail=False, methods=["get"], url_path="admin-pre-event")

@@ -67,6 +67,7 @@ from rest_framework.renderers import BaseRenderer, JSONRenderer
 
 from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField, TrackPricingTier, EventRole, EventAttendeeOrigin
 from .permissions import IsSuperuserOnly, IsEventAdminOrSuperuser, HasRestrictedDataPermission
+from .cache_utils import event_list_cache_key, get_cached_event_list, set_cached_event_list
 from friends.models import Notification
 from groups.models import Group, GroupMembership
 from messaging.models import Conversation, Message
@@ -2052,6 +2053,21 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         )
         return qs
+
+    def list(self, request, *args, **kwargs):
+        """
+        List events with Redis caching for 45 seconds.
+        Cache is user-specific and query-param-aware.
+        """
+        cache_key = event_list_cache_key(request.user, request.query_params)
+        cached_data = get_cached_event_list(cache_key)
+        if cached_data is not None:
+            return Response(cached_data)
+
+        response = super().list(request, *args, **kwargs)
+        if response.status_code == 200:
+            set_cached_event_list(cache_key, response.data)
+        return response
 
     def _get_join_event_or_404(self, event_id):
         """

@@ -126,3 +126,150 @@ def auto_group_questions_task(self, event_id):
         logger.info(f"[CELERY-AUTO-GROUP] ✅ Broadcast complete for event {event_id}")
     except Exception as e:
         logger.error(f"[CELERY-AUTO-GROUP] ❌ Error in auto_group_questions_task: {str(e)}", exc_info=True)
+
+
+@shared_task(bind=True, max_retries=3)
+def persist_chat_message_to_db(self, event_id, message_uuid, message_dict):
+    """
+    Persist chat message to database after Redis queue.
+    Called asynchronously after message is broadcast via WebSocket.
+
+    Retries with exponential backoff on failure.
+    Max retries: 3 (5s, 25s, 125s delays)
+
+    Args:
+        event_id: Event ID
+        message_uuid: Message UUID (for deduplication)
+        message_dict: Dict with message data {user_id, content, created_at, uuid}
+    """
+    import logging
+    from .models import ChatMessage
+    from events.redis_messages import remove_from_pending
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Create message in database
+        message = ChatMessage.objects.create(
+            event_id=event_id,
+            user_id=message_dict.get('user_id'),
+            content=message_dict.get('content'),
+            created_at=message_dict.get('created_at'),
+            external_id=str(message_uuid),
+        )
+
+        # Remove from Redis pending list
+        remove_from_pending(event_id, message_uuid, is_qna=False)
+
+        logger.info(f"✓ Persisted chat message {message_uuid} to DB (id={message.id})")
+        return {'status': 'saved', 'db_id': message.id, 'uuid': str(message_uuid)}
+
+    except Exception as exc:
+        logger.error(
+            f"Failed to persist chat message {message_uuid} (attempt {self.request.retries + 1}/4): {exc}",
+            exc_info=True
+        )
+        # Retry with exponential backoff: 5s, 25s, 125s
+        countdown = 5 ** (self.request.retries + 1)
+        raise self.retry(exc=exc, countdown=countdown)
+
+
+@shared_task(bind=True, max_retries=3)
+def persist_qna_question_to_db(self, event_id, question_uuid, question_dict):
+    """
+    Persist Q&A question to database after Redis queue.
+    Called asynchronously after question is broadcast via WebSocket.
+
+    Retries with exponential backoff on failure.
+    Max retries: 3 (5s, 25s, 125s delays)
+
+    Args:
+        event_id: Event ID
+        question_uuid: Question UUID (for deduplication)
+        question_dict: Dict with question data {user_id, content, created_at, uuid, ...}
+    """
+    import logging
+    from .models import Question
+    from events.redis_messages import remove_from_pending
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Create question in database
+        question = Question.objects.create(
+            event_id=event_id,
+            user_id=question_dict.get('user_id'),
+            guest_asker_id=question_dict.get('guest_asker_id'),
+            content=question_dict.get('content'),
+            lounge_table_id=question_dict.get('lounge_table_id'),
+            is_anonymous=question_dict.get('is_anonymous', False),
+            created_at=question_dict.get('created_at'),
+            external_id=str(question_uuid),
+            moderation_status=question_dict.get('moderation_status', 'pending'),
+        )
+
+        # Remove from Redis pending list
+        remove_from_pending(event_id, question_uuid, is_qna=True)
+
+        logger.info(f"✓ Persisted Q&A question {question_uuid} to DB (id={question.id})")
+        return {'status': 'saved', 'db_id': question.id, 'uuid': str(question_uuid)}
+
+    except Exception as exc:
+        logger.error(
+            f"Failed to persist Q&A question {question_uuid} (attempt {self.request.retries + 1}/4): {exc}",
+            exc_info=True
+        )
+        # Retry with exponential backoff: 5s, 25s, 125s
+        countdown = 5 ** (self.request.retries + 1)
+        raise self.retry(exc=exc, countdown=countdown)
+
+
+@shared_task(bind=True, max_retries=3)
+def persist_qna_reply_to_db(self, event_id, reply_uuid, reply_dict):
+    """
+    Persist Q&A reply to database after Redis queue.
+    Called asynchronously after reply is broadcast via WebSocket.
+
+    Retries with exponential backoff on failure.
+    Max retries: 3 (5s, 25s, 125s delays)
+
+    Args:
+        event_id: Event ID
+        reply_uuid: Reply UUID (for deduplication)
+        reply_dict: Dict with reply data {question_id, user_id, content, created_at, uuid, ...}
+    """
+    import logging
+    from .models import QnAReply
+    from events.redis_messages import remove_from_pending
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Create reply in database
+        reply = QnAReply.objects.create(
+            question_id=reply_dict.get('question_id'),
+            event_id=event_id,
+            user_id=reply_dict.get('user_id'),
+            guest_asker_id=reply_dict.get('guest_asker_id'),
+            content=reply_dict.get('content'),
+            lounge_table_id=reply_dict.get('lounge_table_id'),
+            is_anonymous=reply_dict.get('is_anonymous', False),
+            created_at=reply_dict.get('created_at'),
+            external_id=str(reply_uuid),
+            moderation_status=reply_dict.get('moderation_status', 'pending'),
+        )
+
+        # Remove from Redis pending list
+        remove_from_pending(event_id, reply_uuid, is_qna=True)
+
+        logger.info(f"✓ Persisted Q&A reply {reply_uuid} to DB (id={reply.id})")
+        return {'status': 'saved', 'db_id': reply.id, 'uuid': str(reply_uuid)}
+
+    except Exception as exc:
+        logger.error(
+            f"Failed to persist Q&A reply {reply_uuid} (attempt {self.request.retries + 1}/4): {exc}",
+            exc_info=True
+        )
+        # Retry with exponential backoff: 5s, 25s, 125s
+        countdown = 5 ** (self.request.retries + 1)
+        raise self.retry(exc=exc, countdown=countdown)

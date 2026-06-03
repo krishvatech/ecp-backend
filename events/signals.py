@@ -61,6 +61,19 @@ def sync_event_to_saleor_signal(sender, instance, created, **kwargs):
     transaction.on_commit(queue_sync_task)
 
 
+@receiver(post_save, sender=Event)
+def invalidate_event_list_cache_signal(sender, instance, **kwargs):
+    """
+    Invalidate event list caches when an Event is modified.
+    Ensures users see updated event data within the next cache refresh.
+    """
+    from .cache_utils import invalidate_event_list_caches
+    try:
+        invalidate_event_list_caches(instance.id)
+    except Exception as e:
+        logger.warning(f"Failed to invalidate event list cache for event {instance.id}: {e}")
+
+
 @receiver(post_save, sender=EventParticipant)
 def send_event_confirmation_on_create(sender, instance, created, **kwargs):
     """
