@@ -297,16 +297,17 @@ class MessageSerializer(serializers.ModelSerializer):
         flag = getattr(obj, "is_pinned", None)
         if flag is not None:
             return bool(flag)
-        
+    
         # Fallback: Check global OR pinned by me
-        user = self.context.get("request").user
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
         if not user or not user.is_authenticated:
              # If we can't identify the user, we can only safely show global pins
              return ConversationPinnedMessage.objects.filter(
-                message_id=obj.id, 
+                message_id=obj.id,
                 scope='global'
             ).exists()
-             
+
         from django.db.models import Q
         return ConversationPinnedMessage.objects.filter(
             message_id=obj.id
