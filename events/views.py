@@ -1251,28 +1251,30 @@ def live_join_slot(event_id, limit=None, ttl=None):
     acquired = False
 
     try:
-        cache.add(key, 0, timeout=ttl)
-        count = cache.incr(key)
-
         try:
-            cache.touch(key, timeout=ttl)
-        except Exception:
-            pass
+            cache.add(key, 0, timeout=ttl)
+            count = cache.incr(key)
 
-        if count <= limit:
-            acquired = True
-            yield True
-        else:
             try:
-                cache.decr(key)
+                cache.touch(key, timeout=ttl)
             except Exception:
                 pass
 
-            yield False
+            if count <= limit:
+                acquired = True
+                yield True
+            else:
+                try:
+                    cache.decr(key)
+                except Exception:
+                    pass
 
-    except Exception:
-        # Fail open: if Redis/cache fails, do not block users from joining.
-        yield True
+                yield False
+
+        except Exception:
+            # Fail open: if Redis/cache fails, do not block users from joining.
+            acquired = True
+            yield True
 
     finally:
         if acquired:
