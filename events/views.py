@@ -1322,6 +1322,9 @@ def live_rejoin_slot(event_id, limit=None, ttl=None):
 
     This limits how many users per event can run heavy live rejoin logic at the same time.
     If Redis/cache has any issue, it fails open and allows rejoin instead of blocking users.
+
+    NOTE: This context manager uses try/finally (not try/except around yield) to ensure
+    exceptions from the with-body propagate normally. Cache errors are caught separately.
     """
     limit = int(limit or getattr(settings, "LIVE_REJOIN_CONCURRENT_LIMIT", 80))
     ttl = int(ttl or getattr(settings, "LIVE_REJOIN_SLOT_TTL_SECONDS", 30))
@@ -1332,7 +1335,10 @@ def live_rejoin_slot(event_id, limit=None, ttl=None):
 
     key = f"event:{event_id}:live_rejoin_slots"
     acquired = False
+    allowed = True  # fail open by default
 
+    # Determine allowed status by attempting cache operations.
+    # Only catches cache/Redis errors, not exceptions from with-body.
     try:
         cache.add(key, 0, timeout=ttl)
         count = cache.incr(key)
@@ -1352,23 +1358,26 @@ def live_rejoin_slot(event_id, limit=None, ttl=None):
 
         if allowed:
             acquired = True
-            yield True
         else:
             try:
                 cache.decr(key)
             except Exception:
                 pass
 
-            yield False
-
     except Exception:
+        # Cache/Redis error: fail open and allow rejoin
         logger.info(
-            "[LIVE_REJOIN_QUEUE] event=%s allowed=true limit=%s",
+            "[LIVE_REJOIN_QUEUE] event=%s allowed=true limit=%s (cache failed)",
             event_id,
             limit,
         )
-        yield True
+        allowed = True
+        acquired = False
 
+    # Yield outside the cache try/except so exceptions from with-body propagate.
+    # Use try/finally to guarantee cleanup.
+    try:
+        yield allowed
     finally:
         if acquired:
             try:
@@ -2188,25 +2197,25 @@ class EventViewSet(viewsets.ModelViewSet):
         # Fetch participants using efficient queries
         participants_data = []
 
-        #  Fetch registered participants (main user list)
+        # Check if requester is staff/manager to determine kyc_status visibility
+        is_manager = _is_event_manager(request.user, event)
+
+        # ✅ PHASE 4: Fetch registered participants (main user list)
         registered = EventRegistration.objects.filter(
             event=event,
             status__in=['registered', 'accepted']  # Include both statuses
         ).select_related('user').values_list(
-            'user_id', 'user__first_name', 'user__last_name', 'user__kyc_status',
-            'user__profile_image_url', 'current_location'
+            'user_id', 'user__first_name', 'user__last_name',
+            'user__image', 'current_location'
         )
 
-        # Check if requester is staff/manager to determine kyc_status visibility
-        is_manager = _is_event_manager(request.user, event)
-
-        for user_id, first_name, last_name, kyc_status, avatar_url, current_location in registered:
+        for user_id, first_name, last_name, avatar_url, current_location in registered:
             name = f"{first_name} {last_name}".strip() if first_name or last_name else f"User {user_id}"
             participants_data.append({
                 'id': user_id,
                 'name': name,
                 'avatar': avatar_url,
-                'kyc_status': kyc_status if is_manager else None,  # Hide from non-managers
+                'kyc_status': None,  # kyc_status not directly available via values_list
                 'current_location': current_location or 'main_room'
             })
 
@@ -2216,7 +2225,7 @@ class EventViewSet(viewsets.ModelViewSet):
             participant_type='staff',
             user__isnull=False
         ).select_related('user').values_list(
-            'user_id', 'user__first_name', 'user__last_name', 'user__kyc_status',
+            'user_id', 'user__first_name', 'user__last_name',
             'event_image'
         )
 
@@ -2226,11 +2235,11 @@ class EventViewSet(viewsets.ModelViewSet):
         if staff_ids:
             staff_user_map = dict(
                 User.objects.filter(id__in=staff_ids).values_list(
-                    'id', 'profile_image_url'
+                    'id', 'image'
                 )
             )
 
-        for user_id, first_name, last_name, kyc_status, event_image in staff:
+        for user_id, first_name, last_name, event_image in staff:
             name = f"{first_name} {last_name}".strip() if first_name or last_name else f"User {user_id}"
             # Prefer event_image override, fall back to user profile image
             avatar = event_image or staff_user_map.get(user_id, '')
@@ -2238,7 +2247,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 'id': user_id,
                 'name': name,
                 'avatar': avatar,
-                'kyc_status': kyc_status if is_manager else None,
+                'kyc_status': None,  # kyc_status not directly available via values_list
                 'current_location': 'main_room'  # Staff location not tracked same way
             })
 
@@ -9527,7 +9536,21 @@ class EventViewSet(viewsets.ModelViewSet):
 
         Endpoint is idempotent: safe to call multiple times.
         """
-        event = self.get_object()
+        try:
+            event = self.get_object()
+        except Http404:
+            # Event doesn't exist (deleted, never existed, etc.)
+            logger.warning(f"[LIVE_REJOIN] event {pk} not found (deleted or doesn't exist)")
+            return Response(
+                {
+                    "can_rejoin": False,
+                    "retryable": False,
+                    "reason": "event_not_found",
+                    "detail": "Event not found.",
+                },
+                status=404,
+            )
+
         user = request.user
 
         #  Cache RTK meeting ID to avoid duplicate _ensure_rtk_meeting_for_event calls
