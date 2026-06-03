@@ -294,7 +294,46 @@ ROOT_URLCONF = "ecp_backend.urls"
 ASGI_APPLICATION = "ecp_backend.asgi.application"
 WSGI_APPLICATION = None  # Channels-based; no WSGI application needed
 
+# _DB_CONN_MAX_AGE = int(os.getenv("DB_CONN_MAX_AGE", "0" if DEBUG else "60"))
+# 
+# DATABASES = {
+    # "default": {
+        # "ENGINE": "django.db.backends.postgresql",
+        # "NAME": os.getenv("POSTGRES_DB", "ecp"),
+        # "USER": os.getenv("POSTGRES_USER", "ecp"),
+        # "PASSWORD": os.getenv("POSTGRES_PASSWORD", "ecp_password"),
+        # "HOST": os.getenv("POSTGRES_HOST", "localhost"),
+        # "PORT": os.getenv("POSTGRES_PORT", "5432"),
+        # "CONN_MAX_AGE": _DB_CONN_MAX_AGE,
+        # "CONN_HEALTH_CHECKS": True,           # validates stale pooled conns
+        # "OPTIONS": {
+            # "connect_timeout": 5,    # fail fast instead of hanging
+            # "options": "-c statement_timeout=30000"  # 30 second query timeout
+        # },
+    # }
+# }
+
 _DB_CONN_MAX_AGE = int(os.getenv("DB_CONN_MAX_AGE", "0" if DEBUG else "60"))
+
+_POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+_USING_RDS_PROXY = (
+    "rds-proxy" in _POSTGRES_HOST
+    or ".proxy-" in _POSTGRES_HOST
+    or os.getenv("DB_USE_RDS_PROXY", "false").lower() in ("1", "true", "yes")
+)
+
+_DB_OPTIONS = {
+    "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
+}
+
+if _USING_RDS_PROXY:
+    # RDS Proxy was created with RequireTLS=True, so use TLS explicitly.
+    _DB_OPTIONS["sslmode"] = os.getenv("POSTGRES_SSLMODE", "require")
+else:
+    # Direct RDS supports this. RDS Proxy does NOT.
+    _STATEMENT_TIMEOUT_MS = os.getenv("DB_STATEMENT_TIMEOUT_MS", "30000").strip()
+    if _STATEMENT_TIMEOUT_MS and _STATEMENT_TIMEOUT_MS != "0":
+        _DB_OPTIONS["options"] = f"-c statement_timeout={_STATEMENT_TIMEOUT_MS}"
 
 DATABASES = {
     "default": {
@@ -302,14 +341,11 @@ DATABASES = {
         "NAME": os.getenv("POSTGRES_DB", "ecp"),
         "USER": os.getenv("POSTGRES_USER", "ecp"),
         "PASSWORD": os.getenv("POSTGRES_PASSWORD", "ecp_password"),
-        "HOST": os.getenv("POSTGRES_HOST", "localhost"),
+        "HOST": _POSTGRES_HOST,
         "PORT": os.getenv("POSTGRES_PORT", "5432"),
         "CONN_MAX_AGE": _DB_CONN_MAX_AGE,
-        "CONN_HEALTH_CHECKS": True,           # validates stale pooled conns
-        "OPTIONS": {
-            "connect_timeout": 5,    # fail fast instead of hanging
-            "options": "-c statement_timeout=30000"  # 30 second query timeout
-        },
+        "CONN_HEALTH_CHECKS": True,
+        "OPTIONS": _DB_OPTIONS,
     }
 }
 
