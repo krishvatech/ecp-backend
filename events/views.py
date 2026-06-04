@@ -2068,7 +2068,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
 
 
-        # ⚡ OPTIMIZED: Only annotate registrations_count for list views (no distinct needed here)
+        # ⚡ OPTIMIZED: Annotate registration counts for list views (efficient DB queries)
         qs = qs.annotate(
             registrations_count=Count(
                 'registrations',
@@ -3285,6 +3285,13 @@ class EventViewSet(viewsets.ModelViewSet):
                 notify_event_registration(request.user, event)
             except Exception as e:
                 logger.error(f"Failed to create registration notification: {e}")
+
+        # Invalidate event list caches when registration changes
+        try:
+            from .cache_utils import invalidate_event_list_caches
+            invalidate_event_list_caches(event.id)
+        except Exception as e:
+            logger.warning(f"Failed to invalidate event list cache for event {event.id}: {e}")
 
         return Response({"ok": True, "created": was_created, "event_id": event.id})
 
@@ -11297,6 +11304,13 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
                 reg.status = "deregistered"
                 reg.save(update_fields=["status"])
 
+        # Invalidate event list caches when registration is cancelled/deregistered
+        try:
+            from .cache_utils import invalidate_event_list_caches
+            invalidate_event_list_caches(reg.event_id)
+        except Exception as e:
+            logger.warning(f"Failed to invalidate event list cache for event {reg.event_id}: {e}")
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def get_queryset(self):
@@ -11454,6 +11468,13 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
             cancellation_reason='registration_cancelled'
         )
         # TODO: Process Refund Logic Here
+
+        # Invalidate event list caches when registration is cancelled
+        try:
+            from .cache_utils import invalidate_event_list_caches
+            invalidate_event_list_caches(reg.event_id)
+        except Exception as e:
+            logger.warning(f"Failed to invalidate event list cache for event {reg.event_id}: {e}")
 
         return Response({"ok": True, "status": reg.status})
 

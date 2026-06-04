@@ -2867,15 +2867,26 @@ class EventLiteSerializer(serializers.ModelSerializer):
 class EventListSerializer(serializers.ModelSerializer):
     """
     Optimized serializer for event list endpoints.
-    Includes essential fields and basic registration status WITHOUT expensive computed fields.
-    Excludes: user_status, application_tracks, event_participants, featured_participants, questions, resources.
-    Frontend gets registration details from /event-registrations/mine/ as secondary confirmation.
+    Includes registration counts (via efficient DB annotations) and user status (per-user computed fields).
+    Frontend gets full details from /events/{id}/ detail view if needed.
     """
     sessions = EventSessionSerializer(many=True, read_only=True)
     recommended_event = serializers.SerializerMethodField(read_only=True)
     cpd_cpe_credits = serializers.SerializerMethodField(read_only=True)
     attending_count = serializers.IntegerField(read_only=True)
     registrations_count = serializers.IntegerField(read_only=True)
+    public_registered_count = serializers.SerializerMethodField(read_only=True)
+    public_guest_count = serializers.SerializerMethodField(read_only=True)
+    total_registered = serializers.SerializerMethodField(read_only=True)
+    confirmed_registered_count = serializers.SerializerMethodField(read_only=True)
+    user_status = serializers.SerializerMethodField(read_only=True)
+    payment_pending = serializers.SerializerMethodField(read_only=True)
+    is_confirmed_registered = serializers.SerializerMethodField(read_only=True)
+    assigned_tier = serializers.SerializerMethodField(read_only=True)
+    origins = serializers.SerializerMethodField(read_only=True)
+    show_participants_before_event = serializers.BooleanField(read_only=True)
+    show_participants_after_event = serializers.BooleanField(read_only=True)
+    show_registered_participant_count = serializers.BooleanField(read_only=True)
 
     def get_recommended_event(self, obj):
         if obj.recommended_event_id:
@@ -2895,6 +2906,66 @@ class EventListSerializer(serializers.ModelSerializer):
         if per_credit <= 0:
             return None
         return round(minutes / per_credit, 4)
+
+    def get_public_registered_count(self, obj):
+        """Use annotated count or fallback to computation."""
+        cached = getattr(obj, "_cached_public_registered_count", None)
+        if cached is not None:
+            return cached
+        # Fallback to annotation if available
+        annotated = getattr(obj, "public_registered_count_annotated", None)
+        if annotated is not None:
+            return annotated
+        value = compute_public_registered_count(obj)
+        setattr(obj, "_cached_public_registered_count", value)
+        return value
+
+    def get_public_guest_count(self, obj):
+        """Use annotated count or fallback to computation."""
+        cached = getattr(obj, "_cached_public_guest_count", None)
+        if cached is not None:
+            return cached
+        # Fallback to annotation if available
+        annotated = getattr(obj, "public_guest_count_annotated", None)
+        if annotated is not None:
+            return annotated
+        value = compute_public_guest_count(obj)
+        setattr(obj, "_cached_public_guest_count", value)
+        return value
+
+    def get_total_registered(self, obj):
+        registered_users = self.get_public_registered_count(obj)
+        guest_users = self.get_public_guest_count(obj)
+        return max(0, safe_int(registered_users) + safe_int(guest_users))
+
+    def get_confirmed_registered_count(self, obj):
+        """Get confirmed registration count."""
+        cached = getattr(obj, "_cached_confirmed_registered_count", None)
+        if cached is not None:
+            return cached
+        value = get_confirmed_registered_count_for_event(obj)
+        setattr(obj, "_cached_confirmed_registered_count", value)
+        return value
+
+    def get_user_status(self, obj):
+        """Get current user's registration/application status for this event."""
+        return build_current_user_event_status(obj, self.context.get("request"))
+
+    def _current_user_status_value(self, obj, key, default=None):
+        status = self.get_user_status(obj) or {}
+        return status.get(key, default)
+
+    def get_payment_pending(self, obj):
+        return self._current_user_status_value(obj, "payment_pending", False)
+
+    def get_is_confirmed_registered(self, obj):
+        return self._current_user_status_value(obj, "is_confirmed_registered", False)
+
+    def get_assigned_tier(self, obj):
+        return self._current_user_status_value(obj, "assigned_tier")
+
+    def get_origins(self, obj):
+        return self._current_user_status_value(obj, "origins", [])
 
     class Meta:
         model = Event
@@ -2916,6 +2987,9 @@ class EventListSerializer(serializers.ModelSerializer):
             "external_streaming_host_link",
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
             "attending_count", "registrations_count", "is_pinned", "pin_priority",
+            "public_registered_count", "public_guest_count", "total_registered", "confirmed_registered_count",
+            "user_status", "payment_pending", "is_confirmed_registered", "assigned_tier", "origins",
+            "show_participants_before_event", "show_participants_after_event", "show_registered_participant_count",
         )
 
 
