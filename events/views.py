@@ -9390,12 +9390,17 @@ class EventViewSet(viewsets.ModelViewSet):
         if not registration.joined_live:
             registration.joined_live = True
             registration.joined_live_at = timezone.now()
-            fields_to_update = ["joined_live", "joined_live_at"]
-            registration.save(update_fields=fields_to_update)
+            if registration.pk:
+                registration.save(update_fields=["joined_live", "joined_live_at"])
+            else:
+                registration.save()
         elif not registration.joined_live_at:
             # If somehow joined_live is true but joined_live_at is null, update it
             registration.joined_live_at = timezone.now()
-            registration.save(update_fields=["joined_live_at"])
+            if registration.pk:
+                registration.save(update_fields=["joined_live_at"])
+            else:
+                registration.save()
 
         # ✅ CRITICAL: Remove user from lounge when they join main meeting
         # This ensures they don't appear in lounge occupants list after transitioning to main
