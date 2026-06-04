@@ -1239,6 +1239,9 @@ def live_join_slot(event_id, limit=None, ttl=None):
 
     This limits how many users per event can run heavy join logic at the same time.
     If Redis/cache has any issue, it fails open and allows join instead of blocking live meeting.
+
+    NOTE: This context manager uses try/finally (not try/except around yield) to ensure
+    exceptions from the with-body propagate normally. Cache errors are caught separately.
     """
     limit = int(limit or getattr(settings, "LIVE_JOIN_CONCURRENT_LIMIT", 60))
     ttl = int(ttl or getattr(settings, "LIVE_JOIN_SLOT_TTL_SECONDS", 30))
@@ -1249,33 +1252,49 @@ def live_join_slot(event_id, limit=None, ttl=None):
 
     key = f"event:{event_id}:rtk_join_slots"
     acquired = False
+    allowed = True  # fail open by default
 
+    # Determine allowed status by attempting cache operations.
+    # Only catches cache/Redis errors, not exceptions from with-body.
     try:
-        try:
-            cache.add(key, 0, timeout=ttl)
-            count = cache.incr(key)
+        cache.add(key, 0, timeout=ttl)
+        count = cache.incr(key)
 
+        try:
+            cache.touch(key, timeout=ttl)
+        except Exception:
+            pass
+
+        allowed = count <= limit
+        logger.info(
+            "[LIVE_JOIN_QUEUE] event=%s allowed=%s limit=%s",
+            event_id,
+            str(allowed).lower(),
+            limit,
+        )
+
+        if allowed:
+            acquired = True
+        else:
             try:
-                cache.touch(key, timeout=ttl)
+                cache.decr(key)
             except Exception:
                 pass
 
-            if count <= limit:
-                acquired = True
-                yield True
-            else:
-                try:
-                    cache.decr(key)
-                except Exception:
-                    pass
+    except Exception:
+        # Cache/Redis error: fail open and allow join
+        logger.info(
+            "[LIVE_JOIN_QUEUE] event=%s allowed=true limit=%s (cache failed)",
+            event_id,
+            limit,
+        )
+        allowed = True
+        acquired = False
 
-                yield False
-
-        except Exception:
-            # Fail open: if Redis/cache fails, do not block users from joining.
-            acquired = True
-            yield True
-
+    # Yield outside the cache try/except so exceptions from with-body propagate.
+    # Use try/finally to guarantee cleanup.
+    try:
+        yield allowed
     finally:
         if acquired:
             try:
@@ -9206,7 +9225,9 @@ class EventViewSet(viewsets.ModelViewSet):
                     defaults["admitted_at"] = converted_guest.joined_live_at or timezone.now()
 
             registration = EventRegistration(event=event, user=user, **defaults)
+            registration.save()  # ✅ CRITICAL: Save new registration immediately with its defaults
             _created = True
+            logger.info(f"[RTK_JOIN] Created new registration for user {user.id} on event {event.id} (pk={registration.pk})")
         #  Track field changes to save only once
         fields_to_update = []
 
@@ -9304,14 +9325,12 @@ class EventViewSet(viewsets.ModelViewSet):
                 except Exception as e:
                     logger.warning(f"[WAITING_ROOM] Failed to remove user from lounge: {e}")
 
-                #  Save registration with all collected updates
-                if fields_to_update or _created:
-                    if _created:
-                        registration.save()
-                    elif fields_to_update:
-                        # Remove duplicates from fields_to_update
-                        fields_to_update = list(set(fields_to_update))
-                        registration.save(update_fields=fields_to_update)
+                #  Save registration with collected updates (new registrations already saved above)
+                if fields_to_update:
+                    # Remove duplicates from fields_to_update
+                    fields_to_update = list(set(fields_to_update))
+                    registration.save(update_fields=fields_to_update)
+                    logger.info(f"[RTK_JOIN] Updated registration for user {user.id} on event {event.id} (fields: {', '.join(fields_to_update)})")
 
                     # Log auto-readmission after save
                     if auto_readmit_user:
@@ -9386,21 +9405,27 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=500,
             )
 
-        #  Mark user as joined_live (in memory, save with other updates)
+        #  Mark user as joined_live (registration always has pk at this point)
+        # Either it existed before or we saved it immediately at line 9211
+        if not registration.pk:
+            logger.error(f"[RTK_JOIN] CRITICAL: registration has no pk before marking joined_live (user={user.id}, event={event.id})")
+            return Response(
+                {"error": "registration_error", "detail": "Failed to initialize registration."},
+                status=500,
+            )
+
+        joined_live_changed = False
         if not registration.joined_live:
             registration.joined_live = True
             registration.joined_live_at = timezone.now()
-            if registration.pk:
-                registration.save(update_fields=["joined_live", "joined_live_at"])
-            else:
-                registration.save()
+            registration.save(update_fields=["joined_live", "joined_live_at"])
+            joined_live_changed = True
+            logger.info(f"[RTK_JOIN] Marked user {user.id} as joined_live on event {event.id}")
         elif not registration.joined_live_at:
             # If somehow joined_live is true but joined_live_at is null, update it
             registration.joined_live_at = timezone.now()
-            if registration.pk:
-                registration.save(update_fields=["joined_live_at"])
-            else:
-                registration.save()
+            registration.save(update_fields=["joined_live_at"])
+            logger.info(f"[RTK_JOIN] Set joined_live_at for user {user.id} on event {event.id}")
 
         # ✅ CRITICAL: Remove user from lounge when they join main meeting
         # This ensures they don't appear in lounge occupants list after transitioning to main
