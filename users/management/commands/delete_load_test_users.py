@@ -35,10 +35,12 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         email_domain = options['email_domain'].strip()
         force = options['force']
+        batch_size = 10
 
-        # Find all load test users
-        users = User.objects.filter(email__endswith=f'@{email_domain}')
-        count = users.count()
+        # Find all load test users and fetch IDs upfront to avoid queryset issues during deletion
+        users_qs = User.objects.filter(email__endswith=f'@{email_domain}')
+        user_ids = list(users_qs.values_list('id', flat=True))
+        count = len(user_ids)
 
         if count == 0:
             self.stdout.write(
@@ -49,11 +51,13 @@ class Command(BaseCommand):
         # Show users to be deleted
         self.stdout.write('\n' + '=' * 70)
         self.stdout.write(
-            self.style.WARNING(f'🗑️  About to delete {count} load test user(s):')
+            self.style.WARNING(f'🗑️  About to delete {count} load test user(s) in batches of {batch_size}:')
         )
         self.stdout.write('=' * 70 + '\n')
 
-        for user in users[:10]:  # Show first 10
+        # Preview first 10 users
+        users_preview = User.objects.filter(id__in=user_ids[:10])
+        for user in users_preview:
             self.stdout.write(f'  • {user.username} ({user.email}) - ID: {user.id}')
 
         if count > 10:
@@ -75,41 +79,65 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.SUCCESS('❌ Deletion cancelled.'))
                 return
 
-        # Perform deletion
+        # Perform batch deletion
         self.stdout.write(
-            self.style.WARNING(f'\n🔄 Deleting {count} load test user(s)...\n')
+            self.style.WARNING(f'\n🔄 Deleting {count} load test user(s) in batches of {batch_size}...\n')
         )
 
         deleted = 0
         failed = 0
+        batch_num = 1
+        total_batches = (count + batch_size - 1) // batch_size
 
-        for user in users:
-            try:
-                username = user.username
-                email = user.email
-                user_id = user.id
+        # Process users in batches using user IDs
+        for batch_start in range(0, count, batch_size):
+            batch_end = min(batch_start + batch_size, count)
+            batch_user_ids = user_ids[batch_start:batch_end]
+            batch_users = User.objects.filter(id__in=batch_user_ids)
+            batch_deleted = 0
+            batch_failed = 0
 
-                user.delete()
+            self.stdout.write(
+                self.style.WARNING(f'\n📦 Batch {batch_num}/{total_batches} ({batch_start + 1}-{batch_end}):')
+            )
 
-                deleted += 1
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f'✅ Deleted: {username} ({email}) - ID: {user_id}'
+            for user in batch_users:
+                try:
+                    username = user.username
+                    email = user.email
+                    user_id = user.id
+
+                    user.delete()
+
+                    batch_deleted += 1
+                    deleted += 1
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f'  ✅ Deleted: {username} ({email}) - ID: {user_id}'
+                        )
                     )
-                )
 
-            except Exception as e:
-                failed += 1
-                self.stdout.write(
-                    self.style.ERROR(f'❌ Failed to delete {user.username}: {e}')
-                )
+                except Exception as e:
+                    batch_failed += 1
+                    failed += 1
+                    self.stdout.write(
+                        self.style.ERROR(f'  ❌ Failed to delete {user.username}: {e}')
+                    )
 
-        # Summary
+            # Batch summary
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f'  Batch {batch_num} complete: {batch_deleted} deleted, {batch_failed} failed'
+                )
+            )
+            batch_num += 1
+
+        # Final summary
         self.stdout.write('\n' + '=' * 70)
-        self.stdout.write(self.style.SUCCESS(f'✅ Deleted: {deleted}'))
+        self.stdout.write(self.style.SUCCESS(f'✅ Total Deleted: {deleted}'))
         if failed:
-            self.stdout.write(self.style.ERROR(f'❌ Failed: {failed}'))
-        self.stdout.write(f'📊 Total processed: {deleted + failed}')
+            self.stdout.write(self.style.ERROR(f'❌ Total Failed: {failed}'))
+        self.stdout.write(f'📊 Total processed: {deleted + failed}/{count}')
         self.stdout.write('=' * 70 + '\n')
 
-        logger.info(f'Load test users deleted: {deleted} deleted, {failed} failed')
+        logger.info(f'Load test users deleted: {deleted} deleted, {failed} failed (batch size: {batch_size})')
