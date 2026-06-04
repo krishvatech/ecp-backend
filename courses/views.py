@@ -19,6 +19,7 @@ Endpoints:
 """
 import logging
 from datetime import timedelta
+from html import unescape
 from urllib.parse import urlparse, urlencode
 
 import requests as http_requests
@@ -645,13 +646,11 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
         authenticated user and the requested course. Frontend uses this to
         embed the Mergers.AI video search widget in an iframe.
 
-        Query params:
-            ?course_slug=<slug>  (optional; defaults to course shortname)
-
         Returns:
             {
                 "token": "eyJ....",
                 "widget_url": "https://app.mergers.ai/embed/widget?token=....&course=....",
+                "course_identifier": "42",
                 "course_slug": "cpmi-virtual-live-march-2024",
                 "expires_in_seconds": 900
             }
@@ -680,24 +679,26 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        course_slug = request.query_params.get("course_slug", course.short_name)
+        # Use moodle_id as primary identifier (stable across Moodle instances)
+        course_identifier = str(course.moodle_id or course.short_name)
 
         try:
-            token = mergersai_make_token(user.email, course_slug)
-            widget_url = build_mergersai_widget_url(token, course_slug)
+            token = mergersai_make_token(user.email, course_identifier)
+            widget_url = build_mergersai_widget_url(token, course_identifier)
 
             logger.info(
-                "Generated Mergers.AI token for user=%s course_id=%s course_slug=%s",
+                "Generated Mergers.AI token for user=%s course_id=%s course_identifier=%s",
                 user.email,
                 course.id,
-                course_slug,
+                course_identifier,
             )
 
             return Response(
                 {
                     "token": token,
                     "widget_url": widget_url,
-                    "course_slug": course_slug,
+                    "course_identifier": course_identifier,
+                    "course_slug": course.short_name,
                     "expires_in_seconds": 900,
                 }
             )
@@ -763,7 +764,7 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
                 {
                     "id": e["course__id"],
                     "slug": e["course__short_name"],
-                    "name": decodeEntities(e["course__full_name"]),
+                    "name": unescape(e["course__full_name"] or ""),
                     "moodle_id": e["course__moodle_id"],
                     "has_vector_content": True,  # TODO: fetch from Mergers.AI /api/v1/embed/status after go-live
                     "enrolled": True,

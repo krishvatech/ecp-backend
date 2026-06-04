@@ -11,13 +11,14 @@ import json
 import logging
 import time
 from typing import Optional
+from urllib.parse import urlencode
 
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
 
-def mergersai_make_token(email: str, course_slug: Optional[str] = None) -> str:
+def mergersai_make_token(email: str, course_identifier: Optional[str] = None) -> str:
     """
     Generate an HMAC-signed token for embedding Mergers.AI video widget.
 
@@ -27,7 +28,7 @@ def mergersai_make_token(email: str, course_slug: Optional[str] = None) -> str:
 
     Args:
         email: User's email (must match Moodle email)
-        course_slug: Optional Moodle course shortname
+        course_identifier: Optional course identifier (moodle_id or short_name)
 
     Returns:
         URL-safe base64 encoded token (safe for query strings)
@@ -44,7 +45,7 @@ def mergersai_make_token(email: str, course_slug: Optional[str] = None) -> str:
 
     payload = {
         "email": email,
-        "course": course_slug,
+        "course": course_identifier,
         "exp": int(time.time()) + 900,  # 15 minutes from now
     }
 
@@ -64,22 +65,22 @@ def mergersai_make_token(email: str, course_slug: Optional[str] = None) -> str:
     logger.debug(
         "Generated Mergers.AI token for user=%s course=%s exp=%s",
         email,
-        course_slug,
+        course_identifier,
         payload["exp"],
     )
     return token
 
 
-def build_mergersai_widget_url(token: str, course_slug: Optional[str] = None) -> str:
+def build_mergersai_widget_url(token: str, course_identifier: Optional[str] = None) -> str:
     """
     Build the full iframe src URL for Mergers.AI widget.
 
     Args:
         token: HMAC token from mergersai_make_token()
-        course_slug: Optional course shortname to scope search
+        course_identifier: Optional course identifier (moodle_id or short_name) to scope search
 
     Returns:
-        Full URL safe for <iframe src="">
+        Full URL safe for <iframe src=""> with properly encoded query parameters
     """
     base_url = getattr(
         settings,
@@ -87,12 +88,12 @@ def build_mergersai_widget_url(token: str, course_slug: Optional[str] = None) ->
         "https://app.mergers.ai/embed/widget",
     )
 
-    params = [f"token={token}"]
-    if course_slug:
-        params.append(f"course={course_slug}")
+    params = {"token": token}
+    if course_identifier:
+        params["course"] = course_identifier
 
-    query_string = "&".join(params)
+    query_string = urlencode(params)
     url = f"{base_url}?{query_string}"
 
-    logger.debug("Built Mergers.AI widget URL for course=%s", course_slug)
+    logger.debug("Built Mergers.AI widget URL for course=%s", course_identifier)
     return url
