@@ -2864,6 +2864,61 @@ class EventLiteSerializer(serializers.ModelSerializer):
         )
 
 
+class EventListSerializer(serializers.ModelSerializer):
+    """
+    Optimized serializer for event list endpoints.
+    Includes essential fields and basic registration status WITHOUT expensive computed fields.
+    Excludes: user_status, application_tracks, event_participants, featured_participants, questions, resources.
+    Frontend gets registration details from /event-registrations/mine/ as secondary confirmation.
+    """
+    sessions = EventSessionSerializer(many=True, read_only=True)
+    recommended_event = serializers.SerializerMethodField(read_only=True)
+    cpd_cpe_credits = serializers.SerializerMethodField(read_only=True)
+    attending_count = serializers.IntegerField(read_only=True)
+    registrations_count = serializers.IntegerField(read_only=True)
+
+    def get_recommended_event(self, obj):
+        if obj.recommended_event_id:
+            return {
+                "id": obj.recommended_event.id,
+                "slug": obj.recommended_event.slug,
+                "title": obj.recommended_event.title,
+                "start_time": obj.recommended_event.start_time,
+            }
+        return None
+
+    def get_cpd_cpe_credits(self, obj):
+        minutes = obj.cpd_cpe_minutes
+        if not minutes:
+            return None
+        per_credit = obj.cpd_cpe_minutes_per_credit or 60
+        if per_credit <= 0:
+            return None
+        return round(minutes / per_credit, 4)
+
+    class Meta:
+        model = Event
+        fields = (
+            "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
+            "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country",
+            "category", "is_live", "recording_url", "replay_available", "replay_availability_duration",
+            "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type",
+            "preapproval_code_enabled", "preapproval_allowlist_enabled", "attendee_marker_enabled", "attendee_marker_label",
+            "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room",
+            "networking_tables_enabled_waiting_room", "auto_admit_seconds",
+            "lounge_enabled_before", "lounge_before_buffer",
+            "lounge_enabled_after", "lounge_after_buffer",
+            "is_multi_day", "sessions",
+            "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
+            "cancellation_message", "recommended_event", "created_by_id",
+            "use_external_streaming", "external_streaming_platform", "external_streaming_url",
+            "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
+            "external_streaming_host_link",
+            "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
+            "attending_count", "registrations_count", "is_pinned", "pin_priority",
+        )
+
+
 class EventRoleSerializer(serializers.ModelSerializer):
     """Serializer for EventRole model - attendee role catalog for events."""
 
@@ -2956,6 +3011,29 @@ class EventAttendeeOriginSerializer(serializers.ModelSerializer):
         if obj.accepted_by:
             return f"{obj.accepted_by.first_name} {obj.accepted_by.last_name}".strip()
         return None
+
+
+class EventRegistrationLiteSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for /event-registrations/mine/ endpoint.
+    Includes only fields needed by event card footer (status, button state, join logic).
+    Optimized for fast load on large registration lists.
+    """
+    event_id = serializers.IntegerField(source='event.id', read_only=True)
+    is_host = serializers.SerializerMethodField()
+
+    def get_is_host(self, obj):
+        # User is host if they created the event (most common case for card footer)
+        # For full host check including participants, use EventRegistrationSerializer
+        return obj.user_id == getattr(obj.event, 'created_by_id', None)
+
+    class Meta:
+        model = EventRegistration
+        fields = (
+            'id', 'event_id', 'status', 'attendee_status', 'registered_at',
+            'joined_live', 'watched_replay', 'admission_status', 'admitted_at',
+            'current_location', 'is_host'
+        )
+        read_only_fields = tuple(fields)
 
 
 class EventRegistrationSerializer(serializers.ModelSerializer):

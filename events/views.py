@@ -75,8 +75,10 @@ from .serializers import (
     EventSerializer,
     PublicEventSerializer,
     EventLiteSerializer,
+    EventListSerializer,
     MyEventCardSerializer,
     EventRegistrationSerializer,
+    EventRegistrationLiteSerializer,
     EventSessionSerializer,
     SessionAttendanceSerializer,
     EventParticipantListItemSerializer,
@@ -2074,6 +2076,12 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         )
         return qs
+
+    def get_serializer_class(self):
+        """Use optimized EventListSerializer for list action to avoid expensive user_status computation."""
+        if self.action == 'list':
+            return EventListSerializer
+        return EventSerializer
 
     def list(self, request, *args, **kwargs):
         """
@@ -11021,10 +11029,10 @@ class EventViewSet(viewsets.ModelViewSet):
 
         page = self.paginate_queryset(qs)
         if page is not None:
-            serializer = EventSerializer(page, many=True, context={"request": request})
+            serializer = EventListSerializer(page, many=True, context={"request": request})
             return self.get_paginated_response(serializer.data)
 
-        serializer = EventSerializer(qs, many=True, context={"request": request})
+        serializer = EventListSerializer(qs, many=True, context={"request": request})
         return Response(serializer.data)
 
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="replays")
@@ -11384,6 +11392,7 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         """
         Alias to list only my registrations with pagination support.
         Always strict to request.user.
+        Uses lightweight serializer and optimized query for fast card footer loads.
         """
         if getattr(request.user, "is_guest", False):
             return Response([])
@@ -11391,9 +11400,14 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         qs = self.get_queryset().filter(
             user=request.user,
             status__in=['registered', 'cancellation_requested']
+        ).select_related('event', 'user').only(
+            'id', 'event_id', 'status', 'attendee_status', 'registered_at',
+            'joined_live', 'watched_replay', 'admission_status', 'admitted_at',
+            'current_location', 'user_id', 'event__id', 'event__created_by_id',
+            'user__email'
         )
         page = self.paginate_queryset(qs)
-        ser = self.get_serializer(page or qs, many=True)
+        ser = EventRegistrationLiteSerializer(page or qs, many=True)
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
 
     @action(detail=True, methods=["post"], url_path="cancel_request")
