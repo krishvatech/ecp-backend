@@ -234,9 +234,24 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
 
     async def _user_can_view(self, user_id: int, conv_id: int) -> bool:
         """Check if user has permission to view this conversation."""
-        try:
-            conv = await database_sync_to_async(Conversation.objects.get)(pk=conv_id)
-            user = await database_sync_to_async(lambda: self.scope["user"])()
-            return conv.user_can_view(user)
-        except Conversation.DoesNotExist:
-            return False
+        user = self.scope.get("user")
+
+        @database_sync_to_async
+        def check_permission():
+            try:
+                conv = (
+                    Conversation.objects
+                    .select_related("event", "lounge_table", "group", "user1", "user2")
+                    .get(pk=conv_id)
+                )
+                return conv.user_can_view(user)
+            except Conversation.DoesNotExist:
+                return False
+            except Exception as e:
+                logger.error(
+                    "WS[Conv] permission check failed for user %s conv %s: %s",
+                    user_id, conv_id, e
+                )
+                return False
+
+        return await check_permission()
