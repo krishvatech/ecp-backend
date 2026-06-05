@@ -1797,6 +1797,22 @@ class EventSerializer(serializers.ModelSerializer):
                 send_speaker_credentials_task.delay(user_id)
 
     def create(self, validated_data):
+        # ✅ CRITICAL FIX: Apply visibility defaults if missing from request
+        # This ensures DB always has correct values even if frontend doesn't send them
+        visibility_defaults = {
+            "show_participants_before_event": True,
+            "show_participants_after_event": False,
+            "show_registered_participant_count": True,
+            "show_guest_participant_count": False,
+            "show_public_hosts": False,
+            "show_public_speakers": False,
+            "show_public_moderators": False,
+            "show_speed_networking_match_history": True,
+        }
+        for field, default_value in visibility_defaults.items():
+            if field not in validated_data:
+                validated_data[field] = default_value
+
         # Extract sessions_input before processing other data (must be done first for atomicity)
         sessions_input = validated_data.pop('sessions_input', [])
 
