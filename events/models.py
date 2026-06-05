@@ -306,7 +306,7 @@ class Event(models.Model):
         'EventSeries',
         null=True,
         blank=True,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
         related_name="child_events",
         help_text="Parent series if this event is part of a webinar series"
     )

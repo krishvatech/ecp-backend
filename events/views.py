@@ -13411,7 +13411,14 @@ class SeriesViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         if not self._is_owner(instance):
             raise PermissionDenied("Only the series creator or superuser can delete this series.")
-        instance.delete()
+
+        with transaction.atomic():
+            instance.child_events.update(
+                series=None,
+                series_order=None,
+                series_session_label=''
+            )
+            instance.delete()
 
     def _is_owner(self, obj):
         return bool(
@@ -13595,6 +13602,22 @@ class SeriesViewSet(viewsets.ModelViewSet):
 
             try:
                 event = Event.objects.get(id=event_id)
+
+                # Validate event status: only 'published' or 'live' events can be added
+                if event.status not in ['published', 'live']:
+                    return Response(
+                        {'error': 'Only published or live events can be added to a series.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                # Validate event has not ended: if not 'live', check end_time
+                now = timezone.now()
+                if event.status != 'live' and event.end_time and event.end_time < now:
+                    return Response(
+                        {'error': 'Ended events cannot be added to a series.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
                 event.series = series
                 event.series_order = series_order
                 event.series_session_label = series_session_label
