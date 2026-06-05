@@ -2623,7 +2623,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "created_at", "sessions", "speakers",
             "featured_participants", "featured_participants_total",
             "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
-            "is_multi_day",
+            "is_multi_day", "series",
             "use_external_streaming", "external_streaming_platform", "external_streaming_url",
             "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
             "external_streaming_host_link",
@@ -2869,7 +2869,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer",
             "lounge_enabled_after", "lounge_after_buffer",
-            "is_multi_day", "sessions",  # ✅ Added for multi-day event support
+            "is_multi_day", "sessions", "series",
             "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
             "cancellation_message", "recommended_event", "created_by_id",
             # ✅ External streaming fields
@@ -2995,7 +2995,7 @@ class EventListSerializer(serializers.ModelSerializer):
             "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer",
             "lounge_enabled_after", "lounge_after_buffer",
-            "is_multi_day", "sessions",
+            "is_multi_day", "sessions", "series",
             "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
             "cancellation_message", "recommended_event", "created_by_id",
             "use_external_streaming", "external_streaming_platform", "external_streaming_url",
