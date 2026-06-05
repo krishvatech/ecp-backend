@@ -1786,7 +1786,7 @@ class EventViewSet(viewsets.ModelViewSet):
     # 🔎 Search & ordering
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["title", "location", "category", "description", "community__name"]
-    ordering_fields = ["start_time", "created_at", "title"]
+    ordering_fields = ["start_time", "created_at", "title", "is_pinned", "pin_priority", "pinned_at"]
     ordering = ["-start_time"]
 
     # ------------------------ Queryset -----------------------

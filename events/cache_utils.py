@@ -9,12 +9,13 @@ CACHE_AFFECTING_PARAMS = {
     'search', 'bucket', 'event_format', 'category', 'date_range',
     'location', 'start_date', 'end_date', 'min_price', 'max_price',
     'exclude_ended', 'exclude_pinned', 'include_ended', 'created_by',
-    'is_hidden', 'lounge_table_id'
+    'is_hidden', 'lounge_table_id',
+    'limit', 'offset', 'ordering', 'page', 'page_size'
 }
 
-# Query params to ignore for cache (pagination, ordering, etc handled client-side)
+# Query params to ignore for cache (only truly safe params that don't affect results)
 CACHE_IGNORE_PARAMS = {
-    'limit', 'offset', 'ordering', 'search_fields', 'expand'
+    'search_fields', 'expand'
 }
 
 
