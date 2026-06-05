@@ -316,6 +316,7 @@ def get_current_asg_capacity():
 
 LIVE_MEETING_CAPACITY_STATUS_CACHE_KEY = "live_meeting:capacity_status:v1"
 LIVE_MEETING_ASG_SCALE_LOCK_CACHE_KEY = "live_meeting:asg_scale_lock:v1"
+LIVE_MEETING_SAFE_SCALE_IN_LOCK_CACHE_KEY = "live_meeting:safe_scale_in_lock:v1"
 
 
 def get_capacity_status_cached():
@@ -375,6 +376,36 @@ def acquire_asg_scale_lock():
         return True
 
 
+def acquire_safe_scale_in_lock():
+    """
+    Allow only one celery worker/process to execute safe scale-in at a time.
+
+    This is fail-closed. If cache/Redis is down, do NOT scale in.
+    """
+    ttl = int(getattr(settings, "LIVE_MEETING_SAFE_SCALE_IN_LOCK_TTL_SECONDS", 240))
+
+    try:
+        acquired = cache.add(
+            LIVE_MEETING_SAFE_SCALE_IN_LOCK_CACHE_KEY,
+            timezone.now().isoformat(),
+            timeout=ttl,
+        )
+        return bool(acquired)
+    except Exception:
+        logger.warning(
+            "Failed to acquire safe scale-in lock; blocking scale-in for safety",
+            exc_info=True,
+        )
+        return False
+
+
+def release_safe_scale_in_lock():
+    try:
+        cache.delete(LIVE_MEETING_SAFE_SCALE_IN_LOCK_CACHE_KEY)
+    except Exception:
+        logger.warning("Failed to release safe scale-in lock", exc_info=True)
+
+
 def scale_asg_if_needed(reason="scheduled_check", scale_down_allowed=True):
     if not settings.LIVE_MEETING_ASG_AUTOSCALE_ENABLED:
         logger.info("Live meeting ASG autoscale disabled")
@@ -384,40 +415,79 @@ def scale_asg_if_needed(reason="scheduled_check", scale_down_allowed=True):
     current = get_current_asg_capacity()
 
     desired = required["desired_instances"]
+    target_min = settings.LIVE_MEETING_ASG_MIN_CAPACITY
+    target_max = settings.LIVE_MEETING_ASG_MAX_CAPACITY
+
+    # Always keep ASG bounds normalized, even when desired capacity is already
+    # correct or safe scale-in returns early. This avoids the old 12/12/12
+    # problem where MinSize=12 blocks later decrement-desired scale-in.
+    original_current = dict(current)
+    bounds_changed = (
+        current.get("min") != target_min
+        or current.get("max") != target_max
+    )
+    if bounds_changed:
+        client = boto3.client("autoscaling", region_name=settings.LIVE_MEETING_ASG_REGION)
+        client.update_auto_scaling_group(
+            AutoScalingGroupName=settings.LIVE_MEETING_ASG_NAME,
+            MinSize=target_min,
+            MaxSize=target_max,
+        )
+        current = {**current, "min": target_min, "max": target_max}
+        logger.warning(
+            "Normalized ASG min/max bounds reason=%s from=%s to_min=%s to_max=%s",
+            reason,
+            original_current,
+            target_min,
+            target_max,
+        )
 
     has_capacity_window = required["total_expected_users"] > 0 or bool(required["events"])
 
-    # During live/upcoming/cooldown windows, never reduce capacity.
-    # Downscale is allowed only when there is no relevant meeting window.
-    if desired < current["desired"] and (not scale_down_allowed or has_capacity_window):
+    # During live/upcoming/cooldown windows, never reduce capacity directly.
+    # If safe scale-in is enabled, reduce only by draining/terminating exact idle
+    # instances. This allows Event 1 extra capacity to be removed after its
+    # cooldown while Event 2 continues on lower capacity.
+    if desired < current["desired"] and has_capacity_window:
         logger.info(
-            "Keeping current ASG desired capacity. reason=%s current_desired=%s calculated_desired=%s has_capacity_window=%s",
+            "ASG is over required capacity during active capacity window. reason=%s current_desired=%s calculated_desired=%s",
             reason,
             current["desired"],
             desired,
-            has_capacity_window,
         )
 
-        # Safe scale-in: during an active capacity window we never reduce desired
-        # directly. Instead, when the feature flag is enabled, delegate to the
-        # safe scale-in functions which only ever drain/terminate a single
-        # already-idle instance (and only when dry_run is False). This branch
-        # never calls update_auto_scaling_group to downscale.
-        if has_capacity_window and getattr(settings, "LIVE_MEETING_SAFE_SCALE_IN_ENABLED", False):
-            # Imported lazily to avoid a circular import: live_safe_scale_in
-            # imports calculate_required_capacity/get_current_asg_capacity from
-            # this module.
+        if scale_down_allowed and getattr(settings, "LIVE_MEETING_SAFE_SCALE_IN_ENABLED", False):
+            # Imported lazily to avoid a circular import: live_safe_scale_in imports
+            # calculate_required_capacity/get_current_asg_capacity from this module.
             from events.services.live_safe_scale_in import (
                 continue_safe_scale_in_draining_instances,
                 execute_safe_scale_in_one_step,
             )
 
-            dry_run = getattr(settings, "LIVE_MEETING_SAFE_SCALE_IN_DRY_RUN", True)
+            dry_run = bool(getattr(settings, "LIVE_MEETING_SAFE_SCALE_IN_DRY_RUN", True))
+
+            lock_acquired = acquire_safe_scale_in_lock()
+            if not lock_acquired:
+                logger.info(
+                    "Safe scale-in skipped because another worker holds lock or Redis lock failed. reason=%s",
+                    reason,
+                )
+                return {
+                    "changed": bool(bounds_changed),
+                    "reason": "safe_scale_in_lock_active",
+                    "safe_scale_in": True,
+                    "dry_run": dry_run,
+                    "bounds_changed": bounds_changed,
+                    "from": original_current if bounds_changed else current,
+                    "current": current,
+                    "required": required,
+                }
 
             try:
-                # Stage 1: finish off any instance already draining from a prior cycle.
+                # Stage 1: finish one instance that is already draining. If any
+                # draining instance exists, do not start another one in the same cycle.
                 continue_result = continue_safe_scale_in_draining_instances(
-                    reason=reason,
+                    reason=f"{reason}:continue_draining",
                     dry_run=dry_run,
                 )
                 logger.info(
@@ -428,20 +498,24 @@ def scale_asg_if_needed(reason="scheduled_check", scale_down_allowed=True):
                     continue_result.get("reason"),
                 )
 
-                if continue_result.get("changed"):
+                if continue_result.get("reason") != "no_draining_instances":
                     return {
-                        "changed": True,
+                        "changed": bool(continue_result.get("changed")) or bounds_changed,
+                        "reason": "safe_scale_in_continue",
                         "safe_scale_in": True,
-                        "stage": "continue_draining",
-                        "result": continue_result,
+                        "dry_run": dry_run,
+                        "bounds_changed": bounds_changed,
+                        "from": original_current if bounds_changed else current,
                         "current": current,
                         "required": required,
+                        "result": continue_result,
                     }
 
-                # Stage 2: nothing was draining (or nothing changed) — try to start
-                # or complete one safe scale-in step on a fresh candidate.
+                # Stage 2: no instance is currently draining; start one safe
+                # candidate. This returns even for dry-run / wait-required so the
+                # normal ASG update path is not called with the old desired value.
                 start_result = execute_safe_scale_in_one_step(
-                    reason=reason,
+                    reason=f"{reason}:start_one",
                     dry_run=dry_run,
                 )
                 logger.info(
@@ -452,31 +526,50 @@ def scale_asg_if_needed(reason="scheduled_check", scale_down_allowed=True):
                     start_result.get("reason"),
                 )
 
-                if start_result.get("changed"):
-                    return {
-                        "changed": True,
-                        "safe_scale_in": True,
-                        "stage": "start_or_complete_one_step",
-                        "result": start_result,
-                        "current": current,
-                        "required": required,
-                    }
+                return {
+                    "changed": bool(start_result.get("changed")) or bounds_changed,
+                    "reason": "safe_scale_in_attempted",
+                    "safe_scale_in": True,
+                    "dry_run": dry_run,
+                    "bounds_changed": bounds_changed,
+                    "from": original_current if bounds_changed else current,
+                    "current": current,
+                    "required": required,
+                    "result": start_result,
+                }
             except Exception:
                 # The safe scale-in helpers are already defensive; this is a final
                 # guard so the autoscaler can never be broken by them.
                 logger.warning(
                     "Safe scale-in execution failed; keeping current capacity", exc_info=True
                 )
+            finally:
+                release_safe_scale_in_lock()
 
-        # Conservative fallback (unchanged behavior): during a capacity window, or
-        # when safe scale-in is disabled / dry-run / waiting for a drain, never
-        # reduce desired capacity below the current value.
+        # Conservative fallback: if safe scale-in is disabled, dry-run is not being
+        # used through the return path above, or scale_down_allowed=False, keep
+        # current capacity until all capacity windows are over.
         desired = current["desired"]
 
-    if desired == current["desired"] and desired == current["min"]:
+    elif desired < current["desired"] and not scale_down_allowed:
+        logger.info(
+            "Keeping current ASG desired capacity because scale_down_allowed=False. reason=%s current_desired=%s calculated_desired=%s",
+            reason,
+            current["desired"],
+            desired,
+        )
+        desired = current["desired"]
+
+    if (
+        current["min"] == target_min
+        and current["desired"] == desired
+        and current["max"] == target_max
+    ):
         logger.info("ASG already at required capacity: %s", current)
         return {
-            "changed": False,
+            "changed": bounds_changed,
+            "reason": "bounds_normalized" if bounds_changed else "already_at_required_capacity",
+            "from": original_current if bounds_changed else current,
             "current": current,
             "required": required,
         }
@@ -489,9 +582,6 @@ def scale_asg_if_needed(reason="scheduled_check", scale_down_allowed=True):
         current,
         required,
     )
-
-    target_min = settings.LIVE_MEETING_ASG_MIN_CAPACITY
-    target_max = settings.LIVE_MEETING_ASG_MAX_CAPACITY
 
     client.update_auto_scaling_group(
         AutoScalingGroupName=settings.LIVE_MEETING_ASG_NAME,

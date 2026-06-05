@@ -7,9 +7,10 @@ scale-in would do.
 The execution half (deregister_instance_from_target_groups,
 terminate_instance_decrement_desired, execute_safe_scale_in_one_step,
 continue_safe_scale_in_draining_instances) DOES mutate AWS/Redis, but only ever
-when called explicitly with dry_run=False. Nothing in this module runs
-automatically: no Celery task, scheduler, or other module invokes these
-functions yet. The default for every execution entrypoint is dry_run=True.
+when called explicitly with dry_run=False. These helpers may be invoked by the
+scheduled live meeting capacity task through scale_asg_if_needed() when
+LIVE_MEETING_SAFE_SCALE_IN_ENABLED=True. The default for every execution
+entrypoint is dry_run=True unless LIVE_MEETING_SAFE_SCALE_IN_DRY_RUN=False.
 
 Every function is defensive and never raises into its caller; failures are
 captured in the returned dict and logged.
@@ -31,6 +32,87 @@ from events.services.live_instance_state import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_asg_instance_record(instance_id):
+    """
+    Read the latest ASG instance record directly from AWS.
+
+    This is the final source of truth before any real safe scale-in mutation.
+    If AWS cannot confirm the instance state, caller must fail closed.
+    """
+    if not instance_id:
+        return None
+
+    asg_name = getattr(settings, "LIVE_MEETING_ASG_NAME", None)
+    region = getattr(settings, "LIVE_MEETING_ASG_REGION", None)
+
+    if not asg_name:
+        logger.warning(
+            "live_safe_scale_in: LIVE_MEETING_ASG_NAME missing; refusing instance=%s",
+            instance_id,
+        )
+        return None
+
+    try:
+        client = boto3.client("autoscaling", region_name=region)
+        resp = client.describe_auto_scaling_groups(
+            AutoScalingGroupNames=[asg_name]
+        )
+
+        for group in resp.get("AutoScalingGroups", []) or []:
+            for instance in group.get("Instances", []) or []:
+                if instance.get("InstanceId") == instance_id:
+                    return instance
+
+    except Exception:
+        logger.warning(
+            "live_safe_scale_in: failed reading ASG instance record; refusing instance=%s",
+            instance_id,
+            exc_info=True,
+        )
+        return None
+
+    logger.warning(
+        "live_safe_scale_in: instance not found in ASG; refusing instance=%s",
+        instance_id,
+    )
+    return None
+
+
+def _is_instance_protected_from_scale_in(instance_id):
+    """
+    Fail-closed protection check.
+
+    If AWS does not confirm the instance exists and ProtectedFromScaleIn=False,
+    we treat it as protected. This prevents celery-beat/protected instances from
+    being deregistered or terminated.
+    """
+    record = _get_asg_instance_record(instance_id)
+    if not record:
+        return True
+
+    return bool(record.get("ProtectedFromScaleIn"))
+
+
+def _is_instance_touchable_for_safe_scale_in(instance_id):
+    """
+    True only when AWS confirms this instance is present in the ASG and is NOT
+    protected from scale-in.
+    """
+    return not _is_instance_protected_from_scale_in(instance_id)
+
+
+def _clear_draining_flag(instance_id):
+    try:
+        return mark_instance_draining(instance_id, False)
+    except Exception:
+        logger.warning(
+            "live_safe_scale_in: failed clearing draining flag instance=%s",
+            instance_id,
+            exc_info=True,
+        )
+        return None
 
 
 def get_asg_instances():
@@ -230,21 +312,26 @@ def build_safe_scale_in_plan(idle_seconds=None):
     asg_instances = get_asg_instances()
     target_group_arns = get_asg_target_group_arns()
 
-    current_desired = 0
+    current_desired = None
     if isinstance(current, dict):
         try:
-            current_desired = int(current.get("desired", 0))
+            current_desired = int(current.get("desired"))
         except (TypeError, ValueError):
-            current_desired = 0
+            current_desired = None
 
-    required_desired = 0
+    required_desired = None
     if isinstance(required, dict):
         try:
-            required_desired = int(required.get("desired_instances", 0))
+            required_desired = int(required.get("desired_instances"))
         except (TypeError, ValueError):
-            required_desired = 0
+            required_desired = None
 
-    over_capacity = max(0, current_desired - required_desired)
+    if current_desired is not None and required_desired is not None:
+        over_capacity = max(0, current_desired - required_desired)
+    else:
+        # If we cannot read current or required capacity, planning must be
+        # conservative and show no planned terminations.
+        over_capacity = 0
 
     instances = []
     safe_candidates = []
@@ -273,20 +360,33 @@ def build_safe_scale_in_plan(idle_seconds=None):
 
         safe_to_drain = bool(safety.get("safe", False))
         reasons = safety.get("reasons", [])
+        protected_from_scale_in = bool(asg_instance.get("protected_from_scale_in"))
+        aws_touchable = _is_instance_touchable_for_safe_scale_in(instance_id)
 
         entry = {
             "instance_id": instance_id,
             "lifecycle_state": lifecycle_state,
             "health_status": health_status,
-            "protected_from_scale_in": asg_instance.get("protected_from_scale_in"),
+            "protected_from_scale_in": protected_from_scale_in,
             "safe_to_drain": safe_to_drain,
             "reasons": reasons,
+            "aws_touchable_for_safe_scale_in": aws_touchable,
             "state": state,
             "alb_target_health": get_alb_target_health(instance_id, target_group_arns),
         }
         instances.append(entry)
 
-        if safe_to_drain and lifecycle_state == "InService" and health_status == "Healthy":
+        # Never choose the protected singleton Celery beat instance for safe scale-in.
+        # ASG scale-in protection prevents normal scale-in, and excluding it here
+        # also prevents our explicit terminate_instance_in_auto_scaling_group path
+        # from accidentally removing the scheduler instance.
+        if (
+            safe_to_drain
+            and lifecycle_state == "InService"
+            and health_status == "Healthy"
+            and not protected_from_scale_in
+            and aws_touchable
+        ):
             safe_candidates.append(entry)
 
     # Only plan terminations when actually over capacity. Within that, one-at-a-time
@@ -315,10 +415,10 @@ def build_safe_scale_in_plan(idle_seconds=None):
 # ---------------------------------------------------------------------------
 # Execution helpers
 #
-# Everything below this line can mutate AWS / Redis. None of it runs
-# automatically: these functions are only ever reached via an explicit call, and
-# every entrypoint defaults to dry_run=True. No Celery task or other module wires
-# these in yet.
+# Everything below this line can mutate AWS / Redis, but only when dry_run=False.
+# These functions may be reached from the scheduled capacity task via
+# scale_asg_if_needed() when LIVE_MEETING_SAFE_SCALE_IN_ENABLED=True. Every
+# execution entrypoint defaults to dry_run=True.
 # ---------------------------------------------------------------------------
 
 # The only ALB target state we accept as fully drained for FINAL termination.
@@ -398,6 +498,17 @@ def deregister_instance_from_target_groups(instance_id, target_group_arns=None):
     Only call this from an explicit execution function. Never raises; per-target
     errors are captured in the returned dict.
     """
+    if _is_instance_protected_from_scale_in(instance_id):
+        logger.warning(
+            "live_safe_scale_in: blocked ALB deregister for protected/non-touchable instance=%s",
+            instance_id,
+        )
+        return {
+            "instance_id": instance_id,
+            "blocked": True,
+            "reason": "protected_from_scale_in_before_deregister",
+        }
+
     if target_group_arns is None:
         target_group_arns = get_asg_target_group_arns()
 
@@ -448,6 +559,17 @@ def terminate_instance_decrement_desired(instance_id):
     Only call this from an explicit execution function. Never raises; errors are
     captured in the returned dict.
     """
+    if _is_instance_protected_from_scale_in(instance_id):
+        logger.warning(
+            "live_safe_scale_in: blocked terminate for protected/non-touchable instance=%s",
+            instance_id,
+        )
+        return {
+            "instance_id": instance_id,
+            "terminated": False,
+            "reason": "protected_from_scale_in_before_terminate",
+        }
+
     region = getattr(settings, "LIVE_MEETING_ASG_REGION", None)
 
     try:
@@ -506,6 +628,30 @@ def execute_safe_scale_in_one_step(reason="manual", dry_run=True, idle_seconds=N
     instance_id = candidate.get("instance_id")
     target_group_arns = plan.get("target_group_arns", [])
 
+    # Hard AWS-source guard. Do not trust only Redis/planner state for real execution.
+    if _is_instance_protected_from_scale_in(instance_id):
+        logger.warning(
+            "live_safe_scale_in: blocked selected candidate because AWS says protected/non-touchable instance=%s",
+            instance_id,
+        )
+        return {
+            "changed": False,
+            "reason": "protected_from_scale_in",
+            "instance_id": instance_id,
+            "plan": plan,
+        }
+
+    # Final backup guard. The planner should already exclude protected instances,
+    # but execution must also refuse to touch them in case stale/manual input ever
+    # reaches this function.
+    if candidate.get("protected_from_scale_in"):
+        return {
+            "changed": False,
+            "reason": "protected_from_scale_in",
+            "instance_id": instance_id,
+            "plan": plan,
+        }
+
     # Re-check capacity with a fresh read before mutating anything.
     current = _safe_current()
     required = _safe_required()
@@ -557,9 +703,32 @@ def execute_safe_scale_in_one_step(reason="manual", dry_run=True, idle_seconds=N
             "plan": plan,
         }
 
+    # Final check immediately before any mutation.
+    if _is_instance_protected_from_scale_in(instance_id):
+        logger.warning(
+            "live_safe_scale_in: blocked before mutation because AWS says protected/non-touchable instance=%s",
+            instance_id,
+        )
+        return {
+            "changed": False,
+            "reason": "protected_from_scale_in_before_mutation",
+            "instance_id": instance_id,
+            "plan": plan,
+        }
+
     # ---- Execution (dry_run=False) ----
     drain_result = mark_instance_draining(instance_id, True)
     deregister_result = deregister_instance_from_target_groups(instance_id, target_group_arns)
+    if deregister_result.get("blocked"):
+        _clear_draining_flag(instance_id)
+        return {
+            "changed": False,
+            "reason": deregister_result.get("reason", "deregister_blocked"),
+            "instance_id": instance_id,
+            "draining": drain_result,
+            "deregister": deregister_result,
+            "plan": plan,
+        }
 
     # Re-read ALB health immediately (no long blocking wait here).
     alb_ready = all_alb_targets_unused_or_draining_done(instance_id, target_group_arns)
@@ -584,6 +753,21 @@ def execute_safe_scale_in_one_step(reason="manual", dry_run=True, idle_seconds=N
             "instance_id": instance_id,
             "draining": drain_result,
             "deregister": deregister_result,
+            "target_health": target_health,
+            "state": state,
+        }
+
+    # Last possible protection check before termination.
+    if _is_instance_protected_from_scale_in(instance_id):
+        logger.warning(
+            "live_safe_scale_in: blocked terminate after drain because AWS says protected/non-touchable instance=%s",
+            instance_id,
+        )
+        _clear_draining_flag(instance_id)
+        return {
+            "changed": False,
+            "reason": "protected_from_scale_in_before_terminate",
+            "instance_id": instance_id,
             "target_health": target_health,
             "state": state,
         }
@@ -635,6 +819,53 @@ def continue_safe_scale_in_draining_instances(reason="manual", idle_seconds=None
             continue
 
         if not state.get("draining"):
+            continue
+
+        # Important permanent fix:
+        # If the protected celery-beat instance was accidentally marked draining
+        # by an older deploy/run, clear it and continue. Never deregister or
+        # terminate protected instances.
+        if _is_instance_protected_from_scale_in(instance_id):
+            logger.warning(
+                "live_safe_scale_in: clearing protected/non-touchable draining instance=%s",
+                instance_id,
+            )
+            if dry_run:
+                return {
+                    "changed": False,
+                    "dry_run": True,
+                    "reason": "protected_from_scale_in",
+                    "instance_id": instance_id,
+                    "state": state,
+                }
+
+            _clear_draining_flag(instance_id)
+            # Continue scanning. If there are no other draining instances, the
+            # function returns no_draining_instances and caller can start a new
+            # non-protected candidate in the same cycle.
+            continue
+
+        if bool(asg_instance.get("protected_from_scale_in")):
+            logger.warning(
+                "live_safe_scale_in: refusing to continue protected draining instance=%s",
+                instance_id,
+            )
+            if dry_run:
+                return {
+                    "changed": False,
+                    "dry_run": True,
+                    "reason": "protected_from_scale_in",
+                    "instance_id": instance_id,
+                    "state": state,
+                }
+            try:
+                mark_instance_draining(instance_id, False)
+            except Exception:
+                logger.warning(
+                    "live_safe_scale_in: failed clearing protected draining flag instance=%s",
+                    instance_id,
+                    exc_info=True,
+                )
             continue
 
         # Found a draining instance — process exactly this one and return.
@@ -695,6 +926,21 @@ def continue_safe_scale_in_draining_instances(reason="manual", idle_seconds=None
                 return {
                     "changed": False,
                     "reason": "not_over_capacity",
+                    "instance_id": instance_id,
+                    "current": current,
+                    "required": required,
+                    "instance": report,
+                }
+
+            if _is_instance_protected_from_scale_in(instance_id):
+                logger.warning(
+                    "live_safe_scale_in: blocked terminate of draining instance because AWS says protected/non-touchable instance=%s",
+                    instance_id,
+                )
+                _clear_draining_flag(instance_id)
+                return {
+                    "changed": False,
+                    "reason": "protected_from_scale_in_before_terminate",
                     "instance_id": instance_id,
                     "current": current,
                     "required": required,
