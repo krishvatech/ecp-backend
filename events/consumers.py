@@ -1,6 +1,7 @@
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.core.cache import cache
+from django.conf import settings
 from .models import LoungeTable, LoungeParticipant, Event, EventRegistration, EventParticipant, AssistanceRequestLog, GuestAttendee
 from django.contrib.auth.models import User
 from django.db import close_old_connections
@@ -26,9 +27,9 @@ except Exception:  # pragma: no cover - import guard for local/runtime variation
 logger = logging.getLogger(__name__)
 
 ASSISTANCE_COOLDOWN_SECONDS = 60
-DISCONNECT_CLEANUP_GRACE_SECONDS = 20
-HEARTBEAT_INTERVAL = 5  # Send ping every 5 seconds
-HEARTBEAT_TIMEOUT = 15  # Disconnect if no pong for 15 seconds
+DISCONNECT_CLEANUP_GRACE_SECONDS = int(getattr(settings, "DISCONNECT_CLEANUP_GRACE_SECONDS", 90))
+HEARTBEAT_INTERVAL = int(getattr(settings, "WS_HEARTBEAT_INTERVAL_SECONDS", 25))
+HEARTBEAT_TIMEOUT = int(getattr(settings, "WS_HEARTBEAT_TIMEOUT_SECONDS", 90))
 WS_EVENT_EXISTS_CACHE_TTL_SECONDS = 30
 WS_EVENT_EXISTS_LOCK_TTL_SECONDS = 5
 WS_EVENT_EXISTS_WAIT_RETRIES = 5
@@ -334,7 +335,6 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         # ✅ HEARTBEAT: Initialize heartbeat mechanism for detecting dead connections
         self.heartbeat_task = None
         self.last_pong_at = None
-        self.pong_timeout_task = None
 
         await self.accept()
         logger.info(
@@ -521,11 +521,9 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     exc_info=True,
                 )
 
-        # ✅ HEARTBEAT: Cancel heartbeat tasks on disconnect
+        # ✅ HEARTBEAT: Cancel heartbeat task on disconnect
         if hasattr(self, "heartbeat_task") and self.heartbeat_task:
             self.heartbeat_task.cancel()
-        if hasattr(self, "pong_timeout_task") and self.pong_timeout_task:
-            self.pong_timeout_task.cancel()
 
         if hasattr(self, "group_name"):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
@@ -544,25 +542,19 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             self._disconnect_cleanup_task = asyncio.create_task(self._finalize_disconnect())
 
     async def _finalize_disconnect(self) -> None:
-        """Runs after disconnect returns. Handles presence, broadcasts, grace period, and RTK cleanup."""
+        """
+        Runs after disconnect returns. Handles grace period first, then presence/cleanup.
+
+        Grace period allows user to reconnect without being immediately removed from the meeting.
+        This is critical for 2-3 hour meetings where temporary disconnects are common.
+        """
         logger.info(
-            "[CLEANUP] finalize start event=%s user=%s channel=%s",
+            "[CLEANUP] finalize start event=%s user=%s",
             getattr(self, "event_id", None),
             getattr(getattr(self, "user", None), "id", None),
-            getattr(self, "channel_name", None),
         )
-        try:
-            if hasattr(self, "group_name"):
-                await self.update_online_status(False)
-                await self.schedule_lounge_update()
-                await self.broadcast_main_room_support_status()
-        except Exception as e:
-            logger.warning(
-                "[CLEANUP] Presence/broadcast cleanup failed for user %s: %s",
-                getattr(getattr(self, "user", None), "id", None),
-                e,
-            )
 
+        # Wait for grace period before checking if user reconnected
         try:
             await asyncio.sleep(DISCONNECT_CLEANUP_GRACE_SECONDS)
             should_finalize = await self.should_finalize_disconnect_cleanup()
@@ -582,14 +574,27 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         if not should_finalize:
             logger.info(
-                f"[CLEANUP] Skipping destructive cleanup for user {self.user.id} "
-                f"on event {self.event_id}; another connection became active during grace period."
+                "[CLEANUP] user=%s event=%s reconnected during grace, skip cleanup",
+                getattr(getattr(self, "user", None), "id", None),
+                getattr(self, "event_id", None),
             )
             return
 
+        # Now remove presence only after grace is finished and user did not reconnect
         try:
-            # Treat socket closes as provisional first. This avoids ejecting users
-            # when the client briefly reconnects during page transitions/reloads.
+            if hasattr(self, "group_name"):
+                await self.update_online_status(False)
+                await self.schedule_lounge_update()
+                await self.broadcast_main_room_support_status()
+        except Exception as e:
+            logger.warning(
+                "[CLEANUP] Presence/broadcast cleanup failed for user %s: %s",
+                getattr(getattr(self, "user", None), "id", None),
+                e,
+            )
+
+        # Now destructive cleanup is safe
+        try:
             await self.leave_current_table()
         except Exception as e:
             logger.error(
@@ -605,7 +610,6 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 from .tasks import cleanup_rtk_user_on_disconnect_task
                 user_id = self.user.id
                 event_id = self.event_id
-                # Enqueue task and let it run in background
                 cleanup_rtk_user_on_disconnect_task.delay(user_id, event_id, meeting_ids)
                 logger.info(f"[CLEANUP] Enqueued RTK cleanup task for user {user_id} from {len(meeting_ids)} meetings")
         except Exception as e:
@@ -615,37 +619,45 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 e,
             )
 
-    # ✅ HEARTBEAT: Send periodic pings to detect dead connections
+    # ✅ HEARTBEAT: Send periodic pings to detect dead connections and refresh presence
     async def _heartbeat_loop(self):
-        """Send ping every 5 seconds and monitor for pong responses."""
+        """
+        Send ping every HEARTBEAT_INTERVAL seconds and monitor for pong responses.
+        Disconnects if no pong received within HEARTBEAT_TIMEOUT seconds.
+        """
         try:
+            # Initialize last_pong_at at start of loop
+            self.last_pong_at = asyncio.get_event_loop().time()
+
             while True:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
+
                 if getattr(self, "_ws_closed", False):
                     return
+
+                now = asyncio.get_event_loop().time()
+
+                # Check if we've heard from client recently
+                if self.last_pong_at and now - self.last_pong_at > HEARTBEAT_TIMEOUT:
+                    logger.warning(
+                        "[HEARTBEAT] No pong from user=%s event=%s for %ss, closing socket",
+                        getattr(self.user, "id", None),
+                        self.event_id,
+                        HEARTBEAT_TIMEOUT,
+                    )
+                    await self.close(code=4000)
+                    return
+
+                # Send ping to client
                 try:
                     await self.send_json({"type": "ping"})
-                    self.last_pong_at = asyncio.get_event_loop().time()
-
-                    # Start timeout check for pong response
-                    if self.pong_timeout_task:
-                        self.pong_timeout_task.cancel()
-                    self.pong_timeout_task = asyncio.create_task(self._check_pong_timeout())
                 except Exception as e:
                     logger.warning(f"[HEARTBEAT] Failed to send ping: {e}")
+
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"[HEARTBEAT] Heartbeat loop error: {e}")
-
-    async def _check_pong_timeout(self):
-        """Disconnect if no pong received within timeout period."""
-        try:
-            await asyncio.sleep(HEARTBEAT_TIMEOUT)
-            logger.warning(f"[HEARTBEAT] No pong from {self.user.id} for {HEARTBEAT_TIMEOUT}s, disconnecting")
-            await self.close(code=4000)
-        except asyncio.CancelledError:
-            pass
+            logger.error("[HEARTBEAT] Heartbeat loop error: %s", e)
 
     async def receive_json(self, content: dict, **kwargs) -> None:
         action = content.get("action")
@@ -653,9 +665,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         # ✅ HEARTBEAT: Handle pong response from client
         if action == "pong":
             self.last_pong_at = asyncio.get_event_loop().time()
-            if self.pong_timeout_task:
-                self.pong_timeout_task.cancel()
-                self.pong_timeout_task = None
+
+            # Refresh Redis presence on pong for non-guest users
+            if not self._is_guest_user():
+                from events.redis_presence import RedisPresenceManager
+                await database_sync_to_async(RedisPresenceManager.touch_user_online)(
+                    self.event_id,
+                    self.user.id,
+                )
+
             return
 
         if action == "join_table":

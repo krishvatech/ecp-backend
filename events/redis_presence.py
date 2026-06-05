@@ -10,12 +10,13 @@ Uses raw redis.Redis client (not django.core.cache) for native SET operations:
   - EXPIRE for TTL management
 
 Redis Keys:
-  event:{event_id}:online_users              - Set of online user IDs
-  event:{event_id}:presence:{user_id}        - User presence data JSON (with TTL)
-  event:{event_id}:location:{user_id}        - User current location (with TTL)
-  event:{event_id}:user:{user_id}:conn_count - Multi-tab connection counter (optional)
+  event:{event_id}:online_users              - Set of online user IDs (no expiry)
+  event:{event_id}:presence:{user_id}        - User presence data JSON (with TTL, default 300s)
+  event:{event_id}:location:{user_id}        - User current location (with TTL, default 300s)
+  event:{event_id}:user:{user_id}:conn_count - Multi-tab connection counter (with TTL, default 360s)
 
-TTL: 120 seconds (auto-cleanup if disconnect missed)
+TTL: Configurable via settings (default 300-360s). Set via touch_user_online() heartbeat
+for long-running meetings. Individual user presence keys expire, but full online set persists.
 """
 
 import json
@@ -30,10 +31,10 @@ logger = logging.getLogger('events')
 # Redis connection pool (reused across requests)
 _redis_conn = None
 
-# TTL for presence and location keys (seconds)
-PRESENCE_TTL = 120
-LOCATION_TTL = 120
-CONNECTION_COUNT_TTL = 180  # Slightly longer to handle tab closures
+# TTL for presence and location keys (seconds) - settings-based with defaults
+PRESENCE_TTL = int(getattr(settings, "REDIS_PRESENCE_TTL_SECONDS", 300))
+LOCATION_TTL = int(getattr(settings, "REDIS_LOCATION_TTL_SECONDS", 300))
+CONNECTION_COUNT_TTL = int(getattr(settings, "REDIS_CONNECTION_COUNT_TTL_SECONDS", 360))
 
 
 def _get_redis_connection():
@@ -114,8 +115,9 @@ class RedisPresenceManager:
             r.expire(conn_count_key, CONNECTION_COUNT_TTL)
 
             # ✅  : Add to online set (SADD is idempotent)
+            # Note: Do not expire the full event:{event_id}:online_users set on each add,
+            # individual user presence is managed per user with touch_user_online()
             r.sadd(online_key, str(user_id))
-            r.expire(online_key, PRESENCE_TTL)
 
             # Store presence data with TTL
             presence_data = {
@@ -139,6 +141,58 @@ class RedisPresenceManager:
                 f"[REDIS_PRESENCE] Error adding user to online event={event_id} user={user_id}: {e}"
             )
             return -1  # Error signal
+
+    @classmethod
+    def touch_user_online(cls, event_id: int, user_id: int, location: str | None = None) -> bool:
+        """
+        ✅  : Refresh user presence without expiring the full online set.
+
+        Used for heartbeat keepalive to extend user presence during long meetings.
+        Updates presence timestamp and refreshes TTL without resetting the entire set.
+
+        Args:
+            event_id: Event ID
+            user_id: User ID
+            location: Optional location to update
+
+        Returns:
+            True if successful, False if error
+        """
+        try:
+            r = _get_redis_connection()
+
+            online_key = cls._online_users_key(event_id)
+            presence_key = cls._presence_key(event_id, user_id)
+            conn_count_key = cls._connection_count_key(event_id, user_id)
+
+            # Ensure user is in online set (idempotent)
+            r.sadd(online_key, str(user_id))
+
+            # Refresh presence data with new timestamp
+            presence_data = {
+                "user_id": user_id,
+                "last_seen_at": timezone.now().isoformat(),
+            }
+            r.setex(presence_key, PRESENCE_TTL, json.dumps(presence_data))
+
+            # Refresh connection count TTL
+            r.expire(conn_count_key, CONNECTION_COUNT_TTL)
+
+            # Update location if provided
+            if location:
+                location_key = cls._location_key(event_id, user_id)
+                r.setex(location_key, LOCATION_TTL, location)
+
+            logger.debug(
+                f"[REDIS_PRESENCE] touch event={event_id} user={user_id}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(
+                f"[REDIS_PRESENCE] touch failed event={event_id} user={user_id} error={e}"
+            )
+            return False
 
     @classmethod
     def remove_user_online(cls, event_id: int, user_id: int) -> int:
@@ -224,6 +278,8 @@ class RedisPresenceManager:
         """
         ✅  : Set user's current location in Redis (NO DB WRITE).
 
+        Also refreshes presence to keep user online during long meetings.
+
         Args:
             event_id: Event ID
             user_id: User ID
@@ -235,9 +291,13 @@ class RedisPresenceManager:
         try:
             r = _get_redis_connection()
             location_key = cls._location_key(event_id, user_id)
+            online_key = cls._online_users_key(event_id)
 
             # ✅  : Set with TTL (no DB write)
             r.setex(location_key, LOCATION_TTL, location)
+
+            # Refresh presence: ensure user is in online set
+            r.sadd(online_key, str(user_id))
 
             logger.debug(
                 f"[REDIS_PRESENCE] location event={event_id} user={user_id} location={location}"

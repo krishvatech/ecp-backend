@@ -7287,38 +7287,20 @@ class EventViewSet(viewsets.ModelViewSet):
 
         public_registered_count = len(rows)
 
-        # Parse and validate limit and offset parameters
-        max_limit = 50
-        default_limit = 10
-        try:
-            limit = int(request.query_params.get("limit", default_limit))
-            limit = max(1, min(limit, max_limit))
-        except (TypeError, ValueError):
-            limit = default_limit
+        limit = request.query_params.get("limit")
+        if limit is not None:
+            try:
+                rows = rows[: max(0, int(limit))]
+            except (TypeError, ValueError):
+                pass
 
-        try:
-            offset = int(request.query_params.get("offset", 0))
-            offset = max(0, offset)
-        except (TypeError, ValueError):
-            offset = 0
-
-        # Apply pagination
-        total_count = len(rows)
-        paginated_rows = rows[offset:offset + limit]
-        has_next = (offset + limit) < total_count
-        next_offset = offset + limit if has_next else None
-
-        serializer = EventParticipantListItemSerializer(paginated_rows, many=True)
+        serializer = EventParticipantListItemSerializer(rows, many=True)
         return Response(
             {
                 "participants": serializer.data,
                 "hidden_roles_count": hidden_roles_count if not is_organizer_view else 0,
                 "total_registered_count": qs.count(),
                 "public_registered_count": public_registered_count,
-                "limit": limit,
-                "offset": offset,
-                "next_offset": next_offset,
-                "has_next": has_next,
             }
         )
 

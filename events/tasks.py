@@ -2213,6 +2213,8 @@ def cleanup_rtk_user_on_disconnect_task(self, user_id, event_id, meeting_ids):
     Called from consumers.py _finalize_disconnect after grace period.
     Idempotent: handles case where user already removed or meeting doesn't exist.
 
+    Includes guards to prevent cleanup if user has reconnected since disconnect.
+
     Args:
         user_id: User ID (string, used as client_specific_id)
         event_id: Event ID (for logging context)
@@ -2223,6 +2225,45 @@ def cleanup_rtk_user_on_disconnect_task(self, user_id, event_id, meeting_ids):
     """
     import requests as requests_lib
     from django.conf import settings
+    from events.redis_presence import RedisPresenceManager
+
+    # Guard 1: Check if user has active Redis connection
+    try:
+        conn_count = RedisPresenceManager.get_connection_count(event_id, user_id)
+        online_users = RedisPresenceManager.get_online_users(event_id)
+
+        if conn_count > 0 or user_id in online_users:
+            logger.info(
+                "[RTK_DISCONNECT_CLEANUP] skip user=%s event=%s because user reconnected (conn_count=%s online=%s)",
+                user_id,
+                event_id,
+                conn_count,
+                user_id in online_users,
+            )
+            return {'status': 'skipped', 'reason': 'user_reconnected_redis'}
+    except Exception as e:
+        logger.warning("[RTK_DISCONNECT_CLEANUP] Failed to check Redis presence: %s", e)
+
+    # Guard 2: Check if user recently reconnected (within grace period)
+    try:
+        disconnect_grace = int(getattr(settings, "DISCONNECT_CLEANUP_GRACE_SECONDS", 90))
+        reg = EventRegistration.objects.filter(
+            event_id=event_id,
+            user_id=user_id
+        ).only("last_reconnect_at").first()
+
+        if reg and reg.last_reconnect_at:
+            time_since_reconnect = (timezone.now() - reg.last_reconnect_at).total_seconds()
+            if time_since_reconnect <= disconnect_grace:
+                logger.info(
+                    "[RTK_DISCONNECT_CLEANUP] skip recent reconnect user=%s event=%s (reconnected %ss ago)",
+                    user_id,
+                    event_id,
+                    time_since_reconnect,
+                )
+                return {'status': 'skipped', 'reason': 'recent_reconnect'}
+    except Exception as e:
+        logger.warning("[RTK_DISCONNECT_CLEANUP] Failed to check last_reconnect_at: %s", e)
 
     rtk_api_base = getattr(settings, 'RTK_API_BASE', 'https://api.realtime.cloudflare.com/v2')
     rtk_auth_header = getattr(settings, 'RTK_AUTH_HEADER', '')
