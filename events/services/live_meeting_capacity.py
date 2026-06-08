@@ -16,6 +16,7 @@ _EVENT_FIELD_CANDIDATES = {
     "title",
     "status",
     "is_live",
+    "format",
     "max_participants",
     "max_attendees",
     "capacity",
@@ -175,6 +176,20 @@ def is_multi_day_event(event):
 
     return False
 
+def event_requires_live_meeting_capacity(event):
+    """
+    Return True only for events that need live-meeting backend capacity.
+
+    In-person events do not use RTK/live-meeting capacity, so they must not
+    trigger ASG scale-out, hold cooldown capacity, or block deploy guard.
+
+    Unknown/blank/legacy formats stay capacity-relevant as a fail-safe so old
+    data cannot accidentally disable autoscaling.
+    """
+    event_format = (getattr(event, "format", "") or "").strip().lower()
+    return event_format != "in_person"
+
+
 def get_capacity_windows_for_event(event):
     """
     Returns time windows where this event needs backend capacity.
@@ -234,6 +249,15 @@ def get_capacity_relevant_events():
         if status in ["draft", "cancelled", "canceled", "deleted", "archived"]:
             continue
 
+        if not event_requires_live_meeting_capacity(event):
+            logger.info(
+                "Skipping in-person event for ASG capacity. event_id=%s title=%s format=%s",
+                getattr(event, "id", None),
+                getattr(event, "title", ""),
+                getattr(event, "format", None),
+            )
+            continue
+
         multi_day = is_multi_day_event(event)
         is_live = bool(getattr(event, "is_live", False)) or status == "live"
 
@@ -279,6 +303,7 @@ def calculate_required_capacity():
             {
                 "id": str(event.id),
                 "title": getattr(event, "title", ""),
+                "format": getattr(event, "format", None),
                 "expected_users": expected,
                 "is_live": bool(getattr(event, "is_live", False)),
                 "status": getattr(event, "status", None),

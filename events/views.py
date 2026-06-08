@@ -2125,6 +2125,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "community__owner_id",
                 "status",
                 "is_live",
+                "format",
                 "is_on_break",
                 "waiting_room_enabled",
                 "waiting_room_grace_period_minutes",
@@ -5645,13 +5646,24 @@ class EventViewSet(viewsets.ModelViewSet):
 
         if action_type == "start":
             # Scale out immediately if host starts early (scale up only).
+            # In-person events do not need RTK/live-meeting ASG capacity.
             try:
-                from events.services.live_meeting_capacity import scale_asg_if_needed
-
-                scale_asg_if_needed(
-                    reason=f"host_started_event_{event.id}",
-                    scale_down_allowed=False,
+                from events.services.live_meeting_capacity import (
+                    event_requires_live_meeting_capacity,
+                    scale_asg_if_needed,
                 )
+
+                if event_requires_live_meeting_capacity(event):
+                    scale_asg_if_needed(
+                        reason=f"host_started_event_{event.id}",
+                        scale_down_allowed=False,
+                    )
+                else:
+                    logger.info(
+                        "Skipping ASG scale-out for in-person event start. event_id=%s format=%s",
+                        event.id,
+                        getattr(event, "format", None),
+                    )
             except Exception as e:
                 logger.warning("Live meeting ASG scale-out failed for event %s: %s", event.id, e)
 
@@ -8992,40 +9004,48 @@ class EventViewSet(viewsets.ModelViewSet):
                 from events.services.live_meeting_capacity import (
                     acquire_asg_scale_lock,
                     clear_capacity_status_cache,
+                    event_requires_live_meeting_capacity,
                     get_capacity_status_cached,
                     scale_asg_if_needed,
                 )
 
-                capacity_status = get_capacity_status_cached()
-                required = capacity_status["required"]
-                current = capacity_status["current"]
+                if event_requires_live_meeting_capacity(event):
+                    capacity_status = get_capacity_status_cached()
+                    required = capacity_status["required"]
+                    current = capacity_status["current"]
 
-                if current["desired"] < required["desired_instances"]:
-                    if acquire_asg_scale_lock():
-                        try:
-                            scale_asg_if_needed(
-                                reason=f"participant_waiting_capacity_event_{event.id}",
-                                scale_down_allowed=False,
-                            )
-                            clear_capacity_status_cache()
-                        except Exception as scale_error:
-                            logger.warning(
-                                "Capacity scale trigger failed for event %s: %s",
-                                event.id,
-                                scale_error,
-                            )
+                    if current["desired"] < required["desired_instances"]:
+                        if acquire_asg_scale_lock():
+                            try:
+                                scale_asg_if_needed(
+                                    reason=f"participant_waiting_capacity_event_{event.id}",
+                                    scale_down_allowed=False,
+                                )
+                                clear_capacity_status_cache()
+                            except Exception as scale_error:
+                                logger.warning(
+                                    "Capacity scale trigger failed for event %s: %s",
+                                    event.id,
+                                    scale_error,
+                                )
 
-                    return Response(
-                        {
-                            "waiting": True,
-                            "waiting_room": True,
-                            "waiting_room_enabled": True,
-                            "reason": "capacity_preparing",
-                            "message": "Meeting capacity is preparing. Please wait.",
-                            "required": required,
-                            "current": current,
-                        },
-                        status=202,
+                        return Response(
+                            {
+                                "waiting": True,
+                                "waiting_room": True,
+                                "waiting_room_enabled": True,
+                                "reason": "capacity_preparing",
+                                "message": "Meeting capacity is preparing. Please wait.",
+                                "required": required,
+                                "current": current,
+                            },
+                            status=202,
+                        )
+                else:
+                    logger.info(
+                        "Skipping RTK ASG capacity wait for in-person event. event_id=%s format=%s",
+                        event.id,
+                        getattr(event, "format", None),
                     )
             except Exception as e:
                 logger.warning("Capacity check failed for event %s: %s", event.id, e)
