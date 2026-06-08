@@ -9826,29 +9826,10 @@ class EventViewSet(viewsets.ModelViewSet):
                 response_data["rtk_meeting_id"] = None
                 response_data["rtk_token"] = None
 
-            # Generate RTK token if guest is admitted to main room
-            if is_admitted and event.status == "live" and meeting_id:
-                try:
-                    rtk_participant_id = f"guest_{guest.id}"
-                    rtk_resp = add_rtk_participant(
-                        meeting_id=meeting_id,
-                        user_id=rtk_participant_id,
-                        name=guest.get_display_name(),
-                        preset_name=RTK_PRESET_PARTICIPANT,
-                    )
-                    auth_token = ""
-                    if isinstance(rtk_resp, tuple):
-                        auth_token, rtk_error = rtk_resp
-                    else:
-                        auth_token = (rtk_resp or {}).get("data", {}).get("token", "")
-
-                    if auth_token:
-                        response_data["rtk_token"] = auth_token
-                        logger.info(f"[LIVE_REJOIN] guest {guest.id} rejoining event {event.id} room={current_location}")
-                    else:
-                        logger.warning(f"[LIVE_REJOIN] Failed to get RTK token for guest {guest.id}")
-                except Exception as e:
-                    logger.warning(f"[LIVE_REJOIN] RTK token error for guest {guest.id}: {e}")
+            response_data["needs_rtk_join"] = bool(
+                is_admitted and event.status == "live" and meeting_id
+            )
+            response_data["rtk_token"] = None
 
             # Add break state if meeting is on break
             if event.is_on_break and event.break_started_at:
@@ -9962,48 +9943,10 @@ class EventViewSet(viewsets.ModelViewSet):
             response_data["rtk_meeting_id"] = None
             response_data["rtk_token"] = None
 
-        # Generate RTK token if user is admitted and event is live
-        if admission_status == "admitted" and event.status == "live" and meeting_id:
-            try:
-                preset_name = RTK_PRESET_HOST if is_host else RTK_PRESET_PARTICIPANT
-
-                profile = getattr(user, "profile", None)
-                name = (getattr(profile, "full_name", "") if profile else "") or getattr(user, "get_full_name", lambda: "")() or user.username
-                picture = ""
-                try:
-                    if profile and getattr(profile, "user_image", None):
-                        picture = profile.user_image.url
-                except Exception:
-                    picture = ""
-
-                body = {
-                    "name": name or f"User {user.id}",
-                    "preset_name": preset_name,
-                    "client_specific_id": str(user.id),
-                }
-                if picture:
-                    body["picture"] = picture
-
-                #  Reduce timeout from 10s to 5s for faster rejoin
-                resp = requests.post(
-                    f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
-                    headers=_rtk_headers(),
-                    json=body,
-                    timeout=5,
-                )
-
-                if resp.status_code in (200, 201):
-                    data = (resp.json() or {}).get("data") or {}
-                    auth_token = data.get("token")
-                    if auth_token:
-                        response_data["rtk_token"] = auth_token
-                        logger.info(f"[LIVE_REJOIN] user {user.id} rejoining event {event.id} role={response_data['user_role']} room={current_location}")
-                    else:
-                        logger.warning(f"[LIVE_REJOIN] No RTK token returned for user {user.id}")
-                else:
-                    logger.warning(f"[LIVE_REJOIN] RTK participant error for user {user.id}: {resp.status_code}")
-            except Exception as e:
-                logger.warning(f"[LIVE_REJOIN] RTK token error for user {user.id}: {e}")
+        response_data["needs_rtk_join"] = bool(
+            admission_status == "admitted" and event.status == "live" and meeting_id
+        )
+        response_data["rtk_token"] = None
 
         logger.info(
             "[LIVE_REJOIN] response user=%s event=%s room_type=%s admission=%s current_location=%s waiting_room_enabled=%s last_reconnect_at=%s",

@@ -2204,6 +2204,120 @@ def cleanup_rtk_participant_by_client_id_task(self, meeting_id, client_specific_
             return {'status': 'failed', 'reason': 'max_retries_exceeded'}
 
 
+# Phase 14: WebSocket Disconnect Cleanup Tasks (Async, Non-Blocking)
+
+@shared_task(bind=True, max_retries=1)
+def finalize_event_disconnect_cleanup_task(self, event_id, user_id, channel_name=None):
+    """
+    Final cleanup after WebSocket disconnect grace.
+
+    This replaces the old in-consumer asyncio.sleep cleanup so Daphne does not
+    keep WebSocket application instances alive for 90 seconds.
+    """
+    from django.core.cache import cache
+    from events.redis_presence import RedisPresenceManager
+    from .models import Event, EventRegistration, LoungeParticipant, LoungeTable
+
+    disconnect_grace = int(getattr(settings, "DISCONNECT_CLEANUP_GRACE_SECONDS", 90))
+
+    logger.info(
+        "[CLEANUP_TASK] start event=%s user=%s channel=%s",
+        event_id,
+        user_id,
+        channel_name,
+    )
+
+    try:
+        conn_count = RedisPresenceManager.get_connection_count(event_id, user_id)
+        if conn_count > 0:
+            logger.info(
+                "[CLEANUP_TASK] skip user reconnected event=%s user=%s conn_count=%s",
+                event_id,
+                user_id,
+                conn_count,
+            )
+            return {"status": "skipped", "reason": "user_reconnected", "conn_count": conn_count}
+
+        reg = EventRegistration.objects.filter(
+            event_id=event_id,
+            user_id=user_id,
+        ).only(
+            "id",
+            "last_reconnect_at",
+        ).first()
+
+        if reg and reg.last_reconnect_at:
+            seconds_since_reconnect = (timezone.now() - reg.last_reconnect_at).total_seconds()
+            if seconds_since_reconnect <= disconnect_grace:
+                logger.info(
+                    "[CLEANUP_TASK] skip recent reconnect event=%s user=%s seconds=%s",
+                    event_id,
+                    user_id,
+                    seconds_since_reconnect,
+                )
+                return {"status": "skipped", "reason": "recent_reconnect"}
+
+        # Remove Redis presence only after grace confirms no reconnect.
+        online_count = RedisPresenceManager.force_remove_user_online(event_id, user_id)
+
+        if online_count == 0:
+            Event.objects.filter(
+                id=event_id,
+                is_live=True,
+                idle_started_at__isnull=True,
+            ).update(idle_started_at=timezone.now())
+
+        # Remove user from lounge/breakout DB records after grace.
+        deleted_count, _ = LoungeParticipant.objects.filter(
+            table__event_id=event_id,
+            user_id=user_id,
+        ).delete()
+
+        # Invalidate cached lounge/presence snapshots.
+        cache.delete_many([
+            f"event:{event_id}:lounge_presence:v1",
+            f"event:{event_id}:lounge_state:v1",
+            f"event:{event_id}:participants_lite:v1",
+        ])
+
+        # Cleanup only lounge/breakout RTK meetings. Do not remove from main RTK meeting.
+        meeting_ids = list(
+            LoungeTable.objects.filter(event_id=event_id)
+            .exclude(rtk_meeting_id__isnull=True)
+            .exclude(rtk_meeting_id="")
+            .values_list("rtk_meeting_id", flat=True)
+        )
+        meeting_ids = list(dict.fromkeys(meeting_ids))
+
+        if meeting_ids:
+            cleanup_rtk_user_on_disconnect_task.delay(user_id, event_id, meeting_ids)
+
+        logger.info(
+            "[CLEANUP_TASK] finalized event=%s user=%s online_count=%s lounge_deleted=%s rtk_meetings=%s",
+            event_id,
+            user_id,
+            online_count,
+            deleted_count,
+            len(meeting_ids),
+        )
+
+        return {
+            "status": "ok",
+            "online_count": online_count,
+            "lounge_deleted": deleted_count,
+            "rtk_meetings": len(meeting_ids),
+        }
+
+    except Exception as exc:
+        logger.exception(
+            "[CLEANUP_TASK] failed event=%s user=%s error=%s",
+            event_id,
+            user_id,
+            exc,
+        )
+        raise self.retry(exc=exc, countdown=5)
+
+
 @shared_task(bind=True, max_retries=2)
 def cleanup_rtk_user_on_disconnect_task(self, user_id, event_id, meeting_ids):
     """
