@@ -825,6 +825,43 @@ class UserViewSet(
             )
             qs = qs.filter(search_q)
 
+        # ✅ NEW: Backend-side filtering BEFORE pagination
+        # Support multiple values per filter (e.g., ?company=A&company=B means company A OR B)
+        company_filters = [v.strip() for v in request.query_params.getlist("company") if v.strip()]
+        if company_filters:
+            company_q = Q()
+            for company in company_filters:
+                company_q |= (Q(profile__company__iexact=company) | Q(experiences__community_name__iexact=company))
+            qs = qs.filter(company_q)
+
+        country_filters = [v.strip() for v in request.query_params.getlist("country") if v.strip()]
+        if country_filters:
+            country_q = Q()
+            for country in country_filters:
+                country_q |= (Q(profile__location__icontains=country) | Q(experiences__location__icontains=country))
+            qs = qs.filter(country_q)
+
+        job_title_filters = [v.strip() for v in request.query_params.getlist("job_title") if v.strip()]
+        if job_title_filters:
+            title_q = Q()
+            for title in job_title_filters:
+                title_q |= (Q(profile__job_title__iexact=title) | Q(experiences__position__iexact=title))
+            qs = qs.filter(title_q)
+
+        industry_filters = [v.strip() for v in request.query_params.getlist("industry") if v.strip()]
+        if industry_filters:
+            industry_q = Q()
+            for industry in industry_filters:
+                industry_q |= (Q(profile__industry__iexact=industry) | Q(experiences__industry__iexact=industry))
+            qs = qs.filter(industry_q)
+
+        company_size_filters = [v.strip() for v in request.query_params.getlist("company_size") if v.strip()]
+        if company_size_filters:
+            size_q = Q()
+            for size in company_size_filters:
+                size_q |= (Q(profile__number_of_employees__iexact=size) | Q(experiences__number_of_employees__iexact=size))
+            qs = qs.filter(size_q)
+
         # Quality scoring: prioritize complete, verified, professional profiles
         # Score calculation (applied BEFORE pagination):
         # +3: KYC approved | +2: Has profile photo | +2: Profile is active
@@ -946,6 +983,43 @@ class UserViewSet(
                 experiences__position__icontains=search_query
             )
             qs = qs.filter(search_q)
+
+        # ✅ NEW: Backend-side filtering (same as roster endpoint)
+        # Support multiple values per filter (e.g., ?company=A&company=B means company A OR B)
+        company_filters = [v.strip() for v in request.query_params.getlist("company") if v.strip()]
+        if company_filters:
+            company_q = Q()
+            for company in company_filters:
+                company_q |= (Q(profile__company__iexact=company) | Q(experiences__community_name__iexact=company))
+            qs = qs.filter(company_q)
+
+        country_filters = [v.strip() for v in request.query_params.getlist("country") if v.strip()]
+        if country_filters:
+            country_q = Q()
+            for country in country_filters:
+                country_q |= (Q(profile__location__icontains=country) | Q(experiences__location__icontains=country))
+            qs = qs.filter(country_q)
+
+        job_title_filters = [v.strip() for v in request.query_params.getlist("job_title") if v.strip()]
+        if job_title_filters:
+            title_q = Q()
+            for title in job_title_filters:
+                title_q |= (Q(profile__job_title__iexact=title) | Q(experiences__position__iexact=title))
+            qs = qs.filter(title_q)
+
+        industry_filters = [v.strip() for v in request.query_params.getlist("industry") if v.strip()]
+        if industry_filters:
+            industry_q = Q()
+            for industry in industry_filters:
+                industry_q |= (Q(profile__industry__iexact=industry) | Q(experiences__industry__iexact=industry))
+            qs = qs.filter(industry_q)
+
+        company_size_filters = [v.strip() for v in request.query_params.getlist("company_size") if v.strip()]
+        if company_size_filters:
+            size_q = Q()
+            for size in company_size_filters:
+                size_q |= (Q(profile__number_of_employees__iexact=size) | Q(experiences__number_of_employees__iexact=size))
+            qs = qs.filter(size_q)
 
         # Order by quality score (same as roster, but no pagination)
         from django.db.models import ExpressionWrapper
