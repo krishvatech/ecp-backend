@@ -250,6 +250,98 @@ class RedisPresenceManager:
             return -1  # Error signal
 
     @classmethod
+    def mark_connection_closed_keep_presence(cls, event_id: int, user_id: int) -> int:
+        """
+        Decrement this socket/tab connection immediately, but keep the user in
+        online_users during disconnect grace.
+
+        Why:
+        - WebSocket disconnect should finish fast.
+        - User should not disappear immediately if browser reconnects.
+        - Celery cleanup will force-remove only after grace if conn_count is still 0.
+        """
+        try:
+            r = _get_redis_connection()
+
+            online_key = cls._online_users_key(event_id)
+            presence_key = cls._presence_key(event_id, user_id)
+            conn_count_key = cls._connection_count_key(event_id, user_id)
+
+            try:
+                count = int(r.decr(conn_count_key))
+            except Exception:
+                count = 0
+
+            if count <= 0:
+                count = 0
+                r.setex(conn_count_key, CONNECTION_COUNT_TTL, "0")
+
+            # Keep presence alive during grace window.
+            r.sadd(online_key, str(user_id))
+            presence_data = {
+                "user_id": user_id,
+                "last_seen_at": timezone.now().isoformat(),
+                "disconnect_grace": True,
+            }
+            r.setex(presence_key, PRESENCE_TTL, json.dumps(presence_data))
+
+            logger.info(
+                "[REDIS_PRESENCE] socket closed keep-presence event=%s user=%s conn_count=%s",
+                event_id,
+                user_id,
+                count,
+            )
+            return count
+
+        except Exception as e:
+            logger.error(
+                "[REDIS_PRESENCE] mark_connection_closed_keep_presence failed event=%s user=%s error=%s",
+                event_id,
+                user_id,
+                e,
+            )
+            return 0
+
+    @classmethod
+    def force_remove_user_online(cls, event_id: int, user_id: int) -> int:
+        """
+        Force-remove user after grace period only.
+        Do not decrement again here; the socket count was already decremented
+        at disconnect time.
+        """
+        try:
+            r = _get_redis_connection()
+
+            online_key = cls._online_users_key(event_id)
+            presence_key = cls._presence_key(event_id, user_id)
+            location_key = cls._location_key(event_id, user_id)
+            conn_count_key = cls._connection_count_key(event_id, user_id)
+
+            r.srem(online_key, str(user_id))
+            r.delete(presence_key)
+            r.delete(location_key)
+            r.delete(conn_count_key)
+
+            online_count = int(r.scard(online_key) or 0)
+
+            logger.info(
+                "[REDIS_PRESENCE] force remove event=%s user=%s online_count=%s",
+                event_id,
+                user_id,
+                online_count,
+            )
+            return online_count
+
+        except Exception as e:
+            logger.error(
+                "[REDIS_PRESENCE] force_remove_user_online failed event=%s user=%s error=%s",
+                event_id,
+                user_id,
+                e,
+            )
+            return -1
+
+    @classmethod
     def get_online_count(cls, event_id: int) -> int:
         """✅  : Get total online user count from Redis (NO DB QUERY)."""
         try:

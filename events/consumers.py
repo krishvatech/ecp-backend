@@ -531,15 +531,51 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         if hasattr(self, "user_group_name"):
             await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
 
-        cleanup_task = getattr(self, "_disconnect_cleanup_task", None)
         user = getattr(self, "user", None)
         should_cleanup = (
             hasattr(self, "group_name")
             and user is not None
             and not getattr(user, "is_anonymous", True)
         )
-        if should_cleanup and not cleanup_task:
-            self._disconnect_cleanup_task = asyncio.create_task(self._finalize_disconnect())
+
+        if should_cleanup and not getattr(self, "_disconnect_cleanup_enqueued", False):
+            self._disconnect_cleanup_enqueued = True
+
+            try:
+                # For registered users: decrement this socket count immediately,
+                # but keep presence visible during grace.
+                if not self._is_guest_user():
+                    from events.redis_presence import RedisPresenceManager
+
+                    await database_sync_to_async(
+                        RedisPresenceManager.mark_connection_closed_keep_presence
+                    )(self.event_id, self.user.id)
+
+                from .tasks import finalize_event_disconnect_cleanup_task
+
+                finalize_event_disconnect_cleanup_task.apply_async(
+                    args=[
+                        self.event_id,
+                        self.user.id,
+                        getattr(self, "channel_name", None),
+                    ],
+                    countdown=DISCONNECT_CLEANUP_GRACE_SECONDS,
+                )
+
+                logger.info(
+                    "[CLEANUP] queued celery disconnect cleanup event=%s user=%s countdown=%s",
+                    self.event_id,
+                    getattr(self.user, "id", None),
+                    DISCONNECT_CLEANUP_GRACE_SECONDS,
+                )
+
+            except Exception:
+                logger.warning(
+                    "[CLEANUP] failed to enqueue celery cleanup event=%s user=%s",
+                    getattr(self, "event_id", None),
+                    getattr(getattr(self, "user", None), "id", None),
+                    exc_info=True,
+                )
 
     async def _finalize_disconnect(self) -> None:
         """
