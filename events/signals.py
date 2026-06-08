@@ -38,7 +38,11 @@ def sync_event_to_saleor_signal(sender, instance, created, **kwargs):
     """
     Trigger async Saleor sync when an Event is saved.
     Runs in background Celery task, not blocking the request.
+    Only queues if SALEOR_ENABLED is True.
     """
+    from django.conf import settings
+    if not getattr(settings, "SALEOR_ENABLED", False):
+        return
 
     # Check if we are saving because of the sync itself
     if getattr(instance, "skip_saleor_sync", False):
@@ -412,7 +416,12 @@ def delete_event_from_saleor_signal(sender, instance, **kwargs):
     """
     Queue async task to delete Saleor product when event is deleted.
     Runs in background Celery task, not blocking the request.
+    Only queues if SALEOR_ENABLED is True.
     """
+    from django.conf import settings
+    if not getattr(settings, "SALEOR_ENABLED", False):
+        return
+
     from .tasks import delete_event_from_saleor_async
     try:
         delete_event_from_saleor_async.delay(instance.id)

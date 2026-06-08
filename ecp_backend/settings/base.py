@@ -633,6 +633,9 @@ CELERY_TASK_SOFT_TIME_LIMIT = 240  # 4 minutes soft limit (allows graceful shutd
 REDIS_SOCKET_CONNECT_TIMEOUT = 5
 REDIS_SOCKET_TIMEOUT = 5
 
+# Saleor Integration Feature Flag (must be before Celery Beat schedule)
+SALEOR_ENABLED = os.getenv("SALEOR_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+
 # Celery configuration
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
@@ -688,33 +691,34 @@ CELERY_BEAT_SCHEDULE.update({
     },
 })
 
-# Saleor auto-sync tasks — every 30 minutes
-CELERY_BEAT_SCHEDULE.update({
-    "auto-sync-saleor-channels": {
-        "task": "events.tasks.auto_sync_saleor_channels",
-        "schedule": crontab(minute="*/30"),
-    },
-    "auto-sync-saleor-warehouses": {
-        "task": "events.tasks.auto_sync_saleor_warehouses",
-        "schedule": crontab(minute="*/30"),
-    },
-    "auto-sync-saleor-shipping-zones": {
-        "task": "events.tasks.auto_sync_saleor_shipping_zones",
-        "schedule": crontab(minute="*/30"),
-    },
-    "auto-sync-saleor-product-types": {
-        "task": "events.tasks.auto_sync_saleor_product_types",
-        "schedule": crontab(minute="*/30"),
-    },
-    "auto-sync-saleor-staff-users": {
-        "task": "events.tasks.auto_sync_saleor_staff_users",
-        "schedule": crontab(minute="*/30"),
-    },
-    "auto-sync-saleor-permission-groups": {
-        "task": "events.tasks.auto_sync_saleor_permission_groups",
-        "schedule": crontab(minute="*/30"),
-    },
-})
+# Saleor auto-sync tasks — only enabled if SALEOR_ENABLED is True
+if SALEOR_ENABLED:
+    CELERY_BEAT_SCHEDULE.update({
+        "auto-sync-saleor-channels": {
+            "task": "events.tasks.auto_sync_saleor_channels",
+            "schedule": crontab(minute="*/30"),
+        },
+        "auto-sync-saleor-warehouses": {
+            "task": "events.tasks.auto_sync_saleor_warehouses",
+            "schedule": crontab(minute="*/30"),
+        },
+        "auto-sync-saleor-shipping-zones": {
+            "task": "events.tasks.auto_sync_saleor_shipping_zones",
+            "schedule": crontab(minute="*/30"),
+        },
+        "auto-sync-saleor-product-types": {
+            "task": "events.tasks.auto_sync_saleor_product_types",
+            "schedule": crontab(minute="*/30"),
+        },
+        "auto-sync-saleor-staff-users": {
+            "task": "events.tasks.auto_sync_saleor_staff_users",
+            "schedule": crontab(minute="*/30"),
+        },
+        "auto-sync-saleor-permission-groups": {
+            "task": "events.tasks.auto_sync_saleor_permission_groups",
+            "schedule": crontab(minute="*/30"),
+        },
+    })
 
 # Contact Request Quota Settings
 FRIEND_REQUEST_WINDOW_DAYS = int(os.getenv("FRIEND_REQUEST_WINDOW_DAYS", "30"))

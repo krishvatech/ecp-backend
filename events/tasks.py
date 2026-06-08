@@ -181,7 +181,13 @@ def sync_event_to_saleor_async(event_id):
     """
     Async background task to sync an event to Saleor.
     Runs in Celery worker, not in request cycle.
+    Only executes if SALEOR_ENABLED is True.
     """
+    from django.conf import settings
+    if not getattr(settings, "SALEOR_ENABLED", False):
+        logger.info(f"Saleor integration disabled. Skipping sync_event_to_saleor_async for event {event_id}.")
+        return {"skipped": True, "reason": "Saleor integration disabled"}
+
     try:
         event = Event.objects.get(id=event_id)
         from .saleor_sync import sync_event_to_saleor_sync
@@ -198,7 +204,13 @@ def delete_event_from_saleor_async(event_id):
     """
     Async background task to delete an event from Saleor.
     Runs in Celery worker, not in request cycle.
+    Only executes if SALEOR_ENABLED is True.
     """
+    from django.conf import settings
+    if not getattr(settings, "SALEOR_ENABLED", False):
+        logger.info(f"Saleor integration disabled. Skipping delete_event_from_saleor_async for event {event_id}.")
+        return {"skipped": True, "reason": "Saleor integration disabled"}
+
     try:
         event = Event.objects.get(id=event_id)
         from .saleor_sync import delete_event_from_saleor
@@ -1978,7 +1990,13 @@ def _run_saleor_sync_task(self, label, sync_fn):
     """
     Shared wrapper for all 6 Saleor sync tasks.
     Handles circuit breaker check, retry with exponential backoff, and success/failure tracking.
+    Only runs if SALEOR_ENABLED is True.
     """
+    from django.conf import settings
+    if not getattr(settings, "SALEOR_ENABLED", False):
+        logger.info(f"[SALEOR_SYNC] Saleor integration disabled. Skipping {label} sync.")
+        return {"status": "skipped", "reason": "Saleor integration disabled"}
+
     if _is_circuit_open():
         logger.warning(f"[SALEOR_SYNC] Circuit open — skipping {label} sync.")
         return {"status": "skipped", "reason": "circuit_open"}

@@ -239,7 +239,7 @@ def remove_user_from_cognito(sender, instance, **kwargs):
                 logger.error(f"Failed to remove {instance.username} from Cognito: {e}")
 
     # 2. Remove from Saleor (as customer)
-    if instance.email:
+    if instance.email and getattr(settings, "SALEOR_ENABLED", False):
         try:
             from .saleor_sync import remove_user_from_saleor_customer
             result = remove_user_from_saleor_customer(instance.email)

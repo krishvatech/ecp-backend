@@ -18,6 +18,10 @@ def create_invoice_from_saleor_order(saleor_order_id):
     Args:
         saleor_order_id: Order ID from Saleor (GraphQL ID)
     """
+    if not getattr(settings, "SALEOR_ENABLED", False):
+        logger.info(f"Saleor integration disabled. Skipping create_invoice_from_saleor_order for order {saleor_order_id}.")
+        return {"skipped": True, "reason": "Saleor integration disabled"}
+
     try:
         logger.info(f"Processing Saleor order: {saleor_order_id}")
 

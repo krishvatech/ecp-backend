@@ -16,6 +16,10 @@ logger = logging.getLogger('invoicing')
 @require_http_methods(["POST"])
 def saleor_order_webhook(request):
     """Handle Saleor ORDER_CREATED, ORDER_CANCELLED, ORDER_FULLY_PAID events"""
+    if not getattr(settings, "SALEOR_ENABLED", False):
+        logger.info("Saleor integration disabled. Ignoring Saleor order webhook.")
+        return JsonResponse({"status": "ignored", "reason": "Saleor integration disabled"}, status=200)
+
     signature = request.headers.get('X-Saleor-Signature', '')
     secret = settings.SALEOR_WEBHOOK_SECRET
 

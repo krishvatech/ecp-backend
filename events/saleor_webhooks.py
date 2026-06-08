@@ -46,9 +46,13 @@ class SaleorProductWebhookView(APIView):
         return hmac.compare_digest(expected_sig, signature)
 
     def post(self, request, *args, **kwargs):
+        if not getattr(settings, "SALEOR_ENABLED", False):
+            logger.info("Saleor integration disabled. Ignoring webhook.")
+            return Response({"status": "ignored", "reason": "Saleor integration disabled"}, status=status.HTTP_200_OK)
+
         signature = request.headers.get("X-Saleor-Signature", "")
         payload_bytes = request.body
-        
+
         if not self._validate_signature(payload_bytes, signature):
             logger.warning("Invalid Saleor webhook signature")
             return Response({"error": "Invalid signature"}, status=status.HTTP_401_UNAUTHORIZED)

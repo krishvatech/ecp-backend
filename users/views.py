@@ -3038,7 +3038,14 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         POST /api/admin/users/{id}/add-to-saleor-staff/
         Add a superuser to Saleor staff with Full Access.
         Only superusers can perform this action.
+        Only available if SALEOR_ENABLED is True.
         """
+        if not getattr(settings, "SALEOR_ENABLED", False):
+            return Response(
+                {"detail": "Saleor integration is currently disabled."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
         # Check if requester is superuser
         if not request.user.is_superuser:
             return Response(
@@ -3099,7 +3106,14 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         POST /api/admin/users/{id}/remove-from-saleor-staff/
         Remove a superuser from Saleor staff (deactivate them).
         Only superusers can perform this action.
+        Only available if SALEOR_ENABLED is True.
         """
+        if not getattr(settings, "SALEOR_ENABLED", False):
+            return Response(
+                {"detail": "Saleor integration is currently disabled."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
         # Check if requester is superuser
         if not request.user.is_superuser:
             return Response(
@@ -4602,10 +4616,17 @@ class SaleorDashboardAuthorizeView(APIView):
     Checks if user is platform_admin.
     If yes, returns { "url": settings.SALEOR_DASHBOARD_URL }.
     If no, returns 403.
+    Only available if SALEOR_ENABLED is True.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if not getattr(settings, "SALEOR_ENABLED", False):
+            return Response(
+                {"enabled": False, "connected": False, "detail": "Saleor integration is disabled."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
         is_platform_admin = _is_platform_admin_for_saleor(request)
 
         if not is_platform_admin:
@@ -4644,6 +4665,12 @@ class SaleorConnectionStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if not getattr(settings, "SALEOR_ENABLED", False):
+            return Response(
+                {"enabled": False, "connected": False, "detail": "Saleor integration is disabled."},
+                status=200
+            )
+
         saleor_token = get_valid_saleor_token_for_user(request.user)
         if not saleor_token:
             return Response({"connected": False}, status=200)
@@ -4666,6 +4693,12 @@ class SaleorConnectionStartView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if not getattr(settings, "SALEOR_ENABLED", False):
+            return Response(
+                {"enabled": False, "detail": "Saleor integration is disabled."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
         if not _is_platform_admin_for_saleor(request):
             return Response(
                 {"detail": "Forbidden: Only platform_admin can connect Saleor SSO."},
@@ -4694,6 +4727,12 @@ class SaleorConnectionDisconnectView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if not getattr(settings, "SALEOR_ENABLED", False):
+            return Response(
+                {"enabled": False, "detail": "Saleor integration is disabled."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
         disconnect_saleor_user(request.user)
         return Response({"connected": False}, status=200)
 

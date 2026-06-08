@@ -2764,7 +2764,14 @@ class EventViewSet(viewsets.ModelViewSet):
         Fetch or update Saleor product details (price, stock, channels) for a paid event.
         GET: Fetch current product data from Saleor.
         PATCH: Update product pricing or inventory in Saleor.
+        Only available if SALEOR_ENABLED is True.
         """
+        if not getattr(settings, "SALEOR_ENABLED", False):
+            return Response(
+                {"detail": "Saleor integration is currently disabled."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
         event = self.get_object()
 
         # Superuser check (platform_admin) or Creator
@@ -2826,7 +2833,14 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         Queue async task to sync Saleor product for a paid event.
         Returns immediately with a queued message.
+        Only available if SALEOR_ENABLED is True.
         """
+        if not getattr(settings, "SALEOR_ENABLED", False):
+            return Response(
+                {"detail": "Saleor integration is currently disabled."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
         event = self.get_object()
 
         # Permission check
@@ -12194,6 +12208,9 @@ def _is_platform_admin(request):
 
 
 def _require_saleor_manager_access(request):
+    from django.conf import settings
+    if not getattr(settings, "SALEOR_ENABLED", False):
+        raise PermissionDenied("Saleor integration is currently disabled.")
     if not _is_platform_admin(request):
         raise PermissionDenied("Only platform_admin can access this endpoint.")
     from users.saleor_connection import get_valid_saleor_token_for_user
