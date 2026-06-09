@@ -2275,13 +2275,47 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         print(f"[RANDOM_ASSIGN] Excluding {len(host_user_ids)} host/moderator user(s) from pool: {host_user_ids}")
 
-        # 1. Get all online participants (registered users + guests), excluding hosts
-        registrations = EventRegistration.objects.filter(
-            event_id=self.event_id,
-            is_online=True,
-            admission_status="admitted",
-            joined_live=True,
-        ).exclude(user_id__in=host_user_ids).select_related('user')
+        # 1. Get all online participants from Redis real-time presence, not stale DB is_online
+        from events.redis_presence import RedisPresenceManager
+
+        redis_online_user_ids = RedisPresenceManager.get_online_users(self.event_id)
+
+        print(
+            f"[RANDOM_ASSIGN] Redis online users for event={self.event_id}: "
+            f"{len(redis_online_user_ids)} user(s): {sorted(redis_online_user_ids)}"
+        )
+
+        if redis_online_user_ids:
+            registrations_qs = EventRegistration.objects.filter(
+                event_id=self.event_id,
+                user_id__in=redis_online_user_ids,
+                admission_status="admitted",
+                joined_live=True,
+            ).exclude(
+                user_id__in=host_user_ids
+            ).select_related("user")
+        else:
+            # Safety fallback only if Redis is empty/unavailable.
+            # This keeps old behavior instead of breaking breakout completely.
+            print(
+                f"[RANDOM_ASSIGN] Redis online set is empty for event={self.event_id}; "
+                f"falling back to DB is_online."
+            )
+            registrations_qs = EventRegistration.objects.filter(
+                event_id=self.event_id,
+                is_online=True,
+                admission_status="admitted",
+                joined_live=True,
+            ).exclude(
+                user_id__in=host_user_ids
+            ).select_related("user")
+
+        registrations = list(registrations_qs)
+
+        print(
+            f"[RANDOM_ASSIGN] Eligible registered users after filters: "
+            f"{len(registrations)}"
+        )
 
         participant_entries = [{"kind": "user", "user": reg.user} for reg in registrations]
 
@@ -2295,7 +2329,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         print(
             f"[RANDOM_ASSIGN] Found {len(participant_entries)} online attendees "
-            f"({len(list(registrations))} users, {guest_rows.count()} guests)."
+            f"({len(registrations)} users, {guest_rows.count()} guests)."
         )
         if not participant_entries:
             return []
