@@ -158,6 +158,8 @@ class CognitoJWTAuthentication(BaseAuthentication):
     Auto-creates a local Django user on first login.
     """
 
+    def authenticate_header(self, request):
+        return "Bearer"
 
     def authenticate(self, request):
         auth = get_authorization_header(request).decode("utf-8")

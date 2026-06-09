@@ -83,6 +83,9 @@ class GuestJWTAuthentication(BaseAuthentication):
     before Cognito tries to process them.
     """
 
+    def authenticate_header(self, request):
+        return "Bearer"
+
     def authenticate(self, request):
         """
         Authenticate the request if it contains a valid guest JWT.
