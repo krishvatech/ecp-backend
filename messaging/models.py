@@ -263,6 +263,13 @@ class Message(models.Model):
     edited_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["conversation", "id"], name="msg_conv_id_idx"),
+            models.Index(fields=["conversation", "created_at"], name="msg_conv_created_idx"),
+            models.Index(fields=["conversation", "is_hidden", "is_deleted", "id"], name="msg_conv_visible_idx"),
+        ]
+
 # --- NEW ---
 class MessageReadReceipt(models.Model):
     """

@@ -593,164 +593,60 @@ class QuestionViewSet(viewsets.ModelViewSet):
         else:
             logger.info(f"[AUTO-GROUP] Not enough questions ({ungrouped_count} < {threshold})")
 
+    @staticmethod
+    def _parse_positive_int(value, default, *, max_value=None):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        parsed = max(1, parsed)
+        if max_value is not None:
+            parsed = min(parsed, max_value)
+        return parsed
+
+    @staticmethod
+    def _wants_cursor_response(request) -> bool:
+        raw = str(request.query_params.get("cursor", "")).lower()
+        return raw in {"1", "true", "yes"}
+
     def list(self, request, *args, **kwargs):
-        from events.models import Event
+        qs = self.filter_queryset(self.get_queryset())
 
-        event_id = request.query_params.get("event_id")
-        user = request.user
+        if not self._wants_cursor_response(request):
+            serializer = self.get_serializer(qs, many=True)
+            return Response(serializer.data)
 
-        # Determine host status once for the whole list
-        is_host = False
-        event = None
-        if event_id:
-            try:
-                event = Event.objects.get(pk=event_id)
-                is_host = (user == event.created_by or getattr(user, "is_staff", False))
-            except Event.DoesNotExist:
-                pass
-
-        # Build replies prefetch: filter visibility for attendees
-        replies_qs = (
-            QnAReply.objects
-            .select_related("user", "user__profile", "guest_asker")
-            .prefetch_related("upvoters", "guest_upvotes")
-            .order_by("created_at")
-        )
-        if not is_host:
-            replies_qs = replies_qs.filter(is_hidden=False)
-            if event and event.qna_moderation_enabled:
-                replies_qs = replies_qs.filter(moderation_status="approved")
-
-        # Optimize query by selecting related user + prefetch replies
-        queryset = (
-            self.get_queryset()
-            .select_related("user", "user__profile", "guest_asker", "anonymized_by")
-            .prefetch_related(Prefetch("replies", queryset=replies_qs))
+        limit = self._parse_positive_int(
+            request.query_params.get("limit"),
+            default=10,
+            max_value=50,
         )
 
-        data = []
-        for q in queryset:
-            # Fetch upvoters with their details
-            upvoters = q.upvoters.all().values('id', 'username', 'first_name', 'last_name', 'email')
-            guest_upvoters = q.guest_upvotes.select_related("guest").values(
-                "guest_id", "guest__first_name", "guest__last_name", "guest__email"
-            )
-            upvoters_list = [
-                {
-                    'id': u['id'],
-                    'name': f"{u.get('first_name', '')} {u.get('last_name', '')}".strip() or u.get('username', f"User {u['id']}"),
-                    'username': u.get('username', ''),
-                }
-                for u in upvoters
-            ] + [
-                {
-                    "id": f"guest_{g['guest_id']}",
-                    "name": (
-                        f"{(g.get('guest__first_name') or '').strip()} {(g.get('guest__last_name') or '').strip()}".strip()
-                        or (g.get("guest__email", "").split("@")[0] if g.get("guest__email") else f"Guest {g['guest_id']}")
-                    ),
-                    "username": f"guest_{g['guest_id']}",
-                }
-                for g in guest_upvoters
-            ]
+        before_id = request.query_params.get("before_id")
+        after_id = request.query_params.get("after_id")
 
-            asker_snapshot = self._get_question_asker_snapshot(
-                q,
-                reveal_anonymous_name=is_host,
-            )
+        if after_id:
+            after_id = self._parse_positive_int(after_id, default=0)
+            rows = list(qs.filter(id__gt=after_id).order_by("id")[:limit])
+            has_more = False
+        else:
+            if before_id:
+                before_id = self._parse_positive_int(before_id, default=0)
+                qs = qs.filter(id__lt=before_id)
 
-            # Seed questions use attribution_label as the display name
-            display_user_name = asker_snapshot["asker_name"]
-            if q.is_seed and q.attribution_label:
-                display_user_name = q.attribution_label
+            rows = list(qs[: limit + 1])
+            has_more = len(rows) > limit
+            rows = rows[:limit]
 
-            # Serialize prefetched replies (no N+1 — uses prefetch cache)
-            replies_data = [
-                self._serialize_reply(r, is_host=is_host, user=user)
-                for r in q.replies.all()
-            ]
+        serializer = self.get_serializer(rows, many=True)
 
-            data.append({
-                "id": q.id,
-                "content": q.content,
-                "user_id": asker_snapshot["asker_id"],
-                "user_name": display_user_name,
-                "user_avatar_url": asker_snapshot["asker_avatar_url"],
-                "upvote_count": q.upvotes_count,  # annotated
-                "user_upvoted": q.user_upvoted,  # annotated boolean
-                "upvoters": upvoters_list,  # list of users who upvoted
-                "event_id": q.event_id,
-                "lounge_table_id": q.lounge_table_id,
-                "created_at": q.created_at.isoformat(),
-                "is_answered": q.is_answered,
-                "answered_at": q.answered_at.isoformat() if q.answered_at else None,
-                "answered_by": q.answered_by_id,
-                "answer_text": q.answer_text,
-                "answered_phase": q.answered_phase,
-                "requires_followup": q.requires_followup,
-                "is_pinned": q.is_pinned,
-                "pinned_at": q.pinned_at.isoformat() if q.pinned_at else None,
-                "is_anonymous": q.is_anonymous,
-                "anonymized_by": q.anonymized_by_id,
-                "display_order": q.display_order,
-                "is_seed": q.is_seed,
-                "attribution_label": q.attribution_label,
-                "submission_phase": q.submission_phase,
-                # speaker_note is only returned to the host
-                "speaker_note": q.speaker_note if (q.is_seed and is_host) else "",
-                # threaded replies
-                "replies": replies_data,
-                "reply_count": len(replies_data),
-            })
-
-        # Add pending questions from Redis (not yet persisted to DB)
-        if event_id:
-            from events.redis_messages import get_pending_messages, get_question_from_redis
-            from django.contrib.auth import get_user_model
-
-            User = get_user_model()
-            pending_uuids = get_pending_messages(int(event_id), is_qna=True)
-            for uuid in pending_uuids:
-                pending_q = get_question_from_redis(int(event_id), uuid)
-                if pending_q:
-                    # Only show pending questions to host or to the question asker
-                    show_pending = is_host
-                    asker_user_id = pending_q.get('user_id')
-                    if not show_pending and asker_user_id == user.id:
-                        show_pending = True
-                    if show_pending:
-                        # Get asker name from user object if available
-                        asker_name = "Anonymous"
-                        if asker_user_id:
-                            try:
-                                asker_user = User.objects.get(id=asker_user_id)
-                                asker_name = (asker_user.get_full_name() or asker_user.username or asker_user.email.split('@')[0] if asker_user.email else "User")
-                            except User.DoesNotExist:
-                                asker_name = f"User {asker_user_id}"
-
-                        asker_snapshot = {
-                            "asker_id": asker_user_id,
-                            "asker_name": asker_name,
-                            "asker_avatar_url": "",
-                        }
-                        data.append({
-                            "id": None,
-                            "uuid": uuid,
-                            "content": pending_q.get('content', ''),
-                            "created_at": pending_q.get('created_at'),
-                            "is_hidden": False,
-                            "is_anonymous": pending_q.get('is_anonymous', False),
-                            "is_pinned": False,
-                            "upvote_count": 0,
-                            "asker": asker_snapshot,
-                            "status": "pending",
-                            "replies": [],
-                            "reply_count": 0,
-                        })
-
-        # Sort by created_at descending
-        data.sort(key=lambda x: x.get('created_at', ''), reverse=True)
-        return Response(data)
+        return Response({
+            "results": serializer.data,
+            "has_more": has_more,
+            "oldest_id": rows[-1].id if rows else None,
+            "newest_id": rows[0].id if rows else None,
+            "next_before_id": rows[-1].id if has_more and rows else None,
+        })
 
     @action(detail=False, methods=["get"], url_path="admin-pre-event")
     def admin_pre_event_questions(self, request):

@@ -307,6 +307,8 @@ class Question(models.Model):
             models.Index(fields=["event", "submission_phase"], name="qna_event_phase_idx"),
             models.Index(fields=["event", "answered_phase"], name="qna_event_answered_phase_idx"),
             models.Index(fields=["event", "user", "submission_phase"], name="qna_event_user_phase_idx"),
+            models.Index(fields=["event", "id"], name="qna_event_id_idx"),
+            models.Index(fields=["event", "lounge_table", "id"], name="qna_event_table_id_idx"),
         ]
         constraints = [
             models.CheckConstraint(
