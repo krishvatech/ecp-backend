@@ -44,6 +44,12 @@ echo 'DJANGO_DEBUG=False' >> "$ECP_ENV"
 sed -i '/^WAGTAILADMIN_BASE_URL=/d' "$ECP_ENV"
 echo 'WAGTAILADMIN_BASE_URL=https://api.colligatus.com/cms' >> "$ECP_ENV"
 
+START_SALEOR="$(awk -F= '$1=="START_SALEOR"{print $2}' "$ECP_ENV" | tail -1 | tr -d '\r' || true)"
+START_SALEOR="${START_SALEOR:-false}"
+START_SALEOR="$(echo "$START_SALEOR" | tr '[:upper:]' '[:lower:]')"
+
+echo "START_SALEOR=$START_SALEOR"
+
 IMAGE_URI=$(aws ssm get-parameter \
   --name /ecp/prod/BACKEND_IMAGE_URI \
   --region "$REGION" \
@@ -246,50 +252,126 @@ rm -rf /var/www/ecp-static/*
 docker cp ecp-backend:/app/staticfiles/. /var/www/ecp-static/ || true
 chown -R www-data:www-data /var/www/ecp-static || true
 
+echo "===== Ensuring active Nginx config serves Django/Wagtail static files ====="
+
+ensure_nginx_static_routes() {
+  local conf="${NGINX_CONF:-/etc/nginx/conf.d/ecp-backend.conf}"
+
+  if [ ! -f "$conf" ]; then
+    echo "WARNING: $conf not found. Skipping Nginx static route patch."
+    return 0
+  fi
+
+  if grep -q "alias /var/www/ecp-static/" "$conf"; then
+    echo "Nginx static route already exists in $conf"
+    return 0
+  fi
+
+  local backup="${conf}.bak.$(date +%Y%m%d-%H%M%S)"
+  cp "$conf" "$backup"
+  echo "Backup created: $backup"
+
+  ECP_NGINX_CONF="$conf" python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+conf_path = Path(os.environ["ECP_NGINX_CONF"])
+text = conf_path.read_text()
+
+if "alias /var/www/ecp-static/" in text:
+    print("Static route already present.")
+    raise SystemExit(0)
+
+match = re.search(r"(?m)^(\s*)location\s+/\s*\{", text)
+if not match:
+    print("WARNING: Could not find catch-all location / block. No change made.")
+    raise SystemExit(0)
+
+indent = match.group(1)
+
+static_block = f"""
+{indent}location /static/ {{
+{indent}    alias /var/www/ecp-static/;
+{indent}    access_log off;
+{indent}    expires 365d;
+{indent}    add_header Cache-Control "public, max-age=31536000";
+{indent}}}
+
+{indent}location /media/ {{
+{indent}    alias /home/ubuntu/Event-Community-Platform/events-n-comm-platform/media/;
+{indent}    access_log off;
+{indent}    expires 30d;
+{indent}}}
+
+"""
+
+text = text[:match.start()] + static_block + text[match.start():]
+conf_path.write_text(text)
+print(f"Added /static/ and /media/ routes to {conf_path}")
+PY
+
+  if nginx -t; then
+    echo "Nginx config test passed after static route patch."
+  else
+    echo "ERROR: Nginx config test failed. Restoring backup."
+    cp "$backup" "$conf"
+    nginx -t || true
+    return 0
+  fi
+}
+
+ensure_nginx_static_routes
+
 echo "===== Reloading nginx ====="
 nginx -t
 systemctl reload nginx
 
-echo "===== Starting Saleor best-effort, non-blocking ====="
-if [ -d "$SALEOR_DIR" ]; then
-  cd "$SALEOR_DIR"
-  docker-compose -f docker-compose.rds.yml up -d cache api dashboard worker || true
+if [ "$START_SALEOR" = "true" ]; then
+  echo "===== Starting Saleor best-effort, non-blocking ====="
 
-  SALEOR_READY=false
+  if [ -d "$SALEOR_DIR" ]; then
+    cd "$SALEOR_DIR"
+    docker-compose -f docker-compose.rds.yml up -d cache api dashboard worker || true
 
-  for i in {1..20}; do
-    API_OK=false
-    DASHBOARD_OK=false
+    SALEOR_READY=false
 
-    if curl -fsS --max-time 10 http://127.0.0.1:8001/graphql/ \
-      -H "Content-Type: application/json" \
-      --data '{"query":"query { shop { name } }"}' | grep -q "Saleor e-commerce"; then
-      API_OK=true
+    for i in {1..20}; do
+      API_OK=false
+      DASHBOARD_OK=false
+
+      if curl -fsS --max-time 10 http://127.0.0.1:8001/graphql/ \
+        -H "Content-Type: application/json" \
+        --data '{"query":"query { shop { name } }"}' | grep -q "Saleor e-commerce"; then
+        API_OK=true
+      fi
+
+      if curl -fsSI --max-time 10 http://127.0.0.1:9000/ >/dev/null; then
+        DASHBOARD_OK=true
+      fi
+
+      echo "Saleor wait attempt $i: API_OK=$API_OK DASHBOARD_OK=$DASHBOARD_OK"
+
+      if [ "$API_OK" = true ] && [ "$DASHBOARD_OK" = true ]; then
+        SALEOR_READY=true
+        break
+      fi
+
+      sleep 10
+    done
+
+    if [ "$SALEOR_READY" = true ]; then
+      echo "Running Saleor migrations..."
+      docker-compose -f docker-compose.rds.yml exec -T api python manage.py migrate || echo "WARNING: Saleor migrations failed"
+    else
+      echo "WARNING: Saleor failed to become ready. Backend is already running, so startup will continue."
+      docker-compose -f docker-compose.rds.yml logs --tail=100 api dashboard worker || true
     fi
-
-    if curl -fsSI --max-time 10 http://127.0.0.1:9000/ >/dev/null; then
-      DASHBOARD_OK=true
-    fi
-
-    echo "Saleor wait attempt $i: API_OK=$API_OK DASHBOARD_OK=$DASHBOARD_OK"
-
-    if [ "$API_OK" = true ] && [ "$DASHBOARD_OK" = true ]; then
-      SALEOR_READY=true
-      break
-    fi
-
-    sleep 10
-  done
-
-  if [ "$SALEOR_READY" = true ]; then
-    echo "Running Saleor migrations..."
-    docker-compose -f docker-compose.rds.yml exec -T api python manage.py migrate || echo "WARNING: Saleor migrations failed"
   else
-    echo "WARNING: Saleor failed to become ready. Backend is already running, so startup will continue."
-    docker-compose -f docker-compose.rds.yml logs --tail=100 api dashboard worker || true
+    echo "WARNING: Saleor directory not found: $SALEOR_DIR"
   fi
 else
-  echo "WARNING: Saleor directory not found: $SALEOR_DIR"
+  echo "===== Saleor startup disabled by START_SALEOR=$START_SALEOR ====="
 fi
 
 echo "===== Final backend verification ====="
