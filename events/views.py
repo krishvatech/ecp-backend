@@ -7121,6 +7121,7 @@ class EventViewSet(viewsets.ModelViewSet):
     def registrations(self, request, pk=None):
         """
         Owner-only view: list all members who purchased/registered this event.
+        Summary stats always show full event-level counts, independent of pagination and filters.
         """
         event = self.get_object()
         user = request.user
@@ -7132,14 +7133,28 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # ✅ Only show active registrations (not cancelled/deregistered)
-        qs = (
+        # ✅ Build base_qs: all active registrations (not cancelled/deregistered)
+        base_qs = (
             EventRegistration.objects
             .filter(event=event, status__in=["registered", "cancellation_requested"])
             .select_related("user")
             .order_by("-registered_at")
         )
-        # Filter by attendance status if provided: ?status=joined_live or ?status=watched_replay
+
+        # Calculate full event stats from base_qs (before applying tab filter)
+        # Mutually exclusive categories:
+        # - joined_live: True
+        # - watched_replay: joined_live=False AND watched_replay=True
+        # - did_not_attend: joined_live=False AND watched_replay=False
+        stats = {
+            'total': base_qs.count(),
+            'joined_live': base_qs.filter(joined_live=True).count(),
+            'watched_replay': base_qs.filter(joined_live=False, watched_replay=True).count(),
+            'did_not_attend': base_qs.filter(joined_live=False, watched_replay=False).count(),
+        }
+
+        # Apply tab filter only to the list query (not to stats)
+        qs = base_qs
         status_filter = (request.query_params.get("status") or "").strip().lower()
         if status_filter == "joined_live":
             qs = qs.filter(joined_live=True)
@@ -7152,12 +7167,14 @@ class EventViewSet(viewsets.ModelViewSet):
         page = self.paginate_queryset(qs)
         if page is not None:
             serializer = EventRegistrationSerializer(page, many=True, context={"request": request})
-            return self.get_paginated_response(serializer.data)
+            response = self.get_paginated_response(serializer.data)
+            response.data["stats"] = stats
+            return response
 
         serializer = EventRegistrationSerializer(
             qs, many=True, context={"request": request}
         )
-        return Response(serializer.data)
+        return Response({"results": serializer.data, "stats": stats})
 
     @action(
         detail=True,
