@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.db import transaction
 
 from django.utils.dateparse import parse_datetime
-from django.db.models import Q, Max
+from django.db.models import Q, Max, F
 from content.tasks import publish_resource_task
 from users.serializers import UserMiniSerializer
 from .models import (
@@ -3856,6 +3856,55 @@ def _is_current_user_registered_for_series(obj, request):
     return obj.series_registrations.filter(user_id=user.id, status='registered').exists()
 
 
+# Image field names (in priority order) checked on a series' child events when
+# deriving the series card image. Supports both file fields (ImageField/FileField,
+# which expose `.url`) and plain URL/char fields (returned as-is).
+SERIES_EVENT_IMAGE_FIELD_NAMES = (
+    "cover_image", "image", "banner_image", "thumbnail",
+    "featured_image", "preview_image", "image_url",
+)
+
+
+def _resolve_event_image_url(event, request):
+    """Return the first non-empty image URL found on an event, or None.
+
+    Looks through SERIES_EVENT_IMAGE_FIELD_NAMES defensively via getattr so that
+    events without a given field are simply skipped (never raising).
+    """
+    for field_name in SERIES_EVENT_IMAGE_FIELD_NAMES:
+        value = getattr(event, field_name, None)
+        if not value:
+            continue
+        # FileField/ImageField expose `.url`; plain URL/char fields are strings.
+        url = getattr(value, "url", None)
+        if url is None:
+            url = str(value).strip()
+        if not url:
+            continue
+        if request is not None and url.startswith("/"):
+            return request.build_absolute_uri(url)
+        return url
+    return None
+
+
+def _get_series_card_image_url(series, request):
+    """First available image from the series' events, in series-added order.
+
+    Ordering follows the explicit ``series_order`` (1-indexed add position); any
+    unset values and ties fall back to creation order. Event start time is never
+    used for ordering. Returns None when no event in the series has an image, so
+    the frontend can render a blank media area instead of a placeholder/default.
+    """
+    child_events = series.child_events.all().order_by(
+        F("series_order").asc(nulls_last=True), "created_at", "id"
+    )
+    for event in child_events:
+        url = _resolve_event_image_url(event, request)
+        if url:
+            return url
+    return None
+
+
 class SeriesEventNestedSerializer(serializers.ModelSerializer):
     """Nested event representation for series detail view"""
     registrations_count = serializers.SerializerMethodField()
@@ -3879,6 +3928,7 @@ class EventSeriesListSerializer(serializers.ModelSerializer):
     events_count = serializers.SerializerMethodField()
     registrations_count = serializers.SerializerMethodField()
     cover_image_url = serializers.SerializerMethodField()
+    card_image_url = serializers.SerializerMethodField()
     is_registered = serializers.SerializerMethodField()
 
     class Meta:
@@ -3886,7 +3936,8 @@ class EventSeriesListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'slug', 'description', 'status', 'is_free',
             'price', 'visibility', 'events_count', 'registrations_count',
-            'created_by_name', 'cover_image_url', 'is_registered', 'created_at'
+            'created_by_name', 'cover_image_url', 'card_image_url',
+            'is_registered', 'created_at'
         ]
         read_only_fields = [
             'id', 'slug', 'created_at', 'events_count', 'registrations_count',
@@ -3907,6 +3958,9 @@ class EventSeriesListSerializer(serializers.ModelSerializer):
             return obj.cover_image.url
         return None
 
+    def get_card_image_url(self, obj):
+        return _get_series_card_image_url(obj, self.context.get('request'))
+
     def get_is_registered(self, obj):
         return _is_current_user_registered_for_series(obj, self.context.get('request'))
 
@@ -3921,6 +3975,7 @@ class EventSeriesDetailSerializer(serializers.ModelSerializer):
     events_count = serializers.SerializerMethodField()
     registrations_count = serializers.SerializerMethodField()
     cover_image_url = serializers.SerializerMethodField()
+    card_image_url = serializers.SerializerMethodField()
     is_owner = serializers.SerializerMethodField()
     is_registered = serializers.SerializerMethodField()
 
@@ -3931,7 +3986,8 @@ class EventSeriesDetailSerializer(serializers.ModelSerializer):
             'price', 'currency', 'visibility', 'registration_mode',
             'metadata', 'events', 'events_count', 'registrations_count',
             'created_by_id', 'created_by_name', 'community_id', 'community_name',
-            'cover_image_url', 'is_owner', 'is_registered', 'created_at', 'updated_at'
+            'cover_image_url', 'card_image_url', 'is_owner', 'is_registered',
+            'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'slug', 'currency', 'created_at', 'updated_at',
@@ -3951,6 +4007,9 @@ class EventSeriesDetailSerializer(serializers.ModelSerializer):
                 return request.build_absolute_uri(obj.cover_image.url)
             return obj.cover_image.url
         return None
+
+    def get_card_image_url(self, obj):
+        return _get_series_card_image_url(obj, self.context.get('request'))
 
     def get_is_owner(self, obj):
         request = self.context.get('request')
@@ -3976,15 +4035,22 @@ class EventSeriesCreateUpdateSerializer(serializers.ModelSerializer):
         write_only=True,
         required=True,
     )
+    # Reflect the requesting user's registration state in the create/update
+    # response so the frontend knows the creator is already registered without
+    # needing a second fetch.
+    is_registered = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = EventSeries
         fields = [
             'id', 'title', 'description', 'status', 'registration_mode',
             'is_free', 'price', 'visibility', 'metadata', 'community_id',
-            'cover_image', 'slug'
+            'cover_image', 'slug', 'is_registered'
         ]
-        read_only_fields = ['id', 'slug']
+        read_only_fields = ['id', 'slug', 'is_registered']
+
+    def get_is_registered(self, obj):
+        return _is_current_user_registered_for_series(obj, self.context.get('request'))
 
     def validate_title(self, value):
         if not value or len(value.strip()) < 3:
@@ -4053,17 +4119,33 @@ class PublicEventSeriesSerializer(serializers.ModelSerializer):
     events_count = serializers.SerializerMethodField()
     registrations_count = serializers.SerializerMethodField()
     cover_image_url = serializers.SerializerMethodField()
+    card_image_url = serializers.SerializerMethodField()
     is_registered = serializers.SerializerMethodField()
+    is_owner = serializers.SerializerMethodField()
 
     class Meta:
         model = EventSeries
         fields = [
-            'id', 'title', 'slug', 'description', 'status',
-            'registration_mode', 'events', 'events_count',
+            'id', 'title', 'slug', 'description', 'status', 'visibility',
+            'registration_mode', 'is_free', 'price', 'events', 'events_count',
             'registrations_count', 'created_by_name', 'cover_image_url',
-            'is_registered'
+            'card_image_url', 'is_registered', 'is_owner'
         ]
         read_only_fields = fields
+
+    def get_is_owner(self, obj):
+        request = self.context.get('request')
+        if not request:
+            return False
+        user = getattr(request, 'user', None)
+        return bool(
+            user
+            and user.is_authenticated
+            and (
+                obj.created_by_id == user.id
+                or getattr(user, 'is_superuser', False)
+            )
+        )
 
     def get_events_count(self, obj):
         return obj.child_events.filter(status='published').count()
@@ -4078,6 +4160,9 @@ class PublicEventSeriesSerializer(serializers.ModelSerializer):
                 return request.build_absolute_uri(obj.cover_image.url)
             return obj.cover_image.url
         return None
+
+    def get_card_image_url(self, obj):
+        return _get_series_card_image_url(obj, self.context.get('request'))
 
     def get_is_registered(self, obj):
         return _is_current_user_registered_for_series(obj, self.context.get('request'))

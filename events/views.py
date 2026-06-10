@@ -13395,10 +13395,25 @@ class SeriesViewSet(viewsets.ModelViewSet):
         if not self.request.user.community.filter(id=org.id).exists():
             raise PermissionDenied("You must be a member of the community to create series.")
         initial_status = 'published' if serializer.validated_data.get('is_free', True) else 'draft'
-        serializer.save(
-            created_by=self.request.user,
-            status=initial_status
-        )
+        with transaction.atomic():
+            series = serializer.save(
+                created_by=self.request.user,
+                status=initial_status
+            )
+            # Auto-register the creator/admin for their own series so the UI
+            # reflects that they are already a member (the creator should not see
+            # a Register button on their own series). get_or_create together with
+            # the unique_together(series, user) constraint prevents duplicates.
+            # This only adds a SeriesRegistration row; it does not touch normal
+            # event registration (a freshly created series has no child events).
+            registration, created = SeriesRegistration.objects.get_or_create(
+                series=series,
+                user=self.request.user,
+                defaults={'status': 'registered'},
+            )
+            if not created and registration.status == 'cancelled':
+                registration.status = 'registered'
+                registration.save(update_fields=['status'])
 
     def perform_update(self, serializer):
         if not self._is_owner(self.get_object()):
