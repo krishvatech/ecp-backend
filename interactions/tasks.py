@@ -149,13 +149,15 @@ def persist_chat_message_to_db(self, event_id, message_uuid, message_dict):
     logger = logging.getLogger(__name__)
 
     try:
-        # Create message in database
-        message = ChatMessage.objects.create(
-            event_id=event_id,
-            user_id=message_dict.get('user_id'),
-            content=message_dict.get('content'),
-            created_at=message_dict.get('created_at'),
+        # Idempotent create: retries/replays must not duplicate messages.
+        message, created = ChatMessage.objects.get_or_create(
             external_id=str(message_uuid),
+            defaults={
+                'event_id': event_id,
+                'user_id': message_dict.get('user_id'),
+                'content': message_dict.get('content'),
+                'created_at': message_dict.get('created_at'),
+            },
         )
 
         # Remove from Redis pending list
@@ -195,17 +197,19 @@ def persist_qna_question_to_db(self, event_id, question_uuid, question_dict):
     logger = logging.getLogger(__name__)
 
     try:
-        # Create question in database
-        question = Question.objects.create(
-            event_id=event_id,
-            user_id=question_dict.get('user_id'),
-            guest_asker_id=question_dict.get('guest_asker_id'),
-            content=question_dict.get('content'),
-            lounge_table_id=question_dict.get('lounge_table_id'),
-            is_anonymous=question_dict.get('is_anonymous', False),
-            created_at=question_dict.get('created_at'),
+        # Idempotent create: retries/replays must not duplicate questions.
+        question, created = Question.objects.get_or_create(
             external_id=str(question_uuid),
-            moderation_status=question_dict.get('moderation_status', 'pending'),
+            defaults={
+                'event_id': event_id,
+                'user_id': question_dict.get('user_id'),
+                'guest_asker_id': question_dict.get('guest_asker_id'),
+                'content': question_dict.get('content'),
+                'lounge_table_id': question_dict.get('lounge_table_id'),
+                'is_anonymous': question_dict.get('is_anonymous', False),
+                'created_at': question_dict.get('created_at'),
+                'moderation_status': question_dict.get('moderation_status', 'pending'),
+            },
         )
 
         # Remove from Redis pending list
@@ -245,18 +249,20 @@ def persist_qna_reply_to_db(self, event_id, reply_uuid, reply_dict):
     logger = logging.getLogger(__name__)
 
     try:
-        # Create reply in database
-        reply = QnAReply.objects.create(
-            question_id=reply_dict.get('question_id'),
-            event_id=event_id,
-            user_id=reply_dict.get('user_id'),
-            guest_asker_id=reply_dict.get('guest_asker_id'),
-            content=reply_dict.get('content'),
-            lounge_table_id=reply_dict.get('lounge_table_id'),
-            is_anonymous=reply_dict.get('is_anonymous', False),
-            created_at=reply_dict.get('created_at'),
+        # Idempotent create: retries/replays must not duplicate replies.
+        reply, created = QnAReply.objects.get_or_create(
             external_id=str(reply_uuid),
-            moderation_status=reply_dict.get('moderation_status', 'pending'),
+            defaults={
+                'question_id': reply_dict.get('question_id'),
+                'event_id': event_id,
+                'user_id': reply_dict.get('user_id'),
+                'guest_asker_id': reply_dict.get('guest_asker_id'),
+                'content': reply_dict.get('content'),
+                'lounge_table_id': reply_dict.get('lounge_table_id'),
+                'is_anonymous': reply_dict.get('is_anonymous', False),
+                'created_at': reply_dict.get('created_at'),
+                'moderation_status': reply_dict.get('moderation_status', 'pending'),
+            },
         )
 
         # Remove from Redis pending list

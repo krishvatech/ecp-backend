@@ -1184,7 +1184,7 @@ def _serialize_event_live_context(event, request=None) -> dict:
     data.update({
         "current_user_live_role": current_user_live_role,
         "current_user_role": current_user_live_role,
-        "event_participant_roles": _serialize_event_participant_roles(event),
+        "event_participant_roles": _serialize_event_participant_roles(event) if is_manager else [],
         "is_owner": is_owner,
         "is_host": is_host,
         "is_moderator": is_moderator,
@@ -2246,7 +2246,50 @@ class EventViewSet(viewsets.ModelViewSet):
         # Check if requester is staff/manager to determine kyc_status visibility
         is_manager = _is_event_manager(request.user, event)
 
-        # ✅ PHASE 4: Fetch registered participants (main user list)
+        wants_cursor = str(request.query_params.get("cursor", "")).lower() in {"1", "true", "yes"}
+        if wants_cursor:
+            try:
+                limit = int(request.query_params.get("limit") or 100)
+            except (TypeError, ValueError):
+                limit = 100
+            limit = max(1, min(limit, 200))
+            try:
+                after_id = int(request.query_params.get("after_id") or 0)
+            except (TypeError, ValueError):
+                after_id = 0
+
+            registered_qs = EventRegistration.objects.filter(
+                event=event,
+                status__in=['registered', 'accepted'],
+                user_id__gt=after_id,
+            ).order_by('user_id').values_list(
+                'user_id', 'user__first_name', 'user__last_name',
+                'user__image', 'current_location'
+            )[: limit + 1]
+
+            registered_rows = list(registered_qs)
+            has_more = len(registered_rows) > limit
+            registered_rows = registered_rows[:limit]
+
+            for user_id, first_name, last_name, avatar_url, current_location in registered_rows:
+                name = f"{first_name} {last_name}".strip() if first_name or last_name else f"User {user_id}"
+                participants_data.append({
+                    'id': user_id,
+                    'name': name,
+                    'avatar': avatar_url,
+                    'kyc_status': None,
+                    'current_location': current_location or 'main_room'
+                })
+
+            return Response({
+                'results': participants_data,
+                'count': len(participants_data),
+                'limit': limit,
+                'has_more': has_more,
+                'next_after_id': registered_rows[-1][0] if has_more and registered_rows else None,
+            })
+
+        # ✅ Legacy compatibility path: existing array response shape.
         registered = EventRegistration.objects.filter(
             event=event,
             status__in=['registered', 'accepted']  # Include both statuses
