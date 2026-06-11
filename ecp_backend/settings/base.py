@@ -849,21 +849,31 @@ LEGAL_ENTITIES = {
 # ============================================================================
 # MERGERS.AI VIDEO SEARCH WIDGET INTEGRATION
 # ============================================================================
-# Shared HMAC secret for signing embed tokens (15-min expiry)
-# Share via 1Password, not Slack/email. Rotate quarterly.
+# Shared HMAC secret for signing embed tokens (15-min expiry) — DEPRECATED
+# Use MERGERSAI_EMBED_API_KEY instead for the new API-based integration.
 MERGERSAI_EMBED_SECRET = os.getenv(
     "MERGERSAI_EMBED_SECRET",
     "",  # Empty string = feature disabled until secret is provided
 )
 
-# Widget iframe URL — full HTML page with search box, course dropdown, Vimeo player
+# Widget iframe URL — DEPRECATED
+# Old implementation used iframe at https://app.mergers.ai/embed/widget
+# New implementation uses REST API with backend proxy.
 MERGERSAI_WIDGET_URL = os.getenv(
     "MERGERSAI_WIDGET_URL",
     "https://app.mergers.ai/embed/widget",
 )
 
-# Mergers.AI API base URL — for future direct calls (currently used via frontend only)
+# Mergers.AI API base URL — used by the new API-based integration
 MERGERSAI_API_BASE_URL = os.getenv(
     "MERGERSAI_API_BASE_URL",
     "https://api.mergers.ai",
+)
+
+# Mergers.AI embed API key — required for backend proxy calls to Mergers.AI API
+# Retrieved from 1Password vault: IMAA-Mergers-Integration
+# Used in X-Embed-Api-Key header for all Mergers.AI API calls
+MERGERSAI_EMBED_API_KEY = os.getenv(
+    "MERGERSAI_EMBED_API_KEY",
+    "",  # Empty string = feature disabled until key is provided
 )

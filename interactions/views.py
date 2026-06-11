@@ -37,6 +37,7 @@ from .serializers import (
 )
 from rest_framework.throttling import UserRateThrottle
 import requests
+from common.live_metrics import live_metric_incr
 
 User = get_user_model()
 
@@ -509,6 +510,8 @@ class QuestionViewSet(viewsets.ModelViewSet):
         ).count()
         question.display_order = count
         question.save(update_fields=["display_order"])
+
+        live_metric_incr("qna_question_created", event_id=question.event_id)
 
         # Determine submission phase: pre-event vs live
         from django.utils import timezone as tz
@@ -1192,6 +1195,8 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 question.upvoters.add(user)
                 upvoted = True
             actor_id = user.id
+
+        live_metric_incr("qna_question_upvote", event_id=question.event_id)
 
         upvote_count = (
             QuestionUpvote.objects.filter(question=question).count()

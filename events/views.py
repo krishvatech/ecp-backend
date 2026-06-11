@@ -38,6 +38,7 @@ from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
 from django.template import Template as DjangoTemplate, Context
 from django.core.cache import cache
+from common.live_metrics import live_metric_incr
 
 # ============================================================
 # ================= DRF (Django REST Framework) ==============
@@ -7813,7 +7814,21 @@ class EventViewSet(viewsets.ModelViewSet):
     def lounge_state(self, request, pk=None):
         """Fetch the current state of the Social Lounge for this event."""
         event = self.get_object()
-        cache_key = f"event:{event.id}:http_lounge_state:v1"
+        wants_cursor = str(request.query_params.get("cursor", "")).lower() in {"1", "true", "yes"}
+        try:
+            limit = int(request.query_params.get("limit") or 20)
+        except (TypeError, ValueError):
+            limit = 20
+        limit = max(1, min(limit, 50))
+        try:
+            after_id = int(request.query_params.get("after_id") or 0)
+        except (TypeError, ValueError):
+            after_id = 0
+        cache_key = (
+            f"event:{event.id}:http_lounge_state:cursor:{limit}:{after_id}:v1"
+            if wants_cursor
+            else f"event:{event.id}:http_lounge_state:v1"
+        )
 
         logger.debug(
             "[lounge_state] Event %s: is_live=%s status=%s live_ended_at=%s "
@@ -7857,7 +7872,14 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception:
                 return {}
 
-        tables = LoungeTable.objects.filter(event_id=pk).prefetch_related('participants__user__profile')
+        tables_qs = LoungeTable.objects.filter(event_id=pk).order_by("id").prefetch_related('participants__user__profile')
+        if wants_cursor:
+            tables_page = list(tables_qs.filter(id__gt=after_id)[: limit + 1])
+            has_more = len(tables_page) > limit
+            tables = tables_page[:limit]
+        else:
+            tables = tables_qs
+            has_more = False
         guest_rows = (
             event.guest_attendees
             .filter(converted_at__isnull=True, lounge_table_id__isnull=False)
@@ -7914,6 +7936,13 @@ class EventViewSet(viewsets.ModelViewSet):
                 "next_change": next_change
             }
         }
+        if wants_cursor:
+            data.update({
+                "count": len(state),
+                "limit": limit,
+                "has_more": has_more,
+                "next_after_id": state[-1]["id"] if has_more and state else None,
+            })
         cache.set(cache_key, data, 2)
         return Response(data)
 
@@ -9274,6 +9303,7 @@ class EventViewSet(viewsets.ModelViewSet):
             )
 
             logger.info(f"Guest {guest.email} received RTK token for meeting {meeting_id}")
+            live_metric_incr("rtk_join_token_issued", event_id=event.id)
 
             return Response(response_payload)
         # ──── END GUEST BRANCH ──────────────────────────────────────────────────
@@ -9701,6 +9731,7 @@ class EventViewSet(viewsets.ModelViewSet):
         _set_cached_rtk_join_payload(
             event.id, f"user:{user.id}", role_string, response_payload, "main_room"
         )
+        live_metric_incr("rtk_join_token_issued", event_id=event.id)
 
         return Response(response_payload)
 

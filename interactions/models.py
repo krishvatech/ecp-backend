@@ -320,6 +320,8 @@ class Question(models.Model):
             models.Index(fields=["lounge_table", "-created_at"], name="qna_table_created_idx"),
             models.Index(fields=["event", "moderation_status"], name="qna_event_status_idx"),
             models.Index(fields=["event", "is_pinned"], name="qna_event_pinned_idx"),
+            models.Index(fields=["event", "is_hidden", "is_answered", "id"], name="qna_evt_hidden_ans_idx"),
+            models.Index(fields=["event", "moderation_status", "id"], name="qna_evt_mod_id_idx"),
             models.Index(fields=["event", "is_seed"], name="qna_event_seed_idx"),
             models.Index(fields=["event", "submission_phase"], name="qna_event_phase_idx"),
             models.Index(fields=["event", "answered_phase"], name="qna_event_answered_phase_idx"),
@@ -361,6 +363,7 @@ class QuestionUpvote(models.Model):
         indexes = [
             models.Index(fields=["question", "created_at"], name="qna_upvote_time_idx"),
             models.Index(fields=["user", "question"], name="qna_upvote_user_q_idx"),
+            models.Index(fields=["question", "user"], name="qna_upvote_q_user_idx"),
         ]
 
     def __str__(self) -> str:
@@ -382,6 +385,7 @@ class QuestionGuestUpvote(models.Model):
         indexes = [
             models.Index(fields=["question", "created_at"], name="qna_guest_upvote_time_idx"),
             models.Index(fields=["guest", "question"], name="qna_guest_upvote_guest_q_idx"),
+            models.Index(fields=["question", "guest"], name="qna_guest_upvote_q_guest_idx"),
         ]
 
     def __str__(self) -> str:
@@ -516,6 +520,7 @@ class QnAReply(models.Model):
             models.Index(fields=["question", "created_at"], name="reply_q_created_idx"),
             models.Index(fields=["question", "id"], name="reply_q_id_idx"),
             models.Index(fields=["event", "moderation_status"], name="reply_event_status_idx"),
+            models.Index(fields=["event", "lounge_table", "id"], name="reply_evt_table_id_idx"),
         ]
         constraints = [
             models.CheckConstraint(
