@@ -356,36 +356,48 @@ class QuestionViewSet(viewsets.ModelViewSet):
         # Optional: Filter by specific lounge table (or None for main room)
         # Frontend should send ?lounge_table_id=123 (or empty/missing for main room)
         lounge_table_id = self.request.query_params.get("lounge_table_id")
-        
         user = self.request.user
+
+        qs = (
+            Question.objects
+            .select_related("event", "user", "guest_asker", "lounge_table", "feedback_by")
+            .prefetch_related("upvoters", "guest_upvotes__guest")
+        )
+
         if self._is_guest_user(user):
-            qs = (
-                Question.objects
-                .annotate(
-                    upvotes_count=Count("upvoters", distinct=True) + Count("guest_upvotes", distinct=True),
-                    user_upvoted=Exists(
-                        QuestionGuestUpvote.objects.filter(
-                            question=OuterRef("pk"),
-                            guest=user.guest,
-                        )
-                    ),
-                )
+            guest = getattr(user, "guest", None)
+            user_vote_subquery = QuestionGuestUpvote.objects.filter(
+                question=OuterRef("pk"),
+                pk__isnull=True,
             )
+            if guest:
+                user_vote_subquery = QuestionGuestUpvote.objects.filter(
+                    question=OuterRef("pk"),
+                    guest=guest,
+                )
         else:
-            qs = (
-                Question.objects
-                .annotate(
-                    upvotes_count=Count("upvoters", distinct=True) + Count("guest_upvotes", distinct=True),
-                    user_upvoted=Exists(
-                        QuestionUpvote.objects.filter(
-                            question=OuterRef("pk"),
-                            user=user
-                        )
-                    ),
-                )
+            user_vote_subquery = QuestionUpvote.objects.filter(
+                question=OuterRef("pk"),
+                user=user,
             )
+
+        qs = qs.annotate(
+            upvotes_count=Count("upvoters", distinct=True) + Count("guest_upvotes", distinct=True),
+            user_upvoted=Exists(user_vote_subquery),
+            replies_count=Count("replies", distinct=True),
+        )
+
         if event_id:
             qs = qs.filter(event_id=event_id)
+
+        # Optional reconnect sync: only rows changed after this timestamp.
+        updated_after = self.request.query_params.get("updated_after")
+        if updated_after:
+            from django.utils.dateparse import parse_datetime
+            parsed_updated_after = parse_datetime(updated_after)
+            if parsed_updated_after:
+                qs = qs.filter(updated_at__gt=parsed_updated_after)
+
         # Soft-deleted pre-event questions should never appear in generic Q&A feeds/counts.
         qs = qs.filter(is_deleted=False)
 
@@ -397,15 +409,19 @@ class QuestionViewSet(viewsets.ModelViewSet):
             # This ensures isolation: Main Room users see ONLY main room questions
             qs = qs.filter(lounge_table__isnull=True)
 
-        # Filter out hidden questions for non-hosts
-        # Hosts/admins can see all questions including hidden ones
-        # Also filter out non-approved questions when moderation is enabled
+        event = None
+        is_host = False
         if event_id:
             event = get_object_or_404(
                 __import__('events.models', fromlist=['Event']).Event,
-                id=event_id
+                id=event_id,
             )
-            is_host = self.request.user == event.created_by or getattr(self.request.user, "is_staff", False)
+            is_host = (
+                self.request.user == event.created_by
+                or getattr(self.request.user, "is_staff", False)
+                or getattr(self.request.user, "is_superuser", False)
+                or self._can_manage_event_qna(self.request.user, event)
+            )
             if not is_host:
                 qs = qs.filter(is_hidden=False)
                 # When moderation is enabled, only show approved questions to attendees
@@ -418,24 +434,20 @@ class QuestionViewSet(viewsets.ModelViewSet):
             qs = qs.filter(is_seed=True)
 
         # Optional: filter by submission_phase (pre_event or live) — host/admin only
-        if event_id:
-            event = event or get_object_or_404(
-                __import__('events.models', fromlist=['Event']).Event,
-                id=event_id
-            )
-            is_host = self.request.user == event.created_by or getattr(self.request.user, "is_staff", False)
-            phase_filter = self.request.query_params.get("submission_phase")
-            if phase_filter in ("pre_event", "live") and is_host:
-                qs = qs.filter(submission_phase=phase_filter)
+        phase_filter = self.request.query_params.get("submission_phase")
+        if phase_filter in ("pre_event", "live") and is_host:
+            qs = qs.filter(submission_phase=phase_filter)
 
-        # Support sort parameter: newest, manual, hot/most_voted (default)
-        sort = self.request.query_params.get("sort", "most_voted")
+        # Support sort parameter: newest, manual, hot/most_voted (default).
+        # Keep pinned questions first and answered questions at the bottom at the DB level
+        # so the first paginated page is already the correct global order.
+        sort = self.request.query_params.get("sort", "hot")
         if sort == "newest":
-            return qs.order_by("-created_at")
+            return qs.order_by("-is_pinned", "is_answered", "-id")
         elif sort == "manual":
-            return qs.order_by("display_order", "-created_at")
-        else:  # hot or most_voted
-            return qs.order_by("-upvotes_count", "-created_at")
+            return qs.order_by("-is_pinned", "is_answered", "display_order", "-id")
+        else:  # hot or most_voted: higher votes first, then newest
+            return qs.order_by("-is_pinned", "is_answered", "-upvotes_count", "-id")
 
     def perform_create(self, serializer):
         """
@@ -593,164 +605,101 @@ class QuestionViewSet(viewsets.ModelViewSet):
         else:
             logger.info(f"[AUTO-GROUP] Not enough questions ({ungrouped_count} < {threshold})")
 
+    @staticmethod
+    def _parse_positive_int(value, default, *, max_value=None):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        parsed = max(1, parsed)
+        if max_value is not None:
+            parsed = min(parsed, max_value)
+        return parsed
+
+    @staticmethod
+    def _wants_legacy_array_response(request) -> bool:
+        """
+        Legacy array responses are kept opt-in only for older admin/setup pages.
+        Live Meeting clients should use the cursor metadata response.
+        """
+        raw = str(request.query_params.get("legacy", "")).lower()
+        return raw in {"1", "true", "yes"}
+
     def list(self, request, *args, **kwargs):
-        from events.models import Event
-
-        event_id = request.query_params.get("event_id")
-        user = request.user
-
-        # Determine host status once for the whole list
-        is_host = False
-        event = None
-        if event_id:
-            try:
-                event = Event.objects.get(pk=event_id)
-                is_host = (user == event.created_by or getattr(user, "is_staff", False))
-            except Event.DoesNotExist:
-                pass
-
-        # Build replies prefetch: filter visibility for attendees
-        replies_qs = (
-            QnAReply.objects
-            .select_related("user", "user__profile", "guest_asker")
-            .prefetch_related("upvoters", "guest_upvotes")
-            .order_by("created_at")
-        )
-        if not is_host:
-            replies_qs = replies_qs.filter(is_hidden=False)
-            if event and event.qna_moderation_enabled:
-                replies_qs = replies_qs.filter(moderation_status="approved")
-
-        # Optimize query by selecting related user + prefetch replies
-        queryset = (
-            self.get_queryset()
-            .select_related("user", "user__profile", "guest_asker", "anonymized_by")
-            .prefetch_related(Prefetch("replies", queryset=replies_qs))
-        )
-
-        data = []
-        for q in queryset:
-            # Fetch upvoters with their details
-            upvoters = q.upvoters.all().values('id', 'username', 'first_name', 'last_name', 'email')
-            guest_upvoters = q.guest_upvotes.select_related("guest").values(
-                "guest_id", "guest__first_name", "guest__last_name", "guest__email"
-            )
-            upvoters_list = [
-                {
-                    'id': u['id'],
-                    'name': f"{u.get('first_name', '')} {u.get('last_name', '')}".strip() or u.get('username', f"User {u['id']}"),
-                    'username': u.get('username', ''),
-                }
-                for u in upvoters
-            ] + [
-                {
-                    "id": f"guest_{g['guest_id']}",
-                    "name": (
-                        f"{(g.get('guest__first_name') or '').strip()} {(g.get('guest__last_name') or '').strip()}".strip()
-                        or (g.get("guest__email", "").split("@")[0] if g.get("guest__email") else f"Guest {g['guest_id']}")
-                    ),
-                    "username": f"guest_{g['guest_id']}",
-                }
-                for g in guest_upvoters
-            ]
-
-            asker_snapshot = self._get_question_asker_snapshot(
-                q,
-                reveal_anonymous_name=is_host,
+        if not request.query_params.get("event_id"):
+            return Response(
+                {"detail": "event_id query parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-            # Seed questions use attribution_label as the display name
-            display_user_name = asker_snapshot["asker_name"]
-            if q.is_seed and q.attribution_label:
-                display_user_name = q.attribution_label
+        qs = self.filter_queryset(self.get_queryset())
 
-            # Serialize prefetched replies (no N+1 — uses prefetch cache)
-            replies_data = [
-                self._serialize_reply(r, is_host=is_host, user=user)
-                for r in q.replies.all()
-            ]
+        # Backward-compatible response shape, but still bounded to avoid accidental
+        # full-table payloads in production.
+        if self._wants_legacy_array_response(request):
+            legacy_limit = self._parse_positive_int(
+                request.query_params.get("limit"),
+                default=200,
+                max_value=500,
+            )
+            serializer = self.get_serializer(list(qs[:legacy_limit]), many=True)
+            return Response(serializer.data)
 
-            data.append({
-                "id": q.id,
-                "content": q.content,
-                "user_id": asker_snapshot["asker_id"],
-                "user_name": display_user_name,
-                "user_avatar_url": asker_snapshot["asker_avatar_url"],
-                "upvote_count": q.upvotes_count,  # annotated
-                "user_upvoted": q.user_upvoted,  # annotated boolean
-                "upvoters": upvoters_list,  # list of users who upvoted
-                "event_id": q.event_id,
-                "lounge_table_id": q.lounge_table_id,
-                "created_at": q.created_at.isoformat(),
-                "is_answered": q.is_answered,
-                "answered_at": q.answered_at.isoformat() if q.answered_at else None,
-                "answered_by": q.answered_by_id,
-                "answer_text": q.answer_text,
-                "answered_phase": q.answered_phase,
-                "requires_followup": q.requires_followup,
-                "is_pinned": q.is_pinned,
-                "pinned_at": q.pinned_at.isoformat() if q.pinned_at else None,
-                "is_anonymous": q.is_anonymous,
-                "anonymized_by": q.anonymized_by_id,
-                "display_order": q.display_order,
-                "is_seed": q.is_seed,
-                "attribution_label": q.attribution_label,
-                "submission_phase": q.submission_phase,
-                # speaker_note is only returned to the host
-                "speaker_note": q.speaker_note if (q.is_seed and is_host) else "",
-                # threaded replies
-                "replies": replies_data,
-                "reply_count": len(replies_data),
-            })
+        limit = self._parse_positive_int(
+            request.query_params.get("limit"),
+            default=10,
+            max_value=50,
+        )
 
-        # Add pending questions from Redis (not yet persisted to DB)
-        if event_id:
-            from events.redis_messages import get_pending_messages, get_question_from_redis
-            from django.contrib.auth import get_user_model
+        before_id = request.query_params.get("before_id")
+        after_id = request.query_params.get("after_id")
+        offset_param = request.query_params.get("offset")
 
-            User = get_user_model()
-            pending_uuids = get_pending_messages(int(event_id), is_qna=True)
-            for uuid in pending_uuids:
-                pending_q = get_question_from_redis(int(event_id), uuid)
-                if pending_q:
-                    # Only show pending questions to host or to the question asker
-                    show_pending = is_host
-                    asker_user_id = pending_q.get('user_id')
-                    if not show_pending and asker_user_id == user.id:
-                        show_pending = True
-                    if show_pending:
-                        # Get asker name from user object if available
-                        asker_name = "Anonymous"
-                        if asker_user_id:
-                            try:
-                                asker_user = User.objects.get(id=asker_user_id)
-                                asker_name = (asker_user.get_full_name() or asker_user.username or asker_user.email.split('@')[0] if asker_user.email else "User")
-                            except User.DoesNotExist:
-                                asker_name = f"User {asker_user_id}"
+        if after_id:
+            # Reconnect/new-message sync should always use ascending id order.
+            after_id = self._parse_positive_int(after_id, default=0)
+            rows = list(qs.filter(id__gt=after_id).order_by("id")[:limit])
+            has_more = False
+            newest_id = rows[-1].id if rows else None
+            oldest_id = rows[0].id if rows else None
+            next_offset = None
+        elif offset_param is not None:
+            # Offset mode is used by Live Meeting Q&A because the visible sort can be
+            # hot/votes/manual/newest. An id-only cursor breaks global ordering for
+            # vote-based sorts, so load-more appends the next slice of the same order.
+            offset = self._parse_positive_int(offset_param, default=0) - 1
+            offset = max(0, offset)
+            rows = list(qs[offset: offset + limit + 1])
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            newest_id = rows[0].id if rows else None
+            oldest_id = rows[-1].id if rows else None
+            next_offset = offset + len(rows) if has_more else None
+        else:
+            # Backward-compatible id cursor for clients that still request before_id.
+            if before_id:
+                before_id = self._parse_positive_int(before_id, default=0)
+                qs = qs.filter(id__lt=before_id)
 
-                        asker_snapshot = {
-                            "asker_id": asker_user_id,
-                            "asker_name": asker_name,
-                            "asker_avatar_url": "",
-                        }
-                        data.append({
-                            "id": None,
-                            "uuid": uuid,
-                            "content": pending_q.get('content', ''),
-                            "created_at": pending_q.get('created_at'),
-                            "is_hidden": False,
-                            "is_anonymous": pending_q.get('is_anonymous', False),
-                            "is_pinned": False,
-                            "upvote_count": 0,
-                            "asker": asker_snapshot,
-                            "status": "pending",
-                            "replies": [],
-                            "reply_count": 0,
-                        })
+            rows = list(qs[: limit + 1])
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            newest_id = rows[0].id if rows else None
+            oldest_id = rows[-1].id if rows else None
+            next_offset = len(rows) if has_more else None
 
-        # Sort by created_at descending
-        data.sort(key=lambda x: x.get('created_at', ''), reverse=True)
-        return Response(data)
+        serializer = self.get_serializer(rows, many=True)
+
+        return Response({
+            "results": serializer.data,
+            "count": len(rows),
+            "limit": limit,
+            "has_more": has_more,
+            "oldest_id": oldest_id,
+            "newest_id": newest_id,
+            "next_before_id": oldest_id if has_more and rows else None,
+            "next_offset": next_offset,
+        })
 
     @action(detail=False, methods=["get"], url_path="admin-pre-event")
     def admin_pre_event_questions(self, request):
@@ -2590,18 +2539,44 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 .filter(question=question)
                 .select_related("user", "user__profile", "guest_asker")
                 .prefetch_related("upvoters", "guest_upvotes")
-                .order_by("created_at")
             )
             if not is_host:
                 replies_qs = replies_qs.filter(is_hidden=False)
                 if event.qna_moderation_enabled:
                     replies_qs = replies_qs.filter(moderation_status="approved")
 
+            limit = self._parse_positive_int(
+                request.query_params.get("limit"),
+                default=20,
+                max_value=50,
+            )
+            before_id = request.query_params.get("before_id")
+            legacy = str(request.query_params.get("legacy", "")).lower() in {"1", "true", "yes"}
+
+            if before_id:
+                before_id = self._parse_positive_int(before_id, default=0)
+                replies_qs = replies_qs.filter(id__lt=before_id)
+
+            rows = list(replies_qs.order_by("-id")[: limit + 1])
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            rows_for_display = list(reversed(rows))  # keep oldest -> newest in UI
+
             data = [
                 self._serialize_reply(r, is_host=is_host, user=user)
-                for r in replies_qs
+                for r in rows_for_display
             ]
-            return Response(data, status=status.HTTP_200_OK)
+            if legacy:
+                return Response(data, status=status.HTTP_200_OK)
+            return Response({
+                "results": data,
+                "count": len(data),
+                "limit": limit,
+                "has_more": has_more,
+                "oldest_id": rows[-1].id if rows else None,
+                "newest_id": rows[0].id if rows else None,
+                "next_before_id": rows[-1].id if has_more and rows else None,
+            }, status=status.HTTP_200_OK)
 
         # ── POST: create reply ───────────────────────────────────────────────
         content = (request.data.get("content") or "").strip()

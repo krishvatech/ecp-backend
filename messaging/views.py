@@ -1202,6 +1202,22 @@ class MessageViewSet(
     def _is_guest_user(user) -> bool:
         return bool(getattr(user, "is_guest", False))
 
+    @staticmethod
+    def _parse_positive_int(value, default, *, max_value=None):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        parsed = max(1, parsed)
+        if max_value is not None:
+            parsed = min(parsed, max_value)
+        return parsed
+
+    @staticmethod
+    def _wants_cursor_response(request) -> bool:
+        raw = str(request.query_params.get("cursor", "")).lower()
+        return raw in {"1", "true", "yes"}
+
     def _get_conversation_id(self):
         # Accept common kwarg names from DRF-Nested or custom routers
         conv_id = (
@@ -1238,8 +1254,43 @@ class MessageViewSet(
     
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset()
-        ser = MessageSerializer(qs, many=True, context={"request": request})
-        return Response(ser.data)
+
+        limit = self._parse_positive_int(
+            request.query_params.get("limit"),
+            default=10,
+            max_value=50,
+        )
+
+        before_id = request.query_params.get("before_id")
+        after_id = request.query_params.get("after_id")
+
+        if after_id:
+            after_id = self._parse_positive_int(after_id, default=0)
+            rows = list(qs.filter(id__gt=after_id).order_by("id")[:limit])
+            has_more = False
+        else:
+            if before_id:
+                before_id = self._parse_positive_int(before_id, default=0)
+                qs = qs.filter(id__lt=before_id)
+
+            rows = list(qs.order_by("-id")[: limit + 1])
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            rows.reverse()
+
+        serializer = self.get_serializer(rows, many=True)
+        data = serializer.data
+
+        if not self._wants_cursor_response(request):
+            return Response(data)
+
+        return Response({
+            "results": data,
+            "has_more": has_more,
+            "oldest_id": rows[0].id if rows else None,
+            "newest_id": rows[-1].id if rows else None,
+            "next_before_id": rows[0].id if has_more and rows else None,
+        })
 
     def create(self, request, *args, **kwargs):
         # 1. Resolve Conversation & Permissions

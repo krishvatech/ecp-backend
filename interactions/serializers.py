@@ -13,6 +13,10 @@ from .models import (
 
 class QuestionSerializer(serializers.ModelSerializer):
     user_display = serializers.SerializerMethodField(read_only=True)
+    upvote_count = serializers.SerializerMethodField(read_only=True)
+    user_upvoted = serializers.SerializerMethodField(read_only=True)
+    upvoters = serializers.SerializerMethodField(read_only=True)
+    reply_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Question
@@ -47,8 +51,75 @@ class QuestionSerializer(serializers.ModelSerializer):
             "feedback_message",
             "feedback_by",
             "feedback_at",
+            "upvote_count",
+            "user_upvoted",
+            "upvoters",
+            "reply_count",
         ]
-        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at", "moderation_status", "rejection_reason", "is_answered", "answered_at", "answered_by", "answer_text", "answered_phase", "requires_followup", "is_anonymous", "anonymized_by", "is_seed", "attribution_label", "submission_phase", "covered_by_group", "grouped_answer_parent", "feedback_message", "feedback_by", "feedback_at"]
+        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at", "moderation_status", "rejection_reason", "is_answered", "answered_at", "answered_by", "answer_text", "answered_phase", "requires_followup", "is_anonymous", "anonymized_by", "is_seed", "attribution_label", "submission_phase", "covered_by_group", "grouped_answer_parent", "feedback_message", "feedback_by", "feedback_at", "upvote_count", "user_upvoted", "upvoters", "reply_count"]
+
+    def get_upvote_count(self, obj):
+        annotated = getattr(obj, "upvotes_count", None)
+        if annotated is not None:
+            return int(annotated)
+        return obj.upvoters.count() + obj.guest_upvotes.count()
+
+    def get_user_upvoted(self, obj):
+        annotated = getattr(obj, "user_upvoted", None)
+        if annotated is not None:
+            return bool(annotated)
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        if not user or not getattr(user, "is_authenticated", False):
+            return False
+
+        if getattr(user, "is_guest", False):
+            guest = getattr(user, "guest", None)
+            if not guest:
+                return False
+            return obj.guest_upvotes.filter(guest=guest).exists()
+
+        return obj.upvoters.filter(id=user.id).exists()
+
+    def get_upvoters(self, obj):
+        """
+        Host/admin tooltip data. Attendees still receive an empty list, while
+        upvote_count remains available for all users.
+        """
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        if not user or not getattr(user, "is_authenticated", False):
+            return []
+
+        is_manager = bool(getattr(user, "is_staff", False) or getattr(user, "is_superuser", False))
+        event = getattr(obj, "event", None)
+        if event is not None:
+            is_manager = is_manager or getattr(event, "created_by_id", None) == getattr(user, "id", None)
+
+        if not is_manager:
+            return []
+
+        rows = []
+        for u in obj.upvoters.all()[:20]:
+            name = (f"{getattr(u, 'first_name', '')} {getattr(u, 'last_name', '')}".strip()
+                    or getattr(u, "username", "")
+                    or getattr(u, "email", "")
+                    or f"User {u.id}")
+            rows.append({"id": u.id, "name": name})
+
+        for gu in obj.guest_upvotes.all()[:20]:
+            guest = getattr(gu, "guest", None)
+            name = guest.get_display_name() if guest and hasattr(guest, "get_display_name") else f"Guest {getattr(gu, 'guest_id', '')}"
+            rows.append({"id": f"guest_{getattr(gu, 'guest_id', '')}", "name": name})
+
+        return rows
+
+    def get_reply_count(self, obj):
+        annotated = getattr(obj, "replies_count", None)
+        if annotated is not None:
+            return int(annotated)
+        return obj.replies.count()
 
     def get_user_display(self, obj):
         if getattr(obj, "guest_asker", None):

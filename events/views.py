@@ -281,6 +281,45 @@ def _rtk_headers():
     }
 
 
+RTK_JOIN_TOKEN_CACHE_TTL_SECONDS = int(
+    getattr(settings, "LIVE_RTK_JOIN_TOKEN_CACHE_TTL_SECONDS", 180) or 180
+)
+
+
+def _rtk_join_cache_key(event_id, actor_key, role, room_type="main_room"):
+    """Small idempotency cache for RTK/Dyte join bursts.
+
+    During browser refresh/reconnect, the frontend can call rtk/join multiple
+    times before roomJoined is fired. This cache avoids repeatedly calling the
+    external RTK Add Participant API for the same event/user/role.
+    """
+    safe_actor = str(actor_key).replace(":", "_")
+    safe_role = str(role or "audience").replace(":", "_")
+    safe_room = str(room_type or "main_room").replace(":", "_")
+    return f"event:{event_id}:rtk_join_token:{safe_actor}:{safe_role}:{safe_room}:v1"
+
+
+def _get_cached_rtk_join_payload(event_id, actor_key, role, room_type="main_room"):
+    payload = cache.get(_rtk_join_cache_key(event_id, actor_key, role, room_type))
+    if not isinstance(payload, dict):
+        return None
+    if not payload.get("authToken") or not payload.get("meetingId"):
+        return None
+    return dict(payload)
+
+
+def _set_cached_rtk_join_payload(event_id, actor_key, role, payload, room_type="main_room"):
+    if not isinstance(payload, dict):
+        return
+    if not payload.get("authToken") or not payload.get("meetingId"):
+        return
+    cache.set(
+        _rtk_join_cache_key(event_id, actor_key, role, room_type),
+        dict(payload),
+        timeout=max(30, RTK_JOIN_TOKEN_CACHE_TTL_SECONDS),
+    )
+
+
 def _ensure_rtk_meeting_for_event(event: Event) -> str:
     """
     Ensure this Event has a RTK meeting.
@@ -1184,7 +1223,7 @@ def _serialize_event_live_context(event, request=None) -> dict:
     data.update({
         "current_user_live_role": current_user_live_role,
         "current_user_role": current_user_live_role,
-        "event_participant_roles": _serialize_event_participant_roles(event),
+        "event_participant_roles": _serialize_event_participant_roles(event) if is_manager else [],
         "is_owner": is_owner,
         "is_host": is_host,
         "is_moderator": is_moderator,
@@ -2246,7 +2285,50 @@ class EventViewSet(viewsets.ModelViewSet):
         # Check if requester is staff/manager to determine kyc_status visibility
         is_manager = _is_event_manager(request.user, event)
 
-        # ✅ PHASE 4: Fetch registered participants (main user list)
+        wants_cursor = str(request.query_params.get("cursor", "")).lower() in {"1", "true", "yes"}
+        if wants_cursor:
+            try:
+                limit = int(request.query_params.get("limit") or 100)
+            except (TypeError, ValueError):
+                limit = 100
+            limit = max(1, min(limit, 200))
+            try:
+                after_id = int(request.query_params.get("after_id") or 0)
+            except (TypeError, ValueError):
+                after_id = 0
+
+            registered_qs = EventRegistration.objects.filter(
+                event=event,
+                status__in=['registered', 'accepted'],
+                user_id__gt=after_id,
+            ).order_by('user_id').values_list(
+                'user_id', 'user__first_name', 'user__last_name',
+                'user__image', 'current_location'
+            )[: limit + 1]
+
+            registered_rows = list(registered_qs)
+            has_more = len(registered_rows) > limit
+            registered_rows = registered_rows[:limit]
+
+            for user_id, first_name, last_name, avatar_url, current_location in registered_rows:
+                name = f"{first_name} {last_name}".strip() if first_name or last_name else f"User {user_id}"
+                participants_data.append({
+                    'id': user_id,
+                    'name': name,
+                    'avatar': avatar_url,
+                    'kyc_status': None,
+                    'current_location': current_location or 'main_room'
+                })
+
+            return Response({
+                'results': participants_data,
+                'count': len(participants_data),
+                'limit': limit,
+                'has_more': has_more,
+                'next_after_id': registered_rows[-1][0] if has_more and registered_rows else None,
+            })
+
+        # ✅ Legacy compatibility path: existing array response shape.
         registered = EventRegistration.objects.filter(
             event=event,
             status__in=['registered', 'accepted']  # Include both statuses
@@ -9100,10 +9182,10 @@ class EventViewSet(viewsets.ModelViewSet):
 
             # Respect waiting-room gate for guests.
             # Guests may join main room only after host admission toggles them to main_room.
-            if event.waiting_room_enabled and (
-                guest.current_location != "main_room" or not guest.joined_live
-            ):
+            if event.waiting_room_enabled and guest.current_location != "main_room":
                 # Ensure they are explicitly in waiting state for host controls/listing.
+                # Do not require joined_live here: joined_live must only be set after
+                # frontend confirms RTK roomJoined via rtk/confirm-joined.
                 if guest.current_location != "waiting_room":
                     guest.current_location = "waiting_room"
                     guest.lounge_table = None
@@ -9132,6 +9214,18 @@ class EventViewSet(viewsets.ModelViewSet):
 
             # 2) Add guest as participant (always audience preset, never host)
             rtk_participant_id = f"guest_{guest.id}"
+            cached_join = _get_cached_rtk_join_payload(
+                event.id, f"guest:{guest.id}", "audience", "main_room"
+            )
+            if cached_join:
+                cached_join.update({
+                    "isOnBreak": bool(event.is_on_break),
+                    "mediaLockActive": bool(event.is_on_break),
+                    "admissionStatus": "admitted",
+                    "cached": True,
+                })
+                return Response(cached_join)
+
             rtk_resp = add_rtk_participant(
                 meeting_id=meeting_id,
                 user_id=rtk_participant_id,
@@ -9158,26 +9252,30 @@ class EventViewSet(viewsets.ModelViewSet):
                         status=500,
                     )
 
-            # 3) Update guest participation tracking
-            guest.joined_live = True
-            guest.joined_live_at = timezone.now()
+            # 3) Store only RTK identity here. Do NOT mark joined_live in rtk/join.
+            # rtk/join means token issued; real presence is confirmed by rtk/confirm-joined
+            # after the RTK SDK fires roomJoined.
             guest.rtk_participant_id = participant_id
-            guest.current_location = "main_room"
-            guest.lounge_table = None
-            guest.save(update_fields=[
-                "joined_live", "joined_live_at", "rtk_participant_id", "current_location", "lounge_table"
-            ])
+            guest.save(update_fields=["rtk_participant_id"])
 
-            logger.info(f"Guest {guest.email} joined meeting {meeting_id}")
-
-            return Response({
+            response_payload = {
                 "authToken": auth_token,
                 "meetingId": meeting_id,
                 "presetName": RTK_PRESET_PARTICIPANT,
                 "role": "audience",
                 "isGuest": True,
                 "guestName": guest.get_display_name(),
-            })
+                "isOnBreak": bool(event.is_on_break),
+                "mediaLockActive": bool(event.is_on_break),
+                "admissionStatus": "admitted",
+            }
+            _set_cached_rtk_join_payload(
+                event.id, f"guest:{guest.id}", "audience", response_payload, "main_room"
+            )
+
+            logger.info(f"Guest {guest.email} received RTK token for meeting {meeting_id}")
+
+            return Response(response_payload)
         # ──── END GUEST BRANCH ──────────────────────────────────────────────────
 
         # 1) Ensure meeting exists
@@ -9441,7 +9539,48 @@ class EventViewSet(viewsets.ModelViewSet):
                     status=200,
                 )
 
-        # 3) Prepare participant payload
+        # 3) Reuse short-lived RTK token for reconnect/refresh bursts.
+        # This keeps rtk/join idempotent and avoids repeated external RTK calls.
+        cached_join = _get_cached_rtk_join_payload(
+            event.id, f"user:{user.id}", role_string, "main_room"
+        )
+        if cached_join:
+            # Preserve the existing side-effect: user leaving lounge to join main room
+            # should clear their lounge occupancy even when the RTK token is cached.
+            try:
+                from .models import LoungeParticipant
+                deleted_count, _ = LoungeParticipant.objects.filter(
+                    user=user,
+                    table__event=event
+                ).delete()
+                if deleted_count > 0:
+                    logger.info(
+                        f"[RTK_JOIN] Removed user {user.id} from lounge ({deleted_count} table(s)) using cached RTK token"
+                    )
+            except Exception as e:
+                logger.warning(f"[RTK_JOIN] Failed to remove user from lounge while using cached token: {e}")
+
+            is_grace_period_join = False
+            if event.waiting_room_enabled and event.start_time:
+                now = timezone.now()
+                grace_minutes = (
+                    event.waiting_room_grace_period_minutes
+                    if event.waiting_room_grace_period_minutes is not None
+                    else 10
+                )
+                grace_period_end = event.start_time + timezone.timedelta(minutes=grace_minutes)
+                is_grace_period_join = event.start_time <= now < grace_period_end
+
+            cached_join.update({
+                "isOnBreak": bool(event.is_on_break),
+                "mediaLockActive": bool(event.is_on_break),
+                "gracePeriodAdmitted": is_grace_period_join,
+                "admissionStatus": "admitted",
+                "cached": True,
+            })
+            return Response(cached_join)
+
+        # 4) Prepare participant payload
         profile = getattr(user, "profile", None)
         name = (getattr(profile, "full_name", "") if profile else "") or getattr(user, "get_full_name", lambda: "")() or user.username
         picture = ""
@@ -9459,7 +9598,7 @@ class EventViewSet(viewsets.ModelViewSet):
         if picture:
             body["picture"] = picture
 
-        # 4) Call RTK Add Participant API
+        # 5) Call RTK Add Participant API
         try:
             resp = requests.post(
                 f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
@@ -9549,18 +9688,21 @@ class EventViewSet(viewsets.ModelViewSet):
 
         logger.info(f"[RTK_JOIN] User {user.id} successfully joined event {event.id} (query optimizations: consolidated registration fetches and saves)")
 
-        return Response(
-            {
-                "authToken": auth_token,
-                "meetingId": meeting_id,
-                "presetName": preset_name,
-                "role": role_string,
-                "isOnBreak": bool(event.is_on_break),
-                "mediaLockActive": bool(event.is_on_break),
-                "gracePeriodAdmitted": is_grace_period_join,
-                "admissionStatus": "admitted",
-            }
+        response_payload = {
+            "authToken": auth_token,
+            "meetingId": meeting_id,
+            "presetName": preset_name,
+            "role": role_string,
+            "isOnBreak": bool(event.is_on_break),
+            "mediaLockActive": bool(event.is_on_break),
+            "gracePeriodAdmitted": is_grace_period_join,
+            "admissionStatus": "admitted",
+        }
+        _set_cached_rtk_join_payload(
+            event.id, f"user:{user.id}", role_string, response_payload, "main_room"
         )
+
+        return Response(response_payload)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="rtk/confirm-joined")
     def rtk_confirm_joined(self, request, pk=None):
@@ -9597,7 +9739,11 @@ class EventViewSet(viewsets.ModelViewSet):
             guest.joined_live = True
             guest.joined_live_at = guest.joined_live_at or timezone.now()
             guest.current_location = room_type
-            guest.save(update_fields=["joined_live", "joined_live_at", "current_location"])
+            update_fields = ["joined_live", "joined_live_at", "current_location"]
+            if room_type == "main_room":
+                guest.lounge_table = None
+                update_fields.append("lounge_table")
+            guest.save(update_fields=update_fields)
 
             logger.info(f"[RTK_CONFIRM_JOINED] Guest {guest.id} confirmed joined in {room_type}")
             return Response({"ok": True, "joined_live": True})
@@ -10277,8 +10423,6 @@ class EventViewSet(viewsets.ModelViewSet):
         updated_guests = guest_qs.update(
             current_location="main_room",
             lounge_table=None,
-            joined_live=True,
-            joined_live_at=timezone.now(),
         )
 
         # ✅ NEW: Remove admitted users from LoungeParticipant table (lounge context)

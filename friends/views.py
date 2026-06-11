@@ -174,9 +174,14 @@ class FriendshipViewSet(
         Friends-of-friends suggestions for the logged-in user.
         Excludes: self, already-friends. Sorted by mutual friend count (desc).
         Query params:
-          - limit: int (default 12, max 50)
+          - limit: int (default 12, max 50) — for backward compatibility
+          - page: int (default 1) — for pagination mode
+          - page_size: int (default 20, max 50) — for pagination mode
           - q: optional search on username/first/last/email
-        Output items are shaped for your UI: {id, name, avatar, mutuals, kyc_status}
+
+        Response format:
+          - If no page param: returns array (backward compatible)
+          - If page param: returns paginated object {results, page, page_size, has_next, next}
         """
         me = request.user
 
@@ -195,6 +200,9 @@ class FriendshipViewSet(
 
         def _kyc_status(u):
             return getattr(getattr(u, "profile", None), "kyc_status", None)
+
+        # Determine if pagination mode or legacy mode
+        has_page_param = "page" in request.query_params
 
         # 1) my friend ids
         my_pairs = Friendship.objects.filter(Q(user1=me) | Q(user2=me))
@@ -231,28 +239,63 @@ class FriendshipViewSet(
             related_ids.add(me.id)
             base = base.exclude(id__in=related_ids)
 
-            # Respect ?limit= (default 12, max 50)
-            try:
-                limit = int(request.query_params.get("limit", 12))
-            except ValueError:
-                limit = 12
-            limit = max(1, min(limit, 50))
-
             # Newest-ish first (fallback to id)
-            base = base.order_by("-id")[:limit]
+            base = base.order_by("-id")
 
-            data = [
-                {
-                    "id": u.id,
-                    "name": _name(u),
-                    "avatar": _avatar(u),
-                    "mutuals": 0,
-                    "kyc_status": _kyc_status(u),
-                }
-                for u in base
-            ]
-            return Response(data)
+            # Handle pagination vs legacy mode
+            if has_page_param:
+                try:
+                    page = max(1, int(request.query_params.get("page", 1)))
+                    page_size = int(request.query_params.get("page_size", 10))
+                except ValueError:
+                    page = 1
+                    page_size = 10
+                page_size = max(1, min(page_size, 50))
 
+                offset = (page - 1) * page_size
+                # Fetch one extra to determine has_next
+                results = list(base[offset : offset + page_size + 1])
+                has_next = len(results) > page_size
+                results = results[:page_size]
+
+                data = [
+                    {
+                        "id": u.id,
+                        "name": _name(u),
+                        "avatar": _avatar(u),
+                        "mutuals": 0,
+                        "kyc_status": _kyc_status(u),
+                    }
+                    for u in results
+                ]
+
+                return Response({
+                    "results": data,
+                    "page": page,
+                    "page_size": page_size,
+                    "has_next": has_next,
+                    "next": page + 1 if has_next else None,
+                })
+            else:
+                # Legacy: limit mode
+                try:
+                    limit = int(request.query_params.get("limit", 12))
+                except ValueError:
+                    limit = 12
+                limit = max(1, min(limit, 50))
+
+                results = list(base[:limit])
+                data = [
+                    {
+                        "id": u.id,
+                        "name": _name(u),
+                        "avatar": _avatar(u),
+                        "mutuals": 0,
+                        "kyc_status": _kyc_status(u),
+                    }
+                    for u in results
+                ]
+                return Response(data)
 
         # 2) users who are connected to any of my friends (FoF)
         BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
@@ -294,25 +337,60 @@ class FriendshipViewSet(
                 Q(email__icontains=q)
             )
 
-        # 5) cap results
-        try:
-            limit = int(request.query_params.get("limit", 12))
-        except ValueError:
-            limit = 12
-        limit = max(1, min(limit, 50))
-        qs = qs[:limit]
+        # 5) pagination vs legacy
+        if has_page_param:
+            try:
+                page = max(1, int(request.query_params.get("page", 1)))
+                page_size = int(request.query_params.get("page_size", 10))
+            except ValueError:
+                page = 1
+                page_size = 10
+            page_size = max(1, min(page_size, 50))
 
-        data = [
-            {
-                "id": u.id,
-                "name": _name(u),
-                "avatar": _avatar(u),
-                "mutuals": int(getattr(u, "mutuals", 0)),
-                "kyc_status": _kyc_status(u),
-            }
-            for u in qs
-        ]
-        return Response(data)
+            offset = (page - 1) * page_size
+            # Fetch one extra to determine has_next
+            results = list(qs[offset : offset + page_size + 1])
+            has_next = len(results) > page_size
+            results = results[:page_size]
+
+            data = [
+                {
+                    "id": u.id,
+                    "name": _name(u),
+                    "avatar": _avatar(u),
+                    "mutuals": int(getattr(u, "mutuals", 0)),
+                    "kyc_status": _kyc_status(u),
+                }
+                for u in results
+            ]
+
+            return Response({
+                "results": data,
+                "page": page,
+                "page_size": page_size,
+                "has_next": has_next,
+                "next": page + 1 if has_next else None,
+            })
+        else:
+            # Legacy: limit mode
+            try:
+                limit = int(request.query_params.get("limit", 12))
+            except ValueError:
+                limit = 12
+            limit = max(1, min(limit, 50))
+
+            results = list(qs[:limit])
+            data = [
+                {
+                    "id": u.id,
+                    "name": _name(u),
+                    "avatar": _avatar(u),
+                    "mutuals": int(getattr(u, "mutuals", 0)),
+                    "kyc_status": _kyc_status(u),
+                }
+                for u in results
+            ]
+            return Response(data)
 
 
     @action(detail=False, methods=["get"], url_path="mutual")

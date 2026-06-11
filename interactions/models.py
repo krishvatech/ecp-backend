@@ -57,6 +57,14 @@ class ChatMessage(models.Model):
         help_text="User who authored the message.",
     )
     content = models.TextField(help_text="Message content.")
+    external_id = models.CharField(
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Client/Redis UUID used to make async persistence idempotent.",
+    )
     created_at = models.DateTimeField(auto_now_add=True, help_text="Creation timestamp.")
     updated_at = models.DateTimeField(auto_now=True, help_text="Last update timestamp.")
 
@@ -64,6 +72,7 @@ class ChatMessage(models.Model):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["event", "-created_at"], name="chat_event_created_idx"),
+            models.Index(fields=["event", "id"], name="chat_event_id_idx"),
         ]
         verbose_name = "Chat message"
         verbose_name_plural = "Chat messages"
@@ -113,6 +122,14 @@ class Question(models.Model):
         help_text="Guest attendee who asked the question.",
     )
     content = models.TextField(help_text="Question text.")
+    external_id = models.CharField(
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Client/Redis UUID used to make async persistence idempotent.",
+    )
     created_at = models.DateTimeField(auto_now_add=True, help_text="Creation timestamp.")
     updated_at = models.DateTimeField(auto_now=True, help_text="Last update timestamp.")
     upvoters = models.ManyToManyField(
@@ -307,6 +324,10 @@ class Question(models.Model):
             models.Index(fields=["event", "submission_phase"], name="qna_event_phase_idx"),
             models.Index(fields=["event", "answered_phase"], name="qna_event_answered_phase_idx"),
             models.Index(fields=["event", "user", "submission_phase"], name="qna_event_user_phase_idx"),
+            models.Index(fields=["event", "id"], name="qna_event_id_idx"),
+            models.Index(fields=["event", "-id"], name="qna_event_desc_id_idx"),
+            models.Index(fields=["event", "lounge_table", "id"], name="qna_event_table_id_idx"),
+            models.Index(fields=["event", "lounge_table", "-id"], name="qna_event_table_desc_id_idx"),
         ]
         constraints = [
             models.CheckConstraint(
@@ -431,6 +452,14 @@ class QnAReply(models.Model):
         help_text="Guest attendee who authored the reply.",
     )
     content = models.TextField(help_text="Reply text content.")
+    external_id = models.CharField(
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Client/Redis UUID used to make async persistence idempotent.",
+    )
     created_at = models.DateTimeField(auto_now_add=True, help_text="Creation timestamp.")
     updated_at = models.DateTimeField(auto_now=True, help_text="Last update timestamp.")
     upvoters = models.ManyToManyField(
@@ -485,6 +514,7 @@ class QnAReply(models.Model):
         ordering = ["created_at"]
         indexes = [
             models.Index(fields=["question", "created_at"], name="reply_q_created_idx"),
+            models.Index(fields=["question", "id"], name="reply_q_id_idx"),
             models.Index(fields=["event", "moderation_status"], name="reply_event_status_idx"),
         ]
         constraints = [
