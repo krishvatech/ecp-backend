@@ -253,6 +253,7 @@ class Message(models.Model):
         max_length=255,
         null=True,
         blank=True,
+        db_index=True,
         help_text="RealtimeKit chat message id (id column from CSV)",
     )
 
@@ -267,7 +268,10 @@ class Message(models.Model):
         indexes = [
             models.Index(fields=["conversation", "id"], name="msg_conv_id_idx"),
             models.Index(fields=["conversation", "created_at"], name="msg_conv_created_idx"),
+            models.Index(fields=["conversation", "-created_at"], name="msg_conv_created_desc_idx"),
             models.Index(fields=["conversation", "is_hidden", "is_deleted", "id"], name="msg_conv_visible_idx"),
+            models.Index(fields=["sender", "created_at"], name="msg_sender_created_idx"),
+            models.Index(fields=["event", "created_at"], name="msg_event_created_idx"),
         ]
 
 # --- NEW ---

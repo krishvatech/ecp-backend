@@ -29,10 +29,11 @@ from .permissions import IsConversationParticipant
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
-from events.models import Event, EventRegistration, NetworkingMeeting
+from events.models import Event, EventRegistration, EventParticipant, NetworkingMeeting
 from friends.models import Friendship
 from rest_framework.exceptions import PermissionDenied
 import logging
+from common.live_metrics import live_metric_incr
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,63 @@ class ConversationViewSet(viewsets.ViewSet):
     def _deny_guest(self, request):
         if self._is_guest_user(request.user):
             raise PermissionDenied("Messaging is unavailable for guest users.")
+
+
+    def _event_live_dm_allowed(self, *, user, recipient_id, event_id) -> bool:
+        """
+        Allow 1:1 private chat from Live Meeting participants panel.
+
+        Existing global DM rule stays unchanged:
+        - friends can always message
+        - accepted networking meeting can message
+
+        This helper only opens DM when the request is scoped to a real event and
+        both users are allowed participants/staff for that same event.
+        """
+        if not event_id:
+            return False
+
+        try:
+            event_id = int(event_id)
+        except (TypeError, ValueError):
+            return False
+
+        try:
+            event = Event.objects.select_related("community", "created_by").get(pk=event_id)
+        except Event.DoesNotExist:
+            return False
+
+        def can_access_event_chat(check_user_id):
+            if not check_user_id:
+                return False
+
+            # Event creator / platform staff / community owner can chat in their live event.
+            if check_user_id == event.created_by_id:
+                return True
+
+            if User.objects.filter(pk=check_user_id, is_staff=True).exists():
+                return True
+
+            if getattr(event.community, "owner_id", None) == check_user_id:
+                return True
+
+            # Explicit event staff (host/moderator/speaker) can chat inside this event.
+            if EventParticipant.objects.filter(
+                event_id=event_id,
+                user_id=check_user_id,
+                participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+            ).exists():
+                return True
+
+            # Normal attendees must have an active, non-banned registration.
+            return EventRegistration.objects.filter(
+                event_id=event_id,
+                user_id=check_user_id,
+                status="registered",
+                is_banned=False,
+            ).exists()
+
+        return can_access_event_chat(user.id) and can_access_event_chat(recipient_id)
 
     def get_queryset(self, request):
         user = request.user
@@ -622,53 +680,69 @@ class ConversationViewSet(viewsets.ViewSet):
         are_friends = Friendship.are_friends(user.id, recipient_id)
 
         if not are_friends:
-            # Non-friends must have an accepted networking meeting
-            meeting_id = request.data.get("meeting_id")
+            # Non-friends can message from Live Meeting only when both users
+            # belong to the same event. The frontend must send event_id for this
+            # path, so normal platform DM privacy remains unchanged.
+            event_id = (
+                request.data.get("event_id")
+                or request.data.get("live_event_id")
+                or request.data.get("event")
+            )
+            if self._event_live_dm_allowed(
+                user=user,
+                recipient_id=recipient_id,
+                event_id=event_id,
+            ):
+                meeting_id = None
+            else:
+                # Non-friends outside Live Meeting must have an accepted networking meeting.
+                meeting_id = request.data.get("meeting_id")
 
-            if not meeting_id:
-                raise PermissionDenied(
-                    "You can only message this user after a confirmed 1:1 meeting."
+                if not meeting_id:
+                    raise PermissionDenied(
+                        "You can only message this user after a confirmed 1:1 meeting or inside the same live event."
+                    )
+
+            if meeting_id:
+                try:
+                    meeting_id = int(meeting_id)
+                except (TypeError, ValueError):
+                    raise ValidationError({"meeting_id": "Invalid meeting ID."})
+
+                # Validate meeting exists, is accepted, and includes both users
+                try:
+                    meeting = NetworkingMeeting.objects.get(
+                        pk=meeting_id,
+                        status="accepted"
+                    )
+                except NetworkingMeeting.DoesNotExist:
+                    raise PermissionDenied(
+                        "Meeting not found or not accepted."
+                    )
+
+                # Validate current user is one side and recipient is the other
+                current_user_is_requester = (
+                    meeting.requester.user_id == user.id
+                )
+                current_user_is_recipient = (
+                    meeting.recipient.user_id == user.id
+                )
+                recipient_is_requester = (
+                    meeting.requester.user_id == recipient_id
+                )
+                recipient_is_recipient = (
+                    meeting.recipient.user_id == recipient_id
                 )
 
-            try:
-                meeting_id = int(meeting_id)
-            except (TypeError, ValueError):
-                raise ValidationError({"meeting_id": "Invalid meeting ID."})
-
-            # Validate meeting exists, is accepted, and includes both users
-            try:
-                meeting = NetworkingMeeting.objects.get(
-                    pk=meeting_id,
-                    status="accepted"
-                )
-            except NetworkingMeeting.DoesNotExist:
-                raise PermissionDenied(
-                    "Meeting not found or not accepted."
+                is_valid_meeting = (
+                    (current_user_is_requester and recipient_is_recipient) or
+                    (current_user_is_recipient and recipient_is_requester)
                 )
 
-            # Validate current user is one side and recipient is the other
-            current_user_is_requester = (
-                meeting.requester.user_id == user.id
-            )
-            current_user_is_recipient = (
-                meeting.recipient.user_id == user.id
-            )
-            recipient_is_requester = (
-                meeting.requester.user_id == recipient_id
-            )
-            recipient_is_recipient = (
-                meeting.recipient.user_id == recipient_id
-            )
-
-            is_valid_meeting = (
-                (current_user_is_requester and recipient_is_recipient) or
-                (current_user_is_recipient and recipient_is_requester)
-            )
-
-            if not is_valid_meeting:
-                raise PermissionDenied(
-                    "This meeting does not involve both users."
-                )
+                if not is_valid_meeting:
+                    raise PermissionDenied(
+                        "This meeting does not involve both users."
+                    )
 
         user_ids = sorted([user.id, recipient_id])
 
@@ -1382,6 +1456,8 @@ class MessageViewSet(
                 attachments=uploaded_attachments,
                 event=message_event,
             )
+
+        live_metric_incr("chat_message_created", event_id=getattr(message_event, "id", None) or getattr(conv, "event_id", None))
 
         # 5. Return Response
         serializer = self.get_serializer(message)

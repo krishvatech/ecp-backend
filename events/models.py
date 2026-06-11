@@ -977,6 +977,10 @@ class EventRegistration(models.Model):
             models.Index(fields=['event', 'user']),
             models.Index(fields=['user']),
             models.Index(fields=["event", "user", "status", "is_banned"], name="evtreg_user_status_ban_idx"),
+            models.Index(fields=["event", "status", "user"], name="evtreg_event_status_user_idx"),
+            models.Index(fields=["event", "joined_live", "id"], name="evtreg_joined_live_idx"),
+            models.Index(fields=["event", "is_online", "id"], name="evtreg_online_idx"),
+            models.Index(fields=["event", "current_location", "id"], name="evtreg_location_idx"),
             models.Index(fields=["event", "admission_status", "waiting_started_at"], name="evtreg_wait_queue_idx"),
         ]
     def __str__(self):
