@@ -210,6 +210,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             self._cache_key_ws_lounge_state(),
             self._cache_key_http_lounge_state(),
             self._cache_key_moods(),
+            f"event:{self.event_id}:online_presence_counts:v1",
         ])
 
     async def invalidate_lounge_presence_cache(self) -> None:
@@ -441,8 +442,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         # Handle late joiners joining during active breakout sessions
         await self.handle_late_joiner_join()
 
-        # Send welcome message with current lounge state
-        lounge_state = await self.get_lounge_state()
+        # Send a lightweight welcome message.
+        # Do not attach full lounge_state/online_users here; those payloads can be
+        # very large and become O(N²) during reconnect/join bursts. The frontend
+        # already fetches lounge state lazily when the lounge UI is opened, and
+        # coalesced websocket updates still keep active lounge UIs fresh.
         await self.update_online_status(True)
         # ✅  : Store location in Redis instead of syncing to DB
         await self.set_user_location_from_state()
@@ -465,8 +469,9 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "type": "welcome",
             "event_id": self.event_id,
             "your_user_id": f"guest_{self.user.guest.id}" if self._is_guest_user() else self.user.id,
-            "lounge_state": lounge_state,
-            "online_users": await self.get_online_participants_info(),
+            "online_counts": await self.get_online_presence_counts(),
+            "lounge_state_deferred": True,
+            "online_users_deferred": True,
             "is_on_break": event.is_on_break,
             "media_lock_active": bool(event.is_on_break),
             "break_remaining_seconds": break_remaining,
@@ -1618,6 +1623,39 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             user_current_location = "pre_event"
         user_admission_status = user_reg.admission_status if user_reg else "waiting"
         return user_lounge_table_id, user_current_location, user_admission_status
+
+    @database_sync_to_async
+    def get_online_presence_counts(self):
+        """Return cheap online counts for lightweight websocket welcome payloads."""
+        cache_key = f"event:{self.event_id}:online_presence_counts:v1"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        registered_count = 0
+        try:
+            from events.redis_presence import RedisPresenceManager
+            registered_count = len(RedisPresenceManager.get_online_users(self.event_id) or [])
+        except Exception:
+            registered_count = EventRegistration.objects.filter(
+                event_id=self.event_id,
+                is_online=True,
+                is_banned=False,
+            ).count()
+
+        guest_count = GuestAttendee.objects.filter(
+            event_id=self.event_id,
+            converted_at__isnull=True,
+            joined_live=True,
+        ).count()
+
+        payload = {
+            "registered": int(registered_count or 0),
+            "guests": int(guest_count or 0),
+            "total": int((registered_count or 0) + (guest_count or 0)),
+        }
+        cache.set(cache_key, payload, 2)
+        return payload
 
     @database_sync_to_async
     def get_online_participants_info(self):
