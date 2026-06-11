@@ -13,7 +13,10 @@ Endpoints:
   GET  /api/courses/my-courses/          — Authenticated user's enrollments
   POST /api/courses/my-courses/refresh/  — Trigger background enrollment re-sync
   GET  /api/courses/{id}/launch          — Direct LMS URL for a course
-  GET  /api/courses/{id}/mergersai/token/ — Generate Mergers.AI embed token
+  GET  /api/courses/{id}/mergersai/token/ — [DEPRECATED] Generate Mergers.AI embed token (old iframe widget)
+  GET  /api/courses/{id}/mergersai/status/ — Check Mergers.AI integration health
+  GET  /api/courses/{id}/mergersai/my-courses/ — Get user's searchable courses from Mergers.AI
+  POST /api/courses/{id}/mergersai/search/ — Search for videos in Mergers.AI
   POST /api/courses/admin/sync/          — Admin: trigger full background sync
   GET  /api/courses/image-proxy/         — Proxy IMAA images (bypasses hotlink protection)
 """
@@ -716,67 +719,248 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
             )
 
     # ------------------------------------------------------------------
-    # Mergers.AI my courses  —  GET /api/courses/mergersai/my-courses/
+    # Mergers.AI status  —  GET /api/courses/{id}/mergersai/status/
     # ------------------------------------------------------------------
 
     @action(
-        detail=False,
+        detail=True,
+        methods=["get"],
+        url_path="mergersai/status",
+        permission_classes=[IsAuthenticated],
+    )
+    def mergersai_status(self, request, pk=None):
+        """
+        Check Mergers.AI integration health.
+
+        Calls the Mergers.AI status endpoint to verify API availability and
+        configuration. This is a proxy endpoint that doesn't require user enrollment
+        in the course but does require authentication.
+
+        Returns:
+            Response from Mergers.AI /api/v1/embed/status endpoint
+
+        Response codes:
+            200 OK — status check successful
+            500 Internal Server Error — API key not configured or network error
+            503 Service Unavailable — Mergers.AI API is unavailable
+        """
+        from .mergersai_client import mergersai_status as client_status
+
+        try:
+            data = client_status()
+            logger.info("Mergers.AI status check successful for user=%s", request.user.email)
+            return Response(data)
+        except ValueError as e:
+            logger.error("Mergers.AI status check failed (config): %s", e)
+            return Response(
+                {"detail": "Mergers.AI embed API key is not configured"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        except Exception as e:
+            logger.error("Mergers.AI status check failed: %s", e)
+            return Response(
+                {"detail": "Failed to check Mergers.AI status"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+    # ------------------------------------------------------------------
+    # Mergers.AI my courses  —  GET /api/courses/{id}/mergersai/my-courses/
+    # ------------------------------------------------------------------
+
+    @action(
+        detail=True,
         methods=["get"],
         url_path="mergersai/my-courses",
         permission_classes=[IsAuthenticated],
     )
-    def mergersai_my_courses(self, request):
+    def mergersai_my_courses_api(self, request, pk=None):
         """
-        Return user's enrolled courses with metadata for Mergers.AI widget.
+        Get list of courses searchable in Mergers.AI for the authenticated user.
 
-        Used by the Mergers.AI widget to populate the course dropdown and
-        enforce enrollment gating (only show courses the learner is enrolled in).
+        Returns all courses from Mergers.AI that the user has access to,
+        along with local context about the current course (if it matches).
+
+        This endpoint:
+        1. Calls Mergers.AI /api/v1/embed/my-courses?user_email=<email>
+        2. Optionally cross-references with local course to help frontend select it
+        3. Returns the raw Mergers.AI response with local context
 
         Returns:
             {
                 "courses": [
                     {
-                        "id": 42,
-                        "slug": "cpmi-virtual-live-march-2024",
-                        "name": "CPMI Virtual Live - March 2024",
-                        "has_vector_content": true,
-                        "enrolled": true
-                    }
+                        "id": "course-slug",
+                        "slug": "course-slug",
+                        "name": "Course Name",
+                        "has_vector_content": true
+                    },
+                    ...
+                ],
+                "current_course": {
+                    "id": 42,
+                    "slug": "cpmi-virtual-live-march-2024",
+                    "name": "CPMI Virtual Live - March 2024",
+                    "moodle_id": 123
+                }
+            }
+
+        Response codes:
+            200 OK — courses retrieved successfully
+            403 Forbidden — user not authenticated
+            500 Internal Server Error — API key not configured
+            503 Service Unavailable — Mergers.AI API is unavailable
+        """
+        from .mergersai_client import mergersai_my_courses as client_my_courses
+
+        course = self.get_object()
+        user = request.user
+
+        try:
+            data = client_my_courses(user.email)
+            courses = data.get("courses", [])
+
+            # Add local course context to help frontend auto-select the current course
+            current_course = {
+                "id": course.pk,
+                "moodle_id": course.moodle_id,
+                "slug": course.short_name,
+                "name": unescape(course.full_name or ""),
+            }
+
+            logger.info(
+                "Mergers.AI my-courses for user=%s returned %d courses from API",
+                user.email,
+                len(courses),
+            )
+
+            return Response({
+                "courses": courses,
+                "current_course": current_course,
+            })
+
+        except ValueError as e:
+            logger.error("Mergers.AI my-courses failed (config): %s", e)
+            return Response(
+                {"detail": "Mergers.AI embed API key is not configured"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        except Exception as e:
+            logger.error("Mergers.AI my-courses failed for user=%s: %s", user.email, e)
+            return Response(
+                {"detail": "Failed to retrieve courses from Mergers.AI"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+    # ------------------------------------------------------------------
+    # Mergers.AI search  —  POST /api/courses/{id}/mergersai/search/
+    # ------------------------------------------------------------------
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="mergersai/search",
+        permission_classes=[IsAuthenticated],
+    )
+    def mergersai_search(self, request, pk=None):
+        """
+        Search for videos in a course based on a question.
+
+        Proxies requests to Mergers.AI /api/v1/embed/video-search and returns
+        video search results with metadata (transcript, timestamp, confidence, Vimeo URL).
+
+        Request body:
+            {
+                "question": "your search query",           # Required, non-empty
+                "course_slug": "course-identifier",        # Optional (Mergers.AI will use it if provided)
+                "top_k": 3                                 # Optional, default 3, max ~10
+            }
+
+        Returns:
+            {
+                "results": [
+                    {
+                        "title": "Segment Title",
+                        "course_name": "Course Name",
+                        "confidence_score": 0.92,
+                        "transcript_segment": "Relevant text...",
+                        "vimeo_embed_url": "https://player.vimeo.com/...",
+                        "start_time": 120,
+                        "end_time": 180,
+                    },
+                    ...
                 ]
             }
+
+        Response codes:
+            200 OK — search successful (may have 0 results)
+            400 Bad Request — missing/invalid question or course_slug
+            403 Forbidden — user not authenticated
+            500 Internal Server Error — API key not configured
+            503 Service Unavailable — Mergers.AI API is unavailable
         """
+        from .mergersai_client import mergersai_video_search as client_search
+
+        course = self.get_object()
         user = request.user
-        enrollments = (
-            MoodleEnrollment.objects.filter(user=user)
-            .select_related("course", "course__category")
-            .values(
-                "course__id",
-                "course__short_name",
-                "course__full_name",
-                "course__moodle_id",
-            )
-            .order_by("-synced_at")
-        )
 
-        courses = []
-        for e in enrollments:
-            courses.append(
-                {
-                    "id": e["course__id"],
-                    "slug": e["course__short_name"],
-                    "name": unescape(e["course__full_name"] or ""),
-                    "moodle_id": e["course__moodle_id"],
-                    "has_vector_content": True,  # TODO: fetch from Mergers.AI /api/v1/embed/status after go-live
-                    "enrolled": True,
-                }
+        # Parse and validate request body
+        try:
+            question = request.data.get("question", "").strip()
+            course_slug = request.data.get("course_slug", "").strip()
+            top_k = request.data.get("top_k", 3)
+
+            # Validate required fields
+            if not question:
+                return Response(
+                    {"detail": "Field 'question' is required and must be non-empty"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if not isinstance(top_k, int) or top_k < 1:
+                top_k = 3
+            elif top_k > 10:
+                top_k = 10
+
+            # If course_slug not provided, use the current course's slug as default
+            if not course_slug:
+                course_slug = course.short_name
+
+        except (AttributeError, TypeError):
+            return Response(
+                {"detail": "Invalid request body"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        logger.debug(
-            "Mergers.AI my-courses for user=%s returned %d courses",
-            user.email,
-            len(courses),
-        )
-        return Response({"courses": courses})
+        try:
+            data = client_search(
+                user_email=user.email,
+                course_slug=course_slug,
+                question=question,
+                top_k=top_k,
+            )
+
+            logger.info(
+                "Mergers.AI search for user=%s course=%s question=%s returned %d results",
+                user.email,
+                course_slug,
+                question[:50],
+                len(data.get("results", [])),
+            )
+
+            return Response(data)
+
+        except ValueError as e:
+            logger.error("Mergers.AI search failed (config): %s", e)
+            return Response(
+                {"detail": "Mergers.AI embed API key is not configured"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        except Exception as e:
+            logger.error("Mergers.AI search failed for user=%s course=%s: %s", user.email, course_slug, e)
+            return Response(
+                {"detail": "Failed to search videos in Mergers.AI"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
     # ------------------------------------------------------------------
     # Mark module complete  —  POST /api/courses/{id}/modules/{cmid}/complete/
