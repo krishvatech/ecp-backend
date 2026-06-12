@@ -3190,7 +3190,6 @@ class EventViewSet(viewsets.ModelViewSet):
         - Email: user.email
         - Job Title: profile.job_title (primary) or latest Experience.position (fallback)
         - Company: profile.company (primary) or latest Experience.community_name (fallback)
-        - Contact Number: profile.links.contact.phones
         - Country/Region: profile.location (country field, not just city)
 
         Returns: (is_complete, missing_fields_dict)
@@ -3242,14 +3241,7 @@ class EventViewSet(viewsets.ModelViewSet):
         if not has_location:
             missing['location'] = 'Country/Region'
 
-        # 6. Check contact number: profile.links.contact.phones (primary phone)
-        has_phone = False
-        if profile:
-            phones = (profile.links or {}).get('contact', {}).get('phones', [])
-            has_phone = any(p.get('number') and str(p.get('number')).strip() for p in phones)
-
-        if not has_phone:
-            missing['phone'] = 'Contact Number'
+        # Contact Number is intentionally optional for registration/application.
 
         return len(missing) == 0, missing
 
@@ -3397,7 +3389,7 @@ class EventViewSet(viewsets.ModelViewSet):
     def save_lead_gen_fields(self, request):
         """
         Save lead-generation fields to user profile.
-        Accepts: first_name, last_name, email, job_title, company, location, phone
+        Accepts: first_name, last_name, email, job_title, company, location, phone (optional)
         """
         user = request.user
         profile = user.profile
