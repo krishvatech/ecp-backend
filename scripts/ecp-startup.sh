@@ -6,6 +6,8 @@ AWS_ACCOUNT_ID="776850212338"
 ECP_ENV="/etc/ecp/ecp.env"
 SALEOR_DIR="/home/ubuntu/Event-Community-Platform/saleor-platform"
 NGINX_CONF="/etc/nginx/conf.d/ecp-backend.conf"
+LEGACY_NGINX_SITE="/etc/nginx/sites-enabled/colligatus"
+DISABLED_NGINX_SITE_DIR="/etc/nginx/disabled-sites"
 
 echo "===== ECP startup started: $(date) ====="
 
@@ -248,9 +250,35 @@ echo "===== Collecting CMS static ====="
 docker exec ecp-backend sh -lc "mkdir -p /app/staticfiles && python manage.py collectstatic --noinput" || true
 
 mkdir -p /var/www/ecp-static
-rm -rf /var/www/ecp-static/*
-docker cp ecp-backend:/app/staticfiles/. /var/www/ecp-static/ || true
-chown -R www-data:www-data /var/www/ecp-static || true
+
+TMP_STATIC="/tmp/ecp-static-new"
+rm -rf "$TMP_STATIC"
+mkdir -p "$TMP_STATIC"
+
+if docker cp ecp-backend:/app/staticfiles/. "$TMP_STATIC/"; then
+  rm -rf /var/www/ecp-static/*
+  cp -a "$TMP_STATIC/." /var/www/ecp-static/
+  chown -R www-data:www-data /var/www/ecp-static || true
+  echo "Static files copied successfully to /var/www/ecp-static"
+else
+  echo "WARNING: docker cp staticfiles failed. Keeping existing /var/www/ecp-static unchanged."
+fi
+
+rm -rf "$TMP_STATIC"
+
+echo "===== Disabling duplicate legacy Nginx sites-enabled config ====="
+mkdir -p "$DISABLED_NGINX_SITE_DIR"
+
+if [ -e "$LEGACY_NGINX_SITE" ] || [ -L "$LEGACY_NGINX_SITE" ]; then
+  DISABLED_TARGET="$DISABLED_NGINX_SITE_DIR/colligatus.$(date +%Y%m%d-%H%M%S)"
+  if mv "$LEGACY_NGINX_SITE" "$DISABLED_TARGET" 2>/dev/null; then
+    echo "Disabled duplicate $LEGACY_NGINX_SITE -> $DISABLED_TARGET"
+  else
+    echo "WARNING: Could not move $LEGACY_NGINX_SITE, it may have already been moved by another process."
+  fi
+else
+  echo "No duplicate $LEGACY_NGINX_SITE found"
+fi
 
 echo "===== Ensuring active Nginx config serves Django/Wagtail static files ====="
 
@@ -259,11 +287,6 @@ ensure_nginx_static_routes() {
 
   if [ ! -f "$conf" ]; then
     echo "WARNING: $conf not found. Skipping Nginx static route patch."
-    return 0
-  fi
-
-  if grep -q "alias /var/www/ecp-static/" "$conf"; then
-    echo "Nginx static route already exists in $conf"
     return 0
   fi
 
@@ -278,19 +301,49 @@ from pathlib import Path
 
 conf_path = Path(os.environ["ECP_NGINX_CONF"])
 text = conf_path.read_text()
+lines = text.splitlines(True)
 
-if "alias /var/www/ecp-static/" in text:
-    print("Static route already present.")
-    raise SystemExit(0)
+server_blocks = []
+i = 0
 
-match = re.search(r"(?m)^(\s*)location\s+/\s*\{", text)
-if not match:
-    print("WARNING: Could not find catch-all location / block. No change made.")
-    raise SystemExit(0)
+while i < len(lines):
+    if re.match(r"^\s*server\s*\{", lines[i]):
+        start = i
+        depth = 0
 
-indent = match.group(1)
+        while i < len(lines):
+            depth += lines[i].count("{") - lines[i].count("}")
 
-static_block = f"""
+            if depth == 0:
+                server_blocks.append((start, i + 1))
+                break
+
+            i += 1
+
+    i += 1
+
+changed = False
+
+for start, end in reversed(server_blocks):
+    block = "".join(lines[start:end])
+
+    if "alias /var/www/ecp-static/" in block:
+        continue
+
+    insert_at = None
+    indent = None
+
+    for idx in range(start, end):
+        match = re.match(r"^(\s*)location\s+/\s*\{", lines[idx])
+        if match:
+            insert_at = idx
+            indent = match.group(1)
+            break
+
+    if insert_at is None:
+        continue
+
+    static_block = f"""
 {indent}location /static/ {{
 {indent}    alias /var/www/ecp-static/;
 {indent}    access_log off;
@@ -306,9 +359,14 @@ static_block = f"""
 
 """
 
-text = text[:match.start()] + static_block + text[match.start():]
-conf_path.write_text(text)
-print(f"Added /static/ and /media/ routes to {conf_path}")
+    lines[insert_at:insert_at] = [static_block]
+    changed = True
+
+if changed:
+    conf_path.write_text("".join(lines))
+    print(f"Added /static/ and /media/ routes to missing server block(s) in {conf_path}")
+else:
+    print(f"Static/media routes already present in all matching server blocks, or no catch-all location found in {conf_path}")
 PY
 
   if nginx -t; then
