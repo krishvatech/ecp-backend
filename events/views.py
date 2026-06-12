@@ -3503,7 +3503,15 @@ class EventViewSet(viewsets.ModelViewSet):
 
         email = (data.get('email') or '').strip().lower()
         submitted_code = (data.get('preapproved_code') or '').strip()
-        attendee_marker_value = bool(data.get("attendee_marker_value", False))
+        # Parse the submitted marker answer defensively: DRF JSON gives a real bool,
+        # but form-data / manual API calls may send "true"/"false"/"1"/"0" strings.
+        # The final value is gated on the event's attendee_marker_enabled flag after
+        # the event is locked (see below) to block client-side tampering.
+        _raw_marker = data.get("attendee_marker_value", False)
+        attendee_marker_submitted = (
+            _raw_marker if isinstance(_raw_marker, bool)
+            else str(_raw_marker).strip().lower() in ("true", "1", "yes", "on")
+        )
         comments = (data.get("comments") or "").strip()
 
         # Phase 3: Handle submission mode and track selection
@@ -3580,6 +3588,13 @@ class EventViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             locked_event = Event.objects.select_for_update().get(pk=event.pk)
+
+            # Only honor the marker answer when the event actually enabled the checkbox.
+            # This prevents browser/manual API manipulation from setting the value on
+            # events that never offered the marker.
+            attendee_marker_value = (
+                attendee_marker_submitted if locked_event.attendee_marker_enabled else False
+            )
 
             # Check for existing applications and registrations
             # Strategy: Check child EventApplicationTrackApplication statuses instead of parent status
@@ -4763,7 +4778,7 @@ class EventViewSet(viewsets.ModelViewSet):
             'submission_mode', 'tier_preference_id', 'accepted_tier_id',
             'reviewed_by_id', 'reviewed_at', 'created_at', 'updated_at',
             'application__id', 'application__email', 'application__first_name',
-            'application__last_name', 'application__user_id',
+            'application__last_name', 'application__user_id', 'application__attendee_marker_value',
             'application__user__id', 'application__user__username', 'application__user__email',
             'track__id', 'track__label', 'track__key',
             'track__event__id', 'track__event__title',

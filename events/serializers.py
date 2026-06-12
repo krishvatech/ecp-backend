@@ -3683,6 +3683,9 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
     # Sponsor fields
     sponsor_organization = serializers.CharField(source='application.sponsor_organization', read_only=True, required=False)
 
+    # Event-level optional marker answer (from the parent application)
+    attendee_marker_value = serializers.BooleanField(source='application.attendee_marker_value', read_only=True)
+
     # Reviewer info
     reviewed_by_user = serializers.SerializerMethodField()
     registration_id = serializers.SerializerMethodField()
@@ -3706,7 +3709,7 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
             'applicant_job_title', 'applicant_company', 'applicant_linkedin',
             'is_preapproved', 'preapproval_source',
             'nominator_name', 'nominator_email', 'nominee_name', 'nominee_email',
-            'sponsor_organization',
+            'sponsor_organization', 'attendee_marker_value',
             'reviewed_by_user', 'registration_id', 'reviewed_at', 'created_at', 'updated_at',
             'accepted_at', 'declined_at', 'waitlisted_at', 'cancelled_at',
             'accepted_tier_price', 'accepted_tier_currency', 'origin_status'
