@@ -140,10 +140,10 @@ def mergersai_my_courses(user_email: str) -> Dict[str, Any]:
             "=== MERGERSAI MY-COURSES RESPONSE ===\n"
             "Status Code: %d\n"
             "Response Headers: %s\n"
-            "Response Body: %s",
+            "Response Body (FULL): %s",
             resp.status_code,
             dict(resp.headers),
-            resp.text[:500],
+            resp.text,  # FULL response
         )
 
         resp.raise_for_status()
@@ -231,10 +231,10 @@ def mergersai_video_search(
             "=== MERGERSAI VIDEO SEARCH RESPONSE ===\n"
             "Status Code: %d\n"
             "Response Headers: %s\n"
-            "Response Body: %s",
+            "Response Body (FULL): %s",
             resp.status_code,
             dict(resp.headers),
-            resp.text[:500],  # First 500 chars of response
+            resp.text,  # FULL response
         )
 
         resp.raise_for_status()
