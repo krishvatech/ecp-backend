@@ -235,6 +235,18 @@ def _end_event_from_system(event, reason: str) -> None:
     event.ended_by_host = False
     event.save(update_fields=["status", "is_live", "live_ended_at", "ended_by_host", "updated_at"])
 
+    # System-ended meeting may happen while users are still in breakout rooms.
+    # Clear only breakout-room chat history; keep Q&A for export/review.
+    try:
+        from events.services.breakout_chat_cleanup import soft_delete_breakout_room_chat
+        soft_delete_breakout_room_chat(event.id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to clear breakout room chat for event %s on system end: %s",
+            event.id,
+            exc,
+        )
+
     try:
         from .views import _stop_rtk_recording_for_event
         _stop_rtk_recording_for_event(event)

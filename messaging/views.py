@@ -1370,13 +1370,27 @@ class MessageViewSet(
         # 1. Resolve Conversation & Permissions
         conv_id = self._get_conversation_id()
         try:
-            conv = Conversation.objects.get(pk=conv_id)
+            conv = Conversation.objects.select_related("lounge_table__event").get(pk=conv_id)
         except Conversation.DoesNotExist:
             raise NotFound("Conversation not found.")
         
         user = request.user
         if not conv.user_can_view(user):
             raise PermissionDenied("You are not a participant of this conversation.")
+
+        # Breakout tables are reused between rounds. Once all breakouts are
+        # ended, do not allow a stale room-chat request to create a new message
+        # after cleanup. This check applies only to BREAKOUT room chats; public
+        # chat, private chat, group chat, and normal Social Lounge chat are not
+        # affected.
+        lounge_table = getattr(conv, "lounge_table", None)
+        if lounge_table is not None and getattr(lounge_table, "category", None) == "BREAKOUT":
+            event = getattr(lounge_table, "event", None)
+            if not event or not getattr(event, "breakout_rooms_active", False):
+                return Response(
+                    {"detail": "Breakout room chat is closed."},
+                    status=status.HTTP_409_CONFLICT,
+                )
         # DM Access Check
         if (conv.group_id is None and conv.event_id is None and getattr(conv, "lounge_table_id", None) is None) and user.id not in (conv.user1_id, conv.user2_id):
             raise PermissionDenied("You are not a participant of this conversation.")
@@ -1412,6 +1426,15 @@ class MessageViewSet(
                 )
             if not can_access_event:
                 raise PermissionDenied("You are not allowed to attach this event context.")
+
+        # If frontend did not pass event_id, infer it from the conversation.
+        # This keeps public and breakout chat messages tied to the event for metrics/debugging
+        # without changing public/private/breakout conversation storage behavior.
+        if message_event is None:
+            if getattr(conv, "event_id", None):
+                message_event = conv.event
+            elif getattr(conv, "lounge_table_id", None):
+                message_event = getattr(conv.lounge_table, "event", None)
 
         # 3. Upload Files to S3 Manually
         import uuid
