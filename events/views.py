@@ -11668,6 +11668,7 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         """
         Alias to list only my registrations with pagination support.
         Always strict to request.user.
+        Supports ?event=<id> filter for checking a single event registration.
         Uses lightweight serializer and optimized query for fast card footer loads.
         """
         if getattr(request.user, "is_guest", False):
@@ -11682,6 +11683,9 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
             'current_location', 'user_id', 'event__id', 'event__created_by_id',
             'user__email'
         )
+        event_id = request.query_params.get('event')
+        if event_id:
+            qs = qs.filter(event_id=event_id)
         page = self.paginate_queryset(qs)
         ser = EventRegistrationLiteSerializer(page or qs, many=True)
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)

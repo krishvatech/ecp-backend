@@ -167,7 +167,55 @@ class FriendshipViewSet(
             qs, many=True, context={"request": request, "perspective_id": target_id}
         )
         return Response(ser.data)
-    
+
+    def _get_user_statuses(self, me, user_ids):
+        """
+        Helper to compute friendship status for multiple users.
+        Returns: {user_id: {"status": "...", "request_id": ...}}
+        """
+        if not user_ids:
+            return {}
+
+        # Initialize result dict with "none" status for all IDs
+        results = {uid: {"status": "none", "request_id": None} for uid in user_ids}
+
+        # Check for "self" status
+        for uid in user_ids:
+            if uid == me.id:
+                results[uid] = {"status": "self", "request_id": None}
+
+        # Remove "self" IDs from further processing
+        other_user_ids = [uid for uid in user_ids if uid != me.id]
+        if not other_user_ids:
+            return results
+
+        # Get all friendships for these users in one query
+        friendships = Friendship.objects.filter(
+            Q(user1_id=me.id, user2_id__in=other_user_ids) |
+            Q(user2_id=me.id, user1_id__in=other_user_ids)
+        ).values_list("user1_id", "user2_id")
+
+        for user1_id, user2_id in friendships:
+            other_id = user2_id if user1_id == me.id else user1_id
+            results[other_id] = {"status": "friends", "request_id": None}
+
+        # Get pending friend requests for remaining users in one query
+        pending_requests = FriendRequest.objects.filter(
+            Q(from_user_id__in=other_user_ids, to_user_id=me.id) |
+            Q(from_user_id=me.id, to_user_id__in=other_user_ids),
+            status=FriendRequest.PENDING,
+        ).values_list("from_user_id", "to_user_id", "id")
+
+        for from_id, to_id, req_id in pending_requests:
+            if from_id == me.id:
+                # Outgoing request
+                results[to_id] = {"status": "outgoing_pending", "request_id": req_id}
+            else:
+                # Incoming request
+                results[from_id] = {"status": "incoming_pending", "request_id": req_id}
+
+        return results
+
     @action(detail=False, methods=["get"], url_path="suggested")
     def suggested(self, request):
         """
@@ -258,6 +306,10 @@ class FriendshipViewSet(
                 has_next = len(results) > page_size
                 results = results[:page_size]
 
+                # Get friendship statuses for this page's users
+                user_ids = [u.id for u in results]
+                statuses = self._get_user_statuses(me, user_ids)
+
                 data = [
                     {
                         "id": u.id,
@@ -265,6 +317,8 @@ class FriendshipViewSet(
                         "avatar": _avatar(u),
                         "mutuals": 0,
                         "kyc_status": _kyc_status(u),
+                        "friend_status": statuses.get(u.id, {}).get("status", "none"),
+                        "request_id": statuses.get(u.id, {}).get("request_id", None),
                     }
                     for u in results
                 ]
@@ -285,6 +339,11 @@ class FriendshipViewSet(
                 limit = max(1, min(limit, 50))
 
                 results = list(base[:limit])
+
+                # Get friendship statuses for these users
+                user_ids = [u.id for u in results]
+                statuses = self._get_user_statuses(me, user_ids)
+
                 data = [
                     {
                         "id": u.id,
@@ -292,6 +351,8 @@ class FriendshipViewSet(
                         "avatar": _avatar(u),
                         "mutuals": 0,
                         "kyc_status": _kyc_status(u),
+                        "friend_status": statuses.get(u.id, {}).get("status", "none"),
+                        "request_id": statuses.get(u.id, {}).get("request_id", None),
                     }
                     for u in results
                 ]
@@ -353,6 +414,10 @@ class FriendshipViewSet(
             has_next = len(results) > page_size
             results = results[:page_size]
 
+            # Get friendship statuses for this page's users
+            user_ids = [u.id for u in results]
+            statuses = self._get_user_statuses(me, user_ids)
+
             data = [
                 {
                     "id": u.id,
@@ -360,6 +425,8 @@ class FriendshipViewSet(
                     "avatar": _avatar(u),
                     "mutuals": int(getattr(u, "mutuals", 0)),
                     "kyc_status": _kyc_status(u),
+                    "friend_status": statuses.get(u.id, {}).get("status", "none"),
+                    "request_id": statuses.get(u.id, {}).get("request_id", None),
                 }
                 for u in results
             ]
@@ -380,6 +447,11 @@ class FriendshipViewSet(
             limit = max(1, min(limit, 50))
 
             results = list(qs[:limit])
+
+            # Get friendship statuses for these users
+            user_ids = [u.id for u in results]
+            statuses = self._get_user_statuses(me, user_ids)
+
             data = [
                 {
                     "id": u.id,
@@ -387,6 +459,8 @@ class FriendshipViewSet(
                     "avatar": _avatar(u),
                     "mutuals": int(getattr(u, "mutuals", 0)),
                     "kyc_status": _kyc_status(u),
+                    "friend_status": statuses.get(u.id, {}).get("status", "none"),
+                    "request_id": statuses.get(u.id, {}).get("request_id", None),
                 }
                 for u in results
             ]
@@ -465,6 +539,41 @@ class FriendshipViewSet(
             return Response({"status": "outgoing_pending", "request_id": outgoing.id})
 
         return Response({"status": "none"})
+
+    @action(detail=False, methods=["get"], url_path="status-bulk")
+    def status_bulk(self, request):
+        """Bulk endpoint to get relationship status for multiple users.
+        GET /api/friends/status-bulk/?user_ids=1,2,3,4
+        Returns: {
+            "results": {
+                "1": {"status": "friends", "request_id": null},
+                "2": {"status": "outgoing_pending", "request_id": 55},
+                ...
+            }
+        }
+        """
+        user_ids_raw = request.query_params.get("user_ids", "")
+        if not user_ids_raw:
+            return Response({"results": {}}, status=200)
+
+        # Parse comma-separated user IDs
+        try:
+            user_ids = [int(uid.strip()) for uid in user_ids_raw.split(",") if uid.strip().isdigit()]
+        except (ValueError, TypeError):
+            return Response({"detail": "user_ids must be comma-separated integers"}, status=400)
+
+        if not user_ids:
+            return Response({"results": {}}, status=200)
+
+        me = request.user
+
+        # Use helper to get statuses
+        results = self._get_user_statuses(me, user_ids)
+
+        # Convert int keys to string keys for JSON response
+        results = {str(k): v for k, v in results.items()}
+
+        return Response({"results": results}, status=200)
 
 
 class FriendRequestViewSet(
