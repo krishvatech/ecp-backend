@@ -57,7 +57,8 @@ def _ct_from_param(value: str) -> ContentType:
 class EngagementMetricsView(APIView):
     """
     GET /api/engagements/metrics/?ids=1,2,3[&target_type=app.Model|comment|<ct_id>]
-    Returns per-target reaction/comment/share counts and whether the current user reacted.
+    Returns per-target reaction/comment/share counts, whether current user reacted, and a reaction_preview.
+    reaction_preview contains lightweight user data for one reaction (preferring current user's reaction).
     """
     permission_classes = [IsAuthenticated]
 
@@ -103,6 +104,43 @@ class EngagementMetricsView(APIView):
             .values_list("object_id", flat=True)
         )
 
+        # Get reaction preview for each target:
+        # Prefer current user's reaction, otherwise get the most recent reaction
+        reaction_previews = {}
+        user_reactions = Reaction.objects.filter(
+            content_type=ct, object_id__in=ids, user=request.user
+        ).select_related("user", "user__profile")
+
+        for reaction in user_reactions:
+            # Store current user's reaction for each target
+            user = reaction.user
+            reaction_previews[reaction.object_id] = {
+                "id": user.id,
+                "name": (user.first_name or user.username or str(user)).strip(),
+                "avatar": self._get_avatar_url(user),
+                "reaction": reaction.reaction,
+            }
+
+        # For targets without current user's reaction, get the latest reaction
+        targets_without_preview = [i for i in ids if i not in reaction_previews]
+        if targets_without_preview:
+            latest_reactions = (
+                Reaction.objects
+                .filter(content_type=ct, object_id__in=targets_without_preview)
+                .select_related("user", "user__profile")
+                .order_by("object_id", "-created_at")
+                .distinct("object_id")
+            )
+            for reaction in latest_reactions:
+                if reaction.object_id not in reaction_previews:
+                    user = reaction.user
+                    reaction_previews[reaction.object_id] = {
+                        "id": user.id,
+                        "name": (user.first_name or user.username or str(user)).strip(),
+                        "avatar": self._get_avatar_url(user),
+                        "reaction": reaction.reaction,
+                    }
+
         # Build output skeleton
         out = {}
         for i in ids:
@@ -116,6 +154,7 @@ class EngagementMetricsView(APIView):
                 "comment_count": 0,
                 "share_count": 0,
                 "user_has_liked": (i in liked_by_me),
+                "reaction_preview": reaction_previews.get(i) or None,
             }
 
         for row in reaction_qs:
@@ -134,6 +173,34 @@ class EngagementMetricsView(APIView):
                 o["shares"] = o["share_count"] = row["n"]
 
         return Response(out, status=status.HTTP_200_OK)
+
+    def _get_avatar_url(self, user):
+        """Helper to get avatar URL from user profile."""
+        try:
+            if hasattr(user, 'profile') and user.profile:
+                candidates = [
+                    user.profile.avatar,
+                    user.profile.avatar_url,
+                    user.profile.user_image,
+                ]
+                for url in candidates:
+                    if url:
+                        # Return full URL if it's absolute, otherwise construct it
+                        if isinstance(url, str) and (url.startswith('http') or url.startswith('/')):
+                            return str(url)
+                        elif url:
+                            return f"/media/{url}" if not str(url).startswith('/') else str(url)
+            # Fallback to user attributes
+            candidates = [user.avatar, getattr(user, 'avatar_url', None)]
+            for url in candidates:
+                if url:
+                    if isinstance(url, str) and (url.startswith('http') or url.startswith('/')):
+                        return str(url)
+                    elif url:
+                        return f"/media/{url}" if not str(url).startswith('/') else str(url)
+        except Exception:
+            pass
+        return ""
 
 # ---------- Comments ----------
 class CommentViewSet(viewsets.ModelViewSet):

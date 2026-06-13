@@ -853,7 +853,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     {
                         "type": "breakout_force_join",
                         "user_id": participant_id,
-                        "table_id": table.id
+                        "table_id": table.id,
+                        "table_name": table.name,
                     }
                 )
 
@@ -940,6 +941,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         elif action == "end_all_breakouts":
             if not await self.is_host(): return
             await self._set_breakout_active_flag(False)
+            await self._clear_breakout_room_chat()
             await self.clear_all_tables()
             await self.channel_layer.group_send(
                 self.group_name,
@@ -1991,6 +1993,18 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "started_at": event.get("started_at"),
         })
 
+    async def private_message_unread(self, event: dict) -> None:
+        """Targeted lightweight DM unread notification for live meeting badges."""
+        await self.send_json({
+            "type": "private_message_unread",
+            "conversation_id": event.get("conversation_id"),
+            "message_id": event.get("message_id"),
+            "sender_id": event.get("sender_id"),
+            "recipient_id": event.get("recipient_id"),
+            "event_id": event.get("event_id"),
+            "created_at": event.get("created_at"),
+        })
+
     async def recording_status_changed(self, event: dict) -> None:
         """Broadcast recording status change to all participants."""
         await self.send_json({
@@ -2024,7 +2038,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             print(f"[HANDLER] ✅ Sending force_join_breakout to {debug_self}")
             await self.send_json({
                 "type": "force_join_breakout",
-                "table_id": event["table_id"]
+                "table_id": event["table_id"],
+                "table_name": event.get("table_name"),
             })
         else:
             print(f"[HANDLER] ⚠️ breakout_force_join mismatch: self={debug_self}, target_user={target_user_id}, target_guest={target_guest_id}")
@@ -2257,19 +2272,48 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def clear_all_tables(self):
-        # Clear assignments
+        # Clear breakout assignments only. Do not clear Social Lounge occupants.
         EventRegistration.objects.filter(event_id=self.event_id).update(last_breakout_table=None)
-        # Remove participants
-        LoungeParticipant.objects.filter(table__event_id=self.event_id).delete()
-        # Reset guest table assignments/state
+        # Remove only breakout participants
+        LoungeParticipant.objects.filter(
+            table__event_id=self.event_id,
+            table__category="BREAKOUT",
+        ).delete()
+        # Reset only guests currently assigned to breakout rooms
         GuestAttendee.objects.filter(
             event_id=self.event_id,
             converted_at__isnull=True,
+            lounge_table__category="BREAKOUT",
         ).update(
             lounge_table=None,
             current_location="main_room",
         )
         self._invalidate_lounge_presence_cache_sync()
+
+    @database_sync_to_async
+    def _clear_breakout_room_chat(self):
+        """Hide only breakout-room chat messages for this event.
+
+        We intentionally do not touch public chat, private chat, Social Lounge chat,
+        or Q&A. Breakout rooms reuse the same LoungeTable rows, so this prevents
+        old room chat from showing when the host starts a new breakout round.
+        """
+        from messaging.models import Message
+
+        updated = Message.objects.filter(
+            conversation__lounge_table__event_id=self.event_id,
+            conversation__lounge_table__category="BREAKOUT",
+            is_deleted=False,
+        ).update(
+            is_deleted=True,
+            deleted_at=timezone.now(),
+        )
+        logger.info(
+            "[BREAKOUT_CHAT_CLEANUP] event=%s soft_deleted_messages=%s",
+            self.event_id,
+            updated,
+        )
+        return updated
 
     @database_sync_to_async
     def perform_random_assignment(self, per_room):
@@ -2416,12 +2460,17 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         try:
             with transaction.atomic():
-                # Clear all current assignments in the event
-                LoungeParticipant.objects.filter(table__event_id=self.event_id).delete()
+                # Clear only current breakout assignments in the event.
+                # Social Lounge occupants must not be removed when breakout starts/ends.
+                LoungeParticipant.objects.filter(
+                    table__event_id=self.event_id,
+                    table__category='BREAKOUT',
+                ).delete()
                 EventRegistration.objects.filter(event_id=self.event_id).update(last_breakout_table=None)
                 GuestAttendee.objects.filter(
                     event_id=self.event_id,
                     converted_at__isnull=True,
+                    lounge_table__category='BREAKOUT',
                 ).update(
                     lounge_table=None,
                     current_location="main_room",
@@ -2437,7 +2486,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         user = entry["user"]
                         existing = LoungeParticipant.objects.filter(
                             user=user,
-                            table__event_id=self.event_id
+                            table__event_id=self.event_id,
+                            table__category='BREAKOUT',
                         ).exists()
                         if existing:
                             print(f"[RANDOM_ASSIGN] ⚠️ User {user.id} already assigned, skipping duplicate")
@@ -2456,6 +2506,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                             "target_type": "user",
                             "target_id": user.id,
                             "table_id": table.id,
+                            "table_name": table.name,
                             "meeting_id": table.rtk_meeting_id,
                         })
 
@@ -2472,6 +2523,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                             "target_type": "guest",
                             "target_id": guest.id,
                             "table_id": table.id,
+                            "table_name": table.name,
                             "meeting_id": table.rtk_meeting_id,
                         })
 
@@ -2480,13 +2532,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
                 # ✅ NEW: Validate all assignments were created
                 total_assigned = LoungeParticipant.objects.filter(
-                    table__event_id=self.event_id
+                    table__event_id=self.event_id,
+                    table__category='BREAKOUT',
                 ).count()
                 total_guest_assigned = GuestAttendee.objects.filter(
                     event_id=self.event_id,
                     converted_at__isnull=True,
-                    lounge_table__isnull=False,
-                    current_location__in=["breakout_room", "social_lounge"],
+                    lounge_table__category='BREAKOUT',
+                    current_location='breakout_room',
                 ).count()
                 total_db_assigned = total_assigned + total_guest_assigned
                 print(f"[RANDOM_ASSIGN] Total assignments: {len(assignments)}, DB count: {total_db_assigned}")
@@ -2523,6 +2576,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             target_type = assignment.get("target_type")
             target_id = assignment.get("target_id")
             table_id = assignment.get("table_id")
+            table_name = assignment.get("table_name")
 
             if target_type == "guest":
                 await self.channel_layer.group_send(
@@ -2532,6 +2586,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         "user_id": f"guest_{target_id}",
                         "guest_id": target_id,
                         "table_id": table_id,
+                        "table_name": table_name,
                     }
                 )
             else:
@@ -2540,7 +2595,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     {
                         "type": "breakout_force_join",
                         "user_id": target_id,
-                        "table_id": table_id
+                        "table_id": table_id,
+                        "table_name": table_name,
                     }
                 )
 
@@ -2563,12 +2619,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         for assignment in assignments:
             user_id = assignment[0]
             table_id = assignment[1]
+            table_name = assignment[2] if len(assignment) > 2 else None
             await self.channel_layer.group_send(
                 f"user_{user_id}",
                 {
                     "type": "breakout_force_join",
                     "user_id": user_id,
-                    "table_id": table_id
+                    "table_id": table_id,
+                    "table_name": table_name,
                 }
             )
 
@@ -2614,8 +2672,15 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 print(f"[MANUAL_ASSIGN] All registered users count: {EventRegistration.objects.filter(event_id=self.event_id).count()}")
                 return []
 
-            # Clear any existing assignments for these users
-            LoungeParticipant.objects.filter(user_id__in=valid_users).delete()
+            # Clear only same-event assignments for these users. For breakout assignment,
+            # do not delete Social Lounge rows or rows from other events.
+            existing_assignments = LoungeParticipant.objects.filter(
+                user_id__in=valid_users,
+                table__event_id=self.event_id,
+            )
+            if table.category == 'BREAKOUT':
+                existing_assignments = existing_assignments.filter(table__category='BREAKOUT')
+            existing_assignments.delete()
 
             # Assign each user to the table
             assignments = []
@@ -2642,7 +2707,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 if table.category == 'BREAKOUT':
                     EventRegistration.objects.filter(event_id=self.event_id, user_id=user_id).update(last_breakout_table=table)
 
-                assignments.append((user_id, table_id))
+                assignments.append((user_id, table_id, table.name))
                 print(f"[MANUAL_ASSIGN] ✅ Assigned user {user_id} to table {table_id}, seat {seat_index}")
 
             print(f"[MANUAL_ASSIGN] Completed: Created {len(assignments)} assignments.")
@@ -3362,7 +3427,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     {
                         "type": "breakout_force_join",
                         "user_id": self.user.id,
-                        "table_id": table.id
+                        "table_id": table.id,
+                        "table_name": table.name,
                     }
                 )
 

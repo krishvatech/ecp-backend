@@ -5721,6 +5721,19 @@ class EventViewSet(viewsets.ModelViewSet):
                 event.live_ended_at = timezone.now()
                 event.ended_by_host = True
 
+                # If the full meeting ends while breakout rooms are active,
+                # clear only breakout-room chat history. Q&A is intentionally
+                # preserved for export/review.
+                try:
+                    from events.services.breakout_chat_cleanup import soft_delete_breakout_room_chat
+                    soft_delete_breakout_room_chat(event.id)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to clear breakout room chat for event %s on live-status end: %s",
+                        event.id,
+                        exc,
+                    )
+
                 # If event was on break, clear break state and revoke Celery task
                 if event.is_on_break:
                     if event.break_celery_task_id:
@@ -5975,6 +5988,18 @@ class EventViewSet(viewsets.ModelViewSet):
         event.live_ended_at = timezone.now()
         event.ended_by_host = True
         event.save(update_fields=["status", "is_live", "live_ended_at", "ended_by_host", "updated_at"])
+
+        # Full meeting ended: clear only breakout-room chat history.
+        # Public/private chat and Q&A are intentionally untouched.
+        try:
+            from events.services.breakout_chat_cleanup import soft_delete_breakout_room_chat
+            soft_delete_breakout_room_chat(event.id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to clear breakout room chat for event %s on end-meeting: %s",
+                event.id,
+                exc,
+            )
 
         if event.is_recording and event.rtk_recording_id:
             success, _msg = _stop_rtk_recording_for_event_manual(event)
@@ -7817,6 +7842,75 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return "CLOSED", "Lounge is currently closed", event.start_time
 
+    @action(detail=True, methods=["get"], url_path="lounge-status")
+    def lounge_status(self, request, pk=None):
+        """
+        Lightweight live/breakout/lounge status endpoint.
+
+        IMPORTANT:
+        - Do NOT return full lounge tables here.
+        - Do NOT serialize participants.
+        - Do NOT load avatars/profiles/guest rows.
+        - This endpoint is safe for frequent polling during breakout.
+        """
+        event = self.get_object()
+
+        base_cache_key = f"event:{event.id}:http_lounge_status:v1"
+        base_data = cache.get(base_cache_key)
+
+        if base_data is None:
+            status_code, reason, next_change = self._get_lounge_availability(event)
+
+            breakout_active = LoungeTable.objects.filter(
+                event_id=event.id,
+                category="BREAKOUT",
+            ).exists()
+
+            base_data = {
+                "event_id": event.id,
+                "is_live": bool(event.is_live),
+                "status": event.status,
+                "is_on_break": bool(getattr(event, "is_on_break", False)),
+                "breakout_active": bool(event.is_live and breakout_active),
+                "lounge_enabled_before": bool(getattr(event, "lounge_enabled_before", False)),
+                "lounge_enabled_during": bool(getattr(event, "lounge_enabled_during", False)),
+                "lounge_enabled_breaks": bool(getattr(event, "lounge_enabled_breaks", False)),
+                "lounge_enabled_after": bool(getattr(event, "lounge_enabled_after", False)),
+                "lounge_open_status": {
+                    "status": status_code,
+                    "reason": reason,
+                    "next_change": next_change.isoformat() if hasattr(next_change, "isoformat") else next_change,
+                },
+            }
+
+            # Small TTL is enough. This endpoint is cheap, but this prevents spike storms.
+            cache.set(base_cache_key, base_data, 5)
+
+        data = dict(base_data)
+
+        # Add user-specific table info separately.
+        # This avoids caching one user's table result for all users.
+        user_table = None
+        user = request.user
+        if user and getattr(user, "is_authenticated", False):
+            lp = (
+                LoungeParticipant.objects
+                .filter(table__event_id=event.id, user=user)
+                .select_related("table")
+                .order_by("-joined_at")
+                .first()
+            )
+            if lp and lp.table:
+                user_table = {
+                    "table_id": lp.table_id,
+                    "table_name": lp.table.name,
+                    "category": lp.table.category,
+                    "rtk_meeting_id": lp.table.rtk_meeting_id,
+                }
+
+        data["user_table"] = user_table
+        return Response(data)
+
     @action(detail=True, methods=["get"], url_path="lounge-state")
     def lounge_state(self, request, pk=None):
         """Fetch the current state of the Social Lounge for this event."""
@@ -7950,7 +8044,10 @@ class EventViewSet(viewsets.ModelViewSet):
                 "has_more": has_more,
                 "next_after_id": state[-1]["id"] if has_more and state else None,
             })
-        cache.set(cache_key, data, 2)
+        # Full lounge-state is expensive because it includes tables, participants,
+        # avatars, guest rows and serializers. Keep it cached longer.
+        # Realtime updates should come from WebSocket; this endpoint is fallback/admin state.
+        cache.set(cache_key, data, 15)
         return Response(data)
 
     @action(detail=True, methods=["post"], url_path="create-lounge-table")
@@ -8342,6 +8439,35 @@ class EventViewSet(viewsets.ModelViewSet):
         # Add participant to the table meeting
         user = request.user
 
+        # ✅ Prevent duplicate join storms for the same user/table.
+        # This protects backend when force_join_breakout + reconnect triggers overlap.
+        join_lock_key = f"event:{event.id}:lounge_join_lock:user:{user.id}:table:{table.id}"
+        join_token_cache_key = f"event:{event.id}:lounge_join_token:user:{user.id}:table:{table.id}"
+
+        cached_join = cache.get(join_token_cache_key)
+        if cached_join:
+            logger.info(
+                "[LOUNGE_JOIN] Returning cached recent join token for user=%s table=%s",
+                user.id,
+                table.id,
+            )
+            return Response(cached_join)
+
+        got_join_lock = cache.add(join_lock_key, "1", 20)
+        if not got_join_lock:
+            cached_join = cache.get(join_token_cache_key)
+            if cached_join:
+                return Response(cached_join)
+
+            return Response(
+                {
+                    "error": "join_in_progress",
+                    "reason": "Breakout join already in progress. Please retry shortly.",
+                    "retry_after": 2,
+                },
+                status=202,
+            )
+
         # ✅ CLEANUP: Remove any stale LoungeParticipant records before joining
         # This prevents 409 conflicts when a user rejoins after leaving
         # NOTE: We only clean up Django DB records here, RTK cleanup happens below if needed
@@ -8368,37 +8494,47 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 logger.warning(f"[LOUNGE_JOIN] Error cleaning stale record: {e}")
 
-        # Check if user already in this meeting (duplicate prevention)
+        # Check if user already in this meeting (duplicate prevention).
+        # For BREAKOUT rooms, skip this expensive RTK list-participants call.
+        # During 500+ user force-join, this would create hundreds of external RTK GETs.
+        # The Redis join lock + short token cache above already protects duplicate join storms.
         duplicate_found = False
-        try:
-            logger.info(f"[LOUNGE_JOIN] Checking for duplicates: user {user.id}")
-            check_resp = requests.get(
-                f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
-                headers=_rtk_headers(),
-                params={"limit": 100},
-                timeout=8,
+        if table.category != "BREAKOUT":
+            try:
+                logger.info(f"[LOUNGE_JOIN] Checking for duplicates: user {user.id}")
+                check_resp = requests.get(
+                    f"{RTK_API_BASE}/meetings/{meeting_id}/participants",
+                    headers=_rtk_headers(),
+                    params={"limit": 100},
+                    timeout=8,
+                )
+                if check_resp.ok:
+                    existing = check_resp.json().get("data", [])
+                    for p in existing:
+                        cid = p.get("client_specific_id") or p.get("custom_participant_id")
+                        if cid == str(user.id):
+                            duplicate_found = True
+                            logger.warning(f"[LOUNGE_JOIN] Duplicate detected: user {user.id}")
+                            # Enqueue async task to remove duplicate from RTK and allow rejoin
+                            rtk_id = p.get("id")
+                            if rtk_id:
+                                from .tasks import cleanup_rtk_participant_task
+                                cleanup_rtk_participant_task.delay(meeting_id, rtk_id)
+                                logger.info(f"[LOUNGE_JOIN] Enqueued cleanup task for stale participant {rtk_id}, allowing rejoin")
+                                duplicate_found = False  # Allow rejoin while cleanup happens async
+                                break
+            except requests.exceptions.Timeout:
+                logger.warning(f"[LOUNGE_JOIN] Duplicate check timed out, proceeding with join")
+                # Don't block on timeout, proceed with join
+            except Exception as e:
+                logger.warning(f"[LOUNGE_JOIN] Duplicate check failed: {e}")
+                # Don't block on error, proceed with join
+        else:
+            logger.info(
+                "[LOUNGE_JOIN] Skipping RTK duplicate participant scan for breakout join user=%s table=%s",
+                user.id,
+                table.id,
             )
-            if check_resp.ok:
-                existing = check_resp.json().get("data", [])
-                for p in existing:
-                    cid = p.get("client_specific_id") or p.get("custom_participant_id")
-                    if cid == str(user.id):
-                        duplicate_found = True
-                        logger.warning(f"[LOUNGE_JOIN] Duplicate detected: user {user.id}")
-                        # Enqueue async task to remove duplicate from RTK and allow rejoin
-                        rtk_id = p.get("id")
-                        if rtk_id:
-                            from .tasks import cleanup_rtk_participant_task
-                            cleanup_rtk_participant_task.delay(meeting_id, rtk_id)
-                            logger.info(f"[LOUNGE_JOIN] Enqueued cleanup task for stale participant {rtk_id}, allowing rejoin")
-                            duplicate_found = False  # Allow rejoin while cleanup happens async
-                            break
-        except requests.exceptions.Timeout:
-            logger.warning(f"[LOUNGE_JOIN] Duplicate check timed out, proceeding with join")
-            # Don't block on timeout, proceed with join
-        except Exception as e:
-            logger.warning(f"[LOUNGE_JOIN] Duplicate check failed: {e}")
-            # Don't block on error, proceed with join
 
         if duplicate_found:
             return Response({
@@ -8479,11 +8615,25 @@ class EventViewSet(viewsets.ModelViewSet):
                     except Exception as e:
                         logger.warning(f"[LOUNGE_JOIN] Failed to store RTK participant ID: {e}")
 
-            return Response({"token": token, "participant_id": participant_id})
+            join_payload = {
+                "token": token,
+                "authToken": token,
+                "participant_id": participant_id,
+                "meetingId": meeting_id,
+                "table_id": table.id,
+            }
+
+            # Short cache only to absorb duplicate frontend calls during reconnect/breakout storm.
+            cache.set(join_token_cache_key, join_payload, 60)
+            cache.delete(join_lock_key)
+
+            return Response(join_payload)
         except requests.exceptions.HTTPError as e:
+            cache.delete(join_lock_key)
             logger.error(f"[LOUNGE_JOIN] RTK API error: {e.response.status_code}")
             return Response({"error": "rtk_api_error"}, status=500)
         except Exception as e:
+            cache.delete(join_lock_key)
             logger.error(f"[LOUNGE_JOIN] Exception: {str(e)}")
             return Response({"error": "rtk_join_failed", "detail": str(e)}, status=500)
 
@@ -11683,6 +11833,7 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         """
         Alias to list only my registrations with pagination support.
         Always strict to request.user.
+        Supports ?event=<id> filter for checking a single event registration.
         Uses lightweight serializer and optimized query for fast card footer loads.
         """
         if getattr(request.user, "is_guest", False):
@@ -11697,6 +11848,9 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
             'current_location', 'user_id', 'event__id', 'event__created_by_id',
             'user__email'
         )
+        event_id = request.query_params.get('event')
+        if event_id:
+            qs = qs.filter(event_id=event_id)
         page = self.paginate_queryset(qs)
         ser = EventRegistrationLiteSerializer(page or qs, many=True)
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)

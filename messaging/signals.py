@@ -39,6 +39,10 @@ def on_message_created(sender, instance: Message, created: bool, **kwargs) -> No
 
         # Broadcast new message to WebSocket subscribers
         _broadcast_message_event(instance, event_type="message.created")
+
+        # For direct messages, also notify the receiver's already-open live event
+        # socket so unread badges update instantly without adding HTTP polling.
+        _broadcast_direct_message_unread(instance)
     else:
         # Broadcast edit event to WebSocket subscribers (if body was changed)
         if instance.is_edited or instance.is_deleted:
@@ -95,3 +99,60 @@ def _broadcast_message_event(message: Message, event_type: str = "message.create
 
     except Exception as e:
         logger.exception(f"[Broadcast] ❌ Failed to broadcast message event: {e}")
+
+
+def _broadcast_direct_message_unread(message: Message) -> None:
+    """
+    Send a lightweight unread notification for 1:1 direct messages.
+
+    This intentionally reuses the receiver's user_{id} event websocket group
+    that LiveMeetingPage already keeps open. It avoids new polling and avoids
+    serializing/sending the full message payload to every live participant.
+    """
+    try:
+        conversation = message.conversation
+
+        # Only 1:1 DM conversations have user1/user2 and no event/group/lounge.
+        if (
+            not conversation.user1_id
+            or not conversation.user2_id
+            or conversation.group_id
+            or conversation.event_id
+            or getattr(conversation, "lounge_table_id", None)
+        ):
+            return
+
+        sender_id = message.sender_id
+        if not sender_id:
+            return
+
+        if sender_id == conversation.user1_id:
+            recipient_id = conversation.user2_id
+        elif sender_id == conversation.user2_id:
+            recipient_id = conversation.user1_id
+        else:
+            return
+
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer is None:
+            return
+
+        payload = {
+            "type": "private_message_unread",
+            "conversation_id": conversation.id,
+            "message_id": message.id,
+            "sender_id": sender_id,
+            "recipient_id": recipient_id,
+            "event_id": message.event_id,
+            "created_at": message.created_at.isoformat() if message.created_at else timezone.now().isoformat(),
+        }
+
+        async_to_sync(channel_layer.group_send)(f"user_{recipient_id}", payload)
+    except Exception:
+        logger.exception(
+            "[Broadcast] Failed to send direct-message unread notification for msg_id=%s",
+            getattr(message, "id", None),
+        )
