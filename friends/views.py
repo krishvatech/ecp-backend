@@ -244,7 +244,34 @@ class FriendshipViewSet(
             )
 
         def _avatar(u):
-            return getattr(u, "avatar_url", "") or getattr(getattr(u, "profile", None), "avatar", "") or ""
+            # Check user.avatar_url first, then profile.user_image, then profile.wordpress_avatar_url
+            profile = getattr(u, "profile", None)
+
+            # avatar_url (direct field on user)
+            avatar = getattr(u, "avatar_url", "") or ""
+            if avatar:
+                return avatar
+
+            # profile.user_image (ImageField - need to call .url)
+            if profile:
+                user_image = getattr(profile, "user_image", None)
+                if user_image:
+                    try:
+                        return user_image.url
+                    except (ValueError, AttributeError):
+                        pass
+
+                # profile.wordpress_avatar_url (URLField)
+                avatar = getattr(profile, "wordpress_avatar_url", "") or ""
+                if avatar:
+                    return avatar
+
+                # profile.avatar (fallback)
+                avatar = getattr(profile, "avatar", "") or ""
+                if avatar:
+                    return avatar
+
+            return ""
 
         def _kyc_status(u):
             return getattr(getattr(u, "profile", None), "kyc_status", None)
