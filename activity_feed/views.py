@@ -1,5 +1,5 @@
 # activity_feed/view.py
-from django.db.models import Q, CharField
+from django.db.models import Q, CharField, Count, F
 from django.db.models.functions import Cast
 from rest_framework.viewsets import ReadOnlyModelViewSet
 from rest_framework.permissions import IsAuthenticated
@@ -459,6 +459,109 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             },
         }
 
+    def _batch_aggregate_engagements(self, combined_rows):
+        """
+        Batch-aggregate engagement metrics (likes/comments/shares) for all items.
+        Returns a map: {(content_type_id, object_id): {likes, comments, shares}}
+        Avoids N+1 queries by doing 3 aggregate queries (one per engagement type).
+        """
+        from engagements.models import Reaction, Comment, Share
+
+        # Cache ContentTypes to avoid repeated lookups
+        ct_cache = {}
+        def get_ct(app_label, model):
+            key = (app_label, model)
+            if key not in ct_cache:
+                try:
+                    ct_cache[key] = ContentType.objects.get(app_label=app_label, model=model)
+                except Exception:
+                    ct_cache[key] = None
+            return ct_cache[key]
+
+        # Extract all (content_type, object_id) pairs from combined rows
+        targets = {}  # {(ct_id, obj_id): ct_id} to deduplicate
+
+        for row in combined_rows:
+            row_id = row.get("id", "")
+            # Determine target type and object_id from row
+            object_id = None
+
+            if isinstance(row_id, str) and row_id.startswith("event-"):
+                # Event: content_type = "events.event", object_id = event id
+                try:
+                    event_ct = get_ct("events", "event")
+                    if event_ct:
+                        object_id = int(row_id.split("-")[1])
+                        targets[(event_ct.id, object_id)] = "events.event"
+                except Exception:
+                    pass
+            elif isinstance(row_id, str) and row_id.startswith("resource-"):
+                # Resource: content_type = "content.resource"
+                try:
+                    resource_ct = get_ct("content", "resource")
+                    if resource_ct:
+                        object_id = int(row_id.split("-")[1])
+                        targets[(resource_ct.id, object_id)] = "content.resource"
+                except Exception:
+                    pass
+            else:
+                # Feed item: content_type = "activity_feed.feeditem"
+                try:
+                    feeditem_ct = get_ct("activity_feed", "feeditem")
+                    if feeditem_ct:
+                        object_id = int(row_id)
+                        targets[(feeditem_ct.id, object_id)] = "activity_feed.feeditem"
+                except Exception:
+                    pass
+
+        if not targets:
+            return {}
+
+        # Batch aggregate reactions (likes)
+        reaction_counts = {}
+        reaction_agg = Reaction.objects.filter(
+            content_type_id__in=[ct_id for ct_id, _ in targets.keys()],
+            object_id__in=[obj_id for _, obj_id in targets.keys()]
+        ).values("content_type_id", "object_id").annotate(count=Count("id"))
+
+        for row in reaction_agg:
+            key = (row["content_type_id"], row["object_id"])
+            reaction_counts[key] = row["count"]
+
+        # Batch aggregate comments
+        comment_counts = {}
+        comment_agg = Comment.objects.filter(
+            content_type_id__in=[ct_id for ct_id, _ in targets.keys()],
+            object_id__in=[obj_id for _, obj_id in targets.keys()],
+            moderation_status__in=["clear"]  # only count approved comments
+        ).values("content_type_id", "object_id").annotate(count=Count("id"))
+
+        for row in comment_agg:
+            key = (row["content_type_id"], row["object_id"])
+            comment_counts[key] = row["count"]
+
+        # Batch aggregate shares
+        share_counts = {}
+        share_agg = Share.objects.filter(
+            content_type_id__in=[ct_id for ct_id, _ in targets.keys()],
+            object_id__in=[obj_id for _, obj_id in targets.keys()]
+        ).values("content_type_id", "object_id").annotate(count=Count("id"))
+
+        for row in share_agg:
+            key = (row["content_type_id"], row["object_id"])
+            share_counts[key] = row["count"]
+
+        # Build result map
+        result = {}
+        for key in targets.keys():
+            result[key] = {
+                "likes": reaction_counts.get(key, 0),
+                "comments": comment_counts.get(key, 0),
+                "shares": share_counts.get(key, 0),
+            }
+
+        return result
+
     def list(self, request, *args, **kwargs):
 
         # Build base queryset with your existing filters
@@ -663,7 +766,76 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
 
             return d.timestamp()
 
-        combined.sort(key=_ts, reverse=True)
+        # ---- Check sort parameter ----
+        sort_param = request.query_params.get("sort", "recent").strip().lower()
+
+        if sort_param == "popular":
+            # Popular: sort by popularity score (likes * 1 + comments * 2 + shares * 3)
+            # Tie-breaker: created_at descending (newest first)
+            engagement_map = self._batch_aggregate_engagements(combined)
+
+            # Cache ContentTypes for the popularity key function
+            ct_cache = {}
+            def get_ct_cached(app_label, model):
+                key = (app_label, model)
+                if key not in ct_cache:
+                    try:
+                        ct_cache[key] = ContentType.objects.get(app_label=app_label, model=model)
+                    except Exception:
+                        ct_cache[key] = None
+                return ct_cache[key]
+
+            def _popularity_key(row):
+                row_id = row.get("id", "")
+                key = None
+
+                # Extract target type and object_id from row
+                if isinstance(row_id, str) and row_id.startswith("event-"):
+                    try:
+                        event_ct = get_ct_cached("events", "event")
+                        if event_ct:
+                            object_id = int(row_id.split("-")[1])
+                            key = (event_ct.id, object_id)
+                    except Exception:
+                        pass
+                elif isinstance(row_id, str) and row_id.startswith("resource-"):
+                    try:
+                        resource_ct = get_ct_cached("content", "resource")
+                        if resource_ct:
+                            object_id = int(row_id.split("-")[1])
+                            key = (resource_ct.id, object_id)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        feeditem_ct = get_ct_cached("activity_feed", "feeditem")
+                        if feeditem_ct:
+                            object_id = int(row_id)
+                            key = (feeditem_ct.id, object_id)
+                    except Exception:
+                        pass
+
+                if key and key in engagement_map:
+                    m = engagement_map[key]
+                    likes = m.get("likes", 0)
+                    comments = m.get("comments", 0)
+                    shares = m.get("shares", 0)
+                else:
+                    likes = comments = shares = 0
+
+                # Popularity score: likes * 1 + comments * 2 + shares * 3
+                popularity_score = likes * 1 + comments * 2 + shares * 3
+
+                # Tie-breaker: created_at (newer is better, so negate timestamp)
+                ts = _ts(row)
+
+                # Return tuple for sorting: (-score, -timestamp) so higher scores come first
+                return (-popularity_score, -ts)
+
+            combined.sort(key=_popularity_key)
+        else:
+            # Recent (default): sort by timestamp descending
+            combined.sort(key=_ts, reverse=True)
 
         # ---- paginate the merged list (single pagination pass) ----
         page = self.paginator.paginate_queryset(combined, request, view=self)
