@@ -8,15 +8,18 @@ This version supports:
  - Group rooms (e.g., per-event) via POST /conversations/ensure-group/
 """
 from __future__ import annotations
+from django.conf import settings
+from django.core.cache import cache
 from django.db import models
 from django.contrib.auth import get_user_model
 from django.db.models import Q, Prefetch,Exists, OuterRef
 from rest_framework import viewsets, mixins, status, permissions
 from rest_framework.response import Response
 from rest_framework.decorators import action
-from rest_framework.exceptions import NotFound, ValidationError, PermissionDenied
+from rest_framework.exceptions import NotFound, ValidationError, PermissionDenied, Throttled
 from rest_framework.generics import GenericAPIView
 from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
+from rest_framework.throttling import UserRateThrottle
 from django.core.files.storage import default_storage
 from django.http import FileResponse, Http404
 from django.http import FileResponse
@@ -38,6 +41,29 @@ from common.live_metrics import live_metric_incr
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
+
+
+class LiveChatMessageRateThrottle(UserRateThrottle):
+    """Per-user live chat send limit. Config: DRF_THROTTLE_LIVE_CHAT_MESSAGE."""
+    scope = "live_chat_message"
+
+
+def _cache_window_limited(key: str, *, limit: int, window_seconds: int) -> tuple[bool, int]:
+    """
+    Small Redis/cache fixed-window limiter used for room-level burst protection.
+    Returns (limited, current_count).
+    """
+    limit = max(1, int(limit))
+    window_seconds = max(1, int(window_seconds))
+    try:
+        if cache.add(key, 1, timeout=window_seconds):
+            return False, 1
+        current = cache.incr(key)
+        return current > limit, current
+    except Exception:
+        # Do not break chat if Redis/cache has a temporary issue.
+        logger.warning("[LiveChatRate] cache limiter failed for key=%s", key, exc_info=True)
+        return False, 0
 
 
 class ConversationViewSet(viewsets.ViewSet):
@@ -1269,7 +1295,15 @@ class MessageViewSet(
 ):
     serializer_class = MessageSerializer
     permission_classes = [permissions.IsAuthenticated, IsConversationParticipant]
-    
+
+    def get_throttles(self):
+        # Only throttle message creation. Listing/history must keep the normal
+        # global DRF throttles, otherwise users can hit send limits simply by
+        # reading chat history.
+        if getattr(self, "action", None) == "create":
+            self.throttle_classes = [LiveChatMessageRateThrottle]
+        return super().get_throttles()
+
     parser_classes = (JSONParser, FormParser, MultiPartParser)
 
     @staticmethod
@@ -1394,6 +1428,28 @@ class MessageViewSet(
         # DM Access Check
         if (conv.group_id is None and conv.event_id is None and getattr(conv, "lounge_table_id", None) is None) and user.id not in (conv.user1_id, conv.user2_id):
             raise PermissionDenied("You are not a participant of this conversation.")
+
+        # Room-level burst protection. Per-user DRF throttling is not enough for
+        # a breakout test because 10 users in each of 32 rooms can all send at
+        # the same moment. This keeps one noisy room from creating a DB/Redis
+        # broadcast spike while still allowing normal discussion.
+        if conv.lounge_table_id or conv.event_id or conv.group_id:
+            window = int(getattr(settings, "LIVE_CHAT_ROOM_RATE_WINDOW_SECONDS", 10))
+            if conv.lounge_table_id:
+                limit = int(getattr(settings, "LIVE_ROOM_CHAT_BURST_LIMIT", 25))
+                scope = f"lounge:{conv.lounge_table_id}"
+            elif conv.event_id:
+                limit = int(getattr(settings, "LIVE_EVENT_CHAT_BURST_LIMIT", 80))
+                scope = f"event:{conv.event_id}"
+            else:
+                limit = int(getattr(settings, "LIVE_GROUP_CHAT_BURST_LIMIT", 40))
+                scope = f"group:{conv.group_id}"
+
+            limited, count = _cache_window_limited(
+                f"live-chat-burst:{scope}", limit=limit, window_seconds=window
+            )
+            if limited:
+                raise Throttled(wait=window, detail="Chat is very busy. Please try again in a few seconds.")
 
         # 2. Extract Data
         body_text = request.data.get("body", "")

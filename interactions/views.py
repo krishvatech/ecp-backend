@@ -1,10 +1,13 @@
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.conf import settings
+from django.core.cache import cache
 from django.db.models import BooleanField, Count, Exists, OuterRef, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import Throttled
 from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 import html
@@ -58,6 +61,29 @@ class AiSuggestionsRateThrottle(UserRateThrottle):
     """
     scope = "ai_suggestions"
 
+
+class LiveQnAQuestionRateThrottle(UserRateThrottle):
+    """Per-user live Q&A submit limit. Config: DRF_THROTTLE_LIVE_QNA_QUESTION."""
+    scope = "live_qna_question"
+
+
+def _cache_window_limited(key: str, *, limit: int, window_seconds: int) -> tuple[bool, int]:
+    """
+    Redis/cache fixed-window limiter for room-level Q&A burst protection.
+    Returns (limited, current_count).
+    """
+    limit = max(1, int(limit))
+    window_seconds = max(1, int(window_seconds))
+    try:
+        if cache.add(key, 1, timeout=window_seconds):
+            return False, 1
+        current = cache.incr(key)
+        return current > limit, current
+    except Exception:
+        # Do not break Q&A if cache temporarily fails.
+        return False, 0
+
+
 class QuestionViewSet(viewsets.ModelViewSet):
     """
     Q&A REST endpoints with real-time upvote broadcast.
@@ -67,6 +93,13 @@ class QuestionViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = QuestionSerializer          # ✅ ADD THIS
     queryset = Question.objects.all()  # required by DRF, but we override get_queryset()
+
+    def get_throttles(self):
+        # Only apply Q&A send throttle to question creation. Other actions such
+        # as list/upvote/moderation keep their existing/default behavior.
+        if getattr(self, "action", None) == "create":
+            self.throttle_classes = [LiveQnAQuestionRateThrottle]
+        return super().get_throttles()
 
     @staticmethod
     def _is_guest_user(user) -> bool:
@@ -460,6 +493,25 @@ class QuestionViewSet(viewsets.ModelViewSet):
         # Capture optional table ID from request body
         lounge_table_id = self.request.data.get("lounge_table")
 
+        # Room-level Q&A burst protection. In breakout mode, Q&A is isolated by
+        # lounge_table_id, but DB writes and websocket sends still hit shared
+        # infrastructure. Let a 10-person room ask a normal burst, but reject
+        # runaway spam before it overloads the event.
+        event_id_for_limit = self.request.data.get("event")
+        if event_id_for_limit:
+            window = int(getattr(settings, "LIVE_QNA_ROOM_RATE_WINDOW_SECONDS", 30))
+            if lounge_table_id:
+                limit = int(getattr(settings, "LIVE_ROOM_QNA_BURST_LIMIT", 15))
+                scope = f"event:{event_id_for_limit}:table:{lounge_table_id}"
+            else:
+                limit = int(getattr(settings, "LIVE_EVENT_QNA_BURST_LIMIT", 80))
+                scope = f"event:{event_id_for_limit}:main"
+            limited, count = _cache_window_limited(
+                f"live-qna-burst:{scope}", limit=limit, window_seconds=window
+            )
+            if limited:
+                raise Throttled(wait=window, detail="Q&A is very busy. Please try again in a few seconds.")
+
         # Save with user and table info
         # If lounge_table_id is None/empty, it saves as NULL (Main Room)
         adopted_suggestion_id = self.request.data.get("adopted_suggestion_id")
@@ -570,7 +622,12 @@ class QuestionViewSet(viewsets.ModelViewSet):
         )
 
         # Check if auto-grouping should trigger
-        self._maybe_trigger_auto_grouping(question.event_id)
+        # Breakout room questions should not trigger event-wide AI grouping by
+        # default. That task counts all event questions and broadcasts to the
+        # event shared Q&A group, which is noisy during 300+ user breakout tests.
+        main_room_only = bool(getattr(settings, "QNA_AUTO_GROUP_MAIN_ROOM_ONLY", True))
+        if not (main_room_only and question.lounge_table_id):
+            self._maybe_trigger_auto_grouping(question.event_id)
 
     def _maybe_trigger_auto_grouping(self, event_id):
         """
@@ -588,25 +645,33 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         logger.info(f"[AUTO-GROUP] Checking event {event_id}, threshold={threshold}")
 
+        # Avoid many simultaneous question POSTs all doing the same count query.
         if cache.get(cache_key):
             logger.info(f"[AUTO-GROUP] Throttled (cache hit) for event {event_id}")
             return  # Recently triggered, throttle
+        lock_key = f"{cache_key}:lock"
+        if not cache.add(lock_key, True, timeout=10):
+            logger.info(f"[AUTO-GROUP] Skipping duplicate concurrent check for event {event_id}")
+            return
+        try:
+            ungrouped_count = Question.objects.filter(
+                event_id=event_id,
+                lounge_table__isnull=True,
+                is_hidden=False,
+                is_seed=False,
+                moderation_status__in=["approved", "pending"],
+            ).exclude(group_membership__isnull=False).count()
 
-        ungrouped_count = Question.objects.filter(
-            event_id=event_id,
-            is_hidden=False,
-            is_seed=False,
-            moderation_status__in=["approved", "pending"],
-        ).exclude(group_membership__isnull=False).count()
+            logger.info(f"[AUTO-GROUP] Event {event_id}: {ungrouped_count} ungrouped main-room questions")
 
-        logger.info(f"[AUTO-GROUP] Event {event_id}: {ungrouped_count} ungrouped questions")
-
-        if ungrouped_count >= threshold:
-            logger.info(f"[AUTO-GROUP] ✅ Threshold reached! Dispatching task for event {event_id}")
-            cache.set(cache_key, True, timeout=120)
-            auto_group_questions_task.delay(event_id)
-        else:
-            logger.info(f"[AUTO-GROUP] Not enough questions ({ungrouped_count} < {threshold})")
+            if ungrouped_count >= threshold:
+                logger.info(f"[AUTO-GROUP] ✅ Threshold reached! Dispatching task for event {event_id}")
+                cache.set(cache_key, True, timeout=120)
+                auto_group_questions_task.delay(event_id)
+            else:
+                logger.info(f"[AUTO-GROUP] Not enough questions ({ungrouped_count} < {threshold})")
+        finally:
+            cache.delete(lock_key)
 
     @staticmethod
     def _parse_positive_int(value, default, *, max_value=None):

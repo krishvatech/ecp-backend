@@ -294,6 +294,15 @@ ROOT_URLCONF = "ecp_backend.urls"
 ASGI_APPLICATION = "ecp_backend.asgi.application"
 WSGI_APPLICATION = None  # Channels-based; no WSGI application needed
 
+
+def env_bool(name, default=False):
+    return str(os.getenv(name, str(default))).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Large live-meeting safety: avoid broadcasting full lounge state + full online
+# user list to every websocket client on every coalesced lounge update.
+LIVE_LIGHTWEIGHT_LOUNGE_BROADCASTS = env_bool("LIVE_LIGHTWEIGHT_LOUNGE_BROADCASTS", True)
+
 # _DB_CONN_MAX_AGE = int(os.getenv("DB_CONN_MAX_AGE", "0" if DEBUG else "60"))
 # 
 # DATABASES = {
@@ -531,6 +540,11 @@ REST_FRAMEWORK = {
         "mood": os.getenv("DRF_THROTTLE_MOOD", "30/min"),
         "polish_question": os.getenv("DRF_THROTTLE_POLISH", "20/min"),
         "ai_suggestions": os.getenv("DRF_THROTTLE_AI_SUGG", "10/min"),
+
+        # Live meeting burst protection. These are per-user limits; room-level
+        # burst limits are enforced in messaging/views.py and interactions/views.py.
+        "live_chat_message": os.getenv("DRF_THROTTLE_LIVE_CHAT_MESSAGE", "12/min"),
+        "live_qna_question": os.getenv("DRF_THROTTLE_LIVE_QNA_QUESTION", "6/min"),
     },
     
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",

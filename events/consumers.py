@@ -1169,13 +1169,24 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         })
 
     async def lounge_update(self, event: dict) -> None:
-        """Handler for 'lounge_update' group message."""
-        await self.send_json({
+        """Handler for coalesced lounge updates.
+
+        For large meetings the producer can send a lightweight/deferred payload
+        instead of serializing full lounge state + full online user list to every
+        websocket client. Clients that need full lounge details fetch them lazily.
+        """
+        payload = {
             "type": "lounge_state",
-            "lounge_state": event["state"],
-            "online_users": event.get("online_users", []),
             "main_room_support_status": event.get("main_room_support_status"),
-        })
+        }
+        if event.get("state_deferred"):
+            payload["lounge_state_deferred"] = True
+            payload["online_users_deferred"] = True
+            payload["online_counts"] = event.get("online_counts", {})
+        else:
+            payload["lounge_state"] = event.get("state", [])
+            payload["online_users"] = event.get("online_users", [])
+        await self.send_json(payload)
 
     # ✅ NEW: Lounge countdown handler
     async def lounge_countdown(self, event: dict) -> None:
@@ -1195,9 +1206,27 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         })
 
     async def broadcast_lounge_update(self):
+        main_room_support_status = await self.get_main_room_support_status()
+
+        # For 300–500+ users, full lounge_state + full online_users broadcast is
+        # expensive because the payload is serialized once and delivered to every
+        # event websocket. Use a lightweight payload unless an environment flag
+        # explicitly keeps the legacy full broadcast behavior.
+        lightweight = bool(getattr(settings, "LIVE_LIGHTWEIGHT_LOUNGE_BROADCASTS", True))
+        if lightweight:
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    "type": "lounge_update",
+                    "state_deferred": True,
+                    "online_counts": await self.get_online_presence_counts(),
+                    "main_room_support_status": main_room_support_status,
+                }
+            )
+            return
+
         state = await self.get_lounge_state()
         online_users = await self.get_online_participants_info()
-        main_room_support_status = await self.get_main_room_support_status()
         await self.channel_layer.group_send(
             self.group_name,
             {
@@ -2040,6 +2069,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 "type": "force_join_breakout",
                 "table_id": event["table_id"],
                 "table_name": event.get("table_name"),
+                "join_jitter_ms": event.get("join_jitter_ms", 0),
             })
         else:
             print(f"[HANDLER] ⚠️ breakout_force_join mismatch: self={debug_self}, target_user={target_user_id}, target_guest={target_guest_id}")
@@ -2429,6 +2459,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             name = f"Breakout Room #{room_num}"
             print(f"[RANDOM_ASSIGN] Auto-creating {name}")
             mid = create_rtk_meeting(f"Breakout {self.event_id} - {room_num}")
+            if not mid:
+                raise RuntimeError(f"Failed to create RTK meeting for {name}")
             t = LoungeTable.objects.create(
                 event_id=self.event_id,
                 name=name,
@@ -2449,11 +2481,26 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         print(f"[RANDOM_ASSIGN] Using {len(tables)} table(s) "
               f"(total existing: {len(all_existing)}, needed: {num_rooms_needed})")
 
-        # Update max_seats on the tables we will actually use.
-        for t in tables:
+        # Update max_seats and make sure every selected breakout room already
+        # has an RTK meeting before we notify hundreds of clients.  If we leave
+        # missing RTK meeting creation to /lounge-join-table/, 316 users can all
+        # try to create/fix meetings during the live transition.
+        for idx, t in enumerate(tables, start=1):
+            update_fields = []
             if t.max_seats != per_room:
                 t.max_seats = per_room
-                t.save(update_fields=['max_seats'])
+                update_fields.append('max_seats')
+
+            if not t.rtk_meeting_id:
+                print(f"[RANDOM_ASSIGN] Creating missing RTK meeting for existing breakout table {t.id}")
+                mid = create_rtk_meeting(f"Breakout {self.event_id} - {idx}")
+                if not mid:
+                    raise RuntimeError(f"Failed to create RTK meeting for breakout table {t.id}")
+                t.rtk_meeting_id = mid
+                update_fields.append('rtk_meeting_id')
+
+            if update_fields:
+                t.save(update_fields=update_fields)
 
         # 3. Perform assignments with proper validation
         assignments = []
@@ -2568,35 +2615,53 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         await self.send_debug_to_host(f"Created {len(assignments)} assignments across rooms.")
 
+        # Mark breakouts active before notifying users.  Otherwise users who
+        # reconnect during the transition can hit the late-joiner path while
+        # breakout_rooms_active is still false.
+        await self._set_breakout_active_flag(True)
+
         await self.broadcast_lounge_update()
 
-        # ✅ FIX: Notify each assigned user via the group
-        # Assignments now include meeting_id for better debugging
-        for assignment in assignments:
+        # Notify users in small batches.  With 316 users, sending every
+        # force_join_breakout at once creates a /lounge-join-table/ + RTK
+        # websocket storm.  These settings can be tuned in production.
+        batch_size = max(1, int(getattr(settings, "BREAKOUT_FORCE_JOIN_BATCH_SIZE", 25)))
+        batch_sleep = max(0.0, float(getattr(settings, "BREAKOUT_FORCE_JOIN_BATCH_SLEEP_SECONDS", 3)))
+        client_jitter_ms = max(0, int(getattr(settings, "BREAKOUT_FORCE_JOIN_CLIENT_JITTER_MS", 2500)))
+
+        for index, assignment in enumerate(assignments):
+            if index and index % batch_size == 0 and batch_sleep > 0:
+                await asyncio.sleep(batch_sleep)
+
             target_type = assignment.get("target_type")
             target_id = assignment.get("target_id")
             table_id = assignment.get("table_id")
             table_name = assignment.get("table_name")
 
+            event_payload = {
+                "type": "breakout_force_join",
+                "table_id": table_id,
+                "table_name": table_name,
+                # Small per-client jitter inside each backend batch so clients
+                # do not all call the REST join endpoint in the same millisecond.
+                "join_jitter_ms": client_jitter_ms,
+            }
+
             if target_type == "guest":
                 await self.channel_layer.group_send(
                     f"guest_user_{target_id}",
                     {
-                        "type": "breakout_force_join",
+                        **event_payload,
                         "user_id": f"guest_{target_id}",
                         "guest_id": target_id,
-                        "table_id": table_id,
-                        "table_name": table_name,
                     }
                 )
             else:
                 await self.channel_layer.group_send(
                     f"user_{target_id}",
                     {
-                        "type": "breakout_force_join",
+                        **event_payload,
                         "user_id": target_id,
-                        "table_id": table_id,
-                        "table_name": table_name,
                     }
                 )
 

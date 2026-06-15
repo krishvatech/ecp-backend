@@ -19,7 +19,7 @@ try:
 except Exception:  # pragma: no cover - import guard for local/runtime variation
     Disconnected = None
 
-from events.models import Event, EventRegistration
+from events.models import Event, EventParticipant, EventRegistration
 from interactions.models import ChatMessage, Question
 
 log = logging.getLogger("channels")
@@ -81,6 +81,43 @@ def _get_event_and_check_membership(event_id: int, user):
         return event
 
     return None  # Not a member — reject
+
+
+@database_sync_to_async
+def _can_receive_shared_qna_group(event_id: int, user) -> bool:
+    """
+    Only hosts/moderators/admins need the event-wide shared Q&A group.
+
+    Normal attendees inside breakout rooms should listen only to their room group.
+    Otherwise every shared group/grouping broadcast fans out to all breakout users
+    even when their room-local Q&A does not need it.
+    """
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+
+    if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
+        return True
+
+    user_id = getattr(user, "id", None)
+    if not user_id:
+        return False
+
+    try:
+        event = Event.objects.select_related("community").get(pk=event_id)
+    except Event.DoesNotExist:
+        return False
+
+    if event.created_by_id == user_id:
+        return True
+    if getattr(event.community, "owner_id", None) == user_id:
+        return True
+
+    return EventParticipant.objects.filter(
+        event_id=event_id,
+        user_id=user_id,
+        participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
+        role__in=[EventParticipant.ROLE_HOST, EventParticipant.ROLE_MODERATOR],
+    ).exists()
 
 
 @database_sync_to_async
@@ -366,10 +403,14 @@ class QnAConsumer(BaseEventConsumer):
             self.group_name = f"{self.group_name_prefix}_{self.event_id}_main"
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
-        # Join the event-wide shared group so every user receives group broadcasts
-        # regardless of whether they are in the main room or a lounge table.
-        self.shared_group_name = f"{self.group_name_prefix}_{self.event_id}_shared"
-        await self.channel_layer.group_add(self.shared_group_name, self.channel_name)
+
+        # Only hosts/moderators/admins need event-wide group-management messages.
+        # Breakout attendees receive room-local Q&A messages from self.group_name.
+        self.shared_group_name = None
+        if await _can_receive_shared_qna_group(self.event_id, self.user):
+            self.shared_group_name = f"{self.group_name_prefix}_{self.event_id}_shared"
+            await self.channel_layer.group_add(self.shared_group_name, self.channel_name)
+
         await self.accept()
 
     async def receive_json(self, content: Dict[str, Any], **kwargs: Any) -> None:
@@ -649,9 +690,10 @@ class QnAConsumer(BaseEventConsumer):
         await self.send_json(event.get("payload", {}))
 
     async def disconnect(self, code: int) -> None:
-        try:
-            await self.channel_layer.group_discard(self.shared_group_name, self.channel_name)
-        except Exception:
-            pass
+        if self.shared_group_name:
+            try:
+                await self.channel_layer.group_discard(self.shared_group_name, self.channel_name)
+            except Exception:
+                pass
         await super().disconnect(code)
 
