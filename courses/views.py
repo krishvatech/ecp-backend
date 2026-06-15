@@ -46,6 +46,8 @@ from .tasks import (
     sync_moodle_courses_and_categories,
     sync_single_user_moodle_enrollments,
     _sync_user_enrollments,
+    _get_user_edwiser_wp_id,
+    _clear_unlinked_user_enrollments,
     sync_course_content,
     sync_user_module_completions,
     _sync_course_content,
@@ -221,6 +223,17 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
     def my_courses(self, request):
         user = request.user
 
+        # A user must be linked to the IMAA WordPress/Edwiser account before we
+        # show/sync LMS enrollments. Do not use email fallback here, because it
+        # can create course rows for users without a real LMS account.
+        if not _get_user_edwiser_wp_id(user):
+            _clear_unlinked_user_enrollments(user)
+            logger.info(
+                "my_courses returned empty for user %s because no linked wordpress_id exists",
+                user.email,
+            )
+            return Response([])
+
         # Serve from DB immediately
         enrollments = (
             MoodleEnrollment.objects.filter(user=user)
@@ -237,9 +250,9 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
             [{"course_id": e["course_id"], "full_name": e["full_name"], "progress": e["progress"]} for e in result],
         )
 
-        # Always trigger background enrollment refresh (non-blocking, user-specific)
+        # Trigger background enrollment refresh only for linked users
         sync_single_user_moodle_enrollments.delay(user.id)
-        logger.info("Background enrollment sync triggered for user %s", user.email)
+        logger.info("Background enrollment sync triggered for linked user %s", user.email)
 
         return Response(result)
 
@@ -260,6 +273,15 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
         This ensures unenrolled courses are removed right away.
         """
         user = request.user
+
+        if not _get_user_edwiser_wp_id(user):
+            _clear_unlinked_user_enrollments(user)
+            logger.info(
+                "refresh_my_courses returned empty for user %s because no linked wordpress_id exists",
+                user.email,
+            )
+            return Response([])
+
         try:
             client = get_edwiser_client()
             _sync_user_enrollments(client, user)

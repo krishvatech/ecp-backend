@@ -42,6 +42,43 @@ def _parse_moodle_course_id(course_url: str) -> int | None:
         return None
 
 
+def _get_user_edwiser_wp_id(user) -> int | None:
+    """
+    Return the linked WordPress/Edwiser user ID for course enrollment sync.
+
+    Do not fall back to email here. Email-based Edwiser lookups can match users
+    too broadly and create MoodleEnrollment rows for IMAA Connect users who do
+    not have a linked LMS/Edwiser account.
+    """
+    try:
+        wp_id = getattr(user.profile, "wordpress_id", None)
+    except Exception:
+        return None
+
+    try:
+        return int(wp_id) if wp_id else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _clear_unlinked_user_enrollments(user, *, reason: str = "missing WordPress/Edwiser link") -> int:
+    """
+    Delete only this user's local LMS enrollments when the user is not linked.
+
+    This prevents stale/wrong MoodleEnrollment rows from continuing to appear
+    in /api/courses/my-courses/.
+    """
+    deleted, _ = MoodleEnrollment.objects.filter(user=user).delete()
+    if deleted:
+        logger.info(
+            "Removed %d local course enrollment(s) for unlinked user %s (%s)",
+            deleted,
+            getattr(user, "email", user.pk),
+            reason,
+        )
+    return deleted
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def sync_moodle_courses_and_categories(self):
     """
@@ -138,7 +175,7 @@ def sync_all_user_moodle_enrollments(self):
     users = (
         User.objects.filter(is_active=True, profile__wordpress_id__isnull=False)
         .select_related("profile")
-        .only("id", "email")
+        .only("id", "email", "profile__wordpress_id")
     )
     synced_users = 0
     synced_enrollments = 0
@@ -194,22 +231,18 @@ def _sync_user_enrollments(client, user) -> int | None:
         }
       }
 
-    Returns number of enrollments synced, or None if user has no wordpress_id.
+    Returns number of enrollments synced. Returns 0 when user has no linked wordpress_id.
     """
-    try:
-        profile = user.profile
-        # moodle_user_id is repurposed here as the cached imaa-institute.org WP user ID.
-        # (Direct Moodle API calls are no longer made; this field is free to reuse.)
-        eb_wp_user_id = profile.moodle_user_id
-    except Exception:
-        profile = None
-        eb_wp_user_id = None
-
+    eb_wp_user_id = _get_user_edwiser_wp_id(user)
     if not eb_wp_user_id:
-        # /my-courses accepts email directly — no WP user ID lookup needed
-        eb_courses = client.get_user_courses(email=user.email)
-    else:
-        eb_courses = client.get_user_courses(wp_user_id=eb_wp_user_id)
+        _clear_unlinked_user_enrollments(user)
+        logger.info(
+            "Skipping EB enrollment sync for user %s because no linked wordpress_id exists",
+            getattr(user, "email", user.pk),
+        )
+        return 0
+
+    eb_courses = client.get_user_courses(wp_user_id=eb_wp_user_id)
     synced = 0
     active_course_keys = set()  # track moodle_ids returned by EB API
 
