@@ -41,6 +41,9 @@ class QuestionSerializer(serializers.ModelSerializer):
             "answer_text",
             "answered_phase",
             "requires_followup",
+            "is_pinned",
+            "pinned_at",
+            "pinned_by",
             "is_anonymous",
             "anonymized_by",
             "is_seed",
@@ -56,7 +59,7 @@ class QuestionSerializer(serializers.ModelSerializer):
             "upvoters",
             "reply_count",
         ]
-        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at", "moderation_status", "rejection_reason", "is_answered", "answered_at", "answered_by", "answer_text", "answered_phase", "requires_followup", "is_anonymous", "anonymized_by", "is_seed", "attribution_label", "submission_phase", "covered_by_group", "grouped_answer_parent", "feedback_message", "feedback_by", "feedback_at", "upvote_count", "user_upvoted", "upvoters", "reply_count"]
+        read_only_fields = ["user", "guest_asker", "created_at", "updated_at", "is_hidden", "hidden_by", "hidden_at", "moderation_status", "rejection_reason", "is_answered", "answered_at", "answered_by", "answer_text", "answered_phase", "requires_followup", "is_pinned", "pinned_at", "pinned_by", "is_anonymous", "anonymized_by", "is_seed", "attribution_label", "submission_phase", "covered_by_group", "grouped_answer_parent", "feedback_message", "feedback_by", "feedback_at", "upvote_count", "user_upvoted", "upvoters", "reply_count"]
 
     def get_upvote_count(self, obj):
         annotated = getattr(obj, "upvotes_count", None)
