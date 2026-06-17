@@ -184,6 +184,10 @@ def _update_product_in_saleor(event, url, headers, channel):
         logger.info(f"➕ Variant missing for product {event.saleor_product_id}, creating one...")
         _create_variant(event, url, headers, event.saleor_product_id, channel)
     else:
+        # Update trackInventory to False by default
+        logger.info(f"🔧 Updating trackInventory to False for variant {event.saleor_variant_id}")
+        _update_variant_track_inventory(url, headers, event.saleor_variant_id, track_inventory=False)
+
         # For paid events: price and stock managed via Product Management tab — skip sync
         if event.is_free:
             logger.info(f"💰 UPDATING Price on Variant: {event.saleor_variant_id} | Event: {event.title}")
@@ -210,7 +214,8 @@ def _create_variant(event, url, headers, product_id, channel):
         "input": {
             "product": product_id,
             "sku": sku,
-            "attributes": [] # Required by some Saleor configs even if empty
+            "attributes": [], # Required by some Saleor configs even if empty
+            "trackInventory": False
         }
     }
 
@@ -345,6 +350,47 @@ def _update_variant_channel_listing(event, url, headers, variant_id, channel):
 def _update_variant_price(event, url, headers, variant_id, channel):
     # Same as listing update
     _update_variant_channel_listing(event, url, headers, variant_id, channel)
+
+
+def _update_variant_track_inventory(url, headers, variant_id, track_inventory=False):
+    mutation = """
+    mutation UpdateVariantTrackInventory($id: ID!, $input: ProductVariantInput!) {
+      productVariantUpdate(id: $id, input: $input) {
+        productVariant { id trackInventory }
+        errors { field message }
+      }
+    }
+    """
+    variables = {
+        "id": variant_id,
+        "input": {
+            "trackInventory": track_inventory
+        }
+    }
+
+    try:
+        r = requests.post(url, json={"query": mutation, "variables": variables}, headers=headers, timeout=20)
+        data = r.json()
+        logger.info(f"DEBUG: trackInventory mutation response: {data}")
+
+        # Check for GraphQL errors
+        graphql_errors = data.get("errors", [])
+        if graphql_errors:
+            logger.error(f"❌ GraphQL error updating trackInventory: {graphql_errors}")
+            return data
+
+        errors = data.get("data", {}).get("productVariantUpdate", {}).get("errors", [])
+        if errors:
+            logger.error(f"❌ Failed to update trackInventory for variant {variant_id}: {errors}")
+        else:
+            variant_data = data.get("data", {}).get("productVariantUpdate", {}).get("productVariant", {})
+            logger.info(f"✅ Updated trackInventory to {track_inventory} for variant {variant_id} | Response: {variant_data}")
+        return data
+    except Exception as e:
+        logger.error(f"❌ Exception updating trackInventory: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None
 
 
 # --- Helpers ---

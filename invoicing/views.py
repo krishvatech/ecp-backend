@@ -5,6 +5,7 @@ from django.http import FileResponse
 from django.core.files.storage import default_storage
 from invoicing.models import Invoice, Customer
 from invoicing.serializers import InvoiceSerializer, CustomerInvoiceListSerializer
+from invoicing.tasks import generate_invoice_pdf_task
 
 class IsCustomerOrReadOnly(permissions.BasePermission):
     """Permission to check if user owns the invoice."""
@@ -28,6 +29,21 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
         if self.action == 'list':
             return CustomerInvoiceListSerializer
         return InvoiceSerializer
+
+
+    @action(detail=True, methods=['post'])
+    def generate_pdf(self, request, pk=None):
+        """Generate or regenerate invoice PDF for the authenticated customer."""
+        invoice = self.get_object()
+        generate_invoice_pdf_task(invoice.id)
+        invoice.refresh_from_db()
+        return Response({
+            'id': invoice.id,
+            'number': invoice.number,
+            'state': invoice.state,
+            'pdf_ready': bool(invoice.pdf_storage_reference),
+            'download_url': f'/api/invoices/{invoice.id}/download_pdf/' if invoice.pdf_storage_reference else '',
+        })
 
     @action(detail=True, methods=['get'])
     def download_pdf(self, request, pk=None):

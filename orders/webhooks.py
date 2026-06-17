@@ -9,12 +9,17 @@ from django.conf import settings
 from django.db import transaction
 from django.contrib.auth.models import User
 from events.models import Event, EventRegistration
+from orders.models import Order
 from events.services.post_acceptance_forms import (
     is_online_event,
     trigger_post_acceptance_forms
 )
 
 logger = logging.getLogger('orders')
+
+
+def _metadata_to_dict(items):
+    return {m.get('key'): m.get('value') for m in (items or []) if m.get('key')}
 
 @csrf_exempt
 def saleor_order_paid_webhook(request):
@@ -47,15 +52,28 @@ def saleor_order_paid_webhook(request):
         if not order:
             return HttpResponse("Missing order data", status=400)
 
+        private_metadata = _metadata_to_dict(order.get("privateMetadata"))
         email = order.get("userEmail")
-        if not email:
-            return HttpResponse("Missing email", status=400)
+        user = None
 
-        # Look up user by email
-        user = User.objects.filter(email=email).first()
+        if private_metadata.get("ecp_user_id"):
+            user = User.objects.filter(id=private_metadata["ecp_user_id"]).first()
+
+        if not user and email:
+            user = User.objects.filter(email__iexact=email).first()
+
         if not user:
-            logger.warning(f"No User found for email: {email}. Skipping registration.")
+            logger.warning(f"No User found for Saleor order paid webhook. email={email}")
             return HttpResponse(status=200)
+
+        saleor_order_id = order.get("id")
+        saleor_order_number = order.get("number")
+        if saleor_order_id:
+            Order.objects.filter(saleor_order_id=saleor_order_id).update(
+                status="paid",
+                saleor_order_number=str(saleor_order_number or ""),
+                paid_at=timezone.now(),
+            )
 
         lines = order.get("lines", [])
         registrations_created = 0
@@ -71,10 +89,7 @@ def saleor_order_paid_webhook(request):
             try:
                 event = Event.objects.get(saleor_variant_id=saleor_variant_id)
 
-                # Skip virtual events (they don't need post-acceptance forms)
-                if is_online_event(event):
-                    logger.info(f"Skipping virtual event {event.id} - no forms required")
-                    continue
+                event_is_online = is_online_event(event)
 
                 # Create EventRegistration using transaction for atomicity
                 with transaction.atomic():
@@ -122,8 +137,8 @@ def saleor_order_paid_webhook(request):
                                 f"with status {registration.status}. Skipping form trigger."
                             )
 
-                    if should_trigger_forms:
-                        # Trigger post-acceptance forms (within atomic transaction)
+                    if should_trigger_forms and not event_is_online:
+                        # Trigger post-acceptance forms only for events that require them.
                         def queue_forms():
                             try:
                                 trigger_post_acceptance_forms(registration)
@@ -135,6 +150,8 @@ def saleor_order_paid_webhook(request):
 
                         # Use transaction.on_commit() pattern to ensure forms triggered after save
                         transaction.on_commit(queue_forms)
+                    elif should_trigger_forms and event_is_online:
+                        logger.info(f"Confirmed online event {event.id}; post-acceptance forms skipped.")
 
             except Event.DoesNotExist:
                 logger.warning(f"No Event found for Saleor variant ID: {saleor_variant_id}")
