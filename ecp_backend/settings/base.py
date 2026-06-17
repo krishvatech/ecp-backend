@@ -136,6 +136,9 @@ EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "False") == "True"
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@example.com")
 DEFAULT_REPLY_TO_EMAIL = os.getenv("DEFAULT_REPLY_TO_EMAIL", "").strip()
 SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", DEFAULT_REPLY_TO_EMAIL or DEFAULT_FROM_EMAIL)
+# false = send paid-invoice email immediately on the mark-paid request (after commit);
+# true = dispatch via Celery worker.
+INVOICE_EMAIL_ASYNC = os.getenv("INVOICE_EMAIL_ASYNC", "false").lower() in ("1", "true", "yes", "on")
 AGORA_APP_ID = os.getenv("AGORA_APP_ID", "")
 AGORA_APP_CERTIFICATE = os.getenv("AGORA_APP_CERTIFICATE", "")
 AGORA_TOKEN_EXPIRE_SECS = 7200
@@ -614,6 +617,9 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_PREFLIGHT_MAX_AGE = int(os.getenv("CORS_PREFLIGHT_MAX_AGE", "86400"))
 DIDIT_CALLBACK_URL = os.getenv("DIDIT_CALLBACK_URL", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173/")
+# Public backend URL used to build signed invoice-download links in emails.
+INVOICE_PUBLIC_BASE_URL = os.getenv("INVOICE_PUBLIC_BASE_URL", "http://localhost:8000").strip().rstrip("/")
+INVOICE_PUBLIC_DOWNLOAD_MAX_AGE_DAYS = int(os.getenv("INVOICE_PUBLIC_DOWNLOAD_MAX_AGE_DAYS", "30"))
 AUTH_HOME_URL = os.getenv("AUTH_HOME_URL", "/dashboard/")
 LOGIN_REDIRECT_URL = AUTH_HOME_URL   
 LOGIN_URL = "/login/" 

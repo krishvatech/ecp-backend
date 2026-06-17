@@ -1,5 +1,7 @@
 from celery import shared_task
 from django.core.mail import EmailMessage
+from django.utils.html import strip_tags
+from django.core import signing
 from django.template.loader import render_to_string
 from django.core.files.storage import default_storage
 from django.conf import settings
@@ -153,8 +155,10 @@ def create_invoice_from_saleor_order(saleor_order_id):
                     product_reference=product.get("id") or variant.get("id") or "",
                 )
 
+        # Generate the PDF now so it is ready when finance confirms payment.
+        # Do not email the customer at checkout time; the customer should receive
+        # the final notification only after admin/finance marks the order paid.
         generate_invoice_pdf_task.delay(invoice.id)
-        send_invoice_email.delay(invoice.id)
         logger.info(f"Created invoice {invoice.number} for Saleor order {saleor_order_id}")
         return {"invoice_id": invoice.id, "number": invoice.number, "created": True}
 
@@ -257,6 +261,46 @@ def generate_invoice_pdf_task(invoice_id):
         logger.error(f"Error generating PDF for invoice {invoice_id}: {str(e)}")
         raise
 
+
+PUBLIC_INVOICE_DOWNLOAD_SALT = "invoicing.public_download"
+
+
+def _invoice_download_url(invoice):
+    """Return a signed direct PDF download URL for the paid-invoice email."""
+    base_url = (
+        getattr(settings, "INVOICE_PUBLIC_BASE_URL", "")
+        or getattr(settings, "BACKEND_PUBLIC_URL", "")
+        or "http://localhost:8000"
+    ).rstrip("/")
+    token = signing.dumps(
+        {"invoice_id": invoice.id, "number": invoice.number},
+        salt=PUBLIC_INVOICE_DOWNLOAD_SALT,
+    )
+    return f"{base_url}/api/invoices/public/{token}/download/"
+
+
+def _read_or_generate_invoice_pdf(invoice):
+    """Return PDF bytes for an invoice, generating the PDF first when needed."""
+    if not invoice.pdf_storage_reference:
+        from invoicing.pdf_generator import generate_invoice_pdf
+        invoice.pdf_storage_reference = generate_invoice_pdf(invoice)
+        invoice.save(update_fields=["pdf_storage_reference", "updated_at"])
+
+    if not invoice.pdf_storage_reference:
+        return None
+
+    with default_storage.open(invoice.pdf_storage_reference, "rb") as pdf_file:
+        return pdf_file.read()
+
+
+def _recipient_name(user):
+    if not user:
+        return "Customer"
+    get_full_name = getattr(user, "get_full_name", None)
+    full_name = (get_full_name() if callable(get_full_name) else "") or ""
+    return full_name.strip() or getattr(user, "first_name", "") or getattr(user, "email", "") or "Customer"
+
+
 @shared_task
 def send_invoice_email(invoice_id):
     """
@@ -313,35 +357,66 @@ def send_invoice_email(invoice_id):
 @shared_task
 def send_payment_confirmation_email(invoice_id):
     """
-    Send payment confirmation email when invoice is paid
+    Send the final paid-order email with the invoice PDF attached.
 
-    Args:
-        invoice_id: Invoice primary key
+    This task is intentionally safe to call from both Celery and direct code. It
+    generates the invoice PDF when it is missing so the customer always receives
+    a usable attachment after admin/finance confirms payment.
     """
     try:
-        invoice = Invoice.objects.get(id=invoice_id)
+        invoice = (
+            Invoice.objects
+            .select_related("customer__user", "legal_entity")
+            .prefetch_related("lines", "payment_events")
+            .get(id=invoice_id)
+        )
+        user = invoice.customer.user
+        if not getattr(user, "email", ""):
+            logger.warning("Cannot send paid invoice email for %s: customer email missing", invoice.number)
+            return {"sent": False, "reason": "customer email missing"}
+
+        pdf_content = None
+        try:
+            pdf_content = _read_or_generate_invoice_pdf(invoice)
+        except Exception:
+            logger.exception("Could not prepare invoice PDF attachment for %s", invoice.number)
 
         context = {
-            'invoice': invoice,
-            'portal_url': getattr(settings, 'FRONTEND_URL', 'https://example.com'),
+            "invoice": invoice,
+            "customer_name": _recipient_name(user),
+            "portal_url": getattr(settings, "FRONTEND_URL", "http://localhost:5173").rstrip("/"),
+            "invoice_url": _invoice_download_url(invoice),
+            "support_email": getattr(settings, "SUPPORT_EMAIL", getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@example.com")),
         }
+        html_body = render_to_string("invoicing/payment_confirmation_email.html", context)
+        text_body = strip_tags(html_body)
 
         email = EmailMessage(
-            subject=f'Payment Received - Invoice {invoice.number}',
-            body=render_to_string('invoicing/payment_confirmation_email.html', context),
-            from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'invoices@imaa.org'),
-            to=[invoice.customer.user.email],
+            subject=f"Payment confirmed - Invoice {invoice.number}",
+            body=html_body,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "invoices@imaa.org"),
+            to=[user.email],
             reply_to=[settings.DEFAULT_REPLY_TO_EMAIL] if getattr(settings, "DEFAULT_REPLY_TO_EMAIL", "") else None,
         )
-        email.content_subtype = 'html'
-        email.send()
+        email.content_subtype = "html"
+        email.extra_headers = {"X-Entity-Ref-ID": str(invoice.id)}
+        # Some email clients show plain text previews from the HTML body; keep a
+        # text fallback available for backends that inspect body text.
+        email.body = html_body or text_body
 
-        logger.info(f"Sent payment confirmation for {invoice.number}")
+        if pdf_content:
+            email.attach(f"{invoice.number}.pdf", pdf_content, "application/pdf")
+
+        email.send(fail_silently=False)
+        logger.info("Sent paid invoice email for %s to %s", invoice.number, user.email)
+        return {"sent": True, "invoice_id": invoice.id, "to": user.email, "attached_pdf": bool(pdf_content)}
 
     except Invoice.DoesNotExist:
-        logger.error(f"Invoice {invoice_id} not found")
+        logger.error("Invoice %s not found", invoice_id)
+        return {"sent": False, "reason": "invoice not found"}
     except Exception as e:
-        logger.error(f"Error sending payment confirmation: {str(e)}")
+        logger.error("Error sending payment confirmation: %s", str(e))
+        raise
 
 @shared_task
 def send_payment_reminders():

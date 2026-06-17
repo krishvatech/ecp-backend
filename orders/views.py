@@ -1,4 +1,6 @@
 # orders/views.py
+import logging
+
 from django.conf import settings
 from django.db import transaction
 from django.db.models import F, Sum
@@ -17,6 +19,8 @@ from .saleor_checkout import (
     _event_is_paid,
 )
 from events.models import Event, EventRegistration
+
+logger = logging.getLogger(__name__)
 
 def _is_guest_user(user) -> bool:
     return bool(getattr(user, "is_guest", False))
@@ -575,6 +579,8 @@ class OrderMarkPaidView(APIView):
 
         payment_reference = (request.data.get("payment_reference") or "").strip()
         payment_source = (request.data.get("payment_source") or "manual").strip() or "manual"
+        was_paid = order.status == "paid"
+        paid_invoice_id = None
 
         if order.saleor_order_id:
             try:
@@ -598,11 +604,7 @@ class OrderMarkPaidView(APIView):
             # Ensure invoice exists, generate PDF if needed, then record payment.
             try:
                 from invoicing.models import Invoice, PaymentEvent
-                from invoicing.tasks import (
-                    create_invoice_from_saleor_order,
-                    generate_invoice_pdf_task,
-                    send_payment_confirmation_email,
-                )
+                from invoicing.tasks import create_invoice_from_saleor_order, generate_invoice_pdf_task
 
                 invoice = Invoice.objects.filter(saleor_order_id=order.saleor_order_id).first()
                 if not invoice and order.saleor_order_id:
@@ -627,8 +629,20 @@ class OrderMarkPaidView(APIView):
                         external_reference=payment_reference or order.saleor_order_id,
                         notes=f"Manual payment confirmed from ECP order #{order.id}",
                     )
-                    send_payment_confirmation_email.delay(invoice.id)
+
+                if invoice and not was_paid:
+                    paid_invoice_id = invoice.id
             except Exception:
-                pass
+                logger.exception("Could not finalize invoice/email data for paid order %s", order.id)
+
+            if paid_invoice_id:
+                def _send_paid_invoice_email():
+                    from invoicing.tasks import send_payment_confirmation_email
+                    if getattr(settings, "INVOICE_EMAIL_ASYNC", False):
+                        send_payment_confirmation_email.delay(paid_invoice_id)
+                    else:
+                        send_payment_confirmation_email(paid_invoice_id)
+
+                transaction.on_commit(_send_paid_invoice_email)
 
         return Response(OrderSerializer(order, context={"request": request}).data)
