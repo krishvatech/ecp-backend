@@ -2622,6 +2622,17 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # Only existing events; (optionally) filter to published if your UX demands so
         qs = Event.objects.filter(id__in=event_ids)
+
+        # Paid events must not be confirmed directly. They must go through
+        # Saleor offline checkout so an unpaid Saleor order + invoice can be
+        # created first, then confirmed only after manual payment is received.
+        paid_events = [ev for ev in qs if not ev.is_free]
+        if paid_events:
+            return Response({
+                "detail": "Paid events must go through checkout.",
+                "paid_event_ids": [ev.id for ev in paid_events],
+            }, status=400)
+
         created = []
 
         # Use atomic to ensure all-or-nothing behavior

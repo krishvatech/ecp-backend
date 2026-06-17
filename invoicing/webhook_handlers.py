@@ -15,72 +15,39 @@ logger = logging.getLogger('invoicing')
 @csrf_exempt
 @require_http_methods(["POST"])
 def saleor_order_webhook(request):
-    """Handle Saleor ORDER_CREATED, ORDER_CANCELLED, ORDER_FULLY_PAID events"""
+    """Handle Saleor order webhooks for offline/manual payment invoices."""
     if not getattr(settings, "SALEOR_ENABLED", False):
         logger.info("Saleor integration disabled. Ignoring Saleor order webhook.")
         return JsonResponse({"status": "ignored", "reason": "Saleor integration disabled"}, status=200)
 
     signature = request.headers.get('X-Saleor-Signature', '')
-    secret = settings.SALEOR_WEBHOOK_SECRET
+    secret = getattr(settings, "SALEOR_WEBHOOK_SECRET", "")
 
-    # Verify signature
     body = request.body
-    expected_sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-
-    if not hmac.compare_digest(signature, expected_sig):
-        return JsonResponse({'error': 'Invalid signature'}, status=401)
+    if secret:
+        expected_sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected_sig):
+            return JsonResponse({'error': 'Invalid signature'}, status=401)
 
     event_data = json.loads(body)
-    event_type = event_data.get('event')
+    event_type = str(event_data.get('event') or event_data.get('type') or '').upper()
+    order = event_data.get('order') or {}
+    saleor_order_id = order.get('id')
 
-    if event_type == 'order_created':
+    if not saleor_order_id:
+        return JsonResponse({'error': 'Missing order.id'}, status=400)
+
+    if event_type in {'ORDER_CREATED', 'ORDER_CONFIRMED', 'ORDER_CREATED'.lower().upper()}:
         from invoicing.tasks import create_invoice_from_saleor_order
-        create_invoice_from_saleor_order.delay(event_data['order']['id'])
+        create_invoice_from_saleor_order.delay(saleor_order_id)
 
-    elif event_type == 'order_cancelled':
-        # Handle order cancellation
-        pass
+    elif event_type in {'ORDER_PAID', 'ORDER_FULLY_PAID'}:
+        from invoicing.tasks import record_saleor_order_payment
+        transaction_reference = order.get('paymentReference') or order.get('number') or saleor_order_id
+        record_saleor_order_payment.delay(saleor_order_id, transaction_reference, 'manual')
 
-    return JsonResponse({'ok': True})
-
-@csrf_exempt
-@require_http_methods(["POST"])
-def stripe_payment_webhook(request, entity_code):
-    """Handle Stripe payment webhooks per entity"""
-    event_json = request.body
-    sig_header = request.headers.get('Stripe-Signature')
-
-    stripe_config = settings.STRIPE_CONFIG.get(entity_code)
-    if not stripe_config:
-        return JsonResponse({'error': 'Invalid entity'}, status=400)
-
-    # Verify webhook signature
-    import stripe
-    try:
-        event = stripe.Webhook.construct_event(
-            event_json, sig_header, stripe_config['webhook_secret']
-        )
-    except ValueError:
-        return JsonResponse({'error': 'Invalid payload'}, status=400)
-    except stripe.error.SignatureVerificationError:
-        return JsonResponse({'error': 'Invalid signature'}, status=400)
-
-    if event['type'] == 'payment_intent.succeeded':
-        from invoicing.tasks import record_payment_event
-        record_payment_event.delay(
-            entity_code,
-            event['data']['object']['id'],
-            'payment',
-            event['data']['object']['amount'] / 100
-        )
-
-    elif event['type'] == 'charge.refunded':
-        from invoicing.tasks import record_payment_event
-        record_payment_event.delay(
-            entity_code,
-            event['data']['object']['id'],
-            'refund',
-            event['data']['object']['amount_refunded'] / 100
-        )
+    elif event_type == 'ORDER_CANCELLED':
+        # Starter behavior: invoice cancellation/credit-note logic can be added later.
+        logger.info(f"Saleor order cancelled: {saleor_order_id}")
 
     return JsonResponse({'ok': True})
