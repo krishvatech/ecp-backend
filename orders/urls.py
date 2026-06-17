@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import BillingAddressView, CartView, CartItems, CartItemDetail, CartCount, CartClear, OrderList, CheckoutView, OfflineCheckoutView, OrderMarkPaidView
+from .views import BillingAddressView, CartView, CartItems, CartItemDetail, CartCount, CartClear, OrderList, CheckoutView, OfflineCheckoutView, OrderMarkPaidView, EventOrderListView
 from .webhooks import saleor_order_paid_webhook
 
 urlpatterns = [
@@ -13,6 +13,7 @@ urlpatterns = [
     path("orders/checkout/", CheckoutView.as_view(), name="orders-checkout"),
     path("orders/offline-checkout/", OfflineCheckoutView.as_view(), name="orders-offline-checkout"),
     path("orders/<int:pk>/mark-paid/", OrderMarkPaidView.as_view(), name="orders-mark-paid"),
+    path("events/<int:event_id>/orders/", EventOrderListView.as_view(), name="event-orders"),
 
     # Saleor Webhooks
     path("webhooks/saleor/order-paid/", saleor_order_paid_webhook, name="saleor-order-paid"),

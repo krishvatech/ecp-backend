@@ -423,6 +423,53 @@ class OfflineCheckoutView(APIView):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class EventOrderListView(APIView):
+    """
+    GET /api/events/<event_id>/orders/
+
+    Owner/admin payment review list for one paid event only. Free events return
+    an empty order list because they do not go through Saleor/manual payment.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, event_id):
+        try:
+            event = Event.objects.get(pk=event_id)
+        except Event.DoesNotExist:
+            return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        is_manager = (
+            bool(getattr(request.user, "is_staff", False))
+            or bool(getattr(request.user, "is_superuser", False))
+            or getattr(event, "created_by_id", None) == getattr(request.user, "id", None)
+        )
+        if not is_manager:
+            raise PermissionDenied("You do not have permission to view event orders.")
+
+        if event.is_free is not False:
+            return Response({
+                "event_id": event.id,
+                "event_title": event.title,
+                "is_paid_event": False,
+                "orders": [],
+            })
+
+        qs = (
+            Order.objects
+            .filter(items__event=event, status__in=["pending", "paid", "canceled"])
+            .select_related("user")
+            .prefetch_related("items__event")
+            .distinct()
+            .order_by("-created_at")
+        )
+        return Response({
+            "event_id": event.id,
+            "event_title": event.title,
+            "is_paid_event": True,
+            "orders": OrderSerializer(qs, many=True, context={"request": request}).data,
+        })
+
+
 class OrderMarkPaidView(APIView):
     """
     POST /api/orders/<id>/mark-paid/
@@ -463,10 +510,24 @@ class OrderMarkPaidView(APIView):
                     status="registered",
                 ).update(attendee_status="confirmed")
 
-            # Record invoice payment if invoice already exists.
+            # Ensure invoice exists, generate PDF if needed, then record payment.
             try:
                 from invoicing.models import Invoice, PaymentEvent
+                from invoicing.tasks import (
+                    create_invoice_from_saleor_order,
+                    generate_invoice_pdf_task,
+                    send_payment_confirmation_email,
+                )
+
                 invoice = Invoice.objects.filter(saleor_order_id=order.saleor_order_id).first()
+                if not invoice and order.saleor_order_id:
+                    create_invoice_from_saleor_order(order.saleor_order_id)
+                    invoice = Invoice.objects.filter(saleor_order_id=order.saleor_order_id).first()
+
+                if invoice and not invoice.pdf_storage_reference:
+                    generate_invoice_pdf_task(invoice.id)
+                    invoice.refresh_from_db()
+
                 if invoice and not PaymentEvent.objects.filter(
                     invoice=invoice,
                     event_type="payment",
@@ -481,7 +542,6 @@ class OrderMarkPaidView(APIView):
                         external_reference=payment_reference or order.saleor_order_id,
                         notes=f"Manual payment confirmed from ECP order #{order.id}",
                     )
-                    from invoicing.tasks import send_payment_confirmation_email
                     send_payment_confirmation_email.delay(invoice.id)
             except Exception:
                 pass

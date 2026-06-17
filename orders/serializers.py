@@ -1,6 +1,7 @@
 # orders/serializers.py
 from rest_framework import serializers
 from events.models import Event
+from invoicing.models import Invoice
 from .models import BillingAddress, Order, OrderItem
 
 
@@ -83,7 +84,59 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_display_name = serializers.SerializerMethodField()
+    invoice = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
-        fields = ["id", "status", "subtotal", "total", "payment_method", "payment_reference", "saleor_checkout_id", "saleor_order_id", "saleor_order_number", "paid_at", "items", "created_at"]
+        fields = [
+            "id",
+            "user_email",
+            "user_display_name",
+            "status",
+            "subtotal",
+            "total",
+            "currency",
+            "payment_method",
+            "payment_reference",
+            "saleor_checkout_id",
+            "saleor_order_id",
+            "saleor_order_number",
+            "paid_at",
+            "invoice",
+            "items",
+            "created_at",
+        ]
+
+    def get_user_display_name(self, obj):
+        user = getattr(obj, "user", None)
+        if not user:
+            return ""
+        get_full_name = getattr(user, "get_full_name", None)
+        if callable(get_full_name):
+            name = (get_full_name() or "").strip()
+            if name:
+                return name
+        return getattr(user, "email", "") or str(user)
+
+    def get_invoice(self, obj):
+        saleor_order_id = getattr(obj, "saleor_order_id", "") or ""
+        if not saleor_order_id:
+            return None
+
+        invoice = Invoice.objects.filter(saleor_order_id=saleor_order_id).first()
+        if not invoice:
+            return None
+
+        return {
+            "id": invoice.id,
+            "number": invoice.number,
+            "state": invoice.state,
+            "issue_date": invoice.issue_date.isoformat() if invoice.issue_date else "",
+            "due_date": invoice.due_date.isoformat() if invoice.due_date else "",
+            "total_gross": str(invoice.total_gross),
+            "currency": invoice.currency,
+            "pdf_ready": bool(invoice.pdf_storage_reference),
+            "download_url": f"/api/invoices/{invoice.id}/download_pdf/" if invoice.pdf_storage_reference else "",
+        }
