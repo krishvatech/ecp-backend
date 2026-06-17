@@ -60,6 +60,19 @@ class OrderItem(models.Model):
         if not self.unit_price:
             self.unit_price = self.event.price
         self.line_total = self.unit_price * self.quantity
+
+        # When callers update only quantity with update_fields=["quantity"],
+        # Django would otherwise skip writing line_total. Then the cart row can
+        # show the new quantity while Order.subtotal/total still use the old
+        # line_total from the database. Always persist line_total whenever
+        # quantity/unit_price changes.
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            update_fields = set(update_fields)
+            if {"quantity", "unit_price"} & update_fields:
+                update_fields.add("line_total")
+            kwargs["update_fields"] = list(update_fields)
+
         super().save(*args, **kwargs)
         self.order.recalc()
 

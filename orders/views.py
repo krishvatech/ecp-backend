@@ -128,7 +128,8 @@ class CartItems(APIView):
             defaults={"quantity": qty}
         )
         if not created:
-            item.quantity = F("quantity") + qty
+            item.refresh_from_db()
+            item.quantity = item.quantity + qty
             item.save(update_fields=["quantity"])
             item.refresh_from_db()
 
