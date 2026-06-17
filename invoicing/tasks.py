@@ -3,249 +3,49 @@ from django.core.mail import EmailMessage
 from django.template.loader import render_to_string
 from django.core.files.storage import default_storage
 from django.conf import settings
-from django.contrib.auth import get_user_model
-from django.db import transaction
-from django.utils import timezone
-from invoicing.models import Invoice, PaymentEvent, LegalEntity, Customer, InvoiceLine, InvoiceSequence
-from decimal import Decimal, ROUND_HALF_UP
+from invoicing.models import Invoice, PaymentEvent, LegalEntity, Customer, InvoiceLine
+from decimal import Decimal
 from datetime import datetime, timedelta
-from urllib.parse import urljoin
 import logging
 
 logger = logging.getLogger('invoicing')
 
-def _decimal_money(value):
-    return Decimal(str(value or "0.00")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-
-def _taxed_money_amount(data, bucket="gross"):
-    return _decimal_money(((data or {}).get(bucket) or {}).get("amount"))
-
-
-def _default_legal_entity():
-    code = getattr(settings, "INVOICE_LEGAL_ENTITY_CODE", "CH") or "CH"
-    defaults = {
-        "name": getattr(settings, "INVOICE_LEGAL_ENTITY_NAME", "IMAA Switzerland GmbH"),
-        "legal_form": getattr(settings, "INVOICE_LEGAL_ENTITY_FORM", "GmbH"),
-        "address": getattr(settings, "INVOICE_LEGAL_ENTITY_ADDRESS", ""),
-        "country": getattr(settings, "INVOICE_LEGAL_ENTITY_COUNTRY", "CH"),
-        "vat_id": getattr(settings, "INVOICE_LEGAL_ENTITY_VAT_ID", ""),
-        "bank_details": getattr(settings, "INVOICE_LEGAL_ENTITY_BANK_DETAILS", {}),
-        "currency": getattr(settings, "INVOICE_CURRENCY", "USD"),
-        "vat_exempt": getattr(settings, "INVOICE_VAT_EXEMPT", True),
-    }
-    entity, _ = LegalEntity.objects.get_or_create(code=code, defaults=defaults)
-    return entity
-
-
-def _next_invoice_number(legal_entity, issue_date):
-    year = int(issue_date.year)
-    with transaction.atomic():
-        sequence, _ = InvoiceSequence.objects.select_for_update().get_or_create(
-            legal_entity=legal_entity,
-            series="INV",
-            year=year,
-            defaults={"last_number": 0},
-        )
-        sequence.last_number += 1
-        sequence.save(update_fields=["last_number", "updated_at"])
-        return f"IMAA-{legal_entity.code}-INV-{year}-{sequence.last_number:05d}"
-
-
-def _invoice_public_url(invoice):
-    """Return a full public/signed-ish URL for Saleor invoiceCreate."""
-    base = (
-        getattr(settings, "INVOICE_PUBLIC_BASE_URL", "")
-        or getattr(settings, "BACKEND_PUBLIC_URL", "")
-        or ""
-    ).strip().rstrip("/")
-    if base:
-        return f"{base}/api/invoices/public/{invoice.public_download_token}/"
-
-    if invoice.pdf_storage_reference:
-        try:
-            url = default_storage.url(invoice.pdf_storage_reference)
-            if str(url).startswith(("http://", "https://")):
-                return url
-        except Exception:
-            logger.warning("Could not build storage URL for invoice %s", invoice.number, exc_info=True)
-    return ""
-
-
-def _attach_invoice_to_saleor(invoice, saleor_order_id):
-    public_url = _invoice_public_url(invoice)
-    if not public_url:
-        logger.warning(
-            "Skipping Saleor invoiceCreate for %s because BACKEND_PUBLIC_URL/INVOICE_PUBLIC_BASE_URL is not configured.",
-            invoice.number,
-        )
-        return None
-
-    from events.saleor_sync import call_saleor_gql
-    mutation = """
-    mutation EcpInvoiceCreate($orderId: ID!, $input: InvoiceCreateInput!) {
-      invoiceCreate(orderId: $orderId, input: $input) {
-        invoice { id number url status }
-        errors { field message code }
-      }
-    }
+@shared_task
+def create_invoice_from_saleor_order(saleor_order_id):
     """
-    variables = {
-        "orderId": saleor_order_id,
-        "input": {
-            "number": invoice.number,
-            "url": public_url,
-            "metadata": [
-                {"key": "ecp_invoice_id", "value": str(invoice.id)},
-                {"key": "ecp_invoice_number", "value": invoice.number},
-            ],
-            "privateMetadata": [
-                {"key": "ecp_invoice_id", "value": str(invoice.id)},
-                {"key": "ecp_saleor_order_id", "value": saleor_order_id},
-            ],
-        },
-    }
-    response = call_saleor_gql(mutation, variables)
-    result = response.get("data", {}).get("invoiceCreate", {})
-    errors = result.get("errors") or []
-    if errors:
-        message = "; ".join(f"{e.get('field') or 'general'}: {e.get('message') or e.get('code')}" for e in errors)
-        raise RuntimeError(f"Saleor invoiceCreate failed for {invoice.number}: {message}")
+    Create Invoice from Saleor ORDER_CREATED webhook
 
-    saleor_invoice = result.get("invoice")
-    if saleor_invoice and saleor_invoice.get("id"):
-        invoice.saleor_invoice_id = saleor_invoice["id"]
-        invoice.save(update_fields=["saleor_invoice_id", "updated_at"])
-        logger.info("Attached invoice %s to Saleor order %s", invoice.number, saleor_order_id)
-    return saleor_invoice
-
-
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 3})
-def create_invoice_from_saleor_order(self, saleor_order_id):
-    """
-    Create a local invoice from a paid Saleor order and attach the invoice URL back to Saleor.
-
-    Safe to call multiple times; saleor_order_id is unique on Invoice.
+    Args:
+        saleor_order_id: Order ID from Saleor (GraphQL ID)
     """
     if not getattr(settings, "SALEOR_ENABLED", False):
-        logger.info("Saleor integration disabled. Skipping invoice for order %s.", saleor_order_id)
+        logger.info(f"Saleor integration disabled. Skipping create_invoice_from_saleor_order for order {saleor_order_id}.")
         return {"skipped": True, "reason": "Saleor integration disabled"}
 
-    from orders.saleor_checkout import fetch_saleor_order
-    from invoicing.pdf_generator import generate_invoice_pdf
+    try:
+        logger.info(f"Processing Saleor order: {saleor_order_id}")
 
-    order = fetch_saleor_order(saleor_order_id)
-    if not order.get("isPaid"):
-        logger.info("Saleor order %s is not paid yet; invoice not generated.", saleor_order_id)
-        return {"skipped": True, "reason": "order_not_paid"}
+        # Check if invoice already exists (idempotency)
+        if Invoice.objects.filter(saleor_order_id=saleor_order_id).exists():
+            logger.warning(f"Invoice already exists for order {saleor_order_id}")
+            return
 
-    existing = Invoice.objects.filter(saleor_order_id=saleor_order_id).first()
-    if existing:
-        if not existing.pdf_storage_reference:
-            existing.pdf_storage_reference = generate_invoice_pdf(existing)
-            existing.save(update_fields=["pdf_storage_reference", "updated_at"])
-        if not existing.saleor_invoice_id:
-            # If Saleor already has this invoice number from a previous retry, just store its id.
-            for saleor_invoice in order.get("invoices") or []:
-                if saleor_invoice.get("number") == existing.number:
-                    existing.saleor_invoice_id = saleor_invoice.get("id", "")
-                    existing.save(update_fields=["saleor_invoice_id", "updated_at"])
-                    break
-        if not existing.saleor_invoice_id:
-            _attach_invoice_to_saleor(existing, saleor_order_id)
-        logger.info("Invoice already exists for Saleor order %s: %s", saleor_order_id, existing.number)
-        return {"invoice_id": existing.id, "number": existing.number, "existing": True}
+        # TODO: Fetch order from Saleor API
+        # This requires implementing Saleor GraphQL client
+        # For now, log that this needs implementation
+        logger.info(f"TODO: Fetch order details from Saleor for {saleor_order_id}")
 
-    email = order.get("userEmail") or (order.get("user") or {}).get("email")
-    if not email:
-        logger.warning("Saleor order %s has no userEmail; invoice skipped", saleor_order_id)
-        return {"skipped": True, "reason": "missing_email"}
+        # Once order is fetched:
+        # 1. Extract customer info from order
+        # 2. Find or create Customer record
+        # 3. Create Invoice record
+        # 4. Create InvoiceLine for each order item
+        # 5. Generate PDF
+        # 6. Send email
 
-    user = get_user_model().objects.filter(email__iexact=email).first()
-    if not user:
-        logger.warning("No local user found for Saleor order %s email=%s; invoice skipped", saleor_order_id, email)
-        return {"skipped": True, "reason": "local_user_not_found", "email": email}
-
-    issue_date = timezone.now().date()
-    due_date = issue_date
-    total = order.get("total") or {}
-    total_net = _taxed_money_amount(total, "net")
-    total_vat = _taxed_money_amount(total, "tax")
-    total_gross = _taxed_money_amount(total, "gross")
-    currency = ((total.get("gross") or {}).get("currency") or getattr(settings, "INVOICE_CURRENCY", "USD")).upper()
-
-    legal_entity = _default_legal_entity()
-    customer, _ = Customer.objects.get_or_create(
-        user=user,
-        defaults={
-            "saleor_customer_id": str(((order.get("user") or {}).get("id") or "")),
-            "preferred_language": "en",
-        },
-    )
-
-    with transaction.atomic():
-        # Re-check inside the transaction to protect against concurrent webhook retries.
-        existing = Invoice.objects.select_for_update().filter(saleor_order_id=saleor_order_id).first()
-        if existing:
-            return {"invoice_id": existing.id, "number": existing.number, "existing": True}
-
-        number = _next_invoice_number(legal_entity, issue_date)
-        invoice = Invoice.objects.create(
-            number=number,
-            legal_entity=legal_entity,
-            customer=customer,
-            saleor_order_id=saleor_order_id,
-            saleor_order_number=str(order.get("number") or ""),
-            issue_date=issue_date,
-            due_date=due_date,
-            total_net=total_net,
-            total_vat=total_vat,
-            total_gross=total_gross,
-            currency=currency,
-            language="en",
-        )
-
-        for line in order.get("lines") or []:
-            variant = line.get("variant") or {}
-            product = variant.get("product") or {}
-            description_parts = [line.get("productName") or product.get("name") or "Event"]
-            if line.get("variantName"):
-                description_parts.append(line["variantName"])
-            description = " - ".join([p for p in description_parts if p])[:255]
-
-            unit_price = _taxed_money_amount(line.get("unitPrice"), "net")
-            net_amount = _taxed_money_amount(line.get("totalPrice"), "net")
-            vat_amount = _taxed_money_amount(line.get("totalPrice"), "tax")
-            tax_rate = _decimal_money(line.get("taxRate") or 0)
-
-            InvoiceLine.objects.create(
-                invoice=invoice,
-                description=description,
-                quantity=int(line.get("quantity") or 1),
-                unit_price=unit_price,
-                net_amount=net_amount,
-                vat_rate=tax_rate,
-                vat_amount=vat_amount,
-                product_reference=variant.get("id") or product.get("id") or line.get("productSku") or "",
-            )
-
-        PaymentEvent.objects.create(
-            invoice=invoice,
-            event_type="payment",
-            amount=total_gross,
-            currency=currency,
-            source=getattr(settings, "SALEOR_MANUAL_PAYMENT_SOURCE", "saleor_manual"),
-            external_reference=saleor_order_id,
-            notes=f"Saleor order {order.get('number') or saleor_order_id} marked paid manually/offline.",
-        )
-
-    invoice.pdf_storage_reference = generate_invoice_pdf(invoice)
-    invoice.save(update_fields=["pdf_storage_reference", "updated_at"])
-    _attach_invoice_to_saleor(invoice, saleor_order_id)
-    send_invoice_email.delay(invoice.id)
-
-    logger.info("Created invoice %s from Saleor order %s", invoice.number, saleor_order_id)
-    return {"invoice_id": invoice.id, "number": invoice.number, "existing": False}
+    except Exception as e:
+        logger.error(f"Error creating invoice from Saleor order: {str(e)}")
+        raise
 
 @shared_task
 def record_payment_event(entity_code, external_ref, event_type, amount):

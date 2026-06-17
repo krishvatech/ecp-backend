@@ -21,7 +21,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Invoice
         fields = [
-            'id', 'number', 'customer', 'legal_entity', 'saleor_order_id', 'saleor_order_number', 'saleor_invoice_id',
+            'id', 'number', 'customer', 'legal_entity', 'saleor_order_id',
             'issue_date', 'due_date', 'skonto_deadline',
             'total_net', 'total_vat', 'total_gross', 'currency',
             'state', 'language', 'pdf_storage_reference',

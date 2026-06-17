@@ -6,7 +6,6 @@ router = SimpleRouter()
 router.register('invoices', views.InvoiceViewSet, basename='invoice')
 
 urlpatterns = [
-    path('invoices/public/<uuid:token>/', views.public_invoice_pdf, name='public-invoice-pdf'),
     path('webhooks/saleor/', webhook_handlers.saleor_order_webhook, name='saleor-webhook'),
     path('webhooks/stripe/<str:entity_code>/', webhook_handlers.stripe_payment_webhook, name='stripe-webhook'),
     path('', include(router.urls)),

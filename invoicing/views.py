@@ -3,8 +3,6 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.http import FileResponse
 from django.core.files.storage import default_storage
-from django.shortcuts import get_object_or_404
-from django.views.decorators.http import require_GET
 from invoicing.models import Invoice, Customer
 from invoicing.serializers import InvoiceSerializer, CustomerInvoiceListSerializer
 
@@ -53,23 +51,3 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
                 {'error': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-
-@require_GET
-def public_invoice_pdf(request, token):
-    """
-    Unguessable token-based invoice PDF endpoint for Saleor invoice URLs.
-
-    This endpoint is intentionally not session-authenticated because Saleor stores a
-    static invoice URL. Security comes from the per-invoice UUID token.
-    """
-    invoice = get_object_or_404(Invoice, public_download_token=token)
-    if not invoice.pdf_storage_reference:
-        from invoicing.pdf_generator import generate_invoice_pdf
-        invoice.pdf_storage_reference = generate_invoice_pdf(invoice)
-        invoice.save(update_fields=['pdf_storage_reference', 'updated_at'])
-
-    pdf_file = default_storage.open(invoice.pdf_storage_reference, 'rb')
-    response = FileResponse(pdf_file, content_type='application/pdf')
-    response['Content-Disposition'] = f'inline; filename="{invoice.number}.pdf"'
-    return response
