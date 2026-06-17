@@ -95,7 +95,11 @@ class CartCount(APIView):
         if _is_guest_user(request.user):
             return Response({"count": 0})
         cart = get_open_cart(request.user)
-        count = cart.items.aggregate(n=Sum("quantity"))["n"] or 0
+
+        # Cart badge should show distinct cart lines/products, not the total
+        # ticket quantity. Example: one event with quantity 10 still shows
+        # badge count 1, while two different events show badge count 2.
+        count = cart.items.count()
         return Response({"count": count})
 
 class CartItems(APIView):
