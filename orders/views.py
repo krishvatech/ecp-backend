@@ -21,6 +21,61 @@ from events.models import Event, EventRegistration
 def _is_guest_user(user) -> bool:
     return bool(getattr(user, "is_guest", False))
 
+
+def _get_missing_lead_gen_fields_for_user(user):
+    """Return lead-gen/profile fields missing for event registration/checkout.
+
+    Keep this in sync with events.views.EventViewSet._get_missing_lead_gen_fields.
+    Paid checkout creates registrations after payment review, so it must enforce
+    the same profile-completion rule as free registration and applications.
+    """
+    missing = {}
+    profile = getattr(user, "profile", None)
+
+    has_first_name = bool(getattr(user, "first_name", "") and user.first_name.strip())
+    has_last_name = bool(getattr(user, "last_name", "") and user.last_name.strip())
+    has_full_name = bool(profile and getattr(profile, "full_name", "") and profile.full_name.strip())
+    if not ((has_first_name and has_last_name) or has_full_name):
+        missing["first_name"] = "First Name"
+        missing["last_name"] = "Last Name"
+
+    if not (getattr(user, "email", "") and user.email.strip()):
+        missing["email"] = "Email"
+
+    has_job_title = bool(profile and getattr(profile, "job_title", "") and profile.job_title.strip())
+    has_company = bool(profile and getattr(profile, "company", "") and profile.company.strip())
+
+    latest_exp = None
+    if not has_job_title or not has_company:
+        try:
+            latest_exp = user.experiences.order_by("-start_date").first()
+        except Exception:
+            latest_exp = None
+
+    if not has_job_title:
+        has_job_title = bool(latest_exp and getattr(latest_exp, "position", "") and latest_exp.position.strip())
+    if not has_job_title:
+        missing["job_title"] = "Job Title"
+
+    if not has_company:
+        has_company = bool(latest_exp and getattr(latest_exp, "community_name", "") and latest_exp.community_name.strip())
+    if not has_company:
+        missing["company"] = "Company"
+
+    has_location = bool(profile and getattr(profile, "location", "") and profile.location.strip())
+    if not has_location:
+        missing["location"] = "Country/Region"
+
+    return len(missing) == 0, missing
+
+
+def _missing_lead_gen_response(missing_fields, detail=None):
+    return Response({
+        "status": "missing_lead_gen_fields",
+        "detail": detail or "Please complete your registration profile to continue.",
+        "missing_fields": missing_fields,
+    }, status=status.HTTP_400_BAD_REQUEST)
+
 def get_open_cart(user):
     if _is_guest_user(user):
         raise PermissionDenied("Cart is unavailable for guest users.")
@@ -54,9 +109,22 @@ class CartItems(APIView):
             return Response({"detail": "event_id and quantity required"},
                             status=status.HTTP_400_BAD_REQUEST)
 
+        try:
+            event = Event.objects.get(pk=event_id)
+        except Event.DoesNotExist:
+            return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if _event_is_paid(event):
+            is_profile_complete, missing_fields = _get_missing_lead_gen_fields_for_user(request.user)
+            if not is_profile_complete:
+                return _missing_lead_gen_response(
+                    missing_fields,
+                    "Please complete your registration profile before adding this paid event to cart.",
+                )
+
         cart = get_open_cart(request.user)
         item, created = OrderItem.objects.get_or_create(
-            order=cart, event_id=event_id,
+            order=cart, event=event,
             defaults={"quantity": qty}
         )
         if not created:
@@ -355,6 +423,18 @@ class OfflineCheckoutView(APIView):
         cart = get_open_cart(request.user)
         if not cart.items.exists():
             return Response({"detail": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
+
+        paid_items_exist = any(
+            _event_is_paid(item.event, item)
+            for item in cart.items.select_related("event").all()
+        )
+        if paid_items_exist:
+            is_profile_complete, missing_fields = _get_missing_lead_gen_fields_for_user(request.user)
+            if not is_profile_complete:
+                return _missing_lead_gen_response(
+                    missing_fields,
+                    "Please complete your registration profile before checkout.",
+                )
 
         payment_method = (request.data.get("payment_method") or getattr(settings, "DEFAULT_PAYMENT_METHOD", "bank_transfer")).strip()
         if not payment_method:
