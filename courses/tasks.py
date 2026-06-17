@@ -79,6 +79,96 @@ def _clear_unlinked_user_enrollments(user, *, reason: str = "missing WordPress/E
     return deleted
 
 
+def _sync_user_enrollments_via_moodle(user) -> int | None:
+    """
+    Fetch enrolled courses for a user directly from Moodle REST API using email lookup.
+    No WordPress/Edwiser ID required.
+
+    Returns number of enrollments synced. Returns None if Moodle API not configured.
+    """
+    try:
+        client = get_moodle_client()
+    except ValueError:
+        return None
+
+    # Look up Moodle user ID by email
+    moodle_user_id = client.get_user_id_by_email(user.email)
+    if not moodle_user_id:
+        logger.info("Moodle user not found for %s", user.email)
+        _clear_unlinked_user_enrollments(user, reason="not found in Moodle by email")
+        return 0
+
+    # Fetch enrolled courses from Moodle
+    courses_data = client.get_user_enrolled_courses(moodle_user_id)
+    if not courses_data:
+        logger.info("User %s has no enrollments in Moodle", user.email)
+        _clear_unlinked_user_enrollments(user, reason="no enrollments found in Moodle")
+        return 0
+
+    synced = 0
+    active_course_keys = set()
+
+    for mc in courses_data:
+        moodle_course_id = mc.get("id")
+        if not moodle_course_id:
+            continue
+
+        active_course_keys.add(moodle_course_id)
+
+        # Resolve or create local MoodleCourse
+        course_obj, _ = MoodleCourse.objects.get_or_create(
+            moodle_id=moodle_course_id,
+            defaults={
+                "full_name": mc.get("fullname", "")[:500],
+                "short_name": mc.get("shortname", "")[:255],
+                "summary": mc.get("summary") or "",
+                "image_url": (mc.get("courseimage") or "")[:1000],
+                "moodle_url": f"{client.base_url}/course/view.php?id={moodle_course_id}",
+                "completion_enabled": False,
+            },
+        )
+
+        # Update missing fields
+        updated_fields = []
+        if not course_obj.image_url and mc.get("courseimage"):
+            course_obj.image_url = mc["courseimage"][:1000]
+            updated_fields.append("image_url")
+        if not course_obj.moodle_url:
+            course_obj.moodle_url = f"{client.base_url}/course/view.php?id={moodle_course_id}"
+            updated_fields.append("moodle_url")
+        if updated_fields:
+            course_obj.save(update_fields=updated_fields)
+
+        # Progress from Moodle (if available, 0-100)
+        progress = float(mc.get("progress") or 0.0)
+        completed = bool(progress >= 100.0)
+
+        with transaction.atomic():
+            MoodleEnrollment.objects.update_or_create(
+                user=user,
+                course=course_obj,
+                defaults={
+                    "moodle_user_id": moodle_user_id,
+                    "progress": progress,
+                    "completed": completed,
+                    "last_access": None,
+                },
+            )
+        synced += 1
+
+    # Remove enrollments no longer in Moodle
+    deleted, _ = MoodleEnrollment.objects.filter(user=user).exclude(
+        course__moodle_id__in=active_course_keys
+    ).delete()
+    if deleted:
+        logger.info(
+            "Removed %d stale enrollment(s) for user %s (no longer in Moodle)",
+            deleted, user.email,
+        )
+
+    return synced
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def sync_moodle_courses_and_categories(self):
     """
@@ -164,6 +254,9 @@ def sync_all_user_moodle_enrollments(self):
     For every active ECP user that has a linked WordPress account,
     sync their Edwiser Bridge enrollments + progress into MoodleEnrollment.
     Runs every 30 minutes.
+
+    DEPRECATED: Use sync_all_user_moodle_enrollments_via_moodle instead.
+    Kept for backwards compatibility.
     """
     try:
         client = get_edwiser_client()
@@ -194,11 +287,44 @@ def sync_all_user_moodle_enrollments(self):
     return {"users": synced_users, "enrollments": synced_enrollments}
 
 
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def sync_all_user_moodle_enrollments_via_moodle(self):
+    """
+    For every active ECP user, sync their Moodle enrollments via REST API.
+    No WordPress ID required — looks up users by email.
+    Runs every 30 minutes.
+
+    NEW: Email-based Moodle sync. Works for any user with a Moodle account.
+    """
+    users = User.objects.filter(is_active=True).only("id", "email")
+    synced_users = 0
+    synced_enrollments = 0
+
+    for user in users:
+        try:
+            count = _sync_user_enrollments_via_moodle(user)
+            if count is not None:
+                synced_users += 1
+                synced_enrollments += count
+        except Exception as exc:
+            logger.error("Moodle enrollment sync failed for user %s: %s", user.email, exc)
+
+    logger.info(
+        "Moodle enrollment sync complete: %d users, %d enrollments",
+        synced_users,
+        synced_enrollments,
+    )
+    return {"users": synced_users, "enrollments": synced_enrollments}
+
+
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def sync_single_user_moodle_enrollments(self, user_id: int):
     """
     Sync Edwiser Bridge enrollments for a single ECP user.
     Called on login or explicit refresh via POST /api/courses/my-courses/refresh/.
+
+    DEPRECATED: Use sync_single_user_moodle_enrollments_via_moodle instead.
+    Kept for backwards compatibility.
     """
     try:
         client = get_edwiser_client()
@@ -208,6 +334,25 @@ def sync_single_user_moodle_enrollments(self, user_id: int):
         return {"skipped": True}
 
     count = _sync_user_enrollments(client, user)
+    return {"user_id": user_id, "enrollments": count}
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def sync_single_user_moodle_enrollments_via_moodle(self, user_id: int):
+    """
+    Sync Moodle enrollments for a single ECP user via REST API.
+    Called on login or explicit refresh via POST /api/courses/my-courses/refresh/.
+    No WordPress ID required.
+
+    NEW: Email-based Moodle sync for single user.
+    """
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        logger.warning("Cannot sync Moodle enrollments — user %s not found", user_id)
+        return {"skipped": True}
+
+    count = _sync_user_enrollments_via_moodle(user)
     return {"user_id": user_id, "enrollments": count}
 
 

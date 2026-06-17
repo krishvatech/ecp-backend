@@ -45,7 +45,9 @@ from .serializers import (
 from .tasks import (
     sync_moodle_courses_and_categories,
     sync_single_user_moodle_enrollments,
+    sync_single_user_moodle_enrollments_via_moodle,
     _sync_user_enrollments,
+    _sync_user_enrollments_via_moodle,
     _get_user_edwiser_wp_id,
     _clear_unlinked_user_enrollments,
     sync_course_content,
@@ -223,17 +225,6 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
     def my_courses(self, request):
         user = request.user
 
-        # A user must be linked to the IMAA WordPress/Edwiser account before we
-        # show/sync LMS enrollments. Do not use email fallback here, because it
-        # can create course rows for users without a real LMS account.
-        if not _get_user_edwiser_wp_id(user):
-            _clear_unlinked_user_enrollments(user)
-            logger.info(
-                "my_courses returned empty for user %s because no linked wordpress_id exists",
-                user.email,
-            )
-            return Response([])
-
         # Serve from DB immediately
         enrollments = (
             MoodleEnrollment.objects.filter(user=user)
@@ -250,9 +241,9 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
             [{"course_id": e["course_id"], "full_name": e["full_name"], "progress": e["progress"]} for e in result],
         )
 
-        # Trigger background enrollment refresh only for linked users
-        sync_single_user_moodle_enrollments.delay(user.id)
-        logger.info("Background enrollment sync triggered for linked user %s", user.email)
+        # Trigger background enrollment refresh via Moodle REST API (no WordPress ID needed)
+        sync_single_user_moodle_enrollments_via_moodle.delay(user.id)
+        logger.info("Background enrollment sync triggered for user %s", user.email)
 
         return Response(result)
 
@@ -268,25 +259,16 @@ class MoodleCourseViewSet(ReadOnlyModelViewSet):
     )
     def refresh_my_courses(self, request):
         """
-        Synchronously fetch fresh enrollments from EB API, update DB,
+        Synchronously fetch fresh enrollments from Moodle via REST API, update DB,
         then return the updated list immediately.
         This ensures unenrolled courses are removed right away.
         """
         user = request.user
 
-        if not _get_user_edwiser_wp_id(user):
-            _clear_unlinked_user_enrollments(user)
-            logger.info(
-                "refresh_my_courses returned empty for user %s because no linked wordpress_id exists",
-                user.email,
-            )
-            return Response([])
-
         try:
-            client = get_edwiser_client()
-            _sync_user_enrollments(client, user)
+            _sync_user_enrollments_via_moodle(user)
         except Exception as exc:
-            logger.warning("Sync failed during refresh for user %s: %s", user.email, exc)
+            logger.warning("Moodle sync failed during refresh for user %s: %s", user.email, exc)
 
         # Return fresh data from DB after sync
         enrollments = (

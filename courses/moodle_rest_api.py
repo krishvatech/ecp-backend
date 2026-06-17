@@ -97,6 +97,26 @@ class MoodleRestClient:
             return None
         return result[0].get("id")
 
+    def get_user_enrolled_courses(self, user_id: int) -> List[Dict]:
+        """
+        Fetch all courses a user is enrolled in from Moodle.
+
+        Returns a list of course dicts with:
+          - id: Moodle course ID
+          - fullname: course name
+          - shortname: course short name
+          - summary: course description
+          - courseimage: course image URL (if available)
+          - progress: completion progress (0-100) if available
+        """
+        result = self._call(
+            "core_enrol_get_users_courses",
+            {"userid": user_id},
+        )
+        if not isinstance(result, list):
+            return []
+        return result
+
     # ------------------------------------------------------------------
     # Completion status
     # ------------------------------------------------------------------
