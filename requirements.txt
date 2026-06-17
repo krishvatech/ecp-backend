@@ -24,6 +24,7 @@ google-cloud-storage==2.17.0
 
 # Env / Testing
 python-dotenv==1.0.1
+requests>=2.32,<3
 pytest==8.3.2
 pytest-django==4.8.0
 factory-boy==3.3.0

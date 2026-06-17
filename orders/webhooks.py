@@ -4,147 +4,102 @@ import hmac
 import hashlib
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.utils import timezone
 from django.conf import settings
 from django.db import transaction
-from django.contrib.auth.models import User
-from events.models import Event, EventRegistration
-from events.services.post_acceptance_forms import (
-    is_online_event,
-    trigger_post_acceptance_forms
-)
+from .models import Order
 
 logger = logging.getLogger('orders')
+
+
+def _saleor_signature_is_valid(request) -> bool:
+    """Validate legacy HMAC Saleor signatures when SALEOR_WEBHOOK_SECRET is configured."""
+    secret = getattr(settings, 'SALEOR_WEBHOOK_SECRET', '')
+    if not secret:
+        # Newer Saleor installs may use JWS signatures. If no local secret is configured,
+        # do not block the webhook; rely on HTTPS + secret target URL/custom auth header.
+        return True
+    signature = (
+        request.headers.get('Saleor-Signature')
+        or request.headers.get('X-Saleor-Signature')
+        or request.headers.get('X-Saleor-HMAC-SHA256')
+        or ''
+    )
+    expected = hmac.new(secret.encode(), request.body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+def _event_type(request, payload) -> str:
+    raw = (
+        payload.get('event')
+        or request.headers.get('Saleor-Event')
+        or request.headers.get('X-Saleor-Event')
+        or ''
+    )
+    return str(raw).strip().lower().replace('-', '_')
+
 
 @csrf_exempt
 def saleor_order_paid_webhook(request):
     """
-    Handle Saleor 'order-paid' webhook.
-    Creates EventRegistration and triggers post-acceptance forms for paid orders.
+    Handle Saleor paid-order webhook.
 
-    Validates webhook signature, looks up user by email, checks event format,
-    and triggers form assignments for confirmed attendees.
+    Confirms local EventRegistration rows and queues invoice generation. The task is
+    idempotent, so duplicate Saleor webhook deliveries are safe.
     """
     if request.method != 'POST':
         return HttpResponse(status=405)
 
-    # Verify webhook signature
-    if hasattr(settings, 'SALEOR_WEBHOOK_SECRET') and settings.SALEOR_WEBHOOK_SECRET:
-        signature = request.headers.get('X-Saleor-Signature', '')
-        payload_bytes = request.body
-        hmac_check = hmac.new(
-            settings.SALEOR_WEBHOOK_SECRET.encode(),
-            payload_bytes,
-            hashlib.sha256
-        )
-        if not hmac.compare_digest(hmac_check.hexdigest(), signature):
-            logger.warning(f"Invalid Saleor webhook signature")
-            return HttpResponse(status=401)
+    if not getattr(settings, 'SALEOR_ENABLED', False):
+        logger.info('Saleor disabled; ignoring order-paid webhook')
+        return HttpResponse(status=200)
+
+    if not _saleor_signature_is_valid(request):
+        logger.warning('Invalid Saleor webhook signature')
+        return HttpResponse(status=401)
 
     try:
-        payload = json.loads(request.body)
-        order = payload.get("order")
-        if not order:
-            return HttpResponse("Missing order data", status=400)
+        payload = json.loads(request.body or b'{}')
+        order = payload.get('order') or payload.get('data', {}).get('order') or payload
+        if not isinstance(order, dict) or not order.get('id'):
+            return HttpResponse('Missing order data', status=400)
 
-        email = order.get("userEmail")
-        if not email:
-            return HttpResponse("Missing email", status=400)
-
-        # Look up user by email
-        user = User.objects.filter(email=email).first()
-        if not user:
-            logger.warning(f"No User found for email: {email}. Skipping registration.")
+        event = _event_type(request, payload)
+        paid_events = {'order_paid', 'order_fully_paid', 'orderfullypaid', 'orderpaid'}
+        if event and event not in paid_events:
+            logger.info('Ignoring Saleor event %s for order %s', event, order.get('id'))
             return HttpResponse(status=200)
 
-        lines = order.get("lines", [])
-        registrations_created = 0
+        from .saleor_checkout import confirm_registrations_for_saleor_order, fetch_saleor_order
+        from invoicing.tasks import create_invoice_from_saleor_order
 
-        for line in lines:
-            variant = line.get("variant")
-            if not variant:
-                continue
+        # Webhook subscription payloads differ by Saleor version/configuration. Fetch the
+        # full order if lines/userEmail were not included in the subscription query.
+        if not order.get('lines') or not order.get('userEmail'):
+            order = fetch_saleor_order(order['id'])
 
-            saleor_variant_id = variant.get("id")
+        with transaction.atomic():
+            local_order = Order.objects.select_for_update().filter(saleor_order_id=order['id']).first()
+            if local_order:
+                local_order.status = 'paid'
+                if order.get('number'):
+                    local_order.saleor_order_number = str(order.get('number'))
+                local_order.save(update_fields=['status', 'saleor_order_number', 'updated_at'])
 
-            # Find the Event associated with this Saleor variant
-            try:
-                event = Event.objects.get(saleor_variant_id=saleor_variant_id)
+            registrations_confirmed = confirm_registrations_for_saleor_order(
+                order,
+                payment_reference=(local_order.payment_reference if local_order else order['id']),
+            )
 
-                # Skip virtual events (they don't need post-acceptance forms)
-                if is_online_event(event):
-                    logger.info(f"Skipping virtual event {event.id} - no forms required")
-                    continue
-
-                # Create EventRegistration using transaction for atomicity
-                with transaction.atomic():
-                    registration, created = EventRegistration.objects.get_or_create(
-                        event=event,
-                        user=user,
-                        defaults={
-                            "status": "registered",
-                            "attendee_status": "confirmed",
-                            "registered_at": timezone.now(),
-                        }
-                    )
-
-                    should_trigger_forms = False
-
-                    if created:
-                        logger.info(
-                            f"Created registration for {user.email} to event '{event.title}' "
-                            f"(event_id={event.id}) via Saleor webhook"
-                        )
-                        registrations_created += 1
-                        should_trigger_forms = True
-                    else:
-                        # Update existing payment_pending registrations to confirmed
-                        if registration.attendee_status == 'payment_pending':
-                            registration.status = 'registered'
-                            registration.attendee_status = 'confirmed'
-                            registration.registered_at = timezone.now()
-                            registration.save(update_fields=['status', 'attendee_status', 'registered_at'])
-                            logger.info(
-                                f"Updated existing registration for {user.email} to event {event.id} "
-                                f"from payment_pending to confirmed via Saleor webhook"
-                            )
-                            should_trigger_forms = True
-                        elif registration.status == 'registered' and registration.attendee_status == 'confirmed':
-                            # Existing confirmed registration - trigger forms (idempotent, duplicates prevented by service)
-                            logger.info(
-                                f"Registration already confirmed for {user.email} to event {event.id}. "
-                                f"Triggering forms again (duplicate prevention handled by service)."
-                            )
-                            should_trigger_forms = True
-                        else:
-                            logger.info(
-                                f"Registration already exists for {user.email} to event {event.id} "
-                                f"with status {registration.status}. Skipping form trigger."
-                            )
-
-                    if should_trigger_forms:
-                        # Trigger post-acceptance forms (within atomic transaction)
-                        def queue_forms():
-                            try:
-                                trigger_post_acceptance_forms(registration)
-                            except Exception as e:
-                                logger.error(
-                                    f"Failed to trigger forms for registration {registration.id}: {e}",
-                                    exc_info=True
-                                )
-
-                        # Use transaction.on_commit() pattern to ensure forms triggered after save
-                        transaction.on_commit(queue_forms)
-
-            except Event.DoesNotExist:
-                logger.warning(f"No Event found for Saleor variant ID: {saleor_variant_id}")
-
-        logger.info(f"Saleor order-paid webhook: {registrations_created} registration(s) created")
+        create_invoice_from_saleor_order.delay(order['id'])
+        logger.info(
+            'Saleor paid webhook processed for order %s; confirmed %s registration(s)',
+            order['id'], registrations_confirmed,
+        )
         return HttpResponse(status=200)
 
     except json.JSONDecodeError:
-        logger.error("Invalid JSON in Saleor webhook payload")
-        return HttpResponse("Invalid JSON", status=400)
+        logger.error('Invalid JSON in Saleor webhook payload')
+        return HttpResponse('Invalid JSON', status=400)
     except Exception as e:
-        logger.error(f"Error processing Saleor webhook: {e}", exc_info=True)
+        logger.error('Error processing Saleor paid webhook: %s', e, exc_info=True)
         return HttpResponse(status=500)

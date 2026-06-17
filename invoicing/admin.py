@@ -1,6 +1,6 @@
 from django.contrib import admin
 from invoicing.models import (
-    LegalEntity, Customer, Invoice, InvoiceLine,
+    LegalEntity, InvoiceSequence, Customer, Invoice, InvoiceLine,
     PaymentEvent, CreditNote, ReservedNumber
 )
 
@@ -8,6 +8,12 @@ from invoicing.models import (
 class LegalEntityAdmin(admin.ModelAdmin):
     list_display = ('code', 'name', 'currency')
     readonly_fields = ('inv_counter_2026',)
+
+@admin.register(InvoiceSequence)
+class InvoiceSequenceAdmin(admin.ModelAdmin):
+    list_display = ('legal_entity', 'series', 'year', 'last_number', 'updated_at')
+    list_filter = ('legal_entity', 'series', 'year')
+    readonly_fields = ('updated_at',)
 
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
@@ -17,14 +23,14 @@ class CustomerAdmin(admin.ModelAdmin):
 
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
-    list_display = ('number', 'customer', 'total_gross', 'state', 'issue_date')
+    list_display = ('number', 'customer', 'total_gross', 'state', 'issue_date', 'saleor_order_number')
     list_filter = ('issue_date', 'legal_entity')
-    search_fields = ('number', 'customer__user__email')
-    readonly_fields = ('number', 'state', 'created_at', 'updated_at')
+    search_fields = ('number', 'customer__user__email', 'saleor_order_id', 'saleor_order_number', 'saleor_invoice_id')
+    readonly_fields = ('number', 'state', 'public_download_token', 'created_at', 'updated_at')
 
     fieldsets = (
         ('Invoice Details', {
-            'fields': ('number', 'legal_entity', 'customer', 'saleor_order_id')
+            'fields': ('number', 'legal_entity', 'customer', 'saleor_order_id', 'saleor_order_number', 'saleor_invoice_id', 'public_download_token')
         }),
         ('Dates', {
             'fields': ('issue_date', 'due_date', 'skonto_deadline')

@@ -1,7 +1,8 @@
+import uuid
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
-from events.models import Event
 
 class LegalEntity(models.Model):
     """Represents IMAA Switzerland GmbH"""
@@ -25,6 +26,21 @@ class LegalEntity(models.Model):
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+class InvoiceSequence(models.Model):
+    """Yearly invoice sequence per legal entity and document series."""
+    legal_entity = models.ForeignKey(LegalEntity, on_delete=models.CASCADE, related_name='invoice_sequences')
+    series = models.CharField(max_length=8, default='INV')
+    year = models.PositiveIntegerField()
+    last_number = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [('legal_entity', 'series', 'year')]
+        ordering = ['-year', 'series']
+
+    def __str__(self):
+        return f"{self.legal_entity.code}-{self.series}-{self.year}: {self.last_number}"
 
 class Customer(models.Model):
     """Customer who can have multiple invoices across entities"""
@@ -54,6 +70,9 @@ class Invoice(models.Model):
     legal_entity = models.ForeignKey(LegalEntity, on_delete=models.PROTECT)
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT)
     saleor_order_id = models.CharField(max_length=255, blank=True, db_index=True)  # For idempotency
+    saleor_order_number = models.CharField(max_length=64, blank=True)
+    saleor_invoice_id = models.CharField(max_length=255, blank=True, db_index=True)
+    public_download_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
 
     issue_date = models.DateField()
     due_date = models.DateField()
@@ -77,6 +96,13 @@ class Invoice(models.Model):
             models.Index(fields=['legal_entity', 'issue_date']),
             models.Index(fields=['customer', 'issue_date']),
             models.Index(fields=['number']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['saleor_order_id'],
+                condition=~Q(saleor_order_id=''),
+                name='uniq_invoice_saleor_order_id_not_blank',
+            ),
         ]
 
     def __str__(self):
@@ -127,6 +153,8 @@ class PaymentEvent(models.Model):
         ('stripe', 'Stripe'),
         ('wise', 'Wise Bank Transfer'),
         ('manual', 'Manual Entry'),
+        ('bank_transfer', 'Bank Transfer'),
+        ('saleor_manual', 'Saleor Manual/Offline'),
     ])
     external_reference = models.CharField(max_length=255, blank=True, db_index=True)  # Stripe charge ID, bank ref
 
