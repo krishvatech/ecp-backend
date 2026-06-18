@@ -2,6 +2,7 @@
 import logging
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import F, Sum
 from django.utils import timezone
@@ -206,6 +207,96 @@ def _user_can_mark_order_paid(user, order):
     if bool(getattr(user, "is_staff", False)) or bool(getattr(user, "is_superuser", False)):
         return True
     return order.items.filter(event__created_by=user).exists()
+
+
+def _create_order_payment_notification(order, invoice=None, payment_reference=""):
+    """Create one in-app notification when a manual/offline order is confirmed paid.
+
+    Email is useful outside the platform, but the customer should also see the
+    same payment/invoice update in the Connect notifications tab. This helper is
+    intentionally idempotent so repeated mark-paid calls do not duplicate the
+    notification.
+    """
+    user = getattr(order, "user", None)
+    if not user or _is_guest_user(user):
+        return None
+
+    try:
+        from friends.models import Notification
+    except Exception:
+        return None
+
+    notification_type = "order_payment_confirmed"
+    existing = Notification.objects.filter(
+        recipient=user,
+        kind="event",
+        data__type=notification_type,
+        data__order_id=order.id,
+    ).first()
+    if existing:
+        return existing
+
+    items = list(order.items.select_related("event").all())
+    item_labels = []
+    item_payload = []
+    for item in items:
+        event = getattr(item, "event", None)
+        title = getattr(event, "title", None) or "Event"
+        item_labels.append(title)
+        item_payload.append({
+            "event_id": getattr(event, "id", None),
+            "event_title": title,
+            "quantity": item.quantity,
+            "line_total": str(item.line_total),
+        })
+
+    if len(item_labels) == 1:
+        item_text = item_labels[0]
+    elif len(item_labels) == 2:
+        item_text = f"{item_labels[0]} and {item_labels[1]}"
+    elif item_labels:
+        item_text = f"{item_labels[0]} and {len(item_labels) - 1} other events"
+    else:
+        item_text = f"order #{order.id}"
+
+    invoice_number = getattr(invoice, "number", "") or ""
+    currency = (getattr(invoice, "currency", None) or order.currency or "USD").upper()
+    total = getattr(invoice, "total_gross", None) or order.total
+
+    title = f"Payment confirmed for order #{order.id}"
+    if invoice_number:
+        description = (
+            f"Your payment for {item_text} has been confirmed. "
+            f"Invoice {invoice_number} is ready to download."
+        )
+    else:
+        description = f"Your payment for {item_text} has been confirmed."
+
+    notification = Notification.objects.create(
+        recipient=user,
+        actor=None,
+        kind="event",
+        title=title,
+        description=description,
+        state="",
+        data={
+            "type": notification_type,
+            "order_id": order.id,
+            "saleor_order_number": order.saleor_order_number or "",
+            "saleor_order_id": order.saleor_order_id or "",
+            "invoice_id": getattr(invoice, "id", None),
+            "invoice_number": invoice_number,
+            "payment_reference": payment_reference or order.payment_reference or "",
+            "amount": str(total),
+            "currency": currency,
+            "items": item_payload,
+            "action_url": "/account/cart?tab=orders",
+            "action_label": "View order",
+        },
+    )
+
+    cache.delete(f"user:{user.id}:notifications:unread:count")
+    return notification
 
 
 def _build_saleor_billing_address(user, request_data):
@@ -633,6 +724,15 @@ class OrderMarkPaidView(APIView):
                     # generated while the invoice was still ISSUED.
                     generate_invoice_pdf_task(invoice.id)
                     invoice.refresh_from_db()
+
+                    # In-app notification mirrors the paid-invoice email so the
+                    # customer also sees the update in the Connect notifications
+                    # tab. The helper is idempotent across repeated mark-paid calls.
+                    _create_order_payment_notification(
+                        order,
+                        invoice=invoice,
+                        payment_reference=payment_reference,
+                    )
 
                     if created and not was_paid:
                         paid_invoice_id = invoice.id
