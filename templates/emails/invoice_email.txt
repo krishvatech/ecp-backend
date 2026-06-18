@@ -1,0 +1,29 @@
+Invoice #{{ invoice.number }}
+=========================
+
+Dear {{ customer_name }},
+
+Thank you for your purchase! Your invoice is attached below.
+
+Invoice Details
+---------------
+Invoice Number: {{ invoice.number }}
+Date: {{ invoice.issue_date|date:"M d, Y" }}
+Due Date: {{ invoice.due_date|date:"M d, Y" }}
+Status: {{ invoice.state|upper }}
+
+Amount Due: {{ invoice.currency }} {{ invoice.total_gross }}
+
+{% if invoice.skonto_deadline %}
+Early Payment Discount: Available until {{ invoice.skonto_deadline|date:"M d, Y" }}
+{% endif %}
+
+You can view and download your invoice from your customer portal at:
+{{ portal_url }}/invoices/
+
+---
+
+If you have any questions about this invoice, please contact us at {{ support_email }}.
+
+{{ invoice.legal_entity.name }}
+All rights reserved.

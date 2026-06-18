@@ -1,0 +1,22 @@
+PAYMENT CONFIRMED
+=================
+
+Hello,
+
+We have received and confirmed your payment. Your registration/order is now marked as paid.
+The invoice PDF is attached to this email.
+
+Invoice Details
+---------------
+Invoice Number: {{ invoice.number }}
+Status: PAID
+Amount: {{ invoice.currency }} {{ invoice.total_gross }}
+Issue Date: {{ invoice.issue_date|date:"M d, Y" }}
+
+The invoice PDF is attached to this email.
+
+If you have any questions, reply to this email or contact us at support@imaa.org.
+
+---
+
+This is an automated payment confirmation for invoice {{ invoice.number }}.

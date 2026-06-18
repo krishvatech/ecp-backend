@@ -396,6 +396,8 @@ TEMPLATE_KEY_CHOICES = [
     ("networking_meeting_reminder", "Networking Meeting Reminder"),
     ("post_acceptance_form_sent", "Post-Acceptance Form Sent"),
     ("post_acceptance_form_reminder", "Post-Acceptance Form Reminder"),
+    ("invoice_email", "Invoice Email"),
+    ("invoice_payment_confirmation", "Invoice Payment Confirmation"),
 ]
 
 # Per-template-key required placeholders — used in clean() validation
@@ -436,6 +438,8 @@ REQUIRED_PLACEHOLDERS = {
     "networking_meeting_reminder": ["{{ first_name }}", "{{ other_party_name }}", "{{ event_title }}", "{{ reminder_minutes }}", "{{ companion_url }}"],
     "post_acceptance_form_sent": ["{{ first_name }}", "{{ event_title }}", "{{ form_url }}"],
     "post_acceptance_form_reminder": ["{{ first_name }}", "{{ event_title }}", "{{ form_url }}", "{{ deadline }}"],
+    "invoice_email": ["{{ invoice.number }}"],
+    "invoice_payment_confirmation": ["{{ invoice.number }}", "{{ invoice_url }}"],
 }
 
 

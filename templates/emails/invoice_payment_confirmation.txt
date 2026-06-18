@@ -1,0 +1,30 @@
+PAYMENT CONFIRMED
+=================
+
+Hello {{ customer_name }},
+
+We have received and confirmed your payment. Your registration/order is now marked as paid.
+The invoice PDF is attached to this email. You can also download it directly using the link below.
+
+Invoice Details
+---------------
+Invoice Number: {{ invoice.number }}
+Status: PAID
+Amount: {{ invoice.currency }} {{ invoice.total_gross }}
+Issue Date: {{ invoice.issue_date|date:"M d, Y" }}
+
+Download Invoice
+----------------
+You can download your invoice PDF directly here:
+{{ invoice_url }}
+
+You can also download it again anytime from your account Orders tab.
+
+Questions?
+----------
+If you have any questions, reply to this email or contact us at {{ support_email }}.
+
+---
+
+{{ invoice.legal_entity.name }}
+This is an automated payment confirmation for invoice {{ invoice.number }}.

@@ -1,0 +1,20 @@
+Invoice #{{ invoice.number }}
+=========================
+
+Dear Customer,
+
+Thank you for your purchase! Your invoice is attached below.
+
+Invoice Details
+---------------
+Invoice Number: {{ invoice.number }}
+Date: {{ invoice.issue_date|date:"M d, Y" }}
+Due Date: {{ invoice.due_date|date:"M d, Y" }}
+Status: {{ invoice.state|upper }}
+
+Amount Due: {{ invoice.currency }} {{ invoice.total_gross }}
+
+If you have any questions about this invoice, please contact us at invoices@imaa.org.
+
+{{ invoice.legal_entity.name }}
+All rights reserved.

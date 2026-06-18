@@ -1,8 +1,9 @@
 from celery import shared_task
-from django.core.mail import EmailMessage
+from django.core.mail import EmailMessage, EmailMultiAlternatives
 from django.utils.html import strip_tags
 from django.core import signing
 from django.template.loader import render_to_string
+from django.template import Template as DjangoTemplate, Context
 from django.core.files.storage import default_storage
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -301,10 +302,73 @@ def _recipient_name(user):
     return full_name.strip() or getattr(user, "first_name", "") or getattr(user, "email", "") or "Customer"
 
 
+def render_cms_invoice_email(template_key, context, fallback_subject, fallback_html_path, fallback_txt_path):
+    """
+    Render invoice email from CMS EmailTemplate first, then fallback to file templates.
+
+    This function implements a DB-first rendering strategy:
+    1. Try to load cms.EmailTemplate by template_key
+    2. If found and active, render subject/html/text using Django templates
+    3. If not found or inactive, fallback to file-based templates
+    4. Log errors but never break the email flow
+
+    Args:
+        template_key: CMS template key ('invoice_email' or 'invoice_payment_confirmation')
+        context: Dict of template variables for rendering
+        fallback_subject: Default subject line if no DB template
+        fallback_html_path: Path to fallback HTML template (e.g., 'invoicing/payment_confirmation_email.html')
+        fallback_txt_path: Path to fallback text template (e.g., 'invoicing/payment_confirmation_email.txt')
+
+    Returns:
+        tuple: (subject, html_body, text_body) rendered strings, or (fallback_subject, fallback_html, "") on error
+    """
+    try:
+        # Step 1: Try to load CMS EmailTemplate
+        from cms.models import EmailTemplate
+        try:
+            db_template = EmailTemplate.objects.get(template_key=template_key, is_active=True)
+            logger.info(f"render_cms_invoice_email: Using CMS template for '{template_key}'")
+
+            # Render subject, html_body, and text_body through Django template engine
+            ctx = Context(context)
+            subject = DjangoTemplate(db_template.subject).render(ctx)
+            html_body = DjangoTemplate(db_template.html_body).render(ctx)
+            text_body = DjangoTemplate(db_template.text_body).render(ctx)
+            return subject, html_body, text_body
+
+        except EmailTemplate.DoesNotExist:
+            logger.info(f"render_cms_invoice_email: CMS template '{template_key}' not found, using file fallback")
+        except Exception as e:
+            logger.warning(f"render_cms_invoice_email: Error loading CMS template '{template_key}': {e}, using file fallback")
+
+        # Step 2: Fallback to file-based templates
+        try:
+            html_body = render_to_string(fallback_html_path, context)
+        except Exception as e:
+            logger.error(f"render_cms_invoice_email: Failed to render fallback HTML template {fallback_html_path}: {e}")
+            html_body = f"<p>An invoice has been issued. Please contact support.</p>"
+
+        try:
+            text_body = render_to_string(fallback_txt_path, context)
+        except Exception as e:
+            logger.warning(f"render_cms_invoice_email: Failed to render fallback text template {fallback_txt_path}: {e}")
+            text_body = strip_tags(html_body)
+
+        return fallback_subject, html_body, text_body
+
+    except Exception as e:
+        logger.error(f"render_cms_invoice_email: Unexpected error for template '{template_key}': {e}")
+        # Return safe fallback
+        return fallback_subject, f"<p>An invoice has been issued. Please contact support.</p>", ""
+
+
 @shared_task
 def send_invoice_email(invoice_id):
     """
-    Send invoice PDF to customer
+    Send invoice PDF to customer using CMS template with file fallback.
+
+    Uses the 'invoice_email' template from cms.EmailTemplate if available,
+    otherwise falls back to invoicing/invoice_email.html.
 
     Args:
         invoice_id: Invoice primary key
@@ -325,21 +389,35 @@ def send_invoice_email(invoice_id):
             logger.warning(f"No PDF reference for invoice {invoice.number}")
             pdf_content = None
 
-        # Prepare email
+        # Prepare email context
         context = {
             'invoice': invoice,
+            'customer_name': _recipient_name(invoice.customer.user),
             'portal_url': getattr(settings, 'FRONTEND_URL', 'https://example.com'),
+            'support_email': getattr(settings, 'SUPPORT_EMAIL', getattr(settings, 'DEFAULT_FROM_EMAIL', 'support@example.com')),
             'skonto_config': getattr(settings, 'SKONTO_CONFIG', {}),
         }
 
-        email = EmailMessage(
-            subject=f'Your Invoice {invoice.number}',
-            body=render_to_string('invoicing/invoice_email.html', context),
+        # Render email using CMS template or file fallback
+        subject, html_body, text_body = render_cms_invoice_email(
+            template_key='invoice_email',
+            context=context,
+            fallback_subject=f'Your Invoice {invoice.number}',
+            fallback_html_path='invoicing/invoice_email.html',
+            fallback_txt_path='invoicing/invoice_email.txt'
+        )
+
+        email = EmailMultiAlternatives(
+            subject=subject,
+            body=text_body or strip_tags(html_body),
             from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'invoices@imaa.org'),
             to=[invoice.customer.user.email],
             reply_to=[settings.DEFAULT_REPLY_TO_EMAIL] if getattr(settings, "DEFAULT_REPLY_TO_EMAIL", "") else None,
         )
-        email.content_subtype = 'html'
+
+        # Attach HTML alternative
+        if html_body:
+            email.attach_alternative(html_body, 'text/html')
 
         # Attach PDF if available
         if pdf_content:
@@ -358,6 +436,9 @@ def send_invoice_email(invoice_id):
 def send_payment_confirmation_email(invoice_id):
     """
     Send the final paid-order email with the invoice PDF attached.
+
+    Uses the 'invoice_payment_confirmation' template from cms.EmailTemplate if available,
+    otherwise falls back to invoicing/payment_confirmation_email.html.
 
     This task is intentionally safe to call from both Celery and direct code. It
     generates the invoice PDF when it is missing so the customer always receives
@@ -388,21 +469,28 @@ def send_payment_confirmation_email(invoice_id):
             "invoice_url": _invoice_download_url(invoice),
             "support_email": getattr(settings, "SUPPORT_EMAIL", getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@example.com")),
         }
-        html_body = render_to_string("invoicing/payment_confirmation_email.html", context)
-        text_body = strip_tags(html_body)
 
-        email = EmailMessage(
-            subject=f"Payment confirmed - Invoice {invoice.number}",
-            body=html_body,
+        # Render email using CMS template or file fallback
+        subject, html_body, text_body = render_cms_invoice_email(
+            template_key='invoice_payment_confirmation',
+            context=context,
+            fallback_subject=f'Payment confirmed - Invoice {invoice.number}',
+            fallback_html_path='invoicing/payment_confirmation_email.html',
+            fallback_txt_path='invoicing/payment_confirmation_email.txt'
+        )
+
+        email = EmailMultiAlternatives(
+            subject=subject,
+            body=text_body or strip_tags(html_body),
             from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "invoices@imaa.org"),
             to=[user.email],
             reply_to=[settings.DEFAULT_REPLY_TO_EMAIL] if getattr(settings, "DEFAULT_REPLY_TO_EMAIL", "") else None,
         )
-        email.content_subtype = "html"
         email.extra_headers = {"X-Entity-Ref-ID": str(invoice.id)}
-        # Some email clients show plain text previews from the HTML body; keep a
-        # text fallback available for backends that inspect body text.
-        email.body = html_body or text_body
+
+        # Attach HTML alternative
+        if html_body:
+            email.attach_alternative(html_body, 'text/html')
 
         if pdf_content:
             email.attach(f"{invoice.number}.pdf", pdf_content, "application/pdf")

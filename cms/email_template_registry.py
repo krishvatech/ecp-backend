@@ -54,6 +54,8 @@ DEFAULT_SUBJECTS = {
     "networking_meeting_suggested": "Alternative Time Suggested: {{ other_party_name }} at {{ event_title }}",
     "networking_meeting_cancelled": "Meeting Cancelled: {{ other_party_name }} at {{ event_title }}",
     "networking_meeting_reminder": "Reminder: Meeting with {{ other_party_name }} in {{ reminder_minutes }} minutes",
+    "invoice_email": "Your Invoice {{ invoice.number }}",
+    "invoice_payment_confirmation": "Payment confirmed - Invoice {{ invoice.number }}",
 }
 
 TEMPLATE_CATEGORIES = {
@@ -100,6 +102,8 @@ TEMPLATE_CATEGORIES = {
     "networking_meeting_suggested": "Networking",
     "networking_meeting_cancelled": "Networking",
     "networking_meeting_reminder": "Networking",
+    "invoice_email": "Invoices",
+    "invoice_payment_confirmation": "Invoices",
 }
 
 MERGE_TAG_LABELS = {
@@ -191,6 +195,9 @@ MERGE_TAG_LABELS = {
     "suggested_time": "Suggested Time",
     "suggestion_message": "Suggestion Message",
     "location": "Location",
+    "customer_name": "Customer Name",
+    "invoice_url": "Invoice Download URL",
+    "portal_url": "Portal URL",
 }
 
 COMMON_CONTEXT = {
@@ -260,6 +267,8 @@ TEMPLATE_VARIABLES = {
     "networking_meeting_suggested": ["app_name", "first_name", "other_party_name", "event_title", "companion_url", "meeting_time", "support_email"],
     "networking_meeting_cancelled": ["app_name", "first_name", "other_party_name", "event_title", "companion_url", "support_email"],
     "networking_meeting_reminder": ["app_name", "first_name", "other_party_name", "event_title", "reminder_minutes", "companion_url", "meeting_time", "support_email"],
+    "invoice_email": ["customer_name", "invoice_url", "portal_url", "support_email"],
+    "invoice_payment_confirmation": ["customer_name", "invoice_url", "portal_url", "support_email"],
 }
 
 SAMPLE_VALUES = {
@@ -338,6 +347,9 @@ SAMPLE_VALUES = {
     "suggested_time": "2:00 PM",
     "suggestion_message": "Could we meet the next afternoon instead?",
     "location": "Networking Lounge",
+    "customer_name": "Alex Morgan",
+    "invoice_url": "https://example.com/api/invoices/public/token123/download/",
+    "portal_url": "https://example.com",
 }
 
 def unique_in_order(values):
