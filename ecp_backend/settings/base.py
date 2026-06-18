@@ -306,6 +306,15 @@ def env_bool(name, default=False):
 # user list to every websocket client on every coalesced lounge update.
 LIVE_LIGHTWEIGHT_LOUNGE_BROADCASTS = env_bool("LIVE_LIGHTWEIGHT_LOUNGE_BROADCASTS", True)
 
+# Breakout force-join scale controls. These must be Django settings because
+# consumers.py reads them via django.conf.settings; plain environment variables
+# are not visible there unless mapped here. Defaults target 400+ users by
+# smoothing /lounge-join-table/ calls instead of sending one large REST burst.
+BREAKOUT_FORCE_JOIN_BATCH_SIZE = int(os.getenv("BREAKOUT_FORCE_JOIN_BATCH_SIZE", "50"))
+BREAKOUT_FORCE_JOIN_BATCH_SLEEP_SECONDS = float(os.getenv("BREAKOUT_FORCE_JOIN_BATCH_SLEEP_SECONDS", "0.5"))
+BREAKOUT_FORCE_JOIN_CLIENT_JITTER_MS = int(os.getenv("BREAKOUT_FORCE_JOIN_CLIENT_JITTER_MS", "10000"))
+BREAKOUT_FORCE_JOIN_PER_USER_DELAY_MS = int(os.getenv("BREAKOUT_FORCE_JOIN_PER_USER_DELAY_MS", "250"))
+
 # _DB_CONN_MAX_AGE = int(os.getenv("DB_CONN_MAX_AGE", "0" if DEBUG else "60"))
 # 
 # DATABASES = {

@@ -324,7 +324,16 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         # Join event group
         await self.channel_layer.group_add(self.group_name, self.channel_name)
-        
+
+        # 400+ SCALE FIX:
+        # Host-only events must not be broadcast to every participant. A previous
+        # flow sent late_joiner_notification to event_<id> and every non-host
+        # websocket had to receive + drop it. With hundreds of users this creates
+        # avoidable websocket fan-out during breakout movement.
+        self.host_group_name = f"event_{self.event_id}_hosts"
+        if await self.is_host():
+            await self.channel_layer.group_add(self.host_group_name, self.channel_name)
+
         # Join user-specific group for private messages
 
         if self._is_guest_user():
@@ -532,6 +541,9 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         if hasattr(self, "group_name"):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
+
+        if hasattr(self, "host_group_name"):
+            await self.channel_layer.group_discard(self.host_group_name, self.channel_name)
 
         if hasattr(self, "user_group_name"):
             await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
@@ -764,7 +776,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 )
                 if notification:
                     await self.channel_layer.group_send(
-                        self.group_name,
+                        getattr(self, "host_group_name", f"event_{self.event_id}_hosts"),
                         {"type": "late_joiner_notification", "notification": notification},
                     )
                     if joiner_id:
@@ -2069,6 +2081,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 "type": "force_join_breakout",
                 "table_id": event["table_id"],
                 "table_name": event.get("table_name"),
+                "join_delay_ms": event.get("join_delay_ms", 0),
                 "join_jitter_ms": event.get("join_jitter_ms", 0),
             })
         else:
@@ -2631,12 +2644,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         await self.broadcast_lounge_update()
 
-        # Notify users in small batches.  With 316 users, sending every
-        # force_join_breakout at once creates a /lounge-join-table/ + RTK
-        # websocket storm.  These settings can be tuned in production.
-        batch_size = max(1, int(getattr(settings, "BREAKOUT_FORCE_JOIN_BATCH_SIZE", 25)))
-        batch_sleep = max(0.0, float(getattr(settings, "BREAKOUT_FORCE_JOIN_BATCH_SLEEP_SECONDS", 3)))
-        client_jitter_ms = max(0, int(getattr(settings, "BREAKOUT_FORCE_JOIN_CLIENT_JITTER_MS", 2500)))
+        # Notify users with deterministic client-side staggering.  For 400+ users
+        # the expensive part is not this websocket message; it is each browser
+        # calling /lounge-join-table/ and then RTK /participants.  Spread those
+        # REST joins over time so backend workers and RTK are not hit by one burst.
+        batch_size = max(1, int(getattr(settings, "BREAKOUT_FORCE_JOIN_BATCH_SIZE", 50)))
+        batch_sleep = max(0.0, float(getattr(settings, "BREAKOUT_FORCE_JOIN_BATCH_SLEEP_SECONDS", 0.5)))
+        client_jitter_ms = max(0, int(getattr(settings, "BREAKOUT_FORCE_JOIN_CLIENT_JITTER_MS", 10000)))
+        per_user_delay_ms = max(0, int(getattr(settings, "BREAKOUT_FORCE_JOIN_PER_USER_DELAY_MS", 250)))
 
         for index, assignment in enumerate(assignments):
             if index and index % batch_size == 0 and batch_sleep > 0:
@@ -2651,8 +2666,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 "type": "breakout_force_join",
                 "table_id": table_id,
                 "table_name": table_name,
-                # Small per-client jitter inside each backend batch so clients
-                # do not all call the REST join endpoint in the same millisecond.
+                # The frontend waits this deterministic delay before POSTing
+                # /lounge-join-table/.  For 400 users and 250ms spacing, the
+                # peak request rate stays around 4 joins/sec instead of 400 at once.
+                "join_delay_ms": index * per_user_delay_ms,
+                # Add a small random jitter on top of deterministic spacing to
+                # avoid clients that were delivered at the same time aligning again.
                 "join_jitter_ms": client_jitter_ms,
             }
 
@@ -2689,8 +2708,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.send_debug_to_host(msg)
         await self.broadcast_lounge_update()
 
-        # Notify each assigned user to join the room
-        for assignment in assignments:
+        client_jitter_ms = max(0, int(getattr(settings, "BREAKOUT_FORCE_JOIN_CLIENT_JITTER_MS", 10000)))
+        per_user_delay_ms = max(0, int(getattr(settings, "BREAKOUT_FORCE_JOIN_PER_USER_DELAY_MS", 250)))
+
+        # Notify each assigned user to join the room. Use the same stagger as
+        # random assignment so bulk manual assignment is also safe at scale.
+        for index, assignment in enumerate(assignments):
             user_id = assignment[0]
             table_id = assignment[1]
             table_name = assignment[2] if len(assignment) > 2 else None
@@ -2701,6 +2724,8 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     "user_id": user_id,
                     "table_id": table_id,
                     "table_name": table_name,
+                    "join_delay_ms": index * per_user_delay_ms,
+                    "join_jitter_ms": client_jitter_ms,
                 }
             )
 
@@ -3455,7 +3480,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             }
             print(f"[LATE_JOINER] Broadcasting notification: {notification_data}")
             await self.channel_layer.group_send(
-                self.group_name,
+                getattr(self, "host_group_name", f"event_{self.event_id}_hosts"),
                 {"type": "late_joiner_notification", "notification": notification_data}
             )
             print(f"[LATE_JOINER] ✅ Notification sent to host")
