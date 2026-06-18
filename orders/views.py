@@ -601,7 +601,10 @@ class OrderMarkPaidView(APIView):
                     status="registered",
                 ).update(attendee_status="confirmed")
 
-            # Ensure invoice exists, generate PDF if needed, then record payment.
+            # Ensure invoice exists, record payment, then regenerate the PDF.
+            # Important: the invoice PDF status is derived from PaymentEvent rows.
+            # If we generate the PDF before creating the payment event, the PDF
+            # remains stale and still shows ISSUED even though the order is PAID.
             try:
                 from invoicing.models import Invoice, PaymentEvent
                 from invoicing.tasks import create_invoice_from_saleor_order, generate_invoice_pdf_task
@@ -611,29 +614,34 @@ class OrderMarkPaidView(APIView):
                     create_invoice_from_saleor_order(order.saleor_order_id)
                     invoice = Invoice.objects.filter(saleor_order_id=order.saleor_order_id).first()
 
-                if invoice and not invoice.pdf_storage_reference:
+                if invoice:
+                    payment_ref = payment_reference or order.saleor_order_id or f"ORDER-{order.id}"
+                    _payment_event, created = PaymentEvent.objects.get_or_create(
+                        invoice=invoice,
+                        event_type="payment",
+                        external_reference=payment_ref,
+                        defaults={
+                            "amount": invoice.total_gross,
+                            "currency": invoice.currency,
+                            "source": payment_source if payment_source in {"manual", "wise"} else "manual",
+                            "notes": f"Manual payment confirmed from ECP order #{order.id}",
+                        },
+                    )
+
+                    # Always regenerate after payment confirmation, even if a PDF
+                    # already exists, because the existing PDF may have been
+                    # generated while the invoice was still ISSUED.
                     generate_invoice_pdf_task(invoice.id)
                     invoice.refresh_from_db()
 
-                if invoice and not PaymentEvent.objects.filter(
-                    invoice=invoice,
-                    event_type="payment",
-                    external_reference=payment_reference or order.saleor_order_id,
-                ).exists():
-                    PaymentEvent.objects.create(
-                        invoice=invoice,
-                        event_type="payment",
-                        amount=invoice.total_gross,
-                        currency=invoice.currency,
-                        source=payment_source if payment_source in {"manual", "wise"} else "manual",
-                        external_reference=payment_reference or order.saleor_order_id,
-                        notes=f"Manual payment confirmed from ECP order #{order.id}",
-                    )
-
-                if invoice and not was_paid:
-                    paid_invoice_id = invoice.id
-            except Exception:
-                logger.exception("Could not finalize invoice/email data for paid order %s", order.id)
+                    if created and not was_paid:
+                        paid_invoice_id = invoice.id
+            except Exception as exc:
+                logger.exception("Could not finalize invoice for paid order %s", order.id)
+                return Response(
+                    {"detail": f"Order was marked paid, but invoice finalization failed: {exc}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
 
             if paid_invoice_id:
                 def _send_paid_invoice_email():
