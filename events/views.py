@@ -10520,14 +10520,28 @@ class EventViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="lounge-participants")
     def lounge_participants(self, request, pk=None):
-        """Host-only endpoint: Returns all participants currently in Social Lounge (at table or floating), excluding hosts."""
+        """Host-only lightweight room occupants endpoint.
+
+        Default remains backward-compatible: Social Lounge only.
+        Use ?room_type=breakout to return breakout-room users.
+        Use ?room_type=all to return both Social Lounge and Breakout Room users.
+        """
         event = self.get_object()
         if not _is_event_manager(request.user, event):
             return Response({"detail": "Host only"}, status=403)
 
-        # ✅ FIX: Query all participants whose current_location is social_lounge
-        # This includes both "floating" users (no table) and users seated at tables
         limit, offset = self._parse_limit_offset(request, default_limit=50, max_limit=100)
+        room_type = str(request.query_params.get("room_type") or "lounge").strip().lower()
+
+        if room_type in {"breakout", "breakouts", "breakout_room", "breakout_rooms"}:
+            locations = ["breakout_room"]
+            table_categories = ["BREAKOUT"]
+        elif room_type in {"all", "rooms", "room"}:
+            locations = ["social_lounge", "breakout_room"]
+            table_categories = ["LOUNGE", "BREAKOUT"]
+        else:
+            locations = ["social_lounge"]
+            table_categories = ["LOUNGE"]
 
         host_user_ids = set(
             event.participants.filter(role="host", user_id__isnull=False)
@@ -10546,11 +10560,11 @@ class EventViewSet(viewsets.ModelViewSet):
         }
 
         regs_qs = (
-            EventRegistration.objects.filter(event=event, current_location="social_lounge")
+            EventRegistration.objects.filter(event=event, current_location__in=locations)
             .exclude(user_id__in=excluded_user_ids)
             .exclude(user__is_staff=True)
             .exclude(user__is_superuser=True)
-            .select_related("user")
+            .select_related("user", "last_breakout_table")
             .order_by("id")
         )
         total_count = regs_qs.count()
@@ -10560,7 +10574,7 @@ class EventViewSet(viewsets.ModelViewSet):
         lounge_map = {
             lp.user_id: lp for lp in LoungeParticipant.objects.filter(
                 table__event=event,
-                table__category="LOUNGE",
+                table__category__in=table_categories,
                 user_id__in=user_ids,
             ).select_related("table")
         }
@@ -10573,6 +10587,14 @@ class EventViewSet(viewsets.ModelViewSet):
                 continue
 
             lp = lounge_map.get(reg.user_id)
+            table_obj = lp.table if lp else None
+
+            # During reconnect/force-join races, current_location can already be
+            # breakout_room while LoungeParticipant is not visible yet. Fall back
+            # to last_breakout_table so the host sidebar still shows the room.
+            if not table_obj and reg.current_location == "breakout_room":
+                table_obj = reg.last_breakout_table
+
             mini_user = UserMiniSerializer(user, context={"request": request}).data
             data.append({
                 "user_id": reg.user_id,
@@ -10581,8 +10603,9 @@ class EventViewSet(viewsets.ModelViewSet):
                 "kyc_status": mini_user.get("kyc_status") or "",
                 "job_title": mini_user.get("job_title") or "",
                 "company": mini_user.get("company") or "",
-                "table_id": lp.table_id if lp else None,
-                "table_name": lp.table.name if lp else None,
+                "table_id": table_obj.id if table_obj else None,
+                "table_name": table_obj.name if table_obj else None,
+                "table_category": table_obj.category if table_obj else None,
                 "admission_status": reg.admission_status,
                 "current_location": reg.current_location,
             })
