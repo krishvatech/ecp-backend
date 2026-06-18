@@ -84,18 +84,11 @@ class Conversation(models.Model):
                 status__in=member_statuses,
             ).exists()
 
-        # Event rooms → keep open for now (you can later restrict via event registrations)
+        # Event rooms → active event-chat access only.
         if self.event_id:
-            from events.models import Event, EventRegistration
+            from .access import user_can_access_event_chat
 
-            if getattr(self, "event", None) and self.event.created_by_id == user.id:
-                return True
-            if Event.objects.filter(pk=self.event_id, created_by_id=user.id).exists():
-                return True
-            return EventRegistration.objects.filter(
-                event_id=self.event_id,
-                user_id=user.id,
-            ).exists()
+            return user_can_access_event_chat(user, event=getattr(self, "event", None), event_id=self.event_id)
 
         # Lounge room → only seated users
         if self.lounge_table_id:

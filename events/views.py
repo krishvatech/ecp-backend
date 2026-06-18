@@ -5684,7 +5684,7 @@ class EventViewSet(viewsets.ModelViewSet):
         mx = qs.aggregate(mx=Max("price"))["mx"] or 0
         return Response({"max_price": float(mx)})
     
-    @action(detail=True, methods=["post"], permission_classes=[AllowAny], url_path="live-status")
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="live-status")
     def live_status(self, request, pk=None):
         """
         Start/end a live meeting.
@@ -6221,11 +6221,9 @@ class EventViewSet(viewsets.ModelViewSet):
                 "breakout_rooms_active", "updated_at"
             ])
 
-        # Broadcast break_ended to all participants
+        # Broadcast only a lightweight break_ended event. Do not attach full lounge_state here:
+        # on large meetings it serializes all lounge tables/participants and fans out a huge payload.
         try:
-            # ✅ Get updated lounge state for frontend so UI refreshes immediately
-            lounge_state = _build_lounge_state_sync(event.id)
-
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 f"event_{event.id}",
@@ -6234,7 +6232,8 @@ class EventViewSet(viewsets.ModelViewSet):
                     "event_id": event.id,
                     "lounge_enabled_during": event.lounge_enabled_during,
                     "media_lock_active": False,
-                    "lounge_state": lounge_state,  # ✅ Include updated lounge state
+                    "lounge_state_deferred": True,
+                    "online_users_deferred": True,
                 }
             )
         except Exception as e:
@@ -10433,6 +10432,18 @@ class EventViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @staticmethod
+    def _parse_limit_offset(request, *, default_limit=50, max_limit=100):
+        try:
+            limit = int(request.query_params.get("limit", default_limit))
+        except (TypeError, ValueError):
+            limit = default_limit
+        try:
+            offset = int(request.query_params.get("offset", 0))
+        except (TypeError, ValueError):
+            offset = 0
+        return max(1, min(limit, max_limit)), max(0, offset)
+
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="waiting-room/queue")
     def waiting_room_queue(self, request, pk=None):
         event = self.get_object()
@@ -10455,42 +10466,57 @@ class EventViewSet(viewsets.ModelViewSet):
         # ✅ CRITICAL FIX: Only show users who have ACTIVELY JOINED the waiting room
         # Filter by waiting_started_at__isnull=False to exclude users who just registered
         # but haven't clicked "Join Waiting Room" yet.
-        waiting_regs = (
+        limit, offset = self._parse_limit_offset(request, default_limit=50, max_limit=100)
+        waiting_regs_qs = (
             EventRegistration.objects.filter(
                 event=event,
                 admission_status="waiting",
                 waiting_started_at__isnull=False  # ✅ Only users who actually joined
             )
             .select_related("user")
-            .order_by("waiting_started_at", "registered_at")
+            .order_by("waiting_started_at", "registered_at", "id")
         )
-        data = [
-            {
-                "user_id": r.user_id,
-                "user_name": r.user.get_full_name() or r.user.username,
-                "user_email": r.user.email,
-                "waiting_started_at": r.waiting_started_at,
-                "registered_at": r.registered_at,
-            }
-            for r in waiting_regs
-        ]
-        guest_waiting = GuestAttendee.objects.filter(
+        guest_waiting_qs = GuestAttendee.objects.filter(
             event=event,
             current_location="waiting_room",
             converted_at__isnull=True,
-        ).order_by("created_at")
-        for g in guest_waiting:
-            data.append(
-                {
+        ).order_by("created_at", "id")
+
+        registered_count = waiting_regs_qs.count()
+        guest_count = guest_waiting_qs.count()
+        total_count = registered_count + guest_count
+        data = []
+
+        regs_needed = max(0, min(limit, registered_count - offset))
+        if regs_needed:
+            for r in waiting_regs_qs[offset: offset + regs_needed]:
+                data.append({
+                    "user_id": r.user_id,
+                    "user_name": r.user.get_full_name() or r.user.username,
+                    "user_email": r.user.email,
+                    "waiting_started_at": r.waiting_started_at,
+                    "registered_at": r.registered_at,
+                })
+
+        if len(data) < limit:
+            guest_offset = max(0, offset - registered_count)
+            guest_limit = limit - len(data)
+            for g in guest_waiting_qs[guest_offset: guest_offset + guest_limit]:
+                data.append({
                     "user_id": f"guest_{g.id}",
                     "user_name": g.get_display_name(),
                     "user_email": g.email,
                     "waiting_started_at": None,
                     "registered_at": g.created_at,
                     "is_guest": True,
-                }
-            )
-        return Response({"count": len(data), "results": data})
+                })
+
+        return Response({
+            "count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "results": data,
+        })
 
     @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="lounge-participants")
     def lounge_participants(self, request, pk=None):
@@ -10501,44 +10527,51 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # ✅ FIX: Query all participants whose current_location is social_lounge
         # This includes both "floating" users (no table) and users seated at tables
-        regs = EventRegistration.objects.filter(
-            event=event,
-            current_location="social_lounge"
-        ).select_related("user")
+        limit, offset = self._parse_limit_offset(request, default_limit=50, max_limit=100)
 
-        # Get table assignments for those users (if any)
+        host_user_ids = set(
+            event.participants.filter(role="host", user_id__isnull=False)
+            .values_list("user_id", flat=True)
+        )
+        excluded_user_ids = set(host_user_ids)
+        excluded_user_ids.add(event.created_by_id)
+        community_owner_id = getattr(event.community, "owner_id", None)
+        if community_owner_id:
+            excluded_user_ids.add(community_owner_id)
+
+        host_guest_emails = {
+            (email or "").strip().lower()
+            for email in event.participants.filter(role="host", guest_email__isnull=False)
+            .values_list("guest_email", flat=True)
+        }
+
+        regs_qs = (
+            EventRegistration.objects.filter(event=event, current_location="social_lounge")
+            .exclude(user_id__in=excluded_user_ids)
+            .exclude(user__is_staff=True)
+            .exclude(user__is_superuser=True)
+            .select_related("user")
+            .order_by("id")
+        )
+        total_count = regs_qs.count()
+        regs = list(regs_qs[offset: offset + limit])
+
         user_ids = [r.user_id for r in regs]
         lounge_map = {
             lp.user_id: lp for lp in LoungeParticipant.objects.filter(
-                table__event=event, table__category="LOUNGE", user_id__in=user_ids
+                table__event=event,
+                table__category="LOUNGE",
+                user_id__in=user_ids,
             ).select_related("table")
         }
 
-        # ✅ NEW FIX: Exclude hosts from lounge participants list
-        # Build data only for non-hosts
         data = []
         for reg in regs:
             user = reg.user
-            # Skip if user is a host (staff, superuser, event creator, community owner, or explicitly assigned role)
-            if (
-                user.is_staff
-                or getattr(user, "is_superuser", False)
-                or event.created_by_id == user.id
-                or getattr(event.community, "owner_id", None) == user.id
-            ):
+            user_email = (getattr(user, "email", "") or "").strip().lower()
+            if user_email and user_email in host_guest_emails:
                 continue
 
-            # Check if explicitly assigned host role in EventParticipant (ANY participant type)
-            # First check by user_id
-            if event.participants.filter(role="host", user_id=user.id).exists():
-                continue
-
-            # Then check by email for guest participants
-            user_email = (getattr(user, "email", "") or "").strip()
-            if user_email and event.participants.filter(role="host", guest_email__iexact=user_email).exists():
-                continue
-
-            # Include non-hosts
             lp = lounge_map.get(reg.user_id)
             mini_user = UserMiniSerializer(user, context={"request": request}).data
             data.append({
@@ -10553,7 +10586,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "admission_status": reg.admission_status,
                 "current_location": reg.current_location,
             })
-        return Response({"count": len(data), "results": data})
+        return Response({"count": total_count, "limit": limit, "offset": offset, "results": data})
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="waiting-room/admit")
     def waiting_room_admit(self, request, pk=None):

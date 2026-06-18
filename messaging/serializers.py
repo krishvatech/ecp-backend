@@ -217,9 +217,13 @@ class ConversationSerializer(serializers.ModelSerializer):
         return UserMiniSerializer(other, context=self.context).data
 
     def get_last_message(self, obj: Conversation) -> str:
+        annotated_body = getattr(obj, "last_message_body_annotated", None)
+        if annotated_body is not None:
+            return annotated_body[:80]
+
         msg = (
             obj.messages.filter(is_hidden=False, is_deleted=False)
-            .order_by("-created_at")
+            .order_by("-id")
             .first()
         )
         return msg.body[:80] if msg else ""
@@ -232,6 +236,11 @@ class ConversationSerializer(serializers.ModelSerializer):
         if getattr(u, "is_guest", False):
             # Guest users don't have MessageReadReceipt rows (FK to auth user only).
             return 0
+
+        annotated_count = getattr(obj, "unread_count_annotated", None)
+        if annotated_count is not None:
+            return int(annotated_count)
+
         return (
             obj.messages.filter(is_hidden=False, is_deleted=False)
             .exclude(sender_id=u.id)

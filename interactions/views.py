@@ -2,6 +2,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
 from django.core.cache import cache
+from django.db import transaction
 from django.db.models import BooleanField, Count, Exists, OuterRef, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
@@ -3020,14 +3021,64 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = QnAQuestionGroupSerializer
 
+    @staticmethod
+    def _parse_limit_offset(request, *, default_limit=50, max_limit=100):
+        try:
+            limit = int(request.query_params.get("limit", default_limit))
+        except (TypeError, ValueError):
+            limit = default_limit
+        try:
+            offset = int(request.query_params.get("offset", 0))
+        except (TypeError, ValueError):
+            offset = 0
+        return max(1, min(limit, max_limit)), max(0, offset)
+
+    @staticmethod
+    def _is_group_manager(user, event) -> bool:
+        return bool(
+            user
+            and getattr(user, "is_authenticated", False)
+            and (
+                user == event.created_by
+                or getattr(user, "is_staff", False)
+                or getattr(user, "is_superuser", False)
+            )
+        )
+
+    def _require_group_manager(self, group):
+        from rest_framework.exceptions import PermissionDenied
+        if not self._is_group_manager(self.request.user, group.event):
+            raise PermissionDenied("Only event host/admin can manage Q&A groups.")
+
+    def _valid_question_ids_for_group(self, group, raw_question_ids):
+        from rest_framework.exceptions import ValidationError
+        try:
+            question_ids = [int(q_id) for q_id in (raw_question_ids or [])]
+        except (TypeError, ValueError):
+            raise ValidationError({"question_ids": "All question ids must be integers."})
+
+        if not question_ids:
+            return []
+
+        valid_ids = set(
+            Question.objects.filter(event_id=group.event_id, id__in=question_ids)
+            .values_list("id", flat=True)
+        )
+        invalid_ids = [q_id for q_id in question_ids if q_id not in valid_ids]
+        if invalid_ids:
+            raise ValidationError({"question_ids": f"Invalid question ids for this event: {invalid_ids}"})
+        return question_ids
+
     def get_queryset(self):
+        base_qs = QnAQuestionGroup.objects.select_related("event", "event__created_by").prefetch_related("memberships")
         if self.action in ["retrieve", "update", "partial_update", "destroy", "add_questions", "remove_questions", "reorder_questions"]:
-            return QnAQuestionGroup.objects.all().prefetch_related("memberships")
-            
+            return base_qs
+
         event_id = self.request.query_params.get("event_id")
         if not event_id:
             return QnAQuestionGroup.objects.none()
-        return QnAQuestionGroup.objects.filter(event_id=event_id).prefetch_related("memberships")
+        limit, offset = self._parse_limit_offset(self.request, default_limit=50, max_limit=100)
+        return base_qs.filter(event_id=event_id).order_by("-created_at", "-id")[offset: offset + limit]
 
     def perform_create(self, serializer):
         from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -3060,14 +3111,12 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
 
     def update(self, request, pk=None, *args, **kwargs):
         """Handle PATCH/PUT requests, including question_ids."""
-        from rest_framework.exceptions import PermissionDenied
         import logging
 
         logger = logging.getLogger(__name__)
         group = self.get_object()
 
-        if not (request.user == group.event.created_by or getattr(request.user, "is_staff", False)):
-            raise PermissionDenied("Only event host/admin can update groups.")
+        self._require_group_manager(group)
 
         # Extract question_ids if provided
         question_ids = request.data.get("question_ids")
@@ -3079,23 +3128,20 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
 
         # Handle question_ids update
         if question_ids is not None:
-            logger.info(f"[GROUP-EDIT] Updating group {group.id} with question_ids: {question_ids}")
-
-            # Delete all existing memberships
-            QnAQuestionGroupMembership.objects.filter(group=group).delete()
-
-            # Create new memberships
-            for q_id in question_ids:
-                try:
-                    QnAQuestionGroupMembership.objects.create(
+            question_ids = self._valid_question_ids_for_group(group, question_ids)
+            logger.info("[GROUP-EDIT] Updating group %s with %s question(s)", group.id, len(question_ids))
+            with transaction.atomic():
+                QnAQuestionGroupMembership.objects.filter(group=group).delete()
+                QnAQuestionGroupMembership.objects.filter(question_id__in=question_ids).delete()
+                QnAQuestionGroupMembership.objects.bulk_create([
+                    QnAQuestionGroupMembership(
                         group=group,
                         question_id=q_id,
-                        added_by=request.user
+                        added_by=request.user,
+                        display_order=index,
                     )
-                except Exception as e:
-                    logger.error(f"[GROUP-EDIT] Error adding question {q_id}: {str(e)}")
-
-            logger.info(f"[GROUP-EDIT] Successfully updated group {group.id} with {len(question_ids)} questions")
+                    for index, q_id in enumerate(question_ids)
+                ])
 
         # Broadcast group_updated
         channel_layer = get_channel_layer()
@@ -3112,15 +3158,13 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         """Deprecated - use update() instead."""
-        from rest_framework.exceptions import PermissionDenied
         group = self.get_object()
-        if not (self.request.user == group.event.created_by or getattr(self.request.user, "is_staff", False)):
-            raise PermissionDenied("Only event host/admin can update groups.")
+        self._require_group_manager(group)
         serializer.save()
 
     def perform_destroy(self, instance):
         from rest_framework.exceptions import PermissionDenied
-        if not (self.request.user == instance.event.created_by or getattr(self.request.user, "is_staff", False)):
+        if not self._is_group_manager(self.request.user, instance.event):
             raise PermissionDenied("Only event host/admin can delete groups.")
         
         event_id = instance.event_id
@@ -3141,18 +3185,22 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def add_questions(self, request, pk=None):
         group = self.get_object()
-        question_ids = request.data.get("question_ids", [])
-        
-        added = []
-        for q_id in question_ids:
-            QnAQuestionGroupMembership.objects.filter(question_id=q_id).delete()
-            mem = QnAQuestionGroupMembership.objects.create(
-                group=group,
-                question_id=q_id,
-                added_by=request.user
-            )
-            added.append(q_id)
-            
+        self._require_group_manager(group)
+        question_ids = self._valid_question_ids_for_group(group, request.data.get("question_ids", []))
+
+        with transaction.atomic():
+            QnAQuestionGroupMembership.objects.filter(question_id__in=question_ids).delete()
+            QnAQuestionGroupMembership.objects.bulk_create([
+                QnAQuestionGroupMembership(
+                    group=group,
+                    question_id=q_id,
+                    added_by=request.user,
+                    display_order=index,
+                )
+                for index, q_id in enumerate(question_ids)
+            ])
+        added = question_ids
+
         # Broadcast
         channel_layer = get_channel_layer()
         group_name = f"event_qna_{group.event_id}_shared"
@@ -3161,8 +3209,8 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
             {
                 "type": "qna.group_membership_updated",
                 "payload": {
-                    "type": "qna.group_membership_updated", 
-                    "group_id": group.id, 
+                    "type": "qna.group_membership_updated",
+                    "group_id": group.id,
                     "added": added,
                     "event_id": group.event_id
                 }
@@ -3173,9 +3221,10 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def remove_questions(self, request, pk=None):
         group = self.get_object()
-        question_ids = request.data.get("question_ids", [])
+        self._require_group_manager(group)
+        question_ids = self._valid_question_ids_for_group(group, request.data.get("question_ids", []))
         QnAQuestionGroupMembership.objects.filter(group=group, question_id__in=question_ids).delete()
-        
+
         # Broadcast
         channel_layer = get_channel_layer()
         group_name = f"event_qna_{group.event_id}_shared"
@@ -3184,8 +3233,8 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
             {
                 "type": "qna.group_membership_updated",
                 "payload": {
-                    "type": "qna.group_membership_updated", 
-                    "group_id": group.id, 
+                    "type": "qna.group_membership_updated",
+                    "group_id": group.id,
                     "removed": question_ids,
                     "event_id": group.event_id
                 }
@@ -3195,12 +3244,28 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def reorder_questions(self, request, pk=None):
+        from rest_framework.exceptions import ValidationError
         group = self.get_object()
+        self._require_group_manager(group)
         # expect [{"question_id": 1, "display_order": 0}, ...]
         order_data = request.data.get("order", [])
+        question_ids = self._valid_question_ids_for_group(
+            group,
+            [item.get("question_id") for item in order_data if isinstance(item, dict)],
+        )
+        order_map = {}
         for item in order_data:
-            QnAQuestionGroupMembership.objects.filter(group=group, question_id=item["question_id"]).update(display_order=item["display_order"])
-        
+            try:
+                order_map[int(item["question_id"])] = int(item["display_order"])
+            except (KeyError, TypeError, ValueError):
+                raise ValidationError({"order": "Each item needs integer question_id and display_order."})
+        with transaction.atomic():
+            for question_id in question_ids:
+                QnAQuestionGroupMembership.objects.filter(
+                    group=group,
+                    question_id=question_id,
+                ).update(display_order=order_map[question_id])
+
         return Response({"status": "questions reordered"}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="ai-suggest")

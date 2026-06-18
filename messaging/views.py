@@ -12,7 +12,8 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import models
 from django.contrib.auth import get_user_model
-from django.db.models import Q, Prefetch,Exists, OuterRef
+from django.db.models import Q, Prefetch, Exists, OuterRef, Subquery, Count, Value, IntegerField
+from django.db.models.functions import Coalesce
 from rest_framework import viewsets, mixins, status, permissions
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -29,6 +30,7 @@ from urllib.parse import urlparse
 from .models import Conversation, Message, MessageReadReceipt, ConversationPinnedMessage, ConversationPin, MessageFlag
 from .serializers import ConversationSerializer, MessageSerializer,ConversationPinnedMessageOutSerializer
 from .permissions import IsConversationParticipant
+from .access import user_can_access_event_chat
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
@@ -100,41 +102,15 @@ class ConversationViewSet(viewsets.ViewSet):
             return False
 
         try:
-            event = Event.objects.select_related("community", "created_by").get(pk=event_id)
-        except Event.DoesNotExist:
+            event = Event.objects.select_related("community").get(pk=event_id)
+            recipient = User.objects.get(pk=recipient_id)
+        except (Event.DoesNotExist, User.DoesNotExist):
             return False
 
-        def can_access_event_chat(check_user_id):
-            if not check_user_id:
-                return False
-
-            # Event creator / platform staff / community owner can chat in their live event.
-            if check_user_id == event.created_by_id:
-                return True
-
-            if User.objects.filter(pk=check_user_id, is_staff=True).exists():
-                return True
-
-            if getattr(event.community, "owner_id", None) == check_user_id:
-                return True
-
-            # Explicit event staff (host/moderator/speaker) can chat inside this event.
-            if EventParticipant.objects.filter(
-                event_id=event_id,
-                user_id=check_user_id,
-                participant_type=EventParticipant.PARTICIPANT_TYPE_STAFF,
-            ).exists():
-                return True
-
-            # Normal attendees must have an active, non-banned registration.
-            return EventRegistration.objects.filter(
-                event_id=event_id,
-                user_id=check_user_id,
-                status="registered",
-                is_banned=False,
-            ).exists()
-
-        return can_access_event_chat(user.id) and can_access_event_chat(recipient_id)
+        return (
+            user_can_access_event_chat(user, event=event)
+            and user_can_access_event_chat(recipient, event=event)
+        )
 
     def get_queryset(self, request):
         user = request.user
@@ -166,7 +142,10 @@ class ConversationViewSet(viewsets.ViewSet):
 
         # Events where this user is registered or created the event
         registered_event_ids = EventRegistration.objects.filter(
-            user_id=user.id
+            user_id=user.id,
+            status="registered",
+            attendee_status="confirmed",
+            is_banned=False,
         ).values_list("event_id", flat=True)
         created_event_ids = Event.objects.filter(
             created_by_id=user.id
@@ -196,19 +175,50 @@ class ConversationViewSet(viewsets.ViewSet):
             "group",
             "event",
             "lounge_table",
-        ).prefetch_related(
-            models.Prefetch(
-                "messages",
-                queryset=Message.objects.filter(is_hidden=False, is_deleted=False),
-            )
         )
 
         is_pinned_subquery = ConversationPin.objects.filter(
-            conversation=OuterRef('pk'), 
-            user=user
+            conversation=OuterRef('pk'),
+            user=user,
         )
-        qs = qs.annotate(is_pinned=Exists(is_pinned_subquery))
-        
+        latest_message_subquery = Message.objects.filter(
+            conversation_id=OuterRef("pk"),
+            is_hidden=False,
+            is_deleted=False,
+        ).order_by("-id")
+
+        # IMPORTANT:
+        # Do not calculate unread_count with a filtered Count over
+        # messages__read_receipts. In event/group chats a message can have read
+        # receipts from many users. A joined row for another user can make
+        # `~Q(messages__read_receipts__user_id=user.id)` true even when the
+        # current user has already read the message, so the red unread dot stays
+        # visible after reading. Count unread messages in an isolated Message
+        # subquery using exclude(read_receipts__user_id=user.id), matching the
+        # mark-all-read semantics.
+        unread_messages_subquery = (
+            Message.objects
+            .filter(
+                conversation_id=OuterRef("pk"),
+                is_hidden=False,
+                is_deleted=False,
+            )
+            .exclude(sender_id=user.id)
+            .exclude(read_receipts__user_id=user.id)
+            .values("conversation_id")
+            .annotate(total=Count("id", distinct=True))
+            .values("total")[:1]
+        )
+
+        qs = qs.annotate(
+            is_pinned=Exists(is_pinned_subquery),
+            last_message_body_annotated=Subquery(latest_message_subquery.values("body")[:1]),
+            unread_count_annotated=Coalesce(
+                Subquery(unread_messages_subquery, output_field=IntegerField()),
+                Value(0),
+            ),
+        )
+
         # Ordering: Pinned first (True > False), then by updated_at
         qs = qs.order_by("-is_pinned", "-updated_at")
 
@@ -241,9 +251,22 @@ class ConversationViewSet(viewsets.ViewSet):
         return qs
 
 
+    @staticmethod
+    def _parse_page_params(request, *, default_limit=50, max_limit=100):
+        try:
+            limit = int(request.query_params.get("limit", default_limit))
+        except (TypeError, ValueError):
+            limit = default_limit
+        try:
+            offset = int(request.query_params.get("offset", 0))
+        except (TypeError, ValueError):
+            offset = 0
+        return max(1, min(limit, max_limit)), max(0, offset)
+
     def list(self, request, *args, **kwargs):
-        qs = self.get_queryset(request)  # <-- use filtered queryset
-        serializer = ConversationSerializer(qs, many=True, context={"request": request})
+        qs = self.get_queryset(request)
+        limit, offset = self._parse_page_params(request, default_limit=50, max_limit=100)
+        serializer = ConversationSerializer(qs[offset: offset + limit], many=True, context={"request": request})
         return Response(serializer.data)
 
     def retrieve(self, request, *args, **kwargs):
@@ -272,13 +295,9 @@ class ConversationViewSet(viewsets.ViewSet):
                 event_id = int(event_id)
             except (TypeError, ValueError):
                 raise ValidationError({"event": "Invalid event id."})
-            event = get_object_or_404(Event, pk=event_id)
-            can_access_event = (
-                event.created_by_id == user.id
-                or EventRegistration.objects.filter(user_id=user.id, event_id=event.id).exists()
-            )
-            if not can_access_event:
-                raise PermissionDenied("You are not registered for this event.")
+            event = get_object_or_404(Event.objects.select_related("community"), pk=event_id)
+            if not user_can_access_event_chat(user, event=event):
+                raise PermissionDenied("You are not allowed to access this event chat.")
 
             # One row per event chat
             conv, created = Conversation.objects.get_or_create(
@@ -850,11 +869,13 @@ class ConversationViewSet(viewsets.ViewSet):
         except (TypeError, ValueError):
             raise ValidationError({"event": "Invalid event id."})
 
-        event = get_object_or_404(Event, pk=event_id)
+        event = get_object_or_404(Event.objects.select_related("community"), pk=event_id)
         if self._is_guest_user(request.user):
             guest = getattr(request.user, "guest", None)
             if not guest or guest.event_id != event.id:
                 raise PermissionDenied("Guest session is not valid for this event.")
+        elif not user_can_access_event_chat(request.user, event=event):
+            raise PermissionDenied("You are not allowed to access this event chat.")
 
         # One conversation per event
         conv, created = Conversation.objects.get_or_create(
@@ -1467,20 +1488,8 @@ class MessageViewSet(
             except (TypeError, ValueError):
                 raise ValidationError({"event_id": "Invalid event id."})
 
-            message_event = get_object_or_404(Event, pk=message_event_id)
-            if self._is_guest_user(user):
-                guest = getattr(user, "guest", None)
-                can_access_event = bool(guest and guest.event_id == message_event.id)
-            else:
-                can_access_event = (
-                    message_event.created_by_id == user.id
-                    or EventRegistration.objects.filter(
-                        user_id=user.id, event_id=message_event.id
-                    ).exists()
-                    or getattr(user, "is_staff", False)
-                    or getattr(user, "is_superuser", False)
-                )
-            if not can_access_event:
+            message_event = get_object_or_404(Event.objects.select_related("community"), pk=message_event_id)
+            if not user_can_access_event_chat(user, event=message_event):
                 raise PermissionDenied("You are not allowed to attach this event context.")
 
         # If frontend did not pass event_id, infer it from the conversation.

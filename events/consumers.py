@@ -2303,7 +2303,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
     @database_sync_to_async
     def clear_all_tables(self):
         # Clear breakout assignments only. Do not clear Social Lounge occupants.
-        EventRegistration.objects.filter(event_id=self.event_id).update(last_breakout_table=None)
+        EventRegistration.objects.filter(
+            event_id=self.event_id,
+            last_breakout_table__isnull=False,
+        ).update(last_breakout_table=None, current_location="main_room")
         # Remove only breakout participants
         LoungeParticipant.objects.filter(
             table__event_id=self.event_id,
@@ -2513,7 +2516,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     table__event_id=self.event_id,
                     table__category='BREAKOUT',
                 ).delete()
-                EventRegistration.objects.filter(event_id=self.event_id).update(last_breakout_table=None)
+                EventRegistration.objects.filter(
+                    event_id=self.event_id,
+                    last_breakout_table__isnull=False,
+                ).update(last_breakout_table=None, current_location="main_room")
                 GuestAttendee.objects.filter(
                     event_id=self.event_id,
                     converted_at__isnull=True,
@@ -2547,7 +2553,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         )
 
                         if table.category == 'BREAKOUT':
-                            EventRegistration.objects.filter(event_id=self.event_id, user=user).update(last_breakout_table=table)
+                            EventRegistration.objects.filter(event_id=self.event_id, user=user).update(
+                                last_breakout_table=table,
+                                current_location="breakout_room",
+                            )
 
                         assignments.append({
                             "target_type": "user",
@@ -2770,7 +2779,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
                 # Check if it's a breakout room and save assignment
                 if table.category == 'BREAKOUT':
-                    EventRegistration.objects.filter(event_id=self.event_id, user_id=user_id).update(last_breakout_table=table)
+                    EventRegistration.objects.filter(event_id=self.event_id, user_id=user_id).update(
+                        last_breakout_table=table,
+                        current_location="breakout_room",
+                    )
 
                 assignments.append((user_id, table_id, table.name))
                 print(f"[MANUAL_ASSIGN] ✅ Assigned user {user_id} to table {table_id}, seat {seat_index}")
@@ -2905,7 +2917,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     seat_index=seat
                 )
                 self._invalidate_lounge_presence_cache_sync()
-                # Keep last_breakout_table in EventRegistration (already set)
+                EventRegistration.objects.filter(event_id=self.event_id, user=self.user).update(
+                    last_breakout_table=table,
+                    current_location="breakout_room",
+                )
                 return True, seat
         except Exception as e:
             print(f"[RECONNECT] Error in _restore_breakout_participant: {e}")
