@@ -63,6 +63,62 @@ def _next_invoice_number(legal_entity):
     return f"IMAA-{legal_entity.code}-INV-{year}-{next_value:05d}"
 
 
+
+def _country_code(value):
+    if isinstance(value, dict):
+        return (value.get("code") or "").upper()
+    return (value or "").upper()
+
+
+def _saleor_address_to_snapshot(address):
+    if not isinstance(address, dict):
+        return {}
+    return {
+        "first_name": address.get("firstName") or "",
+        "last_name": address.get("lastName") or "",
+        "company_name": address.get("companyName") or "",
+        "street_address_1": address.get("streetAddress1") or "",
+        "street_address_2": address.get("streetAddress2") or "",
+        "city": address.get("city") or "",
+        "postal_code": address.get("postalCode") or "",
+        "country": _country_code(address.get("country")),
+        "country_area": address.get("countryArea") or "",
+        "phone": address.get("phone") or "",
+    }
+
+
+def _snapshot_to_text(snapshot):
+    if not isinstance(snapshot, dict) or not snapshot:
+        return ""
+    lines = []
+    company = snapshot.get("company_name") or ""
+    name = " ".join(part for part in [snapshot.get("first_name"), snapshot.get("last_name")] if part).strip()
+    if company:
+        lines.append(company)
+    if name:
+        lines.append(name)
+    for value in [
+        snapshot.get("street_address_1"),
+        snapshot.get("street_address_2"),
+        " ".join(part for part in [snapshot.get("postal_code"), snapshot.get("city")] if part).strip(),
+        " ".join(part for part in [snapshot.get("country_area"), snapshot.get("country")] if part).strip(),
+    ]:
+        if value:
+            lines.append(value)
+    return "\n".join(lines)
+
+
+def _order_billing_snapshot_for_saleor_order(saleor_order_id, saleor_order):
+    try:
+        from orders.models import Order
+        order = Order.objects.filter(saleor_order_id=saleor_order_id).first()
+        if order and order.billing_address_snapshot:
+            return order.billing_address_snapshot
+    except Exception:
+        logger.debug("Could not read local order billing snapshot for %s", saleor_order_id, exc_info=True)
+
+    return _saleor_address_to_snapshot((saleor_order or {}).get("billingAddress") or {})
+
 def _resolve_user_from_saleor_order(order):
     User = get_user_model()
     private_metadata = _metadata_to_dict(order.get("privateMetadata"))
@@ -114,16 +170,22 @@ def create_invoice_from_saleor_order(saleor_order_id):
         due_days = int(getattr(settings, "OFFLINE_PAYMENT_DUE_DAYS", 14))
         skonto_days = int(getattr(settings, "SKONTO_CONFIG", {}).get("days", 0) or 0)
         skonto_percentage = Decimal(str(getattr(settings, "SKONTO_CONFIG", {}).get("percentage", 0) or 0))
+        billing_snapshot = _order_billing_snapshot_for_saleor_order(saleor_order_id, saleor_order)
 
         with transaction.atomic():
             legal_entity = LegalEntity.objects.select_for_update().get(pk=_get_or_create_default_legal_entity().pk)
             customer, _ = Customer.objects.get_or_create(user=user)
+            snapshot_text = _snapshot_to_text(billing_snapshot)
+            if snapshot_text and customer.billing_address != snapshot_text:
+                customer.billing_address = snapshot_text
+                customer.save(update_fields=["billing_address"])
 
             invoice = Invoice.objects.create(
                 number=_next_invoice_number(legal_entity),
                 legal_entity=legal_entity,
                 customer=customer,
                 saleor_order_id=saleor_order_id,
+                billing_address_snapshot=billing_snapshot,
                 issue_date=issue_date,
                 due_date=issue_date + timedelta(days=due_days),
                 skonto_deadline=issue_date + timedelta(days=skonto_days) if skonto_days else None,

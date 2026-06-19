@@ -212,6 +212,18 @@ def fetch_saleor_order(saleor_order_id):
         status
         paymentStatus
         total { net { amount currency } gross { amount currency } tax { amount currency } }
+        billingAddress {
+          firstName
+          lastName
+          companyName
+          streetAddress1
+          streetAddress2
+          city
+          postalCode
+          country { code country }
+          countryArea
+          phone
+        }
         metadata { key value }
         privateMetadata { key value }
         lines {

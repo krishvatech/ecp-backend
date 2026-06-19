@@ -12,6 +12,28 @@ import hashlib
 
 logger = logging.getLogger('invoicing')
 
+
+def _normalize_saleor_event_type(value):
+    """Return a stable Saleor webhook event type.
+
+    Saleor commonly sends the event type in the X-Saleor-Event header,
+    while some test/custom payloads include it in the JSON body as event/type.
+    """
+    if isinstance(value, dict):
+        value = value.get('type') or value.get('name') or value.get('event') or ''
+    return str(value or '').strip().replace('-', '_').upper()
+
+
+def _saleor_event_type_from_request(request, payload):
+    return _normalize_saleor_event_type(
+        request.headers.get('X-Saleor-Event')
+        or request.headers.get('Saleor-Event')
+        or request.headers.get('X-Saleor-Webhook-Event')
+        or payload.get('event')
+        or payload.get('type')
+        or payload.get('name')
+    )
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def saleor_order_webhook(request):
@@ -20,17 +42,41 @@ def saleor_order_webhook(request):
         logger.info("Saleor integration disabled. Ignoring Saleor order webhook.")
         return JsonResponse({"status": "ignored", "reason": "Saleor integration disabled"}, status=200)
 
-    signature = request.headers.get('X-Saleor-Signature', '')
-    secret = getattr(settings, "SALEOR_WEBHOOK_SECRET", "")
+    from orders.saleor_webhook_security import verify_saleor_webhook
+    if not verify_saleor_webhook(request):
+        return JsonResponse({'error': 'Invalid signature'}, status=401)
 
     body = request.body
-    if secret:
-        expected_sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected_sig):
-            return JsonResponse({'error': 'Invalid signature'}, status=401)
+    try:
+        event_data = json.loads(body or b'{}')
+    except json.JSONDecodeError:
+        logger.warning("Invalid Saleor webhook JSON received")
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
-    event_data = json.loads(body)
-    event_type = str(event_data.get('event') or event_data.get('type') or '').upper()
+    event_type = _saleor_event_type_from_request(request, event_data)
+    logger.info("Received Saleor webhook event_type=%s keys=%s", event_type, list(event_data.keys()) if isinstance(event_data, dict) else type(event_data).__name__)
+
+    if not event_type:
+        return JsonResponse({'status': 'ignored', 'reason': 'missing_event_type'}, status=200)
+
+    if event_type in {'ADDRESS_CREATED', 'ADDRESS_UPDATED'}:
+        from orders.saleor_address_sync import apply_saleor_address_webhook_payload
+        address = apply_saleor_address_webhook_payload(event_data)
+        return JsonResponse({'ok': True, 'address_synced': bool(address)})
+
+    if event_type == 'ADDRESS_DELETED':
+        from orders.models import BillingAddress
+        address_data = event_data.get('address') or event_data.get('data') or {}
+        saleor_address_id = address_data.get('id') or event_data.get('addressId') or ''
+        if saleor_address_id:
+            BillingAddress.objects.filter(saleor_address_id=saleor_address_id).update(
+                saleor_address_id='',
+                saleor_sync_status='not_synced',
+                saleor_sync_error='Saleor address was deleted.',
+                last_sync_source='saleor',
+            )
+        return JsonResponse({'ok': True})
+
     order = event_data.get('order') or {}
     saleor_order_id = order.get('id')
 

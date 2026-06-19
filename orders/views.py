@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from .models import BillingAddress, Order, OrderItem
 from .serializers import BillingAddressSerializer, OrderSerializer, OrderItemSerializer
+from .saleor_address_sync import sync_billing_address_to_saleor
 from .saleor_checkout import (
     SaleorCheckoutError,
     create_saleor_checkout,
@@ -430,6 +431,37 @@ def _billing_payload_from_request(raw):
     }
 
 
+def _snapshot_from_saleor_billing_address(address):
+    """Normalize Saleor-style address input for immutable order/invoice snapshots."""
+    if not isinstance(address, dict):
+        return {}
+    return {
+        "first_name": address.get("firstName") or "",
+        "last_name": address.get("lastName") or "",
+        "company_name": address.get("companyName") or "",
+        "street_address_1": address.get("streetAddress1") or "",
+        "street_address_2": address.get("streetAddress2") or "",
+        "city": address.get("city") or "",
+        "postal_code": address.get("postalCode") or "",
+        "country": (address.get("country") or "").upper(),
+        "country_area": address.get("countryArea") or "",
+        "phone": address.get("phone") or "",
+    }
+
+
+def _sync_billing_address_to_saleor_best_effort(address, source="ecp"):
+    """Sync billing address to Saleor without breaking the user-facing save/checkout flow."""
+    try:
+        return sync_billing_address_to_saleor(address, source=source)
+    except Exception as exc:
+        logger.warning("Saleor billing address sync failed for address %s: %s", getattr(address, "id", None), exc, exc_info=True)
+        try:
+            address.mark_saleor_sync_failed(exc, source=source)
+        except Exception:
+            logger.exception("Could not mark billing address %s sync as failed", getattr(address, "id", None))
+        return False
+
+
 def _initial_billing_address_for_user(user):
     get_full_name = getattr(user, "get_full_name", None)
     full_name = (get_full_name() if callable(get_full_name) else "") or getattr(user, "email", "") or ""
@@ -463,7 +495,9 @@ def _get_valid_saleor_billing_address(user, request_data):
         serializer = BillingAddressSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         if save_address:
-            BillingAddress.objects.update_or_create(user=user, defaults=serializer.validated_data)
+            address, _ = BillingAddress.objects.update_or_create(user=user, defaults=serializer.validated_data)
+            _sync_billing_address_to_saleor_best_effort(address, source="ecp")
+            return address.to_saleor_input()
         return serializer.to_saleor_input()
 
     saved = getattr(user, "billing_address", None)
@@ -490,6 +524,7 @@ class BillingAddressView(APIView):
             user=request.user,
             defaults=serializer.validated_data,
         )
+        _sync_billing_address_to_saleor_best_effort(address, source="ecp")
         return Response(BillingAddressSerializer(address).data, status=status.HTTP_200_OK)
 
     def patch(self, request):
@@ -544,6 +579,7 @@ class OfflineCheckoutView(APIView):
 
         try:
             billing_address = _get_valid_saleor_billing_address(request.user, request.data)
+            billing_address_snapshot = _snapshot_from_saleor_billing_address(billing_address)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
@@ -574,12 +610,14 @@ class OfflineCheckoutView(APIView):
                 cart.saleor_checkout_id = checkout.get("id", "")
                 cart.saleor_order_id = saleor_order.get("id", "")
                 cart.saleor_order_number = str(saleor_order.get("number") or "")
+                cart.billing_address_snapshot = billing_address_snapshot
                 cart.save(update_fields=[
                     "status",
                     "payment_method",
                     "saleor_checkout_id",
                     "saleor_order_id",
                     "saleor_order_number",
+                    "billing_address_snapshot",
                     "subtotal",
                     "total",
                     "updated_at",
