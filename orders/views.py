@@ -490,10 +490,59 @@ class BillingAddressView(APIView):
             user=request.user,
             defaults=serializer.validated_data,
         )
-        return Response(BillingAddressSerializer(address).data, status=status.HTTP_200_OK)
+
+        # Sync to Saleor asynchronously
+        saleor_sync_result = {"saleor_synced": False}
+        try:
+            from .saleor_customer_address import sync_billing_address_to_saleor
+            saleor_sync_result = sync_billing_address_to_saleor(request.user, address)
+        except Exception as e:
+            logger.warning(f"Failed to sync billing address to Saleor: {e}")
+            saleor_sync_result = {
+                "saleor_synced": False,
+                "saleor_sync_error": "Sync service unavailable",
+            }
+
+        # Return serialized address + sync status
+        response_data = BillingAddressSerializer(address).data
+        response_data["saleor_synced"] = saleor_sync_result.get("saleor_synced", False)
+        if saleor_sync_result.get("saleor_sync_error"):
+            response_data["saleor_sync_error"] = saleor_sync_result["saleor_sync_error"]
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
     def patch(self, request):
         return self.post(request)
+
+    def delete(self, request):
+        address = getattr(request.user, "billing_address", None)
+        if not address:
+            return Response({"detail": "No billing address to delete."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Delete from Saleor first
+        saleor_delete_result = {"deleted_from_saleor": False}
+        try:
+            from .saleor_customer_address import delete_billing_address_from_saleor
+            saleor_delete_result = delete_billing_address_from_saleor(request.user, address)
+        except Exception as e:
+            logger.warning(f"Failed to delete billing address from Saleor: {e}")
+            saleor_delete_result = {
+                "deleted_from_saleor": False,
+                "error": "Deletion service unavailable",
+            }
+
+        # Delete from local database
+        address.delete()
+
+        response = {
+            "detail": "Billing address deleted successfully.",
+            "deleted_from_saleor": saleor_delete_result.get("deleted_from_saleor", False),
+        }
+        if saleor_delete_result.get("error"):
+            response["saleor_deletion_error"] = saleor_delete_result["error"]
+            response["warning"] = "Address deleted locally but Saleor deletion failed"
+
+        return Response(response, status=status.HTTP_200_OK)
 
 
 class CheckoutView(APIView):

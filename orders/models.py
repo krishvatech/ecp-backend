@@ -116,6 +116,11 @@ class BillingAddress(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Saleor customer address sync tracking
+    saleor_address_id = models.CharField(max_length=255, blank=True, default="")
+    saleor_synced_at = models.DateTimeField(null=True, blank=True)
+    saleor_sync_error = models.TextField(blank=True, default="")
+
     class Meta:
         verbose_name = "Billing address"
         verbose_name_plural = "Billing addresses"

@@ -7,6 +7,8 @@ from .models import BillingAddress, Order, OrderItem
 
 
 class BillingAddressSerializer(serializers.ModelSerializer):
+    saleor_synced = serializers.SerializerMethodField()
+
     class Meta:
         model = BillingAddress
         fields = [
@@ -20,9 +22,15 @@ class BillingAddressSerializer(serializers.ModelSerializer):
             "country",
             "country_area",
             "phone",
+            "saleor_synced",
+            "saleor_synced_at",
+            "saleor_sync_error",
             "updated_at",
         ]
-        read_only_fields = ["updated_at"]
+        read_only_fields = ["saleor_synced", "saleor_synced_at", "saleor_sync_error", "updated_at"]
+
+    def get_saleor_synced(self, obj):
+        return bool(obj.saleor_synced_at)
 
     def validate_country(self, value):
         value = (value or "").strip().upper()
