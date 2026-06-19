@@ -1,70 +1,41 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="utf-8">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Payment confirmed - {{ invoice.number }}</title>
 </head>
-<body style="margin:0;padding:0;background:#f4f7fb;font-family:Arial,Helvetica,sans-serif;color:#0b1f44;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f7fb;padding:24px 12px;">
-        <tr>
-            <td align="center">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #e2e8f0;">
-                    <tr>
-                        <td style="background:#071d49;padding:26px 30px;color:#ffffff;">
-                            <div style="font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:#18b8b0;font-weight:700;">IMAA CONNECT</div>
-                            <h1 style="margin:8px 0 0;font-size:26px;line-height:1.25;">Payment confirmed</h1>
-                            <p style="margin:8px 0 0;color:#dbeafe;font-size:14px;">Your event order is paid and your invoice is attached.</p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td style="padding:28px 30px;">
-                            <p style="margin:0 0 14px;font-size:16px;">Hello {{ customer_name }},</p>
-                            <p style="margin:0 0 22px;font-size:15px;line-height:1.6;color:#334155;">
-                                We have received and confirmed your payment. Your registration/order is now marked as paid.
-                                The invoice PDF is attached to this email. You can also download it directly using the button below.
-                            </p>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div style="background-color: #f8f9fa; border-radius: 8px; padding: 30px; margin-bottom: 20px;">
+        <h1 style="color: #071d49; margin-top: 0;">✅ Payment confirmed</h1>
 
-                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;margin:0 0 22px;">
-                                <tr>
-                                    <td style="padding:12px 14px;background:#f8fafc;color:#64748b;font-size:13px;font-weight:700;width:42%;">Invoice number</td>
-                                    <td style="padding:12px 14px;font-size:14px;font-weight:700;">{{ invoice.number }}</td>
-                                </tr>
-                                <tr>
-                                    <td style="padding:12px 14px;background:#f8fafc;color:#64748b;font-size:13px;font-weight:700;">Status</td>
-                                    <td style="padding:12px 14px;font-size:14px;"><span style="display:inline-block;background:#dcfce7;color:#166534;border-radius:999px;padding:4px 10px;font-weight:700;font-size:12px;">PAID</span></td>
-                                </tr>
-                                <tr>
-                                    <td style="padding:12px 14px;background:#f8fafc;color:#64748b;font-size:13px;font-weight:700;">Amount</td>
-                                    <td style="padding:12px 14px;font-size:14px;font-weight:700;">{{ invoice.currency }} {{ invoice.total_gross }}</td>
-                                </tr>
-                                <tr>
-                                    <td style="padding:12px 14px;background:#f8fafc;color:#64748b;font-size:13px;font-weight:700;">Issue date</td>
-                                    <td style="padding:12px 14px;font-size:14px;">{{ invoice.issue_date|date:"M d, Y" }}</td>
-                                </tr>
-                            </table>
+        <p>Hello {{ customer_name }},</p>
 
-                            <p style="margin:0 0 20px;font-size:14px;color:#475569;line-height:1.6;">
-                                Use the button below to download your invoice PDF directly. You can also download it again anytime from your account Orders tab.
-                            </p>
+        <p>We have received and confirmed your payment. Your registration/order is now marked as paid. The invoice PDF is attached to this email. You can also download it directly using the button below.</p>
 
-                            <a href="{{ invoice_url }}" style="display:inline-block;background:#18b8b0;color:#ffffff;text-decoration:none;border-radius:10px;padding:12px 20px;font-weight:700;font-size:14px;">Download invoice PDF</a>
+        <div style="background-color: white; border-left: 4px solid #18b8b0; padding: 20px; margin: 20px 0; border-radius: 5px;">
+            <h2 style="margin-top: 0; color: #2c3e50;">Invoice {{ invoice.number }}</h2>
+            <p style="margin: 5px 0;"><strong>Status:</strong> <span style="display: inline-block; background-color: #dcfce7; color: #166534; border-radius: 999px; padding: 2px 12px; font-weight: bold; font-size: 13px;">PAID</span></p>
+            <p style="margin: 5px 0;"><strong>Amount:</strong> {{ invoice.currency }} {{ invoice.total_gross }}</p>
+            <p style="margin: 5px 0;"><strong>Issue date:</strong> {{ invoice.issue_date|date:"M d, Y" }}</p>
+        </div>
 
-                            <p style="margin:26px 0 0;font-size:13px;color:#64748b;line-height:1.6;">
-                                If you have any questions, reply to this email or contact us at
-                                <a href="mailto:{{ support_email }}" style="color:#18b8b0;">{{ support_email }}</a>.
-                            </p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td style="padding:18px 30px;background:#f8fafc;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;line-height:1.5;">
-                            {{ invoice.legal_entity.name }}<br>
-                            This is an automated payment confirmation for invoice {{ invoice.number }}.
-                        </td>
-                    </tr>
-                </table>
-            </td>
-        </tr>
-    </table>
+        <p>Use the button below to download your invoice PDF directly. You can also download it again anytime from your account Orders tab.</p>
+
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{{ invoice_url }}" style="background-color: #18b8b0; color: white; padding: 14px 28px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Download invoice PDF</a>
+        </div>
+
+        <p style="color: #6c757d; font-size: 14px; margin: 20px 0;">
+            If you have any questions, reply to this email or contact us at <a href="mailto:{{ support_email }}" style="color: #18b8b0;">{{ support_email }}</a>.
+        </p>
+
+        <hr style="border: none; border-top: 1px solid #dee2e6; margin: 30px 0;">
+
+        <p style="color: #6c757d; font-size: 13px; margin: 0;">
+            {{ invoice.legal_entity.name }}<br>
+            This is an automated payment confirmation for invoice {{ invoice.number }}.
+        </p>
+    </div>
 </body>
 </html>
