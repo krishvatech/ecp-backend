@@ -54,7 +54,6 @@ class Invoice(models.Model):
     legal_entity = models.ForeignKey(LegalEntity, on_delete=models.PROTECT)
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT)
     saleor_order_id = models.CharField(max_length=255, blank=True, db_index=True)  # For idempotency
-    billing_address_snapshot = models.JSONField(default=dict, blank=True)
 
     issue_date = models.DateField()
     due_date = models.DateField()

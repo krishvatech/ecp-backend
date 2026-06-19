@@ -20,23 +20,9 @@ class BillingAddressSerializer(serializers.ModelSerializer):
             "country",
             "country_area",
             "phone",
-            "saleor_user_id",
-            "saleor_address_id",
-            "saleor_sync_status",
-            "saleor_sync_error",
-            "saleor_last_synced_at",
-            "last_sync_source",
             "updated_at",
         ]
-        read_only_fields = [
-            "saleor_user_id",
-            "saleor_address_id",
-            "saleor_sync_status",
-            "saleor_sync_error",
-            "saleor_last_synced_at",
-            "last_sync_source",
-            "updated_at",
-        ]
+        read_only_fields = ["updated_at"]
 
     def validate_country(self, value):
         value = (value or "").strip().upper()
@@ -49,12 +35,6 @@ class BillingAddressSerializer(serializers.ModelSerializer):
         missing = [field for field in required if not str(attrs.get(field, "")).strip()]
         if missing:
             raise serializers.ValidationError({field: "This field is required." for field in missing})
-
-        country = (attrs.get("country") or "").upper()
-        country_area = (attrs.get("country_area") or "").strip()
-        if country == "US" and not country_area:
-            raise serializers.ValidationError({"country_area": "State / region is required for US billing addresses."})
-
         return attrs
 
     def to_saleor_input(self, data=None):
@@ -125,7 +105,6 @@ class OrderSerializer(serializers.ModelSerializer):
             "saleor_order_number",
             "paid_at",
             "invoice",
-            "billing_address_snapshot",
             "items",
             "created_at",
         ]

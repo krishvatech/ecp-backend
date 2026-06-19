@@ -33,11 +33,18 @@ def saleor_order_paid_webhook(request):
     if request.method != 'POST':
         return HttpResponse(status=405)
 
-    # Verify webhook signature (Saleor JWS, with legacy HMAC fallback).
-    from orders.saleor_webhook_security import verify_saleor_webhook
-    if not verify_saleor_webhook(request):
-        logger.warning("Invalid Saleor webhook signature")
-        return HttpResponse(status=401)
+    # Verify webhook signature
+    if hasattr(settings, 'SALEOR_WEBHOOK_SECRET') and settings.SALEOR_WEBHOOK_SECRET:
+        signature = request.headers.get('X-Saleor-Signature', '')
+        payload_bytes = request.body
+        hmac_check = hmac.new(
+            settings.SALEOR_WEBHOOK_SECRET.encode(),
+            payload_bytes,
+            hashlib.sha256
+        )
+        if not hmac.compare_digest(hmac_check.hexdigest(), signature):
+            logger.warning(f"Invalid Saleor webhook signature")
+            return HttpResponse(status=401)
 
     try:
         payload = json.loads(request.body)

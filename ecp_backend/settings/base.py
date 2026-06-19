@@ -796,13 +796,6 @@ SALEOR_STAFF_EMAIL = os.getenv("SALEOR_STAFF_EMAIL", "")
 SALEOR_STAFF_PASSWORD = os.getenv("SALEOR_STAFF_PASSWORD", "")
 SALEOR_CHANNEL_SLUG = os.getenv("SALEOR_CHANNEL_SLUG", "default-channel")  # USD channel slug
 SALEOR_WEBHOOK_SECRET = os.getenv("SALEOR_WEBHOOK_SECRET", "")
-# Saleor signs webhooks with a detached JWS verified against its public JWKS.
-# Override the auto-derived URL (from SALEOR_API_URL host) only if needed.
-SALEOR_JWKS_URL = os.getenv("SALEOR_JWKS_URL", "")
-# When true, unverified webhooks are accepted (local dev only). Defaults to DEBUG.
-SALEOR_WEBHOOK_VERIFICATION_OPTIONAL = os.getenv(
-    "SALEOR_WEBHOOK_VERIFICATION_OPTIONAL", str(DEBUG)
-).lower() in ("1", "true", "yes", "on")
 SALEOR_OFFLINE_PAYMENT_ENABLED = os.getenv("SALEOR_OFFLINE_PAYMENT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEFAULT_PAYMENT_METHOD = os.getenv("DEFAULT_PAYMENT_METHOD", "bank_transfer")
 OFFLINE_PAYMENT_DUE_DAYS = int(os.getenv("OFFLINE_PAYMENT_DUE_DAYS", "14"))
