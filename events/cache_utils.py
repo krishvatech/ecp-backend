@@ -3,13 +3,14 @@ import json
 from django.core.cache import cache
 
 EVENT_LIST_CACHE_TTL_SECONDS = 45
+EVENT_LANDING_CACHE_TTL_SECONDS = 45
 
 # Query params that should bust the cache (affect results)
 CACHE_AFFECTING_PARAMS = {
     'search', 'bucket', 'event_format', 'category', 'date_range',
     'location', 'start_date', 'end_date', 'min_price', 'max_price',
     'exclude_ended', 'exclude_pinned', 'include_ended', 'created_by',
-    'is_hidden', 'lounge_table_id',
+    'is_hidden', 'lounge_table_id', 'status',
     'limit', 'offset', 'ordering', 'page', 'page_size'
 }
 
@@ -83,24 +84,30 @@ def admin_event_list_cache_key(user, query_dict):
     return f"event:admin-list:{user.id}:{params_hash}"
 
 
+def event_landing_cache_key():
+    """Cache key for public landing page events. No user/params variation needed."""
+    return "event:landing:v1"
+
+
 def invalidate_event_list_caches(event_id):
     """
     Clear all event list caches when an event is modified.
     Uses pattern deletion if supported, otherwise just clears broadly.
     """
-    # Strategy: Clear all event:* caches since we don't know all possible cache keys
-    # This is safe but may clear slightly more than necessary
-    try:
-        # Try pattern deletion (Redis supports this)
-        cache.delete_pattern("event:list:*")
-        cache.delete_pattern("event:mine:*")
-        cache.delete_pattern("event:upcoming:*")
-        cache.delete_pattern("event:admin-list:*")
-    except AttributeError:
-        # Fallback: If cache backend doesn't support delete_pattern,
-        # we could use a version-based approach or manual key tracking.
-        # For now, this will be caught and we should log it.
-        pass
+    # Landing cache must always be invalidated, even on cache backends that do not
+    # implement delete_pattern().
+    cache.delete(event_landing_cache_key())
+    cache.delete("event:landing:public")  # legacy key from older builds
+
+    delete_pattern = getattr(cache, "delete_pattern", None)
+    if not callable(delete_pattern):
+        return
+
+    delete_pattern("event:list:*")
+    delete_pattern("event:mine:*")
+    delete_pattern("event:upcoming:*")
+    delete_pattern("event:admin-list:*")
+    delete_pattern("event:landing:*")
 
 
 def get_cached_event_list(cache_key):
@@ -115,3 +122,13 @@ def set_cached_event_list(cache_key, data):
     if not cache_key:
         return
     cache.set(cache_key, data, EVENT_LIST_CACHE_TTL_SECONDS)
+
+
+def get_cached_event_landing():
+    """Retrieve cached landing event payload."""
+    return cache.get(event_landing_cache_key())
+
+
+def set_cached_event_landing(data):
+    """Store landing event payload for a short time."""
+    cache.set(event_landing_cache_key(), data, EVENT_LANDING_CACHE_TTL_SECONDS)

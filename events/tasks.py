@@ -235,6 +235,13 @@ def _end_event_from_system(event, reason: str) -> None:
     event.ended_by_host = False
     event.save(update_fields=["status", "is_live", "live_ended_at", "ended_by_host", "updated_at"])
 
+    # ✅ Invalidate event list caches when status changes
+    try:
+        from events.cache_utils import invalidate_event_list_caches
+        invalidate_event_list_caches(event.id)
+    except Exception as e:
+        logger.warning("Failed to invalidate event list cache for event %s: %s", event.id, e)
+
     # System-ended meeting may happen while users are still in breakout rooms.
     # Clear only breakout-room chat history; keep Q&A for export/review.
     try:

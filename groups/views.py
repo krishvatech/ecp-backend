@@ -2302,6 +2302,46 @@ class GroupViewSet(viewsets.ModelViewSet):
              })
         return Response(data)
 
+    @action(
+        detail=False,
+        methods=["get"],
+        permission_classes=[IsAuthenticated],
+        url_path="admin/pending-join-requests-count",
+    )
+    def pending_join_requests_count(self, request):
+        """Return aggregate pending join requests for groups this user can manage.
+
+        This avoids dashboard/sidebar loading all groups and then calling a
+        per-group pending-requests endpoint for every group.
+        """
+        user = request.user
+        user_id = getattr(user, "id", None)
+        if not user_id:
+            return Response({"pending_join_requests_count": 0})
+
+        if getattr(user, "is_staff", False):
+            manageable_group_ids = Group.objects.values("id")
+        else:
+            manageable_group_ids = Group.objects.filter(
+                Q(created_by_id=user_id) |
+                Q(owner_id=user_id) |
+                Q(
+                    memberships__user_id=user_id,
+                    memberships__status=GroupMembership.STATUS_ACTIVE,
+                    memberships__role__in=[
+                        GroupMembership.ROLE_ADMIN,
+                        GroupMembership.ROLE_MODERATOR,
+                    ],
+                )
+            ).distinct().values("id")
+
+        pending_count = GroupMembership.objects.filter(
+            group_id__in=manageable_group_ids,
+            status=GroupMembership.STATUS_PENDING,
+        ).count()
+
+        return Response({"pending_join_requests_count": pending_count})
+
     # Use (Endpoint): GET /api/groups/{id}/member-requests
     # - List PENDING group memberships (join requests). Owner/admin/mod/staff only.
     # Ordering: Explicit order_by("-joined_at") (latest requests first).

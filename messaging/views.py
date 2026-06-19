@@ -263,6 +263,74 @@ class ConversationViewSet(viewsets.ViewSet):
             offset = 0
         return max(1, min(limit, max_limit)), max(0, offset)
 
+    @action(detail=False, methods=["get"], url_path="unread-count")
+    def unread_count(self, request):
+        """Return only the current user's total unread message count.
+
+        This is intentionally much lighter than the full conversations list and is
+        safe for sidebar/dashboard badges during high-traffic redirects.
+        """
+        user = request.user
+        user_id = getattr(user, "id", None)
+        if not user_id:
+            return Response({"unread_count": 0})
+
+        cache_key = f"messaging:unread-count:{user_id}"
+        cached_count = cache.get(cache_key)
+        if cached_count is not None:
+            return Response({"unread_count": int(cached_count)})
+
+        if self._is_guest_user(user):
+            guest = getattr(user, "guest", None)
+            if not guest:
+                return Response({"unread_count": 0})
+
+            conversation_filter = Q(conversation__event_id=guest.event_id)
+            if getattr(guest, "lounge_table_id", None):
+                conversation_filter |= Q(conversation__lounge_table_id=guest.lounge_table_id)
+        else:
+            from groups.models import GroupMembership
+            from events.models import LoungeParticipant
+
+            member_statuses = [
+                GroupMembership.STATUS_ACTIVE,
+                GroupMembership.STATUS_PENDING,
+            ]
+            member_group_ids = GroupMembership.objects.filter(
+                user_id=user_id,
+                status__in=member_statuses,
+            ).values("group_id")
+            registered_event_ids = EventRegistration.objects.filter(
+                user_id=user_id,
+                status="registered",
+                attendee_status="confirmed",
+                is_banned=False,
+            ).values("event_id")
+            created_event_ids = Event.objects.filter(created_by_id=user_id).values("id")
+            lounge_table_ids = LoungeParticipant.objects.filter(user_id=user_id).values("table_id")
+
+            conversation_filter = (
+                Q(conversation__user1_id=user_id) |
+                Q(conversation__user2_id=user_id) |
+                Q(conversation__group_id__in=member_group_ids) |
+                Q(conversation__event_id__in=registered_event_ids) |
+                Q(conversation__event_id__in=created_event_ids) |
+                Q(conversation__lounge_table_id__in=lounge_table_ids)
+            )
+
+        unread_count = Message.objects.filter(
+            conversation_filter,
+            is_hidden=False,
+            is_deleted=False,
+        ).exclude(
+            sender_id=user_id,
+        ).exclude(
+            read_receipts__user_id=user_id,
+        ).distinct().count()
+
+        cache.set(cache_key, unread_count, 15)
+        return Response({"unread_count": unread_count})
+
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset(request)
         limit, offset = self._parse_page_params(request, default_limit=50, max_limit=100)

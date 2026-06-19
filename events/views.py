@@ -68,7 +68,14 @@ from rest_framework.renderers import BaseRenderer, JSONRenderer
 
 from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField, TrackPricingTier, EventRole, EventAttendeeOrigin
 from .permissions import IsSuperuserOnly, IsEventAdminOrSuperuser, HasRestrictedDataPermission
-from .cache_utils import event_list_cache_key, get_cached_event_list, set_cached_event_list
+from .cache_utils import (
+    EVENT_LANDING_CACHE_TTL_SECONDS,
+    event_landing_cache_key,
+    event_list_cache_key,
+    get_cached_event_list,
+    invalidate_event_list_caches,
+    set_cached_event_list,
+)
 from friends.models import Notification
 from groups.models import Group, GroupMembership
 from messaging.models import Conversation, Message
@@ -77,6 +84,7 @@ from .serializers import (
     PublicEventSerializer,
     EventLiteSerializer,
     EventListSerializer,
+    EventLandingSerializer,
     MyEventCardSerializer,
     EventRegistrationSerializer,
     EventRegistrationLiteSerializer,
@@ -1826,7 +1834,7 @@ class EventViewSet(viewsets.ModelViewSet):
     # 🔎 Search & ordering
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["title", "location", "category", "description", "community__name"]
-    ordering_fields = ["start_time", "created_at", "title", "is_pinned", "pin_priority", "pinned_at"]
+    ordering_fields = ["start_time", "created_at", "title", "is_pinned", "pin_priority", "pinned_at", "is_featured"]
     ordering = ["-start_time"]
 
     # ------------------------ Queryset -----------------------
@@ -2099,14 +2107,21 @@ class EventViewSet(viewsets.ModelViewSet):
             if max_price:
                 price_filter &= Q(price__lte=max_price)
             
-            # Include NULL price events (Paid events waiting for setup) 
+            # Include NULL price events (Paid events waiting for setup)
             # if the filter includes 0 (the starting price)
             if not min_price or str(min_price) == "0":
                 qs = qs.filter(price_filter | Q(price__isnull=True))
             else:
                 qs = qs.filter(price_filter)
 
-
+        # Status filter (support ?status=<status_param>)
+        # Valid statuses: draft, published, live, ended, cancelled
+        status_param = (params.get("status") or "").strip().lower()
+        if status_param:
+            valid_statuses = {"draft", "published", "live", "ended", "cancelled"}
+            if status_param in valid_statuses:
+                qs = qs.filter(status=status_param)
+            # else: silently ignore invalid status values (don't crash)
 
         # ⚡ OPTIMIZED: Annotate registration counts for list views (efficient DB queries)
         qs = qs.annotate(
@@ -5772,6 +5787,13 @@ class EventViewSet(viewsets.ModelViewSet):
             ])
             _delete_event_summary_cache(event.id)
 
+            # ✅ Invalidate event list caches when status/is_live changes
+            try:
+                from events.cache_utils import invalidate_event_list_caches
+                invalidate_event_list_caches(event.id)
+            except Exception as e:
+                logger.warning("Failed to invalidate event list cache for event %s: %s", event.id, e)
+
         if action_type == "start":
             # Scale out immediately if host starts early (scale up only).
             # In-person events do not need RTK/live-meeting ASG capacity.
@@ -5999,6 +6021,13 @@ class EventViewSet(viewsets.ModelViewSet):
         event.live_ended_at = timezone.now()
         event.ended_by_host = True
         event.save(update_fields=["status", "is_live", "live_ended_at", "ended_by_host", "updated_at"])
+
+        # ✅ Invalidate event list caches when status changes
+        try:
+            from events.cache_utils import invalidate_event_list_caches
+            invalidate_event_list_caches(event.id)
+        except Exception as e:
+            logger.warning("Failed to invalidate event list cache for event %s: %s", event.id, e)
 
         # Full meeting ended: clear only breakout-room chat history.
         # Public/private chat and Q&A are intentionally untouched.
@@ -11421,13 +11450,34 @@ class EventViewSet(viewsets.ModelViewSet):
             "registration_status": "registered"
         })
 
+    def _set_featured_state(self, request, event, enabled):
+        """Set/remove the explicit featured landing hero with cache invalidation. Superuser-only."""
+        if not getattr(request.user, "is_superuser", False):
+            raise PermissionDenied("Only superusers can change the featured event.")
+
+        with transaction.atomic():
+            if enabled:
+                # Unfeature all other events before featuring this one
+                Event.objects.filter(is_featured=True).exclude(pk=event.pk).update(is_featured=False)
+                event.is_featured = True
+            else:
+                event.is_featured = False
+            event.save(update_fields=["is_featured", "updated_at"])
+
+        # Invalidate cache after atomic update
+        invalidate_event_list_caches(event.id)
+        return Response(EventSerializer(event, context={"request": request}).data)
+
     # ========== Pinning/Promotion Endpoints ==========
     @action(detail=True, methods=["post"], permission_classes=[IsSuperuserOnly], url_path="pin")
     def pin_event(self, request, pk=None):
-        """Pin an event to promote it. Superuser-only."""
-        from django.utils import timezone
+        """Pin an event as landing hero fallback and landing grid/list priority. Superuser-only."""
         event = self.get_object()
-        pin_priority = int(request.data.get("pin_priority", 100))
+        try:
+            pin_priority = int(request.data.get("pin_priority", 100))
+        except (TypeError, ValueError):
+            pin_priority = 100
+
         event.is_pinned = True
         event.pin_priority = pin_priority
         event.pinned_at = timezone.now()
@@ -11437,7 +11487,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], permission_classes=[IsSuperuserOnly], url_path="unpin")
     def unpin_event(self, request, pk=None):
-        """Unpin an event. Superuser-only."""
+        """Remove an event from pinned landing priority. Superuser-only."""
         event = self.get_object()
         event.is_pinned = False
         event.pin_priority = 100
@@ -11446,71 +11496,90 @@ class EventViewSet(viewsets.ModelViewSet):
         event.save(update_fields=["is_pinned", "pin_priority", "pinned_at", "pinned_by", "updated_at"])
         return Response(EventSerializer(event, context={"request": request}).data)
 
+    @action(detail=True, methods=["post"], permission_classes=[IsSuperuserOnly], url_path="feature")
+    def feature_event(self, request, pk=None):
+        """Set this event as the explicit featured landing hero. Superuser-only."""
+        event = self.get_object()
+        return self._set_featured_state(request, event, True)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsSuperuserOnly], url_path="unfeature")
+    def unfeature_event(self, request, pk=None):
+        """Remove this event from the explicit featured landing hero. Superuser-only."""
+        event = self.get_object()
+        return self._set_featured_state(request, event, False)
+
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="landing")
     def landing_page_events(self, request):
-        """Get hero event and upcoming events sorted for landing page.
+        """Get lightweight landing events.
 
-        Returns:
-        {
-            "hero_event": {...},  # featured > pinned > nearest upcoming
-            "upcoming_events": [...]  # excludes hero, sorted: pinned first (by priority), then by date
-        }
+        Hero priority:
+        1. Explicit featured event
+        2. Pinned event fallback when there is no featured event
+        3. None, so frontend can use static fallback
+
+        Grid priority:
+        pinned first, then date-wise, excluding the hero event to avoid duplicate cards.
         """
-        from django.utils import timezone
         now = timezone.now()
+        cache_key = event_landing_cache_key()
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
 
-        # Get upcoming events: published, not ended, after now
-        qs = self.get_queryset().filter(
-            status="published"
-        ).exclude(
-            status="ended"
-        ).exclude(
-            end_time__lt=now
-        ).filter(
-            Q(start_time__isnull=True) | Q(start_time__gt=now)
-        ).order_by("is_pinned", "pin_priority", "pinned_at", "start_time")
+        landing_only_fields = [
+            "id", "slug", "title", "description", "start_time", "end_time", "timezone", "status",
+            "preview_image", "cover_image", "location", "location_city", "location_country",
+            "category", "format", "price", "price_label", "currency", "is_free", "registration_type",
+            "is_pinned", "pin_priority", "pinned_at", "is_featured", "is_hidden",
+        ]
 
-        events = list(qs)
+        base_qs = (
+            Event.objects
+            .filter(is_hidden=False, status__in=["published", "live"])
+            .exclude(status__in=["ended", "cancelled"])
+            .filter(
+                Q(end_time__isnull=True) |
+                Q(end_time__gte=now) |
+                Q(status="live")
+            )
+            .only(*landing_only_fields)
+        )
 
-        # Select hero event: featured > pinned (lowest priority) > nearest upcoming
-        hero_event = None
+        hero_event = (
+            base_qs.filter(is_featured=True)
+            .order_by("start_time", "id")
+            .first()
+        )
 
-        # Priority 1: Featured event
-        featured = next((e for e in events if e.is_featured), None)
-        if featured:
-            hero_event = featured
-        # Priority 2: Pinned event with lowest pin_priority
-        elif any(e.is_pinned for e in events):
-            pinned = [e for e in events if e.is_pinned]
-            hero_event = min(pinned, key=lambda e: (e.pin_priority or 999999, -(e.pinned_at.timestamp() if e.pinned_at else 0)))
-        # Priority 3: Nearest upcoming event
-        elif events:
-            hero_event = events[0]
+        # If admin did not select a featured event, show the best pinned event as the hero.
+        # Do not fall back to a random/nearest event; frontend static hero handles that case.
+        if hero_event is None:
+            hero_event = (
+                base_qs.filter(is_pinned=True)
+                .order_by("pin_priority", "-pinned_at", "start_time", "id")
+                .first()
+            )
 
-        # Get remaining events for grid, sorted properly
-        upcoming_events = [e for e in events if not hero_event or e.id != hero_event.id]
+        upcoming_qs = base_qs
+        if hero_event is not None:
+            upcoming_qs = upcoming_qs.exclude(id=hero_event.id)
 
-        # Sort: pinned first (by pin_priority, then pinned_at), then normal by start_time
-        def sort_key(event):
-            if event.is_pinned:
-                # Pinned: (0, pin_priority, -pinned_at_timestamp)
-                pinned_time = -(event.pinned_at.timestamp() if event.pinned_at else 0)
-                return (0, event.pin_priority or 999999, pinned_time)
-            else:
-                # Normal: (1, start_time_timestamp)
-                start_time = event.start_time.timestamp() if event.start_time else float('inf')
-                return (1, start_time)
+        upcoming_events = list(
+            upcoming_qs.order_by(
+                "-is_pinned",
+                "pin_priority",
+                "-pinned_at",
+                "start_time",
+                "id",
+            )[:6]
+        )
 
-        upcoming_events.sort(key=sort_key)
-
-        # Serialize
-        hero_data = EventSerializer(hero_event, context={"request": request}).data if hero_event else None
-        upcoming_data = EventSerializer(upcoming_events[:6], many=True, context={"request": request}).data
-
-        return Response({
-            "hero_event": hero_data,
-            "upcoming_events": upcoming_data,
-        })
+        payload = {
+            "hero_event": EventLandingSerializer(hero_event, context={"request": request}).data if hero_event else None,
+            "upcoming_events": EventLandingSerializer(upcoming_events, many=True, context={"request": request}).data,
+        }
+        cache.set(cache_key, payload, EVENT_LANDING_CACHE_TTL_SECONDS)
+        return Response(payload)
 
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="pinned")
     def pinned_events(self, request):
@@ -15357,7 +15426,9 @@ def _publish_draft_application_event_if_tracks_ready(event):
     This intentionally does not unpublish events if tracks later become invalid.
     """
     if event.registration_type == 'apply' and event.status == 'draft' and event.has_valid_application_tracks():
-        Event.objects.filter(pk=event.pk, status='draft').update(status='published')
+        updated = Event.objects.filter(pk=event.pk, status='draft').update(status='published')
+        if updated:
+            invalidate_event_list_caches(event.id)
         event.status = 'published'
         return True
     return False
