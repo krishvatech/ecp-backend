@@ -24,6 +24,7 @@ class Order(models.Model):
     saleor_order_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
     saleor_order_number = models.CharField(max_length=64, blank=True, default="")
     paid_at = models.DateTimeField(null=True, blank=True)
+    billing_address_snapshot = models.JSONField(blank=True, default=dict)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -102,6 +103,13 @@ class WebhookEvent(models.Model):
 
 class BillingAddress(models.Model):
     """Default billing address used for Saleor offline checkout and invoices."""
+    SYNC_STATUS = (
+        ("not_synced", "Not synced"),
+        ("synced", "Synced"),
+        ("failed", "Failed"),
+        ("skipped", "Skipped"),
+    )
+
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="billing_address")
     first_name = models.CharField(max_length=256)
     last_name = models.CharField(max_length=256)
@@ -113,6 +121,12 @@ class BillingAddress(models.Model):
     country = models.CharField(max_length=2, default="CH")
     country_area = models.CharField(max_length=128, blank=True, default="")
     phone = models.CharField(max_length=64, blank=True, default="")
+    saleor_user_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    saleor_address_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    saleor_sync_status = models.CharField(max_length=16, choices=SYNC_STATUS, default="not_synced", db_index=True)
+    saleor_sync_error = models.TextField(blank=True, default="")
+    saleor_last_synced_at = models.DateTimeField(null=True, blank=True)
+    last_sync_source = models.CharField(max_length=16, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
