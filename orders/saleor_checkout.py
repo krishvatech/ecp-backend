@@ -27,18 +27,40 @@ def _saleor_headers():
     }
 
 
-def saleor_graphql(query, variables=None, timeout=30):
-    """Run a Saleor GraphQL operation and return the `data` object."""
+def saleor_graphql(query, variables=None, timeout=10, retry_count=0, max_retries=2):
+    """Run a Saleor GraphQL operation with exponential backoff retry.
+
+    Args:
+        query: GraphQL query string
+        variables: GraphQL variables dict
+        timeout: Request timeout in seconds (default 10s, reduced from 30s)
+        retry_count: Current retry attempt (internal use)
+        max_retries: Maximum number of retries (default 2)
+    """
+    import time
+
     saleor_url = getattr(settings, "SALEOR_API_URL", "")
     if not saleor_url:
         raise SaleorCheckoutError("SALEOR_API_URL is not configured.")
 
-    response = requests.post(
-        saleor_url,
-        json={"query": query, "variables": variables or {}},
-        headers=_saleor_headers(),
-        timeout=timeout,
-    )
+    try:
+        response = requests.post(
+            saleor_url,
+            json={"query": query, "variables": variables or {}},
+            headers=_saleor_headers(),
+            timeout=timeout,
+        )
+    except requests.exceptions.Timeout:
+        if retry_count < max_retries:
+            # Exponential backoff: 0.5s, 1s, 2s
+            wait_time = (2 ** retry_count) * 0.5
+            logger.warning(f"Saleor timeout, retrying in {wait_time}s (attempt {retry_count + 1}/{max_retries})")
+            time.sleep(wait_time)
+            return saleor_graphql(query, variables, timeout, retry_count + 1, max_retries)
+        raise SaleorCheckoutError(f"Saleor API timeout after {max_retries} retries")
+    except requests.exceptions.RequestException as e:
+        raise SaleorCheckoutError(f"Saleor API connection error: {str(e)}")
+
     try:
         payload = response.json()
     except ValueError as exc:

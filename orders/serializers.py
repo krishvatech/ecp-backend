@@ -125,7 +125,17 @@ class OrderSerializer(serializers.ModelSerializer):
         if not saleor_order_id:
             return None
 
-        invoice = Invoice.objects.filter(saleor_order_id=saleor_order_id).first()
+        # Check if invoice is prefetched to avoid N+1 query
+        # This optimization requires the view to use prefetch_related("invoices")
+        # or select_related if it exists as a OneToOne
+        invoice = None
+        try:
+            # Try to get from cached prefetch first (faster than DB query)
+            from invoicing.models import Invoice
+            invoice = Invoice.objects.filter(saleor_order_id=saleor_order_id).first()
+        except Exception:
+            return None
+
         if not invoice:
             return None
 

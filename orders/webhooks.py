@@ -9,7 +9,7 @@ from django.conf import settings
 from django.db import transaction
 from django.contrib.auth.models import User
 from events.models import Event, EventRegistration
-from orders.models import Order
+from orders.models import Order, WebhookEvent
 from events.services.post_acceptance_forms import (
     is_online_event,
     trigger_post_acceptance_forms
@@ -51,6 +51,22 @@ def saleor_order_paid_webhook(request):
         order = payload.get("order")
         if not order:
             return HttpResponse("Missing order data", status=400)
+
+        saleor_order_id = order.get("id")
+
+        # Check for idempotency: has this webhook already been processed?
+        if saleor_order_id:
+            webhook_key = f"order_paid_{saleor_order_id}"
+            try:
+                existing_event = WebhookEvent.objects.filter(
+                    webhook_source="saleor",
+                    webhook_event_id=webhook_key
+                ).exists()
+                if existing_event:
+                    logger.info(f"Webhook already processed for Saleor order {saleor_order_id}. Returning 200.")
+                    return HttpResponse(status=200)
+            except Exception as e:
+                logger.warning(f"Could not check webhook idempotency: {e}")
 
         private_metadata = _metadata_to_dict(order.get("privateMetadata"))
         email = order.get("userEmail")
@@ -155,6 +171,18 @@ def saleor_order_paid_webhook(request):
 
             except Event.DoesNotExist:
                 logger.warning(f"No Event found for Saleor variant ID: {saleor_variant_id}")
+
+        # Mark this webhook as processed for idempotency
+        if saleor_order_id:
+            webhook_key = f"order_paid_{saleor_order_id}"
+            try:
+                WebhookEvent.objects.get_or_create(
+                    webhook_source="saleor",
+                    webhook_event_id=webhook_key,
+                    defaults={"saleor_order_id": saleor_order_id}
+                )
+            except Exception as e:
+                logger.error(f"Could not track webhook: {e}")
 
         logger.info(f"Saleor order-paid webhook: {registrations_created} registration(s) created")
         return HttpResponse(status=200)
