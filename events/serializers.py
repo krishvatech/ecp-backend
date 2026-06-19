@@ -1340,6 +1340,7 @@ class EventSerializer(serializers.ModelSerializer):
             "pin_priority",
             "pinned_at",
             "pinned_by_id",
+            "is_featured",
         ]
         extra_kwargs = {
             # Let custom validate_slug() handle uniqueness so create can auto-suffix collisions.
@@ -2076,7 +2077,11 @@ class EventSerializer(serializers.ModelSerializer):
                 if not temp_instance.has_valid_application_tracks():
                     validated_data['status'] = 'draft'
 
-        # Handle one-featured-at-a-time constraint: unfeature all other events
+        featured_changed = 'is_featured' in validated_data
+
+        # Handle one-featured-at-a-time constraint: unfeature all other events.
+        # QuerySet.update() bypasses model signals, so invalidate event list/landing
+        # caches explicitly after the transaction commits.
         if validated_data.get('is_featured') is True:
             with transaction.atomic():
                 Event.objects.filter(is_featured=True).exclude(pk=instance.pk).update(is_featured=False)
@@ -2084,6 +2089,13 @@ class EventSerializer(serializers.ModelSerializer):
         else:
             # Update event fields
             instance = super().update(instance, validated_data)
+
+        if featured_changed:
+            try:
+                from .cache_utils import invalidate_event_list_caches
+                transaction.on_commit(lambda: invalidate_event_list_caches(instance.id))
+            except Exception:
+                pass
 
         # If participants data provided, intelligently update participants
         # Only send confirmation emails to newly added participants
@@ -2831,7 +2843,8 @@ class MyEventCardSerializer(serializers.ModelSerializer):
             "use_external_streaming", "external_streaming_platform", "external_streaming_url",
             "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
             "external_streaming_host_link", "replay_enabled", "replay_video_url", "youtube_summary_url",
-            "linkedin_summary_url", "replay_cta_text", "my_registration",
+            "linkedin_summary_url", "replay_cta_text", "is_pinned", "pin_priority", "pinned_at",
+            "is_featured", "my_registration",
         )
 
 
@@ -3002,11 +3015,31 @@ class EventListSerializer(serializers.ModelSerializer):
             "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
             "external_streaming_host_link",
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
-            "attending_count", "registrations_count", "is_pinned", "pin_priority",
+            "attending_count", "registrations_count", "is_pinned", "pin_priority", "is_featured",
             "public_registered_count", "public_guest_count", "total_registered", "confirmed_registered_count",
             "user_status", "payment_pending", "is_confirmed_registered", "assigned_tier", "origins",
             "show_participants_before_event", "show_participants_after_event", "show_registered_participant_count",
         )
+
+
+class EventLandingSerializer(serializers.ModelSerializer):
+    """
+    Lightweight serializer for /api/events/landing/.
+    Do not add user-specific or count-heavy fields here; dashboard/home uses this during event-end redirects.
+    """
+    event_type = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Event
+        fields = (
+            "id", "slug", "title", "description", "start_time", "end_time", "timezone", "status",
+            "preview_image", "cover_image", "location", "location_city", "location_country",
+            "category", "format", "event_type", "price", "price_label", "currency", "is_free",
+            "registration_type", "is_pinned", "pin_priority", "pinned_at", "is_featured",
+        )
+
+    def get_event_type(self, obj):
+        return obj.category or obj.format or "Event"
 
 
 class EventRoleSerializer(serializers.ModelSerializer):

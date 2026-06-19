@@ -490,10 +490,59 @@ class BillingAddressView(APIView):
             user=request.user,
             defaults=serializer.validated_data,
         )
-        return Response(BillingAddressSerializer(address).data, status=status.HTTP_200_OK)
+
+        # Sync to Saleor asynchronously
+        saleor_sync_result = {"saleor_synced": False}
+        try:
+            from .saleor_customer_address import sync_billing_address_to_saleor
+            saleor_sync_result = sync_billing_address_to_saleor(request.user, address)
+        except Exception as e:
+            logger.warning(f"Failed to sync billing address to Saleor: {e}")
+            saleor_sync_result = {
+                "saleor_synced": False,
+                "saleor_sync_error": "Sync service unavailable",
+            }
+
+        # Return serialized address + sync status
+        response_data = BillingAddressSerializer(address).data
+        response_data["saleor_synced"] = saleor_sync_result.get("saleor_synced", False)
+        if saleor_sync_result.get("saleor_sync_error"):
+            response_data["saleor_sync_error"] = saleor_sync_result["saleor_sync_error"]
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
     def patch(self, request):
         return self.post(request)
+
+    def delete(self, request):
+        address = getattr(request.user, "billing_address", None)
+        if not address:
+            return Response({"detail": "No billing address to delete."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Delete from Saleor first
+        saleor_delete_result = {"deleted_from_saleor": False}
+        try:
+            from .saleor_customer_address import delete_billing_address_from_saleor
+            saleor_delete_result = delete_billing_address_from_saleor(request.user, address)
+        except Exception as e:
+            logger.warning(f"Failed to delete billing address from Saleor: {e}")
+            saleor_delete_result = {
+                "deleted_from_saleor": False,
+                "error": "Deletion service unavailable",
+            }
+
+        # Delete from local database
+        address.delete()
+
+        response = {
+            "detail": "Billing address deleted successfully.",
+            "deleted_from_saleor": saleor_delete_result.get("deleted_from_saleor", False),
+        }
+        if saleor_delete_result.get("error"):
+            response["saleor_deletion_error"] = saleor_delete_result["error"]
+            response["warning"] = "Address deleted locally but Saleor deletion failed"
+
+        return Response(response, status=status.HTTP_200_OK)
 
 
 class CheckoutView(APIView):
@@ -605,10 +654,12 @@ class OfflineCheckoutView(APIView):
 
 class EventOrderListView(APIView):
     """
-    GET /api/events/<event_id>/orders/
+    GET /api/events/<event_id>/orders/?limit=20&offset=0
 
     Owner/admin payment review list for one paid event only. Free events return
     an empty order list because they do not go through Saleor/manual payment.
+
+    Supports pagination via limit/offset query parameters.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -631,6 +682,7 @@ class EventOrderListView(APIView):
                 "event_id": event.id,
                 "event_title": event.title,
                 "is_paid_event": False,
+                "count": 0,
                 "orders": [],
             })
 
@@ -642,11 +694,24 @@ class EventOrderListView(APIView):
             .distinct()
             .order_by("-created_at")
         )
+
+        # Pagination
+        limit = int(request.query_params.get("limit", 20))
+        offset = int(request.query_params.get("offset", 0))
+        limit = min(limit, 100)  # Cap at 100 per page
+        limit = max(limit, 1)    # At least 1
+
+        total_count = qs.count()
+        paginated_qs = qs[offset : offset + limit]
+
         return Response({
             "event_id": event.id,
             "event_title": event.title,
             "is_paid_event": True,
-            "orders": OrderSerializer(qs, many=True, context={"request": request}).data,
+            "count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "orders": OrderSerializer(paginated_qs, many=True, context={"request": request}).data,
         })
 
 
@@ -692,7 +757,7 @@ class OrderMarkPaidView(APIView):
                     status="registered",
                 ).update(attendee_status="confirmed")
 
-            # Ensure invoice exists, record payment, then regenerate the PDF.
+            # Ensure invoice exists, record payment, then regenerate the PDF ASYNCHRONOUSLY.
             # Important: the invoice PDF status is derived from PaymentEvent rows.
             # If we generate the PDF before creating the payment event, the PDF
             # remains stale and still shows ISSUED even though the order is PAID.
@@ -702,7 +767,8 @@ class OrderMarkPaidView(APIView):
 
                 invoice = Invoice.objects.filter(saleor_order_id=order.saleor_order_id).first()
                 if not invoice and order.saleor_order_id:
-                    create_invoice_from_saleor_order(order.saleor_order_id)
+                    # Queue invoice creation asynchronously
+                    create_invoice_from_saleor_order.delay(order.saleor_order_id)
                     invoice = Invoice.objects.filter(saleor_order_id=order.saleor_order_id).first()
 
                 if invoice:
@@ -719,11 +785,11 @@ class OrderMarkPaidView(APIView):
                         },
                     )
 
-                    # Always regenerate after payment confirmation, even if a PDF
-                    # already exists, because the existing PDF may have been
-                    # generated while the invoice was still ISSUED.
-                    generate_invoice_pdf_task(invoice.id)
-                    invoice.refresh_from_db()
+                    # Queue PDF regeneration asynchronously - don't block request.
+                    # Always regenerate after payment confirmation, even if a PDF already exists,
+                    # because the existing PDF may have been generated while the invoice
+                    # was still ISSUED.
+                    generate_invoice_pdf_task.delay(invoice.id)
 
                     # In-app notification mirrors the paid-invoice email so the
                     # customer also sees the update in the Connect notifications
@@ -738,10 +804,8 @@ class OrderMarkPaidView(APIView):
                         paid_invoice_id = invoice.id
             except Exception as exc:
                 logger.exception("Could not finalize invoice for paid order %s", order.id)
-                return Response(
-                    {"detail": f"Order was marked paid, but invoice finalization failed: {exc}"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
+                # Don't return 500 - order is already marked paid. Log the issue but return success.
+                logger.warning(f"Invoice finalization issue for order {order.id}: {exc}")
 
             if paid_invoice_id:
                 def _send_paid_invoice_email():

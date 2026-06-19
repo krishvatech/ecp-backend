@@ -82,6 +82,24 @@ class OrderItem(models.Model):
         order.recalc()
 
 
+class WebhookEvent(models.Model):
+    """Track processed webhooks to prevent duplicate processing."""
+    webhook_source = models.CharField(max_length=32, default="saleor", db_index=True)
+    webhook_event_id = models.CharField(max_length=255, db_index=True)
+    saleor_order_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    processed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("webhook_source", "webhook_event_id")]
+        indexes = [
+            models.Index(fields=["webhook_source", "webhook_event_id"]),
+            models.Index(fields=["saleor_order_id"]),
+        ]
+
+    def __str__(self):
+        return f"{self.webhook_source}:{self.webhook_event_id}"
+
+
 class BillingAddress(models.Model):
     """Default billing address used for Saleor offline checkout and invoices."""
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="billing_address")
@@ -97,6 +115,11 @@ class BillingAddress(models.Model):
     phone = models.CharField(max_length=64, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Saleor customer address sync tracking
+    saleor_address_id = models.CharField(max_length=255, blank=True, default="")
+    saleor_synced_at = models.DateTimeField(null=True, blank=True)
+    saleor_sync_error = models.TextField(blank=True, default="")
 
     class Meta:
         verbose_name = "Billing address"
