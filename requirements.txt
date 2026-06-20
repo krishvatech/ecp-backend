@@ -48,3 +48,4 @@ cryptography>=42,<46
 
 # MJML compilation (used for email templates in cms/api.py)
 mrml
+sentry-sdk>=2,<3

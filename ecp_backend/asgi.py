@@ -16,6 +16,7 @@ from django.contrib.staticfiles.handlers import ASGIStaticFilesHandler
 
 from channels.routing import ProtocolTypeRouter, URLRouter
 from channels.security.websocket import AllowedHostsOriginValidator
+from sentry_sdk.integrations.asgi import SentryAsgiMiddleware
 
 from events.routing import websocket_urlpatterns as events_ws
 from messaging.routing import websocket_urlpatterns as messaging_ws
@@ -28,15 +29,17 @@ django_asgi_app = get_asgi_application()
 if settings.DEBUG:
     django_asgi_app = ASGIStaticFilesHandler(django_asgi_app)
 
+websocket_app = AllowedHostsOriginValidator(
+    JWTAuthMiddlewareStack(
+        URLRouter([
+            *events_ws,
+            *interactions_ws,
+            *messaging_ws,
+        ])
+    )
+)
+
 application = ProtocolTypeRouter({
     "http": django_asgi_app,
-    "websocket": AllowedHostsOriginValidator(
-        JWTAuthMiddlewareStack(
-            URLRouter([
-                *events_ws,
-                *interactions_ws,
-                *messaging_ws,
-            ])
-        )
-    ),
+    "websocket": SentryAsgiMiddleware(websocket_app),
 })

@@ -911,3 +911,59 @@ MERGERSAI_EMBED_API_KEY = os.getenv(
     "MERGERSAI_EMBED_API_KEY",
     "",  # Empty string = feature disabled until key is provided
 )
+
+
+# ============================================================================
+# SENTRY MONITORING
+# ============================================================================
+# Sentry is disabled unless SENTRY_DSN is provided in the environment.
+# Keep the DSN in .env/SSM/server env, not in source code.
+SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
+SENTRY_ENVIRONMENT = os.getenv(
+    "SENTRY_ENVIRONMENT",
+    "development" if DEBUG else "production",
+)
+SENTRY_RELEASE = os.getenv("SENTRY_RELEASE", "").strip()
+
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
+    from sentry_sdk.integrations.redis import RedisIntegration
+
+    def before_send(event, hint):
+        request = event.get("request") or {}
+        headers = request.get("headers") or {}
+
+        # Never send auth/session secrets to Sentry.
+        for key in list(headers.keys()):
+            if key.lower() in {
+                "authorization",
+                "cookie",
+                "x-csrftoken",
+                "x-csrf-token",
+            }:
+                headers[key] = "[Filtered]"
+
+        return event
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=SENTRY_ENVIRONMENT,
+        release=SENTRY_RELEASE or None,
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(propagate_traces=True),
+            RedisIntegration(),
+            LoggingIntegration(
+                level=logging.INFO,
+                event_level=logging.ERROR,
+            ),
+        ],
+        # Keep false by default because the platform contains profile, KYC,
+        # billing, invoice, chat, Q&A, and application-form data.
+        send_default_pii=os.getenv("SENTRY_SEND_DEFAULT_PII", "false").lower() == "true",
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.05")),
+        before_send=before_send,
+    )
