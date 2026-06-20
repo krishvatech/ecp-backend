@@ -22,7 +22,7 @@ def on_message_created(sender, instance: Message, created: bool, **kwargs) -> No
     On update: broadcast edit event to WebSocket.
     """
     if created:
-        logger.info(f"[Signal] Message created: id={instance.id}, conversation_id={instance.conversation_id}, body_len={len(instance.body)}")
+        logger.debug(f"[Signal] Message created: id={instance.id}, conversation_id={instance.conversation_id}, body_len={len(instance.body)}")
 
         try:
             from analytics.tasks import increment_metric  # local import
@@ -47,7 +47,7 @@ def on_message_created(sender, instance: Message, created: bool, **kwargs) -> No
         # Broadcast edit event to WebSocket subscribers (if body was changed)
         if instance.is_edited or instance.is_deleted:
             event_type = "message.deleted" if instance.is_deleted else "message.edited"
-            logger.info(f"[Signal] Message {event_type}: id={instance.id}, conversation_id={instance.conversation_id}")
+            logger.debug(f"[Signal] Message {event_type}: id={instance.id}, conversation_id={instance.conversation_id}")
             _broadcast_message_event(instance, event_type=event_type)
 
 
@@ -69,7 +69,7 @@ def _broadcast_message_event(message: Message, event_type: str = "message.create
         conversation = message.conversation
         group_name = f"messaging_conversation_{conversation.id}"
 
-        logger.info(f"[Broadcast] Broadcasting {event_type} to group {group_name}, msg_id={message.id}")
+        logger.debug(f"[Broadcast] Broadcasting {event_type} to group {group_name}, msg_id={message.id}")
 
         # Serialize message
         try:
@@ -93,9 +93,9 @@ def _broadcast_message_event(message: Message, event_type: str = "message.create
             "message": message_data,
         }
 
-        logger.info(f"[Broadcast] Calling group_send to {group_name} with event type {event_type_underscore}")
+        logger.debug(f"[Broadcast] Calling group_send to {group_name} with event type {event_type_underscore}")
         async_to_sync(channel_layer.group_send)(group_name, payload)
-        logger.info(f"[Broadcast] ✅ Successfully broadcasted {event_type} to {group_name}: msg_id={message.id}")
+        logger.debug(f"[Broadcast] Successfully broadcasted {event_type} to {group_name}: msg_id={message.id}")
 
     except Exception as e:
         logger.exception(f"[Broadcast] ❌ Failed to broadcast message event: {e}")

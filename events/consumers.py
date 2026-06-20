@@ -2,7 +2,16 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.core.cache import cache
 from django.conf import settings
-from .models import LoungeTable, LoungeParticipant, Event, EventRegistration, EventParticipant, AssistanceRequestLog, GuestAttendee
+from .models import (
+    LoungeTable,
+    LoungeParticipant,
+    Event,
+    EventRegistration,
+    EventParticipant,
+    AssistanceRequestLog,
+    GuestAttendee,
+    SpeedNetworkingSession,
+)
 from django.contrib.auth.models import User
 from django.db import close_old_connections
 from django.db import transaction
@@ -794,6 +803,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     await self.send_debug_to_host("Action denied: Not a host")
                     return
 
+                if await self._has_active_speed_networking_session():
+                    await self.send_debug_to_host(
+                        "Cannot start breakout while Speed Networking is active. Stop Speed Networking first."
+                    )
+                    return
+
                 await self.perform_random_assignment_and_notify(per_room)
                 await self._set_breakout_active_flag(True)
             except Exception as e:
@@ -812,6 +827,12 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
                 if not user_ids or not table_id:
                     await self.send_debug_to_host("Invalid manual assignment: missing user_ids or table_id")
+                    return
+
+                if await self._has_active_speed_networking_session():
+                    await self.send_debug_to_host(
+                        "Cannot assign breakout room while Speed Networking is active. Stop Speed Networking first."
+                    )
                     return
 
                 await self.perform_manual_assignment_and_notify(user_ids, table_id)
@@ -957,7 +978,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             await self.clear_all_tables()
             await self.channel_layer.group_send(
                 self.group_name,
-                {"type": "breakout.end"}
+                {
+                    "type": "breakout.end",
+                    "return_jitter_ms": int(getattr(settings, "BREAKOUT_RETURN_CLIENT_JITTER_MS", 15000)),
+                }
             )
             await self.broadcast_lounge_update()
             await self.broadcast_main_room_support_status()
@@ -1215,6 +1239,7 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json({
             "type": "lounge_stopped",
             "transition": event.get("transition", "to_waiting_room"),
+            "return_jitter_ms": event.get("return_jitter_ms"),
         })
 
     async def broadcast_lounge_update(self):
@@ -3778,6 +3803,13 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         BreakoutJoiner.objects.filter(
             event_id=self.event_id, status='waiting'
         ).update(status='expired')
+
+    @database_sync_to_async
+    def _has_active_speed_networking_session(self) -> bool:
+        return SpeedNetworkingSession.objects.filter(
+            event_id=self.event_id,
+            status="ACTIVE",
+        ).exists()
 
     @database_sync_to_async
     def _set_breakout_active_flag(self, active: bool):
