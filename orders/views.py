@@ -599,6 +599,9 @@ class OfflineCheckoutView(APIView):
             return Response({"detail": "Billing address is invalid.", "errors": getattr(exc, "detail", str(exc))}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
+            logger.info(f"[OfflineCheckout] Starting checkout for cart {cart.id}, user {request.user.id}")
+            logger.info(f"[OfflineCheckout] Local ECP Cart pre-Saleor: subtotal={cart.subtotal}, total={cart.total}")
+            
             checkout = create_saleor_checkout(
                 cart,
                 email=request.user.email,
@@ -608,12 +611,21 @@ class OfflineCheckoutView(APIView):
                 ],
                 billing_address=billing_address,
             )
+            
+            logger.info(f"[OfflineCheckout] Saleor checkout created: id={checkout.get('id')}")
+            logger.info(f"[OfflineCheckout] Saleor checkout totalPrice: {checkout.get('totalPrice')}")
+            
             saleor_order = create_saleor_order_from_checkout(
                 checkout_id=checkout["id"],
                 order=cart,
                 payment_method=payment_method,
             )
+            
+            logger.info(f"[OfflineCheckout] Saleor order created: id={saleor_order.get('id')}, number={saleor_order.get('number')}")
+            logger.info(f"[OfflineCheckout] Saleor order total: {saleor_order.get('total')}")
+            
         except SaleorCheckoutError as exc:
+            logger.error(f"[OfflineCheckout] SaleorCheckoutError: {str(exc)}")
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
@@ -623,6 +635,35 @@ class OfflineCheckoutView(APIView):
                 cart.saleor_checkout_id = checkout.get("id", "")
                 cart.saleor_order_id = saleor_order.get("id", "")
                 cart.saleor_order_number = str(saleor_order.get("number") or "")
+
+                # Calculate discount manually based on EventSaleorDiscount
+                from orders.saleor_checkout import _get_discounted_price, apply_saleor_order_discount
+                from decimal import Decimal
+                
+                total_discount_amount = Decimal("0.00")
+                for item in cart.items.select_related("event").prefetch_related("event__saleor_discounts").all():
+                    discounted_price = _get_discounted_price(item.event)
+                    if discounted_price is not None:
+                        original_price = Decimal(str(item.unit_price))
+                        item_discount = (original_price - discounted_price) * item.quantity
+                        total_discount_amount += item_discount
+                
+                cart.discount_amount = total_discount_amount
+                
+                # Apply discount to Saleor Order
+                if total_discount_amount > 0:
+                    try:
+                        discounted_order = apply_saleor_order_discount(cart.saleor_order_id, total_discount_amount)
+                        if discounted_order:
+                            saleor_order = discounted_order
+                    except Exception as e:
+                        logger.error(f"[OfflineCheckout] Failed to apply discount to Saleor order: {e}")
+                
+                # Update the local cart total to match Saleor's calculated total
+                saleor_total_amount = saleor_order.get("total", {}).get("gross", {}).get("amount")
+                if saleor_total_amount is not None:
+                    cart.total = saleor_total_amount
+
                 cart.save(update_fields=[
                     "status",
                     "payment_method",
@@ -630,6 +671,7 @@ class OfflineCheckoutView(APIView):
                     "saleor_order_id",
                     "saleor_order_number",
                     "subtotal",
+                    "discount_amount",
                     "total",
                     "updated_at",
                 ])

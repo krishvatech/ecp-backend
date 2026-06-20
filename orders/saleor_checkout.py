@@ -90,19 +90,54 @@ def _event_is_paid(event, item=None):
     return Decimal(str(getattr(event, "price", 0) or 0)) > 0 or bool(getattr(event, "saleor_variant_id", None))
 
 
+from datetime import date
+
+def _get_discounted_price(event):
+    """Calculate discounted price if an active ECP discount exists."""
+    active_discount = event.saleor_discounts.filter(is_active=True).first()
+    if not active_discount:
+        return None
+        
+    today = date.today()
+    if active_discount.start_date and active_discount.start_date > today:
+        return None
+    if active_discount.end_date and active_discount.end_date < today:
+        return None
+        
+    original_price = Decimal(str(event.price or 0))
+    if original_price <= 0:
+        return None
+
+    try:
+        reward_value = Decimal(str(active_discount.reward_value))
+        if active_discount.reward_value_type == "PERCENTAGE":
+            discount_amount = original_price * (reward_value / Decimal("100"))
+            new_price = original_price - discount_amount
+        else:
+            new_price = original_price - reward_value
+        return max(Decimal("0.00"), new_price)
+    except Exception as e:
+        logger.error(f"Error calculating discount for event {event.id}: {e}")
+        return None
+
 def build_saleor_lines_from_order(order):
     """Return Saleor checkout lines for paid items in an ECP cart/order."""
     lines = []
     missing = []
 
-    for item in order.items.select_related("event").all():
+    for item in order.items.select_related("event").prefetch_related("event__saleor_discounts").all():
         event = item.event
         if not _event_is_paid(event, item):
             continue
         if not event.saleor_variant_id:
             missing.append({"event_id": event.id, "title": event.title})
             continue
-        lines.append({"variantId": event.saleor_variant_id, "quantity": int(item.quantity or 1)})
+            
+        line_data = {
+            "variantId": event.saleor_variant_id, 
+            "quantity": int(item.quantity or 1)
+        }
+        lines.append(line_data)
 
     if missing:
         raise SaleorCheckoutError(
@@ -114,6 +149,36 @@ def build_saleor_lines_from_order(order):
         raise SaleorCheckoutError("No paid Saleor checkout lines found in cart.")
 
     return lines
+
+
+def apply_saleor_order_discount(saleor_order_id, discount_amount):
+    """Apply a manual discount to a Saleor order."""
+    if discount_amount <= 0:
+        return None
+        
+    mutation = """
+    mutation OrderDiscountAdd($id: ID!, $input: OrderDiscountCommonInput!) {
+      orderDiscountAdd(orderId: $id, input: $input) {
+        order {
+          id
+          total { gross { amount currency } }
+        }
+        errors { field message code }
+      }
+    }
+    """
+    variables = {
+        "id": saleor_order_id,
+        "input": {
+            "valueType": "FIXED",
+            "value": str(discount_amount),
+            "reason": "ECP Event Discount"
+        }
+    }
+    data = saleor_graphql(mutation, variables)
+    result = data.get("orderDiscountAdd") or {}
+    _raise_saleor_errors("orderDiscountAdd", result.get("errors"))
+    return result.get("order")
 
 
 def create_saleor_checkout(order, email, metadata=None, billing_address=None):

@@ -104,6 +104,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "user_display_name",
             "status",
             "subtotal",
+            "discount_amount",
             "total",
             "currency",
             "payment_method",
