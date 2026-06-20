@@ -40,6 +40,19 @@ from django.template import Template as DjangoTemplate, Context
 from django.core.cache import cache
 from common.live_metrics import live_metric_incr
 
+
+def _delete_lounge_http_caches(event_id):
+    """Clear lightweight/full Social Lounge HTTP caches for one event.
+
+    This does not touch auth/session/browser caches, so it cannot log users out.
+    """
+    cache.delete_many([
+        f"event:{event_id}:http_lounge_state:v1",
+        f"event:{event_id}:http_lounge_status:v1",
+        f"event:{event_id}:ws_lounge_state:v1",
+        f"event:{event_id}:online_presence_counts:v1",
+    ])
+
 # ============================================================
 # ================= DRF (Django REST Framework) ==============
 # ============================================================
@@ -2489,10 +2502,12 @@ class EventViewSet(viewsets.ModelViewSet):
             "lounge_enabled_after": instance.lounge_enabled_after,
             "lounge_before_buffer": instance.lounge_before_buffer,
             "lounge_after_buffer": instance.lounge_after_buffer,
+            "lounge_enabled_speed_networking": instance.lounge_enabled_speed_networking,
         }
 
         super().perform_update(serializer)
         _delete_event_summary_cache(instance.id)
+        _delete_lounge_http_caches(instance.id)
         
         # Check for changes
         new_instance = serializer.instance # Refreshed instance
@@ -2517,6 +2532,7 @@ class EventViewSet(viewsets.ModelViewSet):
                         "lounge_enabled_after": new_instance.lounge_enabled_after,
                         "lounge_before_buffer": new_instance.lounge_before_buffer,
                         "lounge_after_buffer": new_instance.lounge_after_buffer,
+                        "lounge_enabled_speed_networking": new_instance.lounge_enabled_speed_networking,
                     },
                     "timestamp": timezone.now().isoformat(),
                 }
@@ -8131,9 +8147,27 @@ class EventViewSet(viewsets.ModelViewSet):
             except Exception:
                 icon_url = table.icon.url
 
+        _delete_lounge_http_caches(event.id)
+
+        try:
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"event_{event.id}",
+                {
+                    "type": "lounge_update",
+                    "state_deferred": True,
+                    "online_counts": {},
+                    "main_room_support_status": None,
+                },
+            )
+        except Exception as exc:
+            logger.debug("Failed to broadcast lounge table creation for event %s: %s", event.id, exc)
+
         return Response({
             "id": table.id,
             "name": table.name,
+            "category": table.category,
+            "max_seats": table.max_seats,
             "rtk_meeting_id": table.rtk_meeting_id,
             "icon_url": icon_url,
         }, status=201)
@@ -8166,6 +8200,7 @@ class EventViewSet(viewsets.ModelViewSet):
             table.icon = icon_file
 
         table.save()
+        _delete_lounge_http_caches(event.id)
 
         icon_url = ""
         if table.icon:
@@ -8200,6 +8235,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         LoungeParticipant.objects.filter(table=table).delete()
         table.delete()
+        _delete_lounge_http_caches(event.id)
         return Response({"ok": True})
 
     @action(detail=True, methods=["post"], url_path="lounge-table-icon")
@@ -8217,6 +8253,7 @@ class EventViewSet(viewsets.ModelViewSet):
         table = get_object_or_404(LoungeTable, id=table_id, event_id=pk)
         table.icon = icon_file
         table.save(update_fields=["icon"])
+        _delete_lounge_http_caches(event.id)
 
         icon_url = ""
         if table.icon:
