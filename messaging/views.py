@@ -1518,13 +1518,21 @@ class MessageViewSet(
         if (conv.group_id is None and conv.event_id is None and getattr(conv, "lounge_table_id", None) is None) and user.id not in (conv.user1_id, conv.user2_id):
             raise PermissionDenied("You are not a participant of this conversation.")
 
-        # Room-level burst protection. Per-user DRF throttling is not enough for
-        # a breakout test because 10 users in each of 32 rooms can all send at
-        # the same moment. This keeps one noisy room from creating a DB/Redis
-        # broadcast spike while still allowing normal discussion.
-        if conv.lounge_table_id or conv.event_id or conv.group_id:
+        # Room/conversation-level burst protection. Per-user DRF throttling is
+        # not enough when many users send at the same moment during a live
+        # meeting. This keeps one noisy room/conversation from creating a
+        # DB/Redis broadcast spike while still allowing normal discussion.
+        is_direct_message = (
+            conv.group_id is None
+            and conv.event_id is None
+            and getattr(conv, "lounge_table_id", None) is None
+        )
+        if is_direct_message or conv.lounge_table_id or conv.event_id or conv.group_id:
             window = int(getattr(settings, "LIVE_CHAT_ROOM_RATE_WINDOW_SECONDS", 10))
-            if conv.lounge_table_id:
+            if is_direct_message:
+                limit = int(getattr(settings, "LIVE_DM_CHAT_BURST_LIMIT", 12))
+                scope = f"dm:{conv.id}"
+            elif conv.lounge_table_id:
                 limit = int(getattr(settings, "LIVE_ROOM_CHAT_BURST_LIMIT", 25))
                 scope = f"lounge:{conv.lounge_table_id}"
             elif conv.event_id:

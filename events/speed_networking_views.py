@@ -15,6 +15,7 @@ from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q, Avg
 from django.contrib.auth.models import User
+from django.conf import settings
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -83,6 +84,17 @@ def _guest_not_supported_response():
         },
         status=status.HTTP_403_FORBIDDEN,
     )
+
+
+def _speed_networking_state_cache_key(event_id):
+    return f"event:{event_id}:speed_networking_state"
+
+
+def _invalidate_speed_networking_state_cache(event_id):
+    if event_id is None:
+        return
+    cache.delete(_speed_networking_state_cache_key(event_id))
+    logger.debug(f"[SpeedNetworking] Invalidated state cache for event={event_id}")
 
 
 def _get_criteria_config(session):
@@ -519,7 +531,7 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         #  Cache speed networking state with 10-30 second TTL
         event_id = self.kwargs.get('event_id')
-        cache_key = f"event:{event_id}:speed_networking_state" if event_id else None
+        cache_key = _speed_networking_state_cache_key(event_id) if event_id else None
 
         if cache_key:
             cached_data = cache.get(cache_key)
@@ -546,9 +558,7 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         self._create_interest_tags_from_criteria_config(session)
 
         #  Invalidate speed networking cache on create
-        cache_key = f"event:{event_id}:speed_networking_state"
-        cache.delete(cache_key)
-        logger.debug(f"[SpeedNetworkingSessionViewSet] Invalidated speed networking cache for event={event_id}")
+        _invalidate_speed_networking_state_cache(event_id)
 
     def perform_update(self, serializer):
         """Override update to also sync interest tags from criteria_config."""
@@ -558,9 +568,7 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
 
         #  Invalidate speed networking cache on update
         event_id = self.kwargs.get('event_id') or session.event_id
-        cache_key = f"event:{event_id}:speed_networking_state"
-        cache.delete(cache_key)
-        logger.debug(f"[SpeedNetworkingSessionViewSet] Invalidated speed networking cache for event={event_id}")
+        _invalidate_speed_networking_state_cache(event_id)
 
     def _create_interest_tags_from_criteria_config(self, session):
         """Create SpeedNetworkingInterestTag objects from criteria_config tags."""
@@ -596,9 +604,31 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
 
         session = self.get_object()
 
+        breakout_active = Event.objects.filter(
+            id=session.event_id,
+            breakout_rooms_active=True,
+        ).exists() or LoungeParticipant.objects.filter(
+            table__event_id=session.event_id,
+            table__category="BREAKOUT",
+        ).exists()
+
+        if breakout_active:
+            return Response(
+                {
+                    "error": "Cannot start Speed Networking while breakout rooms are active. End breakout rooms first.",
+                    "code": "breakout_active",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if session.status == 'ACTIVE':
+            # Idempotent start: a double-click or retried request should not show a false failure.
+            _invalidate_speed_networking_state_cache(event_id)
+            return Response(self.get_serializer(session).data, status=status.HTTP_200_OK)
+
         if session.status != 'PENDING':
             return Response(
-                {'error': 'Session is not in PENDING status'},
+                {'error': 'Session cannot be started from its current status', 'status': session.status},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -616,7 +646,9 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
 
         session.status = 'ACTIVE'
         session.started_at = timezone.now()
-        session.save()
+        session.ended_at = None
+        session.save(update_fields=['status', 'started_at', 'ended_at', 'updated_at'])
+        _invalidate_speed_networking_state_cache(event_id)
 
         # Clear stale queue entries from previous runs (older than 1 hour)
         # Keep recently joined users active (they joined while session was PENDING)
@@ -631,7 +663,11 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         send_speed_networking_message(event_id, 'speed_networking.session_started', {
             'session_id': session.id,
             'session_name': session.name,
-            'duration_minutes': session.duration_minutes
+            'status': session.status,
+            'duration_minutes': session.duration_minutes,
+            'buffer_seconds': session.buffer_seconds,
+            'queue_count': session.queue.filter(is_active=True).count(),
+            'active_matches_count': session.matches.filter(status='ACTIVE').count(),
         })
 
         serializer = self.get_serializer(session)
@@ -641,23 +677,30 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
     def stop(self, request, event_id=None, pk=None):
         """Stop a speed networking session."""
         session = self.get_object()
-        
+
+        if session.status == 'ENDED':
+            _invalidate_speed_networking_state_cache(event_id)
+            return Response(self.get_serializer(session).data, status=status.HTTP_200_OK)
+
         if session.status != 'ACTIVE':
             return Response(
                 {'error': 'Session is not ACTIVE'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # End all active matches
-        active_matches = session.matches.filter(status='ACTIVE')
-        for match in active_matches:
-            match.status = 'COMPLETED'
-            match.ended_at = timezone.now()
-            match.save()
-            _emit_match_finalized(match, event_id, request=request)
-        
+        # End all active matches in bulk.
+        # Do not emit one WebSocket event per match during a session stop: with 500 users
+        # this can mean hundreds of extra messages before participants receive the final
+        # session-ended event. The single session-ended event is enough for clients to leave
+        # the match UI and return to the main room; past matches are read from DB when needed.
+        stop_time = timezone.now()
+        completed_match_count = session.matches.filter(status='ACTIVE').update(
+            status='COMPLETED',
+            ended_at=stop_time,
+        )
+
         # Clear queue
-        session.queue.update(is_active=False)
+        session.queue.update(is_active=False, current_match=None)
 
         # Force all lounge occupants back to main room when speed networking stops.
         try:
@@ -685,7 +728,11 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
                 channel_layer = get_channel_layer()
                 async_to_sync(channel_layer.group_send)(
                     f"event_{session.event_id}",
-                    {"type": "lounge_stopped", "transition": "to_main_room"}
+                    {
+                        "type": "lounge_stopped",
+                        "transition": "to_main_room",
+                        "return_jitter_ms": int(getattr(settings, "SPEED_NETWORKING_STOP_RETURN_JITTER_MS", 15000)),
+                    }
                 )
                 logger.info(
                     f"[SN_STOP] Moved {len(lounge_user_ids)} lounge occupants to main room for event {session.event_id}"
@@ -695,11 +742,14 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         
         session.status = 'ENDED'
         session.ended_at = timezone.now()
-        session.save()
-        
+        session.save(update_fields=['status', 'ended_at', 'updated_at'])
+        _invalidate_speed_networking_state_cache(event_id)
+
         # Broadcast via WebSocket
         send_speed_networking_message(event_id, 'speed_networking.session_ended', {
-            'session_id': session.id
+            'session_id': session.id,
+            'return_jitter_ms': int(getattr(settings, "SPEED_NETWORKING_STOP_RETURN_JITTER_MS", 15000)),
+            'completed_match_count': completed_match_count,
         })
 
         serializer = self.get_serializer(session)
@@ -734,7 +784,8 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST)
 
         session.duration_minutes = new_minutes
-        session.save(update_fields=['duration_minutes'])
+        session.save(update_fields=['duration_minutes', 'updated_at'])
+        _invalidate_speed_networking_state_cache(event_id)
 
         # Broadcast to all users in the event so timers recalculate
         send_speed_networking_message(event_id, 'speed_networking.duration_updated', {
