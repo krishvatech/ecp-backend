@@ -970,3 +970,19 @@ if SENTRY_DSN:
         traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.05")),
         before_send=before_send,
     )
+
+
+# ============================================================================
+# CORS HEADERS FOR SENTRY DISTRIBUTED TRACING
+# ============================================================================
+# Frontend Sentry tracing can add `baggage` and `sentry-trace` headers to API
+# requests. Because the frontend and backend are on different domains, browser
+# CORS preflight must see these headers in Access-Control-Allow-Headers.
+# Without this, requests can fail with:
+# "Request header field baggage is not allowed by Access-Control-Allow-Headers".
+from corsheaders.defaults import default_headers
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "baggage",
+    "sentry-trace",
+]
