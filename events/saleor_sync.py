@@ -148,7 +148,15 @@ def _create_product_in_saleor(event, url, headers, cat_id, type_id, channel):
 
             # 2. Create Variant
             _create_variant(event, url, headers, product_id, channel)
-            
+
+            # 3. Sync Price & Stock ONLY for WordPress events (admin events set manually)
+            if event.saleor_variant_id and event.wordpress_event_id:
+                logger.info(f"🔗 WordPress Event Created - Syncing Price & Stock")
+                logger.info(f"💰 SYNCING Price on Creation: ${event.price} → Saleor")
+                _update_variant_price(event, url, headers, event.saleor_variant_id, channel)
+                logger.info(f"📦 SYNCING Stock on Creation: {event.max_participants or '100 units'}")
+                _create_or_update_stock(event, url, headers, event.saleor_variant_id)
+
     except Exception as e:
         logger.error(f"Exc creating product: {e}")
 
