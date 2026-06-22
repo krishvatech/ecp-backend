@@ -4,6 +4,7 @@ import requests
 import logging
 import hashlib
 import json
+import uuid
 from functools import wraps
 from django.core.cache import cache
 
@@ -53,6 +54,23 @@ def _rtk_headers():
         "Content-Type": "application/json",
     }
 
+def is_valid_rtk_meeting_id(meeting_id):
+    """Return True when value is a RealtimeKit meeting UUID.
+
+    RTK REST paths require /meetings/{meetingId}/... where meetingId is a UUID.
+    Local placeholders such as "match-17-abc123" or numeric Django IDs must not be
+    sent to RTK Add Participant because RTK returns a 400 ZodError.
+    """
+    value = str(meeting_id or "").strip()
+    if not value:
+        return False
+    try:
+        uuid.UUID(value)
+        return True
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 def create_rtk_meeting(title):
     """Utility to create a RTK meeting and return the meeting ID."""
     payload = {
@@ -76,6 +94,15 @@ def add_rtk_participant(meeting_id, user_id, name, preset_name):
     Add a participant to a RTK meeting.
     Returns: (auth_token, error_message)
     """
+    meeting_id = str(meeting_id or "").strip()
+    if not is_valid_rtk_meeting_id(meeting_id):
+        error_msg = (
+            f"Invalid RTK meeting_id for Add Participant: {meeting_id!r}. "
+            "Expected the UUID returned by create_rtk_meeting(), not a local match/table/session id."
+        )
+        logger.error(error_msg)
+        return None, error_msg
+
     url = f"{RTK_API_BASE}/meetings/{meeting_id}/participants"
     payload = {
         "name": name,

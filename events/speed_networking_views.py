@@ -42,6 +42,7 @@ from users.serializers import UserMiniSerializer
 from .utils import (
     create_rtk_meeting,
     add_rtk_participant,
+    is_valid_rtk_meeting_id,
     send_speed_networking_message,
     send_speed_networking_user_message,
     RTK_PRESET_PARTICIPANT
@@ -57,6 +58,81 @@ HIGH_MATCH_SCORE_THRESHOLD = 70
 MEDIUM_MATCH_SCORE_THRESHOLD = 50
 LOW_MATCH_SCORE_THRESHOLD = 30
 THRESHOLD_WAIT_WINDOWS_SECONDS = (20, 40)
+
+DEFAULT_CRITERIA_NUMBERS = {
+    'skill': {'weight': 0.35, 'threshold': 40},
+    'experience': {'weight': 0.30, 'threshold': 50},
+    'location': {'weight': 0.20, 'threshold': 30},
+    'education': {'weight': 0.15, 'threshold': 40},
+    'interests': {'weight': 0.0, 'threshold': 50},
+}
+
+
+def _coerce_optional_float(value, default):
+    if value in (None, ''):
+        return default
+    return float(value)
+
+
+def _coerce_optional_int(value, default):
+    if value in (None, ''):
+        return default
+    return int(value)
+
+
+def _normalize_criteria_config_for_save(criteria_config):
+    """
+    Make criteria_config robust against stale/frontend partial values.
+
+    The host settings UI can send only the changed section, or send empty/null
+    values while React state is still updating. Missing numeric fields should use
+    defaults; truly non-numeric values should still fail validation.
+    """
+    normalized = dict(criteria_config or {})
+
+    for criterion in list(normalized.keys()):
+        if criterion not in CRITERIA_KEYS:
+            continue
+
+        config = normalized.get(criterion)
+        if not isinstance(config, dict):
+            return None, f'Criterion {criterion} config must be a dict'
+
+        config = dict(config)
+        defaults = DEFAULT_CRITERIA_NUMBERS.get(criterion, {'weight': 0.0, 'threshold': 50})
+
+        try:
+            weight = _coerce_optional_float(config.get('weight'), defaults['weight'])
+        except (TypeError, ValueError):
+            return None, f'Weight for {criterion} must be a number'
+        if not (0 <= weight <= 1):
+            return None, f'Weight for {criterion} must be between 0 and 1'
+
+        try:
+            threshold = _coerce_optional_int(config.get('threshold'), defaults['threshold'])
+        except (TypeError, ValueError):
+            return None, f'Threshold for {criterion} must be an integer'
+        if not (0 <= threshold <= 100):
+            return None, f'Threshold for {criterion} must be between 0 and 100'
+
+        config['weight'] = weight
+        config['threshold'] = threshold
+        config['enabled'] = bool(config.get('enabled', False))
+        normalized[criterion] = config
+
+    if 'random_factor' in normalized:
+        try:
+            random_factor = _coerce_optional_float(normalized.get('random_factor'), 0.1)
+        except (TypeError, ValueError):
+            return None, 'random_factor must be a number'
+        if not (0 <= random_factor <= 0.3):
+            return None, 'random_factor must be between 0 and 0.3'
+        normalized['random_factor'] = random_factor
+
+    if 'prefer_new_users' in normalized and not isinstance(normalized['prefer_new_users'], bool):
+        normalized['prefer_new_users'] = bool(normalized['prefer_new_users'])
+
+    return normalized, None
 
 
 # ============================================================================
@@ -926,48 +1002,16 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Validate each criterion has required fields
+        # Normalize and validate numeric fields before saving.
+        criteria_config, normalize_error = _normalize_criteria_config_for_save(criteria_config)
+        if normalize_error:
+            return Response(
+                {'error': normalize_error},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         for criterion, config in criteria_config.items():
-            if criterion not in CRITERIA_KEYS:
-                continue
-            if not isinstance(config, dict):
-                return Response(
-                    {'error': f'Criterion {criterion} config must be a dict'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            # Validate weights are floats 0-1
-            if 'weight' in config:
-                try:
-                    weight = float(config['weight'])
-                    if not (0 <= weight <= 1):
-                        return Response(
-                            {'error': f'Weight for {criterion} must be between 0 and 1'},
-                            status=status.HTTP_400_BAD_REQUEST
-                        )
-                except (TypeError, ValueError):
-                    return Response(
-                        {'error': f'Weight for {criterion} must be a number'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-            # Validate thresholds are ints 0-100
-            if 'threshold' in config:
-                try:
-                    threshold = int(config['threshold'])
-                    if not (0 <= threshold <= 100):
-                        return Response(
-                            {'error': f'Threshold for {criterion} must be between 0 and 100'},
-                            status=status.HTTP_400_BAD_REQUEST
-                        )
-                except (TypeError, ValueError):
-                    return Response(
-                        {'error': f'Threshold for {criterion} must be an integer'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-            # Interests-specific validation
-            if criterion == 'interests' and 'match_mode' in config:
+            if criterion == 'interests' and isinstance(config, dict) and 'match_mode' in config:
                 valid_modes = {'complementary', 'similar', 'both'}
                 if config['match_mode'] not in valid_modes:
                     return Response(
@@ -980,39 +1024,25 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-        if 'random_factor' in criteria_config:
-            try:
-                random_factor = float(criteria_config['random_factor'])
-                if not (0 <= random_factor <= 0.3):
-                    return Response(
-                        {'error': 'random_factor must be between 0 and 0.3'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-            except (TypeError, ValueError):
-                return Response(
-                    {'error': 'random_factor must be a number'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-        if 'prefer_new_users' in criteria_config and not isinstance(criteria_config['prefer_new_users'], bool):
-            return Response(
-                {'error': 'prefer_new_users must be a boolean'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
         # Update session and increment config version
         session.criteria_config = criteria_config
         session.config_version = (session.config_version or 0) + 1
         session.save(update_fields=['criteria_config', 'config_version'])
+        _invalidate_speed_networking_state_cache(event_id)
 
         logger.info(f"[UPDATE_CRITERIA] Session {session.id} criteria updated to v{session.config_version}: {criteria_config}")
 
-        # Mark all active/pending matches for recalculation
-        session.matches.filter(
-            status__in=['ACTIVE', 'COMPLETED']
+        # Load-safe: only active matches need recalculation. Completed history is
+        # not used by the live UI and updating it during a host SAVE can touch a
+        # large number of rows in long sessions.
+        updated_active_matches = session.matches.filter(
+            status='ACTIVE'
         ).update(config_version=0)  # 0 = needs recalculation
 
-        logger.info(f"[UPDATE_CRITERIA] Marked matches for recalculation with new config v{session.config_version}")
+        logger.info(
+            f"[UPDATE_CRITERIA] Marked {updated_active_matches} active matches for recalculation "
+            f"with new config v{session.config_version}"
+        )
 
         # Broadcast config update to all clients via WebSocket
         send_speed_networking_message(event_id, 'speed_networking.config_updated', {
@@ -1024,9 +1054,42 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         })
         logger.info(f"[UPDATE_CRITERIA] WebSocket broadcast sent for event {event_id}: config v{session.config_version}")
 
+        # If users are already waiting when the host changes criteria, do not wait
+        # for every participant browser to poll /my-match/. Try to create eligible
+        # matches immediately so the queue moves right after SAVE.
+        matches_created = 0
+        if session.status == 'ACTIVE':
+            try:
+                matcher = SpeedNetworkingQueueViewSet()
+                waiting_entries = list(
+                    session.queue.filter(
+                        is_active=True,
+                        current_match__isnull=True,
+                    ).select_related('user').order_by('joined_at')[:100]
+                )
+                for entry in waiting_entries:
+                    # Entry may have been claimed by a previous iteration.
+                    entry.refresh_from_db(fields=['current_match'])
+                    if entry.current_match_id:
+                        continue
+                    match = matcher._find_and_create_match(session, entry.user)
+                    if match:
+                        matches_created += 1
+                if matches_created:
+                    _broadcast_queue_update(session, event_id)
+                logger.info(
+                    f"[UPDATE_CRITERIA] Immediate queue matching complete for session {session.id}: "
+                    f"created={matches_created}"
+                )
+            except Exception as e:
+                logger.exception(
+                    f"[UPDATE_CRITERIA] Immediate queue matching failed for session {session.id}: {e}"
+                )
+
         return Response({
             'criteria_config': session.criteria_config,
             'config_version': session.config_version,
+            'matches_created': matches_created,
             'message': 'Settings updated. New matches will use these factors immediately.'
         })
 
@@ -1526,6 +1589,15 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+def _is_valid_rtk_meeting_id(value):
+    """RTK meeting IDs are UUIDs. Local placeholders like match-17-abc are not valid."""
+    try:
+        uuid.UUID(str(value or ''))
+        return True
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
     """
     ViewSet for queue operations.
@@ -1538,14 +1610,58 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
     """
     permission_classes = [IsAuthenticated]
 
+    def _ensure_rtk_meeting_for_match(self, match):
+        """
+        Return a real RTK meeting UUID for this match.
+
+        Older code stored local placeholders like ``match-22-abc`` in rtk_room_name and
+        token generation could race. If two participants refreshed at the same time,
+        each browser could create/get a token for a different RTK meeting, so both
+        users saw the match sidebar/chat but RTK video showed only themselves.
+        """
+        if not match:
+            return None
+
+        current_meeting_id = str(match.rtk_room_name or '').strip()
+        if _is_valid_rtk_meeting_id(current_meeting_id):
+            return current_meeting_id
+
+        try:
+            with transaction.atomic():
+                locked_match = SpeedNetworkingMatch.objects.select_for_update().get(id=match.id)
+                locked_meeting_id = str(locked_match.rtk_room_name or '').strip()
+                if _is_valid_rtk_meeting_id(locked_meeting_id):
+                    match.rtk_room_name = locked_meeting_id
+                    return locked_meeting_id
+
+                meeting_title = locked_meeting_id or f"speed-networking-match-{locked_match.id}"
+                real_meeting_id = create_rtk_meeting(meeting_title)
+                if not _is_valid_rtk_meeting_id(real_meeting_id):
+                    logger.error(
+                        "[RTK] Failed to create valid RTK meeting for speed match %s. "
+                        "placeholder=%s returned=%s",
+                        locked_match.id,
+                        locked_meeting_id,
+                        real_meeting_id,
+                    )
+                    return None
+
+                locked_match.rtk_room_name = real_meeting_id
+                locked_match.save(update_fields=["rtk_room_name"])
+                match.rtk_room_name = real_meeting_id
+                return real_meeting_id
+        except Exception as exc:
+            logger.exception("[RTK] Could not ensure RTK meeting for match %s: %s", getattr(match, 'id', None), exc)
+            return None
+
     def _get_rtk_token_for_user(self, match, user):
-        if not match.rtk_room_name:
+        real_meeting_id = self._ensure_rtk_meeting_for_match(match)
+        if not real_meeting_id:
             return None
 
         display_name = f"{user.first_name} {user.last_name}".strip() or user.username
-        meeting_id = match.rtk_room_name
-        token, _ = add_rtk_participant(
-            meeting_id,
+        token, error = add_rtk_participant(
+            real_meeting_id,
             user.id,
             display_name,
             RTK_PRESET_PARTICIPANT
@@ -1553,23 +1669,13 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         if token:
             return token
 
-        # Fallback: if we only have a placeholder "match-..." value, create a real RTK meeting
-        # and persist it so future calls use the correct ID.
-        if meeting_id.startswith("match-"):
-            real_meeting_id = create_rtk_meeting(meeting_id)
-            if real_meeting_id:
-                if real_meeting_id != meeting_id:
-                    match.rtk_room_name = real_meeting_id
-                    match.save(update_fields=["rtk_room_name"])
-                token, _ = add_rtk_participant(
-                    real_meeting_id,
-                    user.id,
-                    display_name,
-                    RTK_PRESET_PARTICIPANT
-                )
-                if token:
-                    return token
-
+        logger.error(
+            "[RTK] Failed to add speed-networking participant user=%s match=%s meeting=%s error=%s",
+            user.id,
+            getattr(match, 'id', None),
+            real_meeting_id,
+            error,
+        )
         return None
 
     def _is_main_room_open(self, event):
@@ -1692,16 +1798,18 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         user = request.user
 
         try:
-            # Get or create queue entry
+            # Get or create queue entry. Rejoining must clear stale match refs from a
+            # previous stop/leave so my-match does not restore an old match.
             queue_entry, created = SpeedNetworkingQueue.objects.get_or_create(
                 session=session,
                 user=user,
                 defaults={'is_active': True}
             )
 
-            if not created and not queue_entry.is_active:
+            if not created:
                 queue_entry.is_active = True
-                queue_entry.save()
+                queue_entry.current_match = None
+                queue_entry.save(update_fields=['is_active', 'current_match', 'updated_at'])
 
             # Handle interests if provided
             interest_ids = request.data.get('interest_ids', [])
@@ -1839,8 +1947,8 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             )
         except SpeedNetworkingQueue.DoesNotExist:
             return Response(
-                {'error': 'Not in queue'},
-                status=status.HTTP_404_NOT_FOUND
+                {'status': 'not_in_queue', 'match': None},
+                status=status.HTTP_200_OK
             )
 
         # Always refresh the queue entry to get the latest match assignment
@@ -2183,16 +2291,21 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         """
         logger.info(f"[BOTH_MATCH] Starting combined matching for user_id={user.id}")
 
-        # Get ALL previous match partners in this event (comprehensive exclusion)
+        # Prefer not to repeat a pair in the same active session, but do not let
+        # a small/fully-exhausted queue stay forever on "Finding your match".
+        # We first try unique candidates; if previous-partner exclusion exhausts
+        # the queue, we allow a repeat pair as a final fallback.
         exclude_user_ids = self._get_previous_match_partners(session, user)
+        allow_repeat_pair = False
 
-        # Also exclude the immediate previous match partner if specified (for backward compatibility)
+        # Also exclude the immediate previous match partner if specified (for backward compatibility).
         if exclude_user:
             exclude_user_ids.append(exclude_user.id)
             logger.info(f"[BOTH_MATCH] Also excluding immediate previous match user_id={exclude_user.id}")
 
+        exclude_user_ids = list(dict.fromkeys(exclude_user_ids))
         if exclude_user_ids:
-            logger.info(f"[BOTH_MATCH] Total users to exclude from candidates: {exclude_user_ids}")
+            logger.info(f"[BOTH_MATCH] Prefer excluding previous partners from candidates: {exclude_user_ids}")
 
         # ===============================================================
         # STEP 1: RULE-BASED FILTERING
@@ -2222,31 +2335,50 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             candidates_after_rules = rule_engine.get_eligible_candidates(user)
             logger.info(f"[BOTH_MATCH] After rule filtering: {len(candidates_after_rules)} candidates")
 
-            # Exclude all previous match partners in this session
+            candidates_before_history = list(candidates_after_rules)
+
             if exclude_user_ids:
-                candidates_after_rules = [c for c in candidates_after_rules if c.id not in exclude_user_ids]
+                candidates_after_rules = [c for c in candidates_before_history if c.id not in exclude_user_ids]
                 logger.info(f"[BOTH_MATCH] After excluding {len(exclude_user_ids)} previous partners: {len(candidates_after_rules)} candidates remain")
 
+            if not candidates_after_rules and candidates_before_history:
+                allow_repeat_pair = True
+                candidates_after_rules = candidates_before_history
+                logger.warning(
+                    f"[BOTH_MATCH] Unique candidates exhausted for user {user.id}; "
+                    "allowing repeat pair fallback so queue can continue"
+                )
+
             if not candidates_after_rules:
-                logger.warning(f"[BOTH_MATCH] No candidates available after excluding previous partners for user {user.id}")
+                logger.warning(f"[BOTH_MATCH] No candidates available after rule filtering for user {user.id}")
                 return None
         else:
             # No rules, use all available candidates
-            candidates_query = SpeedNetworkingQueue.objects.filter(
+            base_candidates_query = SpeedNetworkingQueue.objects.filter(
                 session=session,
                 is_active=True,
                 current_match__isnull=True
             ).exclude(user=user)
 
-            # Exclude all previous match partners in this session
+            candidates_before_history = list(base_candidates_query.values_list('user_id', flat=True))
+
+            candidates_query = base_candidates_query
             if exclude_user_ids:
                 candidates_query = candidates_query.exclude(user_id__in=exclude_user_ids)
-                logger.info(f"[BOTH_MATCH] Excluded {len(exclude_user_ids)} previous partners from candidates")
+                logger.info(f"[BOTH_MATCH] Prefer excluding {len(exclude_user_ids)} previous partners from candidates")
 
-            candidates_after_rules = candidates_query.values_list('user_id', flat=True)
+            candidates_after_rules = list(candidates_query.values_list('user_id', flat=True))
+
+            if not candidates_after_rules and candidates_before_history:
+                allow_repeat_pair = True
+                candidates_after_rules = candidates_before_history
+                logger.warning(
+                    f"[BOTH_MATCH] Unique candidates exhausted for user {user.id}; "
+                    "allowing repeat pair fallback so queue can continue"
+                )
 
             if not candidates_after_rules:
-                logger.warning(f"[BOTH_MATCH] No candidates available after excluding previous partners for user {user.id}")
+                logger.warning(f"[BOTH_MATCH] No candidates available for user {user.id}")
                 return None
 
         # ===============================================================
@@ -2320,7 +2452,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             if not candidate_profiles:
                 logger.warning("[BOTH_MATCH] No candidates with skill data")
                 return self._basic_match_from_candidates(
-                    session, user, candidates_after_rules
+                    session, user, candidates_after_rules, allow_repeat_pair=allow_repeat_pair
                 )
 
             # Initialize criteria matching engine
@@ -2400,7 +2532,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         else:
             # Criteria-only not enabled, do basic match from filtered candidates
             return self._basic_match_from_candidates(
-                session, user, candidates_after_rules
+                session, user, candidates_after_rules, allow_repeat_pair=allow_repeat_pair
             )
 
         # ===============================================================
@@ -2416,8 +2548,8 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             logger.error(f"[BOTH_MATCH] Partner user {partner_dict['user_id']} not found")
             return None
 
-        # Safety net: prevent re-matching the same pair in this session.
-        if self._pair_matched_before(session, user, partner):
+        # Safety net: prevent duplicate pairs unless the queue is otherwise exhausted.
+        if not allow_repeat_pair and self._pair_matched_before(session, user, partner):
             logger.info(
                 f"[BOTH_MATCH] Pair already matched in session {session.id}: "
                 f"{user.id} <-> {partner.id}"
@@ -2499,13 +2631,13 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
         # ===============================================================
 
         if match and match_data:
-            # Create RTK meeting
-            meeting_id = create_rtk_meeting(match.rtk_room_name)
-            real_meeting_id = meeting_id or match.rtk_room_name
-
-            if meeting_id and meeting_id != match.rtk_room_name:
-                match.rtk_room_name = meeting_id
-                match.save(update_fields=["rtk_room_name"])
+            # Ensure both participants receive tokens for the same real RTK meeting UUID.
+            # Never send local placeholders like "match-22-abc" to RTK Add Participant.
+            real_meeting_id = self._ensure_rtk_meeting_for_match(match)
+            if real_meeting_id:
+                match_data['rtk_room_name'] = real_meeting_id
+            else:
+                match_data['rtk_error'] = 'Unable to create RTK meeting for this speed networking match.'
 
             # Add participants to RTK
             p1_token = None
@@ -2514,12 +2646,15 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             p2_error = None
 
             try:
-                p1_token, p1_error = add_rtk_participant(
-                    real_meeting_id,
-                    user.id,
-                    f"{user.first_name} {user.last_name}".strip() or user.username,
-                    RTK_PRESET_PARTICIPANT
-                )
+                if not real_meeting_id:
+                    p1_error = match_data.get('rtk_error') or 'Missing RTK meeting id'
+                else:
+                    p1_token, p1_error = add_rtk_participant(
+                        real_meeting_id,
+                        user.id,
+                        f"{user.first_name} {user.last_name}".strip() or user.username,
+                        RTK_PRESET_PARTICIPANT
+                    )
                 if not p1_token:
                     logger.error(f"[BOTH_MATCH] Failed to get token for user {user.id}: {p1_error}")
             except Exception as e:
@@ -2527,12 +2662,15 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
                 p1_error = str(e)
 
             try:
-                p2_token, p2_error = add_rtk_participant(
-                    real_meeting_id,
-                    partner.id,
-                    f"{partner.first_name} {partner.last_name}".strip() or partner.username,
-                    RTK_PRESET_PARTICIPANT
-                )
+                if not real_meeting_id:
+                    p2_error = match_data.get('rtk_error') or 'Missing RTK meeting id'
+                else:
+                    p2_token, p2_error = add_rtk_participant(
+                        real_meeting_id,
+                        partner.id,
+                        f"{partner.first_name} {partner.last_name}".strip() or partner.username,
+                        RTK_PRESET_PARTICIPANT
+                    )
                 if not p2_token:
                     logger.error(f"[BOTH_MATCH] Failed to get token for partner {partner.id}: {p2_error}")
             except Exception as e:
@@ -2569,7 +2707,7 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
 
         return match
 
-    def _basic_match_from_candidates(self, session, user, candidate_pool):
+    def _basic_match_from_candidates(self, session, user, candidate_pool, allow_repeat_pair=False):
         """
         Basic matching when criteria matching is not available.
         Used as fallback when user doesn't have criteria profile.
@@ -2605,8 +2743,8 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
 
         logger.debug(f"[BOTH_MATCH] Using basic matching (no criteria profile) with user {candidate.id}")
 
-        # Safety net: prevent re-matching the same pair in this session.
-        if self._pair_matched_before(session, user, candidate):
+        # Safety net: prevent duplicate pairs unless the queue is otherwise exhausted.
+        if not allow_repeat_pair and self._pair_matched_before(session, user, candidate):
             logger.info(
                 f"[BOTH_MATCH] Pair already matched in session {session.id}: "
                 f"{user.id} <-> {candidate.id}"
@@ -2660,44 +2798,47 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             return None
 
     def _pair_matched_before(self, session, user_a, user_b):
-        """Check whether two users have already been matched in this event."""
+        """Check whether two users have already been matched in this active session.
+
+        Do not block matches because of an older Speed Networking session in the
+        same event. Hosts commonly stop/restart sessions during testing, and using
+        event-wide history can leave small queues stuck forever even when a valid
+        pair exists.
+        """
         return SpeedNetworkingMatch.objects.filter(
-            session__event=session.event
+            session=session,
+            status__in=['ACTIVE', 'COMPLETED', 'SKIPPED'],
         ).filter(
-            Q(participant_1=user_a, participant_2=user_b) |
-            Q(participant_1=user_b, participant_2=user_a)
+            Q(participant_1_id=user_a.id, participant_2_id=user_b.id) |
+            Q(participant_1_id=user_b.id, participant_2_id=user_a.id)
         ).exists()
 
     def _get_previous_match_partners(self, session, user):
         """
-        Get all users that this user has already been matched with in the current event.
+        Get users already matched with this user in the current speed networking session.
 
-        Args:
-            session: The current speed networking session
-            user: The user to find previous partners for
-
-        Returns:
-            List of User IDs that should be excluded from future matching
+        This is intentionally session-scoped, not event-scoped, so restarting speed
+        networking for the same event does not make a small queue impossible to match.
+        The query returns only IDs to avoid object hydration/N+1 access.
         """
         from django.db.models import Q
 
-        # Find all matches in this event where this user was a participant
-        previous_matches = SpeedNetworkingMatch.objects.filter(
-            session__event=session.event,
-            status__in=['ACTIVE', 'COMPLETED', 'SKIPPED']
+        previous_pairs = SpeedNetworkingMatch.objects.filter(
+            session=session,
+            status__in=['COMPLETED', 'SKIPPED']
         ).filter(
-            Q(participant_1=user) | Q(participant_2=user)
+            Q(participant_1_id=user.id) | Q(participant_2_id=user.id)
+        ).values_list('participant_1_id', 'participant_2_id')
+
+        previous_partners = {
+            p2_id if p1_id == user.id else p1_id
+            for p1_id, p2_id in previous_pairs
+        }
+
+        logger.info(
+            f"[MATCHING] User {user.id} has {len(previous_partners)} previous partners "
+            f"in session {session.id}: {previous_partners}"
         )
-
-        # Extract all partners from previous matches
-        previous_partners = set()
-        for match in previous_matches:
-            if match.participant_1 == user:
-                previous_partners.add(match.participant_2.id)
-            else:
-                previous_partners.add(match.participant_1.id)
-
-        logger.info(f"[MATCHING] User {user.id} has {len(previous_partners)} previous partners in event {session.event_id}: {previous_partners}")
         return list(previous_partners)
 
 

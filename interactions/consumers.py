@@ -356,6 +356,13 @@ class QnAConsumer(BaseEventConsumer):
     lounge_table_id = None
 
     async def connect(self) -> None:
+        # disconnect() can be called even when connect() rejects before accept().
+        # Initialise every attribute used by disconnect() before any early return.
+        self._ws_closed = False
+        self.group_name = None
+        self.shared_group_name = None
+        self.lounge_table_id = None
+
         log.debug("WS path=%s", self.scope.get("path"))
         self.user = self.scope.get("user", None)
         if not self.user or isinstance(self.user, AnonymousUser):
@@ -377,10 +384,9 @@ class QnAConsumer(BaseEventConsumer):
             return
 
         self.event = event
-        
-        # Parse lounge_table_id from query params 
+
+        # Parse lounge_table_id from query params
         # (e.g. ws://...?lounge_table_id=123)
-        self.lounge_table_id = None
         try:
             from urllib.parse import parse_qs
             query_string = self.scope.get("query_string", b"").decode("utf-8")
@@ -406,7 +412,6 @@ class QnAConsumer(BaseEventConsumer):
 
         # Only hosts/moderators/admins need event-wide group-management messages.
         # Breakout attendees receive room-local Q&A messages from self.group_name.
-        self.shared_group_name = None
         if await _can_receive_shared_qna_group(self.event_id, self.user):
             self.shared_group_name = f"{self.group_name_prefix}_{self.event_id}_shared"
             await self.channel_layer.group_add(self.shared_group_name, self.channel_name)
@@ -690,10 +695,14 @@ class QnAConsumer(BaseEventConsumer):
         await self.send_json(event.get("payload", {}))
 
     async def disconnect(self, code: int) -> None:
-        if self.shared_group_name:
+        self._ws_closed = True
+
+        shared_group_name = getattr(self, "shared_group_name", None)
+        if shared_group_name:
             try:
-                await self.channel_layer.group_discard(self.shared_group_name, self.channel_name)
+                await self.channel_layer.group_discard(shared_group_name, self.channel_name)
             except Exception:
                 pass
+
         await super().disconnect(code)
 
