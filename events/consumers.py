@@ -1164,6 +1164,17 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         except Exception as e:
             logger.error(f"[WS] ❌ Failed to send message: {e}")
 
+    async def speed_networking_config_updated(self, event):
+        """Notify participants that matching criteria have been updated."""
+        await self.send_json({
+            "type": "speed_networking_config_updated",
+            "session_id": event.get("session_id"),
+            "config_version": event.get("config_version"),
+            "criteria_config": event.get("criteria_config"),
+            "updated_at": event.get("updated_at"),
+            "message": event.get("message")
+        })
+
     async def lounge_settings_update(self, event):
         """
         Handle lounge settings updates broadcasted from EventViewSet.
