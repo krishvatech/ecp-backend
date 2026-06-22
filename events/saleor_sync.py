@@ -188,14 +188,16 @@ def _update_product_in_saleor(event, url, headers, channel):
         logger.info(f"🔧 Updating trackInventory to False for variant {event.saleor_variant_id}")
         _update_variant_track_inventory(url, headers, event.saleor_variant_id, track_inventory=False)
 
-        # For paid events: price and stock managed via Product Management tab — skip sync
-        if event.is_free:
-            logger.info(f"💰 UPDATING Price on Variant: {event.saleor_variant_id} | Event: {event.title}")
+        # Auto-sync price for FREE events OR events synced from WordPress/Manda
+        is_wordpress_synced = bool(event.wordpress_event_id)
+
+        if event.is_free or is_wordpress_synced:
+            logger.info(f"💰 SYNCING Price: ${event.price} → Saleor | Event: {event.title} | From Manda: {is_wordpress_synced}")
             _update_variant_price(event, url, headers, event.saleor_variant_id, channel)
-            logger.info(f"📦 UPDATING Stock: {event.max_participants or 'Unlimited (999999)'} | Variant: {event.saleor_variant_id}")
+            logger.info(f"📦 SYNCING Stock: {event.max_participants or '100 units'} | Variant: {event.saleor_variant_id}")
             _create_or_update_stock(event, url, headers, event.saleor_variant_id)
         else:
-            logger.info(f"⏭️  Paid event {event.id}: skipping price/stock update — managed in Product Management tab")
+            logger.info(f"⏭️  Paid event {event.id} (manual): skipping price/stock — managed in Product Management tab")
 
 def _create_variant(event, url, headers, product_id, channel):
     mutation = """
@@ -261,7 +263,7 @@ def _create_variant(event, url, headers, product_id, channel):
              if event.is_free:
                  logger.info(f"💰 Setting Price: {event.currency} {price_val} | Variant: {variant_id} | Channel: {channel}")
                  _update_variant_channel_listing(event, url, headers, variant_id, channel)
-                 logger.info(f"📦 Setting Stock: {event.max_participants or 'Unlimited (999999)'} | Variant: {variant_id}")
+                 logger.info(f"📦 Setting Stock: {event.max_participants or '100 units'} | Variant: {variant_id}")
                  _create_or_update_stock(event, url, headers, variant_id)
              else:
                  logger.info(f"⏭️  Paid event {event.id}: skipping price/stock sync — will be managed in Product Management tab")
@@ -578,8 +580,8 @@ def _create_or_update_stock(event, url, headers, variant_id):
     """
     Update stock for event variant using productVariantStocksUpdate mutation.
     Saleor 3.22.x uses this mutation for stock management.
-    - max_participants = quantity in Saleor
-    - NULL = 999999 (practically unlimited)
+    - max_participants = quantity in Saleor (if set)
+    - NULL = 100 (default limited stock for events from Manda)
     """
     warehouse_id = _get_or_create_warehouse(url, headers)
     if not warehouse_id:
@@ -587,7 +589,14 @@ def _create_or_update_stock(event, url, headers, variant_id):
         return
 
     # Determine stock quantity
-    stock_qty = event.max_participants if event.max_participants else 999999
+    # For WordPress/Manda synced events: use 100 as default (not unlimited)
+    # For manual events: use max_participants if set
+    if event.max_participants:
+        stock_qty = event.max_participants
+    elif event.wordpress_event_id:
+        stock_qty = 100  # Default for Manda events
+    else:
+        stock_qty = 100  # Default for all events
 
     # Use productVariantStocksUpdate mutation (Saleor 3.22.x)
     mutation_update = """
