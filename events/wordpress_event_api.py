@@ -17,12 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 class WordPressEventAPIClient:
-    """Client for The Events Calendar REST API via standard WordPress endpoint."""
+    """Client for The Events Calendar REST API."""
 
-    # Uses /wp/v2/tribe_events (standard WordPress REST API for Events Calendar post type)
-    # Falls back to /tribe/v1 if available (custom Events Calendar API)
-    WP_V2_TRIBE_EVENTS = "/wp/v2/tribe_events"
-    TRIBE_V1_EVENTS = "/tribe/v1/events"
+    TRIBE_V1_BASE = "/tribe/v1"
 
     def __init__(self):
         # Reuse the same base URL + auth already configured for user sync
@@ -47,8 +44,7 @@ class WordPressEventAPIClient:
 
     def get_event(self, wp_event_id: int) -> Optional[Dict[str, Any]]:
         """Fetch a single event by WordPress post ID."""
-        # Try standard WP REST API endpoint first (/wp/v2/tribe_events)
-        url = f"{self.base_url}{self.WP_V2_TRIBE_EVENTS}/{wp_event_id}"
+        url = f"{self.base_url}{self.TRIBE_V1_BASE}/events/{wp_event_id}"
         try:
             resp = requests.get(
                 url,
@@ -56,15 +52,10 @@ class WordPressEventAPIClient:
                 auth=self._get_auth(),
                 timeout=15
             )
-            if resp.status_code == 200:
-                return resp.json()
-            elif resp.status_code == 404:
-                logger.debug(f"Event not found at {url}")
-                return None
-            else:
-                resp.raise_for_status()
+            resp.raise_for_status()
+            return resp.json()
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to fetch WP event {wp_event_id} from {url}: {e}")
+            logger.error(f"Failed to fetch WP event {wp_event_id}: {e}")
             return None
 
     def list_events(
@@ -75,17 +66,19 @@ class WordPressEventAPIClient:
         status: str = "publish",
     ) -> Optional[Dict[str, Any]]:
         """
-        List events with optional filters via standard WordPress REST API.
+        List events with optional filters.
 
-        Filters:
-          - page / per_page: pagination
+        The Events Calendar supports:
+          - start_date: ISO date string, filter by start date
+          - per_page / page: pagination
           - status: "publish" (default), "draft", "private"
 
-        Returns dict with format: {"events": [...], "total": count, "total_pages": pages}
+        Returns full response dict including 'events' list and 'total_pages'.
         """
-        url = f"{self.base_url}{self.WP_V2_TRIBE_EVENTS}"
+        url = f"{self.base_url}{self.TRIBE_V1_BASE}/events/"
         params = {"page": page, "per_page": per_page, "status": status}
-
+        if start_date:
+            params["start_date"] = start_date
         try:
             resp = requests.get(
                 url,
@@ -95,32 +88,23 @@ class WordPressEventAPIClient:
                 timeout=15
             )
             resp.raise_for_status()
-
-            events = resp.json()
-            total = int(resp.headers.get("x-wp-total", len(events)))
-            total_pages = int(resp.headers.get("x-wp-totalpages", 1))
-
-            return {
-                "events": events,
-                "total": total,
-                "total_pages": total_pages
-            }
+            return resp.json()
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to list WP events from {url} (page {page}): {e}")
+            logger.error(f"Failed to list WP events (page {page}): {e}")
             return None
 
     def list_recently_modified_events(self, after: str) -> List[Dict[str, Any]]:
         """
         Poll WP REST API for events modified after a given ISO timestamp.
-        Uses /wp/v2/tribe_events endpoint with ?modified_after filter.
+        Uses /wp/v2/tribe_events endpoint which supports ?modified_after.
+        Falls back to full list scan if not available.
         """
-        url = f"{self.base_url}{self.WP_V2_TRIBE_EVENTS}"
+        url = f"{self.base_url}/wp/v2/tribe_events"
         params = {
             "modified_after": after,
             "per_page": 100,
             "orderby": "modified",
             "order": "desc",
-            "status": "publish",
         }
         try:
             resp = requests.get(
@@ -131,11 +115,18 @@ class WordPressEventAPIClient:
                 timeout=15
             )
             resp.raise_for_status()
-            events = resp.json()
-            logger.debug(f"Polled WP events modified after {after}: found {len(events)}")
-            return events if isinstance(events, list) else []
+            events_raw = resp.json()
+            # For each CPT record, fetch the full tribe/v1 representation for field richness
+            enriched = []
+            for e in events_raw:
+                wp_id = e.get("id")
+                if wp_id:
+                    full = self.get_event(wp_id)
+                    if full:
+                        enriched.append(full)
+            return enriched
         except requests.exceptions.RequestException as exc:
-            logger.error(f"Failed to poll recently modified WP events from {url}: {exc}")
+            logger.error(f"Failed to poll recently modified WP events: {exc}")
             return []
 
 
