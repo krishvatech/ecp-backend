@@ -364,17 +364,12 @@ def enforce_event_end_conditions() -> dict:
 @shared_task
 def recalculate_stale_matches():
     """
-    Periodic task (every 5 minutes) to recalculate matches with outdated configs.
+    Periodic task (every 5 minutes) to recalculate queued/pending matches with
+    outdated configs.
 
-    When admin updates matching criteria (config_version increments), all active/pending
-    matches are marked with config_version=0. This task finds those matches and
-    recalculates their scores using the updated algorithm.
-
-    Benefits:
-    - ✅ Matches always reflect current criteria
-    - ✅ Historical records preserved (last_recalculated_at tracked)
-    - ✅ No manual intervention needed
-    - ✅ Transparent to users
+    ACTIVE matches are intentionally skipped. During a live meeting those users
+    are already connected inside RTK rooms, so recalculating them after a host
+    settings save creates unnecessary DB/CPU load and confusing host UI changes.
     """
     from django.db.models import F
     from .models import SpeedNetworkingMatch, SpeedNetworkingSession
@@ -382,10 +377,11 @@ def recalculate_stale_matches():
     from .criteria_matching_engine import CriteriaBasedMatchingEngine
 
     try:
-        # Find stale matches: config_version < session.config_version
+        # Find stale matches: config_version < session.config_version.
+        # Skip ACTIVE matches to keep live rooms stable and load-safe.
         stale_matches = SpeedNetworkingMatch.objects.filter(
             config_version__lt=F('session__config_version'),  # Config outdated
-            status__in=['ACTIVE', 'PENDING'],
+            status='PENDING',
             session__status='ACTIVE'
         )[:100]  # Process in batches of 100
 

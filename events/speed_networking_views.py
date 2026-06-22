@@ -1030,67 +1030,31 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
         session.save(update_fields=['criteria_config', 'config_version'])
         _invalidate_speed_networking_state_cache(event_id)
 
-        logger.info(f"[UPDATE_CRITERIA] Session {session.id} criteria updated to v{session.config_version}: {criteria_config}")
+        logger.info(f"[UPDATE_CRITERIA] Session {session.id} criteria updated to v{session.config_version}")
 
-        # Load-safe: only active matches need recalculation. Completed history is
-        # not used by the live UI and updating it during a host SAVE can touch a
-        # large number of rows in long sessions.
-        updated_active_matches = session.matches.filter(
-            status='ACTIVE'
-        ).update(config_version=0)  # 0 = needs recalculation
+        # Live-safe behavior:
+        # - Do not mark ACTIVE matches as stale.
+        # - Do not recalculate ACTIVE match scores.
+        # - Do not rematch/reconnect users already inside RTK rooms.
+        # The saved criteria are picked up by the next matchmaking operation.
 
-        logger.info(
-            f"[UPDATE_CRITERIA] Marked {updated_active_matches} active matches for recalculation "
-            f"with new config v{session.config_version}"
-        )
-
-        # Broadcast config update to all clients via WebSocket
+        # Broadcast a lightweight config update. Do not send the full criteria
+        # object to every participant; the saving host already receives it in
+        # this HTTP response and other host panels can fetch when needed.
         send_speed_networking_message(event_id, 'speed_networking.config_updated', {
             'session_id': session.id,
             'config_version': session.config_version,
-            'criteria_config': session.criteria_config,
             'updated_at': timezone.now().isoformat(),
-            'message': 'Matching criteria have been updated. Preview will refresh automatically.'
+            'message': 'Matching settings updated. Current active matches are not affected.'
         })
         logger.info(f"[UPDATE_CRITERIA] WebSocket broadcast sent for event {event_id}: config v{session.config_version}")
-
-        # If users are already waiting when the host changes criteria, do not wait
-        # for every participant browser to poll /my-match/. Try to create eligible
-        # matches immediately so the queue moves right after SAVE.
-        matches_created = 0
-        if session.status == 'ACTIVE':
-            try:
-                matcher = SpeedNetworkingQueueViewSet()
-                waiting_entries = list(
-                    session.queue.filter(
-                        is_active=True,
-                        current_match__isnull=True,
-                    ).select_related('user').order_by('joined_at')[:100]
-                )
-                for entry in waiting_entries:
-                    # Entry may have been claimed by a previous iteration.
-                    entry.refresh_from_db(fields=['current_match'])
-                    if entry.current_match_id:
-                        continue
-                    match = matcher._find_and_create_match(session, entry.user)
-                    if match:
-                        matches_created += 1
-                if matches_created:
-                    _broadcast_queue_update(session, event_id)
-                logger.info(
-                    f"[UPDATE_CRITERIA] Immediate queue matching complete for session {session.id}: "
-                    f"created={matches_created}"
-                )
-            except Exception as e:
-                logger.exception(
-                    f"[UPDATE_CRITERIA] Immediate queue matching failed for session {session.id}: {e}"
-                )
 
         return Response({
             'criteria_config': session.criteria_config,
             'config_version': session.config_version,
-            'matches_created': matches_created,
-            'message': 'Settings updated. New matches will use these factors immediately.'
+            'applies_to': 'future_matches_only',
+            'active_matches_affected': 0,
+            'message': 'Settings updated. Current active matches stay connected; future matches use the latest settings.'
         })
 
     @action(detail=True, methods=['post'])
@@ -1332,10 +1296,15 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Find stale matches
+        # Live-safe default: do not recalculate ACTIVE matches because users are
+        # already connected in RTK rooms. Pass ?include_active=true only for an
+        # explicit admin/debug recalculation.
+        include_active = str(request.query_params.get('include_active', '')).lower() in {'1', 'true', 'yes'}
+        stale_statuses = ['PENDING'] + (['ACTIVE'] if include_active else [])
+
         stale_matches = session.matches.filter(
             config_version__lt=F('session__config_version'),
-            status__in=['ACTIVE', 'PENDING']
+            status__in=stale_statuses
         )
 
         if not stale_matches.exists():
@@ -2870,7 +2839,12 @@ class SpeedNetworkingQueueViewSet(viewsets.ViewSet):
             status__in=['COMPLETED', 'SKIPPED']
         ).filter(
             Q(participant_1=user) | Q(participant_2=user)
-        ).select_related('participant_1', 'participant_2').order_by('-ended_at')
+        ).select_related(
+            'participant_1',
+            'participant_2',
+            'participant_1__profile',
+            'participant_2__profile',
+        ).order_by('-ended_at')
 
         # Build response with partner info
         user_matches_data = []
