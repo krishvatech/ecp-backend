@@ -184,20 +184,77 @@ def _map_location(wp_event: Dict[str, Any]) -> str:
     return ", ".join(p for p in parts if p).strip(", ")
 
 
+def _extract_event_dates_from_meta(wp_event: Dict[str, Any], tz_name: str) -> Tuple[Optional[datetime], Optional[datetime], str]:
+    """
+    Extract start/end dates and timezone from WordPress meta fields.
+    WordPress REST API stores event dates in meta as strings like "2026-06-24 08:00:00"
+    Returns: (start_datetime, end_datetime, timezone_name)
+    """
+    meta = wp_event.get("meta", {}) or {}
+
+    # Get timezone from meta (e.g., "Asia/Singapore")
+    wp_tz = meta.get("_EventTimezone", "") or tz_name
+    wp_tz = wp_tz.strip() if wp_tz else tz_name
+
+    # Use local event dates (not UTC) with the WordPress timezone
+    start_date_str = meta.get("_EventStartDate", "")
+    end_date_str = meta.get("_EventEndDate", "")
+
+    start_dt = _parse_event_datetime(start_date_str, wp_tz) if start_date_str else None
+    end_dt = _parse_event_datetime(end_date_str, wp_tz) if end_date_str else None
+
+    if start_dt or end_dt:
+        logger.debug(f"Extracted dates from meta: start={start_dt}, end={end_dt}, timezone={wp_tz}")
+
+    return start_dt, end_dt, wp_tz
+
+
+def _extract_price_from_meta(wp_event: Dict[str, Any]) -> Tuple[float, bool, str]:
+    """
+    Extract price from WordPress meta fields.
+    Tribe Events Calendar stores cost in meta._EventCost
+    """
+    meta = wp_event.get("meta", {}) or {}
+
+    cost_str = meta.get("_EventCost", "") or ""
+
+    # Extract numeric value
+    numeric_str = re.sub(r"[^\d.]", "", cost_str)
+    try:
+        price = float(numeric_str) if numeric_str else 0.0
+    except ValueError:
+        price = 0.0
+
+    is_free = price == 0.0
+    price_label = ""
+
+    if cost_str and cost_str != numeric_str:
+        price_label = cost_str.strip()
+
+    if price > 0 or price_label:
+        logger.debug(f"Extracted price from meta: price={price}, label={price_label}")
+
+    return price, is_free, price_label
+
+
 def _map_price(wp_event: Dict[str, Any]) -> Tuple[float, bool, str]:
     """
     Returns (price, is_free, price_label).
 
-    Price label priority:
-    1. Custom label from cost_details['label']
-    2. Non-numeric text in cost field (e.g., "By application only")
-    3. Empty if cost is purely numeric
+    Priority order:
+    1. Meta fields (_EventCost) - WordPress Events Calendar
+    2. Top-level fields (cost, cost_details) - Tribe v1 API format
     """
+    # Try meta fields first (WordPress REST API)
+    price, is_free, price_label = _extract_price_from_meta(wp_event)
+    if price > 0 or price_label:
+        return price, is_free, price_label
+
+    # Fallback to top-level fields (Tribe v1 API)
     cost = wp_event.get("cost", "") or ""
     cost_details = wp_event.get("cost_details", {}) or {}
     cost_description = wp_event.get("cost_description", "") or ""
 
-    # Extract numeric value from cost
     numeric_str = re.sub(r"[^\d.]", "", cost)
     try:
         price = float(numeric_str) if numeric_str else 0.0
@@ -205,19 +262,12 @@ def _map_price(wp_event: Dict[str, Any]) -> Tuple[float, bool, str]:
         price = 0.0
 
     is_free = price == 0.0
-
-    # Determine price_label - check multiple sources
     price_label = ""
 
-    # 1. Check if cost_details has a label field (from WordPress Events Calendar)
     if isinstance(cost_details, dict) and cost_details.get("label"):
         price_label = str(cost_details["label"]).strip()
-
-    # 2. Check if cost field contains non-numeric text
     elif cost.strip() and cost.strip() != numeric_str:
         price_label = str(cost).strip()
-
-    # 3. Check cost_description field as fallback
     elif cost_description.strip():
         price_label = str(cost_description).strip()
 
@@ -503,10 +553,20 @@ class WordPressEventSyncService:
             return None, "error"
 
         tz_name = wp_event.get("timezone", "UTC") or "UTC"
-        # Normalize timezone to valid IANA zone for both datetime parsing and storage
+
+        # Try extracting dates from meta first (WordPress REST API), which also returns timezone
+        start_dt, end_dt, extracted_tz = _extract_event_dates_from_meta(wp_event, tz_name)
+
+        # Use extracted timezone if found, otherwise use default
+        tz_name = extracted_tz if extracted_tz else tz_name
         normalized_tz = _normalize_timezone(tz_name)
-        start_dt = _parse_event_datetime(wp_event.get("start_date", ""), tz_name)
-        end_dt = _parse_event_datetime(wp_event.get("end_date", ""), tz_name)
+
+        # Fallback to top-level fields (Tribe v1 API) if meta extraction didn't find dates
+        if not start_dt:
+            start_dt = _parse_event_datetime(wp_event.get("start_date", ""), tz_name)
+        if not end_dt:
+            end_dt = _parse_event_datetime(wp_event.get("end_date", ""), tz_name)
+
         price, is_free, price_label = _map_price(wp_event)
 
         fields = {
