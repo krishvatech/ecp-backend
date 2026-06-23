@@ -88,7 +88,12 @@ class ResourceViewSet(viewsets.ModelViewSet):
         user = self.request.user
         qs = Resource.objects.all().select_related("community", "event", "uploaded_by")
 
-        if user.is_staff or user.is_superuser:
+        # Superusers can see all resources
+        if user.is_superuser:
+            return qs.order_by("-created_at")
+
+        # Staff can see all resources
+        if user.is_staff:
             return qs.order_by("-created_at")
 
         # Community membership
@@ -105,7 +110,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
             Q(event__isnull=True, community_id__in=org_ids) |
             Q(event_id__in=paid_eids)
         )
-        
+
         # Exclude resources from suspended/fake/deceased users
         BLOCKED = ("suspended", "fake", "deceased")
         qs = qs.exclude(uploaded_by__profile__profile_status__in=BLOCKED)
@@ -115,10 +120,22 @@ class ResourceViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        org = serializer.validated_data["community"]      # <— object, not *_id
         event = serializer.validated_data.get("event")    # <— object or None
+
+        # If event is provided, derive community from it
+        if event:
+            if not event.community:
+                raise PermissionDenied("The selected event does not have a community.")
+            org = event.community
+        else:
+            # Fallback: use explicitly provided community (for backwards compat)
+            org = serializer.validated_data.get("community")
+            if not org:
+                raise PermissionDenied("Either event_id or community_id must be provided.")
+
         org_id = org.id
 
+        # Permission check: user must be superuser/staff OR member of the community
         if not (
             user.is_staff
             or user.is_superuser
@@ -127,10 +144,8 @@ class ResourceViewSet(viewsets.ModelViewSet):
         ):
             raise PermissionDenied("You must be a member of the community to upload resources.")
 
-        if event and event.community_id != org_id:
-            raise PermissionDenied("Event does not belong to the specified community.")
-
-        serializer.save()  # uploaded_by is set in serializer.create
+        # Save with derived community and event
+        serializer.save(community=org, event=event, uploaded_by=user)
 
     def perform_update(self, serializer):
         user = self.request.user

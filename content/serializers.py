@@ -15,7 +15,8 @@ from django.utils import timezone
 class ResourceSerializer(serializers.ModelSerializer):
     # map request keys → actual FK fields via `source`
     community_id = serializers.PrimaryKeyRelatedField(
-        source="community", queryset=Community.objects.all()
+        source="community", queryset=Community.objects.all(),
+        required=False, allow_null=True
     )
     event_id = serializers.PrimaryKeyRelatedField(
         source="event", queryset=Event.objects.all(),
@@ -38,6 +39,19 @@ class ResourceSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "uploaded_by_id", "created_at", "updated_at"]
 
     def validate(self, data):
+        # For creation, ensure event_id or community_id is provided
+        if not self.instance:
+            event = data.get("event")
+            community = data.get("community")
+            if not event and not community:
+                raise serializers.ValidationError(
+                    "Either event_id or community_id must be provided."
+                )
+            if event and not event.community:
+                raise serializers.ValidationError(
+                    "The selected event does not have a community."
+                )
+
         rtype = data.get("type") or getattr(self.instance, "type", None)
         file = data.get("file")
         link = data.get("link_url")
@@ -71,4 +85,5 @@ class ResourceSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        return Resource.objects.create(uploaded_by=user, **validated_data)
+        validated_data.setdefault("uploaded_by", user)
+        return Resource.objects.create(**validated_data)
