@@ -51,6 +51,56 @@ def decrypt_value(value):
         raise SaleorConnectionError("Stored Saleor token could not be decrypted.") from exc
 
 
+def _graphql_operation_name(query):
+    compact = " ".join((query or "").split())
+    if not compact:
+        return "unknown"
+    for keyword in ("mutation", "query"):
+        prefix = f"{keyword} "
+        if compact.startswith(prefix):
+            remainder = compact[len(prefix):].strip()
+            return remainder.split("(", 1)[0].split(" ", 1)[0].strip() or keyword
+    return compact[:80]
+
+
+def _safe_variables_for_log(variables):
+    """Return a small, token-safe variables preview for debugging Saleor GraphQL calls."""
+    variables = variables or {}
+    safe = {}
+    sensitive_keys = {
+        "code",
+        "state",
+        "token",
+        "accessToken",
+        "refreshToken",
+        "csrfToken",
+        "clientSecret",
+        "client_secret",
+        "authorization",
+    }
+    for key, value in variables.items():
+        if key in sensitive_keys:
+            safe[key] = "***redacted***"
+            continue
+
+        if key == "input" and isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                for input_key in list(parsed.keys()):
+                    if input_key in sensitive_keys:
+                        parsed[input_key] = "***redacted***"
+                safe[key] = parsed
+            except Exception:
+                safe[key] = "<JSONString>"
+            continue
+
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe[key] = value
+        else:
+            safe[key] = f"<{type(value).__name__}>"
+    return safe
+
+
 def _saleor_graphql(query, variables=None, token=None, timeout=20):
     saleor_api_url = getattr(settings, "SALEOR_API_URL", None)
     if not saleor_api_url:
@@ -60,16 +110,75 @@ def _saleor_graphql(query, variables=None, token=None, timeout=20):
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    response = requests.post(
+    operation_name = _graphql_operation_name(query)
+    safe_variables = _safe_variables_for_log(variables)
+
+    logger.info(
+        "[SALEOR_GRAPHQL_START] operation=%s url=%s variable_keys=%s variables_preview=%s has_auth_token=%s",
+        operation_name,
         saleor_api_url,
-        json={"query": query, "variables": variables or {}},
-        headers=headers,
-        timeout=timeout,
+        list((variables or {}).keys()),
+        safe_variables,
+        bool(token),
     )
-    response.raise_for_status()
-    data = response.json()
+
+    try:
+        response = requests.post(
+            saleor_api_url,
+            json={"query": query, "variables": variables or {}},
+            headers=headers,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        logger.exception(
+            "[SALEOR_GRAPHQL_REQUEST_EXCEPTION] operation=%s url=%s error=%s",
+            operation_name,
+            saleor_api_url,
+            str(exc),
+        )
+        raise SaleorConnectionError(f"Saleor GraphQL request failed: {exc}") from exc
+
+    logger.info(
+        "[SALEOR_GRAPHQL_RESPONSE] operation=%s status=%s content_type=%s body_length=%s",
+        operation_name,
+        response.status_code,
+        response.headers.get("content-type", ""),
+        len(response.text or ""),
+    )
+
+    if response.status_code >= 400:
+        logger.error(
+            "[SALEOR_GRAPHQL_HTTP_ERROR] operation=%s status=%s url=%s response_body=%s",
+            operation_name,
+            response.status_code,
+            saleor_api_url,
+            response.text[:3000],
+        )
+        raise SaleorConnectionError(
+            f"Saleor GraphQL HTTP {response.status_code}. Check backend logs for details."
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        logger.exception(
+            "[SALEOR_GRAPHQL_NON_JSON] operation=%s status=%s url=%s response_body=%s",
+            operation_name,
+            response.status_code,
+            saleor_api_url,
+            response.text[:3000],
+        )
+        raise SaleorConnectionError("Saleor GraphQL returned non-JSON response.") from exc
+
     if data.get("errors"):
-        raise SaleorConnectionError("Saleor GraphQL request failed.")
+        logger.error(
+            "[SALEOR_GRAPHQL_ERRORS] operation=%s url=%s errors=%s",
+            operation_name,
+            saleor_api_url,
+            data.get("errors"),
+        )
+        raise SaleorConnectionError(f"Saleor GraphQL request failed: {data.get('errors')}")
+
     return data.get("data") or {}
 
 
@@ -105,6 +214,12 @@ def _load_user_id_for_saleor_state(state):
 
 
 def build_saleor_sso_url(user, request):
+    logger.info(
+        "[SALEOR_SSO_BUILD_URL_START] user_id=%s email=%s callback_url=%s",
+        getattr(user, "pk", None),
+        getattr(user, "email", ""),
+        _callback_url(request),
+    )
     mutation = """
     mutation GetExternalAuthUrl($pluginId: String!, $input: JSONString!) {
       externalAuthenticationUrl(pluginId: $pluginId, input: $input) {
@@ -145,6 +260,12 @@ def build_saleor_sso_url(user, request):
     if not saleor_state:
         raise SaleorConnectionError("Saleor did not return an SSO state.")
     _remember_saleor_state(saleor_state, user)
+    logger.info(
+        "[SALEOR_SSO_BUILD_URL_SUCCESS] user_id=%s saleor_state_digest=%s authorization_url_host=%s",
+        getattr(user, "pk", None),
+        hashlib.sha256(saleor_state.encode("utf-8")).hexdigest()[:12],
+        urlparse(authorization_url).netloc,
+    )
     return authorization_url
 
 
@@ -191,6 +312,13 @@ def verify_saleor_user(token):
 
 
 def handle_saleor_callback(request):
+    logger.info(
+        "[SALEOR_SSO_CALLBACK_START] path=%s has_code=%s has_state=%s callback_url=%s",
+        request.path,
+        bool(request.GET.get("code")),
+        bool(request.GET.get("state")),
+        _callback_url(request),
+    )
     error = request.GET.get("error")
     if error:
         raise SaleorConnectionError(error)
@@ -202,6 +330,12 @@ def handle_saleor_callback(request):
 
     user_id = _load_user_id_for_saleor_state(state)
     user = get_user_model().objects.get(pk=user_id)
+    logger.info(
+        "[SALEOR_SSO_CALLBACK_STATE_OK] user_id=%s email=%s state_digest=%s",
+        user_id,
+        getattr(user, "email", ""),
+        hashlib.sha256(state.encode("utf-8")).hexdigest()[:12],
+    )
 
     mutation = """
     mutation ExternalObtainAccessTokens($pluginId: String!, $input: JSONString!) {
@@ -234,8 +368,17 @@ def handle_saleor_callback(request):
         },
     )
     payload = data.get("externalObtainAccessTokens") or {}
+    logger.info(
+        "[SALEOR_SSO_TOKEN_EXCHANGE_RESPONSE] user_id=%s has_token=%s has_refresh_token=%s has_csrf_token=%s has_user=%s errors=%s",
+        user_id,
+        bool(payload.get("token")),
+        bool(payload.get("refreshToken")),
+        bool(payload.get("csrfToken")),
+        bool(payload.get("user")),
+        payload.get("errors"),
+    )
     if payload.get("errors"):
-        raise SaleorConnectionError("Saleor token exchange failed.")
+        raise SaleorConnectionError(f"Saleor token exchange failed: {payload.get('errors')}")
 
     access_token = payload.get("token")
     refresh_token = payload.get("refreshToken")
@@ -244,6 +387,13 @@ def handle_saleor_callback(request):
         raise SaleorConnectionError("Saleor did not return an access token.")
 
     verified = verify_saleor_user(access_token)
+    logger.info(
+        "[SALEOR_SSO_VERIFY_USER_SUCCESS] user_id=%s saleor_user_id=%s saleor_email=%s permissions=%s",
+        user_id,
+        verified.get("id"),
+        verified.get("email"),
+        verified.get("permissions"),
+    )
     now = timezone.now()
     connection, _ = SaleorUserConnection.objects.get_or_create(user=user)
     connection.saleor_user_id = verified["id"] or (payload.get("user") or {}).get("id", "")
@@ -257,6 +407,13 @@ def handle_saleor_callback(request):
     connection.last_verified_at = now
     connection.last_error = "" if "MANAGE_STAFF" in connection.permissions else "Connected Saleor user is missing MANAGE_STAFF."
     connection.save()
+    logger.info(
+        "[SALEOR_SSO_CONNECTION_SAVED] user_id=%s connection_id=%s is_valid=%s last_error=%s",
+        user_id,
+        connection.pk,
+        connection.is_valid,
+        connection.last_error,
+    )
     return connection
 
 

@@ -4706,8 +4706,27 @@ class SaleorConnectionStartView(APIView):
             )
 
         try:
-            return Response({"url": build_saleor_sso_url(request.user, request)}, status=200)
+            logger.info(
+                "[SALEOR_SSO_CONNECT_START] user_id=%s email=%s path=%s",
+                getattr(request.user, "id", None),
+                getattr(request.user, "email", ""),
+                request.path,
+            )
+            saleor_url = build_saleor_sso_url(request.user, request)
+            logger.info(
+                "[SALEOR_SSO_CONNECT_SUCCESS] user_id=%s redirect_host=%s",
+                getattr(request.user, "id", None),
+                saleor_url.split("/", 3)[2] if "://" in saleor_url else "",
+            )
+            return Response({"url": saleor_url}, status=200)
         except Exception as exc:
+            logger.exception(
+                "[SALEOR_SSO_CONNECT_FAILED] user_id=%s email=%s path=%s error=%s",
+                getattr(request.user, "id", None),
+                getattr(request.user, "email", ""),
+                request.path,
+                str(exc),
+            )
             return Response({"detail": str(exc)}, status=502)
 
 
@@ -4716,10 +4735,25 @@ class SaleorConnectionCallbackView(APIView):
 
     def get(self, request):
         frontend_url = getattr(settings, "FRONTEND_SALEOR_MANAGER_URL", "").rstrip("/")
+        logger.info(
+            "[SALEOR_SSO_CALLBACK_VIEW_START] path=%s has_code=%s has_state=%s frontend_url=%s",
+            request.path,
+            bool(request.GET.get("code")),
+            bool(request.GET.get("state")),
+            frontend_url,
+        )
         try:
             handle_saleor_callback(request)
+            logger.info("[SALEOR_SSO_CALLBACK_VIEW_SUCCESS] redirecting_to=%s", frontend_url)
             return redirect(f"{frontend_url}?saleor_connected=1")
         except Exception as exc:
+            logger.exception(
+                "[SALEOR_SSO_CALLBACK_FAILED] path=%s has_code=%s has_state=%s error=%s",
+                request.path,
+                bool(request.GET.get("code")),
+                bool(request.GET.get("state")),
+                str(exc),
+            )
             return redirect(f"{frontend_url}?saleor_error={quote(str(exc))}")
 
 
