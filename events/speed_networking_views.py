@@ -68,6 +68,23 @@ DEFAULT_CRITERIA_NUMBERS = {
 }
 
 
+def _normalize_legacy_criteria_config_keys(criteria_config):
+    """
+    Accept old frontend/session payloads without letting them leak back to save.
+
+    Older UI code stored interest matching under `interest_based`. The current
+    backend schema uses `interests`. During live sessions a host can load an old
+    config and save it again, so normalize before validation and before saving.
+    """
+    normalized = dict(criteria_config or {})
+    legacy_interests = normalized.pop('interest_based', None)
+
+    if legacy_interests is not None and 'interests' not in normalized:
+        normalized['interests'] = legacy_interests
+
+    return normalized
+
+
 def _coerce_optional_float(value, default):
     if value in (None, ''):
         return default
@@ -173,10 +190,71 @@ def _invalidate_speed_networking_state_cache(event_id):
     logger.debug(f"[SpeedNetworking] Invalidated state cache for event={event_id}")
 
 
+def _cleanup_stale_breakout_state_for_speed_start(event_id):
+    """
+    Return a small status dict after checking breakout state before speed start.
+
+    Real active breakout rooms must block Speed Networking. Stale BREAKOUT
+    lounge occupants left behind after the host already ended breakouts should
+    not block a later Speed Networking start; clean them and continue.
+    """
+    from .models import GuestAttendee
+
+    event = Event.objects.only('id', 'breakout_rooms_active').get(id=event_id)
+    breakout_participant_qs = LoungeParticipant.objects.filter(
+        table__event_id=event_id,
+        table__category='BREAKOUT',
+    )
+    breakout_participant_count = breakout_participant_qs.count()
+
+    if event.breakout_rooms_active:
+        return {
+            'blocked': True,
+            'reason': 'breakout_rooms_active_flag_true',
+            'breakout_participants': breakout_participant_count,
+        }
+
+    if breakout_participant_count <= 0:
+        return {'blocked': False, 'cleaned_breakout_participants': 0}
+
+    with transaction.atomic():
+        EventRegistration.objects.filter(
+            event_id=event_id,
+            last_breakout_table__isnull=False,
+        ).update(
+            last_breakout_table=None,
+            current_location='main_room',
+        )
+
+        deleted_count, _ = breakout_participant_qs.delete()
+
+        GuestAttendee.objects.filter(
+            event_id=event_id,
+            converted_at__isnull=True,
+            lounge_table__category='BREAKOUT',
+        ).update(
+            lounge_table=None,
+            current_location='main_room',
+        )
+
+    logger.warning(
+        "[SESSION_START] Cleaned stale breakout state before Speed Networking start: "
+        "event=%s stale_participants=%s deleted_rows=%s",
+        event_id,
+        breakout_participant_count,
+        deleted_count,
+    )
+
+    return {
+        'blocked': False,
+        'cleaned_breakout_participants': breakout_participant_count,
+    }
+
+
 def _get_criteria_config(session):
     """Get criteria configuration for session with proper defaults."""
     if session.criteria_config:
-        return session.criteria_config
+        return _normalize_legacy_criteria_config_keys(session.criteria_config)
 
     # Return default config based on matching strategy
     if session.matching_strategy == 'criteria_only':
@@ -648,9 +726,9 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
 
     def _create_interest_tags_from_criteria_config(self, session):
         """Create SpeedNetworkingInterestTag objects from criteria_config tags."""
-        criteria_config = session.criteria_config or {}
-        interest_based_config = criteria_config.get('interest_based', {})
-        tags_list = interest_based_config.get('tags', [])
+        criteria_config = _normalize_legacy_criteria_config_keys(session.criteria_config or {})
+        interests_config = criteria_config.get('interests', {})
+        tags_list = interests_config.get('tags', [])
 
         if not tags_list:
             return
@@ -680,19 +758,14 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
 
         session = self.get_object()
 
-        breakout_active = Event.objects.filter(
-            id=session.event_id,
-            breakout_rooms_active=True,
-        ).exists() or LoungeParticipant.objects.filter(
-            table__event_id=session.event_id,
-            table__category="BREAKOUT",
-        ).exists()
+        breakout_state = _cleanup_stale_breakout_state_for_speed_start(session.event_id)
 
-        if breakout_active:
+        if breakout_state.get('blocked'):
             return Response(
                 {
                     "error": "Cannot start Speed Networking while breakout rooms are active. End breakout rooms first.",
                     "code": "breakout_active",
+                    **breakout_state,
                 },
                 status=status.HTTP_409_CONFLICT,
             )
@@ -987,6 +1060,8 @@ class SpeedNetworkingSessionViewSet(viewsets.ModelViewSet):
                 {'error': 'criteria_config must be an object'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        criteria_config = _normalize_legacy_criteria_config_keys(criteria_config)
 
         # Validate structure
         unknown_keys = sorted(set(criteria_config.keys()) - ALLOWED_CRITERIA_CONFIG_KEYS)
