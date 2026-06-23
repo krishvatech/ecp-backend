@@ -737,11 +737,24 @@ class EventOrderListView(APIView):
             .order_by("-created_at")
         )
 
-        # Pagination
-        limit = int(request.query_params.get("limit", 20))
-        offset = int(request.query_params.get("offset", 0))
-        limit = min(limit, 100)  # Cap at 100 per page
-        limit = max(limit, 1)    # At least 1
+        # Pagination. Be defensive because old frontend builds could send
+        # invalid values such as offset=NaN when a click event was accidentally
+        # passed as the page argument. Invalid values should never crash the API.
+        def parse_int_param(name, default, minimum=None, maximum=None):
+            raw_value = request.query_params.get(name, default)
+            try:
+                value = int(raw_value)
+            except (TypeError, ValueError):
+                value = default
+
+            if minimum is not None:
+                value = max(value, minimum)
+            if maximum is not None:
+                value = min(value, maximum)
+            return value
+
+        limit = parse_int_param("limit", 20, minimum=1, maximum=100)
+        offset = parse_int_param("offset", 0, minimum=0)
 
         total_count = qs.count()
         paginated_qs = qs[offset : offset + limit]
