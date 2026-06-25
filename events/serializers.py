@@ -3138,9 +3138,10 @@ class EventAttendeeOriginSerializer(serializers.ModelSerializer):
 
 class EventRegistrationLiteSerializer(serializers.ModelSerializer):
     """Lightweight serializer for /event-registrations/mine/ endpoint.
-    Includes only fields needed by event card footer (status, button state, join logic).
-    Optimized for fast load on large registration lists.
+    Includes registration fields + nested event with recording/replay info.
+    Optimized for My Recordings page while keeping payload reasonable.
     """
+    event = EventLiteSerializer(read_only=True)
     event_id = serializers.IntegerField(source='event.id', read_only=True)
     is_host = serializers.SerializerMethodField()
 
@@ -3152,7 +3153,7 @@ class EventRegistrationLiteSerializer(serializers.ModelSerializer):
     class Meta:
         model = EventRegistration
         fields = (
-            'id', 'event_id', 'status', 'attendee_status', 'registered_at',
+            'id', 'event', 'event_id', 'status', 'attendee_status', 'registered_at',
             'joined_live', 'watched_replay', 'admission_status', 'admitted_at',
             'current_location', 'is_host'
         )
