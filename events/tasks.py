@@ -12,6 +12,19 @@ logger = logging.getLogger('events')
 IDLE_TIMEOUT_MINUTES = 15
 
 
+@shared_task(name="events.process_platform_sync_jobs")
+def process_platform_sync_jobs(limit=50):
+    """Process pending IMAA Connect event sync jobs for external platforms.
+
+    This is the Celery wrapper around the existing outbox processor. It lets
+    Celery Beat process jobs automatically, while keeping the manual
+    `python manage.py process_platform_sync_jobs` command available for support.
+    """
+    from .platform_sync import process_pending_platform_sync_jobs
+
+    return process_pending_platform_sync_jobs(limit=limit)
+
+
 def build_networking_meeting_url(meeting):
     """
     Build the complete companion page URL for a networking meeting.

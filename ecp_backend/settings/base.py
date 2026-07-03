@@ -736,6 +736,22 @@ CELERY_BEAT_SCHEDULE.update({
     },
 })
 
+
+# Event platform sync automation (IMAA Connect -> MANDA)
+EVENT_PLATFORM_SYNC_AUTO_ENABLED = os.getenv("EVENT_PLATFORM_SYNC_AUTO_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+EVENT_PLATFORM_SYNC_INTERVAL_SECONDS = int(os.getenv("EVENT_PLATFORM_SYNC_INTERVAL_SECONDS", "60"))
+EVENT_PLATFORM_SYNC_BATCH_SIZE = int(os.getenv("EVENT_PLATFORM_SYNC_BATCH_SIZE", "50"))
+EVENT_PLATFORM_SYNC_TRIGGER_ON_COMMIT = os.getenv("EVENT_PLATFORM_SYNC_TRIGGER_ON_COMMIT", "true").lower() in ("1", "true", "yes", "on")
+
+if EVENT_PLATFORM_SYNC_AUTO_ENABLED:
+    CELERY_BEAT_SCHEDULE.update({
+        "process-event-platform-sync-jobs": {
+            "task": "events.process_platform_sync_jobs",
+            "schedule": timedelta(seconds=EVENT_PLATFORM_SYNC_INTERVAL_SECONDS),
+            "args": (EVENT_PLATFORM_SYNC_BATCH_SIZE,),
+        },
+    })
+
 # Saleor auto-sync tasks — only enabled if SALEOR_ENABLED is True
 if SALEOR_ENABLED:
     CELERY_BEAT_SCHEDULE.update({

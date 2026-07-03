@@ -37,6 +37,26 @@ from .validators import validate_non_multiday_event, validate_multiday_event, va
 from .platform_sync import enqueue_event_sync_jobs
 
 
+def _enqueue_event_sync_jobs_and_trigger(event_id, *, upsert_slugs=None, disable_slugs=None):
+    """Create platform sync jobs and optionally trigger the Celery processor.
+
+    The DB outbox remains the source of truth. Immediate Celery triggering makes
+    local/admin saves sync quickly, while Celery Beat remains the retry backup.
+    """
+    event = Event.objects.get(pk=event_id)
+    enqueue_event_sync_jobs(event, upsert_slugs=upsert_slugs, disable_slugs=disable_slugs)
+
+    if getattr(settings, "EVENT_PLATFORM_SYNC_TRIGGER_ON_COMMIT", True):
+        try:
+            from .tasks import process_platform_sync_jobs
+
+            process_platform_sync_jobs.delay(getattr(settings, "EVENT_PLATFORM_SYNC_BATCH_SIZE", 50))
+        except Exception:
+            # Do not break event save if Redis/Celery is temporarily unavailable.
+            # Celery Beat or the manual management command can retry pending jobs.
+            pass
+
+
 
 def _normalise_platform_slugs(value):
     if value is None:
@@ -1960,7 +1980,7 @@ class EventSerializer(serializers.ModelSerializer):
             print(f"🔴 BACKEND CREATE METHOD END\n")
 
             enabled_slugs, _disabled_slugs = _save_event_publications(event, platform_slugs)
-            transaction.on_commit(lambda event_id=event.id, slugs=set(enabled_slugs): enqueue_event_sync_jobs(Event.objects.get(pk=event_id), upsert_slugs=slugs))
+            transaction.on_commit(lambda event_id=event.id, slugs=set(enabled_slugs): _enqueue_event_sync_jobs_and_trigger(event_id, upsert_slugs=slugs))
 
             # Handle one-featured-at-a-time constraint: unfeature all other events
             if event.is_featured:
@@ -2182,9 +2202,9 @@ class EventSerializer(serializers.ModelSerializer):
 
         if platform_slugs is not None:
             enabled_slugs, disabled_slugs = _save_event_publications(instance, platform_slugs)
-            transaction.on_commit(lambda event_id=instance.id, upsert=set(enabled_slugs), disable=set(disabled_slugs): enqueue_event_sync_jobs(Event.objects.get(pk=event_id), upsert_slugs=upsert, disable_slugs=disable))
+            transaction.on_commit(lambda event_id=instance.id, upsert=set(enabled_slugs), disable=set(disabled_slugs): _enqueue_event_sync_jobs_and_trigger(event_id, upsert_slugs=upsert, disable_slugs=disable))
         else:
-            transaction.on_commit(lambda event_id=instance.id, slugs=set(previously_enabled_slugs): enqueue_event_sync_jobs(Event.objects.get(pk=event_id), upsert_slugs=slugs))
+            transaction.on_commit(lambda event_id=instance.id, slugs=set(previously_enabled_slugs): _enqueue_event_sync_jobs_and_trigger(event_id, upsert_slugs=slugs))
 
         if featured_changed:
             try:

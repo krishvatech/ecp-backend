@@ -21,6 +21,7 @@ from django.utils.dateparse import parse_datetime
 from django.utils.html import strip_tags
 from django.utils.text import slugify
 from rest_framework import status
+from rest_framework.exceptions import APIException, AuthenticationFailed
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -203,22 +204,29 @@ def _event_response(event: Event, mapping: ExternalEventMapping, message: str):
     )
 
 
+class IntegrationNotConfigured(APIException):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "MANDA integration secret is not configured."
+    default_code = "integration_not_configured"
+
+
 class MandaIntegrationBaseView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
 
-    def dispatch(self, request, *args, **kwargs):
+    def initial(self, request, *args, **kwargs):
+        """Validate integration auth inside DRF's request/response lifecycle.
+
+        Returning a DRF Response directly from dispatch() can bypass
+        finalize_response() and cause AssertionError pages such as
+        ".accepted_renderer not set on Response". Raising DRF exceptions here
+        returns proper JSON 401/503 responses instead of a 500 HTML page.
+        """
+        super().initial(request, *args, **kwargs)
         if not _configured_secret():
-            return Response(
-                {"ok": False, "detail": "MANDA integration secret is not configured."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
+            raise IntegrationNotConfigured()
         if not _is_authorized(request):
-            return Response(
-                {"ok": False, "detail": "Invalid MANDA integration secret."},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-        return super().dispatch(request, *args, **kwargs)
+            raise AuthenticationFailed("Invalid MANDA integration secret.")
 
 
 class MandaEventUpsertView(MandaIntegrationBaseView):
