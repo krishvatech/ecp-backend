@@ -79,7 +79,7 @@ from rest_framework.renderers import BaseRenderer, JSONRenderer
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField, TrackPricingTier, EventRole, EventAttendeeOrigin
+from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField, TrackPricingTier, EventRole, EventAttendeeOrigin, EventPlatform
 from .permissions import IsSuperuserOnly, IsEventAdminOrSuperuser, HasRestrictedDataPermission
 from .cache_utils import (
     EVENT_LANDING_CACHE_TTL_SECONDS,
@@ -94,6 +94,7 @@ from groups.models import Group, GroupMembership
 from messaging.models import Conversation, Message
 from .serializers import (
     EventSerializer,
+    EventPlatformSerializer,
     PublicEventSerializer,
     EventLiteSerializer,
     EventListSerializer,
@@ -1829,6 +1830,16 @@ class VirtualSpeakerViewSet(viewsets.ModelViewSet):
         return Response({'ok': True})
 
 
+class EventPlatformListView(generics.ListAPIView):
+    """Return active event visibility platforms for the admin checkbox UI."""
+
+    serializer_class = EventPlatformSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return EventPlatform.objects.filter(is_active=True).order_by("display_order", "name")
+
+
 class EventViewSet(viewsets.ModelViewSet):
     """
     Full CRUD over events with:
@@ -1871,7 +1882,13 @@ class EventViewSet(viewsets.ModelViewSet):
         is_guest_user = bool(getattr(user, "is_guest", False))
         guest_event_id = getattr(getattr(user, "guest", None), "event_id", None) if is_guest_user else None
         # ⚡ OPTIMIZED: Only select_related(community) for list queries. Prefetches moved to retrieve().
-        qs = Event.objects.select_related("community")
+        qs = Event.objects.select_related("community").prefetch_related("publications__platform")
+
+        if not is_platform_admin:
+            qs = qs.filter(
+                publications__platform__slug="imaa_connect",
+                publications__is_enabled=True,
+            )
 
         # Handle hidden events: visible ONLY to creator OR registered users
         if user.is_authenticated:

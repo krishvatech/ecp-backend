@@ -1,4 +1,4 @@
-from django.db.models.signals import post_save, pre_delete, pre_save
+from django.db.models.signals import post_save, pre_delete, pre_save, post_migrate
 from django.dispatch import receiver
 from django.db import transaction
 from .models import Event, EventParticipant, PostAcceptanceFormTemplate, EventRegistration
@@ -10,6 +10,57 @@ import logging
 
 logger = logging.getLogger(__name__)
 from .models import Event, EventParticipant
+
+
+@receiver(post_migrate)
+def ensure_default_event_platforms(sender, app_config=None, **kwargs):
+    """Create default event platforms automatically after migrations.
+
+    This avoids requiring a separate seed command when a developer pulls the same
+    code and runs migrate. Existing events are backfilled to IMAA Connect so they
+    keep showing in the current IMAA Connect UI.
+    """
+    if not app_config or app_config.name != "events":
+        return
+
+    try:
+        from django.apps import apps
+
+        EventModel = apps.get_model("events", "Event")
+        EventPlatform = apps.get_model("events", "EventPlatform")
+        EventPublication = apps.get_model("events", "EventPublication")
+    except Exception:
+        return
+
+    defaults = [
+        ("imaa_connect", "IMAA Connect", 10),
+        ("manda", "MANDA", 20),
+    ]
+    platforms = {}
+    for slug, name, display_order in defaults:
+        platform, _ = EventPlatform.objects.update_or_create(
+            slug=slug,
+            defaults={
+                "name": name,
+                "is_active": True,
+                "display_order": display_order,
+            },
+        )
+        platforms[slug] = platform
+
+    imaa_platform = platforms.get("imaa_connect")
+    if imaa_platform:
+        existing_event_ids = set(
+            EventPublication.objects.filter(platform=imaa_platform).values_list("event_id", flat=True)
+        )
+        EventPublication.objects.bulk_create(
+            [
+                EventPublication(event_id=event_id, platform=imaa_platform, is_enabled=True)
+                for event_id in EventModel.objects.exclude(id__in=existing_event_ids).values_list("id", flat=True)
+            ],
+            ignore_conflicts=True,
+        )
+
 
 @receiver(post_save, sender=Event)
 def seed_event_roles_signal(sender, instance, created, **kwargs):

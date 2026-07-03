@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 from .views import (
     EventViewSet,
+    EventPlatformListView,
     PublicEventDetailView,
     EventRegistrationViewSet,
     EventBadgeLabelViewSet,
@@ -82,6 +83,7 @@ from .views_participant_directory import ParticipantDirectoryViewSet
 from .webhooks import realtime_webhook
 from .wordpress_event_webhook import WordPressEventWebhookView
 from .saleor_webhooks import SaleorProductWebhookView
+from .integration_views import MandaEventDisableView, MandaEventUpsertView
 
 router = DefaultRouter()
 router.register(r"events", EventViewSet, basename="event")
@@ -93,6 +95,12 @@ router.register(r"post-acceptance-form-assignments", PostAcceptanceFormAssignmen
 
 
 urlpatterns = [
+    # MANDA event integration endpoints
+    path("integrations/manda/events/upsert/", MandaEventUpsertView.as_view(), name="manda-event-upsert"),
+    path("integrations/manda/events/disable/", MandaEventDisableView.as_view(), name="manda-event-disable"),
+
+    path("event-platforms/", EventPlatformListView.as_view(), name="event-platform-list"),
+
     # WordPress Events Calendar sync webhook
     path("events/wordpress/webhook/", WordPressEventWebhookView.as_view(), name="wp-event-webhook"),
 

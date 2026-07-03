@@ -8,7 +8,7 @@ from .models import (
     EventRole, EventApplicationTrack, TrackPricingTier,
     SharedQuestionCategory, SharedQuestion, FormField,
     EventApplicationTrackApplication, EventAttendeeOrigin,
-    PostAcceptanceFormTemplate, PostAcceptanceFormAssignment
+    PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, ExternalEventMapping, EventPlatform, EventPublication, PlatformSyncJob
 )
 
 
@@ -115,6 +115,54 @@ class EventAdmin(admin.ModelAdmin):
         if not change:  # Only on creation, not on edit
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
+
+
+@admin.register(EventPlatform)
+class EventPlatformAdmin(admin.ModelAdmin):
+    list_display = ("name", "slug", "is_active", "display_order")
+    list_editable = ("is_active", "display_order")
+    search_fields = ("name", "slug")
+    ordering = ("display_order", "name")
+
+
+@admin.register(EventPublication)
+class EventPublicationAdmin(admin.ModelAdmin):
+    list_display = ("event", "platform", "is_enabled", "sync_status", "external_event_id", "last_synced_at")
+    list_filter = ("platform", "is_enabled", "sync_status")
+    search_fields = ("event__title", "event__slug", "platform__name", "platform__slug", "external_event_id")
+    raw_id_fields = ("event",)
+    readonly_fields = ("created_at", "updated_at", "last_synced_at")
+
+
+@admin.register(PlatformSyncJob)
+class PlatformSyncJobAdmin(admin.ModelAdmin):
+    list_display = ("id", "event", "platform", "job_type", "status", "attempts", "next_attempt_at", "processed_at")
+    list_filter = ("platform", "job_type", "status")
+    search_fields = ("event__title", "event__slug", "last_error")
+    readonly_fields = (
+        "event", "platform", "job_type", "status", "payload", "attempts", "max_attempts",
+        "next_attempt_at", "locked_at", "processed_at", "last_error", "created_at", "updated_at",
+    )
+    raw_id_fields = ("event",)
+    ordering = ("-id",)
+
+
+@admin.register(ExternalEventMapping)
+class ExternalEventMappingAdmin(admin.ModelAdmin):
+    list_display = (
+        "source_platform",
+        "source_event_id",
+        "canonical_event_id",
+        "local_event",
+        "is_active",
+        "last_synced_at",
+        "disabled_at",
+    )
+    list_filter = ("source_platform", "is_active")
+    search_fields = ("source_event_id", "canonical_event_id", "local_event__title", "local_event__slug")
+    readonly_fields = ("created_at", "updated_at", "last_synced_at", "disabled_at", "last_payload")
+    raw_id_fields = ("local_event",)
+
 
 
 @admin.register(EventParticipant)

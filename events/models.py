@@ -64,6 +64,12 @@ class Event(models.Model):
     )
     title = models.CharField(max_length=255)
     slug = models.CharField(max_length=255, unique=True, blank=True)
+    canonical_event_id = models.UUIDField(
+        default=uuid.uuid4,
+        db_index=True,
+        editable=False,
+        help_text="Shared event UUID used to identify the same event across platforms.",
+    )
     description = models.TextField(blank=True)
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
@@ -632,6 +638,209 @@ class Event(models.Model):
 
         return False
 
+
+
+
+IMAA_CONNECT_PLATFORM_SLUG = "imaa_connect"
+MANDA_PLATFORM_SLUG = "manda"
+
+
+class EventPlatform(models.Model):
+    """Platform where an IMAA Connect event can be published.
+
+    For now this supports IMAA Connect and MANDA. More platforms can be added
+    from the database/admin later without changing frontend code.
+    """
+
+    slug = models.SlugField(max_length=50, unique=True)
+    name = models.CharField(max_length=100)
+    is_active = models.BooleanField(default=True)
+    display_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["display_order", "name"]
+        indexes = [models.Index(fields=["slug", "is_active"])]
+
+    def __str__(self):
+        return self.name
+
+
+class EventPublication(models.Model):
+    """Where an event should be visible.
+
+    The checkbox controls visibility only. Registration remains handled by the
+    platform where the user opens the event. Participant sync is intentionally
+    left for the later shared-Cognito phase.
+    """
+
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="publications",
+    )
+    platform = models.ForeignKey(
+        EventPlatform,
+        on_delete=models.CASCADE,
+        related_name="event_publications",
+    )
+    is_enabled = models.BooleanField(default=True)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    external_event_id = models.CharField(max_length=100, blank=True, default="")
+    sync_status = models.CharField(max_length=50, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["platform__display_order", "platform__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "platform"],
+                name="uniq_event_publication_platform",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["is_enabled"]),
+        ]
+
+    def __str__(self):
+        return f"{self.event_id} on {self.platform.slug}"
+
+
+
+class PlatformSyncJob(models.Model):
+    """Outbox job for syncing IMAA Connect event changes to another platform.
+
+    Participant jobs are defined now but intentionally not used until both
+    platforms share Cognito, because duplicate checks must use
+    canonical_event_id + cognito_sub instead of email.
+    """
+
+    class JobType(models.TextChoices):
+        EVENT_UPSERT = "event_upsert", "Event upsert"
+        EVENT_DISABLE = "event_disable", "Event disable"
+        PARTICIPANT_UPSERT = "participant_upsert", "Participant upsert"
+        PARTICIPANT_CANCEL = "participant_cancel", "Participant cancel"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+        SUCCEEDED = "succeeded", "Succeeded"
+        FAILED = "failed", "Failed"
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="platform_sync_jobs")
+    platform = models.ForeignKey(EventPlatform, on_delete=models.CASCADE, related_name="sync_jobs")
+    job_type = models.CharField(max_length=40, choices=JobType.choices)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
+    payload = models.JSONField(default=dict, blank=True)
+    attempts = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=5)
+    next_attempt_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["next_attempt_at", "id"]
+        indexes = [
+            models.Index(fields=["platform", "job_type", "status"]),
+            models.Index(fields=["event", "platform", "job_type"]),
+        ]
+
+    def __str__(self):
+        return f"{self.job_type} for {self.event} on {self.platform} ({self.status})"
+
+    def mark_processing(self):
+        from django.utils import timezone
+
+        self.status = self.Status.PROCESSING
+        self.locked_at = timezone.now()
+        self.save(update_fields=["status", "locked_at", "updated_at"])
+
+    def mark_succeeded(self):
+        from django.utils import timezone
+
+        self.status = self.Status.SUCCEEDED
+        self.processed_at = timezone.now()
+        self.last_error = ""
+        self.save(update_fields=["status", "processed_at", "last_error", "updated_at"])
+
+    def mark_failed(self, error, *, retry_delay_seconds=300):
+        from django.utils import timezone
+
+        self.attempts += 1
+        self.status = self.Status.FAILED
+        self.last_error = str(error)[:4000]
+        self.locked_at = None
+        self.next_attempt_at = timezone.now() + timezone.timedelta(seconds=retry_delay_seconds)
+        self.save(update_fields=[
+            "attempts", "status", "last_error", "locked_at", "next_attempt_at", "updated_at",
+        ])
+
+
+
+class ExternalEventMapping(models.Model):
+    """Map an event received from an external source to a local IMAA Connect event.
+
+    This is used for MANDA -> IMAA Connect event sharing. It intentionally maps
+    events only. Participant/user sync must wait until both platforms use the
+    same Cognito user pool, so duplicate registration checks can use
+    canonical_event_id + cognito_sub instead of email.
+    """
+
+    SOURCE_MANDA = "manda"
+    SOURCE_PLATFORM_CHOICES = [
+        (SOURCE_MANDA, "MANDA"),
+    ]
+
+    source_platform = models.CharField(
+        max_length=50,
+        choices=SOURCE_PLATFORM_CHOICES,
+        default=SOURCE_MANDA,
+        db_index=True,
+    )
+    source_event_id = models.CharField(
+        max_length=64,
+        db_index=True,
+        help_text="Event ID from the source platform, for example MANDA Event ID.",
+    )
+    canonical_event_id = models.UUIDField(
+        db_index=True,
+        help_text="Shared event UUID used to identify the same event across platforms.",
+    )
+    local_event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="external_mappings",
+    )
+    is_active = models.BooleanField(default=True)
+    last_payload = models.JSONField(default=dict, blank=True)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    disabled_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["source_platform", "source_event_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_platform", "source_event_id"],
+                name="uniq_external_event_source_id",
+            ),
+            models.UniqueConstraint(
+                fields=["source_platform", "canonical_event_id"],
+                name="uniq_external_event_canonical_id",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["source_platform", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"{self.source_platform}:{self.source_event_id} -> {self.local_event_id}"
 
 class EventEmailTemplate(models.Model):
     """Per-event customizable email templates for registration confirmations and application decisions."""

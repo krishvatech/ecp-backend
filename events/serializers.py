@@ -27,13 +27,82 @@ from .models import (
     EventNetworkingSettings, NetworkingTable, NetworkingMeeting, EventSessionBookmark,
     PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer,
     AdminAuditLog, PostAcceptanceFormDraft, EventFormCustomization, EventRole, EventApplicationTrack, EventApplicationTrackApplication, TrackPricingTier,
-    SharedQuestionCategory, SharedQuestion, FormField, EventAttendeeOrigin
+    SharedQuestionCategory, SharedQuestion, FormField, EventAttendeeOrigin, EventPlatform, EventPublication
 )
 from django.db.models import Prefetch as DjangoPrefetch
 from community.models import Community
 from content.models import Resource
 import json
 from .validators import validate_non_multiday_event, validate_multiday_event, validate_session_datetimes
+from .platform_sync import enqueue_event_sync_jobs
+
+
+
+def _normalise_platform_slugs(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                value = parsed
+            else:
+                value = [value]
+        except Exception:
+            value = [part.strip() for part in value.split(",")]
+    if not isinstance(value, (list, tuple)):
+        return None
+    return [str(slug).strip() for slug in value if str(slug or "").strip()]
+
+
+def _platforms_payload(event):
+    publications = getattr(event, "_prefetched_objects_cache", {}).get("publications")
+    if publications is None:
+        publications = event.publications.select_related("platform").all()
+    payload = []
+    for publication in publications:
+        platform = publication.platform
+        payload.append({
+            "slug": platform.slug,
+            "name": platform.name,
+            "is_enabled": publication.is_enabled,
+            "external_event_id": publication.external_event_id or "",
+            "sync_status": publication.sync_status or "",
+        })
+    return payload
+
+
+def _save_event_publications(event, platform_slugs):
+    slugs = _normalise_platform_slugs(platform_slugs)
+    if slugs is None:
+        # Backward-compatible default for older clients: existing Connect events
+        # remain visible on IMAA Connect when the new field is not sent.
+        slugs = ["imaa_connect"]
+
+    selected = set(slugs)
+    previously_enabled = set(
+        EventPublication.objects.filter(event=event, is_enabled=True).values_list("platform__slug", flat=True)
+    )
+    platforms = {platform.slug: platform for platform in EventPlatform.objects.filter(is_active=True)}
+
+    for slug in selected:
+        platform = platforms.get(slug)
+        if not platform:
+            raise serializers.ValidationError({"platform_slugs": f"Unknown or inactive platform: {slug}"})
+        EventPublication.objects.update_or_create(
+            event=event,
+            platform=platform,
+            defaults={"is_enabled": True},
+        )
+
+    EventPublication.objects.filter(event=event).exclude(platform__slug__in=selected).update(is_enabled=False)
+    return selected, previously_enabled - selected
+
+
+class EventPlatformSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EventPlatform
+        fields = ["id", "name", "slug", "is_active", "display_order"]
 
 
 ROLE_PRIORITY = {
@@ -1055,6 +1124,13 @@ class EventSerializer(serializers.ModelSerializer):
     is_confirmed_registered = serializers.SerializerMethodField(read_only=True)
     assigned_tier = serializers.SerializerMethodField(read_only=True)
     origins = serializers.SerializerMethodField(read_only=True)
+    platforms = serializers.SerializerMethodField(read_only=True)
+    platform_slugs = serializers.ListField(
+        child=serializers.CharField(),
+        write_only=True,
+        required=False,
+        help_text="Visibility platforms, for example ['imaa_connect', 'manda'].",
+    )
 
     # Access-controlled recording_url (host can always see, participants only if visible)
     recording_url = serializers.SerializerMethodField(read_only=True)
@@ -1105,6 +1181,9 @@ class EventSerializer(serializers.ModelSerializer):
     )
     recommended_event = serializers.SerializerMethodField(read_only=True)
     series = serializers.PrimaryKeyRelatedField(read_only=True, allow_null=True)
+
+    def get_platforms(self, obj):
+        return _platforms_payload(obj)
 
     def get_recommended_event(self, obj):
         if obj.recommended_event_id:
@@ -1176,6 +1255,7 @@ class EventSerializer(serializers.ModelSerializer):
             "community",
             "title",
             "slug",
+            "canonical_event_id",
             "description",
             "start_time",
             "end_time",
@@ -1233,6 +1313,8 @@ class EventSerializer(serializers.ModelSerializer):
             "is_confirmed_registered",
             "assigned_tier",
             "origins",
+            "platforms",
+            "platform_slugs",
             "preview_image",
             "cover_image",
             "waiting_room_image",
@@ -1319,6 +1401,7 @@ class EventSerializer(serializers.ModelSerializer):
 
         read_only_fields = [
             "id",
+            "canonical_event_id",
             "created_by_id",
             "created_at",
             "updated_at",
@@ -1837,9 +1920,9 @@ class EventSerializer(serializers.ModelSerializer):
         else:
             print(f"⚠️ sessions_input is neither string nor list: {type(sessions_input)}")
 
-        # Extract participants data before creating Event
+        # Extract participants/platform data before creating Event
         participants_data = validated_data.pop('participants', [])
-
+        platform_slugs = validated_data.pop('platform_slugs', None)
         # Handle JSON string participants (from FormData)
         if isinstance(participants_data, str):
             import json
@@ -1875,6 +1958,9 @@ class EventSerializer(serializers.ModelSerializer):
             print(f"    Stored start_time: {event.start_time}")
             print(f"    Stored end_time: {event.end_time}")
             print(f"🔴 BACKEND CREATE METHOD END\n")
+
+            enabled_slugs, _disabled_slugs = _save_event_publications(event, platform_slugs)
+            transaction.on_commit(lambda event_id=event.id, slugs=set(enabled_slugs): enqueue_event_sync_jobs(Event.objects.get(pk=event_id), upsert_slugs=slugs))
 
             # Handle one-featured-at-a-time constraint: unfeature all other events
             if event.is_featured:
@@ -2047,8 +2133,12 @@ class EventSerializer(serializers.ModelSerializer):
         return event
 
     def update(self, instance, validated_data):
-        # Extract and handle participants separately
+        # Extract and handle participants/platform data separately
         participants_data = validated_data.pop('participants', None)
+        platform_slugs = validated_data.pop('platform_slugs', None)
+        previously_enabled_slugs = set(
+            EventPublication.objects.filter(event=instance, is_enabled=True).values_list("platform__slug", flat=True)
+        )
 
         # Handle JSON string participants (from FormData)
         if isinstance(participants_data, str):
@@ -2090,6 +2180,12 @@ class EventSerializer(serializers.ModelSerializer):
             # Update event fields
             instance = super().update(instance, validated_data)
 
+        if platform_slugs is not None:
+            enabled_slugs, disabled_slugs = _save_event_publications(instance, platform_slugs)
+            transaction.on_commit(lambda event_id=instance.id, upsert=set(enabled_slugs), disable=set(disabled_slugs): enqueue_event_sync_jobs(Event.objects.get(pk=event_id), upsert_slugs=upsert, disable_slugs=disable))
+        else:
+            transaction.on_commit(lambda event_id=instance.id, slugs=set(previously_enabled_slugs): enqueue_event_sync_jobs(Event.objects.get(pk=event_id), upsert_slugs=slugs))
+
         if featured_changed:
             try:
                 from .cache_utils import invalidate_event_list_caches
@@ -2103,6 +2199,9 @@ class EventSerializer(serializers.ModelSerializer):
             self._update_participants(instance, participants_data)
 
         return instance
+
+    def get_platforms(self, obj):
+        return _platforms_payload(obj)
 
     def get_resources(self, obj):
         # small, safe read to show what's attached (no extra queries if prefetched)
@@ -2913,9 +3012,13 @@ class EventListSerializer(serializers.ModelSerializer):
     is_confirmed_registered = serializers.SerializerMethodField(read_only=True)
     assigned_tier = serializers.SerializerMethodField(read_only=True)
     origins = serializers.SerializerMethodField(read_only=True)
+    platforms = serializers.SerializerMethodField(read_only=True)
     show_participants_before_event = serializers.BooleanField(read_only=True)
     show_participants_after_event = serializers.BooleanField(read_only=True)
     show_registered_participant_count = serializers.BooleanField(read_only=True)
+
+    def get_platforms(self, obj):
+        return _platforms_payload(obj)
 
     def get_recommended_event(self, obj):
         if obj.recommended_event_id:
@@ -3017,7 +3120,7 @@ class EventListSerializer(serializers.ModelSerializer):
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
             "attending_count", "registrations_count", "is_pinned", "pin_priority", "is_featured",
             "public_registered_count", "public_guest_count", "total_registered", "confirmed_registered_count",
-            "user_status", "payment_pending", "is_confirmed_registered", "assigned_tier", "origins",
+            "user_status", "payment_pending", "is_confirmed_registered", "assigned_tier", "origins", "platforms",
             "show_participants_before_event", "show_participants_after_event", "show_registered_participant_count",
         )
 

@@ -161,6 +161,19 @@ COGNITO_SALEOR_REDIRECT_URI = os.getenv("COGNITO_SALEOR_REDIRECT_URI", "")
 COGNITO_SALEOR_SCOPES = os.getenv("COGNITO_SALEOR_SCOPES", "openid email profile").split()
 SALEOR_SSO_PROMPT = os.getenv("SALEOR_SSO_PROMPT", "none")
 
+# MANDA -> IMAA Connect event integration
+# MANDA sends event-only sync payloads to /api/integrations/manda/events/*.
+# Participant/user sync is intentionally left for the later shared-Cognito phase.
+MANDA_INTEGRATION_SECRET = os.getenv("MANDA_INTEGRATION_SECRET", "")
+MANDA_SYNC_DEFAULT_COMMUNITY_ID = os.getenv("MANDA_SYNC_DEFAULT_COMMUNITY_ID", "")
+MANDA_SYNC_DEFAULT_USER_ID = os.getenv("MANDA_SYNC_DEFAULT_USER_ID", "")
+
+# IMAA Connect -> MANDA event integration
+# IMAA Connect sends event-only sync payloads to MANDA when MANDA is selected.
+MANDA_API_BASE_URL = os.getenv("MANDA_API_BASE_URL", "")
+MANDA_API_INTEGRATION_SECRET = os.getenv("MANDA_API_INTEGRATION_SECRET", "")
+MANDA_API_TIMEOUT = int(os.getenv("MANDA_API_TIMEOUT", "20"))
+
 # Guest JWT Configuration
 GUEST_JWT_TTL_HOURS = int(os.getenv("GUEST_JWT_TTL_HOURS", "24"))
 GUEST_JWT_SECRET = SECRET_KEY  # Use Django SECRET_KEY for HS256 signing
