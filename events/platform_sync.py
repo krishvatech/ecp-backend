@@ -70,7 +70,7 @@ def _source_platform_slugs_for_event(event: Event) -> set[str]:
     of that event.
     """
     return set(
-        ExternalEventMapping.objects.filter(local_event=event, is_active=True)
+        ExternalEventMapping.objects.filter(local_event=event)
         .values_list("source_platform", flat=True)
     )
 
