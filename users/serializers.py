@@ -126,7 +126,7 @@ class EmailChangeConfirmSerializer(serializers.Serializer):
 
 class UserProfileMiniSerializer(serializers.ModelSerializer):
     is_online = serializers.ReadOnlyField()
-    
+
     class Meta:
         model = UserProfile
         fields = (
@@ -135,6 +135,11 @@ class UserProfileMiniSerializer(serializers.ModelSerializer):
             "headline",
             "company",
             "location",
+            "location_city",
+            "location_country",
+            "location_country_code",
+            "location_lat",
+            "location_lng",
             "links",              # Added for contact information (emails, phones, etc.)
             "last_activity_at",   # read-only field
             "is_online",          # computed
@@ -163,7 +168,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
         model = UserProfile
         fields = [
             "full_name", "timezone", "bio", "headline", "job_title", "company",
-            "location", "links", "user_image", "user_image_url", "skills",
+            "location", "location_city", "location_country", "location_country_code",
+            "location_lat", "location_lng", "links", "user_image", "user_image_url", "skills",
             "last_activity_at", "is_online","kyc_decline_reason",
             "kyc_status", "legal_name_locked", "legal_name_verified_at",
             "can_edit_profiles",

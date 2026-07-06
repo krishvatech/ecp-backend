@@ -62,6 +62,11 @@ class UserProfile(models.Model):
     job_title = models.CharField(max_length=255, blank=True)
     company = models.CharField(max_length=255, blank=True)
     location = models.CharField(max_length=255, blank=True)
+    location_city = models.CharField(max_length=120, blank=True, default="")
+    location_country = models.CharField(max_length=120, blank=True, default="")
+    location_country_code = models.CharField(max_length=2, blank=True, default="")
+    location_lat = models.FloatField(null=True, blank=True)
+    location_lng = models.FloatField(null=True, blank=True)
     headline = models.CharField(max_length=255, blank=True)
     skills = ArrayField(
         models.CharField(max_length=50),
