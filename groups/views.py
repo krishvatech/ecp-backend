@@ -1,6 +1,6 @@
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
-from django.db.models import Count, Q, Exists, OuterRef, Subquery
+from django.db.models import Count, Q, Exists, OuterRef, Subquery, Sum
 from django.contrib.auth import get_user_model
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import NotFound
@@ -54,7 +54,7 @@ from .wordpress_group_sync import (
 )
 from friends.models import Friendship
 from users.serializers import UserMiniSerializer
-from users.models import Experience
+from users.models import Experience, UserProfile
 
 
 class GroupViewSet(viewsets.ModelViewSet):
@@ -2976,6 +2976,65 @@ class WordPressGroupSourcePagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = "page_size"
     max_page_size = 200
+
+
+class WordPressGroupSourceStatsView(APIView):
+    """
+    Admin-only production readiness summary for WordPress group/user sync.
+
+    This endpoint is read-only. It does not call WordPress and it does not
+    create/update users, groups, memberships, or Cognito identities. It is used
+    to verify that selected WordPress groups have linked Connect groups, synced
+    memberships, unusable local passwords, and optional Cognito/SSO links.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def get(self, request):
+        sources = WordPressGroupSource.objects.all()
+        enabled_sources = sources.filter(sync_enabled=True)
+        linked_sources = sources.filter(linked_group__isnull=False)
+
+        active_wp_memberships = GroupMembership.objects.filter(
+            source=GroupMembership.SOURCE_WORDPRESS,
+            status=GroupMembership.STATUS_ACTIVE,
+        )
+        all_wp_memberships = GroupMembership.objects.filter(
+            source=GroupMembership.SOURCE_WORDPRESS,
+        )
+
+        wp_profiles = UserProfile.objects.filter(wordpress_id__isnull=False)
+        wp_users_total = wp_profiles.count()
+        wp_users_unusable_password = wp_profiles.filter(user__password__startswith="!").count()
+        wp_users_usable_password = wp_users_total - wp_users_unusable_password
+        wp_users_with_cognito = wp_profiles.filter(
+            user__cognito_identities__isnull=False,
+        ).distinct().count()
+
+        selected_wp_member_total = enabled_sources.aggregate(total=Sum("member_count")).get("total") or 0
+        linked_group_ids = list(linked_sources.values_list("linked_group_id", flat=True))
+        selected_synced_memberships = active_wp_memberships.filter(group_id__in=linked_group_ids).count()
+
+        last_group_refresh = sources.order_by("-last_fetched_at").values_list("last_fetched_at", flat=True).first()
+        last_group_sync = sources.order_by("-last_synced_at").values_list("last_synced_at", flat=True).first()
+        last_member_sync = sources.order_by("-last_members_synced_at").values_list("last_members_synced_at", flat=True).first()
+
+        return Response({
+            "imported_groups": sources.count(),
+            "sync_enabled_groups": enabled_sources.count(),
+            "linked_connect_groups": linked_sources.count(),
+            "selected_wp_member_total": int(selected_wp_member_total),
+            "selected_synced_active_memberships": selected_synced_memberships,
+            "wordpress_memberships_total": all_wp_memberships.count(),
+            "wordpress_memberships_active": active_wp_memberships.count(),
+            "wordpress_users_total": wp_users_total,
+            "wordpress_users_with_unusable_password": wp_users_unusable_password,
+            "wordpress_users_with_usable_password": wp_users_usable_password,
+            "wordpress_users_with_cognito_identity": wp_users_with_cognito,
+            "wordpress_users_without_cognito_identity": max(wp_users_total - wp_users_with_cognito, 0),
+            "last_group_refresh_at": last_group_refresh,
+            "last_group_sync_at": last_group_sync,
+            "last_member_sync_at": last_member_sync,
+        })
 
 
 class WordPressGroupSourceListView(APIView):
