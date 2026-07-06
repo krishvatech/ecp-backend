@@ -850,6 +850,16 @@ WP_IMAA_WEBHOOK_SECRET_KEY = os.getenv("WP_IMAA_WEBHOOK_SECRET_KEY", "")
 WP_IMAA_ALLOW_EMAIL_ONLY_SYNC = os.getenv("WP_IMAA_ALLOW_EMAIL_ONLY_SYNC", "false").lower() in ("1", "true", "yes", "on")
 
 # ============================================================================
+# WORDPRESS IMAA GROUP SYNC (imaa-institute.org — BuddyPress/community groups)
+# Keep this separate from WP_IMAA_* because WP_IMAA_* may point to staging.manda.sg
+# for the existing MANDA/WordPress integration.
+# ============================================================================
+WP_IMAA_GROUPS_API_URL = os.getenv("WP_IMAA_GROUPS_API_URL", "")  # e.g. https://imaa-institute.org/wp-json
+WP_IMAA_GROUPS_API_USER = os.getenv("WP_IMAA_GROUPS_API_USER", "")
+WP_IMAA_GROUPS_API_PASSWORD = os.getenv("WP_IMAA_GROUPS_API_PASSWORD", "")
+WP_IMAA_GROUPS_AUTH_TYPE = os.getenv("WP_IMAA_GROUPS_AUTH_TYPE", "basic")
+
+# ============================================================================
 # EDWISER BRIDGE INTEGRATION (imaa-institute.org — course catalogue & enrollments)
 # Edwiser Bridge plugin syncs courses from Moodle into this WordPress site.
 # ============================================================================

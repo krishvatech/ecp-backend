@@ -5,6 +5,13 @@ from django.utils.text import slugify
 from django.db.models import Q
 
 class Group(models.Model):
+    SOURCE_MANUAL = "manual"
+    SOURCE_WORDPRESS = "wordpress"
+    SOURCE_CHOICES = [
+        (SOURCE_MANUAL, "Manual"),
+        (SOURCE_WORDPRESS, "WordPress IMAA"),
+    ]
+
     VISIBILITY_PUBLIC = 'public'
     VISIBILITY_PRIVATE = 'private'
     VISIBILITY_CHOICES = [
@@ -57,6 +64,24 @@ class Group(models.Model):
     posts_creation_restricted = models.BooleanField(default=False, help_text="Only admins/mods can create posts (members can only view)")
     forum_enabled = models.BooleanField(default=False, help_text="Enable group forum feature")
 
+    # External sync metadata. These fields are intentionally passive so existing
+    # manually-created groups keep working exactly as before.
+    source = models.CharField(
+        max_length=20,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_MANUAL,
+        db_index=True,
+    )
+    source_group_id = models.CharField(
+        max_length=64,
+        blank=True,
+        db_index=True,
+        help_text="External group ID, for example the WordPress/BuddyPress group ID.",
+    )
+    source_slug = models.SlugField(max_length=220, blank=True)
+    source_url = models.URLField(blank=True)
+    source_synced_at = models.DateTimeField(null=True, blank=True)
+
     # owner can exist, but owner/admin logic is out of this moderator scope
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -80,6 +105,14 @@ class Group(models.Model):
             models.Index(fields=['community', 'slug']),
             models.Index(fields=['parent']),
             models.Index(fields=['parent', 'community']),
+            models.Index(fields=['source', 'source_group_id']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source", "source_group_id"],
+                condition=Q(source="wordpress") & ~Q(source_group_id=""),
+                name="uniq_wordpress_source_group",
+            )
         ]
 
     def __str__(self):
@@ -110,6 +143,48 @@ class Group(models.Model):
     @property
     def is_subgroup(self) -> bool:
         return bool(self.parent_id)
+
+
+class WordPressGroupSource(models.Model):
+    """
+    Read-only catalog of BuddyPress/WordPress IMAA groups discovered by Connect.
+
+    Phase 1 stores the WordPress group list only. It does not create users or
+    members. Admins can later enable sync for selected rows and map them to the
+    existing Connect Group model.
+    """
+
+    wp_group_id = models.PositiveIntegerField(unique=True, db_index=True)
+    name = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255, blank=True, db_index=True)
+    description = models.TextField(blank=True)
+    status = models.CharField(max_length=50, blank=True, db_index=True)
+    member_count = models.PositiveIntegerField(default=0)
+    group_url = models.URLField(blank=True)
+    sync_enabled = models.BooleanField(default=False, db_index=True)
+    linked_group = models.OneToOneField(
+        Group,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="wordpress_source",
+    )
+    raw_payload = models.JSONField(default=dict, blank=True)
+    last_fetched_at = models.DateTimeField(null=True, blank=True)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=["sync_enabled", "name"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["last_fetched_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.wp_group_id})"
 
 
 

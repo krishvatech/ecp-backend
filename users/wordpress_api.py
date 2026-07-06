@@ -8,24 +8,55 @@ Handles all API calls to the WordPress IMAA platform:
 """
 import requests
 import logging
+import math
 from django.conf import settings
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 from requests.auth import HTTPBasicAuth
 
 logger = logging.getLogger(__name__)
 
 
 class WordPressAPIClient:
-    """Client for WordPress IMAA REST API integration."""
+    """Client for WordPress IMAA REST API integration.
 
-    def __init__(self):
-        self.base_url = settings.WP_IMAA_API_URL or ""
-        self.auth_type = settings.WP_IMAA_AUTH_TYPE or "basic"
-        self.api_user = settings.WP_IMAA_API_USER or ""
-        self.api_password = settings.WP_IMAA_API_PASSWORD or ""
+    By default this client uses the existing WP_IMAA_* settings, which are
+    already used by the current MANDA/WordPress user and event integrations.
+    Group discovery must use ``for_group_sync()`` so it can safely point to the
+    real IMAA WordPress site without changing existing sync behaviour.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: Optional[str] = None,
+        auth_type: Optional[str] = None,
+        api_user: Optional[str] = None,
+        api_password: Optional[str] = None,
+        config_name: str = "WP_IMAA_API_URL",
+    ):
+        self.base_url = base_url if base_url is not None else (settings.WP_IMAA_API_URL or "")
+        self.auth_type = auth_type if auth_type is not None else (settings.WP_IMAA_AUTH_TYPE or "basic")
+        self.api_user = api_user if api_user is not None else (settings.WP_IMAA_API_USER or "")
+        self.api_password = api_password if api_password is not None else (settings.WP_IMAA_API_PASSWORD or "")
 
         if not self.base_url:
-            raise ValueError("WP_IMAA_API_URL is not configured")
+            raise ValueError(f"{config_name} is not configured")
+
+    @classmethod
+    def for_group_sync(cls) -> "WordPressAPIClient":
+        """Build a client for BuddyPress group discovery.
+
+        This intentionally reads WP_IMAA_GROUPS_* settings instead of the
+        existing WP_IMAA_* settings, because WP_IMAA_* may already point to
+        staging.manda.sg for another integration.
+        """
+        return cls(
+            base_url=getattr(settings, "WP_IMAA_GROUPS_API_URL", "") or "",
+            auth_type=getattr(settings, "WP_IMAA_GROUPS_AUTH_TYPE", "basic") or "basic",
+            api_user=getattr(settings, "WP_IMAA_GROUPS_API_USER", "") or "",
+            api_password=getattr(settings, "WP_IMAA_GROUPS_API_PASSWORD", "") or "",
+            config_name="WP_IMAA_GROUPS_API_URL",
+        )
 
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers based on auth type."""
@@ -66,6 +97,95 @@ class WordPressAPIClient:
             )
         response.raise_for_status()
         return response.json()
+
+    def _get_resource(self, path: str, params: Optional[Dict[str, Any]] = None):
+        """
+        Generic GET helper for non-user WordPress/BuddyPress REST resources.
+
+        `self.base_url` is expected to be the WordPress REST root, for example:
+        https://imaa-institute.org/wp-json
+        """
+        path = path if path.startswith("/") else f"/{path}"
+        url = f"{self.base_url.rstrip('/')}{path}"
+        headers = self._get_headers()
+        auth = self._get_auth()
+        response = requests.get(url, params=params or {}, headers=headers, auth=auth, timeout=20)
+        response.raise_for_status()
+        return response
+
+    def get_buddypress_groups(self, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
+        """
+        Fetch one page of BuddyPress groups from WordPress IMAA.
+
+        Works with the standard BuddyPress REST endpoint:
+        /wp-json/buddypress/v1/groups
+        """
+        response = self._get_resource(
+            "/buddypress/v1/groups",
+            params={"page": page, "per_page": per_page},
+        )
+        try:
+            total = int(response.headers.get("X-WP-Total", "0") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        try:
+            total_pages = int(response.headers.get("X-WP-TotalPages", "0") or 0)
+        except (TypeError, ValueError):
+            total_pages = 0
+
+        data = response.json() if response.content else []
+        if not isinstance(data, list):
+            data = []
+
+        if not total_pages:
+            total_pages = max(1, math.ceil((total or len(data)) / max(per_page, 1)))
+
+        return {
+            "results": data,
+            "total": total,
+            "total_pages": total_pages,
+            "page": page,
+            "per_page": per_page,
+        }
+
+    def get_all_buddypress_groups(self, per_page: int = 100, max_pages: int = 50) -> List[Dict[str, Any]]:
+        """
+        Fetch all available BuddyPress groups up to max_pages.
+
+        This is used only for Phase 1 group discovery. It does not fetch members
+        and does not create users.
+        """
+        all_groups: List[Dict[str, Any]] = []
+        page = 1
+        while page <= max_pages:
+            payload = self.get_buddypress_groups(page=page, per_page=per_page)
+            results = payload.get("results") or []
+            all_groups.extend(results)
+
+            total_pages = int(payload.get("total_pages") or 1)
+            if page >= total_pages or not results:
+                break
+            page += 1
+
+        return all_groups
+
+
+    def get_buddypress_group_member_count(self, group_id: int) -> int:
+        """
+        Return the real BuddyPress group member count.
+
+        The groups list endpoint may return total_member_count=0 for private
+        groups, while /groups/<id>/members exposes the count in X-WP-Total.
+        We request one member only because only the response header is needed.
+        """
+        response = self._get_resource(
+            f"/buddypress/v1/groups/{int(group_id)}/members",
+            params={"page": 1, "per_page": 1},
+        )
+        try:
+            return int(response.headers.get("X-WP-Total", "0") or 0)
+        except (TypeError, ValueError):
+            return 0
 
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """

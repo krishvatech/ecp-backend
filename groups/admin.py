@@ -1,13 +1,13 @@
 # groups/admin.py
 from django.contrib import admin
-from .models import Group, GroupMembership, PromotionRequest
+from .models import Group, GroupMembership, PromotionRequest, WordPressGroupSource
 
 @admin.register(Group)
 class GroupAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'slug', 'visibility', 'created_by', 'created_at')
-    list_filter = ('visibility', 'created_at', 'posts_comments_enabled', 'posts_creation_restricted', 'forum_enabled')
-    search_fields = ('name', 'slug', 'description')
-    readonly_fields = ('created_at', 'updated_at')
+    list_display = ('id', 'name', 'slug', 'visibility', 'source', 'source_group_id', 'created_by', 'created_at')
+    list_filter = ('visibility', 'source', 'created_at', 'posts_comments_enabled', 'posts_creation_restricted', 'forum_enabled')
+    search_fields = ('name', 'slug', 'description', 'source_group_id', 'source_slug')
+    readonly_fields = ('created_at', 'updated_at', 'source_synced_at')
 
     fieldsets = (
         ('Basic Information', {
@@ -23,9 +23,28 @@ class GroupAdmin(admin.ModelAdmin):
             'fields': ('posts_comments_enabled', 'posts_creation_restricted', 'forum_enabled'),
             'description': 'Control how members interact within the group.'
         }),
+        ('External Source', {
+            'fields': ('source', 'source_group_id', 'source_slug', 'source_url', 'source_synced_at'),
+            'description': 'Used by WordPress IMAA group sync. Manual groups keep source=manual.'
+        }),
         ('Organization', {
             'fields': ('community', 'parent', 'owner', 'created_by', 'created_at', 'updated_at')
         }),
+    )
+
+
+@admin.register(WordPressGroupSource)
+class WordPressGroupSourceAdmin(admin.ModelAdmin):
+    list_display = (
+        'wp_group_id', 'name', 'slug', 'status', 'member_count',
+        'sync_enabled', 'linked_group', 'last_fetched_at', 'last_synced_at'
+    )
+    list_filter = ('sync_enabled', 'status', 'last_fetched_at')
+    search_fields = ('name', 'slug', 'description', 'wp_group_id')
+    readonly_fields = (
+        'wp_group_id', 'name', 'slug', 'description', 'status', 'member_count',
+        'group_url', 'raw_payload', 'last_fetched_at', 'last_synced_at',
+        'created_at', 'updated_at'
     )
 
 @admin.register(GroupMembership)

@@ -5,7 +5,7 @@ from community.models import Community
 from django.contrib.auth import get_user_model
 from users.serializers import UserMiniSerializer
 from users.models import Experience
-from .models import Group, GroupMembership, PromotionRequest, GroupNotification
+from .models import Group, GroupMembership, PromotionRequest, GroupNotification, WordPressGroupSource
 
 User = get_user_model()
 
@@ -55,8 +55,17 @@ class GroupSerializer(serializers.ModelSerializer):
             "posts_comments_enabled",
             "posts_creation_restricted",
             "forum_enabled",
+            "source",
+            "source_group_id",
+            "source_slug",
+            "source_url",
+            "source_synced_at",
         ]
-    read_only_fields = ["id", "slug", "member_count", "created_by", "owner", "created_at", "updated_at", "parent_group", "parent_groups", "parent_links"]
+    read_only_fields = [
+        "id", "slug", "member_count", "created_by", "owner", "created_at", "updated_at",
+        "parent_group", "parent_groups", "parent_links",
+        "source", "source_group_id", "source_slug", "source_url", "source_synced_at",
+    ]
 
     def validate(self, attrs):
         """
@@ -566,3 +575,51 @@ class SuggestedGroupSerializer(serializers.ModelSerializer):
         m = (self.context.get("mutual_members_map") or {})
         users = m.get(obj.id, [])
         return UserMiniSerializer(users, many=True, context=self.context).data
+
+
+class WordPressGroupSourceSerializer(serializers.ModelSerializer):
+    linked_group_id = serializers.IntegerField(source="linked_group.id", read_only=True)
+    linked_group_name = serializers.CharField(source="linked_group.name", read_only=True)
+    linked_group_slug = serializers.CharField(source="linked_group.slug", read_only=True)
+
+    class Meta:
+        model = WordPressGroupSource
+        fields = [
+            "id",
+            "wp_group_id",
+            "name",
+            "slug",
+            "description",
+            "status",
+            "member_count",
+            "group_url",
+            "sync_enabled",
+            "linked_group_id",
+            "linked_group_name",
+            "linked_group_slug",
+            "last_fetched_at",
+            "last_synced_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "wp_group_id",
+            "name",
+            "slug",
+            "description",
+            "status",
+            "member_count",
+            "group_url",
+            "linked_group_id",
+            "linked_group_name",
+            "linked_group_slug",
+            "last_fetched_at",
+            "last_synced_at",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class WordPressGroupSourceToggleSerializer(serializers.Serializer):
+    sync_enabled = serializers.BooleanField()

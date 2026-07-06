@@ -14,6 +14,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.pagination import PageNumberPagination
 from uuid import uuid4
 from pathlib import Path
 from django.utils.text import slugify
@@ -28,7 +29,7 @@ from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParam
 
 from community.models import Community
 from activity_feed.models import FeedItem
-from .models import Group, GroupMembership, PromotionRequest, GroupNotification, GroupParentAssociation
+from .models import Group, GroupMembership, PromotionRequest, GroupNotification, GroupParentAssociation, WordPressGroupSource
 from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content, GroupSuperuserOnly
 from .serializers import (
     GroupSerializer,
@@ -40,8 +41,11 @@ from .serializers import (
     PromotionRequestCreateSerializer,
     PromotionRequestOutSerializer,
     GroupNotificationSerializer,
-    SuggestedGroupSerializer
+    SuggestedGroupSerializer,
+    WordPressGroupSourceSerializer,
+    WordPressGroupSourceToggleSerializer,
 )
+from .wordpress_group_sync import refresh_wordpress_group_sources
 from friends.models import Friendship
 from users.serializers import UserMiniSerializer
 from users.models import Experience
@@ -2960,6 +2964,87 @@ class UsersLookupView(APIView):
                 "is_verified": is_verified
             })
         return Response(out)
+
+
+class WordPressGroupSourcePagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
+class WordPressGroupSourceListView(APIView):
+    """
+    Admin-only list of discovered WordPress/BuddyPress groups.
+
+    Phase 1 endpoint: shows WordPress group catalog rows only. It does not
+    create Connect groups, users, or memberships.
+    """
+    permission_classes = [GroupSuperuserOnly]
+    pagination_class = WordPressGroupSourcePagination
+
+    def get(self, request):
+        qs = WordPressGroupSource.objects.select_related("linked_group").all()
+
+        search = (request.query_params.get("search") or "").strip()
+        if search:
+            search_q = (
+                Q(name__icontains=search)
+                | Q(slug__icontains=search)
+                | Q(description__icontains=search)
+            )
+            if search.isdigit():
+                search_q |= Q(wp_group_id=int(search))
+            qs = qs.filter(search_q)
+
+        sync_enabled = request.query_params.get("sync_enabled")
+        if sync_enabled in {"1", "true", "True", "yes"}:
+            qs = qs.filter(sync_enabled=True)
+        elif sync_enabled in {"0", "false", "False", "no"}:
+            qs = qs.filter(sync_enabled=False)
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(qs.order_by("name"), request, view=self)
+        serializer = WordPressGroupSourceSerializer(page, many=True, context={"request": request})
+        return paginator.get_paginated_response(serializer.data)
+
+
+class WordPressGroupSourceRefreshView(APIView):
+    """
+    Admin-only manual refresh from WordPress IMAA BuddyPress groups API.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request):
+        try:
+            result = refresh_wordpress_group_sources()
+        except Exception as exc:
+            return Response(
+                {
+                    "detail": "Unable to refresh WordPress groups.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        total = WordPressGroupSource.objects.count()
+        return Response({"ok": True, "total": total, **result})
+
+
+class WordPressGroupSourceToggleView(APIView):
+    """
+    Admin-only toggle for selected WordPress groups.
+
+    This only records admin selection. Member/user sync is intentionally not
+    performed in Phase 1.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def patch(self, request, wp_group_id):
+        source = get_object_or_404(WordPressGroupSource, wp_group_id=wp_group_id)
+        serializer = WordPressGroupSourceToggleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        source.sync_enabled = serializer.validated_data["sync_enabled"]
+        source.save(update_fields=["sync_enabled", "updated_at"])
+        return Response(WordPressGroupSourceSerializer(source, context={"request": request}).data)
 
 
 class GroupNotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
