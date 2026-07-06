@@ -172,6 +172,7 @@ class WordPressGroupSource(models.Model):
     raw_payload = models.JSONField(default=dict, blank=True)
     last_fetched_at = models.DateTimeField(null=True, blank=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
+    last_members_synced_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -201,16 +202,28 @@ class GroupMembership(models.Model):
     STATUS_ACTIVE = 'active'
     STATUS_PENDING = 'pending'
     STATUS_BANNED = 'banned'
+    STATUS_INACTIVE = 'inactive'
     STATUS_CHOICES = [
         (STATUS_ACTIVE, 'Active'),
         (STATUS_PENDING, 'Pending'),
         (STATUS_BANNED, 'Banned'),
+        (STATUS_INACTIVE, 'Inactive'),
+    ]
+
+    SOURCE_MANUAL = 'manual'
+    SOURCE_WORDPRESS = 'wordpress'
+    SOURCE_CHOICES = [
+        (SOURCE_MANUAL, 'Manual'),
+        (SOURCE_WORDPRESS, 'WordPress IMAA'),
     ]
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='group_memberships')
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='memberships')
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default=ROLE_MEMBER)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_MANUAL, db_index=True)
+    source_user_id = models.CharField(max_length=64, blank=True, db_index=True)
+    source_synced_at = models.DateTimeField(null=True, blank=True)
     invited_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -226,6 +239,7 @@ class GroupMembership(models.Model):
             models.Index(fields=['group', 'user']),
             models.Index(fields=['group', 'status']),
             models.Index(fields=['group', 'role']),
+            models.Index(fields=['group', 'source', 'source_user_id']),
         ]
 
     def __str__(self):

@@ -37,13 +37,13 @@ class GroupAdmin(admin.ModelAdmin):
 class WordPressGroupSourceAdmin(admin.ModelAdmin):
     list_display = (
         'wp_group_id', 'name', 'slug', 'status', 'member_count',
-        'sync_enabled', 'linked_group', 'last_fetched_at', 'last_synced_at'
+        'sync_enabled', 'linked_group', 'last_fetched_at', 'last_synced_at', 'last_members_synced_at'
     )
     list_filter = ('sync_enabled', 'status', 'last_fetched_at')
     search_fields = ('name', 'slug', 'description', 'wp_group_id')
     readonly_fields = (
         'wp_group_id', 'name', 'slug', 'description', 'status', 'member_count',
-        'group_url', 'raw_payload', 'last_fetched_at', 'last_synced_at',
+        'group_url', 'raw_payload', 'last_fetched_at', 'last_synced_at', 'last_members_synced_at',
         'created_at', 'updated_at'
     )
 

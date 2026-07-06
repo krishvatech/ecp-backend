@@ -95,8 +95,20 @@ def ensure_profile(sender, instance, created, **kwargs):
             profile.last_activity_at = timezone.now()
             profile.save(update_fields=["last_activity_at"])
 
-        # 2) Only on brand-new users, add to default community and send welcome email
-        if was_created:
+        # 2) Only on brand-new normal users, add to default community and send welcome email.
+        # Bulk-imported users, such as WordPress/BuddyPress group-sync users, are
+        # pre-provisioned before first login and should not receive welcome emails
+        # or be auto-added to the default community during the sync job.
+        skip_new_user_onboarding = bool(
+            getattr(instance, "_skip_new_user_onboarding", False)
+            or getattr(instance, "_skip_welcome_email", False)
+        )
+
+        if was_created and skip_new_user_onboarding:
+            logger.info("Skipped new-user onboarding for synced/imported user %s", instance.email or instance.pk)
+
+        # 3) Only on brand-new users, add to default community and send welcome email
+        if was_created and not skip_new_user_onboarding:
             try:
                 Community = apps.get_model("community", "Community")
             except LookupError:

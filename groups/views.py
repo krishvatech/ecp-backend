@@ -48,6 +48,8 @@ from .serializers import (
 from .wordpress_group_sync import (
     refresh_wordpress_group_sources,
     sync_enabled_wordpress_sources_to_connect_groups,
+    sync_enabled_wordpress_source_members,
+    sync_wordpress_source_members,
     sync_wordpress_source_to_connect_group,
 )
 from friends.models import Friendship
@@ -3109,6 +3111,50 @@ class WordPressGroupSourceSyncEnabledView(APIView):
 
     def post(self, request):
         result = sync_enabled_wordpress_sources_to_connect_groups(actor=request.user)
+        return Response({"ok": True, **result})
+
+
+class WordPressGroupSourceSyncMembersView(APIView):
+    """
+    Admin-only sync of members for one enabled WordPress group.
+
+    Phase 3 creates missing local Connect users with unusable passwords and
+    adds/updates GroupMembership rows. It does not create Cognito temp-password
+    users and does not modify WordPress.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request, wp_group_id):
+        source = get_object_or_404(WordPressGroupSource, wp_group_id=wp_group_id)
+        if not source.sync_enabled:
+            return Response(
+                {"detail": "Enable sync for this WordPress group before syncing members."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            result = sync_wordpress_source_members(source, actor=request.user)
+        except Exception as exc:
+            return Response(
+                {
+                    "detail": "Unable to sync members for this WordPress group.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source.refresh_from_db()
+        data = WordPressGroupSourceSerializer(source, context={"request": request}).data
+        data["member_sync"] = result
+        return Response(data)
+
+
+class WordPressGroupSourceSyncEnabledMembersView(APIView):
+    """
+    Admin-only bulk sync of members for all enabled WordPress groups.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request):
+        result = sync_enabled_wordpress_source_members(actor=request.user)
         return Response({"ok": True, **result})
 
 

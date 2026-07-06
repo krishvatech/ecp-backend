@@ -187,6 +187,123 @@ class WordPressAPIClient:
         except (TypeError, ValueError):
             return 0
 
+
+    def get_buddypress_group_members(self, group_id: int, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
+        """
+        Fetch one page of BuddyPress group members.
+
+        Endpoint:
+        /wp-json/buddypress/v1/groups/<group_id>/members
+        """
+        response = self._get_resource(
+            f"/buddypress/v1/groups/{int(group_id)}/members",
+            params={"page": page, "per_page": per_page},
+        )
+        try:
+            total = int(response.headers.get("X-WP-Total", "0") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        try:
+            total_pages = int(response.headers.get("X-WP-TotalPages", "0") or 0)
+        except (TypeError, ValueError):
+            total_pages = 0
+
+        data = response.json() if response.content else []
+        if not isinstance(data, list):
+            data = []
+
+        if not total_pages:
+            total_pages = max(1, math.ceil((total or len(data)) / max(per_page, 1)))
+
+        return {
+            "results": data,
+            "total": total,
+            "total_pages": total_pages,
+            "page": page,
+            "per_page": per_page,
+        }
+
+    def get_all_buddypress_group_members(self, group_id: int, per_page: int = 100, max_pages: int = 100) -> List[Dict[str, Any]]:
+        """Fetch all BuddyPress members for one group up to max_pages."""
+        all_members: List[Dict[str, Any]] = []
+        page = 1
+        while page <= max_pages:
+            payload = self.get_buddypress_group_members(group_id=group_id, page=page, per_page=per_page)
+            results = payload.get("results") or []
+            all_members.extend(results)
+
+            total_pages = int(payload.get("total_pages") or 1)
+            if page >= total_pages or not results:
+                break
+            page += 1
+
+        return all_members
+
+    def get_imaa_connect_group_members(self, group_id: int, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
+        """
+        Fetch one page of group members from the custom IMAA Connect WP endpoint.
+
+        This endpoint is intentionally preferred for Phase 3 because it returns
+        member email addresses needed for Connect user creation and SSO linking.
+
+        Endpoint:
+        /wp-json/imaa-connect/v1/groups/<group_id>/members
+        """
+        response = self._get_resource(
+            f"/imaa-connect/v1/groups/{int(group_id)}/members",
+            params={"page": page, "per_page": per_page},
+        )
+        payload = response.json() if response.content else {}
+
+        if isinstance(payload, dict):
+            results = payload.get("results") or payload.get("members") or []
+            total = payload.get("count") or payload.get("total")
+            total_pages = payload.get("total_pages") or payload.get("pages")
+        else:
+            results = payload if isinstance(payload, list) else []
+            total = None
+            total_pages = None
+
+        if not isinstance(results, list):
+            results = []
+
+        try:
+            total = int(total if total is not None else (response.headers.get("X-WP-Total", "0") or 0))
+        except (TypeError, ValueError):
+            total = 0
+
+        try:
+            total_pages = int(total_pages if total_pages is not None else (response.headers.get("X-WP-TotalPages", "0") or 0))
+        except (TypeError, ValueError):
+            total_pages = 0
+
+        if not total_pages:
+            total_pages = max(1, math.ceil((total or len(results)) / max(per_page, 1)))
+
+        return {
+            "results": results,
+            "total": total,
+            "total_pages": total_pages,
+            "page": page,
+            "per_page": per_page,
+        }
+
+    def get_all_imaa_connect_group_members(self, group_id: int, per_page: int = 100, max_pages: int = 100) -> List[Dict[str, Any]]:
+        """Fetch all custom IMAA Connect group members up to max_pages."""
+        all_members: List[Dict[str, Any]] = []
+        page = 1
+        while page <= max_pages:
+            payload = self.get_imaa_connect_group_members(group_id=group_id, page=page, per_page=per_page)
+            results = payload.get("results") or []
+            all_members.extend(results)
+
+            total_pages = int(payload.get("total_pages") or 1)
+            if page >= total_pages or not results:
+                break
+            page += 1
+
+        return all_members
+
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """
         Fetch user from WordPress by email.

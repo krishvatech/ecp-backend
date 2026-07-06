@@ -581,6 +581,7 @@ class WordPressGroupSourceSerializer(serializers.ModelSerializer):
     linked_group_id = serializers.IntegerField(source="linked_group.id", read_only=True)
     linked_group_name = serializers.CharField(source="linked_group.name", read_only=True)
     linked_group_slug = serializers.CharField(source="linked_group.slug", read_only=True)
+    synced_member_count = serializers.SerializerMethodField()
 
     class Meta:
         model = WordPressGroupSource
@@ -597,8 +598,10 @@ class WordPressGroupSourceSerializer(serializers.ModelSerializer):
             "linked_group_id",
             "linked_group_name",
             "linked_group_slug",
+            "synced_member_count",
             "last_fetched_at",
             "last_synced_at",
+            "last_members_synced_at",
             "created_at",
             "updated_at",
         ]
@@ -614,11 +617,19 @@ class WordPressGroupSourceSerializer(serializers.ModelSerializer):
             "linked_group_id",
             "linked_group_name",
             "linked_group_slug",
+            "synced_member_count",
             "last_fetched_at",
             "last_synced_at",
+            "last_members_synced_at",
             "created_at",
             "updated_at",
         ]
+
+    def get_synced_member_count(self, obj):
+        group = getattr(obj, "linked_group", None)
+        if not group:
+            return 0
+        return group.memberships.filter(source=GroupMembership.SOURCE_WORDPRESS, status=GroupMembership.STATUS_ACTIVE).count()
 
 
 class WordPressGroupSourceToggleSerializer(serializers.Serializer):
