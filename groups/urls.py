@@ -7,6 +7,8 @@ from groups.views import (
     WordPressGroupSourceListView,
     WordPressGroupSourceRefreshView,
     WordPressGroupSourceToggleView,
+    WordPressGroupSourceSyncGroupView,
+    WordPressGroupSourceSyncEnabledView,
 )
 
 router = DefaultRouter()
@@ -17,6 +19,8 @@ urlpatterns = [
     path('users-lookup/', UsersLookupView.as_view(), name='users-lookup'),
     path('groups/wordpress-sources/', WordPressGroupSourceListView.as_view(), name='wordpress-group-sources'),
     path('groups/wordpress-sources/refresh/', WordPressGroupSourceRefreshView.as_view(), name='wordpress-group-sources-refresh'),
+    path('groups/wordpress-sources/sync-enabled-groups/', WordPressGroupSourceSyncEnabledView.as_view(), name='wordpress-group-sources-sync-enabled'),
+    path('groups/wordpress-sources/<int:wp_group_id>/sync-group/', WordPressGroupSourceSyncGroupView.as_view(), name='wordpress-group-source-sync-group'),
     path('groups/wordpress-sources/<int:wp_group_id>/', WordPressGroupSourceToggleView.as_view(), name='wordpress-group-source-toggle'),
     path('', include(router.urls)),
 ]

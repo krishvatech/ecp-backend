@@ -45,7 +45,11 @@ from .serializers import (
     WordPressGroupSourceSerializer,
     WordPressGroupSourceToggleSerializer,
 )
-from .wordpress_group_sync import refresh_wordpress_group_sources
+from .wordpress_group_sync import (
+    refresh_wordpress_group_sources,
+    sync_enabled_wordpress_sources_to_connect_groups,
+    sync_wordpress_source_to_connect_group,
+)
 from friends.models import Friendship
 from users.serializers import UserMiniSerializer
 from users.models import Experience
@@ -3033,8 +3037,8 @@ class WordPressGroupSourceToggleView(APIView):
     """
     Admin-only toggle for selected WordPress groups.
 
-    This only records admin selection. Member/user sync is intentionally not
-    performed in Phase 1.
+    Phase 2: when sync is enabled, create/update the matching Connect Group.
+    Member/user sync is still intentionally not performed here.
     """
     permission_classes = [GroupSuperuserOnly]
 
@@ -3042,9 +3046,70 @@ class WordPressGroupSourceToggleView(APIView):
         source = get_object_or_404(WordPressGroupSource, wp_group_id=wp_group_id)
         serializer = WordPressGroupSourceToggleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        source.sync_enabled = serializer.validated_data["sync_enabled"]
-        source.save(update_fields=["sync_enabled", "updated_at"])
-        return Response(WordPressGroupSourceSerializer(source, context={"request": request}).data)
+        enabled = serializer.validated_data["sync_enabled"]
+
+        group_created = False
+        if enabled:
+            try:
+                _group, group_created = sync_wordpress_source_to_connect_group(source, actor=request.user)
+            except Exception as exc:
+                return Response(
+                    {
+                        "detail": "Unable to create or update the Connect group for this WordPress group.",
+                        "error": str(exc),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            # Disabling sync does not delete or hide the linked Connect group.
+            # This avoids accidental data loss and keeps Phase 2 safe.
+            source.sync_enabled = False
+            source.save(update_fields=["sync_enabled", "updated_at"])
+
+        source.refresh_from_db()
+        data = WordPressGroupSourceSerializer(source, context={"request": request}).data
+        data["group_created"] = group_created
+        return Response(data)
+
+
+class WordPressGroupSourceSyncGroupView(APIView):
+    """
+    Admin-only manual create/update of the Connect Group for one WP source.
+
+    This is Phase 2 only. It does not create users or group memberships.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request, wp_group_id):
+        source = get_object_or_404(WordPressGroupSource, wp_group_id=wp_group_id)
+        try:
+            group, created = sync_wordpress_source_to_connect_group(source, actor=request.user)
+        except Exception as exc:
+            return Response(
+                {
+                    "detail": "Unable to create or update the Connect group for this WordPress group.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source.refresh_from_db()
+        data = WordPressGroupSourceSerializer(source, context={"request": request}).data
+        data["group_created"] = created
+        data["connect_group_id"] = group.id
+        return Response(data)
+
+
+class WordPressGroupSourceSyncEnabledView(APIView):
+    """
+    Admin-only bulk create/update of Connect Groups for all enabled WP sources.
+
+    This remains safe: no users or memberships are synced.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request):
+        result = sync_enabled_wordpress_sources_to_connect_groups(actor=request.user)
+        return Response({"ok": True, **result})
 
 
 class GroupNotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
