@@ -27,7 +27,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from community.models import Community
-from .models import Event, ExternalEventMapping
+from .models import (
+    Event,
+    EventPlatform,
+    EventPublication,
+    ExternalEventMapping,
+    IMAA_CONNECT_PLATFORM_SLUG,
+    MANDA_PLATFORM_SLUG,
+)
 
 User = get_user_model()
 
@@ -160,6 +167,31 @@ def _plain_text_from_html(value: str) -> str:
             compact_lines.append("")
             previous_blank = True
     return "\n".join(compact_lines).strip()
+
+
+def _publication_slugs_from_payload(payload: dict) -> set[str]:
+    raw = payload.get("platform_slugs") or []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",")]
+    if not isinstance(raw, (list, tuple, set)):
+        raw = []
+    selected = {str(slug).strip().lower() for slug in raw if str(slug or "").strip()}
+    # Keep source metadata and local IMAA visibility for a MANDA upsert.
+    selected.add(MANDA_PLATFORM_SLUG)
+    selected.add(IMAA_CONNECT_PLATFORM_SLUG)
+    return selected
+
+
+def _save_publications(event: Event, payload: dict, *, enabled: bool):
+    selected = _publication_slugs_from_payload(payload) if enabled else {MANDA_PLATFORM_SLUG}
+    platforms = {platform.slug: platform for platform in EventPlatform.objects.filter(is_active=True)}
+    for slug, platform in platforms.items():
+        should_enable = enabled and slug in selected
+        EventPublication.objects.update_or_create(
+            event=event,
+            platform=platform,
+            defaults={"is_enabled": should_enable},
+        )
 
 
 def _normalise_venue(payload: dict) -> dict:
@@ -323,6 +355,8 @@ class MandaEventUpsertView(MandaIntegrationBaseView):
                 )
                 created = True
 
+            _save_publications(event, payload, enabled=event_status in {"published", "live"} and not event.is_hidden)
+
             if mapping:
                 mapping.source_event_id = source_event_id
                 mapping.canonical_event_id = canonical_event_id
@@ -392,6 +426,7 @@ class MandaEventDisableView(MandaIntegrationBaseView):
             event = mapping.local_event
             event.is_hidden = True
             event.save(update_fields=["is_hidden", "updated_at"])
+            EventPublication.objects.filter(event=event, platform__slug=IMAA_CONNECT_PLATFORM_SLUG).update(is_enabled=False)
             mapping.is_active = False
             mapping.last_payload = dict(payload)
             mapping.last_synced_at = timezone.now()

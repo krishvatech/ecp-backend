@@ -27,7 +27,8 @@ from .models import (
     EventNetworkingSettings, NetworkingTable, NetworkingMeeting, EventSessionBookmark,
     PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer,
     AdminAuditLog, PostAcceptanceFormDraft, EventFormCustomization, EventRole, EventApplicationTrack, EventApplicationTrackApplication, TrackPricingTier,
-    SharedQuestionCategory, SharedQuestion, FormField, EventAttendeeOrigin, EventPlatform, EventPublication
+    SharedQuestionCategory, SharedQuestion, FormField, EventAttendeeOrigin, EventPlatform, EventPublication,
+    ExternalEventMapping, IMAA_CONNECT_PLATFORM_SLUG, MANDA_PLATFORM_SLUG
 )
 from django.db.models import Prefetch as DjangoPrefetch
 from community.models import Community
@@ -75,6 +76,16 @@ def _normalise_platform_slugs(value):
     return [str(slug).strip() for slug in value if str(slug or "").strip()]
 
 
+def _source_platform_slugs_for_event(event) -> set[str]:
+    if not event or not getattr(event, "pk", None):
+        return set()
+    return set(
+        ExternalEventMapping.objects
+        .filter(local_event=event, is_active=True)
+        .values_list("source_platform", flat=True)
+    )
+
+
 def _platforms_payload(event):
     publications = getattr(event, "_prefetched_objects_cache", {}).get("publications")
     if publications is None:
@@ -92,14 +103,46 @@ def _platforms_payload(event):
     return payload
 
 
+def _set_local_publication_enabled(event, enabled):
+    """Enable/disable this event's local IMAA Connect publication record.
+
+    The Hide/Unhide button sends only is_hidden. Normal event lists also require
+    the IMAA Connect EventPublication to be enabled, so both values must stay in
+    sync.
+    """
+    platform = EventPlatform.objects.filter(slug=IMAA_CONNECT_PLATFORM_SLUG, is_active=True).first()
+    if not platform:
+        return
+    EventPublication.objects.update_or_create(
+        event=event,
+        platform=platform,
+        defaults={"is_enabled": bool(enabled)},
+    )
+
+
+def _set_local_hidden_from_publication(event, selected_slugs):
+    """Keep IMAA Connect local visibility in sync with its platform checkbox.
+
+    Source-platform checkboxes can remain locked/enabled for ownership, but they
+    must not keep the event visible on IMAA Connect. If IMAA Connect is unticked,
+    move the event to the Hidden tab; if it is ticked again, unhide it.
+    """
+    should_hide_locally = IMAA_CONNECT_PLATFORM_SLUG not in selected_slugs
+    if bool(getattr(event, "is_hidden", False)) != should_hide_locally:
+        event.is_hidden = should_hide_locally
+        event.save(update_fields=["is_hidden", "updated_at"])
+
+
 def _save_event_publications(event, platform_slugs):
     slugs = _normalise_platform_slugs(platform_slugs)
     if slugs is None:
         # Backward-compatible default for older clients: existing Connect events
         # remain visible on IMAA Connect when the new field is not sent.
-        slugs = ["imaa_connect"]
+        slugs = [IMAA_CONNECT_PLATFORM_SLUG]
 
     selected = set(slugs)
+    locked_source_slugs = _source_platform_slugs_for_event(event)
+    selected.update(locked_source_slugs)
     previously_enabled = set(
         EventPublication.objects.filter(event=event, is_enabled=True).values_list("platform__slug", flat=True)
     )
@@ -116,6 +159,7 @@ def _save_event_publications(event, platform_slugs):
         )
 
     EventPublication.objects.filter(event=event).exclude(platform__slug__in=selected).update(is_enabled=False)
+    _set_local_hidden_from_publication(event, selected)
     return selected, previously_enabled - selected
 
 
@@ -1145,6 +1189,10 @@ class EventSerializer(serializers.ModelSerializer):
     assigned_tier = serializers.SerializerMethodField(read_only=True)
     origins = serializers.SerializerMethodField(read_only=True)
     platforms = serializers.SerializerMethodField(read_only=True)
+    source_platform_slug = serializers.SerializerMethodField(read_only=True)
+    locked_platform_slugs = serializers.SerializerMethodField(read_only=True)
+    editable_platform_slugs = serializers.SerializerMethodField(read_only=True)
+    platform_management_note = serializers.SerializerMethodField(read_only=True)
     platform_slugs = serializers.ListField(
         child=serializers.CharField(),
         write_only=True,
@@ -1204,6 +1252,25 @@ class EventSerializer(serializers.ModelSerializer):
 
     def get_platforms(self, obj):
         return _platforms_payload(obj)
+
+    def get_source_platform_slug(self, obj):
+        source_platforms = sorted(_source_platform_slugs_for_event(obj))
+        return source_platforms[0] if source_platforms else IMAA_CONNECT_PLATFORM_SLUG
+
+    def get_locked_platform_slugs(self, obj):
+        return sorted(_source_platform_slugs_for_event(obj))
+
+    def get_editable_platform_slugs(self, obj):
+        locked = _source_platform_slugs_for_event(obj)
+        active_slugs = set(EventPlatform.objects.filter(is_active=True).values_list("slug", flat=True))
+        return sorted(active_slugs - locked)
+
+    def get_platform_management_note(self, obj):
+        locked = sorted(_source_platform_slugs_for_event(obj))
+        if not locked:
+            return "This event was created in IMAA Connect. IMAA Connect controls cross-platform availability."
+        locked_names = ", ".join(locked)
+        return f"This event was received from {locked_names}. Source-platform availability is locked here; change it on the source platform."
 
     def get_recommended_event(self, obj):
         if obj.recommended_event_id:
@@ -1334,6 +1401,10 @@ class EventSerializer(serializers.ModelSerializer):
             "assigned_tier",
             "origins",
             "platforms",
+            "source_platform_slug",
+            "locked_platform_slugs",
+            "editable_platform_slugs",
+            "platform_management_note",
             "platform_slugs",
             "preview_image",
             "cover_image",
@@ -1981,6 +2052,11 @@ class EventSerializer(serializers.ModelSerializer):
 
             enabled_slugs, _disabled_slugs = _save_event_publications(event, platform_slugs)
             transaction.on_commit(lambda event_id=event.id, slugs=set(enabled_slugs): _enqueue_event_sync_jobs_and_trigger(event_id, upsert_slugs=slugs))
+            try:
+                from .cache_utils import invalidate_event_list_caches
+                transaction.on_commit(lambda event_id=event.id: invalidate_event_list_caches(event_id))
+            except Exception:
+                pass
 
             # Handle one-featured-at-a-time constraint: unfeature all other events
             if event.is_featured:
@@ -2200,9 +2276,27 @@ class EventSerializer(serializers.ModelSerializer):
             # Update event fields
             instance = super().update(instance, validated_data)
 
+        local_hidden_changed = platform_slugs is None and "is_hidden" in validated_data
         if platform_slugs is not None:
             enabled_slugs, disabled_slugs = _save_event_publications(instance, platform_slugs)
             transaction.on_commit(lambda event_id=instance.id, upsert=set(enabled_slugs), disable=set(disabled_slugs): _enqueue_event_sync_jobs_and_trigger(event_id, upsert_slugs=upsert, disable_slugs=disable))
+            try:
+                from .cache_utils import invalidate_event_list_caches
+                transaction.on_commit(lambda event_id=instance.id: invalidate_event_list_caches(event_id))
+            except Exception:
+                pass
+        elif local_hidden_changed:
+            # Hide/Unhide button sends only {is_hidden: true/false}. Keep the
+            # local IMAA Connect publication in sync with that action. Without
+            # this, an unhidden event can disappear from both Hidden and normal
+            # event lists because is_hidden=False but local publication remains
+            # disabled.
+            _set_local_publication_enabled(instance, enabled=not bool(instance.is_hidden))
+            try:
+                from .cache_utils import invalidate_event_list_caches
+                transaction.on_commit(lambda event_id=instance.id: invalidate_event_list_caches(event_id))
+            except Exception:
+                pass
         else:
             transaction.on_commit(lambda event_id=instance.id, slugs=set(previously_enabled_slugs): _enqueue_event_sync_jobs_and_trigger(event_id, upsert_slugs=slugs))
 
