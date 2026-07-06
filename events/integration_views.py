@@ -325,6 +325,8 @@ class MandaEventUpsertView(MandaIntegrationBaseView):
                         },
                     }, status=status.HTTP_200_OK)
 
+            source_reenabled_target = bool(mapping and not mapping.is_active)
+
             if mapping:
                 event = mapping.local_event
                 event.title = title
@@ -332,7 +334,13 @@ class MandaEventUpsertView(MandaIntegrationBaseView):
                 event.start_time = start_time
                 event.end_time = end_time
                 event.status = event_status
-                event.is_hidden = False
+                # Do not blindly unhide an existing MANDA-synced event.
+                # IMAA Connect owns its local visibility, so a normal source
+                # content update must not undo an IMAA admin hide/uncheck.
+                # Only unhide when the source had previously disabled this
+                # target copy and is now explicitly sending an upsert again.
+                if source_reenabled_target and event_status in {"published", "live"}:
+                    event.is_hidden = False
                 event.community = community
                 event.created_by = event.created_by or owner
                 event.slug = _unique_slug(source_slug, exclude_event_id=event.id)
@@ -355,7 +363,12 @@ class MandaEventUpsertView(MandaIntegrationBaseView):
                 )
                 created = True
 
-            _save_publications(event, payload, enabled=event_status in {"published", "live"} and not event.is_hidden)
+            # First inbound sync and explicit source re-enable may set local
+            # visibility. Normal source updates preserve IMAA Connect local
+            # hide/unhide state. If the event is currently visible, keep its
+            # local publication aligned with source publish status.
+            if created or source_reenabled_target or not event.is_hidden:
+                _save_publications(event, payload, enabled=event_status in {"published", "live"} and not event.is_hidden)
 
             if mapping:
                 mapping.source_event_id = source_event_id
