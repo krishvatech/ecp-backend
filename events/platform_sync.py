@@ -18,6 +18,7 @@ from django.utils import timezone
 from .models import (
     Event,
     EventPlatform,
+    ExternalEventMapping,
     IMAA_CONNECT_PLATFORM_SLUG,
     MANDA_PLATFORM_SLUG,
     PlatformSyncJob,
@@ -57,6 +58,20 @@ def _enabled_platform_slugs(event: Event) -> list[str]:
     return list(
         event.publications.filter(is_enabled=True, platform__is_active=True)
         .values_list("platform__slug", flat=True)
+    )
+
+
+def _source_platform_slugs_for_event(event: Event) -> set[str]:
+    """Return platforms where this local event originally came from.
+
+    A synced target copy must not automatically sync back to its source platform,
+    otherwise editing the copied event can create bounce-back updates or duplicate
+    events on the source platform. The source/original platform remains the owner
+    of that event.
+    """
+    return set(
+        ExternalEventMapping.objects.filter(local_event=event)
+        .values_list("source_platform", flat=True)
     )
 
 
@@ -116,6 +131,13 @@ def enqueue_event_sync_jobs(
         for slug in slugs
         if slug and slug != IMAA_CONNECT_PLATFORM_SLUG
     }
+
+    # Do not sync a target copy back to the platform it came from.
+    # Example: an event created in MANDA and copied into IMAA Connect should not
+    # send an upsert back to MANDA when someone edits the IMAA copy.
+    source_platforms = _source_platform_slugs_for_event(event)
+    external_slugs = {slug for slug in external_slugs if slug not in source_platforms}
+
     if not external_slugs:
         return created_jobs
 

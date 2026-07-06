@@ -27,7 +27,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from community.models import Community
-from .models import Event, ExternalEventMapping
+from .models import (
+    Event,
+    EventPlatform,
+    EventPublication,
+    ExternalEventMapping,
+    IMAA_CONNECT_PLATFORM_SLUG,
+    MANDA_PLATFORM_SLUG,
+)
 
 User = get_user_model()
 
@@ -162,6 +169,31 @@ def _plain_text_from_html(value: str) -> str:
     return "\n".join(compact_lines).strip()
 
 
+def _publication_slugs_from_payload(payload: dict) -> set[str]:
+    raw = payload.get("platform_slugs") or []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",")]
+    if not isinstance(raw, (list, tuple, set)):
+        raw = []
+    selected = {str(slug).strip().lower() for slug in raw if str(slug or "").strip()}
+    # Keep source metadata and local IMAA visibility for a MANDA upsert.
+    selected.add(MANDA_PLATFORM_SLUG)
+    selected.add(IMAA_CONNECT_PLATFORM_SLUG)
+    return selected
+
+
+def _save_publications(event: Event, payload: dict, *, enabled: bool):
+    selected = _publication_slugs_from_payload(payload) if enabled else {MANDA_PLATFORM_SLUG}
+    platforms = {platform.slug: platform for platform in EventPlatform.objects.filter(is_active=True)}
+    for slug, platform in platforms.items():
+        should_enable = enabled and slug in selected
+        EventPublication.objects.update_or_create(
+            event=event,
+            platform=platform,
+            defaults={"is_enabled": should_enable},
+        )
+
+
 def _normalise_venue(payload: dict) -> dict:
     venue = payload.get("venue") or {}
     if not isinstance(venue, dict):
@@ -271,6 +303,30 @@ class MandaEventUpsertView(MandaIntegrationBaseView):
                     .first()
                 )
 
+            if not mapping:
+                existing_local_event = (
+                    Event.objects.select_for_update()
+                    .filter(canonical_event_id=canonical_event_id)
+                    .first()
+                )
+                if existing_local_event:
+                    # Bounce-back guard: the original IMAA Connect event already
+                    # exists locally. Do not create a second IMAA event when a
+                    # copied MANDA event sends the same canonical_event_id back.
+                    return Response({
+                        "ok": True,
+                        "message": "Event already exists locally for this canonical_event_id; bounce-back upsert ignored.",
+                        "event": {
+                            "id": existing_local_event.id,
+                            "slug": existing_local_event.slug,
+                            "title": existing_local_event.title,
+                            "status": existing_local_event.status,
+                            "is_hidden": existing_local_event.is_hidden,
+                        },
+                    }, status=status.HTTP_200_OK)
+
+            source_reenabled_target = bool(mapping and not mapping.is_active)
+
             if mapping:
                 event = mapping.local_event
                 event.title = title
@@ -278,7 +334,13 @@ class MandaEventUpsertView(MandaIntegrationBaseView):
                 event.start_time = start_time
                 event.end_time = end_time
                 event.status = event_status
-                event.is_hidden = False
+                # Do not blindly unhide an existing MANDA-synced event.
+                # IMAA Connect owns its local visibility, so a normal source
+                # content update must not undo an IMAA admin hide/uncheck.
+                # Only unhide when the source had previously disabled this
+                # target copy and is now explicitly sending an upsert again.
+                if source_reenabled_target and event_status in {"published", "live"}:
+                    event.is_hidden = False
                 event.community = community
                 event.created_by = event.created_by or owner
                 event.slug = _unique_slug(source_slug, exclude_event_id=event.id)
@@ -300,6 +362,13 @@ class MandaEventUpsertView(MandaIntegrationBaseView):
                     **venue_fields,
                 )
                 created = True
+
+            # First inbound sync and explicit source re-enable may set local
+            # visibility. Normal source updates preserve IMAA Connect local
+            # hide/unhide state. If the event is currently visible, keep its
+            # local publication aligned with source publish status.
+            if created or source_reenabled_target or not event.is_hidden:
+                _save_publications(event, payload, enabled=event_status in {"published", "live"} and not event.is_hidden)
 
             if mapping:
                 mapping.source_event_id = source_event_id
@@ -370,6 +439,7 @@ class MandaEventDisableView(MandaIntegrationBaseView):
             event = mapping.local_event
             event.is_hidden = True
             event.save(update_fields=["is_hidden", "updated_at"])
+            EventPublication.objects.filter(event=event, platform__slug=IMAA_CONNECT_PLATFORM_SLUG).update(is_enabled=False)
             mapping.is_active = False
             mapping.last_payload = dict(payload)
             mapping.last_synced_at = timezone.now()

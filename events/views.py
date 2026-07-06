@@ -79,7 +79,7 @@ from rest_framework.renderers import BaseRenderer, JSONRenderer
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField, TrackPricingTier, EventRole, EventAttendeeOrigin, EventPlatform
+from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField, TrackPricingTier, EventRole, EventAttendeeOrigin, EventPlatform, IMAA_CONNECT_PLATFORM_SLUG
 from .permissions import IsSuperuserOnly, IsEventAdminOrSuperuser, HasRestrictedDataPermission
 from .cache_utils import (
     EVENT_LANDING_CACHE_TTL_SECONDS,
@@ -1886,7 +1886,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         if not is_platform_admin:
             qs = qs.filter(
-                publications__platform__slug="imaa_connect",
+                publications__platform__slug=IMAA_CONNECT_PLATFORM_SLUG,
                 publications__is_enabled=True,
             )
 
@@ -2012,14 +2012,31 @@ class EventViewSet(viewsets.ModelViewSet):
                     Q(status="ended", replay_enabled=True, replay_visible_to_participants=True)  # Replay-enabled events
                 )
 
-        # Hidden filter (platform_admin only) - filter to show only hidden events
+        # Hidden filter
+        #
+        # Normal /api/events/ list pages are public discovery pages. A hidden event must not
+        # leak into Upcoming/Live/Past lists just because the current user is staff, the
+        # creator, or already registered. Hidden events are returned only when the admin
+        # UI explicitly requests the Hidden tab with ?is_hidden=true. Detail/custom actions
+        # can still use the earlier visibility rules above for direct access.
         is_hidden_param = (params.get("is_hidden") or "").strip().lower()
-        if is_hidden_param in {"1", "true", "yes", "on"}:
+        show_hidden_only = is_hidden_param in {"1", "true", "yes", "on"}
+
+        if show_hidden_only:
             if is_platform_admin:
                 qs = qs.filter(is_hidden=True)
             else:
-                # Non-platform-admin users cannot see hidden events
+                # Non-platform-admin users cannot list hidden events.
                 return Event.objects.none()
+        elif self.action == "list":
+            # Normal list/Upcoming/All pages must show only events that are visible
+            # on IMAA Connect. Platform admins should not see locally disabled
+            # MANDA-sourced events in normal tabs; those belong in the Hidden tab.
+            qs = qs.filter(
+                is_hidden=False,
+                publications__platform__slug=IMAA_CONNECT_PLATFORM_SLUG,
+                publications__is_enabled=True,
+            )
 
         # Bucket filter (upcoming / live / past) - applies to both list & mine
         bucket = (params.get("bucket") or "").strip().lower()
