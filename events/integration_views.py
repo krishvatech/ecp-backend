@@ -271,6 +271,28 @@ class MandaEventUpsertView(MandaIntegrationBaseView):
                     .first()
                 )
 
+            if not mapping:
+                existing_local_event = (
+                    Event.objects.select_for_update()
+                    .filter(canonical_event_id=canonical_event_id)
+                    .first()
+                )
+                if existing_local_event:
+                    # Bounce-back guard: the original IMAA Connect event already
+                    # exists locally. Do not create a second IMAA event when a
+                    # copied MANDA event sends the same canonical_event_id back.
+                    return Response({
+                        "ok": True,
+                        "message": "Event already exists locally for this canonical_event_id; bounce-back upsert ignored.",
+                        "event": {
+                            "id": existing_local_event.id,
+                            "slug": existing_local_event.slug,
+                            "title": existing_local_event.title,
+                            "status": existing_local_event.status,
+                            "is_hidden": existing_local_event.is_hidden,
+                        },
+                    }, status=status.HTTP_200_OK)
+
             if mapping:
                 event = mapping.local_event
                 event.title = title
