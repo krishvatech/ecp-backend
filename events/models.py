@@ -842,6 +842,70 @@ class ExternalEventMapping(models.Model):
     def __str__(self):
         return f"{self.source_platform}:{self.source_event_id} -> {self.local_event_id}"
 
+class ExternalParticipantMapping(models.Model):
+    """Map a participant received from MANDA to a local IMAA Connect registration.
+
+    Participant sync is intentionally identity-based. The stable duplicate key is
+    canonical_event_id + cognito_sub, while email/name are display metadata only.
+    """
+
+    SOURCE_MANDA = "manda"
+    SOURCE_PLATFORM_CHOICES = [
+        (SOURCE_MANDA, "MANDA"),
+    ]
+
+    source_platform = models.CharField(
+        max_length=50,
+        choices=SOURCE_PLATFORM_CHOICES,
+        default=SOURCE_MANDA,
+        db_index=True,
+    )
+    source_participant_id = models.CharField(
+        max_length=64,
+        db_index=True,
+        help_text="Participant/attendee ID from the source platform.",
+    )
+    canonical_event_id = models.UUIDField(
+        db_index=True,
+        help_text="Shared event UUID used to identify the same event across platforms.",
+    )
+    cognito_sub = models.CharField(
+        max_length=128,
+        db_index=True,
+        help_text="Stable Cognito subject for the participant identity.",
+    )
+    local_registration = models.ForeignKey(
+        "EventRegistration",
+        on_delete=models.CASCADE,
+        related_name="external_participant_mappings",
+    )
+    is_active = models.BooleanField(default=True)
+    last_payload = models.JSONField(default=dict, blank=True)
+    last_source_updated_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["source_platform", "source_participant_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_platform", "source_participant_id"],
+                name="uniq_external_participant_source_id",
+            ),
+            models.UniqueConstraint(
+                fields=["source_platform", "canonical_event_id", "cognito_sub"],
+                name="uniq_external_participant_identity",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["source_platform", "is_active"]),
+            models.Index(fields=["canonical_event_id", "cognito_sub"]),
+        ]
+
+    def __str__(self):
+        return f"{self.source_platform}:{self.source_participant_id} -> {self.local_registration_id}"
+
+
 class EventEmailTemplate(models.Model):
     """Per-event customizable email templates for registration confirmations and application decisions."""
     TEMPLATE_KEY_CHOICES = [

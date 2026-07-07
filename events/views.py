@@ -81,6 +81,11 @@ from rest_framework.renderers import BaseRenderer, JSONRenderer
 
 from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField, TrackPricingTier, EventRole, EventAttendeeOrigin, EventPlatform, IMAA_CONNECT_PLATFORM_SLUG
 from .permissions import IsSuperuserOnly, IsEventAdminOrSuperuser, HasRestrictedDataPermission
+from .participant_sync import (
+    enqueue_participant_cancel,
+    enqueue_participant_upsert,
+    trigger_platform_sync_processing,
+)
 from .cache_utils import (
     EVENT_LANDING_CACHE_TTL_SECONDS,
     event_landing_cache_key,
@@ -3405,11 +3410,14 @@ class EventViewSet(viewsets.ModelViewSet):
         )
 
         if not was_created and obj.status in ['cancelled', 'deregistered']:
-            # Reactivate the registration
+            # Reactivate the registration. Keep attendee_status in sync too;
+            # otherwise the frontend sees an active EventRegistration row but
+            # still treats it as not confirmed.
             obj.status = 'registered'
-            obj.admission_status = initial_admission_status # Reset admission status
-            obj.save(update_fields=['status', 'admission_status'])
-            was_created = True # Treat as created so we increment count below
+            obj.attendee_status = 'confirmed'
+            obj.admission_status = initial_admission_status  # Reset admission status
+            obj.save(update_fields=['status', 'attendee_status', 'admission_status'])
+            was_created = True  # Treat as created so we increment count below
 
         # Auto-assign Participant badge if registration has no badges
         if was_created and not obj.badge_labels.exists():
@@ -3459,7 +3467,26 @@ class EventViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.warning(f"Failed to invalidate event list cache for event {event.id}: {e}")
 
-        return Response({"ok": True, "created": was_created, "event_id": event.id})
+        # Participant sync for the public event registration endpoint.
+        # The public frontend posts to /api/events/{id}/register/, not the
+        # EventRegistrationViewSet create endpoint. Enqueue for newly-created or
+        # active existing registrations so users who registered before this sync
+        # patch can be reconciled by re-hitting the endpoint without deleting data.
+        if obj.status == "registered" and obj.attendee_status != "cancelled":
+            created_jobs = enqueue_participant_upsert(obj)
+            if created_jobs:
+                transaction.on_commit(trigger_platform_sync_processing)
+
+        registration_data = EventRegistrationLiteSerializer(obj, context={"request": request}).data
+        return Response({
+            "ok": True,
+            "created": was_created,
+            "event_id": event.id,
+            "registration": registration_data,
+            "registration_status": obj.status,
+            "attendee_status": obj.attendee_status,
+            "is_confirmed_registered": obj.status == "registered" and obj.attendee_status == "confirmed",
+        })
 
     @action(detail=False, methods=["post"], permission_classes=[IsAuthenticated], url_path="save-lead-gen-fields")
     def save_lead_gen_fields(self, request):
@@ -11240,6 +11267,8 @@ class EventViewSet(viewsets.ModelViewSet):
             }
         )
 
+        should_sync_participant = False
+
         if not created:
             # User exists but may be cancelled/deregistered - reinstate them
             if reg.status == "registered":
@@ -11250,9 +11279,19 @@ class EventViewSet(viewsets.ModelViewSet):
             reg.admission_status = initial_admission_status
             reg.save(update_fields=["status", "admission_status"])
             Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+            should_sync_participant = True
         else:
             # New registration created
             Event.objects.filter(pk=event.pk).update(attending_count=F("attending_count") + 1)
+            should_sync_participant = True
+
+        # Participant sync for owner/admin manually-added members.
+        # This keeps the other platform's status in sync without sharing local
+        # payment/ticket/application settings.
+        if should_sync_participant:
+            created_jobs = enqueue_participant_upsert(reg)
+            if created_jobs:
+                transaction.on_commit(trigger_platform_sync_processing)
 
         return Response({"ok": True, "detail": f"User {target_user.username} added successfully."})
 
@@ -11904,6 +11943,10 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = EventRegistrationSerializer
 
+    def _trigger_participant_sync_processing(self, jobs):
+        if jobs:
+            transaction.on_commit(trigger_platform_sync_processing)
+
     def destroy(self, request, *args, **kwargs):
         """
         Soft delete registration and cancel related applications:
@@ -11937,6 +11980,9 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
             with transaction.atomic():
                 reg.status = "deregistered"
                 reg.save(update_fields=["status"])
+
+        created_jobs = enqueue_participant_cancel(reg)
+        self._trigger_participant_sync_processing(created_jobs)
 
         # Invalidate event list caches when registration is cancelled/deregistered
         try:
@@ -12017,7 +12063,10 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
                     # If previously deregistered or cancelled, reactivate them
                     if existing_reg.status in ['deregistered', 'cancelled']:
                         existing_reg.status = 'registered'
-                        existing_reg.save(update_fields=['status'])
+                        existing_reg.attendee_status = 'confirmed'
+                        existing_reg.save(update_fields=['status', 'attendee_status'])
+                        created_jobs = enqueue_participant_upsert(existing_reg)
+                        self._trigger_participant_sync_processing(created_jobs)
                         serializer = self.get_serializer(existing_reg)
                         return Response(serializer.data, status=status.HTTP_200_OK)
                     
@@ -12033,7 +12082,9 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         """
         if getattr(self.request.user, "is_guest", False):
             raise PermissionDenied("Guests cannot create user registrations.")
-        serializer.save(user=self.request.user)
+        registration = serializer.save(user=self.request.user)
+        created_jobs = enqueue_participant_upsert(registration)
+        self._trigger_participant_sync_processing(created_jobs)
 
     @action(detail=False, methods=["get"], url_path="mine")
     def mine(self, request):
@@ -12103,6 +12154,9 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         )
         # TODO: Process Refund Logic Here
 
+        created_jobs = enqueue_participant_cancel(reg)
+        self._trigger_participant_sync_processing(created_jobs)
+
         # Invalidate event list caches when registration is cancelled
         try:
             from .cache_utils import invalidate_event_list_caches
@@ -12149,6 +12203,9 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         # Recalculate attending_count safely from real data
         _recalculate_event_attending_count(reg.event_id)
 
+        created_jobs = enqueue_participant_upsert(reg)
+        self._trigger_participant_sync_processing(created_jobs)
+
         return Response({"ok": True, "status": reg.status})
 
     @action(detail=True, methods=["post"], url_path="deregister")
@@ -12181,6 +12238,9 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
 
         # Recalculate attending_count safely from real data
         _recalculate_event_attending_count(reg.event_id)
+
+        created_jobs = enqueue_participant_cancel(reg)
+        self._trigger_participant_sync_processing(created_jobs)
 
         return Response({"ok": True, "status": reg.status})
 
@@ -12219,6 +12279,9 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
 
         # Recalculate attending_count safely from real data
         _recalculate_event_attending_count(reg.event_id)
+
+        created_jobs = enqueue_participant_upsert(reg)
+        self._trigger_participant_sync_processing(created_jobs)
 
         return Response({"ok": True, "status": reg.status})
 

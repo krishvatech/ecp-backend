@@ -83,7 +83,12 @@ from .views_participant_directory import ParticipantDirectoryViewSet
 from .webhooks import realtime_webhook
 from .wordpress_event_webhook import WordPressEventWebhookView
 from .saleor_webhooks import SaleorProductWebhookView
-from .integration_views import MandaEventDisableView, MandaEventUpsertView
+from .integration_views import (
+    MandaEventDisableView,
+    MandaEventUpsertView,
+    MandaParticipantCancelView,
+    MandaParticipantUpsertView,
+)
 
 router = DefaultRouter()
 router.register(r"events", EventViewSet, basename="event")
@@ -98,6 +103,8 @@ urlpatterns = [
     # MANDA event integration endpoints
     path("integrations/manda/events/upsert/", MandaEventUpsertView.as_view(), name="manda-event-upsert"),
     path("integrations/manda/events/disable/", MandaEventDisableView.as_view(), name="manda-event-disable"),
+    path("integrations/manda/participants/upsert/", MandaParticipantUpsertView.as_view(), name="manda-participant-upsert"),
+    path("integrations/manda/participants/cancel/", MandaParticipantCancelView.as_view(), name="manda-participant-cancel"),
 
     path("event-platforms/", EventPlatformListView.as_view(), name="event-platform-list"),
 

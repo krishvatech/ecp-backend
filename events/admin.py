@@ -8,7 +8,8 @@ from .models import (
     EventRole, EventApplicationTrack, TrackPricingTier,
     SharedQuestionCategory, SharedQuestion, FormField,
     EventApplicationTrackApplication, EventAttendeeOrigin,
-    PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, ExternalEventMapping, EventPlatform, EventPublication, PlatformSyncJob
+    PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, ExternalEventMapping, ExternalParticipantMapping,
+    EventPlatform, EventPublication, PlatformSyncJob
 )
 
 
@@ -162,6 +163,30 @@ class ExternalEventMappingAdmin(admin.ModelAdmin):
     search_fields = ("source_event_id", "canonical_event_id", "local_event__title", "local_event__slug")
     readonly_fields = ("created_at", "updated_at", "last_synced_at", "disabled_at", "last_payload")
     raw_id_fields = ("local_event",)
+
+
+@admin.register(ExternalParticipantMapping)
+class ExternalParticipantMappingAdmin(admin.ModelAdmin):
+    list_display = (
+        "source_platform",
+        "source_participant_id",
+        "canonical_event_id",
+        "cognito_sub",
+        "local_registration",
+        "is_active",
+        "last_source_updated_at",
+    )
+    list_filter = ("source_platform", "is_active")
+    search_fields = (
+        "source_participant_id",
+        "canonical_event_id",
+        "cognito_sub",
+        "local_registration__event__title",
+        "local_registration__user__email",
+        "local_registration__user__username",
+    )
+    readonly_fields = ("created_at", "updated_at", "last_source_updated_at", "last_payload")
+    raw_id_fields = ("local_registration",)
 
 
 

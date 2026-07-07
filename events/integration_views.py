@@ -27,11 +27,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from community.models import Community
+from users.models import CognitoIdentity
 from .models import (
     Event,
     EventPlatform,
     EventPublication,
+    EventRegistration,
     ExternalEventMapping,
+    ExternalParticipantMapping,
     IMAA_CONNECT_PLATFORM_SLUG,
     MANDA_PLATFORM_SLUG,
 )
@@ -310,20 +313,22 @@ class MandaEventUpsertView(MandaIntegrationBaseView):
                     .first()
                 )
                 if existing_local_event:
-                    # Bounce-back guard: the original IMAA Connect event already
-                    # exists locally. Do not create a second IMAA event when a
-                    # copied MANDA event sends the same canonical_event_id back.
-                    return Response({
-                        "ok": True,
-                        "message": "Event already exists locally for this canonical_event_id; bounce-back upsert ignored.",
-                        "event": {
-                            "id": existing_local_event.id,
-                            "slug": existing_local_event.slug,
-                            "title": existing_local_event.title,
-                            "status": existing_local_event.status,
-                            "is_hidden": existing_local_event.is_hidden,
-                        },
-                    }, status=status.HTTP_200_OK)
+                    # This is the reverse-edit case:
+                    # the event was originally created in IMAA Connect, synced to
+                    # MANDA, and then edited in MANDA.  The shared
+                    # canonical_event_id points back to this existing IMAA event.
+                    # Do not create a duplicate and do not ignore the update;
+                    # attach a MANDA source mapping so the normal update branch
+                    # below can apply title/description/date changes safely.
+                    mapping = ExternalEventMapping.objects.create(
+                        source_platform=MANDA_SOURCE_PLATFORM,
+                        source_event_id=source_event_id,
+                        canonical_event_id=canonical_event_id,
+                        local_event=existing_local_event,
+                        is_active=True,
+                        last_payload=dict(payload),
+                        last_synced_at=timezone.now(),
+                    )
 
             source_reenabled_target = bool(mapping and not mapping.is_active)
 
@@ -344,6 +349,11 @@ class MandaEventUpsertView(MandaIntegrationBaseView):
                 event.community = community
                 event.created_by = event.created_by or owner
                 event.slug = _unique_slug(source_slug, exclude_event_id=event.id)
+                # Keep the local IMAA event identity aligned with the shared
+                # MANDA canonical_event_id. Participant sync later resolves by
+                # canonical_event_id + cognito_sub, so a local auto-generated
+                # UUID here would make the event look unrelated.
+                event.canonical_event_id = canonical_event_id
                 for field, value in venue_fields.items():
                     setattr(event, field, value)
                 event.save()
@@ -359,6 +369,7 @@ class MandaEventUpsertView(MandaIntegrationBaseView):
                     end_time=end_time,
                     status=event_status,
                     is_hidden=False,
+                    canonical_event_id=canonical_event_id,
                     **venue_fields,
                 )
                 created = True
@@ -447,3 +458,253 @@ class MandaEventDisableView(MandaIntegrationBaseView):
             mapping.save(update_fields=["is_active", "last_payload", "last_synced_at", "disabled_at", "updated_at"])
 
         return _event_response(event, mapping, "Event disabled from MANDA.")
+
+def _participant_source_id(payload: dict) -> str:
+    return str(
+        payload.get("source_attendee_id")
+        or payload.get("source_participant_id")
+        or payload.get("source_registration_id")
+        or ""
+    ).strip()
+
+
+def _normalise_participant_status(payload: dict) -> str:
+    value = str(payload.get("status") or "confirmed").strip().lower()
+    if value in {"cancelled", "canceled", "deregistered"}:
+        return "cancelled"
+    return "confirmed"
+
+
+def _find_participant_mapping(payload: dict):
+    source_participant_id = _participant_source_id(payload)
+    qs = ExternalParticipantMapping.objects.select_related(
+        "local_registration",
+        "local_registration__event",
+        "local_registration__user",
+    ).filter(source_platform=ExternalParticipantMapping.SOURCE_MANDA)
+
+    if source_participant_id:
+        mapping = qs.filter(source_participant_id=source_participant_id).first()
+        if mapping:
+            return mapping
+
+    canonical_raw = payload.get("canonical_event_id")
+    cognito_sub = str(payload.get("cognito_sub") or "").strip()
+    if canonical_raw and cognito_sub:
+        try:
+            canonical_event_id = _parse_uuid(canonical_raw)
+        except ValueError:
+            return None
+        return qs.filter(canonical_event_id=canonical_event_id, cognito_sub=cognito_sub).first()
+
+    return None
+
+
+def _event_for_participant_canonical(canonical_event_id):
+    """Resolve the local IMAA event for an inbound MANDA participant.
+
+    New MANDA-synced events now store the shared canonical_event_id directly on
+    Event. The ExternalEventMapping fallback keeps participant sync working for
+    older local rows that were created before that alignment fix and still have a
+    generated local UUID on Event.
+    """
+    event = Event.objects.filter(canonical_event_id=canonical_event_id).first()
+    if event:
+        return event
+
+    mapping = (
+        ExternalEventMapping.objects.select_related("local_event")
+        .filter(
+            source_platform=MANDA_SOURCE_PLATFORM,
+            canonical_event_id=canonical_event_id,
+            is_active=True,
+        )
+        .first()
+    )
+    return mapping.local_event if mapping else None
+
+
+class MandaParticipantUpsertView(MandaIntegrationBaseView):
+    """Create/update an IMAA Connect registration from a MANDA attendee payload."""
+
+    def post(self, request):
+        payload = request.data if isinstance(request.data, dict) else {}
+        source_participant_id = _participant_source_id(payload)
+        cognito_sub = str(payload.get("cognito_sub") or "").strip()
+
+        try:
+            canonical_event_id = _parse_uuid(payload.get("canonical_event_id"))
+            last_source_updated_at = _parse_datetime(payload.get("updated_at"))
+        except ValueError as exc:
+            return Response({"ok": False, "detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not source_participant_id:
+            return Response(
+                {"ok": False, "detail": "source_attendee_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not cognito_sub:
+            return Response(
+                {"ok": False, "detail": "cognito_sub is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        event = _event_for_participant_canonical(canonical_event_id)
+        if not event:
+            return Response(
+                {"ok": False, "detail": "No IMAA Connect event found for canonical_event_id."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        identity = CognitoIdentity.objects.select_related("user").filter(cognito_sub=cognito_sub).first()
+        if not identity or not identity.user_id:
+            return Response(
+                {
+                    "ok": False,
+                    "detail": "No IMAA Connect user is linked to this Cognito identity yet.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        source_status = _normalise_participant_status(payload)
+        registration_status = "cancelled" if source_status == "cancelled" else "registered"
+        attendee_status = "cancelled" if source_status == "cancelled" else "confirmed"
+        admission_status = "waiting" if event.waiting_room_enabled else "admitted"
+
+        with transaction.atomic():
+            registration, created = EventRegistration.objects.select_for_update().get_or_create(
+                event=event,
+                user=identity.user,
+                defaults={
+                    "status": registration_status,
+                    "attendee_status": attendee_status,
+                    "admission_status": admission_status,
+                },
+            )
+            if not created:
+                registration.status = registration_status
+                registration.attendee_status = attendee_status
+                if registration_status == "registered" and not registration.admission_status:
+                    registration.admission_status = admission_status
+                registration.save(update_fields=["status", "attendee_status", "admission_status"])
+
+            mapping = (
+                ExternalParticipantMapping.objects.select_for_update()
+                .filter(
+                    source_platform=ExternalParticipantMapping.SOURCE_MANDA,
+                    source_participant_id=source_participant_id,
+                )
+                .first()
+            )
+            if not mapping:
+                mapping = (
+                    ExternalParticipantMapping.objects.select_for_update()
+                    .filter(
+                        source_platform=ExternalParticipantMapping.SOURCE_MANDA,
+                        canonical_event_id=canonical_event_id,
+                        cognito_sub=cognito_sub,
+                    )
+                    .first()
+                )
+
+            if mapping:
+                mapping.source_participant_id = source_participant_id
+                mapping.canonical_event_id = canonical_event_id
+                mapping.cognito_sub = cognito_sub
+                mapping.local_registration = registration
+                mapping.is_active = registration_status != "cancelled"
+                mapping.last_payload = dict(payload)
+                mapping.last_source_updated_at = last_source_updated_at
+                mapping.save(update_fields=[
+                    "source_participant_id",
+                    "canonical_event_id",
+                    "cognito_sub",
+                    "local_registration",
+                    "is_active",
+                    "last_payload",
+                    "last_source_updated_at",
+                    "updated_at",
+                ])
+            else:
+                mapping = ExternalParticipantMapping.objects.create(
+                    source_platform=ExternalParticipantMapping.SOURCE_MANDA,
+                    source_participant_id=source_participant_id,
+                    canonical_event_id=canonical_event_id,
+                    cognito_sub=cognito_sub,
+                    local_registration=registration,
+                    is_active=registration_status != "cancelled",
+                    last_payload=dict(payload),
+                    last_source_updated_at=last_source_updated_at,
+                )
+
+        return Response(
+            {
+                "ok": True,
+                "message": "Participant registration upserted from MANDA.",
+                "created": created,
+                "registration": {
+                    "id": registration.id,
+                    "event_id": registration.event_id,
+                    "user_id": registration.user_id,
+                    "status": registration.status,
+                    "attendee_status": registration.attendee_status,
+                },
+                "mapping": {
+                    "id": mapping.id,
+                    "source_platform": mapping.source_platform,
+                    "source_participant_id": mapping.source_participant_id,
+                    "canonical_event_id": str(mapping.canonical_event_id),
+                    "cognito_sub": mapping.cognito_sub,
+                    "is_active": mapping.is_active,
+                },
+            },
+            status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED,
+        )
+
+
+class MandaParticipantCancelView(MandaIntegrationBaseView):
+    """Cancel an IMAA Connect registration from a MANDA attendee payload."""
+
+    def post(self, request):
+        payload = request.data if isinstance(request.data, dict) else {}
+        mapping = _find_participant_mapping(payload)
+        if not mapping:
+            return Response(
+                {"ok": True, "message": "No mapped IMAA Connect registration found; nothing to cancel."},
+                status=status.HTTP_200_OK,
+            )
+
+        with transaction.atomic():
+            registration = EventRegistration.objects.select_for_update().get(pk=mapping.local_registration_id)
+            registration.status = "cancelled"
+            registration.attendee_status = "cancelled"
+            registration.save(update_fields=["status", "attendee_status"])
+
+            mapping.is_active = False
+            mapping.last_payload = dict(payload)
+            try:
+                mapping.last_source_updated_at = _parse_datetime(payload.get("updated_at"))
+            except ValueError:
+                mapping.last_source_updated_at = None
+            mapping.save(update_fields=["is_active", "last_payload", "last_source_updated_at", "updated_at"])
+
+        return Response(
+            {
+                "ok": True,
+                "message": "Participant registration cancelled from MANDA.",
+                "registration": {
+                    "id": registration.id,
+                    "event_id": registration.event_id,
+                    "user_id": registration.user_id,
+                    "status": registration.status,
+                    "attendee_status": registration.attendee_status,
+                },
+                "mapping": {
+                    "id": mapping.id,
+                    "source_platform": mapping.source_platform,
+                    "source_participant_id": mapping.source_participant_id,
+                    "is_active": mapping.is_active,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )

@@ -1,8 +1,7 @@
-"""Event platform sync outbox for IMAA Connect.
+"""Event and participant platform sync outbox for IMAA Connect.
 
-This module syncs event data only. Participant sync must wait until both
-MANDA and IMAA Connect use the same Cognito User Pool, so duplicate checks
-can use canonical_event_id + cognito_sub instead of email.
+Event sync shares event metadata. Participant sync shares only registration
+status for Cognito-linked users using canonical_event_id + cognito_sub.
 """
 
 from __future__ import annotations
@@ -174,8 +173,14 @@ def sync_event_to_platform(
     platform: EventPlatform,
     *,
     job_type: str = PlatformSyncJob.JobType.EVENT_UPSERT,
+    payload: dict | None = None,
 ) -> PlatformSyncResult:
     if platform.slug == MANDA_PLATFORM_SLUG:
+        if job_type in {
+            PlatformSyncJob.JobType.PARTICIPANT_UPSERT,
+            PlatformSyncJob.JobType.PARTICIPANT_CANCEL,
+        }:
+            return sync_participant_to_manda(event, job_type=job_type, payload=payload or {})
         return sync_event_to_manda(event, job_type=job_type)
 
     return PlatformSyncResult(
@@ -186,11 +191,7 @@ def sync_event_to_platform(
     )
 
 
-def sync_event_to_manda(
-    event: Event,
-    *,
-    job_type: str = PlatformSyncJob.JobType.EVENT_UPSERT,
-) -> PlatformSyncResult:
+def _manda_settings() -> tuple[str, str, int]:
     base_url = getattr(settings, "MANDA_API_BASE_URL", "").rstrip("/")
     secret = getattr(settings, "MANDA_API_INTEGRATION_SECRET", "")
     timeout = getattr(settings, "MANDA_API_TIMEOUT", 20)
@@ -199,16 +200,11 @@ def sync_event_to_manda(
         raise PlatformSyncConfigurationError(
             "MANDA_API_BASE_URL and MANDA_API_INTEGRATION_SECRET must be set before processing jobs."
         )
+    return base_url, secret, timeout
 
-    if job_type == PlatformSyncJob.JobType.EVENT_DISABLE:
-        path = "/api/integrations/imaa-connect/events/disable/"
-    else:
-        path = "/api/integrations/imaa-connect/events/upsert/"
 
-    payload = build_event_payload(event)
-    payload["job_type"] = job_type
-    if job_type == PlatformSyncJob.JobType.EVENT_DISABLE:
-        payload["status"] = "disabled"
+def _post_to_manda(path: str, payload: dict, *, job_type: str, success_message: str) -> PlatformSyncResult:
+    base_url, secret, timeout = _manda_settings()
 
     response = requests.post(
         f"{base_url}{path}",
@@ -229,16 +225,72 @@ def sync_event_to_manda(
         ok=True,
         platform_slug=MANDA_PLATFORM_SLUG,
         job_type=job_type,
-        message="Synced to MANDA.",
+        message=success_message,
         response_status=response.status_code,
         response_body=body,
+    )
+
+
+def sync_event_to_manda(
+    event: Event,
+    *,
+    job_type: str = PlatformSyncJob.JobType.EVENT_UPSERT,
+) -> PlatformSyncResult:
+    if job_type == PlatformSyncJob.JobType.EVENT_DISABLE:
+        path = "/api/integrations/imaa-connect/events/disable/"
+    else:
+        path = "/api/integrations/imaa-connect/events/upsert/"
+
+    payload = build_event_payload(event)
+    payload["job_type"] = job_type
+    if job_type == PlatformSyncJob.JobType.EVENT_DISABLE:
+        payload["status"] = "disabled"
+
+    return _post_to_manda(
+        path,
+        payload,
+        job_type=job_type,
+        success_message="Synced event to MANDA.",
+    )
+
+
+def sync_participant_to_manda(
+    event: Event,
+    *,
+    job_type: str,
+    payload: dict,
+) -> PlatformSyncResult:
+    """Send one IMAA Connect participant job to MANDA integration API."""
+    if not payload:
+        raise PlatformSyncError("Participant sync job payload is empty.")
+
+    if job_type == PlatformSyncJob.JobType.PARTICIPANT_CANCEL:
+        path = "/api/integrations/imaa-connect/participants/cancel/"
+    else:
+        path = "/api/integrations/imaa-connect/participants/upsert/"
+
+    job_payload = dict(payload)
+    job_payload["job_type"] = job_type
+    job_payload.setdefault("source_event_id", str(event.pk))
+    job_payload.setdefault("canonical_event_id", str(event.canonical_event_id))
+
+    return _post_to_manda(
+        path,
+        job_payload,
+        job_type=job_type,
+        success_message="Synced participant to MANDA.",
     )
 
 
 def process_platform_sync_job(job: PlatformSyncJob) -> PlatformSyncResult:
     job.mark_processing()
     try:
-        result = sync_event_to_platform(job.event, job.platform, job_type=job.job_type)
+        result = sync_event_to_platform(
+            job.event,
+            job.platform,
+            job_type=job.job_type,
+            payload=job.payload,
+        )
     except Exception as exc:
         delay = min(3600, 300 * max(1, job.attempts + 1))
         job.mark_failed(exc, retry_delay_seconds=delay)
