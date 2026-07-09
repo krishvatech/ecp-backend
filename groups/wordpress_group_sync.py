@@ -143,15 +143,16 @@ def _visibility_from_status(status: str) -> str:
 
 
 def _join_policy_from_status(status: str) -> str:
-    """Map BuddyPress privacy to the safest Connect join policy."""
+    """Map BuddyPress privacy to a valid Connect join policy.
+
+    Connect validation requires private groups to be invite-only. WordPress
+    members are still synced directly into the linked group, so this does not
+    block imported members from accessing their group.
+    """
     status = str(status or "").lower()
     if status == "public":
         return Group.JOIN_OPEN
-    if status == "hidden":
-        return Group.JOIN_INVITE
-    # Private BuddyPress groups generally require request/approval. This keeps
-    # them private without allowing open joins inside Connect.
-    return Group.JOIN_APPROVAL
+    return Group.JOIN_INVITE
 
 
 def _unique_group_slug(base_value: str, wp_group_id: int, existing_group: Group | None = None) -> str:

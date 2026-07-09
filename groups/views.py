@@ -3067,6 +3067,22 @@ class WordPressGroupSourceListView(APIView):
         elif sync_enabled in {"0", "false", "False", "no"}:
             qs = qs.filter(sync_enabled=False)
 
+        linked = request.query_params.get("linked")
+        if linked in {"1", "true", "True", "yes"}:
+            qs = qs.filter(linked_group__isnull=False)
+        elif linked in {"0", "false", "False", "no"}:
+            qs = qs.filter(linked_group__isnull=True)
+
+        status_filter = (request.query_params.get("status") or "").strip().lower()
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        has_members = request.query_params.get("has_members")
+        if has_members in {"1", "true", "True", "yes"}:
+            qs = qs.filter(member_count__gt=0)
+        elif has_members in {"0", "false", "False", "no"}:
+            qs = qs.filter(member_count__lte=0)
+
         paginator = self.pagination_class()
         page = paginator.paginate_queryset(qs.order_by("name"), request, view=self)
         serializer = WordPressGroupSourceSerializer(page, many=True, context={"request": request})
