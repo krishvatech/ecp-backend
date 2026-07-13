@@ -292,7 +292,20 @@ class Question(models.Model):
     deleted_at = models.DateTimeField(
         null=True,
         blank=True,
-        help_text="Timestamp when the question was soft-deleted by the attendee.",
+        help_text="Timestamp when the question was soft-deleted.",
+    )
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deleted_qna_questions",
+        help_text="Authenticated user who soft-deleted the question.",
+    )
+    deletion_reason = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional reason recorded when the question was soft-deleted.",
     )
     feedback_message = models.TextField(
         blank=True,
@@ -328,6 +341,7 @@ class Question(models.Model):
             models.Index(fields=["event", "user", "submission_phase"], name="qna_event_user_phase_idx"),
             models.Index(fields=["event", "id"], name="qna_event_id_idx"),
             models.Index(fields=["event", "-id"], name="qna_event_desc_id_idx"),
+            models.Index(fields=["event", "is_deleted", "id"], name="qna_event_deleted_idx"),
             models.Index(fields=["event", "lounge_table", "id"], name="qna_event_table_id_idx"),
             models.Index(fields=["event", "lounge_table", "-id"], name="qna_event_table_desc_id_idx"),
         ]
@@ -514,6 +528,30 @@ class QnAReply(models.Model):
         help_text="Host who anonymized this reply.",
     )
 
+    is_deleted = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Soft-delete flag. Deleted replies remain stored for audit/history.",
+    )
+    deleted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the reply was soft-deleted.",
+    )
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deleted_qna_replies",
+        help_text="Authenticated user who soft-deleted the reply.",
+    )
+    deletion_reason = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional reason recorded when the reply was soft-deleted.",
+    )
+
     class Meta:
         ordering = ["created_at"]
         indexes = [
@@ -521,6 +559,7 @@ class QnAReply(models.Model):
             models.Index(fields=["question", "id"], name="reply_q_id_idx"),
             models.Index(fields=["event", "moderation_status"], name="reply_event_status_idx"),
             models.Index(fields=["event", "lounge_table", "id"], name="reply_evt_table_id_idx"),
+            models.Index(fields=["question", "is_deleted", "id"], name="reply_q_deleted_idx"),
         ]
         constraints = [
             models.CheckConstraint(
@@ -814,7 +853,8 @@ class QnAQuestionGroup(models.Model):
         counts only once, preventing duplicate-vote inflation.
         """
         question_ids = list(
-            self.memberships.values_list("question_id", flat=True)
+            self.memberships.filter(question__is_deleted=False)
+            .values_list("question_id", flat=True)
         )
         if not question_ids:
             return 0

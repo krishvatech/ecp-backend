@@ -33,10 +33,11 @@ class ChatMessageAdmin(admin.ModelAdmin):
 
 @admin.register(Question)
 class QuestionAdmin(admin.ModelAdmin):
-    list_display = ("id", "event", "user", "short_question", "upvote_count", "is_hidden", "created_at")
-    list_filter = ("event", "is_hidden")
+    list_display = ("id", "event", "user", "short_question", "upvote_count", "is_hidden", "is_deleted", "created_at")
+    list_filter = ("event", "is_hidden", "is_deleted")
+    actions = ("restore_selected_questions",)
     search_fields = ("content", "user__username", "event__title")
-    readonly_fields = ("created_at", "updated_at", "hidden_by", "hidden_at")
+    readonly_fields = ("created_at", "updated_at", "hidden_by", "hidden_at", "deleted_at", "deleted_by")
     fieldsets = (
         ("Question Details", {
             "fields": ("event", "user", "content", "created_at", "updated_at")
@@ -45,12 +46,20 @@ class QuestionAdmin(admin.ModelAdmin):
             "fields": ("is_hidden", "hidden_by", "hidden_at"),
             "classes": ("collapse",),
         }),
+        ("Soft deletion", {
+            "fields": ("is_deleted", "deleted_at", "deleted_by", "deletion_reason"),
+            "classes": ("collapse",),
+        }),
     )
     date_hierarchy = "created_at"
 
     @admin.display(description="question")
     def short_question(self, obj: Question) -> str:
         return (obj.content or "")[:80]
+
+    @admin.action(description="Restore selected soft-deleted questions")
+    def restore_selected_questions(self, request, queryset):
+        queryset.update(is_deleted=False, deleted_at=None, deleted_by=None, deletion_reason="")
 
 @admin.register(QuestionUpvote)
 class QuestionUpvoteAdmin(admin.ModelAdmin):
@@ -84,15 +93,20 @@ class QnAEngagementPromptReceiptAdmin(admin.ModelAdmin):
 
 @admin.register(QnAReply)
 class QnAReplyAdmin(admin.ModelAdmin):
-    list_display = ("id", "question", "event", "user", "guest_asker", "short_content", "moderation_status", "is_hidden", "created_at")
-    list_filter = ("event", "moderation_status", "is_hidden", "is_anonymous")
+    list_display = ("id", "question", "event", "user", "guest_asker", "short_content", "moderation_status", "is_hidden", "is_deleted", "created_at")
+    list_filter = ("event", "moderation_status", "is_hidden", "is_anonymous", "is_deleted")
+    actions = ("restore_selected_replies",)
     search_fields = ("content", "user__username", "event__title")
-    readonly_fields = ("created_at", "updated_at", "hidden_by", "hidden_at", "anonymized_by")
+    readonly_fields = ("created_at", "updated_at", "hidden_by", "hidden_at", "anonymized_by", "deleted_at", "deleted_by")
     date_hierarchy = "created_at"
 
     @admin.display(description="content")
     def short_content(self, obj: QnAReply) -> str:
         return (obj.content or "")[:80]
+
+    @admin.action(description="Restore selected soft-deleted replies")
+    def restore_selected_replies(self, request, queryset):
+        queryset.update(is_deleted=False, deleted_at=None, deleted_by=None, deletion_reason="")
 
 
 @admin.register(QnAReplyUpvote)

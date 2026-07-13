@@ -83,6 +83,7 @@ def auto_group_questions_task(self, event_id):
             event_id=event_id,
             is_hidden=False,
             is_seed=False,
+            is_deleted=False,
             moderation_status__in=["approved", "pending"],
         ).exclude(group_membership__isnull=False).count()
 
@@ -249,6 +250,12 @@ def persist_qna_reply_to_db(self, event_id, reply_uuid, reply_dict):
     logger = logging.getLogger(__name__)
 
     try:
+        question_id = reply_dict.get('question_id')
+        if not Question.objects.filter(id=question_id, is_deleted=False).exists():
+            remove_from_pending(event_id, reply_uuid, is_qna=True)
+            logger.info("Skipped Q&A reply %s because its question is deleted or unavailable", reply_uuid)
+            return {'status': 'skipped', 'reason': 'question_deleted', 'uuid': str(reply_uuid)}
+
         # Idempotent create: retries/replays must not duplicate replies.
         reply, created = QnAReply.objects.get_or_create(
             external_id=str(reply_uuid),

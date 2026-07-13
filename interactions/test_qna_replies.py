@@ -341,8 +341,11 @@ def test_owner_can_delete_reply(event, attendee, question):
     )
     client = _client(attendee)
     resp = client.delete(reply_url(reply.id))
-    assert resp.status_code == 204
-    assert not QnAReply.objects.filter(pk=reply.id).exists()
+    assert resp.status_code == 200
+    reply.refresh_from_db()
+    assert reply.is_deleted is True
+    assert reply.deleted_at is not None
+    assert reply.deleted_by_id == attendee.id
 
 
 @pytest.mark.django_db
@@ -362,7 +365,10 @@ def test_host_can_delete_reply(event, host_user, attendee, question):
     )
     client = _client(host_user)
     resp = client.delete(reply_url(reply.id))
-    assert resp.status_code == 204
+    assert resp.status_code == 200
+    reply.refresh_from_db()
+    assert reply.is_deleted is True
+    assert reply.deleted_by_id == host_user.id
 
 
 # ──────────────────────────────────────────────────────────────────────────────

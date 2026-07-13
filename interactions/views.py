@@ -419,7 +419,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         qs = qs.annotate(
             upvotes_count=Count("upvoters", distinct=True) + Count("guest_upvotes", distinct=True),
             user_upvoted=Exists(user_vote_subquery),
-            replies_count=Count("replies", distinct=True),
+            replies_count=Count("replies", filter=Q(replies__is_deleted=False), distinct=True),
         )
 
         if event_id:
@@ -660,6 +660,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 lounge_table__isnull=True,
                 is_hidden=False,
                 is_seed=False,
+                is_deleted=False,
                 moderation_status__in=["approved", "pending"],
             ).exclude(group_membership__isnull=False).count()
 
@@ -793,7 +794,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
     def admin_pre_event_edit(self, request, pk=None):
         from rest_framework.exceptions import PermissionDenied
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         if question.submission_phase != "pre_event":
             return Response({"detail": "Only pre-event questions can be edited through this endpoint."}, status=status.HTTP_400_BAD_REQUEST)
         if not self._can_manage_event_qna(request.user, question.event):
@@ -818,7 +819,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         from django.utils import timezone
         from rest_framework.exceptions import PermissionDenied
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         if not self._can_manage_event_qna(request.user, question.event):
             raise PermissionDenied("Only event owner/host/moderator/staff/superuser can manage Q&A.")
 
@@ -834,7 +835,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         from django.utils import timezone
         from rest_framework.exceptions import PermissionDenied
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         if question.submission_phase != "pre_event":
             return Response({"detail": "Only pre-event questions can be deleted through this endpoint."}, status=status.HTTP_400_BAD_REQUEST)
         if not self._can_manage_event_qna(request.user, question.event):
@@ -842,8 +843,16 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
         question.is_deleted = True
         question.deleted_at = timezone.now()
-        question.save(update_fields=["is_deleted", "deleted_at"])
-        return Response({"status": "deleted", "question_id": question.id}, status=status.HTTP_200_OK)
+        question.deleted_by = request.user
+        question.deletion_reason = (request.data.get("reason") or "Removed by event Q&A manager").strip()
+        question.save(update_fields=[
+            "is_deleted", "deleted_at", "deleted_by", "deletion_reason", "updated_at"
+        ])
+        return Response({
+            "status": "deleted",
+            "question_id": question.id,
+            "detail": "The question was removed from the live Q&A and remains stored in the database with its replies, votes and moderation history.",
+        }, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="feedback")
     def add_feedback(self, request, pk=None):
@@ -851,7 +860,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         from rest_framework.exceptions import PermissionDenied
         from friends.models import Notification
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         if not self._can_manage_event_qna(request.user, question.event):
             raise PermissionDenied("Only event owner/host/moderator/staff/superuser can manage Q&A.")
 
@@ -994,7 +1003,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         """
         from rest_framework.exceptions import PermissionDenied
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         if not question.is_seed:
             return Response({"detail": "This question is not a seed question."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1236,7 +1245,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         so everyone sees it update in real time. Also broadcast group updates if question
         is part of a question group.
         """
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         user = request.user
 
         if self._is_guest_user(user):
@@ -1354,7 +1363,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         GET /questions/{id}/upvoters/
         Returns list of users who upvoted this question
         """
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         upvoters = question.upvoters.all().values('id', 'username', 'first_name', 'last_name')
         guest_upvoters = question.guest_upvotes.select_related("guest").values(
             "guest_id", "guest__first_name", "guest__last_name", "guest__email"
@@ -1394,7 +1403,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         from django.utils import timezone
         from rest_framework.exceptions import PermissionDenied
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         user = request.user
 
         # Permission check: Only host/admin can hide/unhide
@@ -1450,7 +1459,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         from rest_framework.exceptions import PermissionDenied
         from django.utils import timezone
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         user = request.user
 
         # Permission check: Only host/admin can approve
@@ -1501,7 +1510,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         """
         from rest_framework.exceptions import PermissionDenied
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         user = request.user
 
         # Permission check: Only host/admin can reject
@@ -1565,7 +1574,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         print(f"[DEBUG mark_answered] user.id={request.user.id if request.user else 'ANONYMOUS'}")
         print(f"[DEBUG mark_answered] user.is_authenticated={request.user.is_authenticated}")
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         print(f"[DEBUG mark_answered] Question found: id={question.id}, event_id={question.event_id}")
 
         user = request.user
@@ -1680,7 +1689,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         from django.utils import timezone
         from rest_framework.exceptions import PermissionDenied
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         user = request.user
 
         # Permission check: Only host/admin can pin questions
@@ -1757,7 +1766,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         """
         from rest_framework.exceptions import PermissionDenied
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         user = request.user
 
         # Permission check: Only host/admin can anonymize questions
@@ -1802,7 +1811,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         """
         from rest_framework.exceptions import PermissionDenied
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         if request.user != question.event.created_by and not request.user.is_staff:
             raise PermissionDenied("Only event host/admin can reorder questions.")
 
@@ -2001,7 +2010,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         from django.utils import timezone
         from rest_framework.exceptions import PermissionDenied
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         user = request.user
 
         if self._is_guest_user(user):
@@ -2101,7 +2110,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         from django.utils import timezone
         from rest_framework.exceptions import PermissionDenied
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         user = request.user
 
         if self._is_guest_user(user):
@@ -2132,10 +2141,14 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Soft-delete
+        # Soft-delete: preserve the question and all audit/history links.
         question.is_deleted = True
         question.deleted_at = timezone.now()
-        question.save(update_fields=["is_deleted", "deleted_at"])
+        question.deleted_by = user
+        question.deletion_reason = (request.data.get("reason") or "Removed by the question author").strip()
+        question.save(update_fields=[
+            "is_deleted", "deleted_at", "deleted_by", "deletion_reason", "updated_at"
+        ])
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -2260,7 +2273,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
             send_answer_notifications,
         )
 
-        question = get_object_or_404(Question, pk=pk)
+        question = get_object_or_404(Question, pk=pk, is_deleted=False)
         user = request.user
 
         # Permission check
@@ -2564,9 +2577,17 @@ class QuestionViewSet(viewsets.ModelViewSet):
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied("You do not have permission to delete this question.")
 
-        instance.delete()
+        from django.utils import timezone
 
-        # Broadcast delete
+        instance.is_deleted = True
+        instance.deleted_at = timezone.now()
+        instance.deleted_by = user if not self._is_guest_user(user) else None
+        instance.deletion_reason = (self.request.data.get("reason") or "Removed from live Q&A").strip()
+        instance.save(update_fields=[
+            "is_deleted", "deleted_at", "deleted_by", "deletion_reason", "updated_at"
+        ])
+
+        # Broadcast removal so every connected client hides the question immediately.
         if instance.lounge_table_id:
             group = f"event_qna_{event_id}_table_{instance.lounge_table_id}"
         else:
@@ -2596,7 +2617,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         from events.models import Event
 
         question = get_object_or_404(
-            Question.objects.select_related("event"),
+            Question.objects.select_related("event").filter(is_deleted=False),
             pk=pk,
         )
         event = question.event
@@ -2607,7 +2628,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         if request.method == "GET":
             replies_qs = (
                 QnAReply.objects
-                .filter(question=question)
+                .filter(question=question, is_deleted=False)
                 .select_related("user", "user__profile", "guest_asker")
                 .prefetch_related("upvoters", "guest_upvotes")
             )
@@ -2785,7 +2806,9 @@ class QnAReplyViewSet(viewsets.GenericViewSet):
 
     permission_classes = [IsAuthenticated]
     serializer_class = QnAReplySerializer
-    queryset = QnAReply.objects.select_related("question__event", "user", "guest_asker")
+    queryset = QnAReply.objects.filter(
+        is_deleted=False, question__is_deleted=False
+    ).select_related("question__event", "user", "guest_asker")
 
     @staticmethod
     def _is_guest_user(user) -> bool:
@@ -2815,7 +2838,7 @@ class QnAReplyViewSet(viewsets.GenericViewSet):
         from rest_framework.exceptions import PermissionDenied
 
         reply = get_object_or_404(
-            QnAReply.objects.select_related("question__event", "user", "guest_asker"),
+            QnAReply.objects.filter(is_deleted=False, question__is_deleted=False).select_related("question__event", "user", "guest_asker"),
             pk=pk,
         )
         user = request.user
@@ -2844,7 +2867,7 @@ class QnAReplyViewSet(viewsets.GenericViewSet):
         from rest_framework.exceptions import PermissionDenied
 
         reply = get_object_or_404(
-            QnAReply.objects.select_related("question__event", "user", "guest_asker"),
+            QnAReply.objects.filter(is_deleted=False, question__is_deleted=False).select_related("question__event", "user", "guest_asker"),
             pk=pk,
         )
         user = request.user
@@ -2855,7 +2878,15 @@ class QnAReplyViewSet(viewsets.GenericViewSet):
         question_id = reply.question_id
         reply_id = reply.id
         lounge_table_id = reply.question.lounge_table_id
-        reply.delete()
+        from django.utils import timezone
+
+        reply.is_deleted = True
+        reply.deleted_at = timezone.now()
+        reply.deleted_by = user if not self._is_guest_user(user) else None
+        reply.deletion_reason = (request.data.get("reason") or "Removed from live Q&A").strip()
+        reply.save(update_fields=[
+            "is_deleted", "deleted_at", "deleted_by", "deletion_reason", "updated_at"
+        ])
 
         if lounge_table_id:
             group = f"event_qna_{event_id}_table_{lounge_table_id}"
@@ -2872,13 +2903,17 @@ class QnAReplyViewSet(viewsets.GenericViewSet):
             }},
         )
 
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response({
+            "reply_id": reply_id,
+            "status": "deleted",
+            "detail": "The reply was removed from the live Q&A and remains stored in the database with its votes and moderation history.",
+        }, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"])
     def upvote(self, request, pk=None):
         """POST /api/interactions/replies/{id}/upvote/ – toggle upvote."""
         reply = get_object_or_404(
-            QnAReply.objects.select_related("question__event"),
+            QnAReply.objects.filter(is_deleted=False, question__is_deleted=False).select_related("question__event"),
             pk=pk,
         )
         user = request.user
@@ -2930,7 +2965,7 @@ class QnAReplyViewSet(viewsets.GenericViewSet):
         from rest_framework.exceptions import PermissionDenied
 
         reply = get_object_or_404(
-            QnAReply.objects.select_related("question__event"),
+            QnAReply.objects.filter(is_deleted=False, question__is_deleted=False).select_related("question__event"),
             pk=pk,
         )
         if not self._is_host(reply, request.user):
@@ -2955,7 +2990,7 @@ class QnAReplyViewSet(viewsets.GenericViewSet):
         from rest_framework.exceptions import PermissionDenied
 
         reply = get_object_or_404(
-            QnAReply.objects.select_related("question__event"),
+            QnAReply.objects.filter(is_deleted=False, question__is_deleted=False).select_related("question__event"),
             pk=pk,
         )
         if not self._is_host(reply, request.user):
@@ -2982,7 +3017,7 @@ class QnAReplyViewSet(viewsets.GenericViewSet):
         from rest_framework.exceptions import PermissionDenied
 
         reply = get_object_or_404(
-            QnAReply.objects.select_related("question__event"),
+            QnAReply.objects.filter(is_deleted=False, question__is_deleted=False).select_related("question__event"),
             pk=pk,
         )
         if not self._is_host(reply, request.user):
@@ -3061,8 +3096,9 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
             return []
 
         valid_ids = set(
-            Question.objects.filter(event_id=group.event_id, id__in=question_ids)
-            .values_list("id", flat=True)
+            Question.objects.filter(
+                event_id=group.event_id, id__in=question_ids, is_deleted=False
+            ).values_list("id", flat=True)
         )
         invalid_ids = [q_id for q_id in question_ids if q_id not in valid_ids]
         if invalid_ids:
@@ -3070,7 +3106,17 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
         return question_ids
 
     def get_queryset(self):
-        base_qs = QnAQuestionGroup.objects.select_related("event", "event__created_by").prefetch_related("memberships")
+        active_memberships = Prefetch(
+            "memberships",
+            queryset=QnAQuestionGroupMembership.objects.filter(
+                question__is_deleted=False
+            ).order_by("display_order", "created_at"),
+        )
+        base_qs = (
+            QnAQuestionGroup.objects
+            .select_related("event", "event__created_by")
+            .prefetch_related(active_memberships)
+        )
         if self.action in ["retrieve", "update", "partial_update", "destroy", "add_questions", "remove_questions", "reorder_questions"]:
             return base_qs
 

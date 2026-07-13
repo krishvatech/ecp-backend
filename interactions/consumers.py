@@ -154,7 +154,7 @@ def _toggle_upvote(question_id: int, user_id: int):
     Returns tuple: (question or None, upvoted: bool, upvote_count: int)
     """
     try:
-        q = Question.objects.get(pk=question_id)
+        q = Question.objects.get(pk=question_id, is_deleted=False)
     except Question.DoesNotExist:
         return None, False, 0
 

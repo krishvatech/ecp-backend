@@ -18,6 +18,7 @@ def suggest_groups(event_id, user):
         event_id=event_id,
         is_hidden=False,
         is_seed=False,
+        is_deleted=False,
         moderation_status__in=["approved", "pending"],
     ).exclude(group_membership__isnull=False)
 
