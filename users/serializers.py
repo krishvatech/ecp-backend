@@ -296,7 +296,7 @@ class UserSerializer(serializers.ModelSerializer):
         return validate_email_strict(value, instance=self.instance)
 
     def get_posts_count(self, obj):
-        posts = FeedItem.objects.filter(actor_id=obj.id).filter(Q(group__isnull=True) | Q(group__is_deleted=False))
+        posts = FeedItem.objects.filter(actor_id=obj.id, is_deleted=False).exclude(metadata__is_deleted=True).filter(Q(group__isnull=True) | Q(group__is_deleted=False))
 
         if obj.is_superuser:
             return posts.filter(

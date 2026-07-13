@@ -80,17 +80,52 @@ def _create_feed_item_for_poll(poll: Poll):
         "allows_multiple": bool(getattr(poll, "allows_multiple", False)),
         "is_anonymous": bool(getattr(poll, "is_anonymous", False)),
         "ends_at": getattr(poll, "ends_at", None),
+        "is_deleted": False,
     }
 
-    FeedItem.objects.create(
-        community_id=getattr(community, "id", None),
-        group_id=getattr(poll, "group_id", None),
-        actor_id=actor_id,
-        verb="created_poll",
-        target_content_type=ct,
-        target_object_id=poll.id,
-        metadata=metadata,
+    # polls_create may have already created the feed row before this on_commit
+    # callback runs. Reuse that row instead of creating a duplicate.
+    item = (
+        FeedItem.objects
+        .filter(target_content_type=ct, target_object_id=poll.id)
+        .order_by("id")
+        .first()
     )
+    if item is None:
+        FeedItem.objects.create(
+            community_id=getattr(community, "id", None),
+            group_id=getattr(poll, "group_id", None),
+            actor_id=actor_id,
+            verb="created_poll",
+            target_content_type=ct,
+            target_object_id=poll.id,
+            metadata=metadata,
+            is_deleted=False,
+        )
+        return
+
+    current = dict(item.metadata or {})
+    current.update(metadata)
+    item.community_id = getattr(community, "id", None)
+    item.group_id = getattr(poll, "group_id", None)
+    item.actor_id = actor_id
+    item.verb = "created_poll"
+    item.metadata = current
+    item.is_deleted = False
+    item.deleted_at = None
+    item.deleted_by = None
+    item.deletion_reason = ""
+    item.save(update_fields=[
+        "community",
+        "group",
+        "actor",
+        "verb",
+        "metadata",
+        "is_deleted",
+        "deleted_at",
+        "deleted_by",
+        "deletion_reason",
+    ])
 
 
 @receiver(post_save, sender=Poll)

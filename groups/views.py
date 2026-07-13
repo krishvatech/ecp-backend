@@ -1,6 +1,6 @@
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
-from django.db.models import Count, Q, Exists, OuterRef, Subquery, Sum
+from django.db.models import Count, Q, Exists, OuterRef, Subquery, Sum, Prefetch
 from django.contrib.auth import get_user_model
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import NotFound
@@ -28,7 +28,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter, OpenApiExample
 
 from community.models import Community
-from activity_feed.models import FeedItem
+from activity_feed.models import FeedItem, Poll
 from .models import Group, GroupMembership, PromotionRequest, GroupNotification, GroupParentAssociation, WordPressGroupSource
 from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content, GroupSuperuserOnly
 from .serializers import (
@@ -340,6 +340,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             # Base queryset (all posts for this group)
             base_items = (FeedItem.objects
                     .select_related("actor", "actor__profile")
+                    .filter(is_deleted=False)
                     .filter(
                         # prefer FK (new rows)
                         models.Q(group_id=group.id)
@@ -347,7 +348,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                         | models.Q(target_content_type=ct, target_object_id=group.id)
                     )
                     .filter(community_id=getattr(group, "community_id", None))
-                    .exclude(metadata__is_deleted=True)
+                    .filter(Q(metadata__is_deleted=False) | Q(metadata__is_deleted__isnull=True))
                 )
 
             # Count total posts before moderation filter
@@ -509,10 +510,54 @@ class GroupViewSet(viewsets.ModelViewSet):
         )
         return Response({"ok": True, "id": item.id}, status=201)
     
+    def _optimize_group_queryset(self, qs):
+        """Keep group detail/list serialization to a small, predictable query count."""
+        parent_links_qs = (
+            GroupParentAssociation.objects
+            .filter(parent_group__is_deleted=False)
+            .select_related("parent_group", "requested_by", "reviewed_by")
+            .order_by("id")
+        )
+
+        qs = qs.select_related(
+            "community", "parent", "created_by", "owner"
+        ).prefetch_related(
+            Prefetch(
+                "parent_links",
+                queryset=parent_links_qs,
+                to_attr="_all_parent_links",
+            )
+        )
+
+        user = getattr(self.request, "user", None)
+        if user and user.is_authenticated:
+            membership_qs = GroupMembership.objects.filter(
+                group_id=OuterRef("pk"),
+                user_id=user.id,
+            )
+            qs = qs.annotate(
+                _current_membership_role=Subquery(
+                    membership_qs.values("role")[:1]
+                ),
+                _current_membership_status=Subquery(
+                    membership_qs.values("status")[:1]
+                ),
+                _current_membership_invited=Exists(
+                    membership_qs.filter(
+                        status=GroupMembership.STATUS_PENDING,
+                        invited_by_id__isnull=False,
+                    )
+                ),
+            )
+        return qs
+
     # Use: Base queryset for groups list (optionally filtered by creator or search).
-    # Ordering: No explicit order_by here (natural DB order). Add order_by(...) at call sites if needed.
+    # Ordering: Newest first.
     def get_queryset(self):
-        qs = Group.objects.all().annotate(member_count=Count("memberships")).order_by("-created_at")
+        qs = Group.objects.all().annotate(
+            member_count=Count("memberships")
+        ).order_by("-created_at")
+        qs = self._optimize_group_queryset(qs)
         created_by = self.request.query_params.get("created_by")
         search = self.request.query_params.get("search")
 
@@ -524,15 +569,15 @@ class GroupViewSet(viewsets.ModelViewSet):
             qs = qs.filter(Q(name__icontains=search) | Q(description__icontains=search))
 
         return qs
-    
+
     # Use: Same as get_queryset but includes sub-groups (no parent__isnull constraint).
     # Ordering: No explicit order_by here.
     def get_queryset_all(self):
         qs = Group.objects.all().annotate(member_count=Count("memberships"))
+        qs = self._optimize_group_queryset(qs)
         created_by = self.request.query_params.get("created_by")
         search = self.request.query_params.get("search")
 
-        # only top-level (parent is NULL) when filtering by "me"
         if created_by == "me" and self.request.user.is_authenticated:
             qs = qs.filter(created_by=self.request.user)
 
@@ -544,7 +589,6 @@ class GroupViewSet(viewsets.ModelViewSet):
     # Use: Resolve object by pk or slug; falls back across both.
     # Ordering: Not applicable (single object resolution).
     def get_object(self):
-        print("---- get_object called with pk =", self.kwargs.get("pk"))
         lookup = self.kwargs.get("pk")
         base = self.get_queryset_all()
         if lookup is None:
@@ -1454,7 +1498,8 @@ class GroupViewSet(viewsets.ModelViewSet):
         from activity_feed.models import FeedItem  # local import to avoid cycles
         item = (FeedItem.objects
                 .select_related("group", "community", "actor")
-                .filter(id=fid)
+                .filter(id=fid, is_deleted=False)
+                .filter(Q(metadata__is_deleted=False) | Q(metadata__is_deleted__isnull=True))
                 .first())
         if not item:
             return None, "Feed item not found"
@@ -1684,6 +1729,22 @@ class GroupViewSet(viewsets.ModelViewSet):
 
 
 
+    def _soft_delete_group_feed_item(self, item, request, reason=""):
+        """Soft-delete a group feed item and its poll row without removing history."""
+        item.soft_delete(user=request.user, reason=reason)
+
+        poll_id = None
+        ct_poll = ContentType.objects.get_for_model(Poll)
+        if item.target_content_type_id == ct_poll.id:
+            poll_id = item.target_object_id
+        if not poll_id:
+            poll_id = (item.metadata or {}).get("poll_id")
+
+        if poll_id:
+            poll = Poll.objects.filter(pk=poll_id, is_deleted=False).first()
+            if poll:
+                poll.soft_delete(user=request.user, reason=reason)
+
     # Use (Endpoint): POST /api/groups/{id}/posts/delete-post
     # - Soft delete a feed item (post/poll/image/link/event).
     # Ordering: Not applicable (single item update).
@@ -1702,12 +1763,13 @@ class GroupViewSet(viewsets.ModelViewSet):
         if err:
             return Response({"detail": err}, status=400 if "group" in err else 409)
 
-        meta = item.metadata or {}
-        meta["is_deleted"] = True
-        meta["deleted_at"] = timezone.now().isoformat()
-        item.metadata = meta
-        item.save(update_fields=["metadata"])
-        return Response({"ok": True, "deleted": "soft"}, status=200)
+        reason = str((request.data or {}).get("reason") or "").strip()
+        self._soft_delete_group_feed_item(item, request, reason=reason)
+        return Response({
+            "ok": True,
+            "deleted": "soft",
+            "message": "The post was removed from the platform and remains stored in the database with comments, reactions, reports and history.",
+        }, status=200)
     
     # Use (Endpoint): POST /api/groups/{id}/posts/hide-post
     # - Hide a feed item (soft visibility off).
@@ -2729,7 +2791,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         except Exception:
             return Response({"detail": "Invalid post id"}, status=400)
 
-        it = FeedItem.objects.filter(pk=item_id).first()
+        it = FeedItem.objects.filter(pk=item_id, is_deleted=False).filter(Q(metadata__is_deleted=False) | Q(metadata__is_deleted__isnull=True)).first()
         if not it:
             return Response({"detail": "Post not found"}, status=404)
 
@@ -2807,7 +2869,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         uid = getattr(request.user, "id", None)
         is_active_member = bool(uid and self._is_active_member(uid, group))
 
-        it = FeedItem.objects.filter(pk=item_id).first()
+        it = FeedItem.objects.filter(pk=item_id, is_deleted=False).filter(Q(metadata__is_deleted=False) | Q(metadata__is_deleted__isnull=True)).first()
         if not it:
             return Response({"detail": "Post not found"}, status=404)
         if getattr(it, "group_id", None) != group.id and (it.metadata or {}).get("group_id") != group.id:
@@ -2824,12 +2886,13 @@ class GroupViewSet(viewsets.ModelViewSet):
         ):
             return Response({"detail": "Forbidden"}, status=403)
 
-        m = it.metadata or {}
-        m["is_deleted"] = True
-        m["deleted_at"] = timezone.now().isoformat()
-        it.metadata = m
-        it.save(update_fields=["metadata"])
-        return Response({"ok": True})
+        reason = str((request.data or {}).get("reason") or "").strip()
+        self._soft_delete_group_feed_item(it, request, reason=reason)
+        return Response({
+            "ok": True,
+            "deleted": "soft",
+            "message": "The post was removed from the platform and remains stored in the database with comments, reactions, reports and history.",
+        }, status=200)
 
     @action(detail=True, methods=["post"], url_path="invite-emails", parser_classes=[JSONParser])
     def invite_emails(self, request, pk=None):

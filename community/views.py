@@ -180,6 +180,7 @@ class CommunityViewSet(viewsets.ModelViewSet):
         qs = (
             FeedItem.objects.filter(
                 community_id=community.id,
+                is_deleted=False,
                 verb="posted",
                 group__isnull=True,                 # community-level (not inside a group)
                 event__isnull=True,                 # not tied to an event
@@ -271,6 +272,7 @@ class CommunityViewSet(viewsets.ModelViewSet):
         post = get_object_or_404(
             FeedItem.objects.filter(
                 community_id=community.id,
+                is_deleted=False,
                 group__isnull=True,
                 event__isnull=True,
                 verb="posted",
@@ -365,6 +367,7 @@ class CommunityViewSet(viewsets.ModelViewSet):
         post = get_object_or_404(
             FeedItem.objects.filter(
                 community_id=community.id,
+                is_deleted=False,
                 group__isnull=True,
                 event__isnull=True,
                 verb="posted",
@@ -380,5 +383,11 @@ class CommunityViewSet(viewsets.ModelViewSet):
         if not (is_owner or is_staff or is_actor):
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-        post.delete()
-        return Response({"ok": True, "id": int(post_id)}, status=200)
+        reason = str((request.data or {}).get("reason") or "").strip()
+        post.soft_delete(user=request.user, reason=reason)
+        return Response({
+            "ok": True,
+            "id": int(post_id),
+            "deleted": "soft",
+            "message": "The post was removed from the platform and remains stored in the database with its history.",
+        }, status=200)

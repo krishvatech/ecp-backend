@@ -11,6 +11,7 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 
 
 from activity_feed.models import FeedItem
+from groups.models import GroupMembership
 
 from .models import Comment, Reaction, Share
 from .serializers import (
@@ -84,7 +85,7 @@ class EngagementMetricsView(APIView):
         # Root-level comments
         comment_qs = (
             Comment.objects
-            .filter(content_type=ct, object_id__in=ids, parent__isnull=True)
+            .filter(content_type=ct, object_id__in=ids, parent__isnull=True, is_deleted=False)
             .values("object_id")
             .annotate(n=Count("id"))
         )
@@ -215,7 +216,7 @@ class CommentViewSet(viewsets.ModelViewSet):
     queryset = Comment.objects.select_related("user", "user__profile").all()
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().filter(is_deleted=False)
 
         user = getattr(self.request, "user", None)
         if user and user.is_authenticated and not (user.is_staff or user.is_superuser):
@@ -237,6 +238,9 @@ class CommentViewSet(viewsets.ModelViewSet):
         feed_item = self.request.query_params.get("feed_item")
 
         if parent:
+            parent_obj = Comment.objects.filter(pk=parent, is_deleted=False).first()
+            if not parent_obj:
+                return qs.none()
             return qs.filter(parent_id=parent)
 
         if ttype and tid:
@@ -249,6 +253,9 @@ class CommentViewSet(viewsets.ModelViewSet):
                 ct = ContentType.objects.get(app_label=app_label.lower(), model=model.lower())
             if not str(tid).isdigit():
                 return qs.none()
+            if ct == ContentType.objects.get_for_model(FeedItem):
+                if not FeedItem.objects.filter(pk=int(tid), is_deleted=False).exclude(metadata__is_deleted=True).exists():
+                    return qs.none()
             return qs.filter(content_type=ct, object_id=int(tid), parent__isnull=True)
 
         # Default to FeedItem when only an id is supplied
@@ -256,6 +263,8 @@ class CommentViewSet(viewsets.ModelViewSet):
             ct = ContentType.objects.get_for_model(FeedItem)
             oid = tid or feed_item
             if not str(oid).isdigit(): 
+                return qs.none()
+            if not FeedItem.objects.filter(pk=int(oid), is_deleted=False).exclude(metadata__is_deleted=True).exists():
                 return qs.none()
             return qs.filter(content_type=ct, object_id=int(oid), parent__isnull=True)
 
@@ -275,7 +284,7 @@ class CommentViewSet(viewsets.ModelViewSet):
             oid = None
 
             if parent_id:
-                parent = Comment.objects.filter(pk=parent_id).first()
+                parent = Comment.objects.filter(pk=parent_id, is_deleted=False).first()
                 if parent:
                     ct = parent.content_type
                     oid = parent.object_id
@@ -295,9 +304,57 @@ class CommentViewSet(viewsets.ModelViewSet):
 
         serializer.save()
 
+    def _can_delete_comment(self, request, comment):
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        if user.is_staff or user.is_superuser or comment.user_id == user.id:
+            return True
+
+        feed_ct = ContentType.objects.get_for_model(FeedItem)
+        if comment.content_type_id != feed_ct.id:
+            return False
+
+        item = FeedItem.objects.select_related("group", "community").filter(pk=comment.object_id).first()
+        if not item:
+            return False
+
+        if item.community_id and getattr(item.community, "owner_id", None) == user.id:
+            return True
+
+        group = getattr(item, "group", None)
+        if group:
+            if getattr(group, "created_by_id", None) == user.id or getattr(group, "owner_id", None) == user.id:
+                return True
+            return GroupMembership.objects.filter(
+                group=group,
+                user_id=user.id,
+                status=GroupMembership.STATUS_ACTIVE,
+                role__in=["admin", "moderator"],
+            ).exists()
+
+        return False
+
+    def destroy(self, request, *args, **kwargs):
+        comment = Comment.objects.filter(pk=kwargs.get("pk"), is_deleted=False).first()
+        if not comment:
+            return Response({"detail": "Comment not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not self._can_delete_comment(request, comment):
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        reason = str((request.data or {}).get("reason") or "").strip()
+        comment.soft_delete(user=request.user, reason=reason)
+        return Response({
+            "ok": True,
+            "deleted": "soft",
+            "message": "The comment was removed from the platform and remains stored in the database with its replies, reactions and reports.",
+        }, status=status.HTTP_200_OK)
+
     @action(methods=["get"], detail=True, url_path="replies")
     def replies(self, request, pk=None):
-        qs = Comment.objects.select_related("user", "user__profile").filter(parent_id=pk)
+        if not Comment.objects.filter(pk=pk, is_deleted=False).exists():
+            return Response({"detail": "Comment not found."}, status=status.HTTP_404_NOT_FOUND)
+        qs = Comment.objects.select_related("user", "user__profile").filter(parent_id=pk, is_deleted=False)
         user = getattr(request, "user", None)
         if user and user.is_authenticated and not (user.is_staff or user.is_superuser):
             qs = qs.filter(Q(moderation_status__in=["clear", "under_review"]) | Q(user_id=user.id))

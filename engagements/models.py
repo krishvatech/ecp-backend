@@ -3,6 +3,7 @@ from django.db import models
 from django.db.models import Q
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
 
 # ---------- COMMENTS (generic target) ----------
 class Comment(models.Model):
@@ -13,6 +14,16 @@ class Comment(models.Model):
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     text = models.TextField()
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
     MOD_STATUS_CLEAR = "clear"
     MOD_STATUS_UNDER_REVIEW = "under_review"
     MOD_STATUS_REMOVED = "removed"
@@ -38,8 +49,25 @@ class Comment(models.Model):
         indexes = [
             models.Index(fields=["content_type", "object_id", "created_at"]),
             models.Index(fields=["parent", "created_at"]),
+            models.Index(fields=["is_deleted", "created_at"]),
         ]
         ordering = ["-created_at"]
+
+    def soft_delete(self, *, user=None, reason=""):
+        """Hide the comment while retaining its text, replies and audit links."""
+        if self.is_deleted:
+            return False
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, "pk", None) else None
+        self.deletion_reason = str(reason or "").strip()
+        self.save(update_fields=[
+            "is_deleted",
+            "deleted_at",
+            "deleted_by",
+            "deletion_reason",
+        ])
+        return True
 
     def __str__(self):
         return f"Comment({self.id}) by {self.user}"

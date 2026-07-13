@@ -2432,7 +2432,7 @@ class AdminUserProfileView(AdminTargetUserMixin, APIView):
     def get(self, request, user_id):
         target = self.get_target_user()
         payload = AdminUserProfileSerializer(target, context={"request": request}).data
-        target_posts = FeedItem.objects.filter(actor_id=target.id)
+        target_posts = FeedItem.objects.filter(actor_id=target.id, is_deleted=False).exclude(metadata__is_deleted=True)
         if target.is_superuser:
             payload["posts_count"] = target_posts.filter(
                 community__owner_id=target.id,

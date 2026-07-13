@@ -230,32 +230,50 @@ class GroupSerializer(serializers.ModelSerializer):
         uid = getattr(user, "id", None)
         if not uid:
             return None
-        # treat creator/owner as "owner"
         if obj.created_by_id == uid or getattr(obj, "owner_id", None) == uid:
             return "owner"
-        try:
-            m = GroupMembership.objects.get(group=obj, user_id=uid)
-            return m.role
-        except GroupMembership.DoesNotExist:
-            return None
+
+        if hasattr(obj, "_current_membership_role"):
+            return obj._current_membership_role
+
+        return (
+            GroupMembership.objects
+            .filter(group=obj, user_id=uid)
+            .values_list("role", flat=True)
+            .first()
+        )
     
     def get_membership_status(self, obj):
         request = self.context.get("request")
         uid = getattr(getattr(request, "user", None), "id", None)
         if not uid:
             return None
-        m = GroupMembership.objects.filter(group=obj, user_id=uid).only("status").first()
-        return getattr(m, "status", None) if m else None
 
-    
-    # NEW ↓
+        if hasattr(obj, "_current_membership_status"):
+            return obj._current_membership_status
+
+        return (
+            GroupMembership.objects
+            .filter(group=obj, user_id=uid)
+            .values_list("status", flat=True)
+            .first()
+        )
+
     def get_invited(self, obj):
         request = self.context.get("request")
         uid = getattr(getattr(request, "user", None), "id", None)
         if not uid:
             return False
-        m = GroupMembership.objects.filter(group=obj, user_id=uid).only("invited_by_id", "status").first()
-        return bool(m and m.status == GroupMembership.STATUS_PENDING and getattr(m, "invited_by_id", None))
+
+        if hasattr(obj, "_current_membership_invited"):
+            return bool(obj._current_membership_invited)
+
+        return GroupMembership.objects.filter(
+            group=obj,
+            user_id=uid,
+            status=GroupMembership.STATUS_PENDING,
+            invited_by_id__isnull=False,
+        ).exists()
 
     def get_parent_group(self, obj):
         if not obj.parent_id:
@@ -290,13 +308,17 @@ class GroupSerializer(serializers.ModelSerializer):
              })
 
         # 2. Additional Approved
-        # If pre-fetched, use that. Otherwise query.
-        if hasattr(obj, "_prefetched_parent_links"):
-             # optimization if viewset prefetches
-             links = obj._prefetched_parent_links
+        if hasattr(obj, "_all_parent_links"):
+            links = [
+                link for link in obj._all_parent_links
+                if link.status == "approved"
+            ]
         else:
-             links = obj.parent_links.filter(status='approved', parent_group__is_deleted=False).select_related('parent_group')
-             
+            links = obj.parent_links.filter(
+                status="approved",
+                parent_group__is_deleted=False,
+            ).select_related("parent_group")
+
         for link in links:
              p = link.parent_group
              # avoid duplicates if primary is somehow also in links (shouldn't happen with validation)
@@ -334,8 +356,12 @@ class GroupSerializer(serializers.ModelSerializer):
         if role not in ['admin', 'owner'] and not is_staff:
             return None
             
-        from .models import GroupParentAssociation
-        links = obj.parent_links.filter(parent_group__is_deleted=False).select_related('parent_group', 'requested_by', 'reviewed_by')
+        if hasattr(obj, "_all_parent_links"):
+            links = obj._all_parent_links
+        else:
+            links = obj.parent_links.filter(
+                parent_group__is_deleted=False
+            ).select_related("parent_group", "requested_by", "reviewed_by")
         data = []
         for link in links:
             data.append({

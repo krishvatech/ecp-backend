@@ -26,13 +26,21 @@ def get_ct(value: str) -> ContentType:
 
 def _moderation_status_for_target(ct: ContentType, object_id: int):
     if ct == ContentType.objects.get_for_model(FeedItem):
-        return FeedItem.objects.filter(pk=object_id).values_list("moderation_status", flat=True).first()
+        row = FeedItem.objects.filter(pk=object_id).values("moderation_status", "is_deleted").first()
+        if row and row.get("is_deleted"):
+            return "deleted"
+        return row.get("moderation_status") if row else None
     if ct == ContentType.objects.get_for_model(Comment):
-        return Comment.objects.filter(pk=object_id).values_list("moderation_status", flat=True).first()
+        row = Comment.objects.filter(pk=object_id).values("moderation_status", "is_deleted").first()
+        if row and row.get("is_deleted"):
+            return "deleted"
+        return row.get("moderation_status") if row else None
     return None
 
 def _ensure_target_engageable(ct: ContentType, object_id: int):
     status = _moderation_status_for_target(ct, object_id)
+    if status == "deleted":
+        raise serializers.ValidationError("This content has been deleted and cannot be engaged with.")
     if status in {"under_review", "removed"}:
         raise serializers.ValidationError("This content is under review and cannot be engaged with.")
 
@@ -187,6 +195,8 @@ class CommentSerializer(serializers.ModelSerializer):
             })
 
         # moderation checks
+        if parent and getattr(parent, "is_deleted", False):
+            raise serializers.ValidationError("This comment has been deleted and cannot be replied to.")
         if parent and getattr(parent, "moderation_status", None) in {"under_review", "removed"}:
             raise serializers.ValidationError("This comment is under review and cannot be replied to.")
         _ensure_target_engageable(ct, oid)
@@ -532,7 +542,7 @@ class ShareWriteSerializer(serializers.Serializer):
             from activity_feed.models import FeedItem
             from groups.models import Group, GroupMembership
             try:
-                feed_item = FeedItem.objects.get(id=tid)
+                feed_item = FeedItem.objects.get(id=tid, is_deleted=False)
                 source_group = feed_item.group
                 
                 if source_group:

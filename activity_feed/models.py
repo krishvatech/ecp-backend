@@ -12,6 +12,7 @@ from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
+from django.utils import timezone
 from community.models import Community
 from events.models import Event
 from groups.models import Group
@@ -57,6 +58,17 @@ class FeedItem(models.Model):
     target_object_id = models.PositiveIntegerField()
     target = GenericForeignKey("target_content_type", "target_object_id")
     metadata = models.JSONField(default=dict)
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
+
     MOD_STATUS_CLEAR = "clear"
     MOD_STATUS_UNDER_REVIEW = "under_review"
     MOD_STATUS_REMOVED = "removed"
@@ -79,8 +91,37 @@ class FeedItem(models.Model):
             models.Index(fields=["community", "event", "created_at"]),
             models.Index(fields=["group", "created_at"]),
             models.Index(fields=["community", "group", "created_at"]),
+            models.Index(fields=["is_deleted", "created_at"]),
         ]
         ordering = ["-created_at"]
+
+    def soft_delete(self, *, user=None, reason=""):
+        """Hide this feed item while retaining its content and related history."""
+        if self.is_deleted:
+            return False
+
+        deleted_at = timezone.now()
+        metadata = dict(self.metadata or {})
+        metadata.update({
+            "is_deleted": True,
+            "deleted_at": deleted_at.isoformat(),
+        })
+        if reason:
+            metadata["deletion_reason"] = str(reason).strip()
+
+        self.is_deleted = True
+        self.deleted_at = deleted_at
+        self.deleted_by = user if getattr(user, "pk", None) else None
+        self.deletion_reason = str(reason or "").strip()
+        self.metadata = metadata
+        self.save(update_fields=[
+            "is_deleted",
+            "deleted_at",
+            "deleted_by",
+            "deletion_reason",
+            "metadata",
+        ])
+        return True
 
     def __str__(self) -> str:
         return f"{self.verb} by {self.actor_id} on {self.created_at.isoformat()}"
@@ -97,6 +138,16 @@ class Poll(models.Model):
     is_anonymous = models.BooleanField(default=False)
     is_closed = models.BooleanField(default=False)
     ends_at = models.DateTimeField(null=True, blank=True)
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="polls_created"
     )
@@ -107,7 +158,26 @@ class Poll(models.Model):
         indexes = [
             models.Index(fields=["community", "is_closed", "created_at"]),
             models.Index(fields=["group", "is_closed", "created_at"]),
+            models.Index(fields=["is_deleted", "created_at"]),
         ]
+
+    def soft_delete(self, *, user=None, reason=""):
+        """Hide the poll while retaining options and votes for audit/history."""
+        if self.is_deleted:
+            return False
+        self.is_deleted = True
+        self.is_closed = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, "pk", None) else None
+        self.deletion_reason = str(reason or "").strip()
+        self.save(update_fields=[
+            "is_deleted",
+            "is_closed",
+            "deleted_at",
+            "deleted_by",
+            "deletion_reason",
+        ])
+        return True
 
     def __str__(self):
         return f"Poll[{self.id}] {self.question[:40]}"

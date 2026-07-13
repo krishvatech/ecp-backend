@@ -70,6 +70,7 @@ def _summarize_feed_item(item: FeedItem, request):
         "image_url": meta.get("image") or meta.get("image_url") or "",
         "community_id": item.community_id,
         "group_id": item.group_id,
+        "is_deleted": bool(getattr(item, "is_deleted", False)),
     }
     return summary
 
@@ -80,6 +81,7 @@ def _summarize_comment(comment: Comment):
         "parent_id": comment.parent_id,
         "target_type": f"{comment.content_type.app_label}.{comment.content_type.model}",
         "target_id": comment.object_id,
+        "is_deleted": bool(getattr(comment, "is_deleted", False)),
     }
 
 
@@ -108,6 +110,8 @@ class ReportViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.Gen
         target, kind = _resolve_target(ct, target_id)
         if not target:
             return Response({"detail": "Target not found."}, status=status.HTTP_404_NOT_FOUND)
+        if getattr(target, "is_deleted", False):
+            return Response({"detail": "This content has already been deleted."}, status=status.HTTP_409_CONFLICT)
 
         if kind == "post" and not _is_reportable_feeditem(target):
             return Response({"detail": "This content type cannot be reported."}, status=status.HTTP_400_BAD_REQUEST)

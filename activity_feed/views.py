@@ -77,8 +77,11 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
     def get_queryset(self):
         # Soft-deleted groups and their posts remain stored for audit/history,
         # but they must not appear in any normal feed or direct feed-item view.
-        qs = super().get_queryset().filter(
-            Q(group__isnull=True) | Q(group__is_deleted=False)
+        qs = (
+            super().get_queryset()
+            .filter(is_deleted=False)
+            .filter(Q(metadata__is_deleted=False) | Q(metadata__is_deleted__isnull=True))
+            .filter(Q(group__isnull=True) | Q(group__is_deleted=False))
         )
         req = self.request
         me = req.user
@@ -181,7 +184,9 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
 
             # Base: community posts only (no group, no event), same shape you already produce
             # Also exclude draft event posts (only show published/live event posts)
-            comm_posts = FeedItem.objects.filter(
+            comm_posts = FeedItem.objects.filter(is_deleted=False).exclude(
+                metadata__is_deleted=True
+            ).filter(
                 Q(group__isnull=True, event__isnull=True) |  # Community posts (no event)
                 Q(event__status__in=["published", "live"])    # OR published/live event posts
             ).filter(
@@ -237,7 +242,9 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                     ).values_list("group_id", flat=True)
                 )
                 member_group_ids_str = [str(gid) for gid in member_group_ids]
-                group_feed = FeedItem.objects.filter(
+                group_feed = FeedItem.objects.filter(is_deleted=False).exclude(
+                    metadata__is_deleted=True
+                ).filter(
                     Q(group_id__in=member_group_ids) |
                     Q(metadata__group_id__in=member_group_ids) |
                     Q(metadata__group_id__in=member_group_ids_str) |
@@ -944,7 +951,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         # 2) ensure the FeedItem has options in its metadata
         ct = ContentType.objects.get_for_model(Poll)
         item = (FeedItem.objects
-                .filter(target_content_type=ct, target_object_id=poll.id)
+                .filter(target_content_type=ct, target_object_id=poll.id, is_deleted=False)
+                .filter(Q(metadata__is_deleted=False) | Q(metadata__is_deleted__isnull=True))
                 .order_by("-id")
                 .first())
 
@@ -963,6 +971,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             "allows_multiple": bool(poll.allows_multiple),
             "is_anonymous": bool(poll.is_anonymous),
             "ends_at": poll.ends_at,
+            "is_deleted": False,
         }
 
         if item:
@@ -971,7 +980,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             item.metadata = m
             item.save(update_fields=["metadata"])
         else:
-            FeedItem.objects.create(
+            item = FeedItem.objects.create(
                 community=community or (group.community if group else None),
                 group=group,
                 actor_id=getattr(request.user, "id", None),
@@ -996,11 +1005,11 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         ct_poll = ContentType.objects.get_for_model(PollModel)
         poll = None
         if item.target_content_type_id == ct_poll.id:
-            poll = PollModel.objects.filter(pk=item.target_object_id).first()
+            poll = PollModel.objects.filter(pk=item.target_object_id, is_deleted=False).first()
         if not poll:
             pid = (item.metadata or {}).get("poll_id")
             if pid:
-                poll = PollModel.objects.filter(pk=pid).first()
+                poll = PollModel.objects.filter(pk=pid, is_deleted=False).first()
         if not poll:
             return Response({"detail": "Poll not found"}, status=404)
 
@@ -1043,11 +1052,11 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         ct_poll = ContentType.objects.get_for_model(Poll)
         poll = None
         if item.target_content_type_id == ct_poll.id:
-            poll = Poll.objects.filter(pk=item.target_object_id).first()
+            poll = Poll.objects.filter(pk=item.target_object_id, is_deleted=False).first()
         if not poll:
             pid = (item.metadata or {}).get("poll_id")
             if pid:
-                poll = Poll.objects.filter(pk=pid).first()
+                poll = Poll.objects.filter(pk=pid, is_deleted=False).first()
         if not poll:
             return Response({"detail": "Poll not found"}, status=404)
 
@@ -1079,6 +1088,9 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             return Response({"detail": "Option not found."}, status=404)
 
         poll = option.poll
+        if poll.is_deleted:
+            return Response({"detail": "This poll has been deleted."}, status=410)
+
         uid = getattr(request.user, "id", None)
         if not uid or not request.user.is_authenticated:
             return Response({"detail": "Authentication required."}, status=401)
@@ -1192,7 +1204,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         # build from the base manager to avoid default scope filtering
         qs = (FeedItem.objects
             .select_related("actor")
-            .filter(actor_id=request.user.id)
+            .filter(actor_id=request.user.id, is_deleted=False)
+            .filter(Q(metadata__is_deleted=False) | Q(metadata__is_deleted__isnull=True))
             .order_by("-created_at"))
 
         # still allow DRF filter_backends/pagination to run
@@ -1209,7 +1222,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
     def actor_by_id(self, request, actor_id=None, *args, **kwargs):
         qs = (FeedItem.objects
             .select_related("actor")
-            .filter(actor_id=int(actor_id))
+            .filter(actor_id=int(actor_id), is_deleted=False)
+            .filter(Q(metadata__is_deleted=False) | Q(metadata__is_deleted__isnull=True))
             .order_by("-created_at"))
 
         # still allow DRF filter_backends/pagination to run
@@ -1234,7 +1248,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         except (TypeError, ValueError):
             return Response({"detail": "Invalid poll_id"}, status=400)
 
-        poll = Poll.objects.filter(pk=pid).select_related("group").first()
+        poll = Poll.objects.filter(pk=pid, is_deleted=False).select_related("group", "community").first()
         if not poll:
             return Response({"detail": "Not found"}, status=404)
 
@@ -1249,11 +1263,25 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         if not allowed:
             return Response({"detail": "Forbidden"}, status=403)
 
+        reason = str((request.data or {}).get("reason") or "").strip()
         ct = ContentType.objects.get_for_model(Poll)
         with transaction.atomic():
-            FeedItem.objects.filter(target_content_type=ct, target_object_id=poll.id).delete()
-            poll.delete()
-        return Response(status=204)
+            feed_items = list(
+                FeedItem.objects.filter(
+                    target_content_type=ct,
+                    target_object_id=poll.id,
+                    is_deleted=False,
+                )
+            )
+            for feed_item in feed_items:
+                feed_item.soft_delete(user=request.user, reason=reason)
+            poll.soft_delete(user=request.user, reason=reason)
+
+        return Response({
+            "ok": True,
+            "deleted": "soft",
+            "message": "The poll was removed from the platform and remains stored in the database with its options and votes.",
+        }, status=200)
 
     @action(detail=True, methods=["delete"], url_path=r"poll/delete")
     def poll_delete_on_item(self, request, pk=None, *args, **kwargs):
@@ -1267,15 +1295,29 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         ct_poll = ContentType.objects.get_for_model(Poll)
         poll = None
         if item.target_content_type_id == ct_poll.id:
-            poll = Poll.objects.filter(pk=item.target_object_id).select_related("group").first()
+            poll = Poll.objects.filter(pk=item.target_object_id, is_deleted=False).select_related("group", "community").first()
         if not poll:
             pid = (item.metadata or {}).get("poll_id")
             if pid:
-                poll = Poll.objects.filter(pk=pid).select_related("group").first()
-        if not poll:
-            return Response({"detail": "Poll not found"}, status=404)
-
+                poll = Poll.objects.filter(pk=pid, is_deleted=False).select_related("group", "community").first()
         uid = request.user.id
+        if not poll:
+            # Legacy community polls may exist only as FeedItem metadata. Soft-delete
+            # the feed row without inventing or deleting a Poll record.
+            if str((item.metadata or {}).get("type") or "").lower() != "poll":
+                return Response({"detail": "Poll not found"}, status=404)
+            is_comm_owner = bool(item.community and item.community.owner_id == uid)
+            allowed = (item.actor_id == uid) or getattr(request.user, "is_staff", False) or is_comm_owner
+            if not allowed:
+                return Response({"detail": "Forbidden"}, status=403)
+            reason = str((request.data or {}).get("reason") or "").strip()
+            item.soft_delete(user=request.user, reason=reason)
+            return Response({
+                "ok": True,
+                "deleted": "soft",
+                "message": "The poll was removed from the platform and remains stored in the database with its comments, reactions and reports.",
+            }, status=200)
+
         if poll.group_id:
             allowed = (poll.created_by_id == uid) or self._can_create_poll_for_group(request, poll.group)
         else:
@@ -1286,10 +1328,15 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         if not allowed:
             return Response({"detail": "Forbidden"}, status=403)
 
+        reason = str((request.data or {}).get("reason") or "").strip()
         with transaction.atomic():
-            item.delete()   # remove the feed row
-            poll.delete()   # cascade options/votes
-        return Response(status=204)
+            item.soft_delete(user=request.user, reason=reason)
+            poll.soft_delete(user=request.user, reason=reason)
+        return Response({
+            "ok": True,
+            "deleted": "soft",
+            "message": "The poll was removed from the platform and remains stored in the database with its options and votes.",
+        }, status=200)
     
     # ---- add below your existing helpers/actions inside FeedItemViewSet ----
 
@@ -1339,6 +1386,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             "allows_multiple": bool(poll.allows_multiple),
             "is_anonymous": bool(poll.is_anonymous),
             "ends_at": poll.ends_at,
+            "is_deleted": False,
         }
         return meta
 
@@ -1391,7 +1439,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         from django.contrib.contenttypes.models import ContentType
         ct = ContentType.objects.get_for_model(Poll)
         item = (FeedItem.objects
-                .filter(target_content_type=ct, target_object_id=poll.id)
+                .filter(target_content_type=ct, target_object_id=poll.id, is_deleted=False)
+                .filter(Q(metadata__is_deleted=False) | Q(metadata__is_deleted__isnull=True))
                 .order_by("-id")
                 .first())
         if item:
@@ -1408,7 +1457,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         if not request.user or not request.user.is_authenticated:
             return Response({"detail": "Authentication required."}, status=401)
         try:
-            poll = Poll.objects.get(pk=int(poll_id))
+            poll = Poll.objects.get(pk=int(poll_id), is_deleted=False)
         except (ValueError, Poll.DoesNotExist):
             return Response({"detail": "Poll not found."}, status=404)
         data = request.data or {}
@@ -1431,7 +1480,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         except Exception:
             return Response({"detail": "poll_id is required"}, status=400)
 
-        poll = Poll.objects.filter(pk=pid).select_related("group").first()
+        poll = Poll.objects.filter(pk=pid, is_deleted=False).select_related("group").first()
         if not poll:
             return Response({"detail": "Not found"}, status=404)
         if not self._can_edit_poll(request, poll):
@@ -1446,7 +1495,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         if not request.user or not request.user.is_authenticated:
             return Response({"detail": "Authentication required."}, status=401)
         try:
-            item = FeedItem.objects.get(pk=int(pk))
+            item = FeedItem.objects.get(pk=int(pk), is_deleted=False)
         except (ValueError, FeedItem.DoesNotExist):
             return Response({"detail": "Feed item not found."}, status=404)
 
@@ -1458,7 +1507,7 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             return Response({"detail": "This feed item is not a poll."}, status=400)
 
         try:
-            poll = model.objects.get(pk=item.target_object_id)
+            poll = model.objects.get(pk=item.target_object_id, is_deleted=False)
         except model.DoesNotExist:
             return Response({"detail": "Poll not found."}, status=404)
 
