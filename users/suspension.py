@@ -13,13 +13,14 @@ from typing import Optional
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.sessions.models import Session
+from django.db import transaction
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
 # Blocked profile statuses that should prevent access
-BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased", "deleted")
 
 
 def invalidate_user_sessions(user_id: int) -> dict:
@@ -236,6 +237,146 @@ def reactivate_user(user_id: int, reason: str = "", performed_by: Optional[int] 
             "profile_status_updated_by",
         ]
     )
+
+    result["success"] = True
+    return result
+
+
+def soft_delete_user_account(
+    user_id: int,
+    reason: str = "",
+    performed_by: Optional[int] = None,
+) -> dict:
+    """Soft-delete a platform account without removing business or sync history.
+
+    Preserved intentionally:
+    - Django User and UserProfile primary keys
+    - WordPress user ID and group memberships
+    - Event ownership, registrations, applications, and attendance
+    - CognitoIdentity and Saleor customer identifiers
+    - External participant/event mappings and audit history
+
+    Access is removed by setting ``User.is_active=False`` and the profile lifecycle
+    status to ``deleted``. Cognito is disabled by the UserProfile post-save signal.
+    """
+    result = {
+        "success": False,
+        "user_id": user_id,
+        "sessions_invalidated": 0,
+        "tokens_blacklisted": 0,
+        "cognito_signout": False,
+    }
+
+    try:
+        with transaction.atomic():
+            user = User.objects.select_related("profile", "saleor_connection").get(id=user_id)
+            profile = user.profile
+
+            if profile.profile_status == "deleted":
+                result.update({"success": True, "already_deleted": True})
+                return result
+
+            user.is_active = False
+            user.save(update_fields=["is_active"])
+
+            profile.profile_status = "deleted"
+            profile.profile_status_reason = reason or "Deactivated by platform administrator"
+            profile.profile_status_updated_at = timezone.now()
+            if performed_by:
+                profile.profile_status_updated_by_id = performed_by
+            profile.save(
+                update_fields=[
+                    "profile_status",
+                    "profile_status_reason",
+                    "profile_status_updated_at",
+                    "profile_status_updated_by",
+                ]
+            )
+
+            # Invalidate locally stored Saleor dashboard credentials, but retain the
+            # Saleor customer/user mapping so orders and historical sync remain intact.
+            saleor_connection = getattr(user, "saleor_connection", None)
+            if saleor_connection:
+                saleor_connection.is_valid = False
+                saleor_connection.access_token_encrypted = ""
+                saleor_connection.refresh_token_encrypted = ""
+                saleor_connection.csrf_token_encrypted = ""
+                saleor_connection.last_error = "Platform account deactivated"
+                saleor_connection.save(
+                    update_fields=[
+                        "is_valid",
+                        "access_token_encrypted",
+                        "refresh_token_encrypted",
+                        "csrf_token_encrypted",
+                        "last_error",
+                    ]
+                )
+    except User.DoesNotExist:
+        result["error"] = "User not found"
+        return result
+    except Exception as exc:
+        logger.exception("Unable to soft-delete user %s", user_id)
+        result["error"] = str(exc)
+        return result
+
+    invalidation_stats = invalidate_user_sessions(user_id)
+    result["sessions_invalidated"] = invalidation_stats["sessions_deleted"]
+    result["tokens_blacklisted"] = invalidation_stats["tokens_blacklisted"]
+    result["cognito_signout"] = cognito_global_signout(user.username)
+    result["success"] = True
+    return result
+
+
+def restore_soft_deleted_user(
+    user_id: int,
+    reason: str = "",
+    performed_by: Optional[int] = None,
+) -> dict:
+    """Restore an account that was soft-deleted locally.
+
+    WordPress-originated deletions are not silently overridden. An administrator
+    must first confirm/reactivate the account in the source system and run user sync.
+    """
+    result = {"success": False, "user_id": user_id}
+    try:
+        with transaction.atomic():
+            user = User.objects.select_related("profile").get(id=user_id)
+            profile = user.profile
+
+            if profile.profile_status != "deleted":
+                result["error"] = "Only deleted accounts can be restored"
+                return result
+
+            if profile.wordpress_sync_status == profile.WORDPRESS_SYNC_STATUS_DELETED:
+                result["error"] = (
+                    "This account is deleted in WordPress. Restore it in WordPress "
+                    "and run user sync before restoring Connect access."
+                )
+                return result
+
+            user.is_active = True
+            user.save(update_fields=["is_active"])
+
+            profile.profile_status = "active"
+            profile.profile_status_reason = reason or "Restored by platform administrator"
+            profile.profile_status_updated_at = timezone.now()
+            if performed_by:
+                profile.profile_status_updated_by_id = performed_by
+            profile.save(
+                update_fields=[
+                    "profile_status",
+                    "profile_status_reason",
+                    "profile_status_updated_at",
+                    "profile_status_updated_by",
+                ]
+            )
+    except User.DoesNotExist:
+        result["error"] = "User not found"
+        return result
+    except Exception as exc:
+        logger.exception("Unable to restore soft-deleted user %s", user_id)
+        result["error"] = str(exc)
+        return result
 
     result["success"] = True
     return result

@@ -138,6 +138,7 @@ class ConversationViewSet(viewsets.ViewSet):
         member_group_ids = GroupMembership.objects.filter(
             user=user,
             status__in=member_statuses,
+            group__is_deleted=False,
         ).values_list("group_id", flat=True)
 
         # Events where this user is registered or created the event
@@ -167,6 +168,8 @@ class ConversationViewSet(viewsets.ViewSet):
             | Q(group_id__in=member_group_ids)
             | Q(event_id__in=allowed_event_ids)
             | Q(lounge_table_id__in=lounge_table_ids)
+        ).filter(
+            Q(group__isnull=True) | Q(group__is_deleted=False)
         )
 
         qs = qs.select_related(
@@ -299,6 +302,7 @@ class ConversationViewSet(viewsets.ViewSet):
             member_group_ids = GroupMembership.objects.filter(
                 user_id=user_id,
                 status__in=member_statuses,
+                group__is_deleted=False,
             ).values("group_id")
             registered_event_ids = EventRegistration.objects.filter(
                 user_id=user_id,
@@ -322,6 +326,8 @@ class ConversationViewSet(viewsets.ViewSet):
             conversation_filter,
             is_hidden=False,
             is_deleted=False,
+        ).filter(
+            Q(conversation__group__isnull=True) | Q(conversation__group__is_deleted=False)
         ).exclude(
             sender_id=user_id,
         ).exclude(
@@ -557,6 +563,15 @@ class ConversationViewSet(viewsets.ViewSet):
                     group = Group.objects.get(slug=str(group_ident))
                 except Group.DoesNotExist:
                     group = None  # still gracefully ignore
+
+            # Do not fall back to a room_key-only conversation when the
+            # identifier belongs to a retained soft-deleted group.
+            deleted_group_exists = Group.all_objects.filter(
+                Q(pk=group_id) if group_id is not None else Q(slug=str(group_ident)),
+                is_deleted=True,
+            ).exists()
+            if group is None and deleted_group_exists:
+                raise ValidationError({"group": "This group has been deleted and is no longer available."})
 
         # ---- if no group and no room_key at all, *then* complain ----
         if not group and not room_key:

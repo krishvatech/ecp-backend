@@ -135,7 +135,7 @@ def _is_user_suspended(user):
     """Check if user is suspended/fake/deceased."""
     if not user:
         return False
-    BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+    BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased", "deleted")
     profile = getattr(user, "profile", None)
     return profile and profile.profile_status in BLOCKED_PROFILE_STATUSES
 

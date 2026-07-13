@@ -376,7 +376,7 @@ class CognitoJWTAuthentication(BaseAuthentication):
                         logger.error(f"Error creating CognitoIdentity for {sub}: {e}")
 
             # --- Check suspension status before allowing authentication ---
-            BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+            BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased", "deleted")
             profile = getattr(user, "profile", None)
 
             # logger.info(
@@ -405,6 +405,17 @@ class CognitoJWTAuthentication(BaseAuthentication):
                         "This account has been disabled due to policy violations.",
                         code="account_disabled"
                     )
+                elif status == "deleted":
+                    raise AuthenticationFailed(
+                        "This account has been deactivated by an administrator. Please contact support.",
+                        code="account_deleted"
+                    )
+
+            if not user.is_active:
+                raise AuthenticationFailed(
+                    "This account has been deactivated by an administrator. Please contact support.",
+                    code="account_inactive",
+                )
             # ---------------------------------------------------------------
 
             # keep basic fields in sync

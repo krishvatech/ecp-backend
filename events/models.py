@@ -51,6 +51,7 @@ class Event(models.Model):
         ("live", "Live"),
         ("ended", "Ended"),
         ("cancelled", "Cancelled"),
+        ("archived", "Archived"),
     ]
     FORMAT_CHOICES = [
         ("in_person", "In-Person"),
@@ -88,6 +89,29 @@ class Event(models.Model):
     cancellation_message = models.TextField(blank=True, default="")
     recommended_event = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="recommended_from_cancelled"
+    )
+
+    # Archive / soft-delete lifecycle fields. Archiving never removes the Event
+    # row or any registrations, applications, participants, orders, recordings,
+    # WordPress IDs, Saleor IDs, canonical IDs, or external platform mappings.
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archived_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="archived_events",
+    )
+    archive_reason = models.TextField(blank=True, default="")
+    archived_from_status = models.CharField(max_length=16, blank=True, default="")
+    archived_from_is_hidden = models.BooleanField(default=False)
+    restored_at = models.DateTimeField(null=True, blank=True)
+    restored_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="restored_events",
     )
 
     # Admin visibility control

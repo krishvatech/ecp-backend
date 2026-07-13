@@ -54,6 +54,7 @@ from .views import (
 
 )
 from .wordpress_webhook import WordPressWebhookView, WordPressUserSyncView, WordPressProfileSyncAuthenticatedView
+from .account_login_status import AccountLoginStatusView
 
 # ---- NEW: Router for logged-in user's Education & Experience ----
 router = DefaultRouter()
@@ -108,6 +109,7 @@ urlpatterns = [
     # Registration & password flows
     path("register/", RegisterView.as_view(), name="register"),
     path("check-email/", CheckEmailExistsView.as_view(), name="check-email"),
+    path("login-status/", AccountLoginStatusView.as_view(), name="login-status"),
     path("admin/merge-users/", AdminMergeDuplicateUsersView.as_view(), name="admin-merge-users"),
     path("cognito/bootstrap/", CognitoBootstrapView.as_view(), name="cognito-bootstrap"),
     path("password/change/", ChangePasswordView.as_view(), name="password_change"),

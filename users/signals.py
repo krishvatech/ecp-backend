@@ -163,7 +163,7 @@ def sync_cognito_status(sender, instance, created, **kwargs):
     """
     Sync profile_status changes to Cognito (Enable/Disable user).
     Supported statuses:
-      - 'suspended', 'fake', 'deceased' -> Disable user in Cognito
+      - 'suspended', 'fake', 'deceased', 'deleted' -> Disable user in Cognito
       - 'active', 'under_review' -> Enable user in Cognito
     """
     # 1. Gather Cognito settings
@@ -174,7 +174,7 @@ def sync_cognito_status(sender, instance, created, **kwargs):
 
     # 2. Determine desired Cognito state
     #    True = Enabled, False = Disabled
-    BLOCKED_STATUSES = ("suspended", "fake", "deceased")
+    BLOCKED_STATUSES = UserProfile.ACCESS_BLOCKED_STATUSES
     should_be_enabled = (instance.profile_status not in BLOCKED_STATUSES)
 
     # 3. Perform sync in a separate thread or immediately (blocking)

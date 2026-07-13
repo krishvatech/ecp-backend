@@ -67,6 +67,7 @@ from .didit_client import (
 )
 from .cognito_groups import sync_staff_group
 from .wordpress_sync import get_profile_sync_service
+from .suspension import soft_delete_user_account, restore_soft_deleted_user
 from .saleor_sync import sync_platform_admin_to_saleor, remove_platform_admin_from_saleor, get_saleor_staff_by_email
 from .saleor_connection import (
     build_saleor_sso_url,
@@ -389,7 +390,7 @@ class UserViewSet(
             return qs
 
         # Exclude suspended/fake/deceased users from listings (but allow self)
-        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased", "deleted")
         qs = qs.exclude(
             ~Q(id=user.id),  # Exclude others (not self)
             profile__profile_status__in=BLOCKED_PROFILE_STATUSES
@@ -417,7 +418,7 @@ class UserViewSet(
             )
         
         # Check suspension status
-        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased", "deleted")
         profile = getattr(user, "profile", None)
         if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
              raise AuthenticationFailed("Account is suspended or disabled.")
@@ -668,7 +669,7 @@ class UserViewSet(
                     {"detail": "This profile is not available."},
                     status=status.HTTP_404_NOT_FOUND
                 )
-            elif profile.profile_status == "fake":
+            elif profile.profile_status in ("fake", "deleted"):
                 return Response(
                     {"detail": "This profile has been disabled."},
                     status=status.HTTP_404_NOT_FOUND
@@ -786,7 +787,7 @@ class UserViewSet(
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="roster")
     def roster(self, request):
         # Exclude suspended/fake/deceased users from roster
-        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased", "deleted")
 
         # Base query: active users, excluding blocked profiles
         qs = (
@@ -945,7 +946,7 @@ class UserViewSet(
         Applies same filtering as roster: active users, exclude superusers, exclude blocked profiles,
         respect directory_hidden, and apply search query.
         """
-        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased", "deleted")
 
         # Base query: active users, excluding blocked profiles
         qs = (
@@ -1400,7 +1401,7 @@ class CustomTokenRefreshView(TokenRefreshView):
                     user = User.objects.select_related('profile').get(pk=user_id)
 
                     # Check suspension status
-                    BLOCKED_PROFILE_STATUSES = ('suspended', 'fake', 'deceased')
+                    BLOCKED_PROFILE_STATUSES = ('suspended', 'fake', 'deceased', 'deleted')
                     profile = getattr(user, 'profile', None)
                     if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
                         status_messages = {
@@ -1736,7 +1737,7 @@ class SessionLoginView(APIView):
             return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Check suspension status before allowing login
-        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased", "deleted")
         profile = getattr(user, "profile", None)
         if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
             status_messages = {
@@ -1806,7 +1807,7 @@ class AuthUsersMeView(APIView):
         if _is_guest_user(user):
             return Response(_build_guest_me_payload(user), status=status.HTTP_200_OK)
 
-        BLOCKED = ("suspended", "fake", "deceased")
+        BLOCKED = ("suspended", "fake", "deceased", "deleted")
         profile = getattr(user, "profile", None)
         if profile and profile.profile_status in BLOCKED:
              raise AuthenticationFailed("Account is suspended or disabled.")
@@ -2733,8 +2734,14 @@ class StaffUserViewSet(viewsets.ModelViewSet):
                 filt |= Q(community__slug=slug)
             qs = qs.filter(filt)
 
-        # Filter by user type if specified
+        # Deleted users are retained for audit/sync integrity but hidden from normal tabs.
         user_type_filter = self.request.query_params.get("user_type_filter")
+        if user_type_filter == "deleted":
+            qs = qs.filter(profile__profile_status=UserProfile.PROFILE_STATUS_DELETED)
+        else:
+            qs = qs.exclude(profile__profile_status=UserProfile.PROFILE_STATUS_DELETED)
+
+        # Filter by user type if specified
         if user_type_filter == "superuser":
             qs = qs.filter(is_superuser=True)
         elif user_type_filter == "staff":
@@ -2890,11 +2897,112 @@ class StaffUserViewSet(viewsets.ModelViewSet):
             sync_staff_group(username=uname, is_staff=bool(is_staff))
         return Response({"updated": updated})
 
-    def perform_destroy(self, instance):
-        # The pre_delete signal 'remove_user_from_cognito' handles cleanup for:
-        # - Cognito: Deletes user account so they cannot login
-        # - Saleor: Removes user from Saleor as a customer account
-        instance.delete()
+    def _protected_sync_account_reason(self, instance):
+        """Return why a user cannot be deactivated until sync config is changed."""
+        protected = []
+
+        manda_user_id = getattr(settings, "MANDA_SYNC_DEFAULT_USER_ID", None)
+        if manda_user_id and int(manda_user_id) == instance.id:
+            protected.append("MANDA event sync default owner")
+
+        wp_service_user_id = getattr(settings, "WP_SYNC_SERVICE_ACCOUNT_ID", None)
+        if wp_service_user_id and int(wp_service_user_id) == instance.id:
+            protected.append("WordPress event sync service account")
+
+        # MANDA can fall back to the configured community owner when no explicit
+        # default user is configured. Protect that owner as well.
+        if not manda_user_id:
+            community_id = getattr(settings, "MANDA_SYNC_DEFAULT_COMMUNITY_ID", None)
+            if community_id:
+                try:
+                    from community.models import Community
+                    owner_id = Community.objects.filter(pk=int(community_id)).values_list("owner_id", flat=True).first()
+                    if owner_id == instance.id:
+                        protected.append("MANDA sync community owner")
+                except (TypeError, ValueError):
+                    pass
+
+        return ", ".join(protected)
+
+    @action(detail=True, methods=["post"], url_path="deactivate")
+    def deactivate(self, request, pk=None):
+        instance = self.get_object()
+        if instance.id == request.user.id:
+            return Response(
+                {"detail": "You cannot deactivate your own account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        protected_reason = self._protected_sync_account_reason(instance)
+        if protected_reason:
+            return Response(
+                {
+                    "detail": (
+                        f"This user is the {protected_reason}. Configure a different "
+                        "active sync account before deactivating this user."
+                    ),
+                    "code": "protected_sync_account",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        reason = str(request.data.get("reason") or "").strip()
+        result = soft_delete_user_account(
+            instance.id,
+            reason=reason,
+            performed_by=request.user.id,
+        )
+        if not result.get("success"):
+            return Response(
+                {"detail": result.get("error") or "Unable to deactivate user."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        instance.refresh_from_db()
+        return Response(
+            {
+                "detail": "User deactivated. Business records and sync mappings were preserved.",
+                "user": self.get_serializer(instance).data,
+                "sync_preserved": {
+                    "wordpress_identity": True,
+                    "group_memberships": True,
+                    "event_history": True,
+                    "saleor_customer_mapping": True,
+                    "cognito_identity": True,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        """Backward-compatible DELETE endpoint that performs a soft deactivation."""
+        return self.deactivate(request, pk=kwargs.get("pk"))
+
+    @action(detail=True, methods=["post"], url_path="restore")
+    def restore(self, request, pk=None):
+        instance = User.objects.select_related("profile").filter(pk=pk).first()
+        if not instance:
+            return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        result = restore_soft_deleted_user(
+            instance.id,
+            reason=str(request.data.get("reason") or "").strip(),
+            performed_by=request.user.id,
+        )
+        if not result.get("success"):
+            return Response(
+                {"detail": result.get("error") or "Unable to restore user."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        instance.refresh_from_db()
+        return Response(
+            {
+                "detail": "User access restored.",
+                "user": self.get_serializer(instance).data,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=False, methods=["post"], url_path="create-with-password")
     def create_with_password(self, request):

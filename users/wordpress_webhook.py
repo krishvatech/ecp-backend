@@ -17,9 +17,56 @@ from django.contrib.auth.models import User
 from .wordpress_api import get_wordpress_client
 from .wordpress_sync import get_profile_sync_service
 from .email_utils import update_cognito_user_email, set_cognito_user_password
+from .models import UserProfile
 from .serializers import UserProfileSerializer
 
 logger = logging.getLogger(__name__)
+
+
+ACCOUNT_STATUS_MESSAGES = {
+    UserProfile.PROFILE_STATUS_DELETED: (
+        "account_deleted",
+        "This account has been deactivated by an administrator. Please contact support.",
+    ),
+    UserProfile.PROFILE_STATUS_SUSPENDED: (
+        "account_suspended",
+        "Your account has been suspended. Please contact support for assistance.",
+    ),
+    UserProfile.PROFILE_STATUS_FAKE: (
+        "account_disabled",
+        "This account has been disabled due to policy violations.",
+    ),
+    UserProfile.PROFILE_STATUS_DECEASED: (
+        "account_memorialized",
+        "This account has been memorialized.",
+    ),
+}
+
+
+def _blocked_login_payload(user):
+    """Return a stable API payload when a local account cannot authenticate."""
+    profile = getattr(user, "profile", None)
+    profile_status = getattr(profile, "profile_status", "")
+
+    if profile_status in ACCOUNT_STATUS_MESSAGES:
+        code, detail = ACCOUNT_STATUS_MESSAGES[profile_status]
+        return {
+            "detail": detail,
+            "error": detail,
+            "code": code,
+            "profile_status": profile_status,
+        }
+
+    if not getattr(user, "is_active", False):
+        detail = "This account has been deactivated by an administrator. Please contact support."
+        return {
+            "detail": detail,
+            "error": detail,
+            "code": "account_inactive",
+            "profile_status": profile_status or "inactive",
+        }
+
+    return None
 
 
 def get_cognito_tokens_admin(username: str) -> dict:
@@ -42,7 +89,15 @@ def get_cognito_tokens_admin(username: str) -> dict:
 
         # Get the temporary password from user profile
         try:
-            user = User.objects.get(username=username)
+            user = User.objects.select_related("profile").get(username=username)
+            blocked_payload = _blocked_login_payload(user)
+            if blocked_payload:
+                logger.warning(
+                    "Refusing admin token generation for blocked user %s (%s)",
+                    user.id,
+                    blocked_payload["code"],
+                )
+                return {}
             temp_password = user.profile.cognito_temp_password
         except (User.DoesNotExist, AttributeError):
             logger.error(f"User {username} not found or has no temp password")
@@ -260,6 +315,17 @@ class WordPressUserSyncView(APIView):
                     {"error": "User not found in WordPress"},
                     status=status.HTTP_404_NOT_FOUND
                 )
+
+            # WordPress may remain the profile source, but it must never bypass a
+            # local administrator deactivation or issue replacement JWT/Cognito tokens.
+            blocked_payload = _blocked_login_payload(user)
+            if blocked_payload:
+                logger.warning(
+                    "Blocked WordPress login for user %s (%s)",
+                    user.id,
+                    blocked_payload["code"],
+                )
+                return Response(blocked_payload, status=status.HTTP_403_FORBIDDEN)
 
             # Keep Standard Login aligned with successful WordPress login credentials.
             if "email" in request.data:

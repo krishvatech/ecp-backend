@@ -1065,6 +1065,8 @@ def _serialize_event_summary(event, request=None) -> dict:
         "slug": event.slug,
         "title": event.title,
         "status": event.status,
+        "archived_at": event.archived_at,
+        "restored_at": event.restored_at,
         "is_live": event.is_live,
         "created_by_id": event.created_by_id,
         "start_time": event.start_time,
@@ -1663,11 +1665,11 @@ def _apply_bucket_filter(qs, bucket):
     
     if bucket == "live":
         # Live = status is 'live' (explicit) OR (status!='ended' AND now within start..end)
-        return qs.filter(Q(status="live") | (Q(start_time__lte=now, end_time__gte=now) & ~Q(status="ended"))).exclude(status="cancelled")
+        return qs.filter(Q(status="live") | (Q(start_time__lte=now, end_time__gte=now) & ~Q(status="ended"))).exclude(status__in=["cancelled", "archived"])
     
     elif bucket == "upcoming":
         # Upcoming = status!='ended' AND start_time > now
-        return qs.exclude(status="ended").filter(start_time__gt=now).exclude(status="cancelled")
+        return qs.exclude(status__in=["ended", "archived"]).filter(start_time__gt=now).exclude(status="cancelled")
         
     elif bucket == "past":
         # Past = status='ended' OR end_time < now OR (end_time is null AND start_time < now), EXCLUDING cancelled
@@ -1677,11 +1679,14 @@ def _apply_bucket_filter(qs, bucket):
             Q(end_time__isnull=True, start_time__lt=now)
         )
         # Exclude cancelled from past
-        return qs.exclude(status="cancelled")
+        return qs.exclude(status__in=["cancelled", "archived"])
         
     elif bucket == "cancelled":
         # Cancelled = status="cancelled"
         return qs.filter(status="cancelled")
+
+    elif bucket == "archived":
+        return qs.filter(status="archived")
     
     return qs
 
@@ -1845,6 +1850,164 @@ class EventPlatformListView(generics.ListAPIView):
         return EventPlatform.objects.filter(is_active=True).order_by("display_order", "name")
 
 
+def _event_lifecycle_source(event: Event) -> str:
+    """Return the platform that owns lifecycle changes for this event."""
+    if getattr(event, "wordpress_event_id", None):
+        return "wordpress"
+    mapping = event.external_mappings.order_by("id").first()
+    if mapping:
+        return mapping.source_platform
+    return IMAA_CONNECT_PLATFORM_SLUG
+
+
+def _event_lifecycle_source_error(event: Event):
+    source = _event_lifecycle_source(event)
+    if source == IMAA_CONNECT_PLATFORM_SLUG:
+        return None
+    if source == "wordpress":
+        return (
+            "This event is owned by WordPress. Cancel, archive, restore, or delete "
+            "it in WordPress so the next WordPress sync remains authoritative."
+        )
+    return (
+        f"This event is owned by {source}. Change its lifecycle on the source "
+        "platform so synchronization remains authoritative."
+    )
+
+
+def _event_has_active_archive_marker(event: Event) -> bool:
+    """Return True when the event is currently archived, including legacy/corrupted rows.
+
+    A stale live-room client previously could overwrite ``status='archived'`` with
+    ``live`` or ``ended`` while leaving ``archived_at`` set and ``restored_at``
+    empty. Treat that archive marker as authoritative so no live endpoint can
+    reactivate the event and so admin list filters keep it out of Hidden.
+    """
+    if getattr(event, "status", None) == "archived":
+        return True
+
+    archived_at = getattr(event, "archived_at", None)
+    restored_at = getattr(event, "restored_at", None)
+    if not archived_at:
+        return False
+    return restored_at is None or archived_at > restored_at
+
+
+def _event_hard_delete_blockers(event: Event) -> list[str]:
+    """Return reasons why this event cannot be physically deleted.
+
+    Physical deletion is intentionally limited to an unused, local-only draft.
+    Auto-created draft configuration (roles/templates/publications) is not a
+    blocker because it has no independent business history.
+    """
+    blockers = []
+    if event.status != "draft":
+        blockers.append("event is not a draft")
+
+    source_error = _event_lifecycle_source_error(event)
+    if source_error:
+        blockers.append(f"lifecycle is owned by {_event_lifecycle_source(event)}")
+
+    if event.wordpress_event_id:
+        blockers.append("WordPress event ID exists")
+    if event.saleor_product_id or event.saleor_variant_id:
+        blockers.append("Saleor product or variant ID exists")
+    if event.recording_url or event.rtk_recording_id or event.rtk_meeting_id:
+        blockers.append("recording or live meeting data exists")
+
+    related_checks = [
+        ("registrations", "registrations exist"),
+        ("applications", "applications exist"),
+        ("order_items", "orders or cart items exist"),
+        ("participants", "event participants exist"),
+        ("sessions", "event sessions exist"),
+        ("resources", "event resources exist"),
+        ("chat_conversations", "event conversations exist"),
+        ("feed_items", "activity-feed history exists"),
+        ("platform_sync_jobs", "platform sync history exists"),
+        ("external_mappings", "external event mapping exists"),
+        ("waiting_room_logs", "waiting-room audit history exists"),
+        ("assistance_requests", "assistance request history exists"),
+        ("networking_meetings", "networking meeting history exists"),
+        ("speed_networking_sessions", "speed-networking history exists"),
+    ]
+    for related_name, message in related_checks:
+        manager = getattr(event, related_name, None)
+        try:
+            if manager is not None and manager.exists():
+                blockers.append(message)
+        except (AttributeError, TypeError):
+            continue
+
+    # Preserve order while removing duplicates.
+    return list(dict.fromkeys(blockers))
+
+
+def _enabled_external_event_platform_slugs(event: Event) -> set[str]:
+    return set(
+        event.publications.filter(is_enabled=True, platform__is_active=True)
+        .exclude(platform__slug=IMAA_CONNECT_PLATFORM_SLUG)
+        .values_list("platform__slug", flat=True)
+    )
+
+
+def _enqueue_lifecycle_platform_sync(event: Event, *, enable: bool) -> None:
+    """Queue event upsert/disable without touching participant sync jobs."""
+    slugs = _enabled_external_event_platform_slugs(event)
+    if not slugs:
+        return
+
+    event_id = event.id
+
+    def enqueue_after_commit():
+        try:
+            from .platform_sync import enqueue_event_sync_jobs
+            from .tasks import process_platform_sync_jobs
+
+            fresh_event = Event.objects.get(pk=event_id)
+            if enable:
+                enqueue_event_sync_jobs(fresh_event, upsert_slugs=slugs)
+            else:
+                enqueue_event_sync_jobs(fresh_event, disable_slugs=slugs)
+
+            if getattr(settings, "EVENT_PLATFORM_SYNC_TRIGGER_ON_COMMIT", True):
+                process_platform_sync_jobs.delay(
+                    getattr(settings, "EVENT_PLATFORM_SYNC_BATCH_SIZE", 50)
+                )
+        except Exception as exc:
+            logger.warning(
+                "Could not enqueue lifecycle platform sync for event %s: %s",
+                event_id,
+                exc,
+            )
+
+    transaction.on_commit(enqueue_after_commit)
+
+
+def _queue_saleor_event_availability(event: Event, *, is_available: bool) -> None:
+    """Queue Saleor publish/unpublish while preserving product/variant IDs."""
+    if not getattr(settings, "SALEOR_ENABLED", False):
+        return
+    if not event.saleor_product_id:
+        return
+
+    event_id = event.id
+
+    def enqueue_after_commit():
+        try:
+            from .tasks import set_event_saleor_availability_async
+
+            set_event_saleor_availability_async.delay(event_id, bool(is_available))
+        except Exception as exc:
+            logger.warning(
+                "Could not queue Saleor availability for event %s: %s",
+                event_id,
+                exc,
+            )
+
+    transaction.on_commit(enqueue_after_commit)
+
+
 class EventViewSet(viewsets.ModelViewSet):
     """
     Full CRUD over events with:
@@ -1946,7 +2109,10 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # ✅ FOR DETAIL VIEWS: default to including ended/past events so hosts/participants don't 404
         # Also include "register" and "apply" so users can register/apply for replay events (which are "ended")
-        if self.action in ["retrieve", "update", "partial_update", "destroy", "register", "apply", "live_context"]:
+        if self.action in [
+            "retrieve", "update", "partial_update", "destroy", "register", "apply",
+            "live_context", "cancel", "archive", "restore", "lifecycle_options",
+        ]:
             include_ended = True
 
         # ✅ DRAFT EVENTS: Always visible to creator, regardless of include_ended
@@ -1955,6 +2121,17 @@ class EventViewSet(viewsets.ModelViewSet):
             draft_creator_filter = Q(status="draft", created_by_id=user.id)
         else:
             draft_creator_filter = Q()  # Empty Q object
+
+        archived_manager_filter = Q()
+        if (
+            user.is_authenticated
+            and not is_guest_user
+            and self.action in {"retrieve", "destroy", "archive", "restore", "lifecycle_options"}
+        ):
+            archived_manager_filter = (
+                Q(status="archived", created_by_id=user.id)
+                | Q(status="archived", community__owner_id=user.id)
+            )
 
         # Base visibility filters (only apply if include_ended is NOT requested)
         if not include_ended:
@@ -2014,7 +2191,8 @@ class EventViewSet(viewsets.ModelViewSet):
                     Q(Q(status="ended") | Q(end_time__lt=now), created_by_id=user.id) |  # Event creator
                     Q(Q(status="ended") | Q(end_time__lt=now), community__owner_id=user.id) |  # Community owner
                     Q(Q(status="ended") | Q(end_time__lt=now), id__in=registered_event_ids) |  # Registered users
-                    Q(status="ended", replay_enabled=True, replay_visible_to_participants=True)  # Replay-enabled events
+                    Q(status="ended", replay_enabled=True, replay_visible_to_participants=True) |  # Replay-enabled events
+                    archived_manager_filter
                 )
 
         # Hidden filter
@@ -2026,10 +2204,22 @@ class EventViewSet(viewsets.ModelViewSet):
         # can still use the earlier visibility rules above for direct access.
         is_hidden_param = (params.get("is_hidden") or "").strip().lower()
         show_hidden_only = is_hidden_param in {"1", "true", "yes", "on"}
+        is_archived_param = (params.get("is_archived") or "").strip().lower()
+        show_archived_only = is_archived_param in {"1", "true", "yes", "on"}
 
-        if show_hidden_only:
+        active_archive_q = Q(status="archived") | Q(
+            archived_at__isnull=False,
+            restored_at__isnull=True,
+        )
+
+        if show_archived_only:
             if is_platform_admin:
-                qs = qs.filter(is_hidden=True)
+                qs = qs.filter(active_archive_q)
+            else:
+                return Event.objects.none()
+        elif show_hidden_only:
+            if is_platform_admin:
+                qs = qs.filter(is_hidden=True).exclude(active_archive_q)
             else:
                 # Non-platform-admin users cannot list hidden events.
                 return Event.objects.none()
@@ -2167,10 +2357,10 @@ class EventViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(price_filter)
 
         # Status filter (support ?status=<status_param>)
-        # Valid statuses: draft, published, live, ended, cancelled
+        # Valid statuses: draft, published, live, ended, cancelled, archived
         status_param = (params.get("status") or "").strip().lower()
         if status_param:
-            valid_statuses = {"draft", "published", "live", "ended", "cancelled"}
+            valid_statuses = {"draft", "published", "live", "ended", "cancelled", "archived"}
             if status_param in valid_statuses:
                 qs = qs.filter(status=status_param)
             # else: silently ignore invalid status values (don't crash)
@@ -2231,6 +2421,8 @@ class EventViewSet(viewsets.ModelViewSet):
                 "community__id",
                 "community__owner_id",
                 "status",
+                "archived_at",
+                "restored_at",
                 "is_live",
                 "format",
                 "is_on_break",
@@ -2287,7 +2479,18 @@ class EventViewSet(viewsets.ModelViewSet):
 
         queryset = self.get_queryset().prefetch_related(*prefetches)
         self.queryset = queryset
-        return super().retrieve(request, *args, **kwargs)
+        instance = self.get_object()
+        if _event_has_active_archive_marker(instance):
+            return Response(
+                {
+                    "detail": "This event has been deleted from the platform.",
+                    "error": "event_soft_deleted",
+                    "database_record_preserved": True,
+                },
+                status=status.HTTP_410_GONE,
+            )
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
 
     @action(detail=True, methods=["get"], permission_classes=[AllowAny], url_path="summary")
     def summary(self, request, pk=None):
@@ -2578,37 +2781,15 @@ class EventViewSet(viewsets.ModelViewSet):
             )
 
     def destroy(self, request, *args, **kwargs):
+        """Soft-delete an event instead of removing its database row.
+
+        The normal DELETE endpoint intentionally uses the same protected
+        lifecycle operation as the UI "Delete Event" button. Registrations,
+        participants, applications, orders, recordings, external IDs, and sync
+        mappings remain in the database. Physical purge is reserved for an
+        explicit maintenance process outside the public/admin API.
         """
-        Allow hard deletion only if the event is a draft.
-        Platform admins (superuser only) may also permanently delete
-        any event status.  All related OrderItems are removed first to avoid
-        the ProtectedError raised by OrderItem.event (on_delete=PROTECT).
-        """
-        instance = self.get_object()
-
-        is_platform_admin = getattr(request.user, "is_superuser", False)
-
-        if instance.status != "draft" and not is_platform_admin:
-            return Response(
-                {"detail": "Only draft events can be hard deleted. For published events, please use the cancel functionality."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Pre-delete OrderItems linked to this event so the CASCADE on the
-        # Event row is not blocked by the PROTECT FK on OrderItem.event.
-        if is_platform_admin:
-            try:
-                from orders.models import OrderItem, Order
-                affected_order_ids = list(
-                    OrderItem.objects.filter(event=instance).values_list("order_id", flat=True)
-                )
-                OrderItem.objects.filter(event=instance).delete()
-                for order in Order.objects.filter(id__in=affected_order_ids):
-                    order.recalc()
-            except Exception:
-                pass  # orders app may not be installed in all environments
-
-        return super().destroy(request, *args, **kwargs)
+        return self.soft_delete(request, pk=kwargs.get("pk"))
 
     # ------------------ Dictionary Endpoints -----------------
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="by-slug/(?P<slug>[^/]+)")
@@ -5796,6 +5977,30 @@ class EventViewSet(viewsets.ModelViewSet):
             if not _is_event_manager(request.user, event):
                 return Response({"detail": "Only the host or admin can update live status."}, status=403)
 
+            # Never let a stale live-room page overwrite archive/cancellation state.
+            # Archive/cancel endpoints already stop the meeting and preserve all sync
+            # IDs, participants, registrations, orders, recordings, and mappings.
+            if _event_has_active_archive_marker(event):
+                return Response(
+                    {
+                        "ok": False,
+                        "error": "event_archived",
+                        "detail": "This event is archived. Restore it before starting a live meeting.",
+                        "status": "archived",
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            if event.status == "cancelled":
+                return Response(
+                    {
+                        "ok": False,
+                        "error": "event_cancelled",
+                        "detail": "This event has been cancelled and cannot enter or leave live state.",
+                        "status": "cancelled",
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
             if action_type == "start":
                 if event.status == "ended":
                     return Response(
@@ -6092,6 +6297,30 @@ class EventViewSet(viewsets.ModelViewSet):
 
         if not _is_event_manager(request.user, event):
             return Response({"detail": "Only the host or admin can end the meeting."}, status=403)
+
+        # A stale browser tab may still send end-meeting after another admin archived
+        # or cancelled the event. Preserve that lifecycle state instead of changing
+        # it to ended (which would make an archived+hidden event appear in Hidden).
+        if _event_has_active_archive_marker(event):
+            return Response(
+                {
+                    "ok": False,
+                    "error": "event_archived",
+                    "detail": "This event is archived; its archived status was preserved.",
+                    "status": "archived",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        if event.status == "cancelled":
+            return Response(
+                {
+                    "ok": False,
+                    "error": "event_cancelled",
+                    "detail": "This event is cancelled; its cancelled status was preserved.",
+                    "status": "cancelled",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         event.status = "ended"
         event.is_live = False
@@ -8347,6 +8576,23 @@ class EventViewSet(viewsets.ModelViewSet):
         now = timezone.now()
         user = request.user
 
+        if _event_has_active_archive_marker(event):
+            return Response(
+                {
+                    "error": "event_archived",
+                    "detail": "This event is archived. Lounge and breakout rooms are closed.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        if event.status == "cancelled":
+            return Response(
+                {
+                    "error": "event_cancelled",
+                    "detail": "This event is cancelled. Lounge and breakout rooms are closed.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         # ──── GUEST BRANCH ──────────────────────────────────────────────────────
         if getattr(user, "is_guest", False):
             # Guest participant (JWT authenticated)
@@ -9295,6 +9541,20 @@ class EventViewSet(viewsets.ModelViewSet):
             .order_by("-start_time")
         )
 
+        # Keep archived events out of All/Upcoming/Hidden. Event owners can
+        # retrieve them explicitly through the Archived tab without exposing
+        # archived events to ordinary registrants or guests.
+        active_archive_q = Q(status="archived") | Q(
+            archived_at__isnull=False,
+            restored_at__isnull=True,
+        )
+        is_archived_param = (request.query_params.get("is_archived") or "").strip().lower()
+        show_archived_only = is_archived_param in {"1", "true", "yes", "on"}
+        if show_archived_only:
+            qs = qs.filter(active_archive_q, created_by=user)
+        else:
+            qs = qs.exclude(active_archive_q)
+
         bucket = (request.query_params.get("bucket") or "").strip().lower()
         if bucket:
             qs = _apply_bucket_filter(qs, bucket)
@@ -9303,6 +9563,8 @@ class EventViewSet(viewsets.ModelViewSet):
         if is_hidden_param is not None:
             is_hidden_bool = is_hidden_param.lower() == "true"
             qs = qs.filter(is_hidden=is_hidden_bool)
+            if is_hidden_bool:
+                qs = qs.exclude(active_archive_q)
 
         # ✅ Card mode: Use lightweight serializer with Prefetch optimizations
         if view_mode == "card":
@@ -9425,6 +9687,28 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         event = self._get_join_event_or_404(pk)
         user = request.user
+
+        # Archived/cancelled events are terminal for live-room access. Check this
+        # before autoscaling, RTK meeting creation, registration mutation, or token
+        # issuance so a direct/stale URL cannot reactivate an archived event.
+        if _event_has_active_archive_marker(event):
+            return Response(
+                {
+                    "error": "event_archived",
+                    "detail": "This event is archived. Restore it before hosting or joining the live meeting.",
+                    "status": "archived",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        if event.status == "cancelled":
+            return Response(
+                {
+                    "error": "event_cancelled",
+                    "detail": "This event has been cancelled and cannot be hosted or joined.",
+                    "status": "cancelled",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         # Capacity protection before issuing main-room meeting token.
         # If autoscaling is enabled and we are below required capacity, return 202 so frontend can poll.
@@ -10052,6 +10336,23 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         user = request.user
 
+        if _event_has_active_archive_marker(event):
+            return Response(
+                {
+                    "error": "event_archived",
+                    "detail": "This event is archived. Live attendance cannot be confirmed.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        if event.status == "cancelled":
+            return Response(
+                {
+                    "error": "event_cancelled",
+                    "detail": "This event has been cancelled. Live attendance cannot be confirmed.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         room_type = request.data.get("room_type") or "main_room"
         table_id = request.data.get("table_id")
 
@@ -10124,6 +10425,23 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         event = self.get_object()
         user = request.user
+
+        if _event_has_active_archive_marker(event):
+            return Response(
+                {
+                    "error": "event_archived",
+                    "detail": "This event is archived. Preview access is closed.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        if event.status == "cancelled":
+            return Response(
+                {
+                    "error": "event_cancelled",
+                    "detail": "This event is cancelled. Preview access is closed.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         # Ensure event meeting exists
         try:
@@ -10269,6 +10587,16 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response(payload, status=status_code)
 
         # ──── VALIDATION ──────────────────────────────────────────────────────
+
+        # Check terminal lifecycle states before any RTK meeting/token work.
+        if _event_has_active_archive_marker(event):
+            logger.warning(f"[LIVE_REJOIN] event {event.id} is archived")
+            return _deny(
+                "event_archived",
+                "This event is archived. Restore it before rejoining.",
+                409,
+                cacheable=True,
+            )
 
         # Check if event exists and is not cancelled
         if event.status == "cancelled":
@@ -11374,21 +11702,44 @@ class EventViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="cancel")
     def cancel(self, request, pk=None):
-        """
-        Cancel an event. Only allowed by the host.
-        """
+        """Cancel a local event without deleting any related or external data."""
         event = self.get_object()
-        
+
         if not _is_event_manager(request.user, event):
-            return Response({"detail": "Only hosts can cancel this event."}, status=403)
-            
+            return Response({"detail": "Only event managers can cancel this event."}, status=403)
+
+        source_error = _event_lifecycle_source_error(event)
+        if source_error:
+            return Response(
+                {"detail": source_error, "lifecycle_source": _event_lifecycle_source(event)},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if event.status == "archived":
+            return Response(
+                {"detail": "Restore the archived event before changing its cancellation state."},
+                status=status.HTTP_409_CONFLICT,
+            )
         if event.status == "cancelled":
             return Response({"detail": "Event is already cancelled."}, status=400)
-            
-        message = request.data.get("cancellation_message", "")
+        effectively_ended = bool(
+            event.status == "ended"
+            or (
+                event.end_time
+                and event.end_time <= timezone.now()
+                and not event.is_live
+            )
+        )
+        if effectively_ended:
+            return Response(
+                {"detail": "Ended events should be archived rather than cancelled."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        message = str(request.data.get("cancellation_message", "") or "").strip()
         recommended_event_id = request.data.get("recommended_event_id")
         notify_participants = request.data.get("notify_participants", True)
-        
+
         event.status = "cancelled"
         event.cancelled_at = timezone.now()
         event.cancelled_by = request.user
@@ -11398,22 +11749,218 @@ class EventViewSet(viewsets.ModelViewSet):
                 event.recommended_event = Event.objects.get(id=recommended_event_id)
             except Event.DoesNotExist:
                 pass
-                
-        event.is_live = False # ensure it's not marked live
-        event.save(update_fields=["status", "cancelled_at", "cancelled_by", "cancellation_message", "recommended_event", "is_live", "updated_at"])
-        
+
+        event.is_live = False
+        event.is_on_break = False
+        event.is_featured = False
+        event.is_pinned = False
+        # The lifecycle endpoint queues a precise Saleor unpublish after commit.
+        event.skip_saleor_sync = True
+        event.save(update_fields=[
+            "status", "cancelled_at", "cancelled_by", "cancellation_message",
+            "recommended_event", "is_live", "is_on_break", "is_featured",
+            "is_pinned", "updated_at",
+        ])
+
+        _queue_saleor_event_availability(event, is_available=False)
+        _enqueue_lifecycle_platform_sync(event, enable=False)
+
         if notify_participants:
             try:
                 from .tasks import send_event_cancelled_task
                 send_event_cancelled_task.delay(event.id)
-            except ImportError:
-                pass
-            
+            except Exception as exc:
+                logger.warning("Could not queue event cancellation email for %s: %s", event.id, exc)
+
         return Response({
-            "detail": "Event cancelled successfully.",
+            "detail": "Event cancelled successfully. Historical data and sync IDs were preserved.",
             "status": "cancelled",
             "cancelled_at": event.cancelled_at.isoformat() if event.cancelled_at else None,
-            "cancellation_message": event.cancellation_message
+            "cancellation_message": event.cancellation_message,
+        })
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="lifecycle-options")
+    def lifecycle_options(self, request, pk=None):
+        event = self.get_object()
+        source = _event_lifecycle_source(event)
+        blockers = _event_hard_delete_blockers(event)
+        local_owned = source == IMAA_CONNECT_PLATFORM_SLUG
+        effectively_ended = bool(
+            event.status == "ended"
+            or (
+                event.end_time
+                and event.end_time <= timezone.now()
+                and not event.is_live
+            )
+        )
+        can_soft_delete = (
+            local_owned
+            and not _event_has_active_archive_marker(event)
+            and not event.is_live
+            and (
+                event.status in {"draft", "published", "ended", "cancelled"}
+                or effectively_ended
+            )
+        )
+        return Response({
+            "status": event.status,
+            "lifecycle_source": source,
+            "lifecycle_management_note": _event_lifecycle_source_error(event) or (
+                "This event is owned by IMAA Connect."
+            ),
+            "can_cancel": (
+                local_owned
+                and event.status in {"draft", "published", "live"}
+                and not effectively_ended
+            ),
+            # can_archive is kept temporarily for backward-compatible clients.
+            "can_archive": can_soft_delete,
+            "can_soft_delete": can_soft_delete,
+            "can_restore": local_owned and event.status == "archived",
+            # Event hard deletion is no longer exposed through the API.
+            "can_hard_delete": False,
+            "hard_delete_blockers": blockers,
+        })
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="archive")
+    def archive(self, request, pk=None):
+        """Internal soft-delete lifecycle handler kept for compatibility.
+
+        The event row and all business history remain in the database. The
+        event is removed from normal, hidden, and public event lists, external
+        availability is disabled, and no participant-cancellation job or
+        cancellation email is generated.
+        """
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({"detail": "Only event managers can delete this event."}, status=403)
+
+        source_error = _event_lifecycle_source_error(event)
+        if source_error:
+            return Response(
+                {"detail": source_error, "lifecycle_source": _event_lifecycle_source(event)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if event.status == "archived":
+            return Response({"detail": "Event has already been deleted from the platform."}, status=400)
+
+        effectively_ended = bool(
+            event.status == "ended"
+            or (
+                event.end_time
+                and event.end_time <= timezone.now()
+                and not event.is_live
+            )
+        )
+        if event.is_live or (event.status == "live" and not effectively_ended):
+            return Response(
+                {
+                    "detail": (
+                        "End the live meeting before deleting this event. "
+                        "All existing event data will remain preserved."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        if event.status not in {"draft", "ended", "cancelled", "published", "live"}:
+            return Response(
+                {"detail": f"Events with status '{event.status}' cannot be deleted."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        reason = str(
+            request.data.get("deletion_reason", request.data.get("archive_reason", "")) or ""
+        ).strip()
+        event.archived_from_status = "ended" if effectively_ended else event.status
+        event.archived_from_is_hidden = bool(event.is_hidden)
+        event.status = "archived"
+        event.archived_at = timezone.now()
+        event.archived_by = request.user
+        event.archive_reason = reason
+        event.restored_at = None
+        event.restored_by = None
+        event.is_hidden = True
+        event.is_live = False
+        event.is_on_break = False
+        event.is_featured = False
+        event.is_pinned = False
+        event.skip_saleor_sync = True
+        event.save(update_fields=[
+            "archived_from_status", "archived_from_is_hidden", "status",
+            "archived_at", "archived_by", "archive_reason", "restored_at",
+            "restored_by", "is_hidden", "is_live", "is_on_break",
+            "is_featured", "is_pinned", "updated_at",
+        ])
+
+        _queue_saleor_event_availability(event, is_available=False)
+        _enqueue_lifecycle_platform_sync(event, enable=False)
+        invalidate_event_list_caches(event.id)
+
+        return Response({
+            "detail": (
+                "Event deleted from the platform. The database record and all related "
+                "history, files, IDs, mappings, registrations, participants, and orders "
+                "were preserved."
+            ),
+            # The internal lifecycle value remains archived for backward compatibility.
+            "status": "archived",
+            "display_status": "deleted",
+            "previous_status": event.archived_from_status,
+            "deleted_at": event.archived_at.isoformat(),
+            "deletion_reason": event.archive_reason,
+            "database_record_preserved": True,
+            "visible_in_event_lists": False,
+            "cancellation_email_sent": False,
+        })
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="soft-delete")
+    def soft_delete(self, request, pk=None):
+        """User-facing alias for the protected event soft-delete operation."""
+        return self.archive(request, pk=pk)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="restore")
+    def restore(self, request, pk=None):
+        """Restore a locally archived event to its pre-archive lifecycle state."""
+        event = self.get_object()
+        if not _is_event_manager(request.user, event):
+            return Response({"detail": "Only event managers can restore this event."}, status=403)
+
+        source_error = _event_lifecycle_source_error(event)
+        if source_error:
+            return Response(
+                {"detail": source_error, "lifecycle_source": _event_lifecycle_source(event)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if event.status != "archived":
+            return Response({"detail": "Only archived events can be restored."}, status=400)
+
+        restored_status = event.archived_from_status or "draft"
+        if restored_status == "live":
+            # Never restart a live room implicitly during restore.
+            restored_status = "published"
+
+        event.status = restored_status
+        event.is_hidden = bool(event.archived_from_is_hidden)
+        event.restored_at = timezone.now()
+        event.restored_by = request.user
+        event.is_live = False
+        event.is_on_break = False
+        event.skip_saleor_sync = True
+        event.save(update_fields=[
+            "status", "is_hidden", "restored_at", "restored_by", "is_live",
+            "is_on_break", "updated_at",
+        ])
+
+        should_enable = restored_status == "published" and not event.is_hidden
+        _queue_saleor_event_availability(event, is_available=should_enable)
+        _enqueue_lifecycle_platform_sync(event, enable=should_enable)
+        invalidate_event_list_caches(event.id)
+
+        return Response({
+            "detail": "Event restored successfully.",
+            "status": event.status,
+            "is_hidden": event.is_hidden,
+            "restored_at": event.restored_at.isoformat(),
         })
 
     @action(detail=True, methods=["post"], url_path="invite-emails", parser_classes=[JSONParser])

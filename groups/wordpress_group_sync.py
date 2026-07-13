@@ -160,7 +160,7 @@ def _unique_group_slug(base_value: str, wp_group_id: int, existing_group: Group 
     base = slugify(base_value or "") or f"wordpress-group-{wp_group_id}"
     base = base[:180].strip("-") or f"wordpress-group-{wp_group_id}"
 
-    qs = Group.objects.all()
+    qs = Group.all_objects.all()
     if existing_group and existing_group.pk:
         qs = qs.exclude(pk=existing_group.pk)
 
@@ -195,7 +195,7 @@ def sync_wordpress_source_to_connect_group(source: WordPressGroupSource, *, acto
 
     group = source.linked_group
     if not group:
-        group = Group.objects.filter(
+        group = Group.all_objects.filter(
             source=Group.SOURCE_WORDPRESS,
             source_group_id=source_group_id,
         ).first()
@@ -441,6 +441,8 @@ def _get_or_create_connect_user_from_wordpress_member(
     if user is None:
         user = User.objects.filter(email__iexact=email).first()
 
+    existing_profile = getattr(user, "profile", None) if user is not None else None
+
     if user is None:
         user = User(
             username=_unique_username(username, wp_user_id),
@@ -469,7 +471,14 @@ def _get_or_create_connect_user_from_wordpress_member(
         if last_name and not user.last_name:
             user.last_name = last_name[:150]
             changed = True
-        if not user.is_active:
+        # A group sync may reactivate an account only when its local lifecycle
+        # status is still active/under-review. It must never override an admin
+        # soft delete, suspension, fake-account block, or memorialization.
+        can_sync_reactivate = (
+            existing_profile is None
+            or existing_profile.profile_status not in UserProfile.ACCESS_BLOCKED_STATUSES
+        )
+        if not user.is_active and can_sync_reactivate:
             user.is_active = True
             changed = True
         if changed:

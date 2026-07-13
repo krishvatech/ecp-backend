@@ -1356,6 +1356,13 @@ class EventSerializer(serializers.ModelSerializer):
             "cancellation_message",
             "recommended_event",
             "recommended_event_id",
+            "archived_at",
+            "archived_by_id",
+            "archive_reason",
+            "archived_from_status",
+            "archived_from_is_hidden",
+            "restored_at",
+            "restored_by_id",
             "is_hidden",
             "replay_available",
             "replay_availability_duration",
@@ -1384,6 +1391,10 @@ class EventSerializer(serializers.ModelSerializer):
             "cpd_cpe_credits",
             "saleor_product_id",
             "saleor_variant_id",
+            "wordpress_event_id",
+            "wordpress_event_url",
+            "wordpress_sync_status",
+            "wp_sync_locked",
             "attending_count",
             "registrations_count",
             "public_registered_count",
@@ -1515,6 +1526,17 @@ class EventSerializer(serializers.ModelSerializer):
             "pinned_at",
             "pinned_by_id",
             "is_featured",
+            "archived_at",
+            "archived_by_id",
+            "archive_reason",
+            "archived_from_status",
+            "archived_from_is_hidden",
+            "restored_at",
+            "restored_by_id",
+            "wordpress_event_id",
+            "wordpress_event_url",
+            "wordpress_sync_status",
+            "wp_sync_locked",
         ]
         extra_kwargs = {
             # Let custom validate_slug() handle uniqueness so create can auto-suffix collisions.
@@ -1569,6 +1591,23 @@ class EventSerializer(serializers.ModelSerializer):
                     "min": now_local,
                 })
                 self.fields[fname].style = style
+
+    def validate_status(self, value):
+        """Force lifecycle transitions through audited, sync-safe endpoints."""
+        current = getattr(self.instance, "status", None)
+        if current == "archived" and value != "archived":
+            raise serializers.ValidationError(
+                "Archived events must be restored through the restore endpoint."
+            )
+        if value == "archived" and current != "archived":
+            raise serializers.ValidationError(
+                "Use the archive endpoint to archive an event."
+            )
+        if value == "cancelled" and current != "cancelled":
+            raise serializers.ValidationError(
+                "Use the cancel endpoint to cancel an event."
+            )
+        return value
                 
                 
     def _normalize_url(self, u: str) -> str:

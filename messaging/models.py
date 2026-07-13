@@ -70,9 +70,13 @@ class Conversation(models.Model):
                 return guest.event_id == self.lounge_table.event_id and guest.lounge_table_id == self.lounge_table_id
             return False
 
-        # Group rooms → only members (active or pending)
+        # Group rooms → only members (active or pending). Soft-deleted
+        # groups remain stored but are no longer usable on the platform.
         if self.group_id:
-            from groups.models import GroupMembership
+            from groups.models import Group, GroupMembership
+
+            if not Group.objects.filter(pk=self.group_id).exists():
+                return False
 
             member_statuses = [
                 GroupMembership.STATUS_ACTIVE,

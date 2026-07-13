@@ -213,6 +213,36 @@ def sync_event_to_saleor_async(event_id):
 
 
 @shared_task
+def set_event_saleor_availability_async(event_id, is_available):
+    """Publish/unpublish a Saleor event product while preserving all IDs/history."""
+    if not getattr(settings, "SALEOR_ENABLED", False):
+        logger.info(
+            "Saleor integration disabled. Skipping availability update for event %s.",
+            event_id,
+        )
+        return {"skipped": True, "reason": "Saleor integration disabled"}
+
+    try:
+        event = Event.objects.get(id=event_id)
+    except Event.DoesNotExist:
+        logger.warning("Event %s not found for Saleor availability update", event_id)
+        return {"skipped": True, "reason": "event_not_found"}
+
+    try:
+        from .saleor_sync import set_event_saleor_availability
+
+        return set_event_saleor_availability(event, bool(is_available))
+    except Exception as exc:
+        logger.error(
+            "Failed to update Saleor availability for event %s: %s",
+            event_id,
+            exc,
+            exc_info=True,
+        )
+        raise
+
+
+@shared_task
 def delete_event_from_saleor_async(event_id):
     """
     Async background task to delete an event from Saleor.

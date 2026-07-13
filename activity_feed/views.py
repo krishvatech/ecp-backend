@@ -75,7 +75,11 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         )
         
     def get_queryset(self):
-        qs = super().get_queryset()
+        # Soft-deleted groups and their posts remain stored for audit/history,
+        # but they must not appear in any normal feed or direct feed-item view.
+        qs = super().get_queryset().filter(
+            Q(group__isnull=True) | Q(group__is_deleted=False)
+        )
         req = self.request
         me = req.user
         actor_id = self._parse_actor_id(req)
@@ -117,7 +121,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
             member_group_ids = list(
                 GroupMembership.objects.filter(
                     user=me,
-                    status=GroupMembership.STATUS_ACTIVE
+                    status=GroupMembership.STATUS_ACTIVE,
+                    group__is_deleted=False,
                 ).values_list("group_id", flat=True)
             )
             member_group_ids_str = [str(gid) for gid in member_group_ids]
@@ -227,7 +232,8 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
                 member_group_ids = list(
                     GroupMembership.objects.filter(
                         user=me,
-                        status=GroupMembership.STATUS_ACTIVE
+                        status=GroupMembership.STATUS_ACTIVE,
+                        group__is_deleted=False,
                     ).values_list("group_id", flat=True)
                 )
                 member_group_ids_str = [str(gid) for gid in member_group_ids]

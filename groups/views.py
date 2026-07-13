@@ -45,6 +45,7 @@ from .serializers import (
     WordPressGroupSourceSerializer,
     WordPressGroupSourceToggleSerializer,
 )
+from .soft_delete import soft_delete_group_tree
 from .wordpress_group_sync import (
     refresh_wordpress_group_sources,
     sync_enabled_wordpress_sources_to_connect_groups,
@@ -365,7 +366,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                     | models.Q(actor_id=me.id)
                 )
                 # Exclude posts from suspended/fake/deceased users (but allow own content)
-                BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+                BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased", "deleted")
                 items = items.filter(
                     models.Q(actor_id=me.id) |  # Always show user's own posts
                     ~models.Q(actor__profile__profile_status__in=BLOCKED_PROFILE_STATUSES)
@@ -770,13 +771,60 @@ class GroupViewSet(viewsets.ModelViewSet):
         return super().partial_update(request, *args, **kwargs)
 
     # Use (Endpoint): DELETE /api/groups/{id}/
-    # - Owner/admin/staff-only delete group.
-    # Ordering: Not applicable.
+    # - Owner/admin/staff-only SOFT delete for Connect-owned groups.
+    # - WordPress-owned groups remain source-controlled and cannot be deleted locally.
+    # - The group row, descendants, memberships, posts, polls, messages, reports,
+    #   notifications, and source mappings remain stored in the database.
     def destroy(self, request, *args, **kwargs):
         group = self.get_object()
         if not self._can_manage(request, group):
-            return Response({"detail": "Only owner/admin can delete a group."}, status=status.HTTP_403_FORBIDDEN)
-        return super().destroy(request, *args, **kwargs)
+            return Response(
+                {"detail": "Only owner/admin can delete a group."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        wordpress_managed = (
+            group.source == Group.SOURCE_WORDPRESS
+            or bool(group.source_group_id)
+            or WordPressGroupSource.objects.filter(linked_group_id=group.id).exists()
+        )
+        if wordpress_managed:
+            return Response(
+                {
+                    "detail": (
+                        "This group is managed by IMAA Main WordPress. "
+                        "Delete or deactivate it on WordPress so group synchronization remains authoritative."
+                    ),
+                    "code": "wordpress_group_source_controlled",
+                    "source": Group.SOURCE_WORDPRESS,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        reason = str(request.data.get("reason") or request.data.get("deletion_reason") or "").strip()
+        result = soft_delete_group_tree(
+            group,
+            actor=request.user,
+            reason=reason,
+            deletion_source=Group.DELETION_SOURCE_CONNECT,
+        )
+
+        return Response(
+            {
+                "ok": True,
+                "soft_deleted": True,
+                "retained_in_database": True,
+                "group_id": group.id,
+                "deleted_group_count": result.deleted_count,
+                "deleted_descendant_count": result.deleted_descendant_count,
+                "detail": (
+                    "The group has been removed from the platform. "
+                    "The group and all related history remain stored in the database."
+                ),
+                "visible_in": None,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     # Use: Hook after successful serializer.create to enforce community membership and emit FeedItem.
     # Ordering: Not applicable (single item create).
@@ -3243,7 +3291,7 @@ class GroupNotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_queryset(self):
         me = self.request.user
-        qs = GroupNotification.objects.filter(recipient=me).order_by("-created_at")
+        qs = GroupNotification.objects.filter(recipient=me, group__is_deleted=False).order_by("-created_at")
 
         kind = self.request.query_params.get("kind")
         unread = self.request.query_params.get("unread")

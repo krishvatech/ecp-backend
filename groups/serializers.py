@@ -34,6 +34,15 @@ class GroupSerializer(serializers.ModelSerializer):
 
     owner = serializers.SerializerMethodField(read_only=True)
 
+    # External source identity is maintained only by trusted WordPress sync code.
+    # Local group create/update requests must never be forced to provide these fields
+    # and must not be allowed to impersonate a WordPress-managed group.
+    source = serializers.CharField(read_only=True)
+    source_group_id = serializers.CharField(read_only=True)
+    source_slug = serializers.CharField(read_only=True)
+    source_url = serializers.URLField(read_only=True)
+    source_synced_at = serializers.DateTimeField(read_only=True)
+
     class Meta:
         model = Group
         fields = [
@@ -61,11 +70,16 @@ class GroupSerializer(serializers.ModelSerializer):
             "source_url",
             "source_synced_at",
         ]
-    read_only_fields = [
-        "id", "slug", "member_count", "created_by", "owner", "created_at", "updated_at",
-        "parent_group", "parent_groups", "parent_links",
-        "source", "source_group_id", "source_slug", "source_url", "source_synced_at",
-    ]
+        read_only_fields = [
+            "id", "slug", "member_count", "created_by", "owner", "created_at", "updated_at",
+            "parent_group", "parent_groups", "parent_links",
+            "source", "source_group_id", "source_slug", "source_url", "source_synced_at",
+        ]
+        # The model has a conditional uniqueness constraint for WordPress identity.
+        # DRF converts that constraint into an input validator and incorrectly makes
+        # source_group_id mandatory for normal local group creation. The database
+        # constraint remains authoritative for trusted sync writes.
+        validators = []
 
     def validate(self, attrs):
         """
@@ -281,7 +295,7 @@ class GroupSerializer(serializers.ModelSerializer):
              # optimization if viewset prefetches
              links = obj._prefetched_parent_links
         else:
-             links = obj.parent_links.filter(status='approved').select_related('parent_group')
+             links = obj.parent_links.filter(status='approved', parent_group__is_deleted=False).select_related('parent_group')
              
         for link in links:
              p = link.parent_group
@@ -321,7 +335,7 @@ class GroupSerializer(serializers.ModelSerializer):
             return None
             
         from .models import GroupParentAssociation
-        links = obj.parent_links.all().select_related('parent_group', 'requested_by', 'reviewed_by')
+        links = obj.parent_links.filter(parent_group__is_deleted=False).select_related('parent_group', 'requested_by', 'reviewed_by')
         data = []
         for link in links:
             data.append({

@@ -153,6 +153,16 @@ class UserProfile(models.Model):
     PROFILE_STATUS_SUSPENDED = "suspended"
     PROFILE_STATUS_DECEASED = "deceased"
     PROFILE_STATUS_FAKE = "fake"
+    PROFILE_STATUS_DELETED = "deleted"
+
+    # All statuses that must block login, API access, directory visibility,
+    # and automatic reactivation by external sync jobs.
+    ACCESS_BLOCKED_STATUSES = (
+        PROFILE_STATUS_SUSPENDED,
+        PROFILE_STATUS_DECEASED,
+        PROFILE_STATUS_FAKE,
+        PROFILE_STATUS_DELETED,
+    )
 
     PROFILE_STATUS_CHOICES = [
         (PROFILE_STATUS_ACTIVE, "Active"),
@@ -160,6 +170,7 @@ class UserProfile(models.Model):
         (PROFILE_STATUS_SUSPENDED, "Suspended"),
         (PROFILE_STATUS_DECEASED, "Deceased"),
         (PROFILE_STATUS_FAKE, "Fake/Impersonation"),
+        (PROFILE_STATUS_DELETED, "Deleted"),
     ]
 
     profile_status = models.CharField(

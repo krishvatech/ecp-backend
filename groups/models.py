@@ -4,12 +4,34 @@ from django.db import models
 from django.utils.text import slugify
 from django.db.models import Q
 
+
+class ActiveGroupManager(models.Manager):
+    """Default manager used by user-facing code.
+
+    Soft-deleted groups stay in the database and remain available through
+    ``Group.all_objects`` for audit, restore, and external sync identity
+    matching, but they are excluded from normal platform queries.
+    """
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
 class Group(models.Model):
     SOURCE_MANUAL = "manual"
     SOURCE_WORDPRESS = "wordpress"
     SOURCE_CHOICES = [
         (SOURCE_MANUAL, "Manual"),
         (SOURCE_WORDPRESS, "WordPress IMAA"),
+    ]
+
+    DELETION_SOURCE_CONNECT = "connect"
+    DELETION_SOURCE_WORDPRESS = "wordpress"
+    DELETION_SOURCE_PARENT = "parent"
+    DELETION_SOURCE_CHOICES = [
+        (DELETION_SOURCE_CONNECT, "IMAA Connect"),
+        (DELETION_SOURCE_WORDPRESS, "WordPress IMAA"),
+        (DELETION_SOURCE_PARENT, "Parent group deletion"),
     ]
 
     VISIBILITY_PUBLIC = 'public'
@@ -82,6 +104,30 @@ class Group(models.Model):
     source_url = models.URLField(blank=True)
     source_synced_at = models.DateTimeField(null=True, blank=True)
 
+    # Soft delete lifecycle. The row and all related history remain stored.
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="groups_soft_deleted",
+    )
+    deletion_reason = models.TextField(blank=True)
+    deletion_source = models.CharField(
+        max_length=20,
+        choices=DELETION_SOURCE_CHOICES,
+        blank=True,
+        db_index=True,
+    )
+    deletion_batch_id = models.UUIDField(null=True, blank=True, db_index=True)
+
+    # Keep normal application queries clean while giving sync/audit code an
+    # explicit way to resolve retained soft-deleted rows.
+    objects = ActiveGroupManager()
+    all_objects = models.Manager()
+
     # owner can exist, but owner/admin logic is out of this moderator scope
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -100,12 +146,15 @@ class Group(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        default_manager_name = 'objects'
+        base_manager_name = 'all_objects'
         indexes = [
             models.Index(fields=['slug']),
             models.Index(fields=['community', 'slug']),
             models.Index(fields=['parent']),
             models.Index(fields=['parent', 'community']),
             models.Index(fields=['source', 'source_group_id']),
+            models.Index(fields=['is_deleted', 'created_at']),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -123,7 +172,7 @@ class Group(models.Model):
             base = slugify(self.name)
             slug = base
             i = 2
-            while Group.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+            while Group.all_objects.filter(slug=slug).exclude(pk=self.pk).exists():
                 slug = f"{base}-{i}"
                 i += 1
             self.slug = slug

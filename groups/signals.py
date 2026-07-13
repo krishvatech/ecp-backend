@@ -43,7 +43,7 @@ def _store_prev_group_state(sender, instance: Group, **kwargs):
     """
     if instance.pk:
         try:
-            prev = Group.objects.only("visibility", "join_policy").get(pk=instance.pk)
+            prev = Group.all_objects.only("visibility", "join_policy").get(pk=instance.pk)
             instance._prev_visibility = prev.visibility
             instance._prev_join_policy = prev.join_policy
         except Group.DoesNotExist:
@@ -67,6 +67,8 @@ def _notify_on_membership_change(sender, instance: GroupMembership, created, **k
     # recipients: owner/admin/mods (exclude the actor)
     try:
         group = instance.group
+        if getattr(group, "is_deleted", False):
+            return
         actor = instance.user
         recipients = _admin_and_owner_ids(group)
         if getattr(actor, "id", None):
@@ -193,7 +195,7 @@ def _propagate_admin_to_subgroups(sender, instance: GroupMembership, created, **
         return
 
     group = getattr(instance, "group", None)
-    if not group or not getattr(group, "id", None):
+    if not group or not getattr(group, "id", None) or getattr(group, "is_deleted", False):
         return
 
     subgroups = Group.objects.filter(parent=group)

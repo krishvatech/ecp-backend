@@ -2,7 +2,7 @@ from django.db.models.signals import post_save, pre_delete, pre_save, post_migra
 from django.dispatch import receiver
 from django.db import transaction
 from .models import Event, EventParticipant, PostAcceptanceFormTemplate, EventRegistration
-from .saleor_sync import sync_event_to_saleor_sync, delete_event_from_saleor
+from .saleor_sync import sync_event_to_saleor_sync
 from .services.post_acceptance_forms import is_online_event, trigger_post_acceptance_forms
 from .services.role_seeding import seed_default_roles_for_event
 import threading
@@ -95,8 +95,26 @@ def sync_event_to_saleor_signal(sender, instance, created, **kwargs):
     if not getattr(settings, "SALEOR_ENABLED", False):
         return
 
-    # Check if we are saving because of the sync itself
+    # Check if we are saving because of the sync itself or because a lifecycle
+    # endpoint will enqueue a precise availability update after commit.
     if getattr(instance, "skip_saleor_sync", False):
+        return
+
+    # Cancel/archive are reversible. Never delete the Saleor product; only make
+    # it unavailable while preserving product/variant IDs and order history.
+    if instance.status in {"cancelled", "archived"}:
+        def queue_unpublish_task():
+            from .tasks import set_event_saleor_availability_async
+            try:
+                set_event_saleor_availability_async.delay(instance.id, False)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to queue Saleor unpublish for event %s: %s",
+                    instance.id,
+                    exc,
+                )
+
+        transaction.on_commit(queue_unpublish_task)
         return
 
     # Check if we are saving because of the sync itself (backwards compat/fallback)
@@ -463,23 +481,18 @@ def create_post_acceptance_forms_for_event(sender, instance, created, **kwargs):
 
 
 @receiver(pre_delete, sender=Event)
-def delete_event_from_saleor_signal(sender, instance, **kwargs):
-    """
-    Queue async task to delete Saleor product when event is deleted.
-    Runs in background Celery task, not blocking the request.
-    Only queues if SALEOR_ENABLED is True.
-    """
-    from django.conf import settings
-    if not getattr(settings, "SALEOR_ENABLED", False):
-        return
+def protect_saleor_product_on_event_delete(sender, instance, **kwargs):
+    """Never delete a Saleor product from the normal Event delete path.
 
-    from .tasks import delete_event_from_saleor_async
-    try:
-        delete_event_from_saleor_async.delay(instance.id)
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(
-            f"Failed to queue Saleor deletion task for event {instance.id}: {e}"
+    The API permits physical deletion only for a completely unused local draft,
+    and such a draft must not have Saleor IDs. Keeping this guard here prevents
+    future ORM/admin deletes from silently destroying product or order history.
+    """
+    if instance.saleor_product_id or instance.saleor_variant_id:
+        logger.error(
+            "Blocked implicit Saleor product deletion for Event %s. "
+            "Use archive/cancel; Saleor availability is managed separately.",
+            instance.id,
         )
 
 

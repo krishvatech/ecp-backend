@@ -54,7 +54,7 @@ from django.http import HttpResponseForbidden, JsonResponse
 PLATFORM_ADMIN_GROUP = "platform_admin"
 
 # Profile statuses that should block operations
-BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased", "deleted")
 
 
 class SuspendedUserMiddleware:
@@ -94,10 +94,24 @@ class SuspendedUserMiddleware:
             
             if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
                 logger.warning(f"SuspendedUserMiddleware: Blocking user {user.username} due to status {status}")
+                code_by_status = {
+                    "suspended": "account_suspended",
+                    "fake": "account_disabled",
+                    "deceased": "account_memorialized",
+                    "deleted": "account_deleted",
+                }
+                detail_by_status = {
+                    "deleted": "This account has been deactivated.",
+                    "deceased": "This account has been memorialized.",
+                    "fake": "This account has been disabled.",
+                }
                 return JsonResponse(
                     {
-                        "detail": "Your account has been suspended. You cannot perform this action.",
-                        "code": "account_suspended",
+                        "detail": detail_by_status.get(
+                            profile.profile_status,
+                            "Your account has been suspended. You cannot perform this action.",
+                        ),
+                        "code": code_by_status.get(profile.profile_status, "account_suspended"),
                         "profile_status": profile.profile_status,
                     },
                     status=403

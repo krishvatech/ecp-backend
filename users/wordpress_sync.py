@@ -269,8 +269,16 @@ class WordPressProfileSyncService:
             # Update user and profile with WordPress data
             self._update_user_from_wordpress(user, profile, wp_user_data, override_email=override_email)
 
-            # Ensure Cognito user exists (create if needed)
-            self._ensure_cognito_user_exists(user)
+            # Keep sync metadata current, but never recreate/enable login for an
+            # account that an administrator has deleted/suspended locally.
+            if user.is_active and profile.profile_status not in UserProfile.ACCESS_BLOCKED_STATUSES:
+                self._ensure_cognito_user_exists(user)
+            else:
+                logger.info(
+                    "Skipped Cognito provisioning for blocked/inactive synced user %s (status=%s)",
+                    user.id,
+                    profile.profile_status,
+                )
 
             return user, is_new
 
@@ -563,11 +571,20 @@ class WordPressProfileSyncService:
                 try:
                     profile = UserProfile.objects.get(wordpress_id=wp_user_id)
                     user = profile.user
-                    # Deactivate instead of deleting
+                    # Deactivate instead of deleting. Preserve all local event/group
+                    # history and mark both source sync and account lifecycle status.
                     user.is_active = False
-                    user.save()
-                    profile.wordpress_sync_status = "deleted"
-                    profile.save()
+                    user.save(update_fields=["is_active"])
+                    profile.wordpress_sync_status = UserProfile.WORDPRESS_SYNC_STATUS_DELETED
+                    profile.profile_status = UserProfile.PROFILE_STATUS_DELETED
+                    profile.profile_status_reason = "Deleted in WordPress"
+                    profile.profile_status_updated_at = timezone.now()
+                    profile.save(update_fields=[
+                        "wordpress_sync_status",
+                        "profile_status",
+                        "profile_status_reason",
+                        "profile_status_updated_at",
+                    ])
                     logger.info(f"Deactivated user {user.id} after WordPress deletion")
                     return True
                 except UserProfile.DoesNotExist:

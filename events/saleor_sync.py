@@ -703,6 +703,84 @@ def delete_event_from_saleor(event):
         logger.error(f"❌ Exception deleting Saleor product for event {event.id}: {e}")
 
 
+def set_event_saleor_availability(event, is_available):
+    """Publish/unpublish an existing Saleor event product without deleting it.
+
+    Cancellation and archive are reversible local lifecycle operations. The
+    Saleor Product/Variant IDs and order history must therefore remain intact.
+    """
+    saleor_url = getattr(settings, "SALEOR_API_URL", None)
+    saleor_token = getattr(settings, "SALEOR_APP_TOKEN", None)
+    channel_slug = getattr(settings, "SALEOR_CHANNEL_SLUG", "global-events")
+
+    if not saleor_url or not saleor_token:
+        logger.warning(
+            "Skipping Saleor availability update: settings missing for event %s",
+            event.id,
+        )
+        return {"skipped": True, "reason": "settings_missing"}
+
+    if not event.saleor_product_id:
+        logger.info(
+            "Event %s has no Saleor product; availability update is a no-op.",
+            event.id,
+        )
+        return {"skipped": True, "reason": "no_product"}
+
+    headers = {
+        "Authorization": f"Bearer {saleor_token}",
+        "Content-Type": "application/json",
+    }
+    channel_id = _get_channel_id(saleor_url, headers, channel_slug)
+    if not channel_id:
+        raise RuntimeError(f"Saleor channel '{channel_slug}' could not be resolved.")
+
+    mutation = """
+    mutation UpdateProductChannel($id: ID!, $input: ProductChannelListingUpdateInput!) {
+      productChannelListingUpdate(id: $id, input: $input) {
+        errors { field message code }
+      }
+    }
+    """
+    variables = {
+        "id": event.saleor_product_id,
+        "input": {
+            "updateChannels": [{
+                "channelId": channel_id,
+                "isPublished": bool(is_available),
+                "isAvailableForPurchase": bool(is_available),
+                "visibleInListings": bool(is_available),
+            }]
+        },
+    }
+
+    response = requests.post(
+        saleor_url,
+        json={"query": mutation, "variables": variables},
+        headers=headers,
+        timeout=20,
+    )
+    response.raise_for_status()
+    response_data = response.json()
+    top_level_errors = response_data.get("errors") or []
+    mutation_errors = (
+        response_data.get("data", {})
+        .get("productChannelListingUpdate", {})
+        .get("errors", [])
+    )
+    errors = top_level_errors or mutation_errors
+    if errors:
+        raise RuntimeError(f"Saleor availability update failed: {errors}")
+
+    logger.info(
+        "%s Saleor product %s for event %s without deleting product or variant IDs.",
+        "Published" if is_available else "Unpublished",
+        event.saleor_product_id,
+        event.id,
+    )
+    return {"ok": True, "is_available": bool(is_available)}
+
+
 def json_description(text):
     # Saleor 3.x description is JSON (EditorJS style)
     # MUST return a string, not a dict object for the GraphQL variable if the schema expects JSONScalar

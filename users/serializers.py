@@ -148,8 +148,17 @@ class UserProfileMiniSerializer(serializers.ModelSerializer):
             "connections_hidden",
             "hide_from_others_connections",
             "can_edit_profiles",
+            "profile_status",
+            "profile_status_reason",
+            "profile_status_updated_at",
         )
-        read_only_fields = ("last_activity_at", "is_online")
+        read_only_fields = (
+            "last_activity_at",
+            "is_online",
+            "profile_status",
+            "profile_status_reason",
+            "profile_status_updated_at",
+        )
 
     def get_is_online(self, obj):
         # Uses the @property is_online from UserProfile
@@ -287,7 +296,7 @@ class UserSerializer(serializers.ModelSerializer):
         return validate_email_strict(value, instance=self.instance)
 
     def get_posts_count(self, obj):
-        posts = FeedItem.objects.filter(actor_id=obj.id)
+        posts = FeedItem.objects.filter(actor_id=obj.id).filter(Q(group__isnull=True) | Q(group__is_deleted=False))
 
         if obj.is_superuser:
             return posts.filter(
@@ -477,24 +486,53 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         except User.DoesNotExist:
             raise AuthenticationFailed("No active account found with the given credentials")
 
+        # Return a stable account-status error before issuing any token.  The
+        # structured payload lets every login UI show the real reason instead
+        # of retrying Cognito/WordPress and ending with "invalid credentials".
+        profile = getattr(user, "profile", None)
+        blocked_statuses = UserProfile.ACCESS_BLOCKED_STATUSES
+        if profile and profile.profile_status in blocked_statuses:
+            status_messages = {
+                UserProfile.PROFILE_STATUS_SUSPENDED: (
+                    "account_suspended",
+                    "Your account has been suspended. Please contact support for assistance.",
+                ),
+                UserProfile.PROFILE_STATUS_DECEASED: (
+                    "account_memorialized",
+                    "This account has been memorialized.",
+                ),
+                UserProfile.PROFILE_STATUS_FAKE: (
+                    "account_disabled",
+                    "This account has been disabled due to policy violations.",
+                ),
+                UserProfile.PROFILE_STATUS_DELETED: (
+                    "account_deleted",
+                    "This account has been deactivated by an administrator. Please contact support.",
+                ),
+            }
+            code, detail = status_messages[profile.profile_status]
+            raise AuthenticationFailed(
+                {
+                    "detail": detail,
+                    "code": code,
+                    "profile_status": profile.profile_status,
+                },
+                code=code,
+            )
+
         if not user.is_active:
-            raise AuthenticationFailed("User account is disabled")
+            detail = "This account has been deactivated by an administrator. Please contact support."
+            raise AuthenticationFailed(
+                {
+                    "detail": detail,
+                    "code": "account_inactive",
+                    "profile_status": getattr(profile, "profile_status", "inactive"),
+                },
+                code="account_inactive",
+            )
 
         if not user.check_password(password):
             raise AuthenticationFailed("No active account found with the given credentials")
-
-        # Check suspension status before issuing tokens
-        BLOCKED_PROFILE_STATUSES = ("suspended", "fake", "deceased")
-        profile = getattr(user, "profile", None)
-        if profile and profile.profile_status in BLOCKED_PROFILE_STATUSES:
-            status_messages = {
-                "suspended": "Your account has been suspended. Please contact support for assistance.",
-                "deceased": "This account has been memorialized.",
-                "fake": "This account has been disabled due to policy violations.",
-            }
-            raise AuthenticationFailed(
-                status_messages.get(profile.profile_status, "Account is not accessible.")
-            )
 
         request = self.context.get("request")
         tz_value = attrs.get("timezone") or ""
