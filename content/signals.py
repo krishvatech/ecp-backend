@@ -42,14 +42,7 @@ def on_resource_saved(sender, instance: Resource, created: bool, **kwargs) -> No
         not created and (not was_published) and instance.is_published
     )
 
-    # helpful debug
-    print(
-        f"🔔 SIGNAL Resource: created={created} "
-        f"was_published={was_published} now_published={instance.is_published} "
-        f"title={instance.title}"
-    )
-
-    if not became_published:
+    if instance.is_deleted or not became_published:
         return
 
     metadata = {
@@ -73,10 +66,8 @@ def on_resource_saved(sender, instance: Resource, created: bool, **kwargs) -> No
                 actor_id=instance.uploaded_by_id,
                 metadata=metadata,
             )
-            print("✅ Feed item task dispatched")
         except Exception as e:
             logger.error(f"Error creating feed item: {e}")
-            print(f"❌ Error: {e}")
     else:
         logger.info("Resource publish: skipping FeedItem (CONTENT_RESOURCE_TO_FEED=False)")
     # Analytics (only when it actually becomes published)

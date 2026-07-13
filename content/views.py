@@ -86,7 +86,13 @@ class ResourceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs = Resource.objects.all().select_related("community", "event", "uploaded_by")
+        qs = (
+            Resource.objects
+            .select_related("community", "event", "uploaded_by")
+            # Internally, archived is the event soft-delete state. Resources for a
+            # deleted event remain stored but are not exposed on the platform.
+            .filter(Q(event__isnull=True) | ~Q(event__status="archived"))
+        )
 
         # Superusers can see all resources
         if user.is_superuser:
@@ -168,7 +174,9 @@ class ResourceViewSet(viewsets.ModelViewSet):
             or instance.community.owner_id == user.id
         ):
             raise PermissionDenied("You do not have permission to delete this resource.")
-        instance.delete()
+        payload = self.request.data
+        reason = payload.get("reason", "") if hasattr(payload, "get") else ""
+        instance.soft_delete(user=user, reason=reason)
         
     def _maybe_schedule(self, instance: Resource):
         """Schedule a publish job if this is a draft with a future time."""
@@ -200,7 +208,12 @@ def download_resource(request, pk):
     """
     try:
         # Get the resource
-        resource = Resource.objects.get(pk=pk, is_published=True)
+        resource = Resource.objects.select_related("event").get(
+            pk=pk,
+            is_published=True,
+        )
+        if resource.event_id and resource.event.status == "archived":
+            raise Resource.DoesNotExist
         
         # Only files can be downloaded this way
         if resource.type != 'file':

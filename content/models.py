@@ -14,6 +14,15 @@ from django.contrib.postgres.fields import ArrayField
 from community.models import Community
 from events.models import Event
 from django.utils import timezone
+
+
+class ActiveResourceManager(models.Manager):
+    """Hide soft-deleted resources from normal application queries."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
 # content/models.py
 def resource_upload_path(instance, filename):
     ev = getattr(instance, "event", None)
@@ -65,6 +74,21 @@ class Resource(models.Model):
     )
     is_published = models.BooleanField(default=True)
     publish_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    # Soft-delete lifecycle. The database row and physical file are retained.
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="resources_soft_deleted",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
+
+    objects = ActiveResourceManager()
+    all_objects = models.Manager()
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -76,10 +100,71 @@ class Resource(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         indexes = [
             models.Index(fields=["community", "event", "type", "is_published"]),
+            models.Index(fields=["is_deleted", "created_at"]),
         ]
         ordering = ["-created_at"]
+
+    def soft_delete(self, *, user=None, reason=""):
+        """Remove the resource from the platform without deleting its history/file."""
+        if self.is_deleted:
+            return False
+
+        deleted_at = timezone.now()
+        self.is_deleted = True
+        self.is_published = False
+        self.deleted_at = deleted_at
+        self.deleted_by = user if getattr(user, "pk", None) else None
+        self.deletion_reason = str(reason or "").strip()
+        self.save(update_fields=[
+            "is_deleted",
+            "is_published",
+            "deleted_at",
+            "deleted_by",
+            "deletion_reason",
+            "updated_at",
+        ])
+
+        # A published resource may have an activity FeedItem. Hide that item too,
+        # but retain the feed row, comments, reactions, reports, and target IDs.
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from activity_feed.models import FeedItem
+
+            content_type = ContentType.objects.get_for_model(Resource)
+            for item in FeedItem.objects.filter(
+                target_content_type=content_type,
+                target_object_id=self.pk,
+                is_deleted=False,
+            ):
+                item.soft_delete(user=user, reason=self.deletion_reason)
+        except Exception:
+            # Resource deletion must not fail because optional feed cleanup failed.
+            pass
+
+        return True
+
+    def restore(self):
+        """Restore visibility, keeping the resource unpublished for safety."""
+        if not self.is_deleted:
+            return False
+        self.is_deleted = False
+        self.is_published = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.deletion_reason = ""
+        self.save(update_fields=[
+            "is_deleted",
+            "is_published",
+            "deleted_at",
+            "deleted_by",
+            "deletion_reason",
+            "updated_at",
+        ])
+        return True
 
     def __str__(self) -> str:
         return f"{self.title} ({self.get_type_display()})"

@@ -19,7 +19,7 @@ class ResourceSerializer(serializers.ModelSerializer):
         required=False, allow_null=True
     )
     event_id = serializers.PrimaryKeyRelatedField(
-        source="event", queryset=Event.objects.all(),
+        source="event", queryset=Event.objects.exclude(status="archived"),
         required=False, allow_null=True
     )
     uploaded_by_id = serializers.IntegerField(read_only=True)
@@ -33,10 +33,14 @@ class ResourceSerializer(serializers.ModelSerializer):
             "title", "description", "type",
             "file", "link_url", "video_url",
             "tags", "is_published", "publish_at",
+            "is_deleted", "deleted_at", "deleted_by", "deletion_reason",
             "uploaded_by_id", "created_at", "updated_at",
             "event_title",
         ]
-        read_only_fields = ["id", "uploaded_by_id", "created_at", "updated_at"]
+        read_only_fields = [
+            "id", "uploaded_by_id", "created_at", "updated_at",
+            "is_deleted", "deleted_at", "deleted_by", "deletion_reason",
+        ]
 
     def validate(self, data):
         # For creation, ensure event_id or community_id is provided
