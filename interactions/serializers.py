@@ -244,7 +244,20 @@ class QnAQuestionGroupSerializer(serializers.ModelSerializer):
     class Meta:
         model = QnAQuestionGroup
         fields = "__all__"
-        read_only_fields = ["event", "created_by", "source", "ai_suggestion", "created_at", "updated_at", "aggregated_vote_count"]
+        read_only_fields = [
+            "event",
+            "created_by",
+            "source",
+            "ai_suggestion",
+            "is_deleted",
+            "deleted_at",
+            "deleted_by",
+            "deletion_reason",
+            "question_ids_snapshot",
+            "created_at",
+            "updated_at",
+            "aggregated_vote_count",
+        ]
 
     def get_aggregated_vote_count(self, obj):
         return obj.aggregated_vote_count

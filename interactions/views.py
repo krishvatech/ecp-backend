@@ -3114,6 +3114,7 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
         )
         base_qs = (
             QnAQuestionGroup.objects
+            .filter(is_deleted=False)
             .select_related("event", "event__created_by")
             .prefetch_related(active_memberships)
         )
@@ -3208,24 +3209,68 @@ class QnAQuestionGroupViewSet(viewsets.ModelViewSet):
         self._require_group_manager(group)
         serializer.save()
 
-    def perform_destroy(self, instance):
-        from rest_framework.exceptions import PermissionDenied
-        if not self._is_group_manager(self.request.user, instance.event):
-            raise PermissionDenied("Only event host/admin can delete groups.")
-        
+    def destroy(self, request, *args, **kwargs):
+        """Soft delete a Q&A group while preserving its grouping audit history."""
+        from django.utils import timezone
+
+        instance = self.get_object()
+        self._require_group_manager(instance)
+
         event_id = instance.event_id
         group_id = instance.id
-        instance.delete()
-        
-        # Broadcast group_deleted
+        question_ids = list(
+            instance.memberships.order_by("display_order", "created_at")
+            .values_list("question_id", flat=True)
+        )
+
+        instance.is_deleted = True
+        instance.deleted_at = timezone.now()
+        instance.deleted_by = request.user
+        instance.deletion_reason = str(request.data.get("reason") or "Removed from live Q&A").strip()
+        instance.question_ids_snapshot = question_ids
+        instance.is_visible_to_attendees = False
+        instance.save(update_fields=[
+            "is_deleted",
+            "deleted_at",
+            "deleted_by",
+            "deletion_reason",
+            "question_ids_snapshot",
+            "is_visible_to_attendees",
+            "updated_at",
+        ])
+
+        # Keep membership rows for audit history. Since deleted groups are excluded
+        # from the live API, their questions immediately appear as ungrouped. If a
+        # question is later assigned to another active group, the existing membership
+        # is replaced by the current add/update flows.
+
         channel_layer = get_channel_layer()
         group_name = f"event_qna_{event_id}_shared"
         async_to_sync(channel_layer.group_send)(
             group_name,
             {
                 "type": "qna.group_deleted",
-                "payload": {"type": "qna.group_deleted", "group_id": group_id, "event_id": event_id}
-            }
+                "payload": {
+                    "type": "qna.group_deleted",
+                    "group_id": group_id,
+                    "event_id": event_id,
+                    "soft_deleted": True,
+                },
+            },
+        )
+
+        return Response(
+            {
+                "detail": (
+                    "The Q&A group was removed from the live view and remains stored "
+                    "in the database. Its title, summary, AI source, question snapshot, "
+                    "and grouping history were preserved."
+                ),
+                "code": "qna_group_soft_deleted",
+                "group_id": group_id,
+                "question_ids": question_ids,
+            },
+            status=status.HTTP_200_OK,
         )
 
     @action(detail=True, methods=["post"])

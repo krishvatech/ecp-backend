@@ -15,6 +15,7 @@ from .models import (
     QnAReply,
     QnAReplyUpvote,
     QnAContentContext,
+    QnAQuestionGroup,
 )
 
 
@@ -127,3 +128,36 @@ class QnAContentContextAdmin(admin.ModelAdmin):
     @admin.display(description="content preview")
     def short_content(self, obj: QnAContentContext) -> str:
         return (obj.content_text or "")[:80]
+
+@admin.register(QnAQuestionGroup)
+class QnAQuestionGroupAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "event",
+        "title",
+        "source",
+        "is_deleted",
+        "deleted_at",
+        "created_at",
+    )
+    list_filter = ("event", "source", "is_deleted")
+    search_fields = ("title", "summary", "event__title")
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+        "deleted_at",
+        "deleted_by",
+        "question_ids_snapshot",
+    )
+    actions = ("restore_selected_qna_groups",)
+
+    @admin.action(description="Restore selected soft-deleted Q&A groups")
+    def restore_selected_qna_groups(self, request, queryset):
+        # Restored groups remain hidden from attendees until the host reviews them.
+        queryset.update(
+            is_deleted=False,
+            deleted_at=None,
+            deleted_by=None,
+            deletion_reason="",
+            is_visible_to_attendees=False,
+        )

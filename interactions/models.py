@@ -837,6 +837,25 @@ class QnAQuestionGroup(models.Model):
         default=False,
         help_text="If true, attendees can see the group visually. Currently disabled by default."
     )
+    is_deleted = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Soft-delete flag. Deleted groups are hidden from live Q&A but retained for audit history.",
+    )
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deleted_qna_question_groups",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
+    question_ids_snapshot = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Question ids that belonged to the group when it was soft deleted.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
