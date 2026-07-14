@@ -3524,7 +3524,10 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
         )
 
     def get_badge_labels(self, obj):
-        return [{'id': bl.id, 'name': bl.name, 'color': bl.color} for bl in obj.badge_labels.all()]
+        return [
+            {'id': bl.id, 'name': bl.name, 'color': bl.color}
+            for bl in obj.badge_labels.filter(is_active=True)
+        ]
 
     def get_is_host(self, obj):
         event = obj.event
@@ -4589,8 +4592,15 @@ class EventEmailTemplateSerializer(serializers.ModelSerializer):
 class EventBadgeLabelSerializer(serializers.ModelSerializer):
     class Meta:
         model = EventBadgeLabel
-        fields = ['id', 'event', 'name', 'color', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'event', 'created_at', 'updated_at']
+        fields = [
+            'id', 'event', 'name', 'color', 'is_active',
+            'deactivated_at', 'deactivated_by', 'deactivation_reason',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'event', 'is_active', 'deactivated_at', 'deactivated_by',
+            'deactivation_reason', 'created_at', 'updated_at',
+        ]
 
     def validate_name(self, value):
         if not value or not value.strip():
@@ -4979,7 +4989,7 @@ class EventParticipantDirectorySerializer(serializers.ModelSerializer):
                 'name': label.name,
                 'color': label.color,
             }
-            for label in obj.badge_labels.all()
+            for label in obj.badge_labels.filter(is_active=True)
         ]
 
 

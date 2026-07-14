@@ -12933,7 +12933,11 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         label_ids = request.data.get('label_ids', [])
         if not isinstance(label_ids, list):
             return Response({"error": "label_ids must be a list"}, status=400)
-        labels = EventBadgeLabel.objects.filter(id__in=label_ids, event=reg.event)
+        labels = EventBadgeLabel.objects.filter(
+            id__in=label_ids,
+            event=reg.event,
+            is_active=True,
+        )
         if labels.count() != len(label_ids):
             return Response({"error": "One or more label IDs are invalid or belong to a different event."}, status=400)
         reg.badge_labels.set(labels)
@@ -12958,7 +12962,11 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         if len(regs) != len(registration_ids):
             return Response({"error": "Some registration IDs are invalid or not authorized."}, status=403)
         event_ids = {r.event_id for r in regs}
-        labels = list(EventBadgeLabel.objects.filter(id__in=label_ids, event_id__in=event_ids))
+        labels = list(EventBadgeLabel.objects.filter(
+            id__in=label_ids,
+            event_id__in=event_ids,
+            is_active=True,
+        ))
         updated = 0
         for reg in regs:
             event_labels = [l for l in labels if l.event_id == reg.event_id]
@@ -12979,7 +12987,7 @@ class EventBadgeLabelViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs = EventBadgeLabel.objects.select_related('event')
+        qs = EventBadgeLabel.objects.select_related('event').filter(is_active=True)
         event_id = self.request.query_params.get('event_id') or self.request.query_params.get('event')
         if event_id:
             qs = qs.filter(event_id=event_id)
@@ -13000,6 +13008,40 @@ class EventBadgeLabelViewSet(viewsets.ModelViewSet):
             return Response({'detail': 'event_id is required.'}, status=400)
         event = get_object_or_404(Event, pk=event_id)
         self._check_permission(event)
+
+        name = str(request.data.get('name') or '').strip()
+        color = request.data.get('color') or '#6366f1'
+        inactive_label = EventBadgeLabel.objects.filter(
+            event=event,
+            name=name,
+            is_active=False,
+        ).first()
+
+        if inactive_label:
+            serializer = self.get_serializer(
+                inactive_label,
+                data={'name': name, 'color': color},
+                partial=True,
+            )
+            serializer.is_valid(raise_exception=True)
+            serializer.save(
+                is_active=True,
+                deactivated_at=None,
+                deactivated_by=None,
+                deactivation_reason='',
+            )
+            return Response(
+                {
+                    **serializer.data,
+                    'restored': True,
+                    'detail': (
+                        'The existing badge label was restored. Historical participant '
+                        'assignments were preserved.'
+                    ),
+                },
+                status=status.HTTP_200_OK,
+            )
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save(event=event)
@@ -13016,8 +13058,31 @@ class EventBadgeLabelViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         label = self.get_object()
         self._check_permission(label.event)
-        label.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+
+        label.is_active = False
+        label.deactivated_at = timezone.now()
+        label.deactivated_by = request.user
+        label.deactivation_reason = str(request.data.get('reason') or '').strip()
+        label.save(update_fields=[
+            'is_active', 'deactivated_at', 'deactivated_by',
+            'deactivation_reason', 'updated_at',
+        ])
+
+        return Response(
+            {
+                'ok': True,
+                'code': 'badge_label_soft_deleted',
+                'deletion_type': 'soft',
+                'label_id': label.id,
+                'historical_assignment_count': label.registrations.count(),
+                'detail': (
+                    'The badge label was removed from active event management but remains '
+                    'stored in the database. Existing participant assignments and badge '
+                    'history were preserved.'
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class RecordingWebhookView(views.APIView):

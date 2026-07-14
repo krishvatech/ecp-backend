@@ -2011,6 +2011,20 @@ class EventBadgeLabel(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='badge_labels')
     name = models.CharField(max_length=100)
     color = models.CharField(max_length=7, default='#6366f1', help_text='Hex color code e.g. #6366f1')
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text='Inactive labels are hidden from event management but retained for participant history.',
+    )
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+    deactivated_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='event_badge_labels_deactivated',
+    )
+    deactivation_reason = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

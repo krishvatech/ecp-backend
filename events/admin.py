@@ -10,8 +10,28 @@ from .models import (
     SharedQuestionCategory, SharedQuestion, FormField,
     EventApplicationTrackApplication, EventAttendeeOrigin,
     PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, ExternalEventMapping, ExternalParticipantMapping,
-    EventPlatform, EventPublication, PlatformSyncJob, EventSeries
+    EventPlatform, EventPublication, PlatformSyncJob, EventSeries, EventBadgeLabel
 )
+
+
+@admin.action(description='Restore selected soft-deleted badge labels')
+def restore_badge_labels(modeladmin, request, queryset):
+    queryset.update(
+        is_active=True,
+        deactivated_at=None,
+        deactivated_by=None,
+        deactivation_reason='',
+    )
+
+
+@admin.register(EventBadgeLabel)
+class EventBadgeLabelAdmin(admin.ModelAdmin):
+    list_display = ('name', 'event', 'color', 'is_active', 'deactivated_at', 'created_at')
+    list_filter = ('is_active', 'event')
+    search_fields = ('name', 'event__title')
+    readonly_fields = ('created_at', 'updated_at', 'deactivated_at', 'deactivated_by')
+    actions = [restore_badge_labels]
+
 
 
 class EventParticipantForm(forms.ModelForm):
