@@ -4135,6 +4135,13 @@ class SaleorPermissionGroup(models.Model):
         return self.name
 
 
+class ActiveEventSeriesManager(models.Manager):
+    """Default manager that hides series removed through the platform UI."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
 class EventSeries(models.Model):
     STATUS_CHOICES = [
         ("draft", "Draft"),
@@ -4208,6 +4215,25 @@ class EventSeries(models.Model):
         blank=True,
         help_text="Custom metadata for series (JSON)"
     )
+
+    # Soft-deletion lifecycle: every series removed through the platform UI is
+    # retained, including unused drafts created by mistake. This keeps deletion
+    # behavior consistent and makes restoration/audit possible.
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deleted_event_series",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
+    status_before_delete = models.CharField(max_length=16, blank=True, default="")
+
+    objects = ActiveEventSeriesManager()
+    all_objects = models.Manager()
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -4228,11 +4254,59 @@ class EventSeries(models.Model):
             base_slug = f"{slugify(self.title)}-{year}"
             slug = base_slug
             counter = 1
-            while EventSeries.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+            # Include retained soft-deleted rows because the database slug is unique.
+            while EventSeries.all_objects.filter(slug=slug).exclude(pk=self.pk).exists():
                 slug = f"{base_slug}-{counter}"
                 counter += 1
             self.slug = slug
         super().save(*args, **kwargs)
+
+    def soft_delete(self, *, user=None, reason=""):
+        from django.utils import timezone
+
+        if self.is_deleted:
+            return
+        self.status_before_delete = self.status
+        self.status = "archived"
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, "is_authenticated", False) else None
+        self.deletion_reason = str(reason or "").strip()
+        self.save(
+            update_fields=[
+                "status",
+                "is_deleted",
+                "deleted_at",
+                "deleted_by",
+                "deletion_reason",
+                "status_before_delete",
+                "updated_at",
+            ]
+        )
+
+    def restore(self):
+        if not self.is_deleted:
+            return
+        restored_status = self.status_before_delete or "draft"
+        if restored_status not in dict(self.STATUS_CHOICES):
+            restored_status = "draft"
+        self.status = restored_status
+        self.is_deleted = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.deletion_reason = ""
+        self.status_before_delete = ""
+        self.save(
+            update_fields=[
+                "status",
+                "is_deleted",
+                "deleted_at",
+                "deleted_by",
+                "deletion_reason",
+                "status_before_delete",
+                "updated_at",
+            ]
+        )
 
 
 class SeriesRegistration(models.Model):

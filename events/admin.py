@@ -10,7 +10,7 @@ from .models import (
     SharedQuestionCategory, SharedQuestion, FormField,
     EventApplicationTrackApplication, EventAttendeeOrigin,
     PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, ExternalEventMapping, ExternalParticipantMapping,
-    EventPlatform, EventPublication, PlatformSyncJob
+    EventPlatform, EventPublication, PlatformSyncJob, EventSeries
 )
 
 
@@ -117,6 +117,39 @@ class EventAdmin(admin.ModelAdmin):
         if not change:  # Only on creation, not on edit
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
+
+
+@admin.register(EventSeries)
+class EventSeriesAdmin(admin.ModelAdmin):
+    list_display = (
+        "title",
+        "community",
+        "status",
+        "is_deleted",
+        "created_by",
+        "created_at",
+        "deleted_at",
+    )
+    list_filter = ("status", "is_deleted", "community", "created_at")
+    search_fields = ("title", "slug", "created_by__username", "created_by__email")
+    readonly_fields = ("created_at", "updated_at", "deleted_at", "deleted_by", "deletion_reason")
+    actions = ("restore_selected_series",)
+
+    def get_queryset(self, request):
+        return EventSeries.all_objects.select_related("community", "created_by", "deleted_by")
+
+    @admin.action(description="Restore selected soft-deleted series")
+    def restore_selected_series(self, request, queryset):
+        restored = 0
+        for series in queryset.filter(is_deleted=True):
+            series.restore()
+            restored += 1
+        self.message_user(request, f"Restored {restored} series.")
+
+    def has_delete_permission(self, request, obj=None):
+        # Platform deletion policy must run through the API so history checks are
+        # never bypassed by an accidental Django Admin hard delete.
+        return False
 
 
 @admin.register(EventPlatform)

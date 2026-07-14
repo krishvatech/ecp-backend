@@ -14636,17 +14636,32 @@ class SeriesViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("Only the series creator or superuser can update this series.")
         serializer.save()
 
-    def perform_destroy(self, instance):
-        if not self._is_owner(instance):
+    def destroy(self, request, *args, **kwargs):
+        series = self.get_object()
+        if not self._is_owner(series):
             raise PermissionDenied("Only the series creator or superuser can delete this series.")
 
-        with transaction.atomic():
-            instance.child_events.update(
-                series=None,
-                series_order=None,
-                series_session_label=''
-            )
-            instance.delete()
+        reason = str(request.data.get("reason") or "").strip()
+        series_id = series.id
+        title = series.title
+
+        # Every series uses soft deletion, including an unused draft. Keep the
+        # row, cover image, automatic creator registration, child-event links,
+        # and any registration history intact. This action must not generate
+        # event/participant sync work or alter WordPress, MANDA, or Saleor IDs.
+        series.soft_delete(user=request.user, reason=reason)
+        return Response(
+            {
+                "ok": True,
+                "deletion_type": "soft",
+                "code": "series_soft_deleted",
+                "series_id": series_id,
+                "detail": (
+                    f'The series "{title}" was removed from the platform but remains stored in the database. Linked events, registrations, cover media, and synchronization data were preserved.'
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
 
     def _is_owner(self, obj):
         return bool(
