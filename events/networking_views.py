@@ -11,7 +11,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Q, Max
+from django.db.models import Q, Max, Count
 from django.conf import settings
 from datetime import timedelta
 
@@ -113,7 +113,26 @@ class NetworkingTableViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         event_id = self.kwargs.get('event_id')
-        return NetworkingTable.objects.filter(event_id=event_id)
+        now = timezone.now()
+        blocking_meetings = Q(
+            networking_meetings__status="accepted",
+            networking_meetings__end_time__gt=now,
+        )
+        return (
+            NetworkingTable.objects
+            .filter(event_id=event_id, is_active=True)
+            .annotate(
+                active_meeting_count=Count(
+                    "networking_meetings",
+                    filter=blocking_meetings,
+                    distinct=True,
+                ),
+                available_after=Max(
+                    "networking_meetings__end_time",
+                    filter=blocking_meetings,
+                ),
+            )
+        )
 
     def get_event(self):
         if not hasattr(self, "_event"):
@@ -163,7 +182,64 @@ class NetworkingTableViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         self.check_owner_permission()
-        return super().destroy(request, *args, **kwargs)
+
+        with transaction.atomic():
+            table = (
+                NetworkingTable.objects.select_for_update()
+                .filter(pk=kwargs.get("pk"), event=self.get_event(), is_active=True)
+                .first()
+            )
+            if table is None:
+                raise NotFound("Networking table not found or already removed.")
+
+            active_meetings = table.networking_meetings.filter(
+                status="accepted",
+                end_time__gt=timezone.now(),
+            )
+            if active_meetings.exists():
+                active_meeting_count = active_meetings.count()
+                available_after = active_meetings.aggregate(
+                    available_after=Max("end_time")
+                )["available_after"]
+                return Response(
+                    {
+                        "code": "networking_table_in_use",
+                        "detail": (
+                            "This networking table is already in use by an accepted meeting. "
+                            "It cannot be deleted until every assigned meeting is completed, "
+                            "cancelled, or moved to another table. Try again when the table is free."
+                        ),
+                        "is_in_use": True,
+                        "active_meeting_count": active_meeting_count,
+                        "available_after": available_after,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            table.is_active = False
+            table.deactivated_at = timezone.now()
+            table.deactivated_by = request.user
+            table.deactivation_reason = str(request.data.get("reason") or "").strip()
+            table.save(
+                update_fields=[
+                    "is_active",
+                    "deactivated_at",
+                    "deactivated_by",
+                    "deactivation_reason",
+                    "updated_at",
+                ]
+            )
+
+        return Response(
+            {
+                "code": "networking_table_soft_deleted",
+                "detail": (
+                    "The networking table was removed from active use but remains stored "
+                    "in the database with its meeting history."
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class NetworkingMeetingAvailabilityView(views.APIView):

@@ -4589,6 +4589,15 @@ class NetworkingTable(models.Model):
     name = models.CharField(max_length=255, blank=True, help_text="Optional table name")
     location_note = models.TextField(blank=True, help_text="Optional location notes or description")
     is_active = models.BooleanField(default=True, help_text="Whether this table is available for meetings")
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+    deactivated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deactivated_networking_tables",
+    )
+    deactivation_reason = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

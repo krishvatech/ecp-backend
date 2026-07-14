@@ -10,8 +10,33 @@ from .models import (
     SharedQuestionCategory, SharedQuestion, FormField,
     EventApplicationTrackApplication, EventAttendeeOrigin,
     PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, ExternalEventMapping, ExternalParticipantMapping,
-    EventPlatform, EventPublication, PlatformSyncJob, EventSeries, EventBadgeLabel
+    EventPlatform, EventPublication, PlatformSyncJob, EventSeries, EventBadgeLabel, NetworkingTable
 )
+
+
+
+
+@admin.action(description='Restore selected deactivated networking tables')
+def restore_networking_tables(modeladmin, request, queryset):
+    queryset.update(
+        is_active=True,
+        deactivated_at=None,
+        deactivated_by=None,
+        deactivation_reason='',
+    )
+
+
+@admin.register(NetworkingTable)
+class NetworkingTableAdmin(admin.ModelAdmin):
+    list_display = (
+        'name', 'event', 'table_number', 'is_active', 'deactivated_at', 'updated_at'
+    )
+    list_filter = ('is_active', 'event')
+    search_fields = ('name', 'event__title', 'location_note')
+    readonly_fields = (
+        'created_at', 'updated_at', 'deactivated_at', 'deactivated_by', 'deactivation_reason'
+    )
+    actions = [restore_networking_tables]
 
 
 @admin.action(description='Restore selected soft-deleted badge labels')

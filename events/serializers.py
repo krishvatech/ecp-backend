@@ -4784,14 +4784,46 @@ class EventNetworkingSettingsSerializer(serializers.ModelSerializer):
 
 class NetworkingTableSerializer(serializers.ModelSerializer):
     table_number = serializers.IntegerField(read_only=True)
+    is_in_use = serializers.SerializerMethodField()
+    active_meeting_count = serializers.SerializerMethodField()
+    available_after = serializers.SerializerMethodField()
 
     class Meta:
         model = NetworkingTable
         fields = [
             'id', 'event', 'table_number', 'name', 'location_note', 'is_active',
+            'is_in_use', 'active_meeting_count', 'available_after',
+            'deactivated_at', 'deactivated_by', 'deactivation_reason',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'event', 'table_number', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'event', 'table_number', 'is_active', 'is_in_use',
+            'active_meeting_count', 'available_after', 'deactivated_at',
+            'deactivated_by', 'deactivation_reason', 'created_at', 'updated_at'
+        ]
+
+    def _blocking_meetings(self, obj):
+        return obj.networking_meetings.filter(
+            status="accepted",
+            end_time__gt=timezone.now(),
+        )
+
+    def get_active_meeting_count(self, obj):
+        annotated_count = getattr(obj, "active_meeting_count", None)
+        if annotated_count is not None:
+            return annotated_count
+        return self._blocking_meetings(obj).count()
+
+    def get_is_in_use(self, obj):
+        return self.get_active_meeting_count(obj) > 0
+
+    def get_available_after(self, obj):
+        annotated_value = getattr(obj, "available_after", None)
+        if annotated_value is not None:
+            return annotated_value
+        return self._blocking_meetings(obj).aggregate(
+            available_after=Max("end_time")
+        )["available_after"]
 
     def validate_name(self, value):
         if not value or not value.strip():
