@@ -671,7 +671,55 @@ class EmailChangeRequest(models.Model):
     def __str__(self):
         return f"EmailChange for {self.user.username} -> {self.new_email}"
 
-class Education(models.Model):
+class ActiveProfileRecordManager(models.Manager):
+    """Default manager that hides profile records removed from the UI."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
+class ProfileRecordSoftDeleteMixin(models.Model):
+    """Shared soft-delete lifecycle for CV/profile history records."""
+
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
+
+    objects = ActiveProfileRecordManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        abstract = True
+
+    def soft_delete(self, *, user=None, reason=""):
+        if self.is_deleted:
+            return False
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, "is_authenticated", False) else None
+        self.deletion_reason = (reason or "").strip()
+        self.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "deletion_reason"])
+        return True
+
+    def restore(self):
+        if not self.is_deleted:
+            return False
+        self.is_deleted = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.deletion_reason = ""
+        self.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "deletion_reason"])
+        return True
+
+
+class Education(ProfileRecordSoftDeleteMixin):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="educations"
     )
@@ -702,7 +750,7 @@ class Education(models.Model):
         return f"{self.school} — {self.degree}"
 
 
-class Experience(models.Model):
+class Experience(ProfileRecordSoftDeleteMixin):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="experiences"
     )
@@ -911,7 +959,7 @@ class EducationDocument(models.Model):
 
 # --- NEW: Profile Sections (Trainings, Certifications, Memberships) ---
 
-class ProfileTraining(models.Model):
+class ProfileTraining(ProfileRecordSoftDeleteMixin):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="trainings"
     )
@@ -971,7 +1019,7 @@ class TrainingDocument(models.Model):
     def __str__(self):
         return f"Doc for {self.training}: {self.filename}"
 
-class ProfileCertification(models.Model):
+class ProfileCertification(ProfileRecordSoftDeleteMixin):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="certifications"
     )
@@ -1107,7 +1155,7 @@ class VerificationHistory(models.Model):
         return f"VerifHistory<{self.user_id}: {self.kyc_status} @ {self.archived_at}>"
 
 
-class ProfileMembership(models.Model):
+class ProfileMembership(ProfileRecordSoftDeleteMixin):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="memberships"
     )

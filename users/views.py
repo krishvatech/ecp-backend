@@ -2225,7 +2225,34 @@ class GoogleCallback(APIView):
         return redirect(f"{settings.FRONTEND_URL}/oauth/callback?{qs}")
 
 
-class MeEducationViewSet(viewsets.ModelViewSet):
+class ProfileRecordSoftDeleteViewSetMixin:
+    """Turn DELETE into a retained profile-history removal."""
+
+    soft_delete_label = "Profile record"
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        reason = ""
+        if hasattr(request.data, "get"):
+            reason = request.data.get("reason", "") or request.data.get("deletion_reason", "")
+        instance.soft_delete(user=request.user, reason=reason)
+        return Response(
+            {
+                "deleted": True,
+                "deletion_type": "soft",
+                "code": "profile_record_soft_deleted",
+                "record_type": self.soft_delete_label,
+                "record_id": instance.pk,
+                "detail": (
+                    f"{self.soft_delete_label} was removed from the profile but remains stored "
+                    "in the database with its documents and history."
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class MeEducationViewSet(ProfileRecordSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     /api/users/me/educations/  (GET list, POST)
     /api/users/me/educations/<id>/  (GET, PUT, PATCH, DELETE)
@@ -2233,6 +2260,7 @@ class MeEducationViewSet(viewsets.ModelViewSet):
     """
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = EducationSerializer
+    soft_delete_label = "Education"
 
     def get_queryset(self):
         if _is_guest_user(self.request.user):
@@ -2248,9 +2276,10 @@ class MeEducationViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("Guests cannot modify profile data.")
         serializer.save(user=self.request.user)
 
-class MeTrainingViewSet(viewsets.ModelViewSet):
+class MeTrainingViewSet(ProfileRecordSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProfileTrainingSerializer
+    soft_delete_label = "Training"
 
     def get_queryset(self):
         if _is_guest_user(self.request.user):
@@ -2265,9 +2294,10 @@ class MeTrainingViewSet(viewsets.ModelViewSet):
         serializer.save(user=self.request.user)
 
 
-class MeCertificationViewSet(viewsets.ModelViewSet):
+class MeCertificationViewSet(ProfileRecordSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProfileCertificationSerializer
+    soft_delete_label = "Certification"
 
     def get_queryset(self):
         if _is_guest_user(self.request.user):
@@ -2280,9 +2310,10 @@ class MeCertificationViewSet(viewsets.ModelViewSet):
         serializer.save(user=self.request.user)
 
 
-class MeMembershipViewSet(viewsets.ModelViewSet):
+class MeMembershipViewSet(ProfileRecordSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProfileMembershipSerializer
+    soft_delete_label = "Membership"
 
     def get_queryset(self):
         if _is_guest_user(self.request.user):
@@ -2297,7 +2328,7 @@ class MeMembershipViewSet(viewsets.ModelViewSet):
         serializer.save(user=self.request.user)
 
 
-class MeExperienceViewSet(viewsets.ModelViewSet):
+class MeExperienceViewSet(ProfileRecordSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     /api/users/me/experiences/  (GET list, POST)
     /api/users/me/experiences/<id>/  (GET, PUT, PATCH, DELETE)
@@ -2305,6 +2336,7 @@ class MeExperienceViewSet(viewsets.ModelViewSet):
     """
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ExperienceSerializer
+    soft_delete_label = "Experience"
 
     def get_queryset(self):
         if _is_guest_user(self.request.user):
@@ -2551,8 +2583,9 @@ class AdminUserWordPressSyncView(AdminTargetUserMixin, APIView):
         )
 
 
-class AdminEducationViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+class AdminEducationViewSet(ProfileRecordSoftDeleteViewSetMixin, AdminTargetUserMixin, viewsets.ModelViewSet):
     serializer_class = EducationSerializer
+    soft_delete_label = "Education"
 
     def get_queryset(self):
         return Education.objects.filter(user=self.get_target_user()).order_by("-end_date", "-start_date", "-id")
@@ -2561,8 +2594,9 @@ class AdminEducationViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
         serializer.save(user=self.get_target_user())
 
 
-class AdminExperienceViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+class AdminExperienceViewSet(ProfileRecordSoftDeleteViewSetMixin, AdminTargetUserMixin, viewsets.ModelViewSet):
     serializer_class = ExperienceSerializer
+    soft_delete_label = "Experience"
 
     def get_queryset(self):
         return Experience.objects.filter(user=self.get_target_user()).order_by("-currently_work_here", "-end_date", "-start_date", "-id")
@@ -2571,8 +2605,9 @@ class AdminExperienceViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
         serializer.save(user=self.get_target_user())
 
 
-class AdminTrainingViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+class AdminTrainingViewSet(ProfileRecordSoftDeleteViewSetMixin, AdminTargetUserMixin, viewsets.ModelViewSet):
     serializer_class = ProfileTrainingSerializer
+    soft_delete_label = "Training"
 
     def get_queryset(self):
         return ProfileTraining.objects.filter(user=self.get_target_user()).order_by("-currently_ongoing", "-end_date", "-start_date", "-id")
@@ -2581,8 +2616,9 @@ class AdminTrainingViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
         serializer.save(user=self.get_target_user())
 
 
-class AdminCertificationViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+class AdminCertificationViewSet(ProfileRecordSoftDeleteViewSetMixin, AdminTargetUserMixin, viewsets.ModelViewSet):
     serializer_class = ProfileCertificationSerializer
+    soft_delete_label = "Certification"
 
     def get_queryset(self):
         return ProfileCertification.objects.filter(user=self.get_target_user()).order_by("-issue_date", "-id")
@@ -2591,8 +2627,9 @@ class AdminCertificationViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
         serializer.save(user=self.get_target_user())
 
 
-class AdminMembershipViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+class AdminMembershipViewSet(ProfileRecordSoftDeleteViewSetMixin, AdminTargetUserMixin, viewsets.ModelViewSet):
     serializer_class = ProfileMembershipSerializer
+    soft_delete_label = "Membership"
 
     def get_queryset(self):
         return ProfileMembership.objects.filter(user=self.get_target_user()).order_by("-ongoing", "-end_date", "-start_date", "-id")
@@ -2634,7 +2671,7 @@ class AdminEducationDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet)
     http_method_names = ["get", "post", "delete"]
 
     def get_queryset(self):
-        return EducationDocument.objects.filter(education__user=self.get_target_user())
+        return EducationDocument.objects.filter(education__user=self.get_target_user(), education__is_deleted=False)
 
     def perform_create(self, serializer):
         education_id = self.request.data.get("education")
@@ -2648,7 +2685,7 @@ class AdminTrainingDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
     http_method_names = ["get", "post", "delete"]
 
     def get_queryset(self):
-        return TrainingDocument.objects.filter(training__user=self.get_target_user())
+        return TrainingDocument.objects.filter(training__user=self.get_target_user(), training__is_deleted=False)
 
     def perform_create(self, serializer):
         training_id = self.request.data.get("training")
@@ -2662,7 +2699,7 @@ class AdminCertificationDocumentViewSet(AdminTargetUserMixin, viewsets.ModelView
     http_method_names = ["get", "post", "delete"]
 
     def get_queryset(self):
-        return ProfileCertificationDocument.objects.filter(certification__user=self.get_target_user())
+        return ProfileCertificationDocument.objects.filter(certification__user=self.get_target_user(), certification__is_deleted=False)
 
     def perform_create(self, serializer):
         certification_id = self.request.data.get("certification")
@@ -2676,7 +2713,7 @@ class AdminMembershipDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet
     http_method_names = ["get", "post", "delete"]
 
     def get_queryset(self):
-        return MembershipDocument.objects.filter(membership__user=self.get_target_user())
+        return MembershipDocument.objects.filter(membership__user=self.get_target_user(), membership__is_deleted=False)
 
     def perform_create(self, serializer):
         membership_id = self.request.data.get("membership")
@@ -3628,7 +3665,7 @@ class MeEducationDocumentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         # Only show documents belonging to the user's education entries
-        return EducationDocument.objects.filter(education__user=self.request.user)
+        return EducationDocument.objects.filter(education__user=self.request.user, education__is_deleted=False)
 
     def perform_create(self, serializer):
         # Security check: Ensure the education ID belongs to the current user
@@ -3649,7 +3686,7 @@ class MeTrainingDocumentViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser]
 
     def get_queryset(self):
-        return TrainingDocument.objects.filter(training__user=self.request.user)
+        return TrainingDocument.objects.filter(training__user=self.request.user, training__is_deleted=False)
 
     def perform_create(self, serializer):
         training_id = self.request.data.get('training')
@@ -3669,7 +3706,7 @@ class MeMembershipDocumentViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser]
 
     def get_queryset(self):
-        return MembershipDocument.objects.filter(membership__user=self.request.user)
+        return MembershipDocument.objects.filter(membership__user=self.request.user, membership__is_deleted=False)
 
     def perform_create(self, serializer):
         membership_id = self.request.data.get('membership')
@@ -3689,7 +3726,7 @@ class MeCertificationDocumentViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser]
 
     def get_queryset(self):
-        return ProfileCertificationDocument.objects.filter(certification__user=self.request.user)
+        return ProfileCertificationDocument.objects.filter(certification__user=self.request.user, certification__is_deleted=False)
 
     def perform_create(self, serializer):
         certification_id = self.request.data.get('certification')

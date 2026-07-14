@@ -192,33 +192,52 @@ class UserAdmin(admin.ModelAdmin):
                 exc,
             )
 
+
+
+class ProfileRecordSoftDeleteAdminMixin:
+    actions = ["restore_selected_profile_records"]
+
+    def get_queryset(self, request):
+        return self.model.all_objects.all()
+
+    @admin.action(description="Restore selected soft-deleted profile records")
+    def restore_selected_profile_records(self, request, queryset):
+        restored = 0
+        for item in queryset:
+            if item.restore():
+                restored += 1
+        self.message_user(request, f"Restored {restored} profile record(s).")
+
 @admin.register(Education)
-class EducationAdmin(admin.ModelAdmin):
-    list_display = ("user", "school", "degree", "field_of_study", "start_date", "end_date")
-    list_filter = ("school", "degree")
+class EducationAdmin(ProfileRecordSoftDeleteAdminMixin, admin.ModelAdmin):
+    list_display = ("user", "school", "degree", "field_of_study", "start_date", "end_date", "is_deleted")
+    list_filter = ("is_deleted", "school", "degree")
     search_fields = ("school", "degree", "field_of_study", "user__username", "user__email")
 
 @admin.register(Experience)
-class ExperienceAdmin(admin.ModelAdmin):
-    list_display = ("user", "community_name", "position", "currently_work_here", "start_date", "end_date")
-    list_filter = ("community_name", "position", "currently_work_here")
+class ExperienceAdmin(ProfileRecordSoftDeleteAdminMixin, admin.ModelAdmin):
+    list_display = ("user", "community_name", "position", "currently_work_here", "start_date", "end_date", "is_deleted")
+    list_filter = ("is_deleted", "community_name", "position", "currently_work_here")
     search_fields = ("community_name", "position", "user__username", "user__email")
 
 @admin.register(ProfileTraining)
-class ProfileTrainingAdmin(admin.ModelAdmin):
-    list_display = ("user", "program_title", "provider", "start_date", "end_date", "currently_ongoing")
+class ProfileTrainingAdmin(ProfileRecordSoftDeleteAdminMixin, admin.ModelAdmin):
+    list_filter = ("is_deleted",)
+    list_display = ("user", "program_title", "provider", "start_date", "end_date", "currently_ongoing", "is_deleted")
     search_fields = ("program_title", "provider", "user__username", "user__email")
 
 
 @admin.register(ProfileCertification)
-class ProfileCertificationAdmin(admin.ModelAdmin):
-    list_display = ("user", "certification_name", "issuing_organization", "issue_date", "expiration_date", "no_expiration")
+class ProfileCertificationAdmin(ProfileRecordSoftDeleteAdminMixin, admin.ModelAdmin):
+    list_filter = ("is_deleted",)
+    list_display = ("user", "certification_name", "issuing_organization", "issue_date", "expiration_date", "no_expiration", "is_deleted")
     search_fields = ("certification_name", "issuing_organization", "user__username", "user__email")
 
 
 @admin.register(ProfileMembership)
-class ProfileMembershipAdmin(admin.ModelAdmin):
-    list_display = ("user", "organization_name", "role_type", "start_date", "end_date", "ongoing")
+class ProfileMembershipAdmin(ProfileRecordSoftDeleteAdminMixin, admin.ModelAdmin):
+    list_filter = ("is_deleted",)
+    list_display = ("user", "organization_name", "role_type", "start_date", "end_date", "ongoing", "is_deleted")
     search_fields = ("organization_name", "role_type", "user__username", "user__email")
 
 
