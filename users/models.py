@@ -382,7 +382,55 @@ class EscoSkill(models.Model):
     def __str__(self) -> str:
         return f"{self.preferred_label} ({self.uri})"
 
-class UserSkill(models.Model):
+class ActiveProfileAttributeManager(models.Manager):
+    """Default manager for profile skills/languages/proofs visible in the UI."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
+class ProfileAttributeSoftDeleteMixin(models.Model):
+    """Retain structured profile attributes and uploaded proof history."""
+
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
+
+    objects = ActiveProfileAttributeManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        abstract = True
+
+    def soft_delete(self, *, user=None, reason=""):
+        if self.is_deleted:
+            return False
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, "is_authenticated", False) else None
+        self.deletion_reason = (reason or "").strip()
+        self.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "deletion_reason"])
+        return True
+
+    def restore(self):
+        if not self.is_deleted:
+            return False
+        self.is_deleted = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.deletion_reason = ""
+        self.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "deletion_reason"])
+        return True
+
+
+class UserSkill(ProfileAttributeSoftDeleteMixin):
     """
     Structured user skill linked to ESCO.
     This is the 'new' skills system.
@@ -510,7 +558,7 @@ class GeoCountry(models.Model):
     def __str__(self):
         return f"{self.name} ({self.iso2})"
 
-class UserLanguage(models.Model):
+class UserLanguage(ProfileAttributeSoftDeleteMixin):
     """
     Structured user language linked to ISO master.
     """
@@ -599,7 +647,7 @@ class UserLanguage(models.Model):
         return f"{self.user_id} – {self.language.english_name} ({self.proficiency_cefr})"
 
 
-class LanguageCertificate(models.Model):
+class LanguageCertificate(ProfileAttributeSoftDeleteMixin):
     """
     Certificates or test results for a user language.
     """

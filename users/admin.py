@@ -15,7 +15,7 @@ from django.contrib.auth.models import User
 from django.contrib.auth.forms import UserCreationForm
 from django.utils.crypto import get_random_string
 from .models import UserProfile, ProfileTraining, ProfileCertification, ProfileMembership
-from .models import Education, Experience
+from .models import Education, Experience, UserSkill, UserLanguage, LanguageCertificate
 from .task import send_speaker_credentials_task
 from .email_utils import generate_temporary_password
 
@@ -244,3 +244,38 @@ class ProfileMembershipAdmin(ProfileRecordSoftDeleteAdminMixin, admin.ModelAdmin
 # Unregister the default User admin and register the customized one
 admin.site.unregister(User)
 admin.site.register(User, UserAdmin)
+
+class ProfileAttributeSoftDeleteAdminMixin:
+    actions = ["restore_selected_profile_attributes"]
+
+    def get_queryset(self, request):
+        return self.model.all_objects.all()
+
+    @admin.action(description="Restore selected soft-deleted profile attributes")
+    def restore_selected_profile_attributes(self, request, queryset):
+        restored = 0
+        for item in queryset:
+            if item.restore():
+                restored += 1
+        self.message_user(request, f"Restored {restored} profile attribute(s).")
+
+
+@admin.register(UserSkill)
+class UserSkillAdmin(ProfileAttributeSoftDeleteAdminMixin, admin.ModelAdmin):
+    list_display = ("user", "skill", "proficiency_level", "assessment_type", "is_deleted")
+    list_filter = ("is_deleted", "assessment_type", "proficiency_level")
+    search_fields = ("user__username", "user__email", "skill__preferred_label")
+
+
+@admin.register(UserLanguage)
+class UserLanguageAdmin(ProfileAttributeSoftDeleteAdminMixin, admin.ModelAdmin):
+    list_display = ("user", "language", "primary_dialect", "proficiency_cefr", "is_deleted")
+    list_filter = ("is_deleted", "proficiency_cefr", "assessment_type")
+    search_fields = ("user__username", "user__email", "language__english_name")
+
+
+@admin.register(LanguageCertificate)
+class LanguageCertificateAdmin(ProfileAttributeSoftDeleteAdminMixin, admin.ModelAdmin):
+    list_display = ("user_language", "filename", "test_name", "verified", "uploaded_at", "is_deleted")
+    list_filter = ("is_deleted", "verified", "test_name")
+    search_fields = ("filename", "test_name", "user_language__user__email", "user_language__language__english_name")

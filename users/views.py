@@ -2252,6 +2252,30 @@ class ProfileRecordSoftDeleteViewSetMixin:
         )
 
 
+class ProfileAttributeSoftDeleteViewSetMixin:
+    """Turn DELETE into retained removal for skills, languages and language proofs."""
+
+    soft_delete_label = "Profile item"
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        reason = ""
+        if hasattr(request.data, "get"):
+            reason = request.data.get("reason", "") or request.data.get("deletion_reason", "")
+        instance.soft_delete(user=request.user, reason=reason)
+        return Response(
+            {
+                "deleted": True,
+                "deletion_type": "soft",
+                "code": "profile_attribute_soft_deleted",
+                "record_type": self.soft_delete_label,
+                "record_id": instance.pk,
+                "detail": f"{self.soft_delete_label} was deleted from the visible profile.",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class MeEducationViewSet(ProfileRecordSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     /api/users/me/educations/  (GET list, POST)
@@ -2638,26 +2662,32 @@ class AdminMembershipViewSet(ProfileRecordSoftDeleteViewSetMixin, AdminTargetUse
         serializer.save(user=self.get_target_user())
 
 
-class AdminSkillViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+class AdminSkillViewSet(ProfileAttributeSoftDeleteViewSetMixin, AdminTargetUserMixin, viewsets.ModelViewSet):
     serializer_class = UserSkillSerializer
+    soft_delete_label = "Skill"
 
     def get_queryset(self):
         return UserSkill.objects.filter(user=self.get_target_user()).select_related("skill").order_by("-proficiency_level", "-updated_at", "-id")
 
 
-class AdminLanguageViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+class AdminLanguageViewSet(ProfileAttributeSoftDeleteViewSetMixin, AdminTargetUserMixin, viewsets.ModelViewSet):
     serializer_class = UserLanguageSerializer
+    soft_delete_label = "Language"
 
     def get_queryset(self):
         return UserLanguage.objects.filter(user=self.get_target_user()).select_related("language").prefetch_related("certificates").order_by("language__english_name", "id")
 
 
-class AdminLanguageCertificateViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+class AdminLanguageCertificateViewSet(ProfileAttributeSoftDeleteViewSetMixin, AdminTargetUserMixin, viewsets.ModelViewSet):
     serializer_class = LanguageCertificateSerializer
+    soft_delete_label = "Language certificate"
     parser_classes = [MultiPartParser, FormParser]
 
     def get_queryset(self):
-        return LanguageCertificate.objects.filter(user_language__user=self.get_target_user()).select_related("user_language", "user_language__language")
+        return LanguageCertificate.objects.filter(
+            user_language__user=self.get_target_user(),
+            user_language__is_deleted=False,
+        ).select_related("user_language", "user_language__language")
 
     def perform_create(self, serializer):
         user_language_id = self.request.data.get("user_language")
@@ -4443,13 +4473,14 @@ class EscoSkillSearchView(APIView):
         return Response({"results": results})
 
     
-class MeSkillViewSet(viewsets.ModelViewSet):
+class MeSkillViewSet(ProfileAttributeSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     /api/users/me/skills/  (GET list, POST)
     /api/users/me/skills/<id>/  (GET, PUT, PATCH, DELETE)
     """
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = UserSkillSerializer
+    soft_delete_label = "Skill"
 
     def get_queryset(self):
         return (
@@ -4500,12 +4531,12 @@ class MeSkillViewSet(viewsets.ModelViewSet):
         cache.delete(cache_key)
         logger.debug(f"[MeSkillViewSet] Invalidated skills cache for user={self.request.user.id}")
 
-    def perform_destroy(self, instance):
-        instance.delete()
-        #  Invalidate skills cache on delete
-        cache_key = f"user:{self.request.user.id}:skills"
+    def destroy(self, request, *args, **kwargs):
+        response = super().destroy(request, *args, **kwargs)
+        cache_key = f"user:{request.user.id}:skills"
         cache.delete(cache_key)
-        logger.debug(f"[MeSkillViewSet] Invalidated skills cache for user={self.request.user.id}")
+        logger.debug(f"[MeSkillViewSet] Invalidated skills cache for user={request.user.id}")
+        return response
 
 
 class GeoCitySearchView(APIView):
@@ -4616,12 +4647,13 @@ class IsoLanguageSearchView(APIView):
         return Response({"results": results})
 
 
-class MeLanguageViewSet(viewsets.ModelViewSet):
+class MeLanguageViewSet(ProfileAttributeSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     /api/users/me/languages/
     """
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = UserLanguageSerializer
+    soft_delete_label = "Language"
 
     def get_queryset(self):
         return (
@@ -4673,28 +4705,32 @@ class MeLanguageViewSet(viewsets.ModelViewSet):
         cache.delete(cache_key)
         logger.debug(f"[MeLanguageViewSet] Invalidated languages cache for user={self.request.user.id}")
 
-    def perform_destroy(self, instance):
-        instance.delete()
-        #  Invalidate languages cache on delete
-        cache_key = f"user:{self.request.user.id}:languages"
+    def destroy(self, request, *args, **kwargs):
+        response = super().destroy(request, *args, **kwargs)
+        cache_key = f"user:{request.user.id}:languages"
         cache.delete(cache_key)
-        logger.debug(f"[MeLanguageViewSet] Invalidated languages cache for user={self.request.user.id}")
+        logger.debug(f"[MeLanguageViewSet] Invalidated languages cache for user={request.user.id}")
+        return response
 
 
-class MeLanguageCertificateViewSet(viewsets.ModelViewSet):
+class MeLanguageCertificateViewSet(ProfileAttributeSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     /api/users/me/language-certificates/
     Upload files for language proof.
     """
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = LanguageCertificateSerializer
+    soft_delete_label = "Language certificate"
     parser_classes = [MultiPartParser, FormParser]
 
     def get_queryset(self):
         return (
             LanguageCertificate.objects
             .select_related("user_language", "user_language__language")
-            .filter(user_language__user=self.request.user)
+            .filter(
+                user_language__user=self.request.user,
+                user_language__is_deleted=False,
+            )
             .order_by("-uploaded_at")
         )
 

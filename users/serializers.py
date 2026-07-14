@@ -1325,10 +1325,16 @@ class UserSkillSerializer(serializers.ModelSerializer):
                 logger.info("[UserSkillSerializer] Updated EscoSkill details successfully.")
 
         # 3. Link to User
-        user_skill, created_user_skill = UserSkill.objects.update_or_create(
+        user_skill, created_user_skill = UserSkill.all_objects.update_or_create(
             user=user,
             skill=esco_skill,
-            defaults=validated_data,
+            defaults={
+                **validated_data,
+                "is_deleted": False,
+                "deleted_at": None,
+                "deleted_by": None,
+                "deletion_reason": "",
+            },
         )
 
         return user_skill
@@ -1419,11 +1425,17 @@ class UserLanguageSerializer(serializers.ModelSerializer):
 
         primary_dialect = validated_data.get("primary_dialect", "")
 
-        obj, _ = UserLanguage.objects.update_or_create(
+        obj, _ = UserLanguage.all_objects.update_or_create(
             user=user,
             language=lang,
             primary_dialect=primary_dialect,
-            defaults=validated_data,
+            defaults={
+                **validated_data,
+                "is_deleted": False,
+                "deleted_at": None,
+                "deleted_by": None,
+                "deletion_reason": "",
+            },
         )
         return obj
 
