@@ -1,9 +1,10 @@
 from django.contrib import admin
 from django.contrib.auth.models import User
 from django import forms
+from django.utils import timezone
 from .models import (
     Event, EventParticipant, LoungeTable, LoungeParticipant, EventRegistration,
-    EventSession, SessionParticipant, SessionAttendance, EventApplication,
+    EventSession, SessionBreak, SessionParticipant, SessionAttendance, EventApplication,
     EventPreApprovalCode, EventPreApprovalAllowlist, EventSaleorDiscount, EventSessionBookmark,
     EventRole, EventApplicationTrack, TrackPricingTier,
     SharedQuestionCategory, SharedQuestion, FormField,
@@ -311,13 +312,61 @@ class SessionParticipantInline(admin.TabularInline):
 
 @admin.register(EventSession)
 class EventSessionAdmin(admin.ModelAdmin):
-    """Admin for event sessions."""
-    list_display = ('title', 'event', 'session_type', 'start_time', 'is_live', 'display_order')
-    list_filter = ('session_type', 'is_live', 'use_parent_meeting')
+    """Admin for active and soft-deleted event sessions."""
+    list_display = ('title', 'event', 'session_type', 'start_time', 'is_live', 'is_deleted', 'display_order')
+    list_filter = ('is_deleted', 'session_type', 'is_live', 'use_parent_meeting')
     search_fields = ('title', 'event__title')
-    raw_id_fields = ('event',)
-    readonly_fields = ('is_live', 'live_started_at', 'live_ended_at', 'rtk_meeting_id', 'created_at', 'updated_at')
+    raw_id_fields = ('event', 'deleted_by')
+    readonly_fields = (
+        'is_live', 'live_started_at', 'live_ended_at', 'rtk_meeting_id',
+        'deleted_at', 'deleted_by', 'created_at', 'updated_at',
+    )
     inlines = [SessionParticipantInline]
+    actions = ('soft_delete_selected_sessions', 'restore_selected_sessions')
+
+    def get_queryset(self, request):
+        return EventSession.all_objects.select_related('event', 'deleted_by')
+
+    @admin.action(description='Soft delete selected sessions')
+    def soft_delete_selected_sessions(self, request, queryset):
+        now = timezone.now()
+        for session in queryset.filter(is_deleted=False, is_live=False):
+            SessionBreak.objects.filter(session=session).update(
+                is_deleted=True,
+                deleted_at=now,
+                deleted_by=request.user,
+                deletion_reason='Deleted with parent session from Django admin.',
+                deleted_with_session=True,
+            )
+            session.is_deleted = True
+            session.deleted_at = now
+            session.deleted_by = request.user
+            session.deletion_reason = 'Deleted from Django admin.'
+            session.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'updated_at'])
+
+    @admin.action(description='Restore selected soft-deleted sessions')
+    def restore_selected_sessions(self, request, queryset):
+        for session in queryset.filter(is_deleted=True):
+            session.is_deleted = False
+            session.deleted_at = None
+            session.deleted_by = None
+            session.deletion_reason = ''
+            session.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'updated_at'])
+            SessionBreak.all_objects.filter(
+                session=session,
+                is_deleted=True,
+                deleted_with_session=True,
+            ).update(
+                is_deleted=False,
+                deleted_at=None,
+                deleted_by=None,
+                deletion_reason='',
+                deleted_with_session=False,
+            )
+
+    def has_delete_permission(self, request, obj=None):
+        # Prevent Django admin from invoking a cascading hard delete.
+        return False
 
     fieldsets = (
         (None, {
@@ -332,11 +381,40 @@ class EventSessionAdmin(admin.ModelAdmin):
         ('RTK Integration', {
             'fields': ('use_parent_meeting', 'rtk_meeting_id', 'recording_url')
         }),
+        ('Soft delete', {
+            'fields': ('is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason')
+        }),
         ('Metadata', {
             'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
+
+
+@admin.register(SessionBreak)
+class SessionBreakAdmin(admin.ModelAdmin):
+    list_display = ('label', 'session', 'break_type', 'duration_minutes', 'is_deleted', 'deleted_with_session')
+    list_filter = ('is_deleted', 'deleted_with_session', 'break_type')
+    search_fields = ('label', 'session__title', 'session__event__title')
+    raw_id_fields = ('session', 'deleted_by')
+    readonly_fields = ('deleted_at', 'deleted_by', 'created_at')
+    actions = ('restore_selected_breaks',)
+
+    def get_queryset(self, request):
+        return SessionBreak.all_objects.select_related('session', 'session__event', 'deleted_by')
+
+    @admin.action(description='Restore selected soft-deleted breaks')
+    def restore_selected_breaks(self, request, queryset):
+        queryset.filter(is_deleted=True, session__is_deleted=False).update(
+            is_deleted=False,
+            deleted_at=None,
+            deleted_by=None,
+            deletion_reason='',
+            deleted_with_session=False,
+        )
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(SessionAttendance)

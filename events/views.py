@@ -59,7 +59,7 @@ def _delete_lounge_http_caches(event_id):
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework import permissions, viewsets, status, views, generics   # NOTE: permissions, views may be unused; kept
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, NotFound
+from rest_framework.exceptions import PermissionDenied, NotFound, ValidationError
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.pagination import LimitOffsetPagination
 from django_filters.rest_framework import DjangoFilterBackend
@@ -79,7 +79,7 @@ from rest_framework.renderers import BaseRenderer, JSONRenderer
 # ===================== Local App Imports ====================
 # ============================================================
 
-from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField, TrackPricingTier, EventRole, EventAttendeeOrigin, EventPlatform, IMAA_CONNECT_PLATFORM_SLUG
+from .models import Event, EventRegistration, EventBadgeLabel, LoungeTable, LoungeParticipant, EventSession, SessionBreak, SessionAttendance, WaitingRoomAuditLog, WaitingRoomAnnouncement, GuestAttendee, EventApplication, VirtualSpeaker, EventParticipant, GuestProfileAuditLog, SaleorChannel, SaleorWarehouse, SaleorShippingZone, SaleorProductType, SaleorStaffUser, SaleorPermissionGroup, EventPreApprovalCode, EventPreApprovalAllowlist, EventSeries, SeriesRegistration, EventSaleorDiscount, EventEmailTemplate, EventSessionBookmark, PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, PostAcceptanceFormSubmission, PostAcceptanceFormAnswer, EventApplicationTrack, EventApplicationTrackApplication, SharedQuestionCategory, SharedQuestion, FormField, TrackPricingTier, EventRole, EventAttendeeOrigin, EventPlatform, IMAA_CONNECT_PLATFORM_SLUG
 from .permissions import IsSuperuserOnly, IsEventAdminOrSuperuser, HasRestrictedDataPermission
 from .participant_sync import (
     enqueue_participant_cancel,
@@ -13122,15 +13122,59 @@ class EventSessionViewSet(viewsets.ModelViewSet):
 
         serializer.save()
 
-    def perform_destroy(self, instance):
-        """Delete session with permission check."""
+    def destroy(self, request, *args, **kwargs):
+        """Soft delete a session while retaining its complete history."""
+        instance = self.get_object()
         event = instance.event
 
-        # Check permission: must be event creator or staff
-        if not _is_event_manager(self.request.user, event):
+        if not _is_event_manager(request.user, event):
             raise PermissionDenied("Only event creators/staff can delete sessions")
 
-        instance.delete()
+        if instance.is_live:
+            return Response(
+                {
+                    "detail": "End the live session before deleting it.",
+                    "code": "session_is_live",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        reason = str(request.data.get("reason") or "").strip()
+        now = timezone.now()
+        with transaction.atomic():
+            SessionBreak.objects.filter(session=instance).update(
+                is_deleted=True,
+                deleted_at=now,
+                deleted_by=request.user,
+                deletion_reason="Deleted with parent session.",
+                deleted_with_session=True,
+            )
+            instance.is_deleted = True
+            instance.deleted_at = now
+            instance.deleted_by = request.user
+            instance.deletion_reason = reason
+            instance.save(
+                update_fields=[
+                    "is_deleted",
+                    "deleted_at",
+                    "deleted_by",
+                    "deletion_reason",
+                    "updated_at",
+                ]
+            )
+
+        return Response(
+            {
+                "detail": (
+                    "The session was removed from the event schedule and remains stored "
+                    "in the database with its participants, attendance, bookmarks, "
+                    "recording, meeting identifiers, and break history."
+                ),
+                "code": "session_soft_deleted",
+                "session_id": instance.id,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
     def start_live(self, request, event_id=None, pk=None):
@@ -13343,14 +13387,37 @@ class SessionBreakViewSet(viewsets.ModelViewSet):
 
         serializer.save()
 
-    def perform_destroy(self, instance):
-        """Delete break with permission check."""
+    def destroy(self, request, *args, **kwargs):
+        """Soft delete a break while retaining schedule history."""
+        instance = self.get_object()
         event = instance.session.event
 
-        if not _is_event_manager(self.request.user, event):
+        if not _is_event_manager(request.user, event):
             raise PermissionDenied("Only event creators/staff can delete breaks")
 
-        instance.delete()
+        instance.is_deleted = True
+        instance.deleted_at = timezone.now()
+        instance.deleted_by = request.user
+        instance.deletion_reason = str(request.data.get("reason") or "").strip()
+        instance.deleted_with_session = False
+        instance.save(
+            update_fields=[
+                "is_deleted",
+                "deleted_at",
+                "deleted_by",
+                "deletion_reason",
+                "deleted_with_session",
+            ]
+        )
+
+        return Response(
+            {
+                "detail": "The break was removed from the schedule and remains stored in the database.",
+                "code": "session_break_soft_deleted",
+                "break_id": instance.id,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 # ============================================================

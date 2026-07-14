@@ -2568,6 +2568,14 @@ class EventParticipant(models.Model):
 # ================= Event Session Models ====================
 # ============================================================
 
+
+class ActiveSessionLifecycleManager(models.Manager):
+    """Default manager that hides soft-deleted sessions and breaks."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
 class EventSession(models.Model):
     """Represents a session within a multi-day event."""
     SESSION_TYPE_CHOICES = [
@@ -2602,6 +2610,23 @@ class EventSession(models.Model):
     )
     rtk_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     recording_url = models.URLField(blank=True)
+
+    # Soft-delete lifecycle. A deleted session disappears from schedules and
+    # live-room APIs while its participants, attendance, bookmarks, recording,
+    # RTK identifiers, and break history remain in the database.
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deleted_event_sessions",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
+
+    objects = ActiveSessionLifecycleManager()
+    all_objects = models.Manager()
 
     # Duration override fields
     duration_minutes_override = models.PositiveIntegerField(
@@ -2698,6 +2723,24 @@ class SessionBreak(models.Model):
     duration_minutes = models.PositiveIntegerField(help_text="Break length in minutes")
     break_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # Soft-delete lifecycle. Breaks deleted together with a parent session are
+    # marked separately so restoring the session does not resurrect breaks that
+    # an organiser had already deleted on their own.
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deleted_session_breaks",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
+    deleted_with_session = models.BooleanField(default=False)
+
+    objects = ActiveSessionLifecycleManager()
+    all_objects = models.Manager()
 
     class Meta:
         ordering = ["break_order", "created_at"]
