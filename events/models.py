@@ -11,6 +11,7 @@ from django.db.models.functions import Upper
 from django.contrib.auth.models import User
 from community.models import Community
 from django.utils.text import slugify
+from django.utils import timezone
 from django.conf import settings
 from django.core.exceptions import ValidationError
 import os, uuid
@@ -998,6 +999,13 @@ class EventEmailTemplate(models.Model):
         return f"{self.get_template_key_display()} - {self.event.title}"
 
 
+class ActiveLoungeTableManager(models.Manager):
+    """Hide deactivated lounge and breakout tables from normal application queries."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_active=True)
+
+
 class LoungeTable(models.Model):
     """Represents a virtual table in the Social Lounge."""
     TABLE_CATEGORY_CHOICES = [
@@ -1010,7 +1018,62 @@ class LoungeTable(models.Model):
     max_seats = models.IntegerField(default=4)
     rtk_meeting_id = models.CharField(max_length=255, blank=True, null=True)
     icon = models.ImageField(upload_to=lounge_table_icon_upload_to, blank=True, null=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+    deactivated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deactivated_lounge_tables",
+    )
+    deactivation_reason = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ActiveLoungeTableManager()
+    all_objects = models.Manager()
+
+    def soft_delete(self, *, user=None, reason=""):
+        """Deactivate the table while retaining its configuration and RTK identity.
+
+        Current seating records are transient live-state, so they are cleared. The
+        table row, icon, event association and RTK meeting ID remain available for
+        audit and controlled restoration.
+        """
+        if not self.is_active:
+            return
+
+        # Prevent auto-rejoin or stale breakout references to an unavailable room.
+        self.previous_occupants.update(last_breakout_table=None)
+        self.guest_attendees.update(lounge_table=None, current_location="main_room")
+        self.participants.all().delete()
+
+        self.is_active = False
+        self.deactivated_at = timezone.now()
+        self.deactivated_by = user if getattr(user, "is_authenticated", False) else None
+        self.deactivation_reason = (reason or "").strip()
+        self.save(
+            update_fields=[
+                "is_active",
+                "deactivated_at",
+                "deactivated_by",
+                "deactivation_reason",
+            ]
+        )
+
+    def restore(self):
+        self.is_active = True
+        self.deactivated_at = None
+        self.deactivated_by = None
+        self.deactivation_reason = ""
+        self.save(
+            update_fields=[
+                "is_active",
+                "deactivated_at",
+                "deactivated_by",
+                "deactivation_reason",
+            ]
+        )
 
     def __str__(self):
         return f"{self.name} - {self.event.title}"

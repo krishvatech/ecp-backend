@@ -8599,7 +8599,12 @@ class EventViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="lounge-table-delete")
     def lounge_table_delete(self, request, pk=None):
-        """Admin-only: Delete a lounge table."""
+        """Admin-only: Soft remove a lounge or breakout table.
+
+        The table configuration and RTK meeting ID remain stored. Current seat
+        assignments are transient live-state and are cleared so nobody can rejoin
+        an unavailable table.
+        """
         event = self.get_object()
         if not _is_event_owner(request.user, event):
             return Response({"detail": "Not authorized. Only the event owner can delete lounge tables."}, status=403)
@@ -8609,15 +8614,34 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response({"error": "missing_table_id"}, status=400)
 
         table = get_object_or_404(LoungeTable, id=table_id, event_id=pk)
-        
-        # Clear previous assignments if this was a breakout room
-        if table.category == "BREAKOUT":
-             EventRegistration.objects.filter(event=event, last_breakout_table=table).update(last_breakout_table=None)
+        reason = str(request.data.get("reason") or "").strip()
+        category_label = "breakout room" if table.category == "BREAKOUT" else "lounge table"
 
-        LoungeParticipant.objects.filter(table=table).delete()
-        table.delete()
+        table.soft_delete(user=request.user, reason=reason)
         _delete_lounge_http_caches(event.id)
-        return Response({"ok": True})
+
+        try:
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"event_{event.id}",
+                {
+                    "type": "lounge_update",
+                    "state_deferred": True,
+                    "online_counts": {},
+                },
+            )
+        except Exception:
+            logger.exception("Failed to broadcast lounge table deactivation for event %s", event.id)
+
+        return Response({
+            "ok": True,
+            "code": "lounge_table_soft_deleted",
+            "deletion_type": "soft",
+            "detail": (
+                f"The {category_label} was removed from the platform and remains stored "
+                "in the database. Current seats were cleared."
+            ),
+        })
 
     @action(detail=True, methods=["post"], url_path="lounge-table-icon")
     def lounge_table_icon(self, request, pk=None):

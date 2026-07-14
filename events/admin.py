@@ -293,11 +293,31 @@ class EventParticipantAdmin(admin.ModelAdmin):
         css = {'all': ('admin/css/event_participant_admin.css',)}
 
 
+@admin.action(description="Restore selected deactivated lounge tables")
+def restore_lounge_tables(modeladmin, request, queryset):
+    for table in queryset:
+        table.restore()
+
+
 @admin.register(LoungeTable)
 class LoungeTableAdmin(admin.ModelAdmin):
-    list_display = ("id", "name", "category", "event", "max_seats", "created_at")
-    list_filter = ("category", "event")
-    search_fields = ("name", "event__title")
+    list_display = (
+        "id",
+        "name",
+        "category",
+        "event",
+        "max_seats",
+        "is_active",
+        "deactivated_at",
+        "created_at",
+    )
+    list_filter = ("is_active", "category", "event")
+    search_fields = ("name", "event__title", "rtk_meeting_id")
+    readonly_fields = ("created_at", "deactivated_at", "deactivated_by")
+    actions = [restore_lounge_tables]
+
+    def get_queryset(self, request):
+        return LoungeTable.all_objects.select_related("event", "deactivated_by")
 
 @admin.register(LoungeParticipant)
 class LoungeParticipantAdmin(admin.ModelAdmin):
