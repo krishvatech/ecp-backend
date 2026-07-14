@@ -3822,7 +3822,7 @@ class EventViewSet(viewsets.ModelViewSet):
         if track_id or track_key:
             try:
                 if track_id:
-                    application_track = EventApplicationTrack.objects.get(id=track_id, event=event)
+                    application_track = EventApplicationTrack.objects.get(id=track_id, event=event, is_active=True)
                 else:
                     application_track = EventApplicationTrack.objects.get(key=track_key, event=event)
 
@@ -4412,7 +4412,8 @@ class EventViewSet(viewsets.ModelViewSet):
                         # Check tier belongs to this track
                         tier_preference = TrackPricingTier.objects.get(
                             id=tier_preference_id,
-                            track=track
+                            track=track,
+                            is_active=True,
                         )
                     except TrackPricingTier.DoesNotExist:
                         logger.warning(f"Tier {tier_preference_id} not found for track {track.id}")
@@ -4685,7 +4686,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # Validate track exists if provided
         if track_id:
-            if not EventApplicationTrack.objects.filter(id=track_id, event=event).exists():
+            if not EventApplicationTrack.objects.filter(id=track_id, event=event, is_active=True).exists():
                 return Response({"preapproved": False, "reason": "invalid", "message": "Track not found."}, status=400)
 
         from django.db.models import Q
@@ -4721,7 +4722,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # Validate track exists if provided
         if track_id:
-            if not EventApplicationTrack.objects.filter(id=track_id, event=event).exists():
+            if not EventApplicationTrack.objects.filter(id=track_id, event=event, is_active=True).exists():
                 return Response({"preapproved": False, "reason": "not_found"})
 
         from django.db.models import Q
@@ -4824,7 +4825,7 @@ class EventViewSet(viewsets.ModelViewSet):
         track = None
         if track_id:
             try:
-                track = EventApplicationTrack.objects.get(id=track_id, event=event)
+                track = EventApplicationTrack.objects.get(id=track_id, event=event, is_active=True)
             except EventApplicationTrack.DoesNotExist:
                 return Response({'detail': 'Track not found for this event.'}, status=400)
 
@@ -4856,7 +4857,7 @@ class EventViewSet(viewsets.ModelViewSet):
         track = None
         if track_id:
             try:
-                track = EventApplicationTrack.objects.get(id=track_id, event=event)
+                track = EventApplicationTrack.objects.get(id=track_id, event=event, is_active=True)
             except EventApplicationTrack.DoesNotExist:
                 return Response({'detail': 'Track not found for this event.'}, status=400)
 
@@ -4884,11 +4885,36 @@ class EventViewSet(viewsets.ModelViewSet):
         if not _is_event_manager(request.user, event):
             return Response({'detail': 'Forbidden. Only event managers can manage pre-approval.'}, status=403)
         code = get_object_or_404(EventPreApprovalCode, id=code_id, event=event)
-        code.status = EventPreApprovalCode.STATUS_REVOKED
-        code.revoked_by = request.user if request.user.is_authenticated else None
-        code.revoked_at = timezone.now()
-        code.save(update_fields=["status", "revoked_by", "revoked_at"])
-        return Response(EventPreApprovalCodeSerializer(code).data)
+
+        # A used code is historical evidence of how an application was pre-approved.
+        # Do not overwrite that audit state with "revoked".
+        if code.status == EventPreApprovalCode.STATUS_USED:
+            return Response(
+                {
+                    "detail": "This code has already been used and cannot be removed. Its usage history remains stored.",
+                    "soft_deleted": False,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if code.status != EventPreApprovalCode.STATUS_REVOKED:
+            code.status = EventPreApprovalCode.STATUS_REVOKED
+            code.revoked_by = request.user if request.user.is_authenticated else None
+            code.revoked_at = timezone.now()
+            code.save(update_fields=["status", "revoked_by", "revoked_at"])
+
+        response_data = dict(EventPreApprovalCodeSerializer(code).data)
+        response_data.update(
+            {
+                "detail": (
+                    "The pre-approval code was removed from active use but remains stored "
+                    "in the database with its scope and audit history."
+                ),
+                "soft_deleted": True,
+                "deletion_type": "soft",
+            }
+        )
+        return Response(response_data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path=r"preapproval/codes/(?P<code_id>\d+)/mark-used")
     def preapproval_code_mark_used(self, request, pk=None, code_id=None):
@@ -4919,7 +4945,7 @@ class EventViewSet(viewsets.ModelViewSet):
         track = None
         if track_id:
             try:
-                track = EventApplicationTrack.objects.get(id=track_id, event=event)
+                track = EventApplicationTrack.objects.get(id=track_id, event=event, is_active=True)
             except EventApplicationTrack.DoesNotExist:
                 return Response({'detail': 'Track not found for this event.'}, status=400)
 
@@ -4933,6 +4959,57 @@ class EventViewSet(viewsets.ModelViewSet):
             "track": track,  # FIX 2
             "submission_mode": submission_mode,  # FIX 2
         }
+
+        if not payload["email"]:
+            return Response({"detail": "Email is required."}, status=400)
+
+        # Re-adding a previously removed email restores the same row instead of
+        # creating duplicate inactive history records.
+        existing = (
+            EventPreApprovalAllowlist.objects.filter(
+                event=event,
+                track=track,
+                submission_mode=submission_mode,
+                email=payload["email"],
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if existing:
+            if existing.is_active:
+                return Response(
+                    {"detail": "This email is already active in the allowlist for the selected track and submission mode."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            existing.first_name = payload["first_name"]
+            existing.last_name = payload["last_name"]
+            existing.notes = payload["notes"]
+            existing.is_active = True
+            existing.removed_by = None
+            existing.removed_at = None
+            if existing.created_by_id is None:
+                existing.created_by = payload["created_by"]
+            existing.save(
+                update_fields=[
+                    "first_name",
+                    "last_name",
+                    "notes",
+                    "is_active",
+                    "removed_by",
+                    "removed_at",
+                    "created_by",
+                ]
+            )
+            restored_data = dict(EventPreApprovalAllowlistSerializer(existing).data)
+            restored_data.update(
+                {
+                    "detail": "The previously removed allowlist entry was restored.",
+                    "restored": True,
+                }
+            )
+            return Response(restored_data, status=200)
+
         obj = EventPreApprovalAllowlist.objects.create(**payload)
         return Response(EventPreApprovalAllowlistSerializer(obj).data, status=201)
 
@@ -4942,11 +5019,25 @@ class EventViewSet(viewsets.ModelViewSet):
         if not _is_event_manager(request.user, event):
             return Response({'detail': 'Forbidden. Only event managers can manage pre-approval.'}, status=403)
         entry = get_object_or_404(EventPreApprovalAllowlist, id=entry_id, event=event)
-        entry.is_active = False
-        entry.removed_by = request.user if request.user.is_authenticated else None
-        entry.removed_at = timezone.now()
-        entry.save(update_fields=["is_active", "removed_by", "removed_at"])
-        return Response({"ok": True})
+
+        if entry.is_active:
+            entry.is_active = False
+            entry.removed_by = request.user if request.user.is_authenticated else None
+            entry.removed_at = timezone.now()
+            entry.save(update_fields=["is_active", "removed_by", "removed_at"])
+
+        return Response(
+            {
+                "ok": True,
+                "soft_deleted": True,
+                "deletion_type": "soft",
+                "detail": (
+                    "The email was removed from active pre-approval but remains stored "
+                    "in the database with its track, submission mode, and audit history."
+                ),
+                "entry": EventPreApprovalAllowlistSerializer(entry).data,
+            }
+        )
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="preapproval/allowlist/import-csv")
     def preapproval_allowlist_import_csv(self, request, pk=None):
@@ -4992,7 +5083,7 @@ class EventViewSet(viewsets.ModelViewSet):
             track = default_track
             if track_id and (not default_track or str(default_track.id) != track_id):
                 try:
-                    track = EventApplicationTrack.objects.get(id=track_id, event=event)
+                    track = EventApplicationTrack.objects.get(id=track_id, event=event, is_active=True)
                 except EventApplicationTrack.DoesNotExist:
                     skipped += 1
                     errors.append({"row": idx, "email": email, "error": f"Track {track_id} not found"})
@@ -5335,7 +5426,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 accepted_tier = None
                 if tier_id:
                     try:
-                        accepted_tier = TrackPricingTier.objects.get(id=tier_id)
+                        accepted_tier = TrackPricingTier.objects.get(id=tier_id, is_active=True)
                     except TrackPricingTier.DoesNotExist:
                         return Response({'detail': 'Tier not found.'}, status=400)
 
@@ -5456,7 +5547,7 @@ class EventViewSet(viewsets.ModelViewSet):
         accepted_tier = None
         if tier_id:
             try:
-                accepted_tier = TrackPricingTier.objects.get(id=tier_id, track=track_app.track)
+                accepted_tier = TrackPricingTier.objects.get(id=tier_id, track=track_app.track, is_active=True)
             except TrackPricingTier.DoesNotExist:
                 return Response({'detail': 'Tier not found for this track.'}, status=400)
 
@@ -16226,6 +16317,37 @@ class EventApplicationTrackViewSet(viewsets.ModelViewSet):
         track = serializer.save()
         _publish_draft_application_event_if_tracks_ready(track.event)
 
+    def destroy(self, request, *args, **kwargs):
+        """Remove a track from the platform without deleting application history."""
+        track = self.get_object()
+        if not _is_event_manager(request.user, track.event):
+            raise PermissionDenied('Only event managers can delete application tracks.')
+
+        reason = str(request.data.get('reason') or '').strip()
+        track.status_before_deactivation = track.status
+        track.status = 'closed'
+        track.is_active = False
+        track.deactivated_at = timezone.now()
+        track.deactivated_by = request.user
+        track.deactivation_reason = reason
+        track.save(update_fields=[
+            'status_before_deactivation', 'status', 'is_active',
+            'deactivated_at', 'deactivated_by', 'deactivation_reason',
+            'updated_at',
+        ])
+
+        return Response({
+            'ok': True,
+            'code': 'application_track_soft_deleted',
+            'deletion_type': 'soft',
+            'detail': (
+                'The application track was removed from the platform but remains '
+                'stored in the database. Existing applications, form answers, '
+                'pricing tiers, pre-approval records, and decision history were preserved.'
+            ),
+            'track_id': track.id,
+        }, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['get'], url_path='form-schema')
     def form_schema(self, request, *args, **kwargs):
         """Return form schema with required fields per submission mode."""
@@ -16307,14 +16429,21 @@ class TrackPricingTierViewSet(viewsets.ModelViewSet):
             return TrackPricingTier.objects.filter(
                 track_id=track_id,
                 track__event_id=event_id,
-                is_active=True
+                track__is_active=True,
+                is_active=True,
             ).order_by('sort_order', 'label')
         return TrackPricingTier.objects.none()
 
     def perform_create(self, serializer):
-        """Create pricing tier for specified track with duplicate prevention."""
+        """Create pricing tier for an active track with duplicate prevention."""
+        event_id = self.kwargs.get('event_id')
         track_id = self.kwargs.get('track_id')
-        track = EventApplicationTrack.objects.get(pk=track_id)
+        track = get_object_or_404(
+            EventApplicationTrack,
+            pk=track_id,
+            event_id=event_id,
+            is_active=True,
+        )
 
         # Prevent duplicate tiers with same key for this track
         tier_key = serializer.validated_data.get('key')
@@ -16332,6 +16461,37 @@ class TrackPricingTierViewSet(viewsets.ModelViewSet):
         """Update pricing tier."""
         tier = serializer.save()
         _publish_draft_application_event_if_tracks_ready(tier.track.event)
+
+    def destroy(self, request, *args, **kwargs):
+        """Disable a pricing tier while retaining every historical reference."""
+        tier = self.get_object()
+        if not _is_event_manager(request.user, tier.track.event):
+            raise PermissionDenied('Only event managers can delete pricing tiers.')
+
+        reason = str(request.data.get('reason') or '').strip()
+        tier.was_default_before_deactivation = bool(tier.is_default)
+        tier.is_default = False
+        tier.is_active = False
+        tier.deactivated_at = timezone.now()
+        tier.deactivated_by = request.user
+        tier.deactivation_reason = reason
+        tier.save(update_fields=[
+            'was_default_before_deactivation', 'is_default', 'is_active',
+            'deactivated_at', 'deactivated_by', 'deactivation_reason',
+            'updated_at',
+        ])
+
+        return Response({
+            'ok': True,
+            'code': 'pricing_tier_soft_deleted',
+            'deletion_type': 'soft',
+            'detail': (
+                'The pricing tier was removed from new applications but remains '
+                'stored in the database. Existing tier preferences, accepted '
+                'applications, attendee origins, and payment history were preserved.'
+            ),
+            'tier_id': tier.id,
+        }, status=status.HTTP_200_OK)
 
 
 # Phase 5: Form Schema Primitives and Shared Question Library

@@ -1538,6 +1538,31 @@ class EventApplicationTrack(models.Model):
         db_index=True,
         help_text='Whether this track is enabled for the event'
     )
+    deactivated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='When this track was removed from the platform'
+    )
+    deactivated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='deactivated_event_application_tracks',
+        help_text='Administrator who removed this track from the platform'
+    )
+    deactivation_reason = models.TextField(
+        blank=True,
+        default='',
+        help_text='Optional reason for removing this track'
+    )
+    status_before_deactivation = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        help_text='Track status before it was removed, used for controlled restoration'
+    )
 
     # Submission configuration
     enabled_submission_modes = models.JSONField(
@@ -1664,6 +1689,29 @@ class TrackPricingTier(models.Model):
         default=True,
         db_index=True,
         help_text='If False, tier is disabled and cannot be selected'
+    )
+    deactivated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='When this pricing tier was removed from the platform'
+    )
+    deactivated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='deactivated_track_pricing_tiers',
+        help_text='Administrator who removed this pricing tier'
+    )
+    deactivation_reason = models.TextField(
+        blank=True,
+        default='',
+        help_text='Optional reason for removing this pricing tier'
+    )
+    was_default_before_deactivation = models.BooleanField(
+        default=False,
+        help_text='Whether the tier was the default before it was removed'
     )
     sort_order = models.IntegerField(
         default=0,

@@ -627,16 +627,62 @@ class TrackPricingTierInline(admin.TabularInline):
         return self.readonly_fields
 
 
+@admin.action(description='Restore selected application tracks')
+def restore_application_tracks(modeladmin, request, queryset):
+    restored = 0
+    for track in queryset.filter(is_active=False):
+        track.is_active = True
+        track.status = track.status_before_deactivation or 'closed'
+        track.status_before_deactivation = ''
+        track.deactivated_at = None
+        track.deactivated_by = None
+        track.deactivation_reason = ''
+        track.save(update_fields=[
+            'is_active', 'status', 'status_before_deactivation',
+            'deactivated_at', 'deactivated_by', 'deactivation_reason',
+            'updated_at',
+        ])
+        restored += 1
+    modeladmin.message_user(request, f'Restored {restored} application track(s).')
+
+
+@admin.action(description='Restore selected pricing tiers as non-default')
+def restore_pricing_tiers(modeladmin, request, queryset):
+    restored = 0
+    for tier in queryset.filter(is_active=False, track__is_active=True):
+        tier.is_active = True
+        tier.is_default = False
+        tier.was_default_before_deactivation = False
+        tier.deactivated_at = None
+        tier.deactivated_by = None
+        tier.deactivation_reason = ''
+        tier.save(update_fields=[
+            'is_active', 'is_default', 'was_default_before_deactivation',
+            'deactivated_at', 'deactivated_by', 'deactivation_reason',
+            'updated_at',
+        ])
+        restored += 1
+    modeladmin.message_user(
+        request,
+        f'Restored {restored} pricing tier(s) as non-default. Review defaults before reopening applications.'
+    )
+
+
 @admin.register(EventApplicationTrack)
 class EventApplicationTrackAdmin(admin.ModelAdmin):
     """Admin for EventApplicationTrack - application track configuration."""
-    list_display = ('label', 'event', 'key', 'status', 'is_active', 'sort_order', 'created_at')
+    list_display = ('label', 'event', 'key', 'status', 'is_active', 'deactivated_at', 'sort_order', 'created_at')
     list_filter = ('event', 'status', 'is_active', 'is_system_default', 'created_at')
     search_fields = ('event__title', 'label', 'key')
     raw_id_fields = ('event',)
-    readonly_fields = ('is_system_default', 'created_at', 'updated_at')
+    readonly_fields = (
+        'is_system_default', 'deactivated_at', 'deactivated_by',
+        'deactivation_reason', 'status_before_deactivation',
+        'created_at', 'updated_at'
+    )
     ordering = ['event', 'sort_order', 'label']
     inlines = [TrackPricingTierInline]
+    actions = [restore_application_tracks]
 
     fieldsets = (
         (None, {
@@ -658,6 +704,13 @@ class EventApplicationTrackAdmin(admin.ModelAdmin):
             'description': 'Markdown-formatted content blocks displayed to applicants at different stages',
             'classes': ('collapse',)
         }),
+        ('Removal audit', {
+            'fields': (
+                'deactivated_at', 'deactivated_by', 'deactivation_reason',
+                'status_before_deactivation'
+            ),
+            'classes': ('collapse',)
+        }),
         ('System', {
             'fields': ('is_system_default', 'created_at', 'updated_at'),
             'classes': ('collapse',)
@@ -668,12 +721,16 @@ class EventApplicationTrackAdmin(admin.ModelAdmin):
 @admin.register(TrackPricingTier)
 class TrackPricingTierAdmin(admin.ModelAdmin):
     """Admin for TrackPricingTier - track-specific pricing configuration."""
-    list_display = ('label', 'track', 'key', 'price', 'currency', 'is_default', 'is_active', 'sort_order', 'created_at')
+    list_display = ('label', 'track', 'key', 'price', 'currency', 'is_default', 'is_active', 'deactivated_at', 'sort_order', 'created_at')
     list_filter = ('track__event', 'track', 'currency', 'is_default', 'is_active', 'created_at')
     search_fields = ('track__label', 'label', 'key', 'track__event__title')
     raw_id_fields = ('track',)
-    readonly_fields = ('created_at', 'updated_at')
+    readonly_fields = (
+        'deactivated_at', 'deactivated_by', 'deactivation_reason',
+        'was_default_before_deactivation', 'created_at', 'updated_at'
+    )
     ordering = ['track', 'sort_order', 'label']
+    actions = [restore_pricing_tiers]
 
     fieldsets = (
         (None, {
@@ -684,6 +741,13 @@ class TrackPricingTierAdmin(admin.ModelAdmin):
         }),
         ('Configuration', {
             'fields': ('visibility', 'is_default', 'is_active', 'sort_order')
+        }),
+        ('Removal audit', {
+            'fields': (
+                'deactivated_at', 'deactivated_by', 'deactivation_reason',
+                'was_default_before_deactivation'
+            ),
+            'classes': ('collapse',)
         }),
         ('System', {
             'fields': ('created_at', 'updated_at'),

@@ -3320,13 +3320,19 @@ class EventApplicationTrackSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'event_id', 'key', 'label', 'short_description',
             'status', 'sort_order', 'is_active',
+            'deactivated_at', 'deactivated_by', 'deactivation_reason',
+            'status_before_deactivation',
             'enabled_submission_modes', 'form_schema',
             'preapproval_configuration', 'role_mappings_on_acceptance',
             'content_surfaces', 'landing_page_content', 'form_header_notice',
             'confirmation_page_content', 'is_system_default',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'is_system_default', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'is_system_default', 'deactivated_at', 'deactivated_by',
+            'deactivation_reason', 'status_before_deactivation',
+            'created_at', 'updated_at'
+        ]
 
 
 class TrackPricingTierSerializer(serializers.ModelSerializer):
@@ -3346,10 +3352,15 @@ class TrackPricingTierSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'track_id', 'key', 'label', 'description',
             'price', 'currency', 'visibility', 'is_default', 'is_active',
+            'deactivated_at', 'deactivated_by', 'deactivation_reason',
+            'was_default_before_deactivation',
             'sort_order', 'is_paid', 'is_free',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'deactivated_at', 'deactivated_by', 'deactivation_reason',
+            'was_default_before_deactivation', 'created_at', 'updated_at'
+        ]
 
 
 class EventAttendeeOriginSerializer(serializers.ModelSerializer):
