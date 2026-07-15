@@ -145,3 +145,44 @@ class UserSoftDeleteSyncSafetyTests(TestCase):
         self.assertEqual(response.status_code, 409, response.content)
         self.user.refresh_from_db()
         self.assertTrue(self.user.is_active)
+
+
+    @override_settings(
+        MANDA_SYNC_DEFAULT_USER_ID="none",
+        MANDA_SYNC_DEFAULT_COMMUNITY_ID=None,
+        WP_SYNC_SERVICE_ACCOUNT_ID=None,
+    )
+    @patch("users.suspension.cognito_global_signout", return_value=True)
+    def test_none_string_manda_user_id_does_not_crash_deactivation(self, _signout):
+        client = APIClient()
+        client.force_authenticate(self.admin)
+
+        response = client.post(
+            f"/api/auth/admin/users/{self.user.id}/deactivate/",
+            {"reason": "Cross-platform deactivation"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_active)
+
+    @override_settings(
+        MANDA_SYNC_DEFAULT_USER_ID="not-a-user-id",
+        MANDA_SYNC_DEFAULT_COMMUNITY_ID=None,
+        WP_SYNC_SERVICE_ACCOUNT_ID=None,
+    )
+    def test_invalid_sync_account_setting_returns_clear_service_error(self):
+        client = APIClient()
+        client.force_authenticate(self.admin)
+
+        response = client.post(
+            f"/api/auth/admin/users/{self.user.id}/deactivate/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 503, response.content)
+        self.assertEqual(response.data["code"], "invalid_sync_account_configuration")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_active)

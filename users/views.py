@@ -2964,30 +2964,68 @@ class StaffUserViewSet(viewsets.ModelViewSet):
             sync_staff_group(username=uname, is_staff=bool(is_staff))
         return Response({"updated": updated})
 
+    @staticmethod
+    def _optional_sync_account_id(setting_name):
+        """Return an optional numeric sync-account setting without request-time crashes.
+
+        Empty values and common null-like strings are treated as not configured.
+        Any other malformed value is rejected so account protection cannot be
+        silently bypassed by a production configuration typo.
+        """
+        raw_value = getattr(settings, setting_name, None)
+        if raw_value is None:
+            return None
+
+        normalized_value = str(raw_value).strip()
+        if normalized_value.lower() in {"", "none", "null", "undefined"}:
+            return None
+
+        try:
+            parsed_value = int(normalized_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{setting_name} must be a positive integer or left empty."
+            ) from exc
+
+        if parsed_value <= 0:
+            raise ValueError(
+                f"{setting_name} must be a positive integer or left empty."
+            )
+
+        return parsed_value
+
     def _protected_sync_account_reason(self, instance):
         """Return why a user cannot be deactivated until sync config is changed."""
         protected = []
 
-        manda_user_id = getattr(settings, "MANDA_SYNC_DEFAULT_USER_ID", None)
-        if manda_user_id and int(manda_user_id) == instance.id:
+        manda_user_id = self._optional_sync_account_id(
+            "MANDA_SYNC_DEFAULT_USER_ID"
+        )
+        if manda_user_id == instance.id:
             protected.append("MANDA event sync default owner")
 
-        wp_service_user_id = getattr(settings, "WP_SYNC_SERVICE_ACCOUNT_ID", None)
-        if wp_service_user_id and int(wp_service_user_id) == instance.id:
+        wp_service_user_id = self._optional_sync_account_id(
+            "WP_SYNC_SERVICE_ACCOUNT_ID"
+        )
+        if wp_service_user_id == instance.id:
             protected.append("WordPress event sync service account")
 
-        # MANDA can fall back to the configured community owner when no explicit
-        # default user is configured. Protect that owner as well.
-        if not manda_user_id:
-            community_id = getattr(settings, "MANDA_SYNC_DEFAULT_COMMUNITY_ID", None)
-            if community_id:
-                try:
-                    from community.models import Community
-                    owner_id = Community.objects.filter(pk=int(community_id)).values_list("owner_id", flat=True).first()
-                    if owner_id == instance.id:
-                        protected.append("MANDA sync community owner")
-                except (TypeError, ValueError):
-                    pass
+        # When no explicit MANDA user is configured, event sync uses the owner
+        # of MANDA_SYNC_DEFAULT_COMMUNITY_ID. Protect that fallback owner.
+        if manda_user_id is None:
+            community_id = self._optional_sync_account_id(
+                "MANDA_SYNC_DEFAULT_COMMUNITY_ID"
+            )
+            if community_id is not None:
+                from community.models import Community
+
+                owner_id = (
+                    Community.objects.filter(pk=community_id)
+                    .values_list("owner_id", flat=True)
+                    .first()
+                )
+                if owner_id == instance.id:
+                    protected.append("MANDA sync community owner")
 
         return ", ".join(protected)
 
@@ -3000,7 +3038,21 @@ class StaffUserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        protected_reason = self._protected_sync_account_reason(instance)
+        try:
+            protected_reason = self._protected_sync_account_reason(instance)
+        except ValueError as exc:
+            logger.error("Invalid sync-account configuration: %s", exc)
+            return Response(
+                {
+                    "detail": (
+                        "User deactivation is temporarily unavailable because the "
+                        "sync-account configuration is invalid. Contact an administrator."
+                    ),
+                    "code": "invalid_sync_account_configuration",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         if protected_reason:
             return Response(
                 {
@@ -3028,7 +3080,10 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         instance.refresh_from_db()
         return Response(
             {
-                "detail": "User deactivated. Business records and sync mappings were preserved.",
+                "detail": (
+                    "User deactivated across ECP and MANDA. Business records and "
+                    "sync mappings were preserved."
+                ),
                 "user": self.get_serializer(instance).data,
                 "sync_preserved": {
                     "wordpress_identity": True,
