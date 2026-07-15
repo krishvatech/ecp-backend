@@ -2830,15 +2830,22 @@ class EventViewSet(viewsets.ModelViewSet):
         if not slug:
             return Response({"detail": "slug query parameter is required"}, status=400)
 
-        qs = Event.objects.filter(slug=slug)
+        exclude_pk = None
         exclude_id = request.query_params.get("exclude_id")
         if exclude_id:
             try:
-                qs = qs.exclude(pk=int(exclude_id))
+                exclude_pk = int(exclude_id)
             except (TypeError, ValueError):
-                pass
+                exclude_pk = None
 
-        return Response({"slug": slug, "available": not qs.exists()})
+        suggested_slug = Event.next_available_slug(slug, exclude_pk=exclude_pk)
+        return Response(
+            {
+                "slug": slug,
+                "available": suggested_slug == slug,
+                "suggested_slug": suggested_slug,
+            }
+        )
 
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="formats")
     def formats(self, request, *args, **kwargs):
@@ -13345,11 +13352,7 @@ class EventSessionViewSet(viewsets.ModelViewSet):
 
         return Response(
             {
-                "detail": (
-                    "The session was removed from the event schedule and remains stored "
-                    "in the database with its participants, attendance, bookmarks, "
-                    "recording, meeting identifiers, and break history."
-                ),
+                "detail": "Session deleted successfully.",
                 "code": "session_soft_deleted",
                 "session_id": instance.id,
             },

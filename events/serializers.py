@@ -1659,12 +1659,23 @@ class EventSerializer(serializers.ModelSerializer):
 
         - Keeps existing participants (no duplicate emails) but updates their role if changed
         - Only sends confirmation emails to NEWLY ADDED participants
-        - Deletes removed participants
+        - Soft-deletes removed participants while preserving history
         - Handles role changes gracefully
         """
+        request = self.context.get("request")
+        actor = request.user if request and getattr(request.user, "is_authenticated", False) else None
+
         if not participants_data:
-            # If participants list is empty, delete all
-            event.participants.all().delete()
+            # Keep historical assignments in the database while removing them
+            # from every normal participant query and user-facing response.
+            now = timezone.now()
+            event.participants.update(
+                is_deleted=True,
+                deleted_at=now,
+                deleted_by=actor,
+                deletion_reason="Removed from the event participant list.",
+                updated_at=now,
+            )
             return
 
         from django.contrib.auth.models import User
@@ -1709,8 +1720,12 @@ class EventSerializer(serializers.ModelSerializer):
         # Process deletions and updates
         for identity_key, (ep, old_role) in existing_by_identity.items():
             if identity_key not in new_by_identity:
-                # Participant was removed
-                ep.delete()
+                # Participant was removed. Retain the row for audit/history but
+                # hide it through the default manager.
+                ep.soft_delete(
+                    user=actor,
+                    reason="Removed from the event participant list.",
+                )
             else:
                 # Participant still exists; check if role or display_order changed
                 new_role, p_data = new_by_identity[identity_key]
@@ -2644,24 +2659,17 @@ class EventSerializer(serializers.ModelSerializer):
                 "Slug is too long (max 255 characters)."
             )
 
-        # Check uniqueness (exclude self if updating)
-        qs = Event.objects.filter(slug=value)
-        if self.instance:
-            qs = qs.exclude(pk=self.instance.pk)
-        if not qs.exists():
+        candidate = Event.next_available_slug(
+            value,
+            exclude_pk=self.instance.pk if self.instance else None,
+        )
+        if candidate == value:
             return value
 
-        # For create flow, hidden slug input can collide (same title multiple times).
-        # Auto-resolve to a unique slug instead of failing.
+        # Creation is user-friendly: preserve the requested base and allocate the
+        # next available suffix. Editing remains strict so an existing event URL
+        # is never changed unexpectedly.
         if not self.instance:
-            max_len = Event._meta.get_field("slug").max_length or 255
-            base_slug = value[:max_len]
-            candidate = base_slug
-            suffix = 2
-            while Event.objects.filter(slug=candidate).exists():
-                suffix_str = f"-{suffix}"
-                candidate = f"{base_slug[: max_len - len(suffix_str)]}{suffix_str}"
-                suffix += 1
             return candidate
 
         raise serializers.ValidationError("This slug is already in use.")

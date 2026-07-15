@@ -273,13 +273,14 @@ class ExternalParticipantMappingAdmin(admin.ModelAdmin):
 class EventParticipantAdmin(admin.ModelAdmin):
     """Standalone admin for EventParticipant supporting staff and guest participants."""
     form = EventParticipantForm
-    list_display = ('get_participant_name', 'event', 'role', 'participant_type', 'display_order', 'created_at')
-    list_filter = ('participant_type', 'role', 'event__status', 'created_at')
+    list_display = ('get_participant_name', 'event', 'role', 'participant_type', 'is_deleted', 'display_order', 'created_at')
+    list_filter = ('is_deleted', 'participant_type', 'role', 'event__status', 'created_at')
     search_fields = ('user__username', 'user__first_name', 'user__last_name', 'guest_name', 'guest_email', 'event__title')
     # Use raw_id_fields instead of autocomplete to have more control
-    raw_id_fields = ('user', 'event')
+    raw_id_fields = ('user', 'event', 'deleted_by')
     ordering = ['event', 'display_order', 'created_at']
-    readonly_fields = ('created_at', 'updated_at')
+    readonly_fields = ('is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'created_at', 'updated_at')
+    actions = ('soft_delete_selected_participants', 'restore_selected_participants')
 
     fieldsets = (
         (None, {
@@ -295,11 +296,31 @@ class EventParticipantAdmin(admin.ModelAdmin):
             'description': 'For external guest speakers not in the system.',
             'classes': ('collapse',)
         }),
+        ('Deletion audit', {
+            'fields': ('is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason'),
+            'classes': ('collapse',)
+        }),
         ('Metadata', {
             'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
+
+    def get_queryset(self, request):
+        return EventParticipant.all_objects.select_related('event', 'user', 'deleted_by')
+
+    @admin.action(description='Soft delete selected event participants')
+    def soft_delete_selected_participants(self, request, queryset):
+        for participant in queryset.filter(is_deleted=False):
+            participant.soft_delete(
+                user=request.user,
+                reason='Removed from Django admin.',
+            )
+
+    @admin.action(description='Restore selected event participants')
+    def restore_selected_participants(self, request, queryset):
+        for participant in queryset.filter(is_deleted=True):
+            participant.restore()
 
     def get_participant_name(self, obj):
         """Display name of participant based on type."""

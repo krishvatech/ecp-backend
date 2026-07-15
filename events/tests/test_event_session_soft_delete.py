@@ -86,6 +86,7 @@ class EventSessionSoftDeleteTests(TestCase):
 
         assert response.status_code == status.HTTP_200_OK
         assert response.data["code"] == "session_soft_deleted"
+        assert response.data["detail"] == "Session deleted successfully."
         assert not EventSession.objects.filter(id=self.session.id).exists()
 
         stored = EventSession.all_objects.get(id=self.session.id)

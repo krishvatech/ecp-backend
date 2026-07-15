@@ -563,6 +563,39 @@ class Event(models.Model):
     class Meta:
         ordering = ["-created_at"]
 
+    @classmethod
+    def next_available_slug(cls, requested_slug, *, exclude_pk=None):
+        """Return a database-safe unique slug, including archived events.
+
+        Event rows are retained when archived/soft-deleted, and ``slug`` remains
+        globally unique.  This helper therefore checks every retained event and
+        returns ``slug-2``, ``slug-3``, etc. instead of exposing a duplicate-slug
+        validation error during event creation.
+        """
+        requested = str(requested_slug or "").strip()
+        if not requested:
+            return requested
+
+        max_len = cls._meta.get_field("slug").max_length or 255
+        base_slug = requested[:max_len]
+
+        def is_taken(candidate):
+            queryset = cls.objects.filter(slug=candidate)
+            if exclude_pk is not None:
+                queryset = queryset.exclude(pk=exclude_pk)
+            return queryset.exists()
+
+        if not is_taken(base_slug):
+            return base_slug
+
+        suffix = 2
+        while True:
+            suffix_text = f"-{suffix}"
+            candidate = f"{base_slug[: max_len - len(suffix_text)]}{suffix_text}"
+            if not is_taken(candidate):
+                return candidate
+            suffix += 1
+
     def clean(self):
         """Validate price."""
         from django.core.exceptions import ValidationError
@@ -577,14 +610,7 @@ class Event(models.Model):
             # Generate slug from title + year for better SEO
             year = self.start_time.year if self.start_time else timezone.now().year
             base_slug = slugify(f"{self.title}-{year}")
-            # Ensure slug doesn't exceed max_length minus room for suffix
-            base_slug = base_slug[:240]
-            slug = base_slug
-            suffix = 2
-            while Event.objects.filter(slug=slug).exclude(pk=self.pk if self.pk else None).exists():
-                slug = f"{base_slug}-{suffix}"
-                suffix += 1
-            self.slug = slug
+            self.slug = self.next_available_slug(base_slug, exclude_pk=self.pk)
 
         # Ensure default currency is set
         if not self.currency:
@@ -2463,6 +2489,13 @@ class SpeedNetworkingInterestTag(models.Model):
         return f"[{self.session_id}] {self.label} ({self.category}/{self.side})"
 
 
+class ActiveEventParticipantManager(models.Manager):
+    """Default manager that hides participants removed from an event."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
 class EventParticipant(models.Model):
     """
     Hybrid model supporting staff users, external guest speakers, and virtual speaker profiles.
@@ -2596,6 +2629,22 @@ class EventParticipant(models.Model):
         help_text="Linked VirtualSpeaker profile (only for virtual type)"
     )
 
+    # Soft-delete lifecycle. Removing a speaker/host from an event must not
+    # physically erase the historical participant assignment.
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deleted_event_participants",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
+
+    objects = ActiveEventParticipantManager()
+    all_objects = models.Manager()
+
     # Metadata
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -2606,6 +2655,7 @@ class EventParticipant(models.Model):
             models.Index(fields=['event', 'role']),
             models.Index(fields=['participant_type']),
             models.Index(fields=['event', 'display_order']),
+            models.Index(fields=['event', 'is_deleted', 'display_order']),
             models.Index(fields=["event", "role", "participant_type", "user"], name="evtpart_host_user_idx"),
             models.Index(
                 F("event"),
@@ -2635,6 +2685,42 @@ class EventParticipant(models.Model):
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)
+
+    def soft_delete(self, *, user=None, reason=""):
+        """Hide this assignment while retaining its audit/history row."""
+        if self.is_deleted:
+            return
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, "is_authenticated", False) else None
+        self.deletion_reason = str(reason or "").strip()
+        self.save(
+            update_fields=[
+                "is_deleted",
+                "deleted_at",
+                "deleted_by",
+                "deletion_reason",
+                "updated_at",
+            ]
+        )
+
+    def restore(self):
+        """Restore a previously removed event participant assignment."""
+        if not self.is_deleted:
+            return
+        self.is_deleted = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.deletion_reason = ""
+        self.save(
+            update_fields=[
+                "is_deleted",
+                "deleted_at",
+                "deleted_by",
+                "deletion_reason",
+                "updated_at",
+            ]
+        )
 
     def __str__(self):
         name = self.get_name()
