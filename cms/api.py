@@ -43,6 +43,12 @@ def image_url(request, image, spec="fill-2000x900"):
     return url
 
 
+def is_cms_page_deleted(page):
+    """Return True when a Wagtail CMS page has been archived/soft-deleted."""
+    specific = page.specific
+    return bool(getattr(specific, "cms_is_deleted", False))
+
+
 class CmsPageBySlugView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -53,6 +59,8 @@ class CmsPageBySlugView(APIView):
             return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
         specific = page.specific
+        if getattr(specific, "cms_is_deleted", False):
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
         data = {
             "id": page.id,
@@ -175,7 +183,7 @@ class ProfileLayoutView(APIView):
     def get(self, request):
         # Find the first ProfileLayoutPage (it's a singleton)
         from .models import ProfileLayoutPage
-        page = ProfileLayoutPage.objects.live().public().first()
+        page = ProfileLayoutPage.objects.live().public().filter(cms_is_deleted=False).first()
         if not page:
             return Response({"detail": "Profile Layout not configured"}, status=status.HTTP_404_NOT_FOUND)
 

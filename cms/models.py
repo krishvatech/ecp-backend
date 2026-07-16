@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.template import Template as DjangoTemplate, TemplateSyntaxError
 
@@ -10,6 +11,65 @@ from wagtail.admin.panels import FieldPanel, MultiFieldPanel
 from wagtail.models import Page
 from wagtail.snippets.models import register_snippet
 from wagtail_ai.panels import AITitleFieldPanel, AIDescriptionFieldPanel
+
+
+class CmsSoftDeletePageMixin(models.Model):
+    """Soft-delete metadata shared by Wagtail CMS page types.
+
+    Wagtail pages should remain in the database for recovery/audit when an
+    editor deletes them from the CMS. The delete action is converted to an
+    archive operation in cms/wagtail_hooks.py.
+    """
+
+    cms_is_deleted = models.BooleanField(default=False, db_index=True)
+    cms_deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    cms_deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="%(class)s_cms_deleted_pages",
+    )
+    cms_deleted_reason = models.TextField(blank=True)
+
+    class Meta:
+        abstract = True
+
+    def soft_delete(self, user=None, reason=""):
+        """Archive this CMS page without removing its database record."""
+        self.cms_is_deleted = True
+        self.cms_deleted_at = timezone.now()
+        self.cms_deleted_by = user if getattr(user, "is_authenticated", False) else None
+        self.cms_deleted_reason = reason or ""
+
+        # Hide from public Wagtail/frontend queries immediately.
+        if getattr(self, "live", False):
+            self.unpublish()
+
+        self.save(
+            update_fields=[
+                "cms_is_deleted",
+                "cms_deleted_at",
+                "cms_deleted_by",
+                "cms_deleted_reason",
+            ]
+        )
+
+    def restore(self):
+        """Clear soft-delete metadata. This does not auto-publish the page."""
+        self.cms_is_deleted = False
+        self.cms_deleted_at = None
+        self.cms_deleted_by = None
+        self.cms_deleted_reason = ""
+        self.save(
+            update_fields=[
+                "cms_is_deleted",
+                "cms_deleted_at",
+                "cms_deleted_by",
+                "cms_deleted_reason",
+            ]
+        )
+
 
 class HomeFeaturedCardBlock(blocks.StructBlock):
     image = ImageChooserBlock(required=False)
@@ -33,7 +93,7 @@ class HomeMiniCardBlock(blocks.StructBlock):
         label = "Community Card"
 
 
-class HomePage(Page):
+class HomePage(CmsSoftDeletePageMixin, Page):
     intro = RichTextField(blank=True)
     hero_title = models.CharField(
         max_length=160,
@@ -156,7 +216,7 @@ class HomePage(Page):
     ]
 
 
-class StandardPage(Page):
+class StandardPage(CmsSoftDeletePageMixin, Page):
     body = RichTextField(blank=True)
 
     content_panels = Page.content_panels + [
@@ -177,7 +237,7 @@ class AboutFeatureBlock(blocks.StructBlock):
         label = "Feature Card"
 
 
-class AboutPage(Page):
+class AboutPage(CmsSoftDeletePageMixin, Page):
     # Hero
     hero_title = models.CharField(max_length=160, blank=True, default="About IMAA Connect")
     hero_subtitle = models.TextField(blank=True, default="")
@@ -237,7 +297,7 @@ class AboutPage(Page):
     subpage_types = []
 
 
-class EventsLandingPage(Page):
+class EventsLandingPage(CmsSoftDeletePageMixin, Page):
     # Hero
     hero_title = models.CharField(
         max_length=160,
@@ -321,7 +381,7 @@ PROFILE_SECTION_CHOICES = [
 ]
 
 
-class ProfileLayoutPage(Page):
+class ProfileLayoutPage(CmsSoftDeletePageMixin, Page):
     left_column = StreamField(
         [("section", blocks.ChoiceBlock(choices=PROFILE_SECTION_CHOICES))],
         blank=True,
