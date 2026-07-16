@@ -304,6 +304,49 @@ class WordPressAPIClient:
 
         return all_members
 
+
+    def get_imaa_connect_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch one exact WordPress user profile by email from the custom IMAA
+        Connect endpoint.
+
+        This endpoint is used by IMAA OAuth login enrichment. It is safer than
+        the standard /wp/v2/users search endpoint because WordPress search can
+        return partial matches and often does not expose email/profile fields.
+
+        Endpoint:
+        /wp-json/imaa-connect/v1/users/by-email?email=<email>
+        """
+        email = str(email or "").strip().lower()
+        if not email or "@" not in email:
+            return None
+
+        try:
+            response = self._get_resource(
+                "/imaa-connect/v1/users/by-email",
+                params={"email": email},
+            )
+            payload = response.json() if response.content else None
+            return payload if isinstance(payload, dict) and payload.get("id") else None
+        except requests.exceptions.HTTPError as exc:
+            status_code = getattr(exc.response, "status_code", None)
+            if status_code == 404:
+                logger.info("No custom WordPress user profile found for email: %s", email)
+            else:
+                logger.warning(
+                    "Custom WordPress user profile lookup failed for %s: %s",
+                    email,
+                    exc,
+                )
+            return None
+        except requests.exceptions.RequestException as exc:
+            logger.warning(
+                "Custom WordPress user profile lookup failed for %s: %s",
+                email,
+                exc,
+            )
+            return None
+
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """
         Fetch user from WordPress by email.

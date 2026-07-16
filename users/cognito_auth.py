@@ -129,6 +129,136 @@ def _extract_email_from_provider_username(provider_username: str) -> str:
     return match.group(0).lower().strip() if match else ""
 
 
+
+def _clean_claim(value) -> str:
+    return str(value or "").strip()
+
+
+def _split_full_name(full_name: str) -> tuple[str, str]:
+    clean = " ".join(str(full_name or "").strip().split())
+    if not clean:
+        return "", ""
+
+    parts = clean.split(" ", 1)
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[1]
+
+
+def _is_imaa_wordpress_oauth_provider(provider: str) -> bool:
+    return str(provider or "").strip().lower() == "imaawordpressoauth"
+
+
+def _email_local_part(email: str) -> str:
+    email = str(email or "").strip().lower()
+    return email.split("@", 1)[0] if "@" in email else ""
+
+
+def _provider_username_local_part(provider_username: str) -> str:
+    raw = str(provider_username or "").strip()
+    if "_" in raw:
+        raw = raw.split("_", 1)[1]
+    return raw.split("@", 1)[0].strip() if raw else ""
+
+
+def _is_placeholder_name(value: str, email: str = "", provider_username: str = "") -> bool:
+    value = _clean_claim(value).lower()
+    if not value:
+        return True
+
+    placeholders = {
+        "user",
+        _email_local_part(email).lower(),
+        _provider_username_local_part(provider_username).lower(),
+    }
+    placeholders.discard("")
+    return value in placeholders
+
+
+def _names_from_claims(claims: dict, email: str = "", provider_username: str = "") -> tuple[str, str, str]:
+    first_name = (
+        _clean_claim(claims.get("given_name"))
+        or _clean_claim(claims.get("first_name"))
+        or _clean_claim(claims.get("firstname"))
+    )
+    last_name = (
+        _clean_claim(claims.get("family_name"))
+        or _clean_claim(claims.get("last_name"))
+        or _clean_claim(claims.get("lastname"))
+    )
+
+    full_name = (
+        _clean_claim(claims.get("name"))
+        or _clean_claim(claims.get("display_name"))
+        or _clean_claim(claims.get("preferred_username"))
+    )
+
+    if (not first_name or not last_name) and full_name:
+        split_first, split_last = _split_full_name(full_name)
+        first_name = first_name or split_first
+        last_name = last_name or split_last
+
+    if not full_name:
+        full_name = " ".join(part for part in (first_name, last_name) if part).strip()
+
+    return first_name[:150], last_name[:150], full_name
+
+
+def _extract_wordpress_profile_names(payload: dict) -> tuple[str, str, str]:
+    if not isinstance(payload, dict):
+        return "", "", ""
+
+    first_name = _clean_claim(payload.get("first_name"))
+    last_name = _clean_claim(payload.get("last_name"))
+    full_name = (
+        _clean_claim(payload.get("display_name"))
+        or _clean_claim(payload.get("name"))
+    )
+
+    if (not first_name or not last_name) and full_name:
+        split_first, split_last = _split_full_name(full_name)
+        first_name = first_name or split_first
+        last_name = last_name or split_last
+
+    if not full_name:
+        full_name = " ".join(part for part in (first_name, last_name) if part).strip()
+
+    return first_name[:150], last_name[:150], full_name
+
+
+def _fetch_imaa_wordpress_user_profile(provider: str, email: str) -> dict:
+    """Fetch exact WordPress profile data for IMAA OAuth users only.
+
+    Failure is intentionally non-blocking so login never depends on WordPress
+    profile enrichment being available.
+    """
+    if not _is_imaa_wordpress_oauth_provider(provider) or not email:
+        return {}
+
+    try:
+        from .wordpress_api import WordPressAPIClient
+
+        client = WordPressAPIClient.for_group_sync()
+        payload = client.get_imaa_connect_user_by_email(email)
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:  # pragma: no cover - defensive auth fallback
+        logger.warning(
+            "Unable to enrich IMAA OAuth user from WordPress profile %s: %s",
+            email,
+            exc,
+        )
+        return {}
+
+
+def _fallback_imaa_oauth_names(first_name: str, last_name: str, email: str, provider_username: str) -> tuple[str, str]:
+    """Avoid creating IMAA OAuth users with a generic blank/User display name."""
+    if first_name or last_name:
+        return first_name[:150], last_name[:150]
+
+    fallback = _provider_username_local_part(provider_username) or _email_local_part(email)
+    return fallback[:150], ""
+
+
 def _skip_local_password_provider(provider: str) -> bool:
     skipped = getattr(settings, "COGNITO_SKIP_LOCAL_PASSWORD_PROVIDERS", set()) or set()
     return str(provider or "").strip().lower() in skipped
@@ -261,8 +391,23 @@ class CognitoJWTAuthentication(BaseAuthentication):
             email = (claims.get("email") or "").lower().strip()
             if not email and provider != "cognito":
                 email = _extract_email_from_provider_username(provider_username)
-            first_name = claims.get("given_name") or ""
-            last_name = claims.get("family_name") or ""
+            first_name, last_name, full_name = _names_from_claims(
+                claims, email=email, provider_username=provider_username
+            )
+            wordpress_profile = _fetch_imaa_wordpress_user_profile(provider, email)
+            if wordpress_profile:
+                wp_first_name, wp_last_name, wp_full_name = _extract_wordpress_profile_names(wordpress_profile)
+                if wp_first_name or wp_last_name:
+                    first_name = wp_first_name or first_name
+                    last_name = wp_last_name or last_name
+                full_name = wp_full_name or full_name
+
+            if _is_imaa_wordpress_oauth_provider(provider):
+                first_name, last_name = _fallback_imaa_oauth_names(
+                    first_name, last_name, email, provider_username
+                )
+                if not full_name:
+                    full_name = " ".join(part for part in (first_name, last_name) if part).strip()
 
             # --- Global roles from Cognito groups ---
             raw_groups = claims.get("cognito:groups") or []
@@ -460,25 +605,93 @@ class CognitoJWTAuthentication(BaseAuthentication):
                 if not incoming_is_placeholder or current_is_placeholder:
                     user.email = email
                     updated = True
-            if first_name and user.first_name != first_name:
-                user.first_name = first_name
-                updated = True
-            if last_name and user.last_name != last_name:
-                user.last_name = last_name
-                updated = True
+            if _is_imaa_wordpress_oauth_provider(provider):
+                if first_name and (
+                    not user.first_name
+                    or _is_placeholder_name(user.first_name, email, provider_username)
+                ):
+                    user.first_name = first_name
+                    updated = True
+                if last_name and (
+                    not user.last_name
+                    or _is_placeholder_name(user.last_name, email, provider_username)
+                ):
+                    user.last_name = last_name
+                    updated = True
+            else:
+                if first_name and user.first_name != first_name:
+                    user.first_name = first_name
+                    updated = True
+                if last_name and user.last_name != last_name:
+                    user.last_name = last_name
+                    updated = True
+
             if updated:
                 user.save(update_fields=["email", "first_name", "last_name"])
 
-            # Keep profile full_name in sync with user's first_name + last_name
+            # Keep profile full_name in sync with user's first_name + last_name.
+            # For IMAA OAuth, also save WordPress identity fields from the
+            # custom lookup endpoint when available. Existing real profile data
+            # is not overwritten by fallback values.
             profile = getattr(user, "profile", None)
             if profile:
-                full_name = f"{user.first_name} {user.last_name}".strip()
-                if full_name and profile.full_name != full_name:
-                    profile.full_name = full_name
-                    if profile.pk:
-                        profile.save(update_fields=["full_name"])
-                    else:
-                        profile.save()
+                profile_update_fields = []
+                profile_full_name = full_name or f"{user.first_name} {user.last_name}".strip()
+                can_update_full_name = (
+                    bool(profile_full_name)
+                    and (
+                        not profile.full_name
+                        or (
+                            _is_imaa_wordpress_oauth_provider(provider)
+                            and _is_placeholder_name(profile.full_name, email, provider_username)
+                        )
+                    )
+                )
+                if can_update_full_name and profile.full_name != profile_full_name:
+                    profile.full_name = profile_full_name
+                    profile_update_fields.append("full_name")
+
+                if wordpress_profile:
+                    wp_user_id = wordpress_profile.get("id")
+                    try:
+                        wp_user_id = int(wp_user_id) if wp_user_id else None
+                    except (TypeError, ValueError):
+                        wp_user_id = None
+
+                    wp_email = _clean_claim(wordpress_profile.get("email") or email).lower()
+                    wp_username = _clean_claim(
+                        wordpress_profile.get("user_login")
+                        or wordpress_profile.get("username")
+                        or wordpress_profile.get("slug")
+                    )
+                    avatar_urls = wordpress_profile.get("avatar_urls") or {}
+                    avatar_url = ""
+                    if isinstance(avatar_urls, dict):
+                        for key in ("full", "96", "thumb", "48", "24"):
+                            avatar_url = _clean_claim(avatar_urls.get(key))
+                            if avatar_url:
+                                break
+
+                    if wp_user_id and profile.wordpress_id != wp_user_id:
+                        profile.wordpress_id = wp_user_id
+                        profile_update_fields.append("wordpress_id")
+                    if wp_email and profile.wordpress_email != wp_email:
+                        profile.wordpress_email = wp_email
+                        profile_update_fields.append("wordpress_email")
+                    if wp_username and profile.wordpress_username != wp_username:
+                        profile.wordpress_username = wp_username
+                        profile_update_fields.append("wordpress_username")
+                    if avatar_url and profile.wordpress_avatar_url != avatar_url:
+                        profile.wordpress_avatar_url = avatar_url
+                        profile_update_fields.append("wordpress_avatar_url")
+                    if profile.wordpress_sync_status != profile.WORDPRESS_SYNC_STATUS_SYNCED:
+                        profile.wordpress_sync_status = profile.WORDPRESS_SYNC_STATUS_SYNCED
+                        profile_update_fields.append("wordpress_sync_status")
+                    profile.wordpress_synced_at = timezone.now()
+                    profile_update_fields.append("wordpress_synced_at")
+
+                if profile_update_fields:
+                    profile.save(update_fields=list(dict.fromkeys(profile_update_fields)))
 
             # --- Update last_login on successful authentication ---
             user.last_login = timezone.now()
