@@ -116,6 +116,24 @@ def _provider_from_claims(claims: dict, provider_username: str) -> str:
     return "cognito"
 
 
+def _extract_email_from_provider_username(provider_username: str) -> str:
+    """
+    Some OIDC/SAML providers return Cognito usernames such as
+    "IMAAWordPress_user@example.com" even when the email claim is missing.
+    Use this only as a fallback so Cognito can still link the correct local user.
+    """
+    raw = str(provider_username or "").strip()
+    if "_" in raw:
+        raw = raw.split("_", 1)[1]
+    match = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", raw, re.I)
+    return match.group(0).lower().strip() if match else ""
+
+
+def _skip_local_password_provider(provider: str) -> bool:
+    skipped = getattr(settings, "COGNITO_SKIP_LOCAL_PASSWORD_PROVIDERS", set()) or set()
+    return str(provider or "").strip().lower() in skipped
+
+
 def _random_cognito_password(length: int = 20) -> str:
     """Generate a strong random password compatible with common Cognito policies."""
     # Ensure upper/lower/digit/special are present.
@@ -123,11 +141,18 @@ def _random_cognito_password(length: int = 20) -> str:
     return f"Aa1!{core}"
 
 
-def _enable_federated_user_password(provider_username: str) -> bool:
+def _enable_federated_user_password(provider_username: str, provider: str = "") -> bool:
     """
     For federated Cognito users (e.g. Google_xxx), set a permanent local password.
     This enables Cognito ForgotPassword OTP delivery for that account.
+
+    IMAA WordPress OAuth/OIDC users should keep WordPress as the password owner,
+    so they can be excluded through COGNITO_SKIP_LOCAL_PASSWORD_PROVIDERS.
     """
+    if _skip_local_password_provider(provider):
+        logger.info("Skipping local Cognito password enablement for provider: %s", provider)
+        return False
+
     region = getattr(settings, "COGNITO_REGION", "") or ""
     pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
     if not region or not pool_id or not provider_username:
@@ -234,6 +259,8 @@ class CognitoJWTAuthentication(BaseAuthentication):
             sub = (claims.get("sub") or "").strip()
 
             email = (claims.get("email") or "").lower().strip()
+            if not email and provider != "cognito":
+                email = _extract_email_from_provider_username(provider_username)
             first_name = claims.get("given_name") or ""
             last_name = claims.get("family_name") or ""
 
@@ -256,7 +283,7 @@ class CognitoJWTAuthentication(BaseAuthentication):
             if identity:
                 user = identity.user
                 if identity.provider != "cognito" and sub not in _FEDERATED_PASSWORD_SYNCED_SUBS:
-                    if _enable_federated_user_password(provider_username):
+                    if _enable_federated_user_password(provider_username, provider):
                         _FEDERATED_PASSWORD_SYNCED_SUBS.add(sub)
             else:
                 user = None
@@ -274,6 +301,9 @@ class CognitoJWTAuthentication(BaseAuthentication):
                         }
                     )
                     if created:
+                        if provider != "cognito":
+                            user.set_unusable_password()
+                            user.save(update_fields=["password"])
                         logger.info(f"Created new user for verified email {email}")
 
                 # ✅ 3) Backward compatibility: if we previously stored provider_username as DB username
@@ -291,12 +321,15 @@ class CognitoJWTAuthentication(BaseAuthentication):
                             user = User.objects.filter(email__iexact=email).first() if email else None
 
                             if not user:
-                                user = User.objects.create(
+                                user = User(
                                     username=username,
                                     email=email or "",
                                     first_name=first_name,
                                     last_name=last_name,
                                 )
+                                if provider != "cognito":
+                                    user.set_unusable_password()
+                                user.save()
                                 logger.info(f"Created new user {user.id} with email {email}")
                     except Exception as e:
                         logger.warning(f"Error creating user for {email}: {e}")
@@ -323,7 +356,7 @@ class CognitoJWTAuthentication(BaseAuthentication):
                             if created:
                                 logger.info(f"Created CognitoIdentity {sub} -> user {user.id}")
                                 if provider != "cognito":
-                                    if _enable_federated_user_password(provider_username):
+                                    if _enable_federated_user_password(provider_username, provider):
                                         _FEDERATED_PASSWORD_SYNCED_SUBS.add(sub)
                             else:
                                 if identity.user_id != user.id:
