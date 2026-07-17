@@ -261,7 +261,7 @@ class GroupViewSet(viewsets.ModelViewSet):
     def _ensure_parent_membership_active(self, group: Group, user_id: int):
         if not group.parent_id:
             return
-        GroupMembership.objects.get_or_create(
+        membership, _ = GroupMembership.objects.get_or_create(
             group=group.parent,
             user_id=user_id,
             defaults={
@@ -269,6 +269,8 @@ class GroupViewSet(viewsets.ModelViewSet):
                 "status": GroupMembership.STATUS_ACTIVE,   # parent is active once you join a child
             },
         )
+        if membership.status != GroupMembership.STATUS_ACTIVE:
+            membership.mark_status(GroupMembership.STATUS_ACTIVE)
 
     # Use: Check if a user is ACTIVE member of a group.
     # Ordering: Not applicable (exists()).
@@ -960,7 +962,10 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         # Also remove any secondary parent links (GroupParentAssociation)
         # where this group is the child.
-        deleted_count, _ = GroupParentAssociation.objects.filter(child_group=group).delete()
+        parent_links = GroupParentAssociation.objects.filter(child_group=group).exclude(status=GroupParentAssociation.STATUS_REMOVED)
+        deleted_count = parent_links.count()
+        for link in parent_links:
+            link.mark_removed(user=request.user, reason='Group promoted to main group')
 
         if membership_policy == "remove_child_only" and old_parent_id:
             # compute child_active_user_ids
@@ -995,7 +1000,13 @@ class GroupViewSet(viewsets.ModelViewSet):
                     if exclude_users:
                         memberships_to_delete = memberships_to_delete.exclude(user_id__in=exclude_users)
                 
-                removed_count, _ = memberships_to_delete.delete()
+                removed_count = memberships_to_delete.count()
+                for membership in memberships_to_delete:
+                    membership.mark_status(
+                        GroupMembership.STATUS_REMOVED,
+                        user=request.user,
+                        reason='Removed from old parent during subgroup promotion',
+                    )
 
         # Log or notify if needed (optional)
         print(f"User {request.user} promoted group {group.id} (was child of {old_parent_id}) to main group. Removed {deleted_count} parent links. Removed parent memberships: {removed_count}")
@@ -1109,8 +1120,14 @@ class GroupViewSet(viewsets.ModelViewSet):
                     "invited_by_id": getattr(request.user, "id", None),
                 },
             )
-            if not created and getattr(membership, "invited_by_id", None) is None:
-                GroupMembership.objects.filter(pk=membership.pk).update(invited_by_id=getattr(request.user, "id", None))
+            if not created:
+                updates = {}
+                if membership.status != STATUS_ACTIVE:
+                    membership.mark_status(STATUS_ACTIVE)
+                if getattr(membership, "invited_by_id", None) is None:
+                    updates["invited_by_id"] = getattr(request.user, "id", None)
+                if updates:
+                    GroupMembership.objects.filter(pk=membership.pk).update(**updates)
 
         memberships = GroupMembership.objects.filter(group=group).select_related("user")
         if group.parent_id:
@@ -1287,10 +1304,10 @@ class GroupViewSet(viewsets.ModelViewSet):
         except GroupMembership.DoesNotExist:
             pass
         
-        deleted, _ = GroupMembership.objects.filter(
-            group=group, user_id=uid, status=STATUS_PENDING
-        ).delete()
-        return Response({"ok": True, "deleted": deleted, "user_id": uid})
+        membership = GroupMembership.objects.filter(group=group, user_id=uid, status=STATUS_PENDING).first()
+        if membership:
+            membership.mark_status(GroupMembership.STATUS_REJECTED, user=request.user, reason="Join request rejected")
+        return Response({"ok": True, "status": "rejected", "user_id": uid})
 
     # Use (Endpoint): POST /api/groups/{id}/members/remove-member
     # - Owner/admin remove a member (cannot remove owner).
@@ -1314,7 +1331,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         if owner_user_id is not None and int(membership.user_id) == int(owner_user_id):
             return Response({"detail": "Cannot remove the owner"}, status=status.HTTP_400_BAD_REQUEST)
 
-        membership.delete()
+        membership.mark_status(GroupMembership.STATUS_REMOVED, user=request.user, reason="Removed by group admin")
         return Response({"ok": True}, status=status.HTTP_200_OK)
 
     # Use (Endpoint): POST /api/groups/{id}/leave
@@ -1372,7 +1389,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                 # Log or notify could happen here
                 # Finally delete own membership if it exists
                 if membership:
-                    membership.delete()
+                    membership.mark_status(GroupMembership.STATUS_LEFT, user=request.user, reason="Left group")
                 
                 return Response({
                     "ok": True, 
@@ -1400,13 +1417,13 @@ class GroupViewSet(viewsets.ModelViewSet):
                     }, status=400)
                 
                 if membership:
-                    membership.delete()
+                    membership.mark_status(GroupMembership.STATUS_LEFT, user=request.user, reason="Left group")
                 return Response({"ok": True, "detail": "You have left the group."})
             
             else:
                 # Regular member/moderator - just leave
                 if membership:
-                    membership.delete()
+                    membership.mark_status(GroupMembership.STATUS_LEFT, user=request.user, reason="Left group")
                 return Response({"ok": True, "detail": "You have left the group."})
 
     # Use (Endpoint): GET /api/groups/{id}/moderator/can-i
@@ -2254,22 +2271,42 @@ class GroupViewSet(viewsets.ModelViewSet):
         if child_group.parent_id == parent_group.id:
              return Response({"detail": "Already the primary parent."}, status=400)
              
-        # Check existing
-        if GroupParentAssociation.objects.filter(child_group=child_group, parent_group=parent_group).exists():
-             return Response({"detail": "Association already exists (check status)"}, status=400)
-             
-        # Always require manual approval for parent links, even if requester is admin/owner.
-        # This ensures a consistent workflow (Request -> Review -> Approve).
-        status_val = GroupParentAssociation.STATUS_PENDING
-        
-        link = GroupParentAssociation.objects.create(
+        # Reuse old association rows instead of creating duplicates.
+        existing_link = GroupParentAssociation.objects.filter(
              child_group=child_group,
              parent_group=parent_group,
-             status=status_val,
-             requested_by=request.user,
-             reviewed_by=None,
-             reviewed_at=None
-        )
+        ).first()
+        if existing_link:
+             if existing_link.status in (
+                  GroupParentAssociation.STATUS_PENDING,
+                  GroupParentAssociation.STATUS_APPROVED,
+             ):
+                  return Response({"detail": "Association already exists (check status)"}, status=400)
+             existing_link.status = GroupParentAssociation.STATUS_PENDING
+             existing_link.requested_by = request.user
+             existing_link.reviewed_by = None
+             existing_link.reviewed_at = None
+             existing_link.removed_at = None
+             existing_link.removed_by = None
+             existing_link.removal_reason = ""
+             existing_link.save(update_fields=[
+                  "status", "requested_by", "reviewed_by", "reviewed_at",
+                  "removed_at", "removed_by", "removal_reason", "updated_at",
+             ])
+             link = existing_link
+        else:
+             # Always require manual approval for parent links, even if requester is admin/owner.
+             # This ensures a consistent workflow (Request -> Review -> Approve).
+             status_val = GroupParentAssociation.STATUS_PENDING
+             
+             link = GroupParentAssociation.objects.create(
+                  child_group=child_group,
+                  parent_group=parent_group,
+                  status=status_val,
+                  requested_by=request.user,
+                  reviewed_by=None,
+                  reviewed_at=None
+             )
 
         # Notify all admins/owners of the PARENT group about the request
         parent_admins = GroupMembership.objects.filter(
@@ -2392,7 +2429,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         if not (can_child or can_parent):
             return Response({"detail": "Forbidden"}, status=403)
             
-        link.delete()
+        link.mark_removed(user=request.user, reason="Removed group parent association")
         return Response({"ok": True, "status": "removed"})
 
     # Use (Endpoint): GET /api/groups/{id}/child-links/
@@ -2512,10 +2549,14 @@ class GroupViewSet(viewsets.ModelViewSet):
         STATUS_ACTIVE  = GroupMembership.STATUS_ACTIVE
         STATUS_PENDING = GroupMembership.STATUS_PENDING
 
-        if GroupMembership.objects.filter(group=group, user_id=uid).exists():
-            # also ensure parent membership if this is a sub-group
+        existing_membership = GroupMembership.objects.filter(group=group, user_id=uid).first()
+        if existing_membership:
+            if existing_membership.status == STATUS_ACTIVE:
+                self._ensure_parent_membership_active(group, uid)
+                return Response({"ok": True, "status": "already_member"}, status=200)
+            existing_membership.mark_status(STATUS_ACTIVE)
             self._ensure_parent_membership_active(group, uid)
-            return Response({"ok": True, "status": "already_member"}, status=200)
+            return Response({"ok": True, "status": "joined"}, status=200)
 
         jp, vis = group.join_policy, group.visibility
 
@@ -2581,7 +2622,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                 defaults={"role": default_role, "status": STATUS_ACTIVE},
             )
             if not created and membership.status != STATUS_ACTIVE:
-                GroupMembership.objects.filter(pk=membership.pk).update(status=STATUS_ACTIVE)
+                membership.mark_status(STATUS_ACTIVE)
                 membership.refresh_from_db()
             return Response(
                 {"detail": "Joined successfully.", "membership": GroupMemberOutSerializer(membership).data},
@@ -2617,7 +2658,7 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         # If membership exists in another status (e.g., left/removed), flip back to pending
         if not created and membership.status != STATUS_PENDING:
-            GroupMembership.objects.filter(pk=membership.pk).update(status=STATUS_PENDING)
+            membership.mark_status(STATUS_PENDING)
 
         # Fresh read for response
         membership = GroupMembership.objects.select_related("user").get(pk=membership.pk)

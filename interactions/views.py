@@ -1192,7 +1192,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
                 )
 
         # ── load presentation context ────────────────────────────────────────
-        context_qs = QnAContentContext.objects.filter(event=event)
+        context_qs = QnAContentContext.objects.filter(event=event, is_deleted=False)
         if session_id:
             context_qs = context_qs.filter(
                 Q(session_id=session_id) | Q(session__isnull=True)
@@ -3523,7 +3523,7 @@ class QnAContentContextViewSet(viewsets.ModelViewSet):
         if not is_host:
             return QnAContentContext.objects.none()
 
-        return QnAContentContext.objects.filter(event=event).order_by("-created_at")
+        return QnAContentContext.objects.filter(event=event, is_deleted=False).order_by("-created_at")
 
     def _get_event_and_assert_host(self, event_id):
         """Helper: resolve event and confirm requester is host/staff."""
@@ -3609,10 +3609,10 @@ class QnAContentContextViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         """DELETE /qna-context/<id>/"""
-        ctx = get_object_or_404(QnAContentContext, pk=kwargs["pk"])
+        ctx = get_object_or_404(QnAContentContext, pk=kwargs["pk"], is_deleted=False)
         self._get_event_and_assert_host(ctx.event_id)
-        ctx.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        ctx.soft_delete(user=request.user, reason=request.data.get('reason') or 'Removed Q&A content context.')
+        return Response({'ok': True, 'deletion_type': 'soft', 'context_id': ctx.id}, status=status.HTTP_200_OK)
 
     def partial_update(self, request, *args, **kwargs):
         """PATCH /qna-context/<id>/"""
@@ -3700,7 +3700,7 @@ class AiPublicSuggestionViewSet(viewsets.ModelViewSet):
         event = self._get_event_and_assert_host(event_id)
 
         # Load context
-        context_qs = QnAContentContext.objects.filter(event=event)
+        context_qs = QnAContentContext.objects.filter(event=event, is_deleted=False)
         if session_id:
             context_qs = context_qs.filter(
                 Q(session_id=session_id) | Q(session__isnull=True)

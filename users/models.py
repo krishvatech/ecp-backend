@@ -982,12 +982,57 @@ class NameChangeRequest(models.Model):
         return f"NameChangeRequest<{self.user_id} {self.old_first_name} → {self.new_first_name}>"
 
 
+
+class ActiveProfileDocumentManager(models.Manager):
+    """Default manager that hides soft-deleted profile attachment rows."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
+class ProfileDocumentSoftDeleteMixin(models.Model):
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='deleted_%(class)ss',
+    )
+    deletion_reason = models.TextField(blank=True, default='')
+
+    objects = ActiveProfileDocumentManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        abstract = True
+
+    def soft_delete(self, *, user=None, reason=''):
+        if self.is_deleted:
+            return
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, 'is_authenticated', False) else None
+        self.deletion_reason = str(reason or '').strip()
+        self.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason'])
+
+    def restore(self):
+        if not self.is_deleted:
+            return
+        self.is_deleted = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.deletion_reason = ''
+        self.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason'])
+
+
 def education_document_path(instance, filename):
     name, ext = os.path.splitext(filename)
     # Upload to: education_docs/user_<id>/<random_id>.<ext>
     return f"education_docs/user_{instance.education.user.id}/{uuid.uuid4().hex[:8]}{ext}"
 
-class EducationDocument(models.Model):
+class EducationDocument(ProfileDocumentSoftDeleteMixin):
     education = models.ForeignKey(
         Education, on_delete=models.CASCADE, related_name="documents"
     )
@@ -1051,7 +1096,7 @@ def training_document_path(instance, filename):
     name, ext = os.path.splitext(filename)
     return f"training_docs/user_{instance.training.user.id}/{uuid.uuid4().hex[:8]}{ext}"
 
-class TrainingDocument(models.Model):
+class TrainingDocument(ProfileDocumentSoftDeleteMixin):
     training = models.ForeignKey(
         ProfileTraining, on_delete=models.CASCADE, related_name="documents"
     )
@@ -1108,7 +1153,7 @@ def certification_document_path(instance, filename):
     name, ext = os.path.splitext(filename)
     return f"certification_docs/user_{instance.certification.user.id}/{uuid.uuid4().hex[:8]}{ext}"
 
-class ProfileCertificationDocument(models.Model):
+class ProfileCertificationDocument(ProfileDocumentSoftDeleteMixin):
     certification = models.ForeignKey(
         ProfileCertification, on_delete=models.CASCADE, related_name="documents"
     )
@@ -1244,7 +1289,7 @@ def membership_document_path(instance, filename):
     name, ext = os.path.splitext(filename)
     return f"membership_docs/user_{instance.membership.user.id}/{uuid.uuid4().hex[:8]}{ext}"
 
-class MembershipDocument(models.Model):
+class MembershipDocument(ProfileDocumentSoftDeleteMixin):
     membership = models.ForeignKey(
         ProfileMembership, on_delete=models.CASCADE, related_name="documents"
     )
@@ -1404,6 +1449,20 @@ class UserEmailAlias(models.Model):
         blank=True,
         help_text="Timestamp when email was verified"
     )
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Inactive aliases are hidden from users but retained for identity audit."
+    )
+    removed_at = models.DateTimeField(null=True, blank=True)
+    removed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='removed_email_aliases',
+    )
+    removal_reason = models.TextField(blank=True, default='')
     added_at = models.DateTimeField(auto_now_add=True)
     attempt_count = models.PositiveIntegerField(
         default=0,
@@ -1414,6 +1473,7 @@ class UserEmailAlias(models.Model):
         db_table = "user_email_aliases"
         indexes = [
             models.Index(fields=["user", "verified"]),
+            models.Index(fields=["user", "is_active", "verified"], name="alias_user_active_idx"),
             models.Index(fields=["email"]),
         ]
         unique_together = ("user", "email")
@@ -1427,6 +1487,30 @@ class UserEmailAlias(models.Model):
             return False
         return timezone.now() < self.otp_expires_at
 
+    def remove(self, *, user=None, reason=''):
+        if not self.is_active:
+            return
+        self.is_active = False
+        self.removed_at = timezone.now()
+        self.removed_by = user if getattr(user, 'is_authenticated', False) else None
+        self.removal_reason = str(reason or '').strip()
+        self.otp_code = ''
+        self.otp_expires_at = None
+        self.save(update_fields=['is_active', 'removed_at', 'removed_by', 'removal_reason', 'otp_code', 'otp_expires_at'])
+
+    def restore_for_verification(self, *, otp_code='', otp_expires_at=None):
+        self.is_active = True
+        self.removed_at = None
+        self.removed_by = None
+        self.removal_reason = ''
+        self.verified = False
+        self.verified_at = None
+        self.otp_code = otp_code
+        self.otp_expires_at = otp_expires_at
+        self.attempt_count = 0
+        self.save(update_fields=['is_active', 'removed_at', 'removed_by', 'removal_reason', 'verified', 'verified_at', 'otp_code', 'otp_expires_at', 'attempt_count'])
+
     def __str__(self):
         status = "verified" if self.verified else "unverified"
-        return f"{self.email} ({status}) - {self.user.email}"
+        active = "active" if self.is_active else "removed"
+        return f"{self.email} ({status}, {active}) - {self.user.email}"

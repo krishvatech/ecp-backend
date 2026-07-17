@@ -1717,19 +1717,45 @@ class VirtualSpeakerViewSet(viewsets.ModelViewSet):
         if self.action == 'list' and community_id:
             return VirtualSpeaker.objects.filter(community_id=community_id)
 
-        # For detail endpoints (retrieve, update, delete, convert, etc.), return all
+        # For detail endpoints, default manager returns only active speakers.
         if self.action in ['retrieve', 'update', 'partial_update', 'destroy', 'convert', 'resend_invite']:
             return VirtualSpeaker.objects.all()
 
-        # For list without community_id, return all (allows browsing all speakers)
+        # For list without community_id, return all active speakers (allows browsing all speakers)
         return VirtualSpeaker.objects.all()
+
+    def create(self, request, *args, **kwargs):
+        """Create or restore a virtual speaker for the selected community."""
+        community_id = request.data.get('community_id')
+        name = (request.data.get('name') or '').strip()
+        if community_id and name:
+            existing = VirtualSpeaker.all_objects.filter(
+                community_id=community_id,
+                name__iexact=name,
+                is_deleted=True,
+            ).first()
+            if existing:
+                existing.restore()
+                serializer = self.get_serializer(existing, data=request.data, partial=True)
+                serializer.is_valid(raise_exception=True)
+                serializer.save(created_by=existing.created_by or request.user)
+                return Response({**serializer.data, 'restored': True}, status=status.HTTP_200_OK)
+        return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         """Set the creator and community when creating."""
-        # Get community_id from request data
         community_id = self.request.data.get('community_id')
-        # Ensure community_id is always set
         serializer.save(community_id=community_id, created_by=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        speaker = self.get_object()
+        speaker.soft_delete(user=request.user, reason=request.data.get('reason') or 'Removed virtual speaker profile.')
+        return Response({
+            'ok': True,
+            'deletion_type': 'soft',
+            'speaker_id': speaker.id,
+            'detail': 'Virtual speaker was hidden from active lists but historical event/session links were preserved.',
+        }, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], permission_classes=[IsSuperuserOnly], url_path='convert')
     def convert(self, request, pk=None):
@@ -15229,9 +15255,17 @@ class PostAcceptanceFormAssignmentViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.is_authenticated:
             return PostAcceptanceFormAssignment.objects.filter(
-                event_registration__user=user
+                event_registration__user=user,
+                is_deleted=False,
             )
         return PostAcceptanceFormAssignment.objects.none()
+
+    def destroy(self, request, *args, **kwargs):
+        assignment = self.get_object()
+        if assignment.event_registration.user != request.user and not getattr(request.user, 'is_staff', False):
+            raise PermissionDenied('You can only remove your own assignment.')
+        assignment.soft_delete(user=request.user, reason=request.data.get('reason') or 'Post-acceptance form assignment removed.')
+        return Response({'ok': True, 'deletion_type': 'soft', 'assignment_id': assignment.id}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], url_path='my')
     def my_assignments(self, request):
@@ -15754,7 +15788,7 @@ class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
             )
         )
 
-        queryset = PostAcceptanceFormAssignment.objects.filter(event=event).select_related(
+        queryset = PostAcceptanceFormAssignment.objects.filter(event=event, is_deleted=False).select_related(
             'event', 'form_template', 'event_registration', 'event_registration__user', 'manual_completed_by'
         ).prefetch_related(submission_prefetch)
 
@@ -15818,12 +15852,29 @@ class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
                     pass
 
             queryset = PostAcceptanceFormAssignment.objects.filter(
-                id__in=[a.id for a in filtered_list]
+                id__in=[a.id for a in filtered_list],
+                is_deleted=False,
             ).select_related(
                 'event', 'form_template', 'event_registration', 'event_registration__user', 'manual_completed_by'
             ).prefetch_related(submission_prefetch)
 
         return queryset
+
+    def destroy(self, request, *args, **kwargs):
+        assignment = self.get_object()
+        event = assignment.event
+        if not _is_event_manager(request.user, event) and not getattr(request.user, 'is_staff', False):
+            raise PermissionDenied('Only event managers can delete post-acceptance form assignments.')
+        assignment.soft_delete(
+            user=request.user,
+            reason=request.data.get('reason') or 'Post-acceptance form assignment removed by admin.',
+        )
+        return Response({
+            'ok': True,
+            'deletion_type': 'soft',
+            'assignment_id': assignment.id,
+            'detail': 'Assignment was archived; submissions, answers, files, drafts, and reminder history were preserved.',
+        }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], url_path='summary')
     def summary(self, request, event_id=None):
@@ -16485,16 +16536,37 @@ class EventRoleViewSet(viewsets.ModelViewSet):
             from .services.role_seeding import get_or_seed_event_roles
             try:
                 event = Event.objects.get(pk=event_id)
-                return get_or_seed_event_roles(event)
+                return get_or_seed_event_roles(event).filter(is_active=True)
             except Event.DoesNotExist:
                 return EventRole.objects.none()
         return EventRole.objects.none()
+
+    def create(self, request, *args, **kwargs):
+        event_id = self.kwargs.get('event_id')
+        event = get_object_or_404(Event, pk=event_id)
+        key = (request.data.get('key') or '').strip()
+        if key:
+            existing = EventRole.objects.filter(event=event, key=key, is_active=False).first()
+            if existing:
+                existing.reactivate()
+                serializer = self.get_serializer(existing, data=request.data, partial=True)
+                serializer.is_valid(raise_exception=True)
+                serializer.save(event=event)
+                return Response({**serializer.data, 'restored': True}, status=status.HTTP_200_OK)
+        return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         """Create role for specified event."""
         event_id = self.kwargs.get('event_id')
         event = Event.objects.get(pk=event_id)
         serializer.save(event=event)
+
+    def destroy(self, request, *args, **kwargs):
+        role = self.get_object()
+        if not _is_event_manager(request.user, role.event):
+            raise PermissionDenied('Only event managers can delete event roles.')
+        role.deactivate(user=request.user, reason=request.data.get('reason') or 'Removed event role.')
+        return Response({'ok': True, 'deletion_type': 'soft', 'role_id': role.id}, status=status.HTTP_200_OK)
 
 
 # FIX 3: Track Pricing Tier ViewSet for UI/API management
@@ -16629,9 +16701,24 @@ class FormFieldViewSet(viewsets.ModelViewSet):
         if event_id and track_id:
             return FormField.objects.filter(
                 track_id=track_id,
-                track__event_id=event_id
+                track__event_id=event_id,
+                is_active=True,
             ).order_by('sort_order', 'id')
         return FormField.objects.none()
+
+    def create(self, request, *args, **kwargs):
+        track_id = self.kwargs.get('track_id')
+        track = get_object_or_404(EventApplicationTrack, pk=track_id)
+        label = (request.data.get('label') or '').strip()
+        if label:
+            existing = FormField.objects.filter(track=track, label__iexact=label, is_active=False).first()
+            if existing:
+                existing.restore()
+                serializer = self.get_serializer(existing, data=request.data, partial=True)
+                serializer.is_valid(raise_exception=True)
+                serializer.save(track=track)
+                return Response({**serializer.data, 'restored': True}, status=status.HTTP_200_OK)
+        return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         """Create form field for specified track."""
@@ -16642,3 +16729,15 @@ class FormFieldViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         """Update form field and maintain sort order."""
         serializer.save()
+
+    def destroy(self, request, *args, **kwargs):
+        field = self.get_object()
+        if not _is_event_manager(request.user, field.track.event):
+            raise PermissionDenied('Only event managers can delete form fields.')
+        field.archive(user=request.user, reason=request.data.get('reason') or 'Removed custom application field.')
+        return Response({
+            'ok': True,
+            'deletion_type': 'soft',
+            'field_id': field.id,
+            'detail': 'Field was hidden from new applications while existing answers keep their question context.',
+        }, status=status.HTTP_200_OK)

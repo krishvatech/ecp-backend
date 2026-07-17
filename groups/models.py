@@ -2,6 +2,7 @@
 from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
+from django.utils import timezone
 from django.db.models import Q
 
 
@@ -252,11 +253,17 @@ class GroupMembership(models.Model):
     STATUS_PENDING = 'pending'
     STATUS_BANNED = 'banned'
     STATUS_INACTIVE = 'inactive'
+    STATUS_LEFT = 'left'
+    STATUS_REMOVED = 'removed'
+    STATUS_REJECTED = 'rejected'
     STATUS_CHOICES = [
         (STATUS_ACTIVE, 'Active'),
         (STATUS_PENDING, 'Pending'),
         (STATUS_BANNED, 'Banned'),
         (STATUS_INACTIVE, 'Inactive'),
+        (STATUS_LEFT, 'Left'),
+        (STATUS_REMOVED, 'Removed'),
+        (STATUS_REJECTED, 'Rejected'),
     ]
 
     SOURCE_MANUAL = 'manual'
@@ -281,6 +288,15 @@ class GroupMembership(models.Model):
     )
     joined_at = models.DateTimeField(auto_now_add=True)
     left_at = models.DateTimeField(null=True, blank=True, help_text="When the member left the group")
+    removed_at = models.DateTimeField(null=True, blank=True)
+    removed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='group_memberships_removed',
+    )
+    removal_reason = models.TextField(blank=True, default='')
 
     class Meta:
         unique_together = ('user', 'group')
@@ -290,6 +306,20 @@ class GroupMembership(models.Model):
             models.Index(fields=['group', 'role']),
             models.Index(fields=['group', 'source', 'source_user_id']),
         ]
+
+    def mark_status(self, status_value, *, user=None, reason=''):
+        self.status = status_value
+        if status_value in {self.STATUS_LEFT, self.STATUS_REMOVED, self.STATUS_REJECTED, self.STATUS_INACTIVE}:
+            self.left_at = self.left_at or timezone.now()
+            self.removed_at = timezone.now()
+            self.removed_by = user if getattr(user, 'is_authenticated', False) else None
+            self.removal_reason = str(reason or '').strip()
+        elif status_value in {self.STATUS_ACTIVE, self.STATUS_PENDING}:
+            self.left_at = None
+            self.removed_at = None
+            self.removed_by = None
+            self.removal_reason = ''
+        self.save(update_fields=['status', 'left_at', 'removed_at', 'removed_by', 'removal_reason'])
 
     def __str__(self):
         return f"{self.user} → {self.group} ({self.role}, {self.status})"
@@ -305,10 +335,12 @@ class GroupParentAssociation(models.Model):
     STATUS_PENDING = 'pending'
     STATUS_APPROVED = 'approved'
     STATUS_REJECTED = 'rejected'
+    STATUS_REMOVED = 'removed'
     STATUS_CHOICES = [
         (STATUS_PENDING, 'Pending'),
         (STATUS_APPROVED, 'Approved'),
         (STATUS_REJECTED, 'Rejected'),
+        (STATUS_REMOVED, 'Removed'),
     ]
 
     child_group = models.ForeignKey(
@@ -338,6 +370,15 @@ class GroupParentAssociation(models.Model):
     
     created_at = models.DateTimeField(auto_now_add=True)
     reviewed_at = models.DateTimeField(null=True, blank=True)
+    removed_at = models.DateTimeField(null=True, blank=True)
+    removed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='group_parent_links_removed',
+    )
+    removal_reason = models.TextField(blank=True, default='')
 
     class Meta:
         unique_together = ('child_group', 'parent_group')
@@ -345,6 +386,20 @@ class GroupParentAssociation(models.Model):
             models.Index(fields=['child_group', 'status']),
             models.Index(fields=['parent_group', 'status']),
         ]
+
+    def mark_removed(self, *, user=None, reason=''):
+        self.status = self.STATUS_REMOVED
+        self.removed_at = timezone.now()
+        self.removed_by = user if getattr(user, 'is_authenticated', False) else None
+        self.removal_reason = str(reason or '').strip()
+        self.save(update_fields=['status', 'removed_at', 'removed_by', 'removal_reason'])
+
+    def reactivate(self, *, status_value=None):
+        self.status = status_value or self.STATUS_PENDING
+        self.removed_at = None
+        self.removed_by = None
+        self.removal_reason = ''
+        self.save(update_fields=['status', 'removed_at', 'removed_by', 'removal_reason'])
 
     def __str__(self):
         return f"{self.child_group.slug} -> {self.parent_group.slug} ({self.status})"

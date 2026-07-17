@@ -52,6 +52,8 @@ class FriendshipCreateSerializer(serializers.Serializer):
         target_id = validated_data["user_id"]
         u1, u2 = (me_id, target_id) if me_id < target_id else (target_id, me_id)
         friendship, _ = Friendship.objects.get_or_create(user1_id=u1, user2_id=u2)
+        if friendship.status != Friendship.STATUS_ACTIVE:
+            friendship.restore()
         return friendship
 
 

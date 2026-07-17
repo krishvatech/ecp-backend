@@ -125,6 +125,8 @@ def get_or_create_promotional_profile(event_registration):
     ).first()
 
     if existing:
+        if getattr(existing, 'is_deleted', False):
+            existing.restore()
         # Repair broken template if needed
         if existing.form_template:
             template = existing.form_template
@@ -360,10 +362,10 @@ def consolidate_promotional_profiles_for_registration(registration):
     ).first()
 
     if not modules and assignment:
-        # User lost all promotional profile roles - delete profile
-        assignment.delete()
+        # User lost all promotional profile roles - soft-remove the profile assignment.
+        assignment.soft_delete(reason='No active promotional-profile roles remain')
         logger.info(
-            f"Deleted promotional profile for {registration.user.username} "
+            f"Soft-deleted promotional profile for {registration.user.username} "
             f"(no more triggering roles)"
         )
         return None

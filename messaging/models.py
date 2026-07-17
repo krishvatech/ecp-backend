@@ -257,9 +257,28 @@ class Message(models.Model):
     is_hidden = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='deleted_messages',
+    )
+    deletion_reason = models.TextField(blank=True, default='')
     is_edited = models.BooleanField(default=False)
     edited_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def soft_delete(self, *, user=None, reason=''):
+        if self.is_deleted:
+            return
+        from django.utils import timezone
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, 'is_authenticated', False) else None
+        self.deletion_reason = str(reason or '').strip()
+        self.body = 'This message was deleted'
+        self.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'body'])
 
     class Meta:
         indexes = [

@@ -70,16 +70,17 @@ class FriendshipViewSet(
             return Response({"detail": "You cannot remove yourself."}, status=400)
 
         u1, u2 = (me.id, friend_id) if me.id < friend_id else (friend_id, me.id)
-        deleted, _ = Friendship.objects.filter(user1_id=u1, user2_id=u2).delete()
-        if not deleted:
+        friendship = Friendship.objects.filter(user1_id=u1, user2_id=u2, status=Friendship.STATUS_ACTIVE).first()
+        if not friendship:
             return Response({"detail": "Contact not found."}, status=404)
+        friendship.remove(user=me, reason="Removed contact")
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def get_queryset(self):
         me = self.request.user
         return (
             Friendship.objects.select_related("user1", "user2")
-            .filter(Q(user1=me) | Q(user2=me))
+            .filter(Q(user1=me) | Q(user2=me), status=Friendship.STATUS_ACTIVE)
             .order_by("-created_at")
         )
 
@@ -93,7 +94,9 @@ class FriendshipViewSet(
         friend_user_id = request.query_params.get("user_id")
         if friend_user_id:
             return self._remove_friendship(request)
-        return super().destroy(request, *args, **kwargs)
+        instance = self.get_object()
+        instance.remove(user=request.user, reason="Removed contact")
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(
         parameters=[OpenApiParameter(

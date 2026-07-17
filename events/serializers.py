@@ -1080,11 +1080,68 @@ class EventSessionSerializer(serializers.ModelSerializer):
         instance.save()
 
         if participants_data is not None:
-            # Replace all participants
-            instance.participants.all().delete()
-            self._create_participants(instance, participants_data)
+            self._sync_participants(instance, participants_data)
 
         return instance
+
+    def _session_participant_identity(self, item):
+        ptype = (item.get('type') or item.get('participant_type') or 'staff').lower()
+        role = (item.get('role') or 'speaker').lower()
+        if ptype == 'staff':
+            user_id = item.get('user_id') or item.get('user')
+            return ('staff', int(user_id), role) if user_id else None
+        if ptype == 'guest':
+            name = (item.get('name') or item.get('guest_name') or '').strip().lower()
+            email = (item.get('email') or item.get('guest_email') or '').strip().lower()
+            return ('guest', name, email, role) if name else None
+        if ptype == 'virtual':
+            vs_id = item.get('virtual_speaker_id') or item.get('virtual_speaker')
+            return ('virtual', int(vs_id), role) if vs_id else None
+        return None
+
+    def _sync_participants(self, session, participants_data):
+        """Soft-replace session participants and restore old rows when the same person is re-added."""
+        request = self.context.get('request')
+        actor = request.user if request and getattr(request.user, 'is_authenticated', False) else None
+
+        existing = {}
+        for sp in SessionParticipant.all_objects.filter(session=session):
+            if sp.participant_type == SessionParticipant.PARTICIPANT_TYPE_STAFF:
+                key = ('staff', sp.user_id, sp.role)
+            elif sp.participant_type == SessionParticipant.PARTICIPANT_TYPE_GUEST:
+                key = ('guest', (sp.guest_name or '').strip().lower(), (sp.guest_email or '').strip().lower(), sp.role)
+            else:
+                key = ('virtual', sp.virtual_speaker_id, sp.role)
+            existing[key] = sp
+
+        desired = {}
+        for item in participants_data:
+            key = self._session_participant_identity(item)
+            if key and key not in desired:
+                desired[key] = item
+
+        for key, sp in existing.items():
+            if key not in desired and not sp.is_deleted:
+                sp.soft_delete(user=actor, reason='Removed from the session participant list.')
+
+        to_create = []
+        for key, item in desired.items():
+            old = existing.get(key)
+            if old:
+                changed = []
+                new_order = item.get('display_order', 0)
+                if old.display_order != new_order:
+                    old.display_order = new_order
+                    changed.append('display_order')
+                if old.is_deleted:
+                    old.restore()
+                if changed:
+                    old.save(update_fields=changed + ['updated_at'])
+            else:
+                to_create.append(item)
+
+        if to_create:
+            self._create_participants(session, to_create)
 
     def _create_participants(self, session, participants_data):
         """Create SessionParticipant records (mirrors EventSerializer._create_participants)."""
@@ -1128,7 +1185,7 @@ class EventSessionSerializer(serializers.ModelSerializer):
                     continue
 
                 # De-duplicate
-                key = ('guest', name.lower(), role)
+                key = ('guest', name.lower(), (item.get('email') or '').strip().lower(), role)
                 if key in seen:
                     continue
                 seen.add(key)
@@ -1139,6 +1196,22 @@ class EventSessionSerializer(serializers.ModelSerializer):
                     guest_name=name,
                     guest_email=item.get('email', ''),
                     guest_bio=item.get('bio', ''),
+                    role=role,
+                    display_order=item.get('display_order', 0)
+                ))
+
+            elif ptype == 'virtual':
+                virtual_speaker_id = item.get('virtual_speaker_id')
+                if not virtual_speaker_id:
+                    continue
+                key = ('virtual', virtual_speaker_id, role)
+                if key in seen:
+                    continue
+                seen.add(key)
+                participants_to_create.append(SessionParticipant(
+                    session=session,
+                    participant_type='virtual',
+                    virtual_speaker_id=virtual_speaker_id,
                     role=role,
                     display_order=item.get('display_order', 0)
                 ))
@@ -1680,8 +1753,10 @@ class EventSerializer(serializers.ModelSerializer):
 
         from django.contrib.auth.models import User
 
-        # Build keys from existing participants (WITHOUT role for identity matching)
-        existing_participants = event.participants.all()
+        # Build keys from existing participants (WITHOUT role for identity matching), including
+        # soft-deleted rows so re-adding the same speaker restores the old row instead of
+        # creating duplicate historical assignments.
+        existing_participants = EventParticipant.all_objects.filter(event=event)
         existing_by_identity = {}  # Map of identity_key → (ep_object, role)
 
         for ep in existing_participants:
@@ -1727,9 +1802,12 @@ class EventSerializer(serializers.ModelSerializer):
                     reason="Removed from the event participant list.",
                 )
             else:
-                # Participant still exists; check if role or display_order changed
+                # Participant still exists; restore if it had been removed before, then
+                # check if role or display_order changed.
                 new_role, p_data = new_by_identity[identity_key]
                 new_display_order = p_data.get('display_order', 0)
+                if ep.is_deleted:
+                    ep.restore()
 
                 # Track what needs updating
                 update_fields = []

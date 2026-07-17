@@ -55,7 +55,7 @@ def _find_user(identifier: str):
 
     alias = (
         UserEmailAlias.objects.select_related("user__profile")
-        .filter(email__iexact=normalized, verified=True)
+        .filter(email__iexact=normalized, verified=True, is_active=True)
         .order_by("id")
         .first()
     )

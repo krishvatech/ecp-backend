@@ -63,7 +63,8 @@ class PromotionalProfileAdminViewSet(viewsets.ModelViewSet):
 
         queryset = PostAcceptanceFormAssignment.objects.filter(
             event_id=event_id,
-            form_type='promotional_profile'
+            form_type='promotional_profile',
+            is_deleted=False,
         ).select_related(
             'event_registration__user',
             'form_template',

@@ -23,6 +23,24 @@ class Friendship(models.Model):
         related_name="friends_as_user2",
         on_delete=models.CASCADE,
     )
+    STATUS_ACTIVE = 'active'
+    STATUS_REMOVED = 'removed'
+    STATUS_BLOCKED = 'blocked'
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, 'Active'),
+        (STATUS_REMOVED, 'Removed'),
+        (STATUS_BLOCKED, 'Blocked'),
+    ]
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=STATUS_ACTIVE, db_index=True)
+    removed_at = models.DateTimeField(null=True, blank=True)
+    removed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='friendships_removed',
+    )
+    removal_reason = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -37,6 +55,8 @@ class Friendship(models.Model):
         indexes = [
             models.Index(fields=["user1"]),
             models.Index(fields=["user2"]),
+            models.Index(fields=["status", "user1"], name="friend_status_user1_idx"),
+            models.Index(fields=["status", "user2"], name="friend_status_user2_idx"),
         ]
 
     def save(self, *args, **kwargs):
@@ -48,12 +68,30 @@ class Friendship(models.Model):
     def __str__(self):
         return f"Friendship({self.user1_id}, {self.user2_id})"
 
+    def remove(self, *, user=None, reason=''):
+        if self.status == self.STATUS_REMOVED:
+            return
+        self.status = self.STATUS_REMOVED
+        self.removed_at = timezone.now()
+        self.removed_by = user if getattr(user, 'is_authenticated', False) else None
+        self.removal_reason = str(reason or '').strip()
+        self.save(update_fields=['status', 'removed_at', 'removed_by', 'removal_reason'])
+
+    def restore(self):
+        if self.status == self.STATUS_ACTIVE:
+            return
+        self.status = self.STATUS_ACTIVE
+        self.removed_at = None
+        self.removed_by = None
+        self.removal_reason = ''
+        self.save(update_fields=['status', 'removed_at', 'removed_by', 'removal_reason'])
+
     @classmethod
     def are_friends(cls, a_id: int, b_id: int) -> bool:
         if a_id == b_id:
             return False
         u1, u2 = (a_id, b_id) if a_id < b_id else (b_id, a_id)
-        return cls.objects.filter(user1_id=u1, user2_id=u2).exists()
+        return cls.objects.filter(user1_id=u1, user2_id=u2, status=cls.STATUS_ACTIVE).exists()
 
 
 class FriendRequest(models.Model):
@@ -116,7 +154,9 @@ class FriendRequest(models.Model):
         u1, u2 = (self.from_user_id, self.to_user_id)
         if u1 > u2:
             u1, u2 = u2, u1
-        Friendship.objects.get_or_create(user1_id=u1, user2_id=u2)
+        friendship, _ = Friendship.objects.get_or_create(user1_id=u1, user2_id=u2)
+        if friendship.status != Friendship.STATUS_ACTIVE:
+            friendship.restore()
 
         self.status = self.ACCEPTED
         self.responded_at = timezone.now()

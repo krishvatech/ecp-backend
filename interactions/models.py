@@ -996,6 +996,16 @@ class QnAContentContext(models.Model):
     content_text = models.TextField(
         help_text="The normalized text content used for AI grounding.",
     )
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='deleted_qna_contexts',
+    )
+    deletion_reason = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1003,6 +1013,24 @@ class QnAContentContext(models.Model):
         ordering = ["-created_at"]
         verbose_name = "Q&A Content Context"
         verbose_name_plural = "Q&A Content Contexts"
+
+    def soft_delete(self, *, user=None, reason=''):
+        if self.is_deleted:
+            return
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, 'is_authenticated', False) else None
+        self.deletion_reason = str(reason or '').strip()
+        self.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'updated_at'])
+
+    def restore(self):
+        if not self.is_deleted:
+            return
+        self.is_deleted = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.deletion_reason = ''
+        self.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'updated_at'])
 
     def __str__(self) -> str:
         return f"[Event {self.event_id}] {self.get_source_type_display()}: {self.source_title or self.content_text[:40]}"

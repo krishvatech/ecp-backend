@@ -1672,7 +1672,7 @@ def send_form_reminder_task(self, assignment_id):
     from events.services.post_acceptance_forms import send_form_reminder_email
 
     try:
-        assignment = PostAcceptanceFormAssignment.objects.get(id=assignment_id)
+        assignment = PostAcceptanceFormAssignment.objects.get(id=assignment_id, is_deleted=False)
 
         # Don't send if already completed
         if assignment.status == PostAcceptanceFormAssignment.STATUS_COMPLETED:
@@ -1746,6 +1746,7 @@ def schedule_form_reminders():
         # Skip opted-out registrations if field exists
         # Use select_related + prefetch_related to prevent N+1 queries on user lookups
         assignments = PostAcceptanceFormAssignment.objects.filter(
+            is_deleted=False,
             status__in=[
                 PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
                 PostAcceptanceFormAssignment.STATUS_IN_PROGRESS
@@ -1852,6 +1853,7 @@ def mark_lapsed_form_assignments():
 
         # Find incomplete assignments past deadline
         lapsed_assignments = PostAcceptanceFormAssignment.objects.filter(
+            is_deleted=False,
             status__in=[
                 PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
                 PostAcceptanceFormAssignment.STATUS_IN_PROGRESS

@@ -1702,10 +1702,7 @@ class MessageViewSet(
     def perform_destroy(self, instance):
         if not self._can_moderate_message(self.request.user, instance):
             raise PermissionDenied("Not allowed to delete this message.")
-        instance.is_deleted = True
-        instance.deleted_at = timezone.now()
-        instance.body = "This message was deleted"
-        instance.save()
+        instance.soft_delete(user=self.request.user, reason=self.request.data.get('reason') or 'Message deleted')
         # The record remains in DB with placeholder body so conversation thread is readable
 
     @action(detail=True, methods=["post"], url_path="flag")

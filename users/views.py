@@ -2695,7 +2695,16 @@ class AdminLanguageCertificateViewSet(ProfileAttributeSoftDeleteViewSetMixin, Ad
         serializer.save(user_language=user_language)
 
 
-class AdminEducationDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+
+class ProfileDocumentSoftDeleteViewSetMixin:
+    def perform_destroy(self, instance):
+        instance.soft_delete(
+            user=self.request.user,
+            reason=self.request.data.get('reason') or 'Profile document attachment removed.',
+        )
+
+
+class AdminEducationDocumentViewSet(AdminTargetUserMixin, ProfileDocumentSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     serializer_class = EducationDocumentSerializer
     parser_classes = [MultiPartParser, FormParser]
     http_method_names = ["get", "post", "delete"]
@@ -2709,7 +2718,7 @@ class AdminEducationDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet)
         serializer.save(education=education)
 
 
-class AdminTrainingDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+class AdminTrainingDocumentViewSet(AdminTargetUserMixin, ProfileDocumentSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     serializer_class = TrainingDocumentSerializer
     parser_classes = [MultiPartParser, FormParser]
     http_method_names = ["get", "post", "delete"]
@@ -2723,7 +2732,7 @@ class AdminTrainingDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
         serializer.save(training=training)
 
 
-class AdminCertificationDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+class AdminCertificationDocumentViewSet(AdminTargetUserMixin, ProfileDocumentSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     serializer_class = ProfileCertificationDocumentSerializer
     parser_classes = [MultiPartParser, FormParser]
     http_method_names = ["get", "post", "delete"]
@@ -2737,7 +2746,7 @@ class AdminCertificationDocumentViewSet(AdminTargetUserMixin, viewsets.ModelView
         serializer.save(certification=certification)
 
 
-class AdminMembershipDocumentViewSet(AdminTargetUserMixin, viewsets.ModelViewSet):
+class AdminMembershipDocumentViewSet(AdminTargetUserMixin, ProfileDocumentSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     serializer_class = MembershipDocumentSerializer
     parser_classes = [MultiPartParser, FormParser]
     http_method_names = ["get", "post", "delete"]
@@ -3737,7 +3746,7 @@ class AdminKYCViewSet(viewsets.ModelViewSet):
 
 
 
-class MeEducationDocumentViewSet(viewsets.ModelViewSet):
+class MeEducationDocumentViewSet(ProfileDocumentSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     Manage documents for the authenticated user's education entries.
     Endpoints:
@@ -3759,7 +3768,7 @@ class MeEducationDocumentViewSet(viewsets.ModelViewSet):
         serializer.save(education=education)
 
 
-class MeTrainingDocumentViewSet(viewsets.ModelViewSet):
+class MeTrainingDocumentViewSet(ProfileDocumentSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     Manage documents for the authenticated user's training entries.
     Endpoints:
@@ -3779,7 +3788,7 @@ class MeTrainingDocumentViewSet(viewsets.ModelViewSet):
         serializer.save(training=training)
 
 
-class MeMembershipDocumentViewSet(viewsets.ModelViewSet):
+class MeMembershipDocumentViewSet(ProfileDocumentSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     Manage documents for the authenticated user's membership entries.
     Endpoints:
@@ -3799,7 +3808,7 @@ class MeMembershipDocumentViewSet(viewsets.ModelViewSet):
         serializer.save(membership=membership)
 
 
-class MeCertificationDocumentViewSet(viewsets.ModelViewSet):
+class MeCertificationDocumentViewSet(ProfileDocumentSoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     Manage documents for the authenticated user's certification entries.
     Endpoints:
@@ -5338,27 +5347,32 @@ class AddEmailAliasView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Check if email is already an alias for this user
-        if UserEmailAlias.objects.filter(user=user, email=new_email).exists():
-            return Response(
-                {"error": "This email is already an alias for your account."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Generate OTP
+        # Generate OTP before create/restore.
         otp_code = ''.join([str(random.randint(0, 9)) for _ in range(6)])
         expires_at = timezone.now() + timedelta(minutes=10)
 
-        # Create or update UserEmailAlias
-        alias, created = UserEmailAlias.objects.update_or_create(
-            user=user,
-            email=new_email,
-            defaults={
-                "otp_code": otp_code,
-                "otp_expires_at": expires_at,
-                "verified": False,
-            }
-        )
+        existing_alias = UserEmailAlias.objects.filter(email__iexact=new_email).first()
+        if existing_alias and existing_alias.user_id != user.id:
+            return Response(
+                {"error": "This email is already linked to another account. Please contact support if this is yours."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if existing_alias and existing_alias.user_id == user.id:
+            if existing_alias.is_active:
+                return Response(
+                    {"error": "This email is already an alias for your account."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            existing_alias.restore_for_verification(otp_code=otp_code, otp_expires_at=expires_at)
+            alias = existing_alias
+        else:
+            alias = UserEmailAlias.objects.create(
+                user=user,
+                email=new_email,
+                otp_code=otp_code,
+                otp_expires_at=expires_at,
+                verified=False,
+            )
 
         # Send OTP email
         try:
@@ -5431,7 +5445,7 @@ class VerifyEmailAliasView(APIView):
 
         # Find the alias
         try:
-            alias = UserEmailAlias.objects.get(user=user, email=email)
+            alias = UserEmailAlias.objects.get(user=user, email=email, is_active=True)
         except UserEmailAlias.DoesNotExist:
             return Response(
                 {"error": "Email alias not found."},
@@ -5445,7 +5459,7 @@ class VerifyEmailAliasView(APIView):
 
             # Rate limit after 5 attempts
             if alias.attempt_count >= 5:
-                alias.delete()
+                alias.remove(user=user, reason="Too many failed OTP attempts")
                 return Response(
                     {"error": "Too many failed attempts. Please request a new code."},
                     status=status.HTTP_400_BAD_REQUEST
@@ -5514,7 +5528,7 @@ class ListEmailAliasView(APIView):
         from .models import UserEmailAlias
 
         user = request.user
-        aliases = UserEmailAlias.objects.filter(user=user).order_by("-verified_at", "email")
+        aliases = UserEmailAlias.objects.filter(user=user, is_active=True).order_by("-verified_at", "email")
 
         return Response({
             "primary_email": user.email,
@@ -5555,10 +5569,10 @@ class RemoveEmailAliasView(APIView):
         user = request.user
 
         try:
-            alias = UserEmailAlias.objects.get(id=alias_id, user=user)
+            alias = UserEmailAlias.objects.get(id=alias_id, user=user, is_active=True)
             email = alias.email
-            alias.delete()
-            logger.info(f"Removed email alias {email} for user {user.id}")
+            alias.remove(user=user, reason="Removed by user")
+            logger.info(f"Soft-removed email alias {email} for user {user.id}")
             return Response(status=status.HTTP_204_NO_CONTENT)
         except UserEmailAlias.DoesNotExist:
             return Response(

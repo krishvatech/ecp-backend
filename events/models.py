@@ -1439,6 +1439,20 @@ class EventRole(models.Model):
         default=False,
         help_text='Whether this is a system-provided default role'
     )
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text='Inactive roles are hidden from new assignment but retained for attendee history.'
+    )
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+    deactivated_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='event_roles_deactivated',
+    )
+    deactivation_reason = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1448,8 +1462,27 @@ class EventRole(models.Model):
         ordering = ['sort_priority', 'label']
         indexes = [
             models.Index(fields=['event', 'key']),
+            models.Index(fields=['event', 'is_active'], name='evtrole_event_active_idx'),
             models.Index(fields=['triggers_promotional_profile']),
         ]
+
+    def deactivate(self, *, user=None, reason=''):
+        if not self.is_active:
+            return
+        self.is_active = False
+        self.deactivated_at = timezone.now()
+        self.deactivated_by = user if getattr(user, 'is_authenticated', False) else None
+        self.deactivation_reason = str(reason or '').strip()
+        self.save(update_fields=['is_active', 'deactivated_at', 'deactivated_by', 'deactivation_reason', 'updated_at'])
+
+    def reactivate(self):
+        if self.is_active:
+            return
+        self.is_active = True
+        self.deactivated_at = None
+        self.deactivated_by = None
+        self.deactivation_reason = ''
+        self.save(update_fields=['is_active', 'deactivated_at', 'deactivated_by', 'deactivation_reason', 'updated_at'])
 
     def __str__(self):
         return f"{self.label} ({self.event.title})"
@@ -2080,6 +2113,20 @@ class FormField(models.Model):
         default=0,
         help_text='Display order (ascending)'
     )
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text='Archived fields are hidden from new forms but retained for submitted answer history.'
+    )
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archived_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='archived_form_fields',
+    )
+    archive_reason = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2090,7 +2137,26 @@ class FormField(models.Model):
         indexes = [
             models.Index(fields=['track', 'sort_order']),
             models.Index(fields=['track', 'field_type']),
+            models.Index(fields=['track', 'is_active', 'sort_order'], name='formfield_active_order_idx'),
         ]
+
+    def archive(self, *, user=None, reason=''):
+        if not self.is_active:
+            return
+        self.is_active = False
+        self.archived_at = timezone.now()
+        self.archived_by = user if getattr(user, 'is_authenticated', False) else None
+        self.archive_reason = str(reason or '').strip()
+        self.save(update_fields=['is_active', 'archived_at', 'archived_by', 'archive_reason', 'updated_at'])
+
+    def restore(self):
+        if self.is_active:
+            return
+        self.is_active = True
+        self.archived_at = None
+        self.archived_by = None
+        self.archive_reason = ''
+        self.save(update_fields=['is_active', 'archived_at', 'archived_by', 'archive_reason', 'updated_at'])
 
     def __str__(self):
         return f"{self.label} ({self.track.label})"
@@ -2208,7 +2274,16 @@ class WaitingRoomAnnouncement(models.Model):
     sender_name = models.CharField(max_length=255, default="Host")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    is_deleted = models.BooleanField(default=False)  # soft delete
+    is_deleted = models.BooleanField(default=False, db_index=True)  # soft delete
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='deleted_waiting_room_announcements',
+    )
+    deletion_reason = models.TextField(blank=True, default='')
 
     class Meta:
         ordering = ["-created_at"]
@@ -2960,6 +3035,13 @@ class SessionBreak(models.Model):
         return f"{self.label or self.break_type} - {self.duration_minutes}m"
 
 
+class ActiveSessionParticipantManager(models.Manager):
+    """Default manager that hides participants removed from a session."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
 class SessionParticipant(models.Model):
     """Links speakers/moderators to specific sessions (mirrors EventParticipant)."""
 
@@ -3007,6 +3089,20 @@ class SessionParticipant(models.Model):
         help_text="Linked VirtualSpeaker profile (only for virtual type)"
     )
 
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='deleted_session_participants',
+    )
+    deletion_reason = models.TextField(blank=True, default='')
+
+    objects = ActiveSessionParticipantManager()
+    all_objects = models.Manager()
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -3015,6 +3111,7 @@ class SessionParticipant(models.Model):
         indexes = [
             models.Index(fields=['session', 'role']),
             models.Index(fields=['participant_type']),
+            models.Index(fields=['session', 'is_deleted', 'display_order'], name='sesspart_active_order_idx'),
         ]
 
     def clean(self):
@@ -3029,6 +3126,24 @@ class SessionParticipant(models.Model):
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)
+
+    def soft_delete(self, *, user=None, reason=''):
+        if self.is_deleted:
+            return
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, 'is_authenticated', False) else None
+        self.deletion_reason = str(reason or '').strip()
+        self.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'updated_at'])
+
+    def restore(self):
+        if not self.is_deleted:
+            return
+        self.is_deleted = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.deletion_reason = ''
+        self.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'updated_at'])
 
     def __str__(self):
         return f"{self.get_name()} - {self.get_role_display()} at {self.session.title}"
@@ -3087,6 +3202,13 @@ def virtual_speaker_image_upload_to(instance, filename):
     name, ext = os.path.splitext(filename or "")
     base = slugify(name) or "speaker"
     return f"virtual-speakers/{base}-{uuid.uuid4().hex[:8]}{ext.lower()}"
+
+
+class ActiveVirtualSpeakerManager(models.Manager):
+    """Default manager that hides deleted virtual speaker profiles."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
 
 
 class VirtualSpeaker(models.Model):
@@ -3167,6 +3289,20 @@ class VirtualSpeaker(models.Model):
         help_text="Email address used for conversion"
     )
 
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='deleted_virtual_speakers',
+    )
+    deletion_reason = models.TextField(blank=True, default='')
+
+    objects = ActiveVirtualSpeakerManager()
+    all_objects = models.Manager()
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -3175,9 +3311,28 @@ class VirtualSpeaker(models.Model):
         indexes = [
             models.Index(fields=['community', 'status']),
             models.Index(fields=['community', 'name']),
+            models.Index(fields=['community', 'is_deleted', 'name'], name='vspeaker_active_name_idx'),
         ]
         verbose_name = 'Virtual Speaker'
         verbose_name_plural = 'Virtual Speakers'
+
+    def soft_delete(self, *, user=None, reason=''):
+        if self.is_deleted:
+            return
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, 'is_authenticated', False) else None
+        self.deletion_reason = str(reason or '').strip()
+        self.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'updated_at'])
+
+    def restore(self):
+        if not self.is_deleted:
+            return
+        self.is_deleted = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.deletion_reason = ''
+        self.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'updated_at'])
 
     def __str__(self):
         status_label = f" ({self.get_status_display()})" if self.status == 'converted' else ""
@@ -4859,11 +5014,13 @@ class PostAcceptanceFormAssignment(models.Model):
     STATUS_IN_PROGRESS = 'in_progress'
     STATUS_COMPLETED = 'completed'
     STATUS_LAPSED = 'lapsed'
+    STATUS_ARCHIVED = 'archived'
     STATUS_CHOICES = [
         (STATUS_NOT_STARTED, 'Not Started'),
         (STATUS_IN_PROGRESS, 'In Progress'),
         (STATUS_COMPLETED, 'Completed'),
         (STATUS_LAPSED, 'Lapsed'),
+        (STATUS_ARCHIVED, 'Archived'),
     ]
 
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='post_acceptance_form_assignments')
@@ -4908,6 +5065,18 @@ class PostAcceptanceFormAssignment(models.Model):
     )
     manual_completed_at = models.DateTimeField(null=True, blank=True, help_text='When admin manually marked complete')
 
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='deleted_post_acceptance_form_assignments',
+    )
+    deletion_reason = models.TextField(blank=True, default='')
+    status_before_delete = models.CharField(max_length=20, blank=True, default='')
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -4917,10 +5086,35 @@ class PostAcceptanceFormAssignment(models.Model):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['event', 'status']),
+            models.Index(fields=['event', 'is_deleted', 'status'], name='pafa_event_deleted_idx'),
             models.Index(fields=['event_registration', 'form_type']),
             models.Index(fields=['status']),
+            models.Index(fields=['is_deleted'], name='pafa_deleted_idx'),
             models.Index(fields=['deadline']),
         ]
+
+    def soft_delete(self, *, user=None, reason=''):
+        if self.is_deleted:
+            return
+        self.status_before_delete = self.status
+        self.status = self.STATUS_ARCHIVED
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, 'is_authenticated', False) else None
+        self.deletion_reason = str(reason or '').strip()
+        self.save(update_fields=['status_before_delete', 'status', 'is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'updated_at'])
+
+    def restore(self, *, status_value=None):
+        if not self.is_deleted:
+            return
+        restored_status = status_value or self.status_before_delete or self.STATUS_NOT_STARTED
+        self.status = restored_status
+        self.status_before_delete = ''
+        self.is_deleted = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.deletion_reason = ''
+        self.save(update_fields=['status', 'status_before_delete', 'is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason', 'updated_at'])
 
     def __str__(self):
         return f"{self.get_form_type_display()} - {self.event_registration.user.username} - {self.status}"

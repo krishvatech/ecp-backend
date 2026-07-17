@@ -298,9 +298,16 @@ def _create_form_assignment(event_registration, form_type, form_template_cache=N
             'deadline': deadline,
         }
     )
+    restored = False
+    if not created and getattr(assignment, 'is_deleted', False):
+        assignment.restore(status_value=PostAcceptanceFormAssignment.STATUS_NOT_STARTED)
+        assignment.form_template = form_template
+        assignment.deadline = deadline
+        assignment.save(update_fields=['form_template', 'deadline', 'updated_at'])
+        restored = True
 
     # FIX: Send form email synchronously (reliable) after assignment is persisted
-    if created:
+    if created or restored:
         def send_email():
             try:
                 # Send synchronously for reliability - users should receive form email immediately
@@ -316,7 +323,7 @@ def _create_form_assignment(event_registration, form_type, form_template_cache=N
         from django.db import transaction
         transaction.on_commit(send_email)
 
-    return assignment if created else None
+    return assignment if (created or restored) else None
 
 
 def mark_assignment_in_progress(assignment):
@@ -380,6 +387,7 @@ def get_pending_assignments_for_event(event):
     """
     return PostAcceptanceFormAssignment.objects.filter(
         event=event,
+        is_deleted=False,
         status__in=[
             PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
             PostAcceptanceFormAssignment.STATUS_IN_PROGRESS,
@@ -401,6 +409,7 @@ def get_lapsed_assignments(deadline_before=None):
         deadline_before = timezone.now()
 
     return PostAcceptanceFormAssignment.objects.filter(
+        is_deleted=False,
         status__in=[
             PostAcceptanceFormAssignment.STATUS_NOT_STARTED,
             PostAcceptanceFormAssignment.STATUS_IN_PROGRESS,
