@@ -2208,6 +2208,15 @@ class EventViewSet(viewsets.ModelViewSet):
                     status="registered"
                 ).values_list('event_id', flat=True)
 
+                # ✅ Direct-URL access to PAST events: allow ANY authenticated user to view
+                # and register for a past event when it is opened directly (retrieve) or when
+                # they hit the register/apply endpoints. This is gated on the action so past
+                # events still do NOT leak into Upcoming/Past discovery listings (the `list`
+                # action keeps the stricter rules above and is re-filtered further below).
+                public_past_access = Q()
+                if self.action in {"retrieve", "register", "apply"}:
+                    public_past_access = Q(status="ended") | Q(status="published", end_time__lt=now)
+
                 qs = qs.filter(
                     # ✅ Published/Live events (not yet past)
                     Q(status__in=["published", "live"], end_time__isnull=True) |  # No end time
@@ -2217,7 +2226,11 @@ class EventViewSet(viewsets.ModelViewSet):
                     Q(Q(status="ended") | Q(end_time__lt=now), created_by_id=user.id) |  # Event creator
                     Q(Q(status="ended") | Q(end_time__lt=now), community__owner_id=user.id) |  # Community owner
                     Q(Q(status="ended") | Q(end_time__lt=now), id__in=registered_event_ids) |  # Registered users
-                    Q(status="ended", replay_enabled=True, replay_visible_to_participants=True) |  # Replay-enabled events
+                    # Replay-enabled past events. Some imported/WP events remain "published" even
+                    # after end_time has passed, so treat them as replay-signup events too.
+                    Q(status="ended", replay_enabled=True, replay_visible_to_participants=True) |
+                    Q(status="published", end_time__lt=now, replay_enabled=True, replay_visible_to_participants=True) |
+                    public_past_access |  # ✅ Any authed user opening a past event by direct URL (retrieve/register/apply)
                     archived_manager_filter
                 )
 
@@ -3570,12 +3583,11 @@ class EventViewSet(viewsets.ModelViewSet):
                     "code": "application_required"
                 }, status=400)
 
-        # Check if event is ended and replay access is not enabled
-        if event.status == "ended":
-            if not event.replay_enabled:
-                return Response({"detail": "Replay sign-up is not enabled for this event."}, status=400)
-            if not event.replay_visible_to_participants:
-                return Response({"detail": "Replay is not available yet."}, status=400)
+        # Past events are registerable by any user who opens them directly.
+        # We intentionally do NOT block registration when replay is disabled/unavailable:
+        # users may register on a past event's landing page (e.g. to be notified when a
+        # replay is published, or simply to be recorded as an attendee). Replay playback
+        # access is enforced separately where the recording is served.
 
         # Check capactity limit
         if event.max_participants is not None:
@@ -9787,16 +9799,19 @@ class EventViewSet(viewsets.ModelViewSet):
         else:
             qs = qs.filter(is_hidden=False)
 
-        # Filter for replay events: must be ended with replay enabled, visible, and have media
+        # Filter for replay events: must be past/ended with replay enabled, visible, and have media.
+        # Allow status="published" when end_time is already past because imported/WP
+        # events are not always converted to status="ended".
         now = timezone.now()
         qs = qs.filter(
-            status="ended",
             replay_enabled=True,
-            replay_visible_to_participants=True
-        ).exclude(
-            # Must have actual media (recording_url or replay_video_url)
-            recording_url="",
-            replay_video_url=""
+            replay_visible_to_participants=True,
+            status__in=["published", "ended"],
+        ).filter(
+            Q(status="ended") | Q(end_time__lt=now)
+        ).filter(
+            Q(recording_url__isnull=False, recording_url__gt="") |
+            Q(replay_video_url__isnull=False, replay_video_url__gt="")
         )
 
         # For authenticated users: exclude their own registrations
@@ -9816,10 +9831,10 @@ class EventViewSet(viewsets.ModelViewSet):
         # Paginate
         page = self.paginate_queryset(qs)
         if page is not None:
-            serializer = self.get_serializer(page, many=True)
+            serializer = PublicEventSerializer(page, many=True, context={"request": request})
             return self.get_paginated_response(serializer.data)
 
-        serializer = self.get_serializer(qs, many=True)
+        serializer = PublicEventSerializer(qs, many=True, context={"request": request})
         return Response(serializer.data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="rtk/join")
@@ -12441,13 +12456,18 @@ class EventViewSet(viewsets.ModelViewSet):
             # Non-authenticated users: only non-hidden, published events
             qs = qs.filter(is_hidden=False)
 
-        # Core replay filter: must be ended/past, have replay enabled, and recording must be published
+        # Core replay filter: must be ended/past, have replay enabled, visible, and have media.
+        # Allow status="published" when end_time is already past because imported/WP
+        # events are not always converted to status="ended".
         qs = qs.filter(
             replay_enabled=True,
             replay_visible_to_participants=True,
-            status__in=["published", "ended"]
+            status__in=["published", "ended"],
         ).filter(
             Q(status="ended") | Q(end_time__lt=now)
+        ).filter(
+            Q(recording_url__isnull=False, recording_url__gt="") |
+            Q(replay_video_url__isnull=False, replay_video_url__gt="")
         )
 
         # For authenticated users: exclude events they're already registered for
