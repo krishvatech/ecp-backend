@@ -36,6 +36,7 @@ from content.models import Resource
 import json
 from .validators import validate_non_multiday_event, validate_multiday_event, validate_session_datetimes
 from .platform_sync import enqueue_event_sync_jobs
+from .lifecycle import is_replay_ready_for_signup
 
 
 def _enqueue_event_sync_jobs_and_trigger(event_id, *, upsert_slugs=None, disable_slugs=None):
@@ -1262,6 +1263,10 @@ class EventSerializer(serializers.ModelSerializer):
     assigned_tier = serializers.SerializerMethodField(read_only=True)
     origins = serializers.SerializerMethodField(read_only=True)
     platforms = serializers.SerializerMethodField(read_only=True)
+    replay_ready = serializers.SerializerMethodField(read_only=True)
+    replay_signup_enabled = serializers.SerializerMethodField(read_only=True)
+    can_signup_for_replay = serializers.SerializerMethodField(read_only=True)
+    has_replay_access = serializers.SerializerMethodField(read_only=True)
     source_platform_slug = serializers.SerializerMethodField(read_only=True)
     locked_platform_slugs = serializers.SerializerMethodField(read_only=True)
     editable_platform_slugs = serializers.SerializerMethodField(read_only=True)
@@ -1355,6 +1360,35 @@ class EventSerializer(serializers.ModelSerializer):
             }
         return None
 
+    def _is_current_user_registered(self, obj):
+        request = self.context.get("request")
+        if (
+            not request
+            or not request.user.is_authenticated
+            or getattr(request.user, "is_guest", False)
+        ):
+            return False
+        return EventRegistration.objects.filter(
+            event=obj,
+            user=request.user,
+            status__in=["registered", "cancellation_requested"],
+            attendee_status="confirmed",
+        ).exists()
+
+    def get_replay_ready(self, obj):
+        return is_replay_ready_for_signup(obj)
+
+    def get_replay_signup_enabled(self, obj):
+        return bool(obj.replay_enabled)
+
+    def get_can_signup_for_replay(self, obj):
+        if not is_replay_ready_for_signup(obj):
+            return False
+        return not self._is_current_user_registered(obj)
+
+    def get_has_replay_access(self, obj):
+        return self._is_current_user_registered(obj)
+
     def get_recording_url(self, obj):
         """
         Access control for recording_url:
@@ -1365,7 +1399,11 @@ class EventSerializer(serializers.ModelSerializer):
         from events.models import EventRegistration
 
         request = self.context.get('request')
-        if not request or not request.user.is_authenticated:
+        if (
+            not request
+            or not request.user.is_authenticated
+            or getattr(request.user, "is_guest", False)
+        ):
             return None
 
         # Host can always see
@@ -1440,6 +1478,10 @@ class EventSerializer(serializers.ModelSerializer):
             "replay_available",
             "replay_availability_duration",
             "replay_visible_to_participants",
+            "replay_ready",
+            "replay_signup_enabled",
+            "can_signup_for_replay",
+            "has_replay_access",
             "replay_publishing_mode",
             "category",
             "format",
@@ -2633,25 +2675,31 @@ class EventSerializer(serializers.ModelSerializer):
             url = instance.waiting_room_image.url
             data["waiting_room_image"] = request.build_absolute_uri(url) if request else url
 
-        # Privacy gate: only show venue_name and venue_address to registered/admitted members or host
-        if request and request.user.is_authenticated:
+        # Privacy gate: only show private venue/replay fields to a normal
+        # authenticated member who manages or is registered for the event.
+        is_manager = False
+        is_registered = False
+        is_member_user = bool(
+            request
+            and request.user.is_authenticated
+            and not getattr(request.user, "is_guest", False)
+        )
+        if is_member_user:
             from events.views import _is_event_manager
 
             is_manager = _is_event_manager(request.user, instance)
             is_registered = EventRegistration.objects.filter(
                 event=instance,
                 user=request.user,
-                status__in=["registered", "admitted", "cancellation_requested"]
+                status__in=["registered", "admitted", "cancellation_requested"],
             ).exists()
 
-            # If not manager and not registered, remove venue details
-            if not is_manager and not is_registered:
-                data.pop("venue_name", None)
-                data.pop("venue_address", None)
-        else:
-            # Unauthenticated users: don't show venue details
+        if not is_manager and not is_registered:
             data.pop("venue_name", None)
             data.pop("venue_address", None)
+            # The public landing page uses replay_ready to advertise replay
+            # signup. The playable URL is released only after access exists.
+            data["replay_video_url"] = None
 
         return data
 
@@ -2960,6 +3008,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
     replay_signup_enabled = serializers.SerializerMethodField()
     can_signup_for_replay = serializers.SerializerMethodField()
     has_replay_access = serializers.SerializerMethodField()
+    replay_ready = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -2978,7 +3027,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
             "external_streaming_host_link",
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
-            "is_registered_for_event", "user_status", "replay_signup_enabled", "can_signup_for_replay", "has_replay_access",
+            "is_registered_for_event", "user_status", "replay_signup_enabled", "replay_ready", "can_signup_for_replay", "has_replay_access",
         ]
         read_only_fields = fields
 
@@ -3050,7 +3099,11 @@ class PublicEventSerializer(serializers.ModelSerializer):
         from events.views import _is_event_host
         from events.models import EventRegistration
         request = self.context.get('request')
-        if not request or not request.user.is_authenticated:
+        if (
+            not request
+            or not request.user.is_authenticated
+            or getattr(request.user, "is_guest", False)
+        ):
             return None
         if _is_event_host(request.user, obj):
             # Host can view replay if replay_visible_to_participants is True or if they have direct access
@@ -3069,7 +3122,11 @@ class PublicEventSerializer(serializers.ModelSerializer):
         """Check if the current user is registered for this event."""
         from events.models import EventRegistration
         request = self.context.get('request')
-        if not request or not request.user.is_authenticated:
+        if (
+            not request
+            or not request.user.is_authenticated
+            or getattr(request.user, "is_guest", False)
+        ):
             return False
         return EventRegistration.objects.filter(
             event=obj, user=request.user,
@@ -3089,37 +3146,23 @@ class PublicEventSerializer(serializers.ModelSerializer):
         """Return whether replay signup is enabled for this event."""
         return bool(obj.replay_enabled)
 
+    def get_replay_ready(self, obj):
+        return is_replay_ready_for_signup(obj)
+
     def get_can_signup_for_replay(self, obj):
-        """
-        Check if user can signup for replay.
-        True only when:
-        - replay is enabled
-        - event is ended/past
-        - replay recording is published/ready (has replay_visible_to_participants and recording)
-        - user is not registered
-        """
-        from django.utils import timezone
-        request = self.context.get('request')
+        """Return whether the current viewer can create replay access."""
+        if not is_replay_ready_for_signup(obj):
+            return False
 
-        # Check if event is ended
-        now = timezone.now()
-        is_ended = obj.status == "ended" or (obj.end_time and obj.end_time < now)
+        request = self.context.get("request")
+        if (
+            not request
+            or not request.user.is_authenticated
+            or getattr(request.user, "is_guest", False)
+        ):
+            return True
 
-        # Check if replay is enabled
-        replay_enabled = bool(obj.replay_enabled)
-
-        # Check if replay is published/ready to participants
-        # Must have replay_visible_to_participants=True AND either replay_video_url or recording_url
-        replay_ready = bool(obj.replay_visible_to_participants) and bool(obj.replay_video_url or obj.recording_url)
-
-        # Check registration status
-        if not request or not request.user.is_authenticated:
-            # Anonymous users: can signup if ended, replay enabled, and recording is ready
-            return is_ended and replay_enabled and replay_ready
-
-        # Authenticated users: can signup only if not already registered
-        is_registered = self.get_is_registered_for_event(obj)
-        return is_ended and replay_enabled and replay_ready and not is_registered
+        return not self.get_is_registered_for_event(obj)
 
     def get_has_replay_access(self, obj):
         """

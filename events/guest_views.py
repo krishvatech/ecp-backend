@@ -24,6 +24,7 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from .models import Event, EventRegistration, GuestAttendee, GuestEmailOTP, GuestProfileAuditLog
+from .lifecycle import is_event_effectively_ended
 from .guest_auth import GuestPrincipal
 
 logger = logging.getLogger(__name__)
@@ -301,6 +302,15 @@ class GuestJoinView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        if is_event_effectively_ended(event):
+            return Response(
+                {
+                    "error": "event_ended",
+                    "detail": "This event has ended. Please sign in to view the event details.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         # 2. Extract and validate request data
         first_name = request.data.get("first_name", "").strip()
         last_name = request.data.get("last_name", "").strip()
@@ -458,6 +468,15 @@ class GuestVerifyOTPView(APIView):
             return Response(
                 {"error": "Event not found."},
                 status=status.HTTP_404_NOT_FOUND
+            )
+
+        if is_event_effectively_ended(event):
+            return Response(
+                {
+                    "error": "event_ended",
+                    "detail": "This event has ended. Guest access can no longer be created.",
+                },
+                status=status.HTTP_409_CONFLICT,
             )
 
         # 2. Extract and validate request data
@@ -644,6 +663,15 @@ class ResendGuestOTPView(APIView):
             return Response(
                 {"error": "Event not found."},
                 status=status.HTTP_404_NOT_FOUND
+            )
+
+        if is_event_effectively_ended(event):
+            return Response(
+                {
+                    "error": "event_ended",
+                    "detail": "This event has ended. Guest verification is closed.",
+                },
+                status=status.HTTP_409_CONFLICT,
             )
 
         # 2. Extract email

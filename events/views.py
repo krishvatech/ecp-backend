@@ -153,6 +153,7 @@ from .serializers import (
     EventAttendeeOriginSerializer,
 )
 from users.serializers import UserMiniSerializer
+from .lifecycle import is_event_effectively_ended, is_post_event_lounge_open, is_replay_ready_for_signup
 from .utils import (
     RTK_API_BASE,
     RTK_PRESET_HOST,
@@ -2190,13 +2191,18 @@ class EventViewSet(viewsets.ModelViewSet):
         else:
             # When include_ended=true, apply proper visibility rules with ended events included
             if not user.is_authenticated:
-                # Non-authenticated users: only published & live (NO ended events)
-                qs = qs.filter(status__in=["published", "live"])
+                # A direct detail request may resolve an ended event so retrieve()
+                # can require login (or allow a published replay landing page).
+                # List/discovery requests keep the existing public visibility.
+                allowed_statuses = ["published", "live", "ended"] if self.action == "retrieve" else ["published", "live"]
+                qs = qs.filter(status__in=allowed_statuses)
             elif is_guest_user:
-                # Guest tokens scoped to single event: only published & live
+                # Guest tokens remain scoped to their event. Resolve ended detail
+                # requests so retrieve() can redirect them to normal member login.
                 if guest_event_id is None:
                     return Event.objects.none()
-                qs = qs.filter(id=guest_event_id, status__in=["published", "live"])
+                allowed_statuses = ["published", "live", "ended"] if self.action == "retrieve" else ["published", "live"]
+                qs = qs.filter(id=guest_event_id, status__in=allowed_statuses)
             elif is_platform_admin:
                 # Platform admin: full visibility (no filter)
                 pass
@@ -2528,6 +2534,22 @@ class EventViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_410_GONE,
             )
+
+        # Past events without a published replay are member-only detail pages.
+        # Keep replay landing pages public so guests can still sign up for access.
+        if (
+            (not request.user.is_authenticated or getattr(request.user, "is_guest", False))
+            and is_event_effectively_ended(instance)
+            and not is_replay_ready_for_signup(instance)
+        ):
+            return Response(
+                {
+                    "detail": "Please log in to view this past event.",
+                    "code": "past_event_login_required",
+                },
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 
@@ -3583,11 +3605,16 @@ class EventViewSet(viewsets.ModelViewSet):
                     "code": "application_required"
                 }, status=400)
 
-        # Past events are registerable by any user who opens them directly.
-        # We intentionally do NOT block registration when replay is disabled/unavailable:
-        # users may register on a past event's landing page (e.g. to be notified when a
-        # replay is published, or simply to be recorded as an attendee). Replay playback
-        # access is enforced separately where the recording is served.
+        # Registration after the scheduled event is allowed only for a replay that
+        # is enabled, participant-visible, and has a playable recording.
+        if is_event_effectively_ended(event) and not is_replay_ready_for_signup(event):
+            return Response(
+                {
+                    "detail": "This event has ended and replay registration is not available.",
+                    "code": "event_ended_no_replay",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         # Check capactity limit
         if event.max_participants is not None:
@@ -3780,6 +3807,15 @@ class EventViewSet(viewsets.ModelViewSet):
                 return Response(
                     {'detail': 'You must be registered and logged in to apply for this event.'},
                     status=401
+                )
+
+            if is_event_effectively_ended(event):
+                return Response(
+                    {
+                        "detail": "This event has ended and applications are closed.",
+                        "code": "event_ended",
+                    },
+                    status=status.HTTP_409_CONFLICT,
                 )
 
             open_tracks = list(
@@ -6138,10 +6174,13 @@ class EventViewSet(viewsets.ModelViewSet):
                 )
 
             if action_type == "start":
-                if event.status == "ended":
+                if is_event_effectively_ended(event):
                     return Response(
-                        {"detail": "Meeting already ended. Cannot restart via live-status."},
-                        status=409,
+                        {
+                            "detail": "This event has ended and cannot be hosted again.",
+                            "error": "event_ended",
+                        },
+                        status=status.HTTP_409_CONFLICT,
                     )
 
                 # Event can go live with or without external streaming
@@ -9873,6 +9912,19 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_409_CONFLICT,
             )
 
+        # Do not create/reopen the main event room after the event has ended.
+        # The configured post-event Social Lounge remains available during its
+        # own bounded window and continues to use the existing meeting.
+        if is_event_effectively_ended(event) and not is_post_event_lounge_open(event):
+            return Response(
+                {
+                    "error": "event_ended",
+                    "detail": "This event has ended and can no longer be hosted or joined live.",
+                    "status": "ended",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         # Capacity protection before issuing main-room meeting token.
         # If autoscaling is enabled and we are below required capacity, return 202 so frontend can poll.
         is_host = False
@@ -12770,6 +12822,25 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Guests cannot create user registrations."}, status=403)
         event_id = request.data.get("event_id") or request.data.get("event")
 
+        # Keep this generic CRUD endpoint aligned with /events/{id}/register/.
+        # Otherwise a direct API call could bypass the past-event replay rule.
+        event = None
+        if event_id:
+            try:
+                event = Event.objects.filter(pk=event_id).first()
+            except (TypeError, ValueError):
+                # Let the serializer return its normal invalid-event validation.
+                event = None
+
+        if event and is_event_effectively_ended(event) and not is_replay_ready_for_signup(event):
+            return Response(
+                {
+                    "detail": "This event has ended and replay registration is not available.",
+                    "code": "event_ended_no_replay",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         if event_id and user.is_authenticated:
             try:
                 # Use filter().first() to avoid exceptions
@@ -13413,6 +13484,15 @@ class EventSessionViewSet(viewsets.ModelViewSet):
 
         if not _is_event_manager(request.user, event):
             raise PermissionDenied("Only event hosts can start sessions")
+
+        if is_event_effectively_ended(event):
+            return Response(
+                {
+                    "error": "event_ended",
+                    "detail": "The parent event has ended, so this session cannot be started.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         if session.is_live:
             return Response({'error': 'Session is already live'}, status=400)
