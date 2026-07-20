@@ -2,7 +2,7 @@
 Tests for invoicing API views
 """
 from django.test import TestCase, Client
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 from rest_framework import status
@@ -173,3 +173,107 @@ class InvoiceViewSetTests(APITestCase):
         # Now should be paid
         response = self.client.get(f'/api/invoices/{self.invoice1.id}/')
         self.assertEqual(response.data['state'], 'paid')
+
+
+
+class AdminLegalEntitySettingsViewTests(APITestCase):
+    """Tests for the Saleor Manager invoice-settings tab backend."""
+
+    url = '/api/invoicing/admin/legal-entity/'
+
+    def setUp(self):
+        self.client = APIClient()
+        self.legal_entity = LegalEntity.objects.create(
+            code='CH',
+            name='IMAA Switzerland GmbH',
+            legal_form='Swiss GmbH',
+            address='Zurich, CH',
+            country='CH',
+            vat_id='',
+            currency='USD',
+            vat_exempt=True,
+            bank_details={
+                'iban': 'OLD-IBAN',
+                'legacy_reference': 'preserve-me',
+            },
+            inv_counter_2026=42,
+        )
+        self.regular_user = User.objects.create_user(
+            username='regular-invoice-user',
+            email='regular-invoice-user@example.com',
+            password='testpass123',
+        )
+        self.platform_admin = User.objects.create_user(
+            username='invoice-platform-admin',
+            email='invoice-platform-admin@example.com',
+            password='testpass123',
+        )
+        platform_admin_group, _ = Group.objects.get_or_create(name='platform_admin')
+        self.platform_admin.groups.add(platform_admin_group)
+
+    def test_settings_require_authentication(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_regular_user_cannot_read_settings(self):
+        self.client.force_authenticate(user=self.regular_user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_platform_admin_can_read_settings(self):
+        self.client.force_authenticate(user=self.platform_admin)
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['code'], 'CH')
+        self.assertEqual(response.data['name'], 'IMAA Switzerland GmbH')
+        self.assertNotIn('inv_counter_2026', response.data)
+
+    def test_platform_admin_can_update_invoice_from_and_bank_details(self):
+        self.client.force_authenticate(user=self.platform_admin)
+        response = self.client.patch(
+            self.url,
+            {
+                'name': 'IMAA Switzerland AG',
+                'legal_form': 'Swiss AG',
+                'address': 'Example Street 10\n8000 Zurich\nSwitzerland',
+                'country': 'ch',
+                'vat_id': 'CHE-123.456.789',
+                'currency': 'usd',
+                'vat_exempt': False,
+                'bank_details': {
+                    'account_name': 'IMAA Switzerland AG',
+                    'bank_name': 'Example Bank',
+                    'iban': '  CH00 0000 0000 0000 0000 0  ',
+                    'swift': ' EXAMPLECH ',
+                    'account_number': '',
+                },
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.legal_entity.refresh_from_db()
+        self.assertEqual(self.legal_entity.name, 'IMAA Switzerland AG')
+        self.assertEqual(self.legal_entity.country, 'CH')
+        self.assertEqual(self.legal_entity.currency, 'USD')
+        self.assertEqual(self.legal_entity.inv_counter_2026, 42)
+        self.assertEqual(self.legal_entity.bank_details['iban'], 'CH00 0000 0000 0000 0000 0')
+        self.assertEqual(self.legal_entity.bank_details['swift'], 'EXAMPLECH')
+        self.assertEqual(self.legal_entity.bank_details['legacy_reference'], 'preserve-me')
+
+    def test_invalid_country_and_currency_are_rejected_without_partial_save(self):
+        self.client.force_authenticate(user=self.platform_admin)
+        response = self.client.patch(
+            self.url,
+            {
+                'name': 'Should Not Save',
+                'country': 'SWITZERLAND',
+                'currency': 'DOLLARS',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.legal_entity.refresh_from_db()
+        self.assertEqual(self.legal_entity.name, 'IMAA Switzerland GmbH')

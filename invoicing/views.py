@@ -1,4 +1,5 @@
 from rest_framework import viewsets, permissions, status
+from rest_framework.views import APIView
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from django.http import FileResponse
@@ -10,8 +11,44 @@ from django.utils.text import get_valid_filename
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny
 from invoicing.models import Invoice, Customer
-from invoicing.serializers import InvoiceSerializer, CustomerInvoiceListSerializer
-from invoicing.tasks import generate_invoice_pdf_task
+from invoicing.serializers import (
+    InvoiceSerializer,
+    CustomerInvoiceListSerializer,
+    AdminLegalEntitySettingsSerializer,
+)
+from invoicing.tasks import generate_invoice_pdf_task, _get_or_create_default_legal_entity
+from invoicing.permissions import IsPlatformAdmin
+
+
+class AdminLegalEntitySettingsView(APIView):
+    """Read and update the default legal entity used on invoice PDFs.
+
+    This endpoint intentionally updates only the existing ``LegalEntity`` row.
+    It does not touch Saleor, invoice totals, customer billing addresses, invoice
+    numbers, payment events, or already stored PDF files.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsPlatformAdmin]
+
+    def get_object(self):
+        return _get_or_create_default_legal_entity()
+
+    def get(self, request):
+        legal_entity = self.get_object()
+        serializer = AdminLegalEntitySettingsSerializer(legal_entity)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        legal_entity = self.get_object()
+        serializer = AdminLegalEntitySettingsSerializer(
+            legal_entity,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 
 def _user_can_access_invoice(user, invoice):
