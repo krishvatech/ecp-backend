@@ -750,13 +750,28 @@ class UserRosterSerializer(serializers.ModelSerializer):
         return full
 
     def _best_experience(self, obj):
-        # use prefetched related if present; fall back to query
-        qs = getattr(obj, "experiences", None)
-        if hasattr(qs, "all"):
-            qs = qs.all()
+        # The roster queryset provides an already ordered ``roster_experiences``
+        # list. Reuse one object for all four derived fields instead of running
+        # a separate query for company/title/industry/company size.
+        cached = getattr(obj, "_roster_best_experience", None)
+        if cached is not None:
+            return cached
+
+        prefetched = getattr(obj, "roster_experiences", None)
+        if prefetched is not None:
+            experience = prefetched[0] if prefetched else False
         else:
-            qs = Experience.objects.filter(user=obj)
-        return qs.order_by("-currently_work_here", "-end_date", "-start_date", "-id").first()
+            experience = (
+                Experience.objects
+                .filter(user=obj)
+                .order_by("-currently_work_here", "-end_date", "-start_date", "-id")
+                .first()
+            )
+            if experience is None:
+                experience = False
+
+        obj._roster_best_experience = experience
+        return experience or None
 
     def get_company_from_experience(self, obj):
         ex = self._best_experience(obj)

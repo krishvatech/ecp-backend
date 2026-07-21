@@ -195,7 +195,8 @@ class FriendshipViewSet(
         # Get all friendships for these users in one query
         friendships = Friendship.objects.filter(
             Q(user1_id=me.id, user2_id__in=other_user_ids) |
-            Q(user2_id=me.id, user1_id__in=other_user_ids)
+            Q(user2_id=me.id, user1_id__in=other_user_ids),
+            status=Friendship.STATUS_ACTIVE,
         ).values_list("user1_id", "user2_id")
 
         for user1_id, user2_id in friendships:

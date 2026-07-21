@@ -44,7 +44,8 @@ from django.utils.crypto import get_random_string
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import LinkedInAccount,EscoSkill
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q, F, Case, When, Value, IntegerField
+from django.db.models import Q, F, Case, When, Value, IntegerField, Prefetch, Exists, OuterRef
+from django.db.models.functions import Lower
 from activity_feed.models import FeedItem
 from friends.models import Friendship
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -54,7 +55,7 @@ from django.contrib.auth import get_user_model
 from .serializers import StaffUserSerializer, UserRosterSerializer
 from .serializers import PublicProfileSerializer
 from .serializers import PublicProfileSerializer
-from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileCertificationDocument, ProfileMembership, EmailChangeRequest, VerificationRequest, VerificationHistory, CognitoIdentity
+from .models import Education, Experience,UserProfile,NameChangeRequest, UserSkill, UserLanguage, IsoLanguage, LanguageCertificate, ProfileTraining, ProfileCertification, ProfileCertificationDocument, ProfileMembership, EmailChangeRequest, VerificationRequest, VerificationHistory, CognitoIdentity, GeoCity
 from .serializers import EducationSerializer, ExperienceSerializer,NameChangeRequestSerializer, AdminKYCSerializer, ProfileTrainingSerializer, ProfileCertificationSerializer, ProfileCertificationDocumentSerializer, ProfileMembershipSerializer, EmailChangeInitSerializer, EmailChangeConfirmSerializer, VerificationRequestSerializer, VerificationHistorySerializer, AdminUserProfileSerializer, UserProfileSerializer
 from .models import EducationDocument, TrainingDocument, MembershipDocument
 from .serializers import EducationDocumentSerializer, TrainingDocumentSerializer, MembershipDocumentSerializer
@@ -795,12 +796,40 @@ class UserViewSet(
             .filter(is_superuser=False)
             .exclude(profile__profile_status__in=BLOCKED_PROFILE_STATUSES)
             .select_related("profile")
-            .prefetch_related("experiences")
+            .prefetch_related(
+                Prefetch(
+                    "experiences",
+                    queryset=Experience.objects.order_by(
+                        "-currently_work_here",
+                        "-end_date",
+                        "-start_date",
+                        "-id",
+                    ),
+                    to_attr="roster_experiences",
+                )
+            )
         )
 
         # Only hide opted-out users if the request user is NOT staff/superuser
         if not (request.user.is_staff or request.user.is_superuser):
             qs = qs.exclude(profile__directory_hidden=True)
+
+        # Optional backend-side contacts filter used by the Explore Members
+        # "My Contacts" tab. The default roster behaviour remains unchanged.
+        contacts_only = str(request.query_params.get("contacts_only", "")).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if contacts_only:
+            qs = qs.filter(
+                Q(
+                    friends_as_user1__user2_id=request.user.id,
+                    friends_as_user1__status=Friendship.STATUS_ACTIVE,
+                )
+                | Q(
+                    friends_as_user2__user1_id=request.user.id,
+                    friends_as_user2__status=Friendship.STATUS_ACTIVE,
+                )
+            )
 
         # Server-side search: across all member fields
         search_query = (request.query_params.get("search") or "").strip()
@@ -853,14 +882,14 @@ class UserViewSet(
         if industry_filters:
             industry_q = Q()
             for industry in industry_filters:
-                industry_q |= (Q(profile__industry__iexact=industry) | Q(experiences__industry__iexact=industry))
+                industry_q |= Q(experiences__industry__iexact=industry)
             qs = qs.filter(industry_q)
 
         company_size_filters = [v.strip() for v in request.query_params.getlist("company_size") if v.strip()]
         if company_size_filters:
             size_q = Q()
             for size in company_size_filters:
-                size_q |= (Q(profile__number_of_employees__iexact=size) | Q(experiences__number_of_employees__iexact=size))
+                size_q |= Q(experiences__number_of_employees__iexact=size)
             qs = qs.filter(size_q)
 
         # Quality scoring: prioritize complete, verified, professional profiles
@@ -961,6 +990,21 @@ class UserViewSet(
         if not (request.user.is_staff or request.user.is_superuser):
             qs = qs.exclude(profile__directory_hidden=True)
 
+        contacts_only = str(request.query_params.get("contacts_only", "")).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if contacts_only:
+            qs = qs.filter(
+                Q(
+                    friends_as_user1__user2_id=request.user.id,
+                    friends_as_user1__status=Friendship.STATUS_ACTIVE,
+                )
+                | Q(
+                    friends_as_user2__user1_id=request.user.id,
+                    friends_as_user2__status=Friendship.STATUS_ACTIVE,
+                )
+            )
+
         # Server-side search: same as roster endpoint
         search_query = (request.query_params.get("search") or "").strip()
         if search_query:
@@ -1012,14 +1056,14 @@ class UserViewSet(
         if industry_filters:
             industry_q = Q()
             for industry in industry_filters:
-                industry_q |= (Q(profile__industry__iexact=industry) | Q(experiences__industry__iexact=industry))
+                industry_q |= Q(experiences__industry__iexact=industry)
             qs = qs.filter(industry_q)
 
         company_size_filters = [v.strip() for v in request.query_params.getlist("company_size") if v.strip()]
         if company_size_filters:
             size_q = Q()
             for size in company_size_filters:
-                size_q |= (Q(profile__number_of_employees__iexact=size) | Q(experiences__number_of_employees__iexact=size))
+                size_q |= Q(experiences__number_of_employees__iexact=size)
             qs = qs.filter(size_q)
 
         # Order by quality score (same as roster, but no pagination)
@@ -1081,6 +1125,233 @@ class UserViewSet(
         # Return all results without pagination
         data = UserRosterSerializer(qs, many=True, context={"request": request}).data
         return Response(data)
+
+    @action(
+        detail=False,
+        methods=["get"],
+        permission_classes=[IsAuthenticated],
+        url_path="roster-map-points",
+    )
+    def roster_map_points(self, request):
+        """
+        Return a compact, unpaginated member payload for Explore Members map.
+
+        This endpoint deliberately avoids UserRosterSerializer and experience
+        serialization. The existing ``roster-map`` endpoint remains unchanged
+        for backwards compatibility.
+        """
+        blocked_profile_statuses = ("suspended", "fake", "deceased", "deleted")
+
+        qs = (
+            UserModel.objects
+            .filter(is_superuser=False)
+            .exclude(profile__profile_status__in=blocked_profile_statuses)
+        )
+
+        if not (request.user.is_staff or request.user.is_superuser):
+            qs = qs.exclude(profile__directory_hidden=True)
+
+        contacts_only = str(request.query_params.get("contacts_only", "")).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if contacts_only:
+            qs = qs.filter(
+                Q(
+                    friends_as_user1__user2_id=request.user.id,
+                    friends_as_user1__status=Friendship.STATUS_ACTIVE,
+                )
+                | Q(
+                    friends_as_user2__user1_id=request.user.id,
+                    friends_as_user2__status=Friendship.STATUS_ACTIVE,
+                )
+            )
+
+        search_query = (request.query_params.get("search") or "").strip()
+        if search_query:
+            qs = qs.filter(
+                Q(first_name__icontains=search_query)
+                | Q(last_name__icontains=search_query)
+                | Q(email__icontains=search_query)
+                | Q(profile__full_name__icontains=search_query)
+                | Q(profile__company__icontains=search_query)
+                | Q(profile__location__icontains=search_query)
+                | Q(profile__job_title__icontains=search_query)
+                | Q(experiences__community_name__icontains=search_query)
+                | Q(experiences__position__icontains=search_query)
+            )
+
+        company_filters = [v.strip() for v in request.query_params.getlist("company") if v.strip()]
+        if company_filters:
+            company_q = Q()
+            for company in company_filters:
+                company_q |= (
+                    Q(profile__company__iexact=company)
+                    | Q(experiences__community_name__iexact=company)
+                )
+            qs = qs.filter(company_q)
+
+        country_filters = [v.strip() for v in request.query_params.getlist("country") if v.strip()]
+        if country_filters:
+            country_q = Q()
+            for country in country_filters:
+                country_q |= (
+                    Q(profile__location__icontains=country)
+                    | Q(experiences__location__icontains=country)
+                )
+            qs = qs.filter(country_q)
+
+        job_title_filters = [v.strip() for v in request.query_params.getlist("job_title") if v.strip()]
+        if job_title_filters:
+            title_q = Q()
+            for title in job_title_filters:
+                title_q |= (
+                    Q(profile__job_title__iexact=title)
+                    | Q(experiences__position__iexact=title)
+                )
+            qs = qs.filter(title_q)
+
+        industry_filters = [v.strip() for v in request.query_params.getlist("industry") if v.strip()]
+        if industry_filters:
+            industry_q = Q()
+            for industry in industry_filters:
+                industry_q |= Q(experiences__industry__iexact=industry)
+            qs = qs.filter(industry_q)
+
+        company_size_filters = [
+            v.strip() for v in request.query_params.getlist("company_size") if v.strip()
+        ]
+        if company_size_filters:
+            size_q = Q()
+            for company_size in company_size_filters:
+                size_q |= Q(experiences__number_of_employees__iexact=company_size)
+            qs = qs.filter(size_q)
+
+        active_friendship = Friendship.objects.filter(
+            status=Friendship.STATUS_ACTIVE,
+        ).filter(
+            Q(user1_id=request.user.id, user2_id=OuterRef("pk"))
+            | Q(user2_id=request.user.id, user1_id=OuterRef("pk"))
+        )
+
+        rows = list(
+            qs.annotate(is_contact=Exists(active_friendship))
+            .order_by("first_name", "last_name", "id")
+            .values(
+                "id",
+                "username",
+                "first_name",
+                "last_name",
+                "profile__full_name",
+                "profile__location",
+                "profile__location_city",
+                "profile__location_country",
+                "profile__location_country_code",
+                "profile__location_lat",
+                "profile__location_lng",
+                "profile__kyc_status",
+                "profile__directory_hidden",
+                "is_contact",
+            )
+            .distinct()
+        )
+
+        # Resolve missing city coordinates in one database query. Nothing is
+        # written to profiles; this is only a response-time fallback.
+        missing_city_names = set()
+        for row in rows:
+            if row["profile__location_lat"] is not None and row["profile__location_lng"] is not None:
+                continue
+            city = (row["profile__location_city"] or "").strip()
+            if not city:
+                city = ((row["profile__location"] or "").split(",", 1)[0]).strip()
+            if city:
+                missing_city_names.add(city.lower())
+
+        city_by_country = {}
+        city_any_country = {}
+        if missing_city_names:
+            geo_rows = (
+                GeoCity.objects
+                .annotate(
+                    normalized_name=Lower("name"),
+                    normalized_ascii_name=Lower("ascii_name"),
+                )
+                .filter(
+                    Q(normalized_name__in=missing_city_names)
+                    | Q(normalized_ascii_name__in=missing_city_names)
+                )
+                .exclude(latitude__isnull=True)
+                .exclude(longitude__isnull=True)
+                .order_by("-population", "geoname_id")
+                .values(
+                    "name",
+                    "ascii_name",
+                    "country_code",
+                    "latitude",
+                    "longitude",
+                )
+            )
+
+            for geo in geo_rows:
+                coordinates = (geo["latitude"], geo["longitude"])
+                country_code = (geo["country_code"] or "").upper()
+                names = {
+                    (geo["name"] or "").strip().lower(),
+                    (geo["ascii_name"] or "").strip().lower(),
+                }
+                for normalized_name in names:
+                    if not normalized_name:
+                        continue
+                    city_by_country.setdefault(
+                        (normalized_name, country_code),
+                        coordinates,
+                    )
+                    city_any_country.setdefault(normalized_name, coordinates)
+
+        payload = []
+        for row in rows:
+            latitude = row["profile__location_lat"]
+            longitude = row["profile__location_lng"]
+            city = (row["profile__location_city"] or "").strip()
+            if not city:
+                city = ((row["profile__location"] or "").split(",", 1)[0]).strip()
+            country_code = (row["profile__location_country_code"] or "").upper()
+
+            if (latitude is None or longitude is None) and city:
+                coordinates = city_by_country.get((city.lower(), country_code))
+
+                # A city-name-only fallback is safe only when the member has
+                # no country code. If a country code is present but no matching
+                # city exists in that country, leave the coordinates unresolved
+                # instead of placing the member in a different country that has
+                # a city with the same name.
+                if coordinates is None and not country_code:
+                    coordinates = city_any_country.get(city.lower())
+
+                if coordinates is not None:
+                    latitude, longitude = coordinates
+
+            payload.append({
+                "id": row["id"],
+                "username": row["username"],
+                "first_name": row["first_name"],
+                "last_name": row["last_name"],
+                "is_superuser": False,
+                "is_contact": bool(row["is_contact"]),
+                "profile": {
+                    "full_name": row["profile__full_name"],
+                    "location": row["profile__location"],
+                    "location_city": city,
+                    "location_country": row["profile__location_country"],
+                    "location_country_code": country_code,
+                    "location_lat": latitude,
+                    "location_lng": longitude,
+                    "kyc_status": row["profile__kyc_status"],
+                    "directory_hidden": bool(row["profile__directory_hidden"]),
+                },
+            })
+
+        return Response(payload)
 
     @action(detail=False, methods=["post"], url_path="me/name-change-request")
     def create_name_change_request(self, request):
