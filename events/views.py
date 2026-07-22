@@ -9723,16 +9723,36 @@ class EventViewSet(viewsets.ModelViewSet):
         view_mode = (request.query_params.get("view") or "").strip().lower()
 
         is_platform_admin = bool(getattr(user, "is_superuser", False))
+        is_staff = bool(getattr(user, "is_staff", False))
 
         visibility_q = Q(created_by=user)
         if is_platform_admin:
             visibility_q |= Q(status="draft")
 
+        # Pre-query hosted event IDs to avoid slow JOINs in the main query
+        hosted_event_ids = []
+        if user.is_authenticated:
+            from events.models import EventParticipant
+            host_p_qs = EventParticipant.objects.filter(role="host")
+            if user_email:
+                host_p_qs = host_p_qs.filter(Q(user=user) | Q(guest_email__iexact=user_email))
+            else:
+                host_p_qs = host_p_qs.filter(user=user)
+            hosted_event_ids = list(host_p_qs.values_list("event_id", flat=True))
+
+        reg_q = Q(registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'], status__in=['published', 'live', 'ended', 'cancelled'])
+        if not (is_platform_admin or is_staff):
+            reg_q &= (
+                Q(registrations__attendee_status='confirmed') |
+                Q(created_by=user) |
+                Q(id__in=hosted_event_ids)
+            )
+
         qs = (
             Event.objects
             .filter(
                 visibility_q |
-                Q(registrations__user=user, registrations__status__in=['registered', 'cancellation_requested'], status__in=['published', 'live', 'ended', 'cancelled']) |
+                reg_q |
                 Q(guest_attendees__converted_user=user, status__in=['published', 'live', 'ended', 'cancelled'])
             )
             .distinct()
@@ -9769,7 +9789,7 @@ class EventViewSet(viewsets.ModelViewSet):
         if view_mode == "card":
             my_reg_prefetch = Prefetch(
                 "registrations",
-                EventRegistration.objects.filter(user=user, status__in=['registered', 'cancellation_requested'])
+                EventRegistration.objects.filter(user=user, status__in=['registered', 'cancellation_requested'], attendee_status="confirmed")
             )
             qs = qs.prefetch_related(my_reg_prefetch, "sessions")
 
