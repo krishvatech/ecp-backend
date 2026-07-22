@@ -16,13 +16,14 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.filters import SearchFilter, OrderingFilter
-from django_filters.rest_framework import DjangoFilterBackend, FilterSet, CharFilter
+from django_filters.rest_framework import DjangoFilterBackend, FilterSet, CharFilter, BooleanFilter
 from .models import Resource
 from django.utils import timezone
 from .tasks import publish_resource_task
 from .serializers import ResourceSerializer
 from events.models import EventRegistration 
 from users.cognito_auth import is_platform_admin
+from .pagination import ResourcePagination
 
 class IsPlatformAdminOrReadOnly(permissions.BasePermission):
     """
@@ -43,6 +44,7 @@ class IsPlatformAdminOrReadOnly(permissions.BasePermission):
 class ResourceFilter(FilterSet):
     """Filter set for Resource queries."""
     tag = CharFilter(method="filter_tag")
+    event_isnull = BooleanFilter(field_name='event', lookup_expr='isnull')
 
     class Meta:
         model = Resource
@@ -193,6 +195,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
     """
     serializer_class = ResourceSerializer
     permission_classes = [permissions.IsAuthenticated, IsPlatformAdminOrReadOnly]
+    pagination_class = ResourcePagination
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = ResourceFilter
     search_fields = ['title', 'description', 'tags']
