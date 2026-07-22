@@ -778,3 +778,457 @@ class ResourcePermissionsRegressionTests(APITestCase):
         # Saved community MUST equal event.community (i.e. self.community)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["community_id"], self.community.id)
+
+
+class StaffResourceReadAccessTests(APITestCase):
+    def setUp(self):
+        from django.contrib.auth.models import Group
+        
+        # 1. Platform Admin
+        self.platform_admin = User.objects.create_user(
+            username="platform-admin-test",
+            email="platform-admin-test@example.com",
+            password="test-pass-123",
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.platform_admin_group, _ = Group.objects.get_or_create(name='platform_admin')
+        self.platform_admin.groups.add(self.platform_admin_group)
+        
+        # 2. Staff user (non platform-admin)
+        self.staff_user = User.objects.create_user(
+            username="staff-user-test",
+            email="staff-user-test@example.com",
+            password="test-pass-123",
+            is_staff=True,
+        )
+
+        # 3. Community Owner
+        self.community_owner = User.objects.create_user(
+            username="comm-owner-test",
+            email="comm-owner-test@example.com",
+            password="test-pass-123",
+            is_staff=True,
+        )
+        
+        # 4. Normal User
+        self.normal_user = User.objects.create_user(
+            username="normal-user-test",
+            email="normal-user-test@example.com",
+            password="test-pass-123",
+        )
+
+        # Community & Event setup
+        self.community = Community.objects.create(
+            name="Test Community",
+            owner=self.community_owner,
+        )
+        self.staff_user.community.add(self.community)
+        self.normal_user.community.add(self.community)
+        self.platform_admin.community.add(self.community)
+        
+        self.free_event = Event.objects.create(
+            community=self.community,
+            title="Free Event",
+            is_free=True,
+            created_by=self.community_owner
+        )
+        self.paid_event = Event.objects.create(
+            community=self.community,
+            title="Paid Event",
+            is_free=False,
+            created_by=self.community_owner
+        )
+
+        self.free_resource = Resource.all_objects.create(
+            community=self.community,
+            event=self.free_event,
+            title="Free Resource",
+            type=Resource.TYPE_FILE,
+            file="event_resources/Free_Event/test.pdf",
+            is_published=True,
+            uploaded_by=self.community_owner
+        )
+
+        self.paid_resource = Resource.all_objects.create(
+            community=self.community,
+            event=self.paid_event,
+            title="Paid Resource",
+            type=Resource.TYPE_FILE,
+            file="event_resources/Paid_Event/test.pdf",
+            is_published=True,
+            uploaded_by=self.community_owner
+        )
+
+    @patch('requests.get')
+    def test_staff_no_registration(self, mock_get):
+        self.client.force_authenticate(self.staff_user)
+
+        # 1. List excludes resource
+        response = self.client.get("/api/content/resources/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [r["id"] for r in response.data.get("results", response.data)]
+        self.assertNotIn(self.free_resource.id, ids)
+
+        # 2. Detail returns 404
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 3. Download returns 404
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/download/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 4. Event API retrieve does not include resource
+        response = self.client.get(f"/api/events/{self.free_event.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        resources = response.data.get("resources", [])
+        resource_ids = [r["id"] for r in resources]
+        self.assertNotIn(self.free_resource.id, resource_ids)
+
+    @patch('requests.get')
+    def test_staff_free_event_confirmed_registration(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b"fake file data"
+        mock_response.headers = {'content-type': 'application/pdf'}
+        mock_get.return_value = mock_response
+
+        # Register staff user (active, confirmed, not banned)
+        EventRegistration.objects.create(
+            user=self.staff_user,
+            event=self.free_event,
+            status="registered",
+            attendee_status="confirmed",
+            is_banned=False
+        )
+
+        self.client.force_authenticate(self.staff_user)
+
+        # 1. List contains resource
+        response = self.client.get("/api/content/resources/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [r["id"] for r in response.data.get("results", response.data)]
+        self.assertIn(self.free_resource.id, ids)
+
+        # 2. Detail succeeds
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # 3. Download succeeds
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/download/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # 4. Event serializer includes resource
+        response = self.client.get(f"/api/events/{self.free_event.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        resources = response.data.get("resources", [])
+        resource_ids = [r["id"] for r in resources]
+        self.assertIn(self.free_resource.id, resource_ids)
+
+    def test_staff_free_event_cancelled_registration(self):
+        # Register staff user as cancelled
+        EventRegistration.objects.create(
+            user=self.staff_user,
+            event=self.free_event,
+            status="cancelled",
+            attendee_status="confirmed",
+            is_banned=False
+        )
+
+        self.client.force_authenticate(self.staff_user)
+
+        # 1. List excludes resource
+        response = self.client.get("/api/content/resources/")
+        ids = [r["id"] for r in response.data.get("results", response.data)]
+        self.assertNotIn(self.free_resource.id, ids)
+
+        # 2. Detail returns 404
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 3. Download returns 404
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/download/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 4. Event serializer excludes resource
+        response = self.client.get(f"/api/events/{self.free_event.id}/")
+        resources = response.data.get("resources", [])
+        resource_ids = [r["id"] for r in resources]
+        self.assertNotIn(self.free_resource.id, resource_ids)
+
+    def test_staff_paid_event_pending_payment(self):
+        # Registration status registered, attendee status payment_pending
+        EventRegistration.objects.create(
+            user=self.staff_user,
+            event=self.paid_event,
+            status="registered",
+            attendee_status="payment_pending",
+            is_banned=False
+        )
+        # Order pending, paid_at = null
+        order = Order.objects.create(
+            user=self.staff_user,
+            status="pending",
+            paid_at=None
+        )
+        OrderItem.objects.create(
+            order=order,
+            event=self.paid_event,
+            unit_price=10.0,
+            line_total=10.0
+        )
+
+        self.client.force_authenticate(self.staff_user)
+
+        # 1. List excludes
+        response = self.client.get("/api/content/resources/")
+        ids = [r["id"] for r in response.data.get("results", response.data)]
+        self.assertNotIn(self.paid_resource.id, ids)
+
+        # 2. Detail returns 404
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 3. Download returns 404
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/download/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 4. Event serializer excludes
+        response = self.client.get(f"/api/events/{self.paid_event.id}/")
+        resources = response.data.get("resources", [])
+        resource_ids = [r["id"] for r in resources]
+        self.assertNotIn(self.paid_resource.id, resource_ids)
+
+    def test_staff_paid_order_unconfirmed_attendee(self):
+        EventRegistration.objects.create(
+            user=self.staff_user,
+            event=self.paid_event,
+            status="registered",
+            attendee_status="payment_pending",
+            is_banned=False
+        )
+        order = Order.objects.create(
+            user=self.staff_user,
+            status="paid",
+            paid_at=timezone.now()
+        )
+        OrderItem.objects.create(
+            order=order,
+            event=self.paid_event,
+            unit_price=10.0,
+            line_total=10.0
+        )
+
+        self.client.force_authenticate(self.staff_user)
+
+        # 1. List excludes
+        response = self.client.get("/api/content/resources/")
+        ids = [r["id"] for r in response.data.get("results", response.data)]
+        self.assertNotIn(self.paid_resource.id, ids)
+
+        # 2. Detail returns 404
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 3. Download returns 404
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/download/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    @patch('requests.get')
+    def test_staff_confirmed_paid_registration(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b"fake file data"
+        mock_response.headers = {'content-type': 'application/pdf'}
+        mock_get.return_value = mock_response
+
+        EventRegistration.objects.create(
+            user=self.staff_user,
+            event=self.paid_event,
+            status="registered",
+            attendee_status="confirmed",
+            is_banned=False
+        )
+        order = Order.objects.create(
+            user=self.staff_user,
+            status="paid",
+            paid_at=timezone.now()
+        )
+        OrderItem.objects.create(
+            order=order,
+            event=self.paid_event,
+            unit_price=10.0,
+            line_total=10.0
+        )
+
+        self.client.force_authenticate(self.staff_user)
+
+        # 1. List contains resource
+        response = self.client.get("/api/content/resources/")
+        ids = [r["id"] for r in response.data.get("results", response.data)]
+        self.assertIn(self.paid_resource.id, ids)
+
+        # 2. Detail succeeds
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # 3. Download succeeds
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/download/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # 4. Event serializer includes resource
+        response = self.client.get(f"/api/events/{self.paid_event.id}/")
+        resources = response.data.get("resources", [])
+        resource_ids = [r["id"] for r in resources]
+        self.assertIn(self.paid_resource.id, resource_ids)
+
+    def test_staff_cancelled_registration_old_paid_order(self):
+        EventRegistration.objects.create(
+            user=self.staff_user,
+            event=self.paid_event,
+            status="cancelled",
+            attendee_status="confirmed",
+            is_banned=False
+        )
+        order = Order.objects.create(
+            user=self.staff_user,
+            status="paid",
+            paid_at=timezone.now()
+        )
+        OrderItem.objects.create(
+            order=order,
+            event=self.paid_event,
+            unit_price=10.0,
+            line_total=10.0
+        )
+
+        self.client.force_authenticate(self.staff_user)
+
+        # Access denied
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    @patch('requests.get')
+    def test_platform_admin_no_registration(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b"fake file data"
+        mock_response.headers = {'content-type': 'application/pdf'}
+        mock_get.return_value = mock_response
+
+        self.client.force_authenticate(self.platform_admin)
+
+        # 1. List allowed
+        response = self.client.get("/api/content/resources/")
+        ids = [r["id"] for r in response.data.get("results", response.data)]
+        self.assertIn(self.paid_resource.id, ids)
+
+        # 2. Detail allowed
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # 3. Download allowed
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/download/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    @patch('requests.get')
+    def test_normal_user_regression(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b"fake file data"
+        mock_response.headers = {'content-type': 'application/pdf'}
+        mock_get.return_value = mock_response
+
+        # 1. free confirmed -> allowed
+        EventRegistration.objects.create(
+            user=self.normal_user,
+            event=self.free_event,
+            status="registered",
+            attendee_status="confirmed",
+            is_banned=False
+        )
+        self.client.force_authenticate(self.normal_user)
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # 2. paid pending -> denied
+        EventRegistration.objects.create(
+            user=self.normal_user,
+            event=self.paid_event,
+            status="registered",
+            attendee_status="payment_pending",
+            is_banned=False
+        )
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 3. paid confirmed -> allowed
+        reg = EventRegistration.objects.get(user=self.normal_user, event=self.paid_event)
+        reg.attendee_status = "confirmed"
+        reg.save()
+        order = Order.objects.create(
+            user=self.normal_user,
+            status="paid",
+            paid_at=timezone.now()
+        )
+        OrderItem.objects.create(
+            order=order,
+            event=self.paid_event,
+            unit_price=10.0,
+            line_total=10.0
+        )
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # 4. cancelled -> denied
+        reg.status = "cancelled"
+        reg.save()
+        response = self.client.get(f"/api/content/resources/{self.paid_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_soft_deleted_and_unpublished_resources(self):
+        # 1. Soft-deleted resource remains inaccessible
+        self.free_resource.is_deleted = True
+        self.free_resource.deleted_at = timezone.now()
+        self.free_resource.save()
+
+        # Try staff with confirmed registration
+        EventRegistration.objects.create(
+            user=self.staff_user,
+            event=self.free_event,
+            status="registered",
+            attendee_status="confirmed",
+            is_banned=False
+        )
+        self.client.force_authenticate(self.staff_user)
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # Try platform admin
+        self.client.force_authenticate(self.platform_admin)
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # Restore
+        self.free_resource.is_deleted = False
+        self.free_resource.deleted_at = None
+        self.free_resource.save()
+
+        # 2. Unpublished resource remains hidden from normal eligible users and staff, but admin can see it (since they see all)
+        self.free_resource.is_published = False
+        self.free_resource.save()
+
+        # Staff with registration
+        self.client.force_authenticate(self.staff_user)
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # Normal user with registration
+        self.client.force_authenticate(self.normal_user)
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        # Platform admin can access
+        self.client.force_authenticate(self.platform_admin)
+        response = self.client.get(f"/api/content/resources/{self.free_resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)

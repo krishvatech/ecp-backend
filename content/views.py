@@ -101,11 +101,11 @@ def _accessible_event_ids(user):
     return _free_accessible_event_ids(user).union(_paid_accessible_event_ids(user))
 
 
-def has_resource_access(user, resource):
+def has_resource_access(user, resource, request=None):
     """
     Determine if a user has access to a specific resource.
     Follows all rules for:
-    - superuser/staff bypass
+    - superuser/staff bypass (platform_admin only)
     - community resource membership check
     - free event access
     - paid event access
@@ -121,7 +121,21 @@ def has_resource_access(user, resource):
     if not user or not user.is_authenticated:
         return False
 
-    if user.is_superuser or user.is_staff:
+    # Authoritative platform_admin check
+    is_admin = False
+    if request is not None:
+        is_admin = is_platform_admin(request)
+    else:
+        # Fallback when request is not provided (e.g. from tests or internal calls)
+        try:
+            if user.groups.filter(name="platform_admin").exists():
+                is_admin = True
+        except Exception:
+            pass
+        if not is_admin:
+            is_admin = bool(user.is_staff and user.is_superuser)
+
+    if is_admin:
         return True
 
     if resource.uploaded_by_id == user.id or resource.community.owner_id == user.id:
@@ -276,7 +290,7 @@ def download_resource(request, pk):
         resource = Resource.objects.select_related("event", "community").get(
             pk=pk,
         )
-        if not has_resource_access(request.user, resource):
+        if not has_resource_access(request.user, resource, request=request):
             raise Resource.DoesNotExist
         
         # Only files can be downloaded this way

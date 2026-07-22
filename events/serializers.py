@@ -2504,7 +2504,7 @@ class EventSerializer(serializers.ModelSerializer):
 
         allowed_resources = []
         for r in qs.all().order_by("-created_at"):
-            if user and has_resource_access(user, r):
+            if user and has_resource_access(user, r, request=request):
                 allowed_resources.append({
                     "id": r.id,
                     "type": r.type,
