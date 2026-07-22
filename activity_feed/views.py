@@ -333,6 +333,9 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         Resources visible in live feed.
         Search supports resource title, description, tags, event title, community name, and uploader.
         """
+        from users.cognito_auth import is_platform_admin
+        from content.views import _accessible_event_ids
+
         me = request.user
         if not me.is_authenticated:
             return Resource.objects.none()
@@ -340,16 +343,27 @@ class FeedItemViewSet(ReadOnlyModelViewSet):
         qs = (
             Resource.objects
             .select_related("uploaded_by", "community", "event")
-            .filter(is_published=True, event_id__isnull=False)
+            .filter(event_id__isnull=False)
+            .filter(~Q(event__status="archived"))
         )
 
-        # Admin/staff can see all published resources.
-        # Normal users see only resources for registered events.
-        if not (me.is_staff or me.is_superuser):
-            reg_event_ids = self._registered_event_ids(me.id)
-            if not reg_event_ids:
-                return Resource.objects.none()
-            qs = qs.filter(event_id__in=reg_event_ids)
+        if is_platform_admin(request):
+            # Platform admin bypass: can see all resources (including drafts) for non-archived events.
+            pass
+        else:
+            accessible_eids = _accessible_event_ids(me)
+
+            qs = qs.filter(
+                Q(uploaded_by=me) |
+                Q(community__owner=me) |
+                (
+                    Q(is_published=True) & Q(event_id__in=accessible_eids)
+                )
+            )
+
+            # Exclude resources from suspended/fake/deceased users
+            BLOCKED = ("suspended", "fake", "deceased")
+            qs = qs.exclude(uploaded_by__profile__profile_status__in=BLOCKED)
 
         cid = request.query_params.get("community_id")
         if cid:
