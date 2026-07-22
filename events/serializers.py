@@ -2496,20 +2496,26 @@ class EventSerializer(serializers.ModelSerializer):
         qs = getattr(obj, "resources", None)
         if not qs:
             return []
-        # Minimal shape to avoid circular import of content.serializers
-        return [
-            {
-                "id": r.id,
-                "type": r.type,
-                "title": r.title,
-                "file": getattr(r.file, "url", None) if getattr(r, "file", None) else None,
-                "link_url": r.link_url or None,
-                "video_url": r.video_url or None,
-                "is_published": r.is_published,
-                "created_at": getattr(r, "created_at", None),
-            }
-            for r in qs.all().order_by("-created_at")
-        ]
+        
+        request = self.context.get("request")
+        user = request.user if request else None
+        
+        from content.views import has_resource_access
+
+        allowed_resources = []
+        for r in qs.all().order_by("-created_at"):
+            if user and has_resource_access(user, r):
+                allowed_resources.append({
+                    "id": r.id,
+                    "type": r.type,
+                    "title": r.title,
+                    "file": getattr(r.file, "url", None) if getattr(r, "file", None) else None,
+                    "link_url": r.link_url or None,
+                    "video_url": r.video_url or None,
+                    "is_published": r.is_published,
+                    "created_at": getattr(r, "created_at", None),
+                })
+        return allowed_resources
 
     def get_event_participants(self, obj):
         """Return all participants grouped by role, sorted by display_order within each role."""

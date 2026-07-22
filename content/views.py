@@ -35,6 +35,123 @@ class ResourceFilter(FilterSet):
         if value:
             return queryset.filter(tags__contains=[value])
         return queryset
+def _free_accessible_event_ids(user):
+    if not user or not user.is_authenticated:
+        return set()
+    return set(
+        EventRegistration.objects.filter(
+            user=user,
+            status="registered",
+            attendee_status="confirmed",
+            is_banned=False,
+        )
+        .filter(
+            Q(event__is_free=True) | Q(event__price=0)
+        )
+        .values_list("event_id", flat=True)
+    )
+
+
+def _paid_accessible_event_ids(user):
+    if not user or not user.is_authenticated:
+        return set()
+
+    from orders.models import Order
+    paid_order_event_ids = Order.objects.filter(
+        user=user,
+        status="paid",
+        paid_at__isnull=False
+    ).values_list("items__event_id", flat=True)
+
+    return set(
+        EventRegistration.objects.filter(
+            user=user,
+            status="registered",
+            attendee_status="confirmed",
+            is_banned=False,
+            event_id__in=paid_order_event_ids
+        )
+        .exclude(
+            Q(event__is_free=True) | Q(event__price=0)
+        )
+        .values_list("event_id", flat=True)
+    )
+
+
+def _accessible_event_ids(user):
+    if not user or not user.is_authenticated:
+        return set()
+    return _free_accessible_event_ids(user).union(_paid_accessible_event_ids(user))
+
+
+def has_resource_access(user, resource):
+    """
+    Determine if a user has access to a specific resource.
+    Follows all rules for:
+    - superuser/staff bypass
+    - community resource membership check
+    - free event access
+    - paid event access
+    - soft-deleted/unpublished/archived status
+    - uploader or community owner bypass
+    """
+    if resource.is_deleted:
+        return False
+
+    if resource.event_id and resource.event.status == "archived":
+        return False
+
+    if not user or not user.is_authenticated:
+        return False
+
+    if user.is_superuser or user.is_staff:
+        return True
+
+    if resource.uploaded_by_id == user.id or resource.community.owner_id == user.id:
+        return True
+
+    if not resource.is_published:
+        return False
+
+    if resource.uploaded_by_id:
+        try:
+            profile_status = getattr(resource.uploaded_by.profile, "profile_status", None)
+            if profile_status in ("suspended", "fake", "deceased"):
+                return False
+        except Exception:
+            pass
+
+    if resource.event_id is None:
+        # Community-level resource: check if user belongs to the community
+        org_ids = set(user.community.values_list("id", flat=True))
+        org_ids.update(user.owned_community.values_list("id", flat=True))
+        return resource.community_id in org_ids
+    else:
+        # Event-level resource: check if user has access to this event
+        event = resource.event
+        is_free = getattr(event, "is_free", False) or getattr(event, "price", None) == 0
+
+        try:
+            registration = EventRegistration.objects.get(
+                user=user,
+                event_id=resource.event_id,
+                status="registered",
+                attendee_status="confirmed",
+                is_banned=False
+            )
+        except EventRegistration.DoesNotExist:
+            return False
+
+        if is_free:
+            return True
+        else:
+            from orders.models import Order
+            return Order.objects.filter(
+                user=user,
+                status="paid",
+                paid_at__isnull=False,
+                items__event_id=resource.event_id
+            ).exists()
 
 
 class ResourceViewSet(viewsets.ModelViewSet):
@@ -50,71 +167,39 @@ class ResourceViewSet(viewsets.ModelViewSet):
     search_fields = ['title', 'description', 'tags']
     ordering_fields = ['created_at', 'title']
     ordering = ['-created_at']
-    # content/views.py (inside ResourceViewSet)
-    def _paid_event_ids(self, user):
-        """
-        Return event IDs the user has purchased.
-        UNCOMMENT the block that matches your schema and delete the others.
-        """
-
-        # A) If you have Ticket/Order with status
-        # from events.models import Ticket
-        # return set(
-        #     Ticket.objects.filter(user_id=user.id, status__in=["paid", "completed"])
-        #           .values_list("event_id", flat=True)
-        # )
-
-        # B) If you have EventRegistration with is_paid flag
-        # from events.models import EventRegistration
-        # return set(
-        #     EventRegistration.objects.filter(user_id=user.id, is_paid=True)
-        #         .values_list("event_id", flat=True)
-        # )
-
-        # C) If you keep purchases in Orders/OrderItems
-        # from orders.models import OrderItem
-        # return set(
-        #     OrderItem.objects.filter(order__user_id=user.id, order__status="paid", event__isnull=False)
-        #         .values_list("event_id", flat=True)
-        # )
-
-        return set(
-            EventRegistration.objects
-            .filter(user_id=user.id)          # optionally add filters like is_paid=True or status__in=[...]
-            .values_list("event_id", flat=True)
-        )
 
     def get_queryset(self):
         user = self.request.user
         qs = (
             Resource.objects
             .select_related("community", "event", "uploaded_by")
-            # Internally, archived is the event soft-delete state. Resources for a
-            # deleted event remain stored but are not exposed on the platform.
             .filter(Q(event__isnull=True) | ~Q(event__status="archived"))
         )
 
-        # Superusers can see all resources
-        if user.is_superuser:
+        # Superusers and staff can see all resources
+        if user.is_superuser or user.is_staff:
             return qs.order_by("-created_at")
 
-        # Staff can see all resources
-        if user.is_staff:
-            return qs.order_by("-created_at")
+        # Get accessible event IDs using helper logic
+        accessible_eids = _accessible_event_ids(user)
 
-        # Community membership
+        # Community membership org IDs
         org_ids = list(user.community.values_list("id", flat=True))
         org_ids += list(getattr(user, "owned_community", []).values_list("id", flat=True))
 
-        # Paid event access
-        paid_eids = self._paid_event_ids(user)
-
         # Show:
-        #  - community-level resources (no event) for communities the user belongs to
-        #  - event-level resources for events the user purchased
-        qs = qs.filter(is_published=True).filter(
-            Q(event__isnull=True, community_id__in=org_ids) |
-            Q(event_id__in=paid_eids)
+        #  - resources uploaded by the user or owned by the community owner
+        #  - published community-level resources for communities the user belongs to
+        #  - published event-level resources for events the user has access to
+        qs = qs.filter(
+            Q(uploaded_by=user) |
+            Q(community__owner=user) |
+            (
+                Q(is_published=True) & (
+                    Q(event__isnull=True, community_id__in=org_ids) |
+                    Q(event_id__in=accessible_eids)
+                )
+            )
         )
 
         # Exclude resources from suspended/fake/deceased users
@@ -122,6 +207,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
         qs = qs.exclude(uploaded_by__profile__profile_status__in=BLOCKED)
 
         return qs.order_by("-created_at")
+
 
 
     def perform_create(self, serializer):
@@ -208,11 +294,10 @@ def download_resource(request, pk):
     """
     try:
         # Get the resource
-        resource = Resource.objects.select_related("event").get(
+        resource = Resource.objects.select_related("event", "community").get(
             pk=pk,
-            is_published=True,
         )
-        if resource.event_id and resource.event.status == "archived":
+        if not has_resource_access(request.user, resource):
             raise Resource.DoesNotExist
         
         # Only files can be downloaded this way
