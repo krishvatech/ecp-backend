@@ -199,8 +199,8 @@ class ResourceViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = ResourceFilter
     search_fields = ['title', 'description', 'tags']
-    ordering_fields = ['created_at', 'title']
-    ordering = ['-created_at']
+    ordering_fields = ['created_at', 'title', 'id']
+    ordering = ['-created_at', '-id']
 
     def get_queryset(self):
         user = self.request.user
@@ -212,7 +212,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
 
         # Only platform admins can see all resources (including drafts, unscoped, etc.)
         if is_platform_admin(self.request):
-            return qs.order_by("-created_at")
+            return qs.order_by("-created_at", "-id")
 
         # Get accessible event IDs using helper logic
         accessible_eids = _accessible_event_ids(user)
@@ -240,7 +240,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
         BLOCKED = ("suspended", "fake", "deceased")
         qs = qs.exclude(uploaded_by__profile__profile_status__in=BLOCKED)
 
-        return qs.order_by("-created_at")
+        return qs.order_by("-created_at", "-id")
 
     def perform_create(self, serializer):
         user = self.request.user
