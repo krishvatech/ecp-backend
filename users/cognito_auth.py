@@ -770,3 +770,34 @@ def create_cognito_user_from_guest(
             profile.save(update_fields=update_fields)
 
     return user
+
+
+def is_platform_admin(request):
+    """
+    Authoritative helper to determine if the authenticated user is a platform_admin.
+    Checks:
+    1. Cognito group claims (cognito:groups)
+    2. Django Group membership (platform_admin)
+    3. Fallback: is_staff and is_superuser
+    """
+    user = getattr(request, "user", None)
+    if not user or not user.is_authenticated:
+        return False
+
+    claims = getattr(request, "cognito_claims", {}) or {}
+    raw_groups = claims.get("cognito:groups") or []
+    if isinstance(raw_groups, str):
+        groups_set = {g.strip().lower() for g in raw_groups.split(",")}
+    else:
+        groups_set = {str(g).strip().lower() for g in raw_groups}
+
+    if "platform_admin" in groups_set:
+        return True
+
+    try:
+        if user.groups.filter(name="platform_admin").exists():
+            return True
+    except Exception:
+        pass
+
+    return bool(user.is_staff and user.is_superuser)

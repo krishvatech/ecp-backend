@@ -22,6 +22,23 @@ from django.utils import timezone
 from .tasks import publish_resource_task
 from .serializers import ResourceSerializer
 from events.models import EventRegistration 
+from users.cognito_auth import is_platform_admin
+
+class IsPlatformAdminOrReadOnly(permissions.BasePermission):
+    """
+    DRF permission class for Resources.
+    - Write actions: only platform_admin allowed.
+    - Read actions (GET/HEAD/OPTIONS): allowed for authenticated users.
+      (Normal users and staff are filtered via get_queryset, guests are blocked by IsAuthenticated or this class).
+    """
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+
+        if request.method not in permissions.SAFE_METHODS:
+            return is_platform_admin(request)
+
+        return True 
 
 class ResourceFilter(FilterSet):
     """Filter set for Resource queries."""
@@ -161,7 +178,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
     within their community, and only members/owners can create or modify them.
     """
     serializer_class = ResourceSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsPlatformAdminOrReadOnly]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = ResourceFilter
     search_fields = ['title', 'description', 'tags']
@@ -176,8 +193,8 @@ class ResourceViewSet(viewsets.ModelViewSet):
             .filter(Q(event__isnull=True) | ~Q(event__status="archived"))
         )
 
-        # Superusers and staff can see all resources
-        if user.is_superuser or user.is_staff:
+        # Only platform admins can see all resources (including drafts, unscoped, etc.)
+        if is_platform_admin(self.request):
             return qs.order_by("-created_at")
 
         # Get accessible event IDs using helper logic
@@ -208,61 +225,23 @@ class ResourceViewSet(viewsets.ModelViewSet):
 
         return qs.order_by("-created_at")
 
-
-
     def perform_create(self, serializer):
         user = self.request.user
-        event = serializer.validated_data.get("event")    # <— object or None
-
-        # If event is provided, derive community from it
-        if event:
-            if not event.community:
-                raise PermissionDenied("The selected event does not have a community.")
-            org = event.community
-        else:
-            # Fallback: use explicitly provided community (for backwards compat)
-            org = serializer.validated_data.get("community")
-            if not org:
-                raise PermissionDenied("Either event_id or community_id must be provided.")
-
-        org_id = org.id
-
-        # Permission check: user must be superuser/staff OR member of the community
-        if not (
-            user.is_staff
-            or user.is_superuser
-            or user.community.filter(id=org_id).exists()
-            or user.owned_community.filter(id=org_id).exists()
-        ):
-            raise PermissionDenied("You must be a member of the community to upload resources.")
-
-        # Save with derived community and event
-        serializer.save(community=org, event=event, uploaded_by=user)
+        if not is_platform_admin(self.request):
+            raise PermissionDenied("Only platform_admin can create resources.")
+        serializer.save(uploaded_by=user)
 
     def perform_update(self, serializer):
-        user = self.request.user
-        instance = self.get_object()
-        if not (
-            user.is_staff
-            or user.is_superuser
-            or instance.uploaded_by_id == user.id
-            or instance.community.owner_id == user.id
-        ):
-            raise PermissionDenied("You do not have permission to modify this resource.")
+        if not is_platform_admin(self.request):
+            raise PermissionDenied("Only platform_admin can modify resources.")
         super().perform_update(serializer)
 
     def perform_destroy(self, instance):
-        user = self.request.user
-        if not (
-            user.is_staff
-            or user.is_superuser
-            or instance.uploaded_by_id == user.id
-            or instance.community.owner_id == user.id
-        ):
-            raise PermissionDenied("You do not have permission to delete this resource.")
+        if not is_platform_admin(self.request):
+            raise PermissionDenied("Only platform_admin can delete resources.")
         payload = self.request.data
         reason = payload.get("reason", "") if hasattr(payload, "get") else ""
-        instance.soft_delete(user=user, reason=reason)
+        instance.soft_delete(user=self.request.user, reason=reason)
         
     def _maybe_schedule(self, instance: Resource):
         """Schedule a publish job if this is a draft with a future time."""

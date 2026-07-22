@@ -5159,20 +5159,8 @@ class SaleorDashboardAuthorizeView(APIView):
 
 
 def _is_platform_admin_for_saleor(request):
-    claims = getattr(request, "cognito_claims", {}) or {}
-    raw_groups = claims.get("cognito:groups") or []
-    if isinstance(raw_groups, str):
-        groups_set = {g.strip().lower() for g in raw_groups.split(",")}
-    else:
-        groups_set = {str(g).strip().lower() for g in raw_groups}
-
-    is_platform_admin = "platform_admin" in groups_set
-    if not is_platform_admin:
-        is_platform_admin = request.user.groups.filter(name="platform_admin").exists()
-    if not is_platform_admin:
-        is_platform_admin = (request.user.is_staff and request.user.is_superuser)
-
-    return is_platform_admin
+    from users.cognito_auth import is_platform_admin
+    return is_platform_admin(request)
 
 SALEOR_OIDC_PLUGIN_ID = "mirumee.authentication.openidconnect"
 

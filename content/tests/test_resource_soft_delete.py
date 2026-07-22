@@ -15,12 +15,16 @@ from events.models import Event
 
 class ResourceSoftDeleteTests(APITestCase):
     def setUp(self):
+        from django.contrib.auth.models import Group
         self.owner = User.objects.create_user(
             username="resource-owner",
             email="resource-owner@example.com",
             password="test-pass-123",
             is_staff=True,
+            is_superuser=True,
         )
+        platform_admin_group, _ = Group.objects.get_or_create(name='platform_admin')
+        self.owner.groups.add(platform_admin_group)
         self.community = Community.objects.create(
             name="Resource Test Community",
             owner=self.owner,

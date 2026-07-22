@@ -451,3 +451,330 @@ class ResourceAccessTests(APITestCase):
         response = self.client.get("/api/content/resources/")
         ids = [r["id"] for r in response.data.get("results", response.data)]
         self.assertNotIn(resource.id, ids)
+
+
+class ResourcePermissionsRegressionTests(APITestCase):
+    def setUp(self):
+        from django.contrib.auth.models import Group
+        
+        # 1. Platform Admin
+        self.platform_admin = User.objects.create_user(
+            username="platform-admin",
+            email="platform-admin@example.com",
+            password="test-pass-123",
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.platform_admin_group, _ = Group.objects.get_or_create(name='platform_admin')
+        self.platform_admin.groups.add(self.platform_admin_group)
+        
+        # 2. Staff user (non platform-admin)
+        self.staff_user = User.objects.create_user(
+            username="staff-user",
+            email="staff-user@example.com",
+            password="test-pass-123",
+            is_staff=True,
+        )
+
+        # 3. Community Owner / creator (non platform-admin)
+        self.community_owner = User.objects.create_user(
+            username="comm-owner",
+            email="comm-owner@example.com",
+            password="test-pass-123",
+        )
+        
+        # 4. Community Member (non platform-admin)
+        self.community_member = User.objects.create_user(
+            username="comm-member",
+            email="comm-member@example.com",
+            password="test-pass-123",
+        )
+        
+        # 5. Normal User
+        self.normal_user = User.objects.create_user(
+            username="norm-user",
+            email="norm-user@example.com",
+            password="test-pass-123",
+        )
+
+        # Community & Event setup
+        self.community = Community.objects.create(
+            name="Target Community",
+            owner=self.community_owner,
+        )
+        self.community_member.community.add(self.community)
+        self.normal_user.community.add(self.community)
+        self.staff_user.community.add(self.community)
+        self.platform_admin.community.add(self.community)
+        
+        self.event = Event.objects.create(
+            community=self.community,
+            title="Event 1",
+            is_free=True,
+            created_by=self.community_owner
+        )
+
+    def test_guest_permissions(self):
+        # List denied (401)
+        response = self.client.get("/api/content/resources/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        
+        # Create denied (401)
+        response = self.client.post("/api/content/resources/", {"title": "Guest Resource"})
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_normal_user_cannot_write(self):
+        self.client.force_authenticate(self.normal_user)
+        
+        # Create returns 403
+        response = self.client.post("/api/content/resources/", {
+            "title": "Test Resource",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com",
+            "event_id": self.event.id
+        })
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        
+        # Setup resource to test update/delete
+        resource = Resource.objects.create(
+            community=self.community,
+            event=self.event,
+            title="Existing Resource",
+            type=Resource.TYPE_LINK,
+            link_url="https://example.com",
+            is_published=True,
+            uploaded_by=self.platform_admin
+        )
+        
+        # Update returns 403
+        response = self.client.put(f"/api/content/resources/{resource.id}/", {
+            "title": "Updated",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com",
+            "event_id": self.event.id
+        })
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        
+        # Delete returns 403
+        response = self.client.delete(f"/api/content/resources/{resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_community_member_cannot_create(self):
+        self.client.force_authenticate(self.community_member)
+        response = self.client.post("/api/content/resources/", {
+            "title": "Member Resource",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com",
+            "event_id": self.event.id
+        })
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_community_owner_cannot_write(self):
+        self.client.force_authenticate(self.community_owner)
+        
+        # Create returns 403
+        response = self.client.post("/api/content/resources/", {
+            "title": "Owner Resource",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com",
+            "event_id": self.event.id
+        })
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        resource = Resource.objects.create(
+            community=self.community,
+            event=self.event,
+            title="Owner Existing",
+            type=Resource.TYPE_LINK,
+            link_url="https://example.com",
+            is_published=True,
+            uploaded_by=self.platform_admin
+        )
+
+        # Update returns 403
+        response = self.client.put(f"/api/content/resources/{resource.id}/", {
+            "title": "Updated Title",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com",
+            "event_id": self.event.id
+        })
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        
+        # Delete returns 403
+        response = self.client.delete(f"/api/content/resources/{resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_original_uploader_cannot_write(self):
+        # Create resource uploaded by normal user (maybe previously allowed)
+        resource = Resource.objects.create(
+            community=self.community,
+            event=self.event,
+            title="Uploaded by norm",
+            type=Resource.TYPE_LINK,
+            link_url="https://example.com",
+            is_published=True,
+            uploaded_by=self.normal_user
+        )
+        
+        self.client.force_authenticate(self.normal_user)
+        
+        # Update returns 403
+        response = self.client.put(f"/api/content/resources/{resource.id}/", {
+            "title": "Hack title",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com",
+            "event_id": self.event.id
+        })
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        
+        # Delete returns 403
+        response = self.client.delete(f"/api/content/resources/{resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_staff_user_read_only(self):
+        self.client.force_authenticate(self.staff_user)
+        
+        # Setup resource
+        resource = Resource.objects.create(
+            community=self.community,
+            event=self.event,
+            title="Staff Read Test",
+            type=Resource.TYPE_LINK,
+            link_url="https://example.com",
+            is_published=True,
+            uploaded_by=self.platform_admin
+        )
+        
+        # 1. Without registration: list succeeds but is empty (since staff user is treated same as normal user)
+        response = self.client.get("/api/content/resources/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [r["id"] for r in response.data.get("results", response.data)]
+        self.assertNotIn(resource.id, ids)
+        
+        # Detail returns 404
+        response = self.client.get(f"/api/content/resources/{resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        
+        # 2. Add registration for staff user
+        EventRegistration.objects.create(
+            user=self.staff_user,
+            event=self.event,
+            status="registered",
+            attendee_status="confirmed",
+            is_banned=False
+        )
+        
+        # List succeeds and contains the resource
+        response = self.client.get("/api/content/resources/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [r["id"] for r in response.data.get("results", response.data)]
+        self.assertIn(resource.id, ids)
+        
+        # Detail succeeds (200)
+        response = self.client.get(f"/api/content/resources/{resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        
+        # 3. Write requests still return 403
+        # Create returns 403
+        response = self.client.post("/api/content/resources/", {
+            "title": "Staff Write",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com",
+            "event_id": self.event.id
+        })
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        
+        # Update returns 403
+        response = self.client.put(f"/api/content/resources/{resource.id}/", {
+            "title": "Staff Update",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com",
+            "event_id": self.event.id
+        })
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        
+        # Delete returns 403
+        response = self.client.delete(f"/api/content/resources/{resource.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_platform_admin_full_crud(self):
+        self.client.force_authenticate(self.platform_admin)
+        
+        # 1. Create succeeds
+        response = self.client.post("/api/content/resources/", {
+            "title": "Admin Created",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com",
+            "event_id": self.event.id
+        })
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        resource_id = response.data["id"]
+        
+        # 2. List succeeds
+        response = self.client.get("/api/content/resources/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        
+        # 3. Update succeeds
+        response = self.client.put(f"/api/content/resources/{resource_id}/", {
+            "title": "Admin Updated",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com/updated",
+            "event_id": self.event.id
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["title"], "Admin Updated")
+        
+        # 4. Soft Delete succeeds
+        response = self.client.delete(f"/api/content/resources/{resource_id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        
+        # 5. Row remains in database but normal query excludes it
+        retained = Resource.all_objects.get(pk=resource_id)
+        self.assertTrue(retained.is_deleted)
+        self.assertFalse(Resource.objects.filter(pk=resource_id).exists())
+
+    def test_missing_event_during_create(self):
+        self.client.force_authenticate(self.platform_admin)
+        
+        # Missing event_id -> receives 400
+        response = self.client.post("/api/content/resources/", {
+            "title": "No Event",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com"
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("An event is required for every resource.", str(response.data))
+
+    def test_client_submits_only_community_id(self):
+        self.client.force_authenticate(self.platform_admin)
+        
+        # Only community_id -> receives 400
+        response = self.client.post("/api/content/resources/", {
+            "title": "Community Only",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com",
+            "community_id": self.community.id
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("An event is required for every resource.", str(response.data))
+
+    def test_client_submits_mismatched_community(self):
+        self.client.force_authenticate(self.platform_admin)
+        
+        other_community = Community.objects.create(
+            name="Other Comm",
+            owner=self.community_owner
+        )
+        
+        # Client submits event AND other mismatched community
+        response = self.client.post("/api/content/resources/", {
+            "title": "Mismatched",
+            "type": Resource.TYPE_LINK,
+            "link_url": "https://example.com",
+            "event_id": self.event.id,
+            "community_id": other_community.id
+        })
+        
+        # Saved community MUST equal event.community (i.e. self.community)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["community_id"], self.community.id)

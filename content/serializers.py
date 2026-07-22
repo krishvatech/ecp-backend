@@ -43,18 +43,40 @@ class ResourceSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, data):
-        # For creation, ensure event_id or community_id is provided
+        # 1. Enforce event selection and derive community from it
         if not self.instance:
             event = data.get("event")
-            community = data.get("community")
-            if not event and not community:
+            if not event:
                 raise serializers.ValidationError(
-                    "Either event_id or community_id must be provided."
+                    "An event is required for every resource."
                 )
-            if event and not event.community:
+            if not event.community:
                 raise serializers.ValidationError(
                     "The selected event does not have a community."
                 )
+            data["community"] = event.community
+        else:
+            # For updates
+            if "event" in data:
+                event = data["event"]
+                if not event:
+                    raise serializers.ValidationError(
+                        "An event is required for every resource."
+                    )
+                if not event.community:
+                    raise serializers.ValidationError(
+                        "The selected event does not have a community."
+                    )
+                data["community"] = event.community
+            else:
+                # If 'community' is in data, reject or override it using instance event
+                if "community" in data:
+                    if self.instance.event:
+                        data["community"] = self.instance.event.community
+                    else:
+                        raise serializers.ValidationError(
+                            "Cannot change community independently of event."
+                        )
 
         rtype = data.get("type") or getattr(self.instance, "type", None)
         file = data.get("file")
