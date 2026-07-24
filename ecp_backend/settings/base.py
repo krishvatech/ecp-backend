@@ -551,6 +551,14 @@ else:
     MEDIA_URL = "/media/"
     MEDIA_ROOT = BASE_DIR / "media"
 
+# Event image optimisation. Values are environment-configurable so production
+# can tune the social-preview limit without code changes.
+EVENT_SOCIAL_IMAGE_MAX_BYTES = int(os.getenv("EVENT_SOCIAL_IMAGE_MAX_BYTES", "600000"))
+EVENT_PREVIEW_IMAGE_MAX_WIDTH = int(os.getenv("EVENT_PREVIEW_IMAGE_MAX_WIDTH", "1200"))
+EVENT_PREVIEW_IMAGE_MAX_HEIGHT = int(os.getenv("EVENT_PREVIEW_IMAGE_MAX_HEIGHT", "1200"))
+EVENT_COVER_IMAGE_MAX_WIDTH = int(os.getenv("EVENT_COVER_IMAGE_MAX_WIDTH", "1280"))
+EVENT_COVER_IMAGE_MAX_HEIGHT = int(os.getenv("EVENT_COVER_IMAGE_MAX_HEIGHT", "720"))
+
 # Django REST Framework configuration
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [

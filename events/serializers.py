@@ -37,6 +37,7 @@ import json
 from .validators import validate_non_multiday_event, validate_multiday_event, validate_session_datetimes
 from .platform_sync import enqueue_event_sync_jobs
 from .lifecycle import is_replay_ready_for_signup
+from .image_utils import optimize_event_image
 
 
 def _enqueue_event_sync_jobs_and_trigger(event_id, *, upsert_slugs=None, disable_slugs=None):
@@ -1277,6 +1278,28 @@ class EventSerializer(serializers.ModelSerializer):
         required=False,
         help_text="Visibility platforms, for example ['imaa_connect', 'manda'].",
     )
+
+    def validate_preview_image(self, value):
+        if value is None:
+            return value
+        return optimize_event_image(
+            value,
+            max_dimensions=(
+                settings.EVENT_PREVIEW_IMAGE_MAX_WIDTH,
+                settings.EVENT_PREVIEW_IMAGE_MAX_HEIGHT,
+            ),
+        )
+
+    def validate_cover_image(self, value):
+        if value is None:
+            return value
+        return optimize_event_image(
+            value,
+            max_dimensions=(
+                settings.EVENT_COVER_IMAGE_MAX_WIDTH,
+                settings.EVENT_COVER_IMAGE_MAX_HEIGHT,
+            ),
+        )
 
     # Access-controlled recording_url (host can always see, participants only if visible)
     recording_url = serializers.SerializerMethodField(read_only=True)
