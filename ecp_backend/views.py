@@ -8,6 +8,10 @@ from events.models import Event
 from ecp_backend.health_checks import get_health_status
 from events.services.live_instance_state import heartbeat_instance
 
+
+SOCIAL_PREVIEW_PAGE_TYPES = {"public", "events", "landing"}
+SOCIAL_PREVIEW_STATUSES = ("published", "live", "ended")
+
 def health(request):
     """Simple health check for ALB. Must only return {"status": "ok"} without deep checks."""
     try:
@@ -30,14 +34,24 @@ def index(request):
     return redirect(settings.FRONTEND_URL)
 
 
-def public_event_meta(request, slug):
+def public_event_meta(request, slug, page_type="events"):
     """
-    Server-rendered public page containing OG/Twitter tags for social crawlers.
-    Handles both /public/<slug>/ and /events/<slug>/ routes.
-    Crawlers see meta tags, users redirect to React app.
+    Return server-rendered Open Graph and Twitter metadata for public event URLs.
+
+    Supported frontend routes:
+    - /public/<slug>/
+    - /events/<slug>/
+    - /landing/<slug>/
     """
+    if page_type not in SOCIAL_PREVIEW_PAGE_TYPES:
+        raise Http404("Unsupported event page type")
+
     event = (
-        Event.objects.filter(slug=slug, status__in=["published", "live"])
+        Event.objects.filter(
+            slug=slug,
+            status__in=SOCIAL_PREVIEW_STATUSES,
+            is_hidden=False,
+        )
         .select_related("community")
         .first()
     )
@@ -60,7 +74,11 @@ def public_event_meta(request, slug):
             image_url = ""
 
     frontend_base = (settings.FRONTEND_URL or "").rstrip("/")
-    event_url = f"{frontend_base}/events/{slug}/" if frontend_base else request.build_absolute_uri(request.path)
+    event_url = (
+        f"{frontend_base}/{page_type}/{slug}/"
+        if frontend_base
+        else request.build_absolute_uri(request.path)
+    )
 
     context = {
         "title": title,
