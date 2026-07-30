@@ -626,28 +626,72 @@ class UserViewSet(
         # ---------------------------
         region = getattr(settings, "COGNITO_REGION", "")
         pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "")
-        cognito_username = user.username
 
         if region and pool_id:
             try:
                 client = boto3.client("cognito-idp", region_name=region)
 
-                client.admin_update_user_attributes(
-                    UserPoolId=pool_id,
-                    Username=cognito_username,
-                    UserAttributes=[
-                        {
-                            "Name": "email",
-                            "Value": new_email
-                        },
-                        {
-                            "Name": "email_verified",
-                            "Value": "true"
-                        }
-                    ]
-                )
+                cognito_usernames = []
+                for identity in user.cognito_identities.all().order_by("-email_verified", "id"):
+                    if identity.cognito_sub:
+                        cognito_usernames.append(identity.cognito_sub)
+
+                cognito_usernames.extend([
+                    user.username,
+                    old_email,
+                ])
+                cognito_usernames = list(dict.fromkeys(
+                    value for value in cognito_usernames if value
+                ))
+
+                if not cognito_usernames:
+                    logger.error("Cognito Email Sync Failed: no Cognito identifier for user_id=%s", user.id)
+                    return Response(
+                        {"detail": "Failed to update login provider. Please try again later."},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE
+                    )
+
+                cognito_updated = False
+                last_cognito_error = None
+                for cognito_username in cognito_usernames:
+                    try:
+                        client.admin_update_user_attributes(
+                            UserPoolId=pool_id,
+                            Username=cognito_username,
+                            UserAttributes=[
+                                {
+                                    "Name": "email",
+                                    "Value": new_email
+                                },
+                                {
+                                    "Name": "email_verified",
+                                    "Value": "true"
+                                }
+                            ]
+                        )
+                        cognito_updated = True
+                        break
+                    except client.exceptions.UserNotFoundException as e:
+                        last_cognito_error = e
+                        logger.warning(
+                            "Cognito user not found while updating email for user_id=%s with identifier=%s",
+                            user.id,
+                            cognito_username,
+                        )
+
+                if not cognito_updated:
+                    logger.error(
+                        "Cognito Email Sync Failed for user_id=%s; tried identifiers=%s; last_error=%s",
+                        user.id,
+                        cognito_usernames,
+                        last_cognito_error,
+                    )
+                    return Response(
+                        {"detail": "Failed to update login provider. Please try again later."},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE
+                    )
             except Exception as e:
-                logger.error(f"Cognito Email Sync Failed: {e}")
+                logger.exception("Cognito Email Sync Failed for user_id=%s: %s", user.id, e)
                 # Fallback: proceed if it's acceptable, or block.
                 # Blocking prevents data mismatch.
                 return Response(
