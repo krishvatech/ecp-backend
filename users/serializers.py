@@ -109,11 +109,12 @@ class EmailChangeInitSerializer(serializers.Serializer):
         value = value.lower().strip()
         # Ensure it's not already the user's current email
         user = self.context["request"].user
-        if user.email == value:
+        current_email = (user.email or "").strip().lower()
+        if current_email == value:
             raise serializers.ValidationError("This is already your primary email.")
 
         # Ensure unique across all users
-        if User.objects.filter(email=value).exists():
+        if User.objects.filter(email__iexact=value).exclude(id=user.id).exists():
             raise serializers.ValidationError("This email is already in use by another account.")
         return value
 

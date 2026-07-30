@@ -19,6 +19,7 @@ from django.contrib.auth import update_session_auth_hash
 from django.http import HttpResponse
 from django.conf import settings
 from django.core.cache import cache
+from django.db import transaction
 from users.cache_utils import (
     USER_DETAIL_CACHE_TTL_SECONDS,
     bump_user_cache_version,
@@ -489,7 +490,13 @@ class UserViewSet(
         serializer = EmailChangeInitSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         
-        new_email = serializer.validated_data["new_email"]
+        new_email = (serializer.validated_data["new_email"] or "").strip().lower()
+
+        EmailChangeRequest.objects.filter(
+            user=user,
+            new_email__iexact=new_email,
+            is_verified=False,
+        ).delete()
 
         # Generate OTP
         code = get_random_string(length=6, allowed_chars='0123456789')
@@ -537,30 +544,94 @@ class UserViewSet(
         serializer = EmailChangeConfirmSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
-        code = serializer.validated_data["code"]
-        new_email = serializer.validated_data["new_email"]
+        code = (serializer.validated_data["code"] or "").strip()
+        new_email = (serializer.validated_data["new_email"] or "").strip().lower()
+        otp_cutoff = django_timezone.now() - timedelta(minutes=10)
 
         # Find valid request (simple check: latest unverified matching request)
         req = EmailChangeRequest.objects.filter(
             user=user, 
-            new_email=new_email, 
-            is_verified=False
+            new_email__iexact=new_email,
+            is_verified=False,
+            created_at__gte=otp_cutoff,
         ).order_by("-created_at").first()
 
         if not req or req.verification_code != code:
             return Response({"detail": "Invalid or expired verification code."}, status=status.HTTP_400_BAD_REQUEST)
 
         # ---------------------------
-        # 1. Sync to Cognito
+        # 1. Prepare contact email metadata swap
+        # ---------------------------
+        def email_key(value):
+            return (value or "").strip().lower()
+
+        old_email = (user.email or "").strip()
+        new_email = (new_email or "").strip()
+        old_key = email_key(old_email)
+        new_key = email_key(new_email)
+
+        profile = getattr(user, "profile", None)
+        links = profile.links if profile and isinstance(profile.links, dict) else {}
+        contact = links.get("contact", {}) if isinstance(links, dict) else {}
+        if not isinstance(contact, dict):
+            contact = {}
+
+        emails = contact.get("emails", [])
+        if not isinstance(emails, list):
+            emails = []
+
+        main_email_meta = contact.get("main_email", {})
+        if not isinstance(main_email_meta, dict):
+            main_email_meta = {}
+
+        old_main_type = main_email_meta.get("type", "")
+        old_main_visibility = main_email_meta.get("visibility", "contacts")
+
+        selected_email = None
+        remaining_emails = []
+        for entry in emails:
+            if not isinstance(entry, dict):
+                continue
+
+            email_value = (entry.get("email") or "").strip()
+            key = email_key(email_value)
+            if not key:
+                continue
+
+            normalized_entry = {
+                **entry,
+                "email": email_value,
+                "type": entry.get("type") or "professional",
+                "visibility": entry.get("visibility") or "private",
+            }
+
+            if key == new_key:
+                if selected_email is None:
+                    selected_email = normalized_entry
+                continue
+
+            remaining_emails.append(normalized_entry)
+
+        if selected_email is None:
+            return Response(
+                {"detail": "Selected email was not found in your secondary email list."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        new_main_type = selected_email.get("type") or ""
+        new_main_visibility = selected_email.get("visibility") or "contacts"
+
+        # ---------------------------
+        # 2. Sync to Cognito
         # ---------------------------
         region = getattr(settings, "COGNITO_REGION", "")
         pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "")
         cognito_username = user.username
-        
+
         if region and pool_id:
             try:
                 client = boto3.client("cognito-idp", region_name=region)
-                
+
                 client.admin_update_user_attributes(
                     UserPoolId=pool_id,
                     Username=cognito_username,
@@ -577,51 +648,69 @@ class UserViewSet(
                 )
             except Exception as e:
                 logger.error(f"Cognito Email Sync Failed: {e}")
-                # Fallback: proceed if it's acceptable, or block. 
+                # Fallback: proceed if it's acceptable, or block.
                 # Blocking prevents data mismatch.
                 return Response(
-                    {"detail": "Failed to update login provider. Please try again later."}, 
+                    {"detail": "Failed to update login provider. Please try again later."},
                     status=status.HTTP_503_SERVICE_UNAVAILABLE
                 )
 
         # ---------------------------
-        # 2. Update Local DB
+        # 3. Update Local DB
         # ---------------------------
-        old_email = user.email
-        
-        user.email = new_email
-        user.save(update_fields=["email"])
-        
-        req.is_verified = True
-        req.save()
+        with transaction.atomic():
+            user.email = new_email
+            user.save(update_fields=["email"])
 
-        # ---------------------------
-        # 3. Handle Old Email (Move to Secondary)
-        # ---------------------------
-        profile = getattr(user, "profile", None)
-        if profile and old_email:
-            links = profile.links or {}
-            contact = links.get("contact", {})
-            if not isinstance(contact, dict): contact = {}
-            
-            emails = contact.get("emails", [])
-            if not isinstance(emails, list): emails = []
-            
-            exists = any(e.get("email") == old_email for e in emails)
-            if not exists:
-                emails.append({
-                    "email": old_email,
-                    "type": "personal",
-                    "visibility": "private"
-                })
-                contact["emails"] = emails
+            req.is_verified = True
+            req.save(update_fields=["is_verified"])
+
+            # ---------------------------
+            # 4. Move old main email to secondary and remove duplicates
+            # ---------------------------
+            if profile:
+                normalized_secondaries = []
+                if old_email and old_key != new_key:
+                    normalized_secondaries.append({
+                        "email": old_email,
+                        "type": old_main_type,
+                        "visibility": old_main_visibility,
+                    })
+
+                normalized_secondaries.extend(
+                    entry for entry in remaining_emails
+                    if email_key(entry.get("email")) not in {old_key, new_key}
+                )
+
+                deduped_emails = []
+                seen = set()
+                for entry in normalized_secondaries:
+                    key = email_key(entry.get("email"))
+                    if not key or key in seen or key == new_key:
+                        continue
+                    seen.add(key)
+                    deduped_emails.append({
+                        **entry,
+                        "email": (entry.get("email") or "").strip(),
+                        "type": entry.get("type") or "professional",
+                        "visibility": entry.get("visibility") or "private",
+                    })
+
+                contact["emails"] = deduped_emails
+                contact["main_email"] = {
+                    "type": new_main_type,
+                    "visibility": new_main_visibility,
+                }
                 links["contact"] = contact
                 profile.links = links
                 profile.save(update_fields=["links"])
 
+        bump_user_cache_version(user.id)
+
         return Response({
-            "detail": "Primary email updated successfully. Please use your new email to log in.",
-            "new_email": new_email
+            "detail": "Primary email updated successfully.",
+            "new_email": user.email,
+            "contact": contact,
         }, status=status.HTTP_200_OK)
     
     @action(detail=False, methods=["post"], url_path="me/avatar")

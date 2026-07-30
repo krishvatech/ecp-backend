@@ -598,12 +598,19 @@ class CognitoJWTAuthentication(BaseAuthentication):
 
             # keep basic fields in sync
             updated = False
-            # Never downgrade a real email to WordPress placeholder from Cognito claims.
-            if email and user.email != email:
-                current_is_placeholder = (user.email or "").lower().endswith("@wordpress.local")
-                incoming_is_placeholder = email.endswith("@wordpress.local")
-                if not incoming_is_placeholder or current_is_placeholder:
-                    user.email = email
+            # Do not overwrite a valid DB email from every Cognito token. Old
+            # access/ID tokens can contain the previous primary email after an
+            # in-app email switch, so only fill an empty/placeholder DB value.
+            current_email = (user.email or "").strip().lower()
+            incoming_email = (email or "").strip().lower()
+            if incoming_email:
+                current_is_placeholder = current_email.endswith("@wordpress.local")
+                incoming_is_placeholder = incoming_email.endswith("@wordpress.local")
+                if not current_email:
+                    user.email = incoming_email
+                    updated = True
+                elif current_is_placeholder and not incoming_is_placeholder:
+                    user.email = incoming_email
                     updated = True
             if _is_imaa_wordpress_oauth_provider(provider):
                 if first_name and (
