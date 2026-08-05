@@ -642,7 +642,8 @@ class FriendRequestViewSet(
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         fr = serializer.save()
         
         # Return enriched response

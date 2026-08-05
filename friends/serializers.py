@@ -99,7 +99,15 @@ class FriendRequestSerializer(serializers.ModelSerializer):
 
 
 class FriendRequestCreateSerializer(serializers.ModelSerializer):
-    to_user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+    to_user = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        error_messages={
+            "does_not_exist": "Invalid user.",
+            "incorrect_type": "Invalid user.",
+            "required": "to_user is required.",
+            "null": "to_user is required.",
+        },
+    )
 
     class Meta:
         model = FriendRequest

@@ -236,6 +236,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
             "closed protocol" in message
             or "connection already closed" in message
             or "socket is already closed" in message
+            or "unexpected asgi message" in message
+            or "after sending 'websocket.close'" in message
+            or "response already completed" in message
+            or "websocket.send" in message
+            or "websocket.close" in message
         )
 
     async def send_json(self, content, close=False):
@@ -255,6 +260,19 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                 return
             raise
 
+    async def close(self, code=None, reason=None):
+        if getattr(self, "_ws_close_sent", False):
+            self._ws_closed = True
+            return
+        self._ws_close_sent = True
+        self._ws_closed = True
+        try:
+            await super().close(code=code, reason=reason)
+        except Exception as exc:
+            if self._is_closed_socket_error(exc):
+                return
+            raise
+
     async def event_exists_cached(self, event_id):
         return await database_sync_to_async(_event_exists_cached_sync)(event_id)
 
@@ -263,6 +281,11 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         # (e.g., anonymous users rejected before completing handshake).
         self._disconnect_cleanup_task = None
         self._live_session_tracked = False
+        self._disconnect_cleanup_started = False
+        self._disconnect_cleanup_enqueued = False
+        self._ws_closed = False
+        self._ws_close_sent = False
+        self.heartbeat_task = None
 
         self.user = self.scope.get("user")
         if not self.user or self.user.is_anonymous:
@@ -272,7 +295,6 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
         self.event_id = self.scope["url_route"]["kwargs"]["event_id"]
         self.group_name = f"event_{self.event_id}"
-        self._ws_closed = False
 
         event_exists = await self.event_exists_cached(self.event_id)
         if event_exists is None:
@@ -352,10 +374,10 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         await self.channel_layer.group_add(self.user_group_name, self.channel_name)
 
         # ✅ HEARTBEAT: Initialize heartbeat mechanism for detecting dead connections
-        self.heartbeat_task = None
         self.last_pong_at = None
 
         await self.accept()
+        self._ws_closed = False
         logger.info(
             "WS[Event] connect accepted event=%s user=%s channel=%s",
             self.event_id,
@@ -509,6 +531,20 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     async def disconnect(self, code: int) -> None:
         self._ws_closed = True
+        if getattr(self, "_disconnect_cleanup_started", False):
+            return
+        self._disconnect_cleanup_started = True
+
+        heartbeat_task = getattr(self, "heartbeat_task", None)
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self.heartbeat_task = None
+
         logger.info(
             "WS[Event] disconnect event=%s user=%s channel=%s code=%s",
             getattr(self, "event_id", None),
@@ -543,10 +579,6 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                     getattr(self, "channel_name", None),
                     exc_info=True,
                 )
-
-        # ✅ HEARTBEAT: Cancel heartbeat task on disconnect
-        if hasattr(self, "heartbeat_task") and self.heartbeat_task:
-            self.heartbeat_task.cancel()
 
         if hasattr(self, "group_name"):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
@@ -707,14 +739,29 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
                         self.event_id,
                         HEARTBEAT_TIMEOUT,
                     )
-                    await self.close(code=4000)
+                    self._ws_closed = True
+                    try:
+                        await self.close(code=4000)
+                    except Exception as e:
+                        if self._is_closed_socket_error(e):
+                            self._ws_closed = True
+                            return
+                        logger.warning("[HEARTBEAT] Failed to close timed-out socket: %s", e)
                     return
 
                 # Send ping to client
                 try:
                     await self.send_json({"type": "ping"})
                 except Exception as e:
-                    logger.warning(f"[HEARTBEAT] Failed to send ping: {e}")
+                    if self._is_closed_socket_error(e):
+                        self._ws_closed = True
+                        return
+                    self._ws_closed = True
+                    logger.warning("[HEARTBEAT] Failed to send ping: %s", e)
+                    return
+
+                if getattr(self, "_ws_closed", False):
+                    return
 
         except asyncio.CancelledError:
             pass
@@ -995,6 +1042,32 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
         elif action == "start_support_chat":
             await self.handle_start_support_chat(content)
 
+        elif action == "friendship_status_changed":
+            user_ids = content.get("user_ids", [])
+            if not isinstance(user_ids, list):
+                user_ids = []
+            cleaned_user_ids = []
+            for value in user_ids:
+                try:
+                    cleaned_user_ids.append(str(int(value)))
+                except (TypeError, ValueError):
+                    continue
+            if len(cleaned_user_ids) != 2 or str(self.user.id) not in cleaned_user_ids:
+                return
+            status = content.get("status") or "connected"
+            if status != "connected":
+                return
+            request_id = content.get("request_id")
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    "type": "friendship.status.changed",
+                    "user_ids": cleaned_user_ids,
+                    "status": status,
+                    "request_id": request_id,
+                },
+            )
+
         elif action == "admit_from_lounge":
             # Host-only action with countdown transition from lounge/pre-event.
             if not await self.is_host():
@@ -1207,6 +1280,14 @@ class EventConsumer(AsyncJsonWebsocketConsumer):
 
     async def broadcast_message(self, event: dict) -> None:
         await self.send_json({"type": "message", "data": event["payload"]})
+
+    async def friendship_status_changed(self, event: dict) -> None:
+        await self.send_json({
+            "type": "friendship_status_changed",
+            "user_ids": event.get("user_ids", []),
+            "status": event.get("status") or "connected",
+            "request_id": event.get("request_id"),
+        })
 
     async def server_debug(self, event: dict) -> None:
         """Handler for 'server_debug' group message."""
