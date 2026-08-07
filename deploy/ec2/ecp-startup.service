@@ -3,14 +3,33 @@ Description=ECP backend startup bootstrap
 After=network-online.target docker.service amazon-ssm-agent.service
 Wants=network-online.target docker.service amazon-ssm-agent.service
 
+# Bound the retries. Previously an unbounded Restart=on-failure turned a single
+# unrecoverable failure (port 8000 held by an orphaned daphne) into an endless
+# relaunch loop -- the "activating (auto-restart)" state seen on the ASG.
+# Retry is still useful for genuinely transient boot failures, so keep it, but
+# stop after 3 attempts in 10 minutes. The deploy runs "systemctl reset-failed",
+# which clears this counter.
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
 [Service]
 Type=oneshot
 User=root
 ExecStart=/usr/local/bin/ecp-startup.sh
 TimeoutStartSec=0
-RemainAfterExit=yes
+
+# Keeping the unit "active" after the script finished made a later
+# "systemctl start" a no-op, so freshly deployed versions of ecp-startup.sh
+# were never executed. Let the unit go inactive when the bootstrap ends.
+RemainAfterExit=no
+
 Restart=on-failure
 RestartSec=15
+
+# Ensure a stop tears down every process the bootstrap spawned, not just the
+# main PID, so a stopped unit cannot leave a daphne holding port 8000.
+KillMode=control-group
+TimeoutStopSec=120
 
 [Install]
 WantedBy=multi-user.target

@@ -97,6 +97,77 @@ else
   done
 fi
 
+# "kill -9 <pid>" cannot remove a process whose cgroup is frozen (SIGKILL is
+# queued but never delivered) and cannot remove a task whose containerd shim was
+# orphaned (dockerd forgot the container, so "docker rm" is a no-op while the
+# task keeps the listening socket). Both look identical from ps/ss: the PID is
+# visible, kill returns success, the process never dies. That is the state that
+# leaves an orphaned daphne on 0.0.0.0:8000, which makes the real --network host
+# container fail to bind and crash-loop. Escalate instead of retrying kill.
+remove_rogue_container_runtime() {
+  rogue_pid="$1"
+  [ -n "$rogue_pid" ] || return 0
+  ps -p "$rogue_pid" >/dev/null 2>&1 || return 0
+
+  # 1. Let docker remove it while docker still tracks the container.
+  rogue_cid=$(docker ps -aq 2>/dev/null | while read -r c; do
+    p=$(docker inspect -f '{{.State.Pid}}' "$c" 2>/dev/null || echo "")
+    [ -n "$p" ] && [ "$p" = "$rogue_pid" ] && echo "$c"
+  done | head -1 || true)
+  if [ -n "$rogue_cid" ]; then
+    echo "Removing container $rogue_cid holding PID=$rogue_pid"
+    docker update --restart=no "$rogue_cid" >/dev/null 2>&1 || true
+    docker rm -f "$rogue_cid" >/dev/null 2>&1 || true
+    sleep 2
+    ps -p "$rogue_pid" >/dev/null 2>&1 || return 0
+  fi
+
+  # 2. Kill the whole systemd scope (docker-<id>.scope) owning the PID.
+  scope=$(awk -F: '{print $3}' "/proc/$rogue_pid/cgroup" 2>/dev/null \
+    | grep -oE '[^/]+\.scope' | head -1 || true)
+  self_scope=$(awk -F: '{print $3}' "/proc/$$/cgroup" 2>/dev/null \
+    | grep -oE '[^/]+\.scope' | head -1 || true)
+  if [ -n "$scope" ] && [ "$scope" = "$self_scope" ]; then
+    echo "Refusing to kill scope $scope: it also contains this script"
+  elif [ -n "$scope" ]; then
+    echo "Killing systemd scope $scope for PID=$rogue_pid"
+    systemctl kill --kill-who=all --signal=SIGKILL "$scope" 2>/dev/null || true
+    sleep 2
+    ps -p "$rogue_pid" >/dev/null 2>&1 || return 0
+  fi
+
+  # 3. cgroup v2: thaw first, then mass-kill every task in the cgroup.
+  rel=$(awk -F: '$1=="0"{print $3}' "/proc/$rogue_pid/cgroup" 2>/dev/null || true)
+  if [ -n "$rel" ] && [ -d "/sys/fs/cgroup$rel" ]; then
+    if [ -f "/sys/fs/cgroup$rel/cgroup.freeze" ]; then
+      echo "Thawing cgroup /sys/fs/cgroup$rel"
+      echo 0 > "/sys/fs/cgroup$rel/cgroup.freeze" 2>/dev/null || true
+    fi
+    if [ -f "/sys/fs/cgroup$rel/cgroup.kill" ]; then
+      echo "Using cgroup.kill on /sys/fs/cgroup$rel"
+      echo 1 > "/sys/fs/cgroup$rel/cgroup.kill" 2>/dev/null || true
+      sleep 2
+      ps -p "$rogue_pid" >/dev/null 2>&1 || return 0
+    fi
+  fi
+
+  # 4. Ask containerd directly; dockerd has lost track of this task.
+  if command -v ctr >/dev/null 2>&1; then
+    task=$(ctr -n moby tasks ls 2>/dev/null | awk -v p="$rogue_pid" '$2==p {print $1}' | head -1 || true)
+    if [ -n "$task" ]; then
+      echo "Killing orphaned containerd shim task $task for PID=$rogue_pid"
+      ctr -n moby tasks kill -s SIGKILL "$task" 2>/dev/null || true
+      ctr -n moby tasks rm -f "$task" 2>/dev/null || true
+      sleep 2
+      ps -p "$rogue_pid" >/dev/null 2>&1 || return 0
+    fi
+  fi
+
+  echo "PID=$rogue_pid survived every escalation step; diagnostic state:"
+  grep -E '^(Name|State):' "/proc/$rogue_pid/status" 2>/dev/null || true
+  return 1
+}
+
 echo "===== Free port 8000 safely if needed ====="
 
 for attempt in $(seq 1 30); do
@@ -132,6 +203,12 @@ for attempt in $(seq 1 30); do
       kill -TERM "$PID" 2>/dev/null || true
       sleep 1
       kill -KILL "$PID" 2>/dev/null || true
+      # Plain signals are not enough for a frozen cgroup or an orphaned
+      # containerd task, which is how this loop used to spin 30 times against
+      # the same PID and then fail the whole deploy.
+      if ps -p "$PID" >/dev/null 2>&1; then
+        remove_rogue_container_runtime "$PID" || true
+      fi
     fi
   done
 
@@ -434,6 +511,47 @@ fi
 
 echo "===== Final backend verification ====="
 docker inspect -f 'image={{.Config.Image}} status={{.State.Status}} restarting={{.State.Restarting}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} pid={{.State.Pid}}' ecp-backend
-curl -fsS https://api.colligatus.com/api/health/
+
+# Confirm the process holding port 8000 really is this instance's ecp-backend
+# container, not a leftover daphne from an earlier boot.
+pid_belongs_to_backend_container() {
+  candidate="$1"
+  [ -n "$candidate" ] || return 1
+  backend_pid=$(docker inspect -f '{{.State.Pid}}' ecp-backend 2>/dev/null || echo "")
+  [ -n "$backend_pid" ] && [ "$candidate" = "$backend_pid" ]
+}
+
+assert_backend_owns_port_8000() {
+  port_pid=$(ss -lntpH 2>/dev/null | awk '$4 ~ /:8000$/ {print}' | grep -oP 'pid=\K[0-9]+' | head -1 || true)
+  if [ -z "$port_pid" ]; then
+    echo "ERROR: nothing is listening on port 8000"
+    return 1
+  fi
+  if ! pid_belongs_to_backend_container "$port_pid"; then
+    echo "ERROR: port 8000 is held by PID=$port_pid which is not the ecp-backend container"
+    ps -p "$port_pid" -o args= || true
+    return 1
+  fi
+  echo "Port 8000 is owned by the expected ecp-backend container (PID=$port_pid)"
+}
+
+assert_backend_owns_port_8000
+
+HEALTH=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' ecp-backend 2>/dev/null || echo missing)
+if [ "$HEALTH" = "healthy" ] || [ "$HEALTH" = "none" ]; then
+  echo "Container health: $HEALTH"
+else
+  echo "ERROR: ecp-backend container health is $HEALTH"
+  docker logs --tail=100 ecp-backend || true
+  exit 1
+fi
+
+# Local endpoint is the authoritative check for this instance. The public URL
+# goes through the ALB and can be answered by a DIFFERENT healthy instance,
+# which made a broken instance look fine.
+curl -fsS --max-time 10 \
+  -H "Host: api.colligatus.com" \
+  -H "X-Forwarded-Proto: https" \
+  http://127.0.0.1:8000/api/health/
 
 echo "===== ECP startup finished successfully: $(date) ====="
