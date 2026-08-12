@@ -357,4 +357,3 @@ def test_singleton_beat_ssm_verifier_is_posix_shell_compatible():
     # Bash is explicitly invoked, so the direct payload must be portable.
     assert '"set -eu",' in step
     assert '"set -euo pipefail",' not in step
-
