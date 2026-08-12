@@ -370,7 +370,6 @@ class WordPressAPIClient:
 
         return all_members
 
-
     def get_imaa_connect_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """
         Fetch one exact WordPress user profile by email from the custom IMAA

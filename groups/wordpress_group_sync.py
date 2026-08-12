@@ -539,8 +539,70 @@ def _get_or_create_connect_user_from_wordpress_member(
     return user, is_new, "ok"
 
 
-def _wordpress_join_dates_by_user_id(client: WordPressAPIClient, wp_group_id: int) -> dict[str, Any]:
-    """Return earliest BuddyPress joined_group date for each WordPress user in a group."""
+def _wp_joined_at_from_member_payload(payload: Dict[str, Any]):
+    """Extract a WordPress/BuddyPress membership date from common payload shapes."""
+    if not isinstance(payload, dict):
+        return None
+
+    direct_keys = (
+        "joined_at",
+        "joined_date",
+        "date_joined",
+        "date_modified",
+        "membership_date",
+        "member_since",
+    )
+    for key in direct_keys:
+        parsed = _wp_datetime(payload.get(key))
+        if parsed:
+            return parsed
+
+    for nested_key in ("membership", "group_membership", "member"):
+        nested = payload.get(nested_key)
+        if isinstance(nested, dict):
+            parsed = _wp_joined_at_from_member_payload(nested)
+            if parsed:
+                return parsed
+
+    return None
+
+
+def _set_earliest_join_date(join_dates: dict[str, Any], wp_user_id: Any, joined_at: Any) -> None:
+    wp_user_id = _int(wp_user_id)
+    if not wp_user_id or not joined_at:
+        return
+    key = str(wp_user_id)
+    existing = join_dates.get(key)
+    if existing is None or joined_at < existing:
+        join_dates[key] = joined_at
+
+
+def _wordpress_join_dates_by_user_id(
+    client: WordPressAPIClient,
+    wp_group_id: int,
+    *,
+    member_payloads: Iterable[Dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """
+    Return the best known WordPress group join date for each WordPress user.
+
+    Priority is:
+    1. joined_at/date_modified fields returned by the existing custom members
+       endpoint: /wp-json/imaa-connect/v1/groups/<group_id>/members;
+    2. BuddyPress joined_group activity fallback.
+
+    The activity fallback is incomplete for older/admin/imported members, so the
+    existing WordPress members endpoint should include joined_at for fully
+    accurate dates.
+    """
+    join_dates: dict[str, Any] = {}
+
+    for payload in member_payloads or []:
+        if not isinstance(payload, dict):
+            continue
+        wp_user_id = _extract_wp_member_id(payload)
+        _set_earliest_join_date(join_dates, wp_user_id, _wp_joined_at_from_member_payload(payload))
+
     try:
         joined_rows = client.get_all_buddypress_group_activity(
             wp_group_id,
@@ -549,21 +611,15 @@ def _wordpress_join_dates_by_user_id(client: WordPressAPIClient, wp_group_id: in
             max_pages=100,
         )
     except Exception as exc:  # pragma: no cover - network safety
-        logger.warning("Unable to fetch WordPress join dates for group %s: %s", wp_group_id, exc)
-        return {}
+        logger.warning("Unable to fetch WordPress join-date activity for group %s: %s", wp_group_id, exc)
+        joined_rows = []
 
-    join_dates: dict[str, Any] = {}
     for row in joined_rows:
-        wp_user_id = _int(row.get("user_id"))
-        if not wp_user_id:
+        if not isinstance(row, dict):
             continue
         joined_at = _wp_datetime(row.get("date_gmt") or row.get("date"))
-        if not joined_at:
-            continue
-        key = str(wp_user_id)
-        existing = join_dates.get(key)
-        if existing is None or joined_at < existing:
-            join_dates[key] = joined_at
+        _set_earliest_join_date(join_dates, row.get("user_id"), joined_at)
+
     return join_dates
 
 
@@ -763,7 +819,11 @@ def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -
     # /wp/v2/users/<id>?context=edit route is not available on IMAA.
     # Endpoint: /wp-json/imaa-connect/v1/groups/<group_id>/members
     members = client.get_all_imaa_connect_group_members(source.wp_group_id)
-    join_dates_by_wp_user_id = _wordpress_join_dates_by_user_id(client, source.wp_group_id)
+    join_dates_by_wp_user_id = _wordpress_join_dates_by_user_id(
+        client,
+        source.wp_group_id,
+        member_payloads=members,
+    )
 
     processed_wp_ids: set[str] = set()
     users_created = 0
