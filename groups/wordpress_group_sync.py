@@ -7,14 +7,19 @@ WordPressGroupSource. Phase 2 can also create/update selected Connect Group rows
 import html
 import logging
 import re
+from datetime import timezone as datetime_timezone
 from typing import Any, Dict, Iterable
 
 from django.contrib.auth.models import User
+from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.utils.html import strip_tags
 from django.utils.text import slugify
 
+from activity_feed.models import FeedItem
 from users.wordpress_api import WordPressAPIClient
 from users.models import UserProfile
 from .models import Group, GroupMembership, WordPressGroupSource
@@ -38,6 +43,28 @@ def _int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _wp_datetime(value: Any):
+    """Parse a WordPress REST datetime string into an aware Django datetime."""
+    if not value:
+        return None
+    parsed = parse_datetime(str(value))
+    if not parsed:
+        return None
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, timezone=datetime_timezone.utc)
+    return parsed
+
+
+def _json_has_wordpress_activity_id(activity_id: int) -> Q:
+    """Match old/new metadata shapes and int/string JSON values for idempotency."""
+    return (
+        Q(metadata__source="wordpress", metadata__wordpress_activity_id=activity_id)
+        | Q(metadata__source="wordpress", metadata__wordpress_activity_id=str(activity_id))
+        | Q(metadata__source_activity_id=activity_id)
+        | Q(metadata__source_activity_id=str(activity_id))
+    )
 
 
 def normalize_buddypress_group(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -512,6 +539,206 @@ def _get_or_create_connect_user_from_wordpress_member(
     return user, is_new, "ok"
 
 
+def _wordpress_join_dates_by_user_id(client: WordPressAPIClient, wp_group_id: int) -> dict[str, Any]:
+    """Return earliest BuddyPress joined_group date for each WordPress user in a group."""
+    try:
+        joined_rows = client.get_all_buddypress_group_activity(
+            wp_group_id,
+            activity_type="joined_group",
+            per_page=100,
+            max_pages=100,
+        )
+    except Exception as exc:  # pragma: no cover - network safety
+        logger.warning("Unable to fetch WordPress join dates for group %s: %s", wp_group_id, exc)
+        return {}
+
+    join_dates: dict[str, Any] = {}
+    for row in joined_rows:
+        wp_user_id = _int(row.get("user_id"))
+        if not wp_user_id:
+            continue
+        joined_at = _wp_datetime(row.get("date_gmt") or row.get("date"))
+        if not joined_at:
+            continue
+        key = str(wp_user_id)
+        existing = join_dates.get(key)
+        if existing is None or joined_at < existing:
+            join_dates[key] = joined_at
+    return join_dates
+
+
+def _connect_user_for_wordpress_user_id(wp_user_id: int):
+    if not wp_user_id:
+        return None
+    profile = UserProfile.objects.filter(wordpress_id=wp_user_id).select_related("user").first()
+    return profile.user if profile else None
+
+
+def import_wordpress_source_group_content(
+    source: WordPressGroupSource,
+    *,
+    actor=None,
+    dry_run: bool = False,
+    max_pages: int = 100,
+) -> Dict[str, int]:
+    """
+    Import BuddyPress group activity posts into the linked IMAA Connect group.
+
+    This is intentionally additive and idempotent:
+    - only BuddyPress ``activity_update`` rows are imported as Connect posts;
+    - existing Connect posts/users/memberships are never deleted;
+    - the same WordPress activity id is never imported twice;
+    - missing authors fall back to the admin/group owner instead of blocking import.
+    """
+    if not source.linked_group_id:
+        if not actor:
+            raise ValueError("This WordPress source is not linked to a Connect group yet.")
+        sync_wordpress_source_to_connect_group(source, actor=actor)
+        source.refresh_from_db()
+
+    group = source.linked_group
+    if not group:
+        raise ValueError("Unable to resolve linked Connect group for this WordPress source.")
+
+    client = WordPressAPIClient.for_group_sync()
+    activities = client.get_all_buddypress_group_activity(
+        source.wp_group_id,
+        activity_type="activity_update",
+        per_page=100,
+        max_pages=max_pages,
+    )
+
+    group_ct = ContentType.objects.get_for_model(Group)
+    imported = 0
+    skipped_existing = 0
+    skipped_empty = 0
+    skipped_wrong_group = 0
+    failed = 0
+
+    fallback_actor = None
+    if actor and getattr(actor, "is_authenticated", False):
+        fallback_actor = actor
+    elif group.owner_id:
+        fallback_actor = group.owner
+    elif group.created_by_id:
+        fallback_actor = group.created_by
+
+    for activity in activities:
+        wp_activity_id = _int(activity.get("id"))
+        wp_group_id = _int(activity.get("primary_item_id"))
+        if not wp_activity_id:
+            failed += 1
+            continue
+        if wp_group_id and wp_group_id != int(source.wp_group_id):
+            skipped_wrong_group += 1
+            continue
+
+        if FeedItem.objects.filter(group=group).filter(_json_has_wordpress_activity_id(wp_activity_id)).exists():
+            skipped_existing += 1
+            continue
+
+        content_html = ""
+        content_payload = activity.get("content")
+        if isinstance(content_payload, dict):
+            content_html = str(content_payload.get("rendered") or "")
+        else:
+            content_html = str(content_payload or "")
+        content_text = _text(content_payload)
+        if not content_text:
+            skipped_empty += 1
+            continue
+
+        author = _connect_user_for_wordpress_user_id(_int(activity.get("user_id"))) or fallback_actor
+        source_created_at = _wp_datetime(activity.get("date_gmt") or activity.get("date"))
+        metadata = {
+            "type": "text",
+            "text": content_text,
+            "group_id": group.id,
+            "is_hidden": False,
+            "is_deleted": False,
+            "source": "wordpress",
+            "source_system": "wordpress",
+            "source_object_type": "buddypress_activity",
+            "source_activity_type": str(activity.get("type") or "activity_update"),
+            "source_activity_id": str(wp_activity_id),
+            "wordpress_activity_id": str(wp_activity_id),
+            "wordpress_group_id": str(source.wp_group_id),
+            "wordpress_user_id": str(activity.get("user_id") or ""),
+            "wordpress_link": str(activity.get("link") or ""),
+            "wordpress_title": _text(activity.get("title")),
+            "wordpress_created_at": (source_created_at.isoformat() if source_created_at else str(activity.get("date") or "")),
+        }
+        if content_html and content_html != content_text:
+            metadata["wordpress_content_html"] = content_html
+
+        if dry_run:
+            imported += 1
+            continue
+
+        try:
+            with transaction.atomic():
+                item = FeedItem.objects.create(
+                    community=group.community,
+                    group=group,
+                    event=None,
+                    actor=author,
+                    verb="posted",
+                    target_content_type=group_ct,
+                    target_object_id=group.id,
+                    metadata=metadata,
+                )
+                if source_created_at:
+                    FeedItem.objects.filter(pk=item.pk).update(created_at=source_created_at)
+            imported += 1
+        except Exception as exc:  # pragma: no cover - defensive import safety
+            failed += 1
+            logger.exception(
+                "Unable to import WordPress activity %s for group %s: %s",
+                wp_activity_id,
+                source.wp_group_id,
+                exc,
+            )
+
+    return {
+        "processed": len(activities),
+        "imported": imported,
+        "skipped_existing": skipped_existing,
+        "skipped_empty": skipped_empty,
+        "skipped_wrong_group": skipped_wrong_group,
+        "failed": failed,
+        "dry_run": bool(dry_run),
+    }
+
+
+def import_enabled_wordpress_source_group_content(*, actor=None, dry_run: bool = False) -> Dict[str, int]:
+    """Import BuddyPress group posts for all enabled/linked WordPress sources."""
+    totals = {
+        "groups_processed": 0,
+        "groups_failed": 0,
+        "processed": 0,
+        "imported": 0,
+        "skipped_existing": 0,
+        "skipped_empty": 0,
+        "skipped_wrong_group": 0,
+        "failed": 0,
+        "dry_run": bool(dry_run),
+    }
+    qs = WordPressGroupSource.objects.filter(sync_enabled=True).select_related("linked_group").order_by("name")
+    for source in qs:
+        if not source.linked_group_id:
+            continue
+        try:
+            result = import_wordpress_source_group_content(source, actor=actor, dry_run=dry_run)
+        except Exception as exc:  # pragma: no cover - defensive sync logging
+            totals["groups_failed"] += 1
+            logger.exception("Unable to import WordPress content for group %s: %s", source.wp_group_id, exc)
+            continue
+        totals["groups_processed"] += 1
+        for key in ("processed", "imported", "skipped_existing", "skipped_empty", "skipped_wrong_group", "failed"):
+            totals[key] += int(result.get(key) or 0)
+    return totals
+
+
 def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -> Dict[str, int]:
     """
     Sync members for one enabled WordPress group into existing GroupMembership.
@@ -536,6 +763,7 @@ def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -
     # /wp/v2/users/<id>?context=edit route is not available on IMAA.
     # Endpoint: /wp-json/imaa-connect/v1/groups/<group_id>/members
     members = client.get_all_imaa_connect_group_members(source.wp_group_id)
+    join_dates_by_wp_user_id = _wordpress_join_dates_by_user_id(client, source.wp_group_id)
 
     processed_wp_ids: set[str] = set()
     users_created = 0
@@ -581,6 +809,7 @@ def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -
                 "source": GroupMembership.SOURCE_WORDPRESS,
                 "source_user_id": str(wp_user_id),
                 "source_synced_at": now,
+                "joined_at": join_dates_by_wp_user_id.get(str(wp_user_id)) or now,
                 "invited_by": actor if actor and getattr(actor, "is_authenticated", False) else None,
                 "left_at": None,
             },
@@ -601,6 +830,10 @@ def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -
             if membership.source_user_id != str(wp_user_id):
                 membership.source_user_id = str(wp_user_id)
                 changed_fields.append("source_user_id")
+            wp_joined_at = join_dates_by_wp_user_id.get(str(wp_user_id))
+            if wp_joined_at and not membership.joined_at:
+                membership.joined_at = wp_joined_at
+                changed_fields.append("joined_at")
             if membership.left_at is not None:
                 membership.left_at = None
                 changed_fields.append("left_at")
@@ -610,17 +843,17 @@ def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -
                 membership.save(update_fields=list(dict.fromkeys(changed_fields)))
             memberships_updated += 1
 
+    # WordPress/Moodle sync is intentionally non-destructive. If a source group
+    # no longer returns a user, keep the existing Connect user and membership
+    # untouched. This preserves community access/history and makes subsequent
+    # syncs additive: existing users remain, newly found users are added.
     marked_inactive = 0
+    preserved_missing_remote = 0
     if processed_wp_ids:
-        stale_qs = GroupMembership.objects.filter(
+        preserved_missing_remote = GroupMembership.objects.filter(
             group=group,
             source=GroupMembership.SOURCE_WORDPRESS,
-        ).exclude(source_user_id__in=processed_wp_ids)
-        marked_inactive = stale_qs.exclude(status=GroupMembership.STATUS_INACTIVE).update(
-            status=GroupMembership.STATUS_INACTIVE,
-            left_at=now,
-            source_synced_at=now,
-        )
+        ).exclude(source_user_id__in=processed_wp_ids).count()
 
     source.last_members_synced_at = now
     source.member_count = len(processed_wp_ids) if processed_wp_ids else source.member_count
@@ -632,6 +865,7 @@ def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -
         "memberships_created": memberships_created,
         "memberships_updated": memberships_updated,
         "marked_inactive": marked_inactive,
+        "preserved_missing_remote": preserved_missing_remote,
         "skipped_missing_email": skipped_missing_email,
         "failed": failed,
         "processed": len(processed_wp_ids),
@@ -649,6 +883,7 @@ def sync_enabled_wordpress_source_members(*, actor=None) -> Dict[str, int]:
         "memberships_created": 0,
         "memberships_updated": 0,
         "marked_inactive": 0,
+        "preserved_missing_remote": 0,
         "skipped_missing_email": 0,
         "failed": 0,
         "processed": 0,
@@ -669,6 +904,7 @@ def sync_enabled_wordpress_source_members(*, actor=None) -> Dict[str, int]:
             "memberships_created",
             "memberships_updated",
             "marked_inactive",
+            "preserved_missing_remote",
             "skipped_missing_email",
             "failed",
             "processed",

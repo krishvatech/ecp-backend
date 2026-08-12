@@ -47,6 +47,8 @@ from .serializers import (
 )
 from .soft_delete import soft_delete_group_tree
 from .wordpress_group_sync import (
+    import_enabled_wordpress_source_group_content,
+    import_wordpress_source_group_content,
     refresh_wordpress_group_sources,
     sync_enabled_wordpress_sources_to_connect_groups,
     sync_enabled_wordpress_source_members,
@@ -207,7 +209,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             return int(data.get("gid")) == int(group.pk)
         except Exception:
             return False
-        
+
     # Use: Resolve a messaging.Message by id and ensure it belongs to this group's conversation.
     # Ordering: Not applicable (single record lookup).
     def _get_message_for_group(self, group, message_id):
@@ -227,7 +229,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         if (getattr(conv, "group_id", None) is not None) and (getattr(conv, "event_id", None) is None) and (conv.group_id == group.id):
             return msg, None
         return None, "Message does not belong to this group"
-    
+
     # Use: Decide if current user can send a message to a group (admins/mods vs message_mode=all).
     # Ordering: Not applicable.
     def _can_send_message_to_group(self, request, group) -> (bool, str):
@@ -255,7 +257,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             return True, "member_allowed"
 
         return False, "admins_only"
-    
+
     # Use: Ensure user has ACTIVE membership in parent when joining a sub-group.
     # Ordering: Not applicable (get_or_create).
     def _ensure_parent_membership_active(self, group: Group, user_id: int):
@@ -278,7 +280,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         return GroupMembership.objects.filter(
             group=group, user_id=user_id, status=GroupMembership.STATUS_ACTIVE
         ).exists()
-    
+
     # Use: Check if user is owner/admin or site staff for a group.
     # Ordering: Not applicable.
     def _is_owner_admin_or_staff(self, user_id, group: Group) -> bool:
@@ -299,14 +301,14 @@ class GroupViewSet(viewsets.ModelViewSet):
         # Use UserMiniSerializer to get avatar_url and other standard fields
         # Pass context so avatar_url can be built as absolute URI
         data = UserMiniSerializer(u, context=self.get_serializer_context()).data
-        
+
         # Ensure 'name' field is present for frontend compatibility (GroupDetailsPage uses .name)
         # Priority: Full Name > Username > Email
         name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", None)
         data["name"] = name
-        
+
         return data
-    
+
     # Use (Endpoint): GET/POST /api/groups/{id}/posts/
     # - GET: lists feed posts for a group (Ordering: FeedItems ordered by "-created_at")
     # - POST: create a post (text/image/link/poll/event) — moderator/admin/owner/staff only
@@ -330,7 +332,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                 (uid and self._is_active_member(uid, group))
             ):
                 return Response({"detail": "Only sub-group members can view its posts."}, status=403)
-            
+
         FeedItem = self._get_feeditem_model()
         if not FeedItem:
             return Response({"detail": "activity_feed.FeedItem not installed"}, status=409)
@@ -511,7 +513,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             metadata=meta,
         )
         return Response({"ok": True, "id": item.id}, status=201)
-    
+
     def _optimize_group_queryset(self, qs):
         """Keep group detail/list serialization to a small, predictable query count."""
         parent_links_qs = (
@@ -630,7 +632,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         return GroupMembership.objects.filter(
             group=group, user_id=user_id, role=GroupMembership.ROLE_ADMIN
         ).exists()
-    
+
     # Use: True if user is MODERATOR in this group (staff-only).
     # Ordering: Not applicable.
     def _is_moderator(self, user_id, group) -> bool:
@@ -661,17 +663,17 @@ class GroupViewSet(viewsets.ModelViewSet):
         uid = getattr(user, "id", None)
         if not uid or not user.is_authenticated:
             return False
-            
+
         if getattr(user, "is_staff", False):
             return True
-            
+
         if getattr(group, "owner_id", None) == uid or group.created_by_id == uid:
             return True
-            
+
         return GroupMembership.objects.filter(
             group=group, user_id=uid, role=GroupMembership.ROLE_ADMIN, status=GroupMembership.STATUS_ACTIVE
         ).exists()
-    
+
     # Return the Community for this group
     def _resolve_group_community(self, group):
         """
@@ -893,7 +895,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         if FeedItem:
             FeedItem.objects.create(
                 community=community,
-                group=group, 
+                group=group,
                 event=None,
                 actor=self.request.user,
                 verb="group_created",
@@ -931,11 +933,11 @@ class GroupViewSet(viewsets.ModelViewSet):
         Allowed for: Superusers, Group Owners, Group Admins.
         """
         group = self.get_object()
-        
+
         # Permission check
         uid = getattr(request.user, "id", None)
         is_allowed = (
-            request.user.is_superuser 
+            request.user.is_superuser
             or (group.owner_id and group.owner_id == uid)
             or (group.created_by_id == uid)
             or self._is_admin(uid, group)
@@ -989,17 +991,17 @@ class GroupViewSet(viewsets.ModelViewSet):
                 ).exclude(
                     role__in=[GroupMembership.ROLE_ADMIN, GroupMembership.ROLE_MODERATOR]
                 )
-                
+
                 if old_parent:
                     exclude_users = []
                     if old_parent.owner_id:
                         exclude_users.append(old_parent.owner_id)
                     if old_parent.created_by_id:
                         exclude_users.append(old_parent.created_by_id)
-                    
+
                     if exclude_users:
                         memberships_to_delete = memberships_to_delete.exclude(user_id__in=exclude_users)
-                
+
                 removed_count = memberships_to_delete.count()
                 for membership in memberships_to_delete:
                     membership.mark_status(
@@ -1037,20 +1039,20 @@ class GroupViewSet(viewsets.ModelViewSet):
     def export_members_csv(self, request, pk=None):
         """Export group members as CSV (admin/owner only)."""
         group = self.get_object()
-        
+
         # Check if user is admin or owner
         if not self._can_manage(request, group):
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        
+
         # Get all memberships (including active and inactive)
         memberships = GroupMembership.objects.filter(
             group=group
         ).select_related("user").order_by("-joined_at")
-        
+
         # Create CSV
         output = StringIO()
         writer = csv.writer(output)
-        
+
         # Write header
         writer.writerow([
             "User ID",
@@ -1062,14 +1064,14 @@ class GroupViewSet(viewsets.ModelViewSet):
             "Left Date",
             "Invited By"
         ])
-        
+
         # Write data rows
         for membership in memberships:
             user = membership.user
             joined_date = membership.joined_at.isoformat() if membership.joined_at else ""
             left_date = membership.left_at.isoformat() if membership.left_at else ""
             invited_by = membership.invited_by.get_full_name() or membership.invited_by.username if membership.invited_by else ""
-            
+
             writer.writerow([
                 user.id,
                 user.get_full_name() or user.username,
@@ -1080,7 +1082,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                 left_date,
                 invited_by
             ])
-        
+
         # Create HTTP response with proper CSV content type
         csv_content = output.getvalue()
         response = HttpResponse(csv_content, content_type="text/csv; charset=utf-8")
@@ -1224,7 +1226,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
-    
+
     # Use: Internal helper to activate PENDING members (and parent activation for sub-groups).
     # Ordering: Not applicable.
     def _activate_members(self, group, user_ids):
@@ -1262,7 +1264,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         uid = int(user_id)
         updated = self._activate_members(group, [uid])
         return Response({"ok": True, "updated": updated, "user_id": uid})
-    
+
     # Use (Endpoint): POST /api/groups/{id}/member-requests/reject/{user_id}
     # - Reject a single pending request (delete pending membership).
     # Ordering: Not applicable.
@@ -1279,12 +1281,12 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         uid = int(user_id)
         STATUS_PENDING = GroupMembership.STATUS_PENDING
-        
+
         # Get the membership before deleting to notify the user
         try:
             membership = GroupMembership.objects.get(group=group, user_id=uid, status=STATUS_PENDING)
             user = membership.user
-            
+
             # Notify the user that their join request was rejected
             if user:
                 from friends.models import Notification
@@ -1303,7 +1305,7 @@ class GroupViewSet(viewsets.ModelViewSet):
                 )
         except GroupMembership.DoesNotExist:
             pass
-        
+
         membership = GroupMembership.objects.filter(group=group, user_id=uid, status=STATUS_PENDING).first()
         if membership:
             membership.mark_status(GroupMembership.STATUS_REJECTED, user=request.user, reason="Join request rejected")
@@ -1359,14 +1361,14 @@ class GroupViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             # refresh group to lock? (optional, but good for owner check)
             group.refresh_from_db()
-            
+
             is_owner = (group.owner_id == user.id)
             is_admin = (membership.role == GroupMembership.ROLE_ADMIN) if membership else False
-            
+
             # Find OTHER active admins
             other_admins_qs = GroupMembership.objects.filter(
-                group=group, 
-                role=GroupMembership.ROLE_ADMIN, 
+                group=group,
+                role=GroupMembership.ROLE_ADMIN,
                 status=GroupMembership.STATUS_ACTIVE
             ).exclude(user_id=user.id).order_by("joined_at") # oldest first
 
@@ -1378,48 +1380,48 @@ class GroupViewSet(viewsets.ModelViewSet):
                     return Response({
                         "detail": "As the owner, you must assign another Admin before leaving. The group requires an Admin to function."
                     }, status=400)
-                
+
                 # Transfer ownership to the oldest admin
                 new_owner_membership = other_admins_qs.first()
                 new_owner = new_owner_membership.user
-                
+
                 group.owner = new_owner
                 group.save(update_fields=["owner"])
-                
+
                 # Log or notify could happen here
                 # Finally delete own membership if it exists
                 if membership:
                     membership.mark_status(GroupMembership.STATUS_LEFT, user=request.user, reason="Left group")
-                
+
                 return Response({
-                    "ok": True, 
+                    "ok": True,
                     "detail": f"You have left the group. Ownership was transferred to {new_owner.get_full_name() or new_owner.username}."
                 })
 
             elif is_admin:
-                # If I am an Admin, I should not leave if I am the LAST Admin 
+                # If I am an Admin, I should not leave if I am the LAST Admin
                 # (and the owner is not active or missing? Actually, if there is an owner, the owner is an admin/super-user usually).
                 # But typically, if constraints say "must have at least one admin", we enforce it.
                 # If there is also an Owner, the Owner counts as "privileged" but might not have "role=admin" explicitly in membership?
                 # Let's check _is_admin logic: it checks role=admin.
-                # If the Owner is distinct, we might be fine. 
+                # If the Owner is distinct, we might be fine.
                 # But request says: "if that admin leave... if there is no other admin than he make a admin..."
-                
+
                 # Safest check: If I am the ONLY admin, and there are no other admins.
                 if other_admins_count == 0:
                     # Check if owner exists and is someone else?
-                    # If I am not owner, but I am the only admin... 
+                    # If I am not owner, but I am the only admin...
                     # Does the owner count as an admin? Usually yes via _is_admin but that checks queryset.
                     # If owner has role=member, then I am really the last admin.
-                    
+
                     return Response({
                         "detail": "You are the only Admin. Please promote another member to Admin before leaving."
                     }, status=400)
-                
+
                 if membership:
                     membership.mark_status(GroupMembership.STATUS_LEFT, user=request.user, reason="Left group")
                 return Response({"ok": True, "detail": "You have left the group."})
-            
+
             else:
                 # Regular member/moderator - just leave
                 if membership:
@@ -1490,7 +1492,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             )
         )
 
-    
+
     # Use: ContentType id helper for a model class.
     # Ordering: Not applicable.
     def _ct_id(self, model):
@@ -1523,7 +1525,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         if item.group_id != group.id:
             return None, "Item does not belong to this group"
         return item, None
-    
+
     def _my_friend_ids(self, me_id: int) -> set[int]:
         if not me_id:
             return set()
@@ -1787,7 +1789,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             "deleted": "soft",
             "message": "The post was removed from the platform and remains stored in the database with comments, reactions, reports and history.",
         }, status=200)
-    
+
     # Use (Endpoint): POST /api/groups/{id}/posts/hide-post
     # - Hide a feed item (soft visibility off).
     # Ordering: Not applicable (single item update).
@@ -1809,7 +1811,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         item, err = self._load_group_item(group, fid)
         if err:
             return Response({"detail": err}, status=400)
-        
+
         meta = item.metadata or {}
         meta["is_hidden"] = True
         meta["hidden_at"] = timezone.now().isoformat()
@@ -2201,15 +2203,15 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def subgroups(self, request, pk=None):
         parent = self.get_object()
-        
+
         # Primary children OR Linked children (approved)
         qs = Group.objects.filter(
-            Q(parent=parent) | 
+            Q(parent=parent) |
             Q(parent_links__parent_group=parent, parent_links__status=GroupParentAssociation.STATUS_APPROVED)
         ).distinct()
 
         qs = qs.annotate(member_count=Count("memberships")).select_related('community', 'created_by').order_by('-created_at')
-        
+
         page = self.paginate_queryset(qs)
         ser = GroupSerializer(page or qs, many=True, context={'request': request})
         if page is not None:
@@ -2224,9 +2226,9 @@ class GroupViewSet(viewsets.ModelViewSet):
         # Permission: Only subgroup admins/staff can see the full list (including pending/rejected)
         if not self._can_manage(request, group):
             return Response({"detail": "Forbidden"}, status=403)
-        
+
         links = GroupParentAssociation.objects.filter(child_group=group).select_related('parent_group', 'requested_by', 'reviewed_by').order_by('-created_at')
-        
+
         data = []
         for link in links:
              data.append({
@@ -2251,26 +2253,26 @@ class GroupViewSet(viewsets.ModelViewSet):
         child_group = self.get_object()
         if not self._can_manage(request, child_group):
              return Response({"detail": "Forbidden"}, status=403)
-             
+
         parent_id = request.data.get("parent_id")
         if not parent_id:
              return Response({"detail": "parent_id required"}, status=400)
-             
+
         try:
              parent_group = Group.objects.get(pk=int(parent_id))
         except (Group.DoesNotExist, ValueError):
              return Response({"detail": "Parent group not found"}, status=404)
-             
+
         # Constraints check
         if child_group.community_id != parent_group.community_id:
              return Response({"detail": "Groups must belong to the same community"}, status=400)
-             
+
         if not child_group.parent_id:
              return Response({"detail": "Only existing sub-groups can request additional parents."}, status=400)
-             
+
         if child_group.parent_id == parent_group.id:
              return Response({"detail": "Already the primary parent."}, status=400)
-             
+
         # Reuse old association rows instead of creating duplicates.
         existing_link = GroupParentAssociation.objects.filter(
              child_group=child_group,
@@ -2298,7 +2300,7 @@ class GroupViewSet(viewsets.ModelViewSet):
              # Always require manual approval for parent links, even if requester is admin/owner.
              # This ensures a consistent workflow (Request -> Review -> Approve).
              status_val = GroupParentAssociation.STATUS_PENDING
-             
+
              link = GroupParentAssociation.objects.create(
                   child_group=child_group,
                   parent_group=parent_group,
@@ -2342,7 +2344,7 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path=r'parent-links/(?P<link_id>\d+)/approve')
     def approve_parent_link(self, request, pk=None, link_id=None):
         group = self.get_object() # Could be child or parent
-        
+
         # Try to find link where group is child OR parent
         try:
             link = GroupParentAssociation.objects.get(
@@ -2350,11 +2352,11 @@ class GroupViewSet(viewsets.ModelViewSet):
             )
         except GroupParentAssociation.DoesNotExist:
             return Response({"detail": "Link not found for this group"}, status=404)
-            
+
         # Permission: Must manage PARENT group
         if not self._can_manage(request, link.parent_group):
             return Response({"detail": "You must be an admin of the PARENT group to approve."}, status=403)
-            
+
         link.status = GroupParentAssociation.STATUS_APPROVED
         link.reviewed_by = request.user
         link.reviewed_at = timezone.now()
@@ -2398,14 +2400,14 @@ class GroupViewSet(viewsets.ModelViewSet):
             )
         except GroupParentAssociation.DoesNotExist:
             return Response({"detail": "Link not found for this group"}, status=404)
-            
+
         # Permission: Parent admin OR Child admin can cancel/reject
         can_child = self._can_manage(request, link.child_group)
         can_parent = self._can_manage(request, link.parent_group)
 
         if not (can_child or can_parent):
              return Response({"detail": "Forbidden"}, status=403)
-             
+
         link.status = GroupParentAssociation.STATUS_REJECTED
         link.reviewed_by = request.user
         link.reviewed_at = timezone.now()
@@ -2421,14 +2423,14 @@ class GroupViewSet(viewsets.ModelViewSet):
             )
         except GroupParentAssociation.DoesNotExist:
             return Response({"detail": "Link not found for this group"}, status=404)
-            
+
         # Permission: Parent admin OR Child admin
         can_child = self._can_manage(request, link.child_group)
         can_parent = self._can_manage(request, link.parent_group)
-        
+
         if not (can_child or can_parent):
             return Response({"detail": "Forbidden"}, status=403)
-            
+
         link.mark_removed(user=request.user, reason="Removed group parent association")
         return Response({"ok": True, "status": "removed"})
 
@@ -2439,9 +2441,9 @@ class GroupViewSet(viewsets.ModelViewSet):
         group = self.get_object()
         if not self._can_manage(request, group):
             return Response({"detail": "Forbidden"}, status=403)
-            
+
         links = GroupParentAssociation.objects.filter(parent_group=group).select_related('child_group', 'requested_by', 'reviewed_by').order_by('-created_at')
-        
+
         data = []
         for link in links:
              data.append({
@@ -2534,7 +2536,7 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         data = GroupMemberOutSerializer(qs, many=True).data
         return Response({"ok": True, "count": len(data), "requests": data}, status=200)
-    
+
     # Use (Endpoint): POST /api/groups/{id}/join-group
     # - Handle join flows for all visibility/policy combos (open/approval/invite + public/private).
     # Ordering: Not applicable.
@@ -2816,7 +2818,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         ok, reason = self._can_send_message_to_group(request, group)
         return Response({"ok": ok, "reason": reason, "message_mode": group.message_mode})
 
-    
+
     # PATCH /api/groups/{id}/posts/{item_id}/edit
     @action(detail=True, methods=["patch"], url_path=r"posts/(?P<item_id>\d+)/edit",
             parser_classes=[JSONParser, FormParser, MultiPartParser])
@@ -2940,7 +2942,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         group = self.get_object()
         if not self._can_invite_by_email(request, group):
             return Response({"detail": "Forbidden"}, status=403)
-            
+
         from django.core.validators import EmailValidator
         from django.core.exceptions import ValidationError
         from django.core.cache import cache
@@ -2953,7 +2955,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         emails_raw = request.data.get("emails_text", "")
         if "emails" in request.data and isinstance(request.data["emails"], list):
             emails_raw += "\n".join(request.data["emails"])
-            
+
         # Parse emails
         parts = re.split(r'[,\n\r\t; ]+', emails_raw)
         validator = EmailValidator()
@@ -2966,32 +2968,32 @@ class GroupViewSet(viewsets.ModelViewSet):
                     emails.append(p)
                 except ValidationError:
                     pass
-                    
+
         max_per_req = getattr(settings, "INVITE_EMAILS_MAX_PER_REQUEST", 20)
         if len(emails) > max_per_req:
             emails = emails[:max_per_req]
-            
+
         if not emails:
             return Response({"detail": "No valid emails provided"}, status=400)
-            
+
         max_per_day = getattr(settings, "INVITE_EMAILS_MAX_PER_DAY", 100)
         today_str = datetime.now().strftime("%Y-%m-%d")
         cache_key = f"invite_email:group:{request.user.id}:{today_str}"
         current_daily = cache.get(cache_key, 0)
-        
+
         if current_daily >= max_per_day:
             return Response({"detail": f"Daily limit of {max_per_day} invites reached."}, status=429)
-            
+
         frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
         group_id_str = group.slug or str(group.id)
-        
+
         sent = 0
         failed = []
-        
+
         for email in emails:
             if current_daily + sent >= max_per_day:
                 break
-                
+
             payload = {
                 "kind": "group",
                 "group_id": group.id,
@@ -3000,16 +3002,16 @@ class GroupViewSet(viewsets.ModelViewSet):
             }
             token = signing.dumps(payload, salt="group-email-invite")
             invite_url = f"{frontend_url}/community/groups/{group_id_str}?invite_token={token}"
-            
+
             success = send_group_invite_email(email, group, request.user, invite_url)
             if success:
                 sent += 1
             else:
                 failed.append({"email": email, "error": "Internal send error"})
-                
+
         if sent > 0:
             cache.set(cache_key, current_daily + sent, timeout=86400)
-            
+
         return Response({
             "ok": True,
             "sent": sent,
@@ -3024,22 +3026,22 @@ class GroupViewSet(viewsets.ModelViewSet):
         token = request.data.get("token")
         if not token:
             return Response({"detail": "Token required"}, status=400)
-            
+
         from django.core import signing
         from django.conf import settings
         max_age = getattr(settings, "INVITE_EMAIL_TOKEN_MAX_AGE_SECONDS", 30 * 24 * 3600)
-        
+
         try:
             payload = signing.loads(token, salt="group-email-invite", max_age=max_age)
         except signing.BadSignature:
             return Response({"detail": "Invalid or expired token"}, status=400)
-            
+
         if payload.get("kind") != "group" or payload.get("group_id") != group.id:
             return Response({"detail": "Token not for this group"}, status=400)
-            
+
         if not request.user.email or payload.get("email", "").lower() != request.user.email.lower():
             return Response({"detail": "Token belongs to a different email"}, status=403)
-            
+
         # Join group
         invited_by_id = payload.get("invited_by")
         membership, created = GroupMembership.objects.get_or_create(
@@ -3059,9 +3061,9 @@ class GroupViewSet(viewsets.ModelViewSet):
             status_msg = "already_member"
         else:
             status_msg = "joined"
-            
+
         self._ensure_parent_membership_active(group, request.user.id)
-            
+
         return Response({
             "ok": True,
             "status": status_msg,
@@ -3099,25 +3101,25 @@ class UsersLookupView(APIView):
         out = []
         for u in qs:
             name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", "")
-            
+
             # 1. Avatar logic: check profile.user_image
             avatar = None
             if hasattr(u, "profile"):
                 if u.profile.user_image:
                     avatar = u.profile.user_image.url
-                # fallback if your model has .avatar 
+                # fallback if your model has .avatar
                 elif hasattr(u.profile, "avatar") and u.profile.avatar:
                     avatar = u.profile.avatar.url
-            
+
             # 2. KYC logic
             is_verified = False
             if hasattr(u, "profile"):
                 is_verified = (u.profile.kyc_status == "approved")
 
             out.append({
-                "id": u.pk, 
-                "name": name or None, 
-                "email": getattr(u, "email", None), 
+                "id": u.pk,
+                "name": name or None,
+                "email": getattr(u, "email", None),
                 "avatar": avatar,
                 "is_verified": is_verified
             })
@@ -3169,6 +3171,11 @@ class WordPressGroupSourceStatsView(APIView):
         last_group_refresh = sources.order_by("-last_fetched_at").values_list("last_fetched_at", flat=True).first()
         last_group_sync = sources.order_by("-last_synced_at").values_list("last_synced_at", flat=True).first()
         last_member_sync = sources.order_by("-last_members_synced_at").values_list("last_members_synced_at", flat=True).first()
+        imported_wp_group_posts = FeedItem.objects.filter(
+            metadata__source="wordpress",
+            metadata__source_object_type="buddypress_activity",
+            is_deleted=False,
+        ).count()
 
         return Response({
             "imported_groups": sources.count(),
@@ -3186,6 +3193,7 @@ class WordPressGroupSourceStatsView(APIView):
             "last_group_refresh_at": last_group_refresh,
             "last_group_sync_at": last_group_sync,
             "last_member_sync_at": last_member_sync,
+            "wordpress_group_posts_imported": imported_wp_group_posts,
         })
 
 
@@ -3382,6 +3390,51 @@ class WordPressGroupSourceSyncEnabledMembersView(APIView):
 
     def post(self, request):
         result = sync_enabled_wordpress_source_members(actor=request.user)
+        return Response({"ok": True, **result})
+
+
+class WordPressGroupSourceSyncContentView(APIView):
+    """
+    Admin-only import of BuddyPress group posts for one enabled WordPress group.
+
+    This imports only main BuddyPress group activity posts (activity_update).
+    It is additive/idempotent and never deletes Connect posts, users, or memberships.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request, wp_group_id):
+        source = get_object_or_404(WordPressGroupSource, wp_group_id=wp_group_id)
+        if not source.sync_enabled:
+            return Response(
+                {"detail": "Enable sync for this WordPress group before importing content."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        dry_run = str(request.data.get("dry_run", "")).lower() in {"1", "true", "yes"}
+        try:
+            result = import_wordpress_source_group_content(source, actor=request.user, dry_run=dry_run)
+        except Exception as exc:
+            return Response(
+                {
+                    "detail": "Unable to import WordPress group content for this group.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source.refresh_from_db()
+        data = WordPressGroupSourceSerializer(source, context={"request": request}).data
+        data["content_sync"] = result
+        return Response(data)
+
+
+class WordPressGroupSourceSyncEnabledContentView(APIView):
+    """
+    Admin-only bulk import of BuddyPress group posts for all enabled/linked WordPress groups.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request):
+        dry_run = str(request.data.get("dry_run", "")).lower() in {"1", "true", "yes"}
+        result = import_enabled_wordpress_source_group_content(actor=request.user, dry_run=dry_run)
         return Response({"ok": True, **result})
 
 

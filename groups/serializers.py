@@ -1,5 +1,6 @@
 # groups/serializers.py
 from rest_framework import serializers
+from django.apps import apps
 from django.db.models import Count
 from community.models import Community
 from django.contrib.auth import get_user_model
@@ -203,7 +204,7 @@ class GroupSerializer(serializers.ModelSerializer):
 
         old_file = instance.cover_image if instance.cover_image else None
         old_logo = instance.logo if instance.logo else None
-        
+
         obj = super().update(instance, validated_data)
 
         if remove_flag and old_file:
@@ -221,9 +222,9 @@ class GroupSerializer(serializers.ModelSerializer):
                 pass
             obj.logo = None
             obj.save(update_fields=["logo"])
-            
+
         return obj
-    
+
     def get_current_user_role(self, obj):
         request = self.context.get("request")
         user = getattr(request, "user", None)
@@ -242,7 +243,7 @@ class GroupSerializer(serializers.ModelSerializer):
             .values_list("role", flat=True)
             .first()
         )
-    
+
     def get_membership_status(self, obj):
         request = self.context.get("request")
         uid = getattr(getattr(request, "user", None), "id", None)
@@ -295,7 +296,7 @@ class GroupSerializer(serializers.ModelSerializer):
         Returns list of ALL approved parents: [Primary] + [Additional Approved].
         """
         results = []
-        
+
         # 1. Primary
         if obj.parent_id:
              results.append({
@@ -324,7 +325,7 @@ class GroupSerializer(serializers.ModelSerializer):
              # avoid duplicates if primary is somehow also in links (shouldn't happen with validation)
              if any(r['id'] == p.id for r in results):
                  continue
-                 
+
              results.append({
                 "id": p.id,
                 "name": p.name,
@@ -343,19 +344,19 @@ class GroupSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
             return None
-            
+
         # Check permission (simple check: if user is admin/mod of THIS group)
         # Optimized: relying on view permissions or checking membership role here
         # For simplicity, we limit this detail to valid members with admin/mod role
         # or global staff.
-        
+
         # We can re-use current_user_role logic if available
         role = self.get_current_user_role(obj)
         is_staff = getattr(request.user, "is_staff", False) or getattr(request.user, "is_superuser", False)
-        
+
         if role not in ['admin', 'owner'] and not is_staff:
             return None
-            
+
         if hasattr(obj, "_all_parent_links"):
             links = obj._all_parent_links
         else:
@@ -467,7 +468,7 @@ class GroupMemberOutSerializer(serializers.ModelSerializer):
                 avatar = getattr(u.profile, "avatar", None)
         if hasattr(avatar, "url"):
             avatar = avatar.url
-        
+
         kyc_status = "not_started"
         if hasattr(u, "profile"):
             kyc_status = getattr(u.profile, "kyc_status", "not_started")
@@ -527,7 +528,7 @@ class GroupCreateUpdateSerializer(serializers.ModelSerializer):
         model = Group
         fields = [
             'id', 'name', 'slug', 'description', 'visibility',
-            'cover_image', 'logo', 'parent_id', 'community', 
+            'cover_image', 'logo', 'parent_id', 'community',
             'remove_cover_image', 'remove_logo'
         ]
         extra_kwargs = {
@@ -554,14 +555,14 @@ class GroupCreateUpdateSerializer(serializers.ModelSerializer):
             if instance.cover_image:
                 instance.cover_image.delete(save=False)
             instance.cover_image = None
-            
+
         if validated.pop('remove_logo', False):
             if instance.logo:
                 instance.logo.delete(save=False)
             instance.logo = None
-            
+
         return super().update(instance, validated)
-    
+
 
 class GroupNotificationSerializer(serializers.ModelSerializer):
     actor = UserMiniSerializer(read_only=True)
@@ -622,6 +623,7 @@ class WordPressGroupSourceSerializer(serializers.ModelSerializer):
     linked_group_name = serializers.CharField(source="linked_group.name", read_only=True)
     linked_group_slug = serializers.CharField(source="linked_group.slug", read_only=True)
     synced_member_count = serializers.SerializerMethodField()
+    synced_post_count = serializers.SerializerMethodField()
 
     class Meta:
         model = WordPressGroupSource
@@ -639,6 +641,7 @@ class WordPressGroupSourceSerializer(serializers.ModelSerializer):
             "linked_group_name",
             "linked_group_slug",
             "synced_member_count",
+            "synced_post_count",
             "last_fetched_at",
             "last_synced_at",
             "last_members_synced_at",
@@ -658,6 +661,7 @@ class WordPressGroupSourceSerializer(serializers.ModelSerializer):
             "linked_group_name",
             "linked_group_slug",
             "synced_member_count",
+            "synced_post_count",
             "last_fetched_at",
             "last_synced_at",
             "last_members_synced_at",
@@ -670,6 +674,18 @@ class WordPressGroupSourceSerializer(serializers.ModelSerializer):
         if not group:
             return 0
         return group.memberships.filter(source=GroupMembership.SOURCE_WORDPRESS, status=GroupMembership.STATUS_ACTIVE).count()
+
+    def get_synced_post_count(self, obj):
+        group = getattr(obj, "linked_group", None)
+        if not group:
+            return 0
+        FeedItem = apps.get_model("activity_feed", "FeedItem")
+        return FeedItem.objects.filter(
+            group=group,
+            metadata__source="wordpress",
+            metadata__source_object_type="buddypress_activity",
+            is_deleted=False,
+        ).count()
 
 
 class WordPressGroupSourceToggleSerializer(serializers.Serializer):

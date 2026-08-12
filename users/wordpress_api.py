@@ -239,6 +239,72 @@ class WordPressAPIClient:
 
         return all_members
 
+    def get_buddypress_group_activity(self, group_id: int, *, activity_type: str = "activity_update", page: int = 1, per_page: int = 100) -> Dict[str, Any]:
+        """
+        Fetch one page of BuddyPress activity for a single WordPress group.
+
+        The BuddyPress REST API filters group activity by ``primary_id``. This
+        is intentionally used for WordPress content import because
+        ``primary_item_id`` is a response field, not a working request filter.
+
+        Endpoint:
+        /wp-json/buddypress/v1/activity?component=groups&type=<type>&primary_id=<group_id>
+        """
+        params = {
+            "component": "groups",
+            "primary_id": int(group_id),
+            "page": page,
+            "per_page": per_page,
+        }
+        if activity_type:
+            params["type"] = activity_type
+
+        response = self._get_resource("/buddypress/v1/activity", params=params)
+        try:
+            total = int(response.headers.get("X-WP-Total", "0") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        try:
+            total_pages = int(response.headers.get("X-WP-TotalPages", "0") or 0)
+        except (TypeError, ValueError):
+            total_pages = 0
+
+        data = response.json() if response.content else []
+        if not isinstance(data, list):
+            data = []
+
+        if not total_pages:
+            total_pages = max(1, math.ceil((total or len(data)) / max(per_page, 1)))
+
+        return {
+            "results": data,
+            "total": total,
+            "total_pages": total_pages,
+            "page": page,
+            "per_page": per_page,
+        }
+
+    def get_all_buddypress_group_activity(self, group_id: int, *, activity_type: str = "activity_update", per_page: int = 100, max_pages: int = 100) -> List[Dict[str, Any]]:
+        """Fetch all BuddyPress activity rows for one group up to max_pages."""
+        all_activity: List[Dict[str, Any]] = []
+        page = 1
+        while page <= max_pages:
+            payload = self.get_buddypress_group_activity(
+                group_id=group_id,
+                activity_type=activity_type,
+                page=page,
+                per_page=per_page,
+            )
+            results = payload.get("results") or []
+            all_activity.extend(results)
+
+            total_pages = int(payload.get("total_pages") or 1)
+            if page >= total_pages or not results:
+                break
+            page += 1
+
+        return all_activity
+
     def get_imaa_connect_group_members(self, group_id: int, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
         """
         Fetch one page of group members from the custom IMAA Connect WP endpoint.

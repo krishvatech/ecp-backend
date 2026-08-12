@@ -11,6 +11,8 @@ from groups.views import (
     WordPressGroupSourceSyncEnabledView,
     WordPressGroupSourceSyncMembersView,
     WordPressGroupSourceSyncEnabledMembersView,
+    WordPressGroupSourceSyncContentView,
+    WordPressGroupSourceSyncEnabledContentView,
     WordPressGroupSourceStatsView,
 )
 
@@ -25,8 +27,10 @@ urlpatterns = [
     path('groups/wordpress-sources/stats/', WordPressGroupSourceStatsView.as_view(), name='wordpress-group-sources-stats'),
     path('groups/wordpress-sources/sync-enabled-groups/', WordPressGroupSourceSyncEnabledView.as_view(), name='wordpress-group-sources-sync-enabled'),
     path('groups/wordpress-sources/sync-enabled-members/', WordPressGroupSourceSyncEnabledMembersView.as_view(), name='wordpress-group-sources-sync-enabled-members'),
+    path('groups/wordpress-sources/sync-enabled-content/', WordPressGroupSourceSyncEnabledContentView.as_view(), name='wordpress-group-sources-sync-enabled-content'),
     path('groups/wordpress-sources/<int:wp_group_id>/sync-group/', WordPressGroupSourceSyncGroupView.as_view(), name='wordpress-group-source-sync-group'),
     path('groups/wordpress-sources/<int:wp_group_id>/sync-members/', WordPressGroupSourceSyncMembersView.as_view(), name='wordpress-group-source-sync-members'),
+    path('groups/wordpress-sources/<int:wp_group_id>/sync-content/', WordPressGroupSourceSyncContentView.as_view(), name='wordpress-group-source-sync-content'),
     path('groups/wordpress-sources/<int:wp_group_id>/', WordPressGroupSourceToggleView.as_view(), name='wordpress-group-source-toggle'),
     path('', include(router.urls)),
 ]
