@@ -831,7 +831,7 @@ def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -
                 membership.source_user_id = str(wp_user_id)
                 changed_fields.append("source_user_id")
             wp_joined_at = join_dates_by_wp_user_id.get(str(wp_user_id))
-            if wp_joined_at and not membership.joined_at:
+            if wp_joined_at and (not membership.joined_at or wp_joined_at < membership.joined_at):
                 membership.joined_at = wp_joined_at
                 changed_fields.append("joined_at")
             if membership.left_at is not None:
