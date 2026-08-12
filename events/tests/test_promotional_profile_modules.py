@@ -34,7 +34,7 @@ from events.validators import (
     validate_thesis_tagline
 )
 from users.models import User
-from communities.models import Community
+from community.models import Community
 from django.core.exceptions import ValidationError
 
 

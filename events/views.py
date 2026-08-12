@@ -1,6 +1,5 @@
 """
 ViewSets for the events app.
-
 Users can list, create, retrieve, update, and delete events belonging to
 community they are members of. Creation is restricted to users
 belonging to the target community.

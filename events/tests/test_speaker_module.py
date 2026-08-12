@@ -29,7 +29,7 @@ from events.validators import (
     validate_speaker_bio, validate_short_bio
 )
 from users.models import User
-from communities.models import Community
+from community.models import Community
 from django.core.exceptions import ValidationError
 
 
