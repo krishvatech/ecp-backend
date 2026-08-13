@@ -370,6 +370,137 @@ class WordPressAPIClient:
 
         return all_members
 
+    def _dict_or_list_payload_page(
+        self,
+        response,
+        *,
+        page: int,
+        per_page: int,
+        results_keys: tuple[str, ...] = ("results",),
+    ) -> Dict[str, Any]:
+        """Normalize custom IMAA Connect plugin paginated responses."""
+        payload = response.json() if response.content else {}
+        if isinstance(payload, dict):
+            results = []
+            for key in results_keys:
+                value = payload.get(key)
+                if isinstance(value, list):
+                    results = value
+                    break
+            total = payload.get("total") or payload.get("count")
+            total_pages = payload.get("total_pages") or payload.get("pages")
+        else:
+            results = payload if isinstance(payload, list) else []
+            total = None
+            total_pages = None
+
+        try:
+            total = int(total if total is not None else (response.headers.get("X-WP-Total", "0") or 0))
+        except (TypeError, ValueError):
+            total = 0
+        try:
+            total_pages = int(total_pages if total_pages is not None else (response.headers.get("X-WP-TotalPages", "0") or 0))
+        except (TypeError, ValueError):
+            total_pages = 0
+        if not total_pages:
+            total_pages = max(1, math.ceil((total or len(results)) / max(per_page, 1)))
+
+        return {
+            "results": results,
+            "total": total,
+            "total_pages": total_pages,
+            "page": page,
+            "per_page": per_page,
+        }
+
+    def get_imaa_connect_forum_content_forums(self, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
+        """Fetch one page of forums from the custom read-only forum content plugin."""
+        response = self._get_resource(
+            "/imaa-connect/v1/forum-content/forums",
+            params={"page": page, "per_page": per_page},
+        )
+        return self._dict_or_list_payload_page(response, page=page, per_page=per_page)
+
+    def get_all_imaa_connect_forum_content_forums(self, per_page: int = 100, max_pages: int = 100) -> List[Dict[str, Any]]:
+        """Fetch all forums exposed by the custom read-only forum content plugin."""
+        all_forums: List[Dict[str, Any]] = []
+        page = 1
+        while page <= max_pages:
+            payload = self.get_imaa_connect_forum_content_forums(page=page, per_page=per_page)
+            results = payload.get("results") or []
+            all_forums.extend(results)
+            total_pages = int(payload.get("total_pages") or 1)
+            if page >= total_pages or not results:
+                break
+            page += 1
+        return all_forums
+
+    def get_imaa_connect_forum_topics(self, forum_id: int, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
+        """Fetch one page of bbPress topics for a forum from the custom read-only plugin."""
+        response = self._get_resource(
+            f"/imaa-connect/v1/forum-content/forums/{int(forum_id)}/topics",
+            params={"page": page, "per_page": per_page},
+        )
+        return self._dict_or_list_payload_page(response, page=page, per_page=per_page)
+
+    def get_all_imaa_connect_forum_topics(self, forum_id: int, per_page: int = 100, max_pages: int = 100) -> List[Dict[str, Any]]:
+        """Fetch all bbPress topics for one forum up to max_pages."""
+        all_topics: List[Dict[str, Any]] = []
+        page = 1
+        while page <= max_pages:
+            payload = self.get_imaa_connect_forum_topics(forum_id=forum_id, page=page, per_page=per_page)
+            results = payload.get("results") or []
+            all_topics.extend(results)
+            total_pages = int(payload.get("total_pages") or 1)
+            if page >= total_pages or not results:
+                break
+            page += 1
+        return all_topics
+
+    def get_imaa_connect_forum_topic_replies(self, topic_id: int, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
+        """Fetch one page of bbPress replies for a topic from the custom read-only plugin."""
+        response = self._get_resource(
+            f"/imaa-connect/v1/forum-content/topics/{int(topic_id)}/replies",
+            params={"page": page, "per_page": per_page},
+        )
+        return self._dict_or_list_payload_page(response, page=page, per_page=per_page)
+
+    def get_all_imaa_connect_forum_topic_replies(self, topic_id: int, per_page: int = 100, max_pages: int = 100) -> List[Dict[str, Any]]:
+        """Fetch all bbPress replies for one topic up to max_pages."""
+        all_replies: List[Dict[str, Any]] = []
+        page = 1
+        while page <= max_pages:
+            payload = self.get_imaa_connect_forum_topic_replies(topic_id=topic_id, page=page, per_page=per_page)
+            results = payload.get("results") or []
+            all_replies.extend(results)
+            total_pages = int(payload.get("total_pages") or 1)
+            if page >= total_pages or not results:
+                break
+            page += 1
+        return all_replies
+
+    def get_imaa_connect_group_activity_comments(self, activity_id: int, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
+        """Fetch one page of BuddyPress activity comments for one activity item."""
+        response = self._get_resource(
+            f"/imaa-connect/v1/forum-content/group-activity/{int(activity_id)}/comments",
+            params={"page": page, "per_page": per_page},
+        )
+        return self._dict_or_list_payload_page(response, page=page, per_page=per_page)
+
+    def get_all_imaa_connect_group_activity_comments(self, activity_id: int, per_page: int = 100, max_pages: int = 100) -> List[Dict[str, Any]]:
+        """Fetch all BuddyPress activity comments for one activity item up to max_pages."""
+        all_comments: List[Dict[str, Any]] = []
+        page = 1
+        while page <= max_pages:
+            payload = self.get_imaa_connect_group_activity_comments(activity_id=activity_id, page=page, per_page=per_page)
+            results = payload.get("results") or []
+            all_comments.extend(results)
+            total_pages = int(payload.get("total_pages") or 1)
+            if page >= total_pages or not results:
+                break
+            page += 1
+        return all_comments
+
     def get_imaa_connect_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """
         Fetch one exact WordPress user profile by email from the custom IMAA

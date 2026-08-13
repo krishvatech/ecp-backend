@@ -47,7 +47,10 @@ from .serializers import (
 )
 from .soft_delete import soft_delete_group_tree
 from .wordpress_group_sync import (
+    import_enabled_wordpress_group_activity_comments,
     import_enabled_wordpress_source_group_content,
+    import_wordpress_forum_content,
+    import_wordpress_group_activity_comments_for_source,
     import_wordpress_source_group_content,
     refresh_wordpress_group_sources,
     sync_enabled_wordpress_sources_to_connect_groups,
@@ -3426,6 +3429,76 @@ class WordPressGroupSourceSyncContentView(APIView):
         return Response(data)
 
 
+class WordPressGroupSourceSyncCommentsView(APIView):
+    """
+    Admin-only import of BuddyPress comments for already imported WordPress group posts.
+
+    This is additive/idempotent and never deletes Connect or WordPress content.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request, wp_group_id):
+        source = get_object_or_404(WordPressGroupSource, wp_group_id=wp_group_id)
+        if not source.sync_enabled:
+            return Response(
+                {"detail": "Enable sync for this WordPress group before importing comments."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        dry_run = str(request.data.get("dry_run", "")).lower() in {"1", "true", "yes"}
+        try:
+            result = import_wordpress_group_activity_comments_for_source(source, actor=request.user, dry_run=dry_run)
+        except Exception as exc:
+            return Response(
+                {
+                    "detail": "Unable to import WordPress group comments for this group.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source.refresh_from_db()
+        data = WordPressGroupSourceSerializer(source, context={"request": request}).data
+        data["comment_sync"] = result
+        return Response(data)
+
+
+class WordPressForumContentImportView(APIView):
+    """
+    Admin-only import of mapped WordPress bbPress group-forum topics/replies.
+
+    By default only /groups/<slug>/forum/ forums are imported, and only when the
+    slug maps to an enabled, linked WordPressGroupSource. Public/global bbPress
+    forums are skipped until a deliberate mapping is added.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request):
+        dry_run = str(request.data.get("dry_run", "")).lower() in {"1", "true", "yes"}
+        group_forums_only = str(request.data.get("group_forums_only", "true")).lower() not in {"0", "false", "no"}
+        max_forums_raw = request.data.get("max_forums")
+        max_forums = None
+        if max_forums_raw not in (None, ""):
+            try:
+                max_forums = int(max_forums_raw)
+            except (TypeError, ValueError):
+                return Response({"detail": "max_forums must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            result = import_wordpress_forum_content(
+                actor=request.user,
+                dry_run=dry_run,
+                group_forums_only=group_forums_only,
+                max_forums=max_forums,
+            )
+        except Exception as exc:
+            return Response(
+                {
+                    "detail": "Unable to import WordPress forum content.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"ok": True, **result})
+
+
 class WordPressGroupSourceSyncEnabledContentView(APIView):
     """
     Admin-only bulk import of BuddyPress group posts for all enabled/linked WordPress groups.
@@ -3435,6 +3508,16 @@ class WordPressGroupSourceSyncEnabledContentView(APIView):
     def post(self, request):
         dry_run = str(request.data.get("dry_run", "")).lower() in {"1", "true", "yes"}
         result = import_enabled_wordpress_source_group_content(actor=request.user, dry_run=dry_run)
+        return Response({"ok": True, **result})
+
+
+class WordPressGroupSourceSyncEnabledCommentsView(APIView):
+    """Admin-only bulk import of comments for already imported WordPress group posts."""
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request):
+        dry_run = str(request.data.get("dry_run", "")).lower() in {"1", "true", "yes"}
+        result = import_enabled_wordpress_group_activity_comments(actor=request.user, dry_run=dry_run)
         return Response({"ok": True, **result})
 
 

@@ -11,7 +11,10 @@ from groups.views import (
     WordPressGroupSourceSyncEnabledView,
     WordPressGroupSourceSyncMembersView,
     WordPressGroupSourceSyncEnabledMembersView,
+    WordPressForumContentImportView,
+    WordPressGroupSourceSyncCommentsView,
     WordPressGroupSourceSyncContentView,
+    WordPressGroupSourceSyncEnabledCommentsView,
     WordPressGroupSourceSyncEnabledContentView,
     WordPressGroupSourceStatsView,
 )
@@ -28,9 +31,12 @@ urlpatterns = [
     path('groups/wordpress-sources/sync-enabled-groups/', WordPressGroupSourceSyncEnabledView.as_view(), name='wordpress-group-sources-sync-enabled'),
     path('groups/wordpress-sources/sync-enabled-members/', WordPressGroupSourceSyncEnabledMembersView.as_view(), name='wordpress-group-sources-sync-enabled-members'),
     path('groups/wordpress-sources/sync-enabled-content/', WordPressGroupSourceSyncEnabledContentView.as_view(), name='wordpress-group-sources-sync-enabled-content'),
+    path('groups/wordpress-sources/sync-enabled-comments/', WordPressGroupSourceSyncEnabledCommentsView.as_view(), name='wordpress-group-sources-sync-enabled-comments'),
+    path('groups/wordpress-sources/import-forum-content/', WordPressForumContentImportView.as_view(), name='wordpress-forum-content-import'),
     path('groups/wordpress-sources/<int:wp_group_id>/sync-group/', WordPressGroupSourceSyncGroupView.as_view(), name='wordpress-group-source-sync-group'),
     path('groups/wordpress-sources/<int:wp_group_id>/sync-members/', WordPressGroupSourceSyncMembersView.as_view(), name='wordpress-group-source-sync-members'),
     path('groups/wordpress-sources/<int:wp_group_id>/sync-content/', WordPressGroupSourceSyncContentView.as_view(), name='wordpress-group-source-sync-content'),
+    path('groups/wordpress-sources/<int:wp_group_id>/sync-comments/', WordPressGroupSourceSyncCommentsView.as_view(), name='wordpress-group-source-sync-comments'),
     path('groups/wordpress-sources/<int:wp_group_id>/', WordPressGroupSourceToggleView.as_view(), name='wordpress-group-source-toggle'),
     path('', include(router.urls)),
 ]

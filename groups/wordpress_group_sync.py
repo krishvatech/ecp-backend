@@ -9,6 +9,7 @@ import logging
 import re
 from datetime import timezone as datetime_timezone
 from typing import Any, Dict, Iterable
+from urllib.parse import unquote, urlparse
 
 from django.contrib.auth.models import User
 from django.contrib.contenttypes.models import ContentType
@@ -20,6 +21,7 @@ from django.utils.html import strip_tags
 from django.utils.text import slugify
 
 from activity_feed.models import FeedItem
+from engagements.models import Comment
 from users.wordpress_api import WordPressAPIClient
 from users.models import UserProfile
 from .models import Group, GroupMembership, WordPressGroupSource
@@ -793,6 +795,540 @@ def import_enabled_wordpress_source_group_content(*, actor=None, dry_run: bool =
         for key in ("processed", "imported", "skipped_existing", "skipped_empty", "skipped_wrong_group", "failed"):
             totals[key] += int(result.get(key) or 0)
     return totals
+
+
+
+def _json_has_wordpress_comment_id(comment_id: int) -> Q:
+    """Match source metadata for imported WordPress/BuddyPress comments/replies."""
+    return (
+        Q(metadata__source="wordpress", metadata__wordpress_comment_id=comment_id)
+        | Q(metadata__source="wordpress", metadata__wordpress_comment_id=str(comment_id))
+        | Q(metadata__source="wordpress", metadata__wordpress_activity_comment_id=comment_id)
+        | Q(metadata__source="wordpress", metadata__wordpress_activity_comment_id=str(comment_id))
+        | Q(metadata__source="wordpress", metadata__wordpress_bbpress_reply_id=comment_id)
+        | Q(metadata__source="wordpress", metadata__wordpress_bbpress_reply_id=str(comment_id))
+    )
+
+
+def _json_has_wordpress_bbpress_topic_id(topic_id: int) -> Q:
+    """Match old/new metadata shapes for imported WordPress bbPress topics."""
+    return (
+        Q(metadata__source="wordpress", metadata__source_object_type="bbpress_topic", metadata__wordpress_topic_id=topic_id)
+        | Q(metadata__source="wordpress", metadata__source_object_type="bbpress_topic", metadata__wordpress_topic_id=str(topic_id))
+        | Q(metadata__source="wordpress", metadata__source_object_type="bbpress_topic", metadata__source_topic_id=topic_id)
+        | Q(metadata__source="wordpress", metadata__source_object_type="bbpress_topic", metadata__source_topic_id=str(topic_id))
+    )
+
+
+def _source_created_at_from_payload(payload: Dict[str, Any]):
+    return _wp_datetime(payload.get("date_gmt") or payload.get("date") or payload.get("created_at"))
+
+
+def _wp_author_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    author = payload.get("author") if isinstance(payload, dict) else None
+    return author if isinstance(author, dict) else {}
+
+
+def _connect_user_for_wordpress_author(payload: Dict[str, Any], *, fallback_actor=None):
+    """Resolve/create a Connect user from a WordPress author payload when email is available."""
+    author_payload = _wp_author_payload(payload)
+    if author_payload:
+        user, _created, reason = _get_or_create_connect_user_from_wordpress_member(author_payload, author_payload)
+        if user:
+            return user
+        if reason != "missing_email":
+            logger.warning("Unable to resolve WordPress author for imported content: %s", reason)
+    return fallback_actor
+
+
+def _fallback_actor_for_group(group: Group, actor=None):
+    if actor and getattr(actor, "is_authenticated", False):
+        return actor
+    if group.owner_id:
+        return group.owner
+    if group.created_by_id:
+        return group.created_by
+    return User.objects.filter(is_staff=True).order_by("id").first()
+
+
+def _feed_item_ct():
+    return ContentType.objects.get_for_model(FeedItem)
+
+
+def _group_ct():
+    return ContentType.objects.get_for_model(Group)
+
+
+def _create_imported_comment(
+    *,
+    feed_item: FeedItem,
+    user,
+    text: str,
+    metadata: Dict[str, Any],
+    created_at=None,
+    parent: Comment | None = None,
+) -> Comment:
+    comment = Comment.objects.create(
+        content_type=_feed_item_ct(),
+        object_id=feed_item.id,
+        user=user,
+        text=text,
+        parent=parent,
+        metadata=metadata,
+    )
+    if created_at:
+        Comment.objects.filter(pk=comment.pk).update(created_at=created_at, updated_at=created_at)
+    return comment
+
+
+def import_wordpress_group_activity_comments_for_source(
+    source: WordPressGroupSource,
+    *,
+    actor=None,
+    dry_run: bool = False,
+    max_pages: int = 100,
+) -> Dict[str, int]:
+    """
+    Import BuddyPress comments for already-imported WordPress group activity posts.
+
+    This is additive and idempotent. It never deletes/updates WordPress, Connect
+    users, memberships, posts, or existing non-WordPress comments.
+    """
+    if not source.linked_group_id:
+        raise ValueError("This WordPress source is not linked to a Connect group yet.")
+
+    group = source.linked_group
+    if not group:
+        raise ValueError("Unable to resolve linked Connect group for this WordPress source.")
+
+    client = WordPressAPIClient.for_group_sync()
+    fallback_actor = _fallback_actor_for_group(group, actor=actor)
+    if not fallback_actor:
+        raise ValueError("Unable to resolve a fallback Connect user for imported WordPress comments.")
+
+    feeditem_ct = _feed_item_ct()
+    posts = FeedItem.objects.filter(
+        group=group,
+        metadata__source="wordpress",
+        metadata__source_object_type="buddypress_activity",
+        is_deleted=False,
+    ).order_by("id")
+
+    posts_processed = 0
+    comments_processed = 0
+    comments_imported = 0
+    skipped_existing = 0
+    skipped_empty = 0
+    failed = 0
+
+    for item in posts:
+        metadata = item.metadata or {}
+        activity_id = _int(metadata.get("wordpress_activity_id") or metadata.get("source_activity_id"))
+        if not activity_id:
+            continue
+        posts_processed += 1
+        try:
+            comments = client.get_all_imaa_connect_group_activity_comments(
+                activity_id,
+                per_page=100,
+                max_pages=max_pages,
+            )
+        except Exception as exc:  # pragma: no cover - network safety
+            failed += 1
+            logger.exception("Unable to fetch WordPress activity comments for %s: %s", activity_id, exc)
+            continue
+
+        for payload in comments:
+            wp_comment_id = _int(payload.get("id"))
+            if not wp_comment_id:
+                failed += 1
+                continue
+            comments_processed += 1
+            if Comment.objects.filter(content_type=feeditem_ct, object_id=item.id).filter(_json_has_wordpress_comment_id(wp_comment_id)).exists():
+                skipped_existing += 1
+                continue
+
+            text = _text(payload.get("content_text") or payload.get("content_html") or payload.get("content"))
+            if not text:
+                skipped_empty += 1
+                continue
+
+            parent = None
+            parent_wp_id = _int(payload.get("parent_id"))
+            if parent_wp_id:
+                parent = Comment.objects.filter(
+                    content_type=feeditem_ct,
+                    object_id=item.id,
+                ).filter(_json_has_wordpress_comment_id(parent_wp_id)).first()
+
+            source_created_at = _source_created_at_from_payload(payload)
+            author = _connect_user_for_wordpress_author(payload, fallback_actor=fallback_actor)
+            comment_metadata = {
+                "source": "wordpress",
+                "source_system": "wordpress",
+                "source_object_type": "buddypress_activity_comment",
+                "wordpress_comment_id": str(wp_comment_id),
+                "wordpress_activity_comment_id": str(wp_comment_id),
+                "wordpress_root_activity_id": str(payload.get("root_activity_id") or activity_id),
+                "wordpress_parent_comment_id": str(parent_wp_id or ""),
+                "wordpress_group_id": str(source.wp_group_id),
+                "wordpress_user_id": str((_wp_author_payload(payload) or {}).get("id") or ""),
+                "wordpress_link": str(payload.get("primary_link") or ""),
+                "wordpress_created_at": (source_created_at.isoformat() if source_created_at else str(payload.get("date") or "")),
+            }
+            content_html = str(payload.get("content_html") or "")
+            if content_html and content_html != text:
+                comment_metadata["wordpress_content_html"] = content_html
+
+            if dry_run:
+                comments_imported += 1
+                continue
+
+            try:
+                with transaction.atomic():
+                    _create_imported_comment(
+                        feed_item=item,
+                        user=author,
+                        text=text,
+                        parent=parent,
+                        metadata=comment_metadata,
+                        created_at=source_created_at,
+                    )
+                comments_imported += 1
+            except Exception as exc:  # pragma: no cover - defensive import safety
+                failed += 1
+                logger.exception("Unable to import WordPress activity comment %s: %s", wp_comment_id, exc)
+
+    return {
+        "posts_processed": posts_processed,
+        "comments_processed": comments_processed,
+        "comments_imported": comments_imported,
+        "skipped_existing": skipped_existing,
+        "skipped_empty": skipped_empty,
+        "failed": failed,
+        "dry_run": bool(dry_run),
+    }
+
+
+def import_enabled_wordpress_group_activity_comments(*, actor=None, dry_run: bool = False) -> Dict[str, int]:
+    """Import BuddyPress activity comments for all enabled/linked WordPress sources."""
+    totals = {
+        "groups_processed": 0,
+        "groups_failed": 0,
+        "posts_processed": 0,
+        "comments_processed": 0,
+        "comments_imported": 0,
+        "skipped_existing": 0,
+        "skipped_empty": 0,
+        "failed": 0,
+        "dry_run": bool(dry_run),
+    }
+    qs = WordPressGroupSource.objects.filter(sync_enabled=True, linked_group__isnull=False).select_related("linked_group").order_by("name")
+    for source in qs:
+        try:
+            result = import_wordpress_group_activity_comments_for_source(source, actor=actor, dry_run=dry_run)
+        except Exception as exc:  # pragma: no cover - defensive sync logging
+            totals["groups_failed"] += 1
+            logger.exception("Unable to import WordPress activity comments for group %s: %s", source.wp_group_id, exc)
+            continue
+        totals["groups_processed"] += 1
+        for key in ("posts_processed", "comments_processed", "comments_imported", "skipped_existing", "skipped_empty", "failed"):
+            totals[key] += int(result.get(key) or 0)
+    return totals
+
+
+def _forum_group_slug(forum_payload: Dict[str, Any]) -> str:
+    url = str(forum_payload.get("url") or "")
+    parsed_path = unquote(urlparse(url).path or "")
+    match = re.search(r"/groups/([^/]+)/forum/?", parsed_path)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def _source_for_forum_payload(forum_payload: Dict[str, Any]) -> WordPressGroupSource | None:
+    """Map a WordPress group forum to its already-linked WordPressGroupSource."""
+    group_slug = _forum_group_slug(forum_payload)
+    if not group_slug:
+        return None
+    return (
+        WordPressGroupSource.objects.filter(
+            slug=group_slug,
+            sync_enabled=True,
+            linked_group__isnull=False,
+        )
+        .select_related("linked_group")
+        .first()
+    )
+
+
+def _topic_text(topic_payload: Dict[str, Any]) -> str:
+    title = _text(topic_payload.get("title"))
+    body = _text(topic_payload.get("content_text") or topic_payload.get("content_html") or topic_payload.get("content"))
+    if title and body and title.lower() not in body.lower():
+        return f"{title}\n\n{body}".strip()
+    return body or title
+
+
+def _import_wordpress_topic_replies(
+    *,
+    client: WordPressAPIClient,
+    feed_item: FeedItem,
+    topic_payload: Dict[str, Any],
+    fallback_actor,
+    dry_run: bool,
+    max_pages: int,
+) -> Dict[str, int]:
+    topic_id = _int(topic_payload.get("id"))
+    feeditem_ct = _feed_item_ct()
+    processed = 0
+    imported = 0
+    skipped_existing = 0
+    skipped_empty = 0
+    failed = 0
+
+    try:
+        replies = client.get_all_imaa_connect_forum_topic_replies(topic_id, per_page=100, max_pages=max_pages)
+    except Exception as exc:  # pragma: no cover - network safety
+        logger.exception("Unable to fetch WordPress bbPress replies for topic %s: %s", topic_id, exc)
+        return {"processed": 0, "imported": 0, "skipped_existing": 0, "skipped_empty": 0, "failed": 1}
+
+    for payload in replies:
+        reply_id = _int(payload.get("id"))
+        if not reply_id:
+            failed += 1
+            continue
+        processed += 1
+        if Comment.objects.filter(content_type=feeditem_ct, object_id=feed_item.id).filter(_json_has_wordpress_comment_id(reply_id)).exists():
+            skipped_existing += 1
+            continue
+
+        text = _text(payload.get("content_text") or payload.get("content_html") or payload.get("content"))
+        if not text:
+            skipped_empty += 1
+            continue
+
+        parent = None
+        parent_wp_id = _int(payload.get("reply_to"))
+        if parent_wp_id:
+            parent = Comment.objects.filter(content_type=feeditem_ct, object_id=feed_item.id).filter(_json_has_wordpress_comment_id(parent_wp_id)).first()
+
+        source_created_at = _source_created_at_from_payload(payload)
+        author = _connect_user_for_wordpress_author(payload, fallback_actor=fallback_actor)
+        comment_metadata = {
+            "source": "wordpress",
+            "source_system": "wordpress",
+            "source_object_type": "bbpress_reply",
+            "wordpress_comment_id": str(reply_id),
+            "wordpress_bbpress_reply_id": str(reply_id),
+            "wordpress_topic_id": str(topic_id),
+            "wordpress_forum_id": str(payload.get("forum_id") or topic_payload.get("forum_id") or ""),
+            "wordpress_parent_reply_id": str(parent_wp_id or ""),
+            "wordpress_user_id": str((_wp_author_payload(payload) or {}).get("id") or ""),
+            "wordpress_link": str(payload.get("url") or ""),
+            "wordpress_created_at": (source_created_at.isoformat() if source_created_at else str(payload.get("date") or "")),
+        }
+        content_html = str(payload.get("content_html") or "")
+        if content_html and content_html != text:
+            comment_metadata["wordpress_content_html"] = content_html
+
+        if dry_run:
+            imported += 1
+            continue
+
+        try:
+            with transaction.atomic():
+                _create_imported_comment(
+                    feed_item=feed_item,
+                    user=author,
+                    text=text,
+                    parent=parent,
+                    metadata=comment_metadata,
+                    created_at=source_created_at,
+                )
+            imported += 1
+        except Exception as exc:  # pragma: no cover - defensive import safety
+            failed += 1
+            logger.exception("Unable to import WordPress bbPress reply %s: %s", reply_id, exc)
+
+    return {
+        "processed": processed,
+        "imported": imported,
+        "skipped_existing": skipped_existing,
+        "skipped_empty": skipped_empty,
+        "failed": failed,
+    }
+
+
+def import_wordpress_forum_content(
+    *,
+    actor=None,
+    dry_run: bool = False,
+    group_forums_only: bool = True,
+    max_forums: int | None = None,
+    max_pages: int = 100,
+) -> Dict[str, int]:
+    """
+    Import mapped WordPress bbPress group forum topics and replies.
+
+    By default this imports only forums whose URL is under /groups/<slug>/forum/
+    and whose slug matches an enabled, linked WordPressGroupSource. Public/global
+    /forums/forum/<slug>/ forums are skipped until an explicit mapping decision is
+    made, avoiding accidental content placement in the wrong Connect group.
+    """
+    client = WordPressAPIClient.for_group_sync()
+    forums = client.get_all_imaa_connect_forum_content_forums(per_page=100, max_pages=max_pages)
+    if max_forums is not None:
+        forums = forums[: max(0, int(max_forums))]
+
+    group_ct = _group_ct()
+    processed_forums = 0
+    skipped_unmapped_forums = 0
+    skipped_public_forums = 0
+    topics_processed = 0
+    topics_imported = 0
+    topics_skipped_existing = 0
+    topics_skipped_empty = 0
+    replies_processed = 0
+    replies_imported = 0
+    replies_skipped_existing = 0
+    replies_skipped_empty = 0
+    failed = 0
+
+    for forum_payload in forums:
+        forum_id = _int(forum_payload.get("id"))
+        if not forum_id:
+            failed += 1
+            continue
+        if group_forums_only and not _forum_group_slug(forum_payload):
+            skipped_public_forums += 1
+            continue
+        source = _source_for_forum_payload(forum_payload)
+        if not source or not source.linked_group_id:
+            skipped_unmapped_forums += 1
+            continue
+
+        group = source.linked_group
+        fallback_actor = _fallback_actor_for_group(group, actor=actor)
+        if not fallback_actor:
+            failed += 1
+            continue
+        processed_forums += 1
+
+        try:
+            topics = client.get_all_imaa_connect_forum_topics(forum_id, per_page=100, max_pages=max_pages)
+        except Exception as exc:  # pragma: no cover - network safety
+            failed += 1
+            logger.exception("Unable to fetch WordPress bbPress topics for forum %s: %s", forum_id, exc)
+            continue
+
+        for topic_payload in topics:
+            topic_id = _int(topic_payload.get("id"))
+            if not topic_id:
+                failed += 1
+                continue
+            topics_processed += 1
+            existing = FeedItem.objects.filter(group=group).filter(_json_has_wordpress_bbpress_topic_id(topic_id)).first()
+            if existing:
+                topics_skipped_existing += 1
+                topic_item = existing
+            else:
+                text = _topic_text(topic_payload)
+                if not text:
+                    topics_skipped_empty += 1
+                    continue
+
+                source_created_at = _source_created_at_from_payload(topic_payload)
+                author = _connect_user_for_wordpress_author(topic_payload, fallback_actor=fallback_actor)
+                topic_title = _text(topic_payload.get("title"))
+                topic_metadata = {
+                    "type": "text",
+                    "text": text,
+                    "group_id": group.id,
+                    "is_hidden": False,
+                    "is_deleted": False,
+                    "source": "wordpress",
+                    "source_system": "wordpress",
+                    "source_object_type": "bbpress_topic",
+                    "source_topic_id": str(topic_id),
+                    "wordpress_topic_id": str(topic_id),
+                    "wordpress_forum_id": str(forum_id),
+                    "wordpress_forum_title": _text(forum_payload.get("title")),
+                    "wordpress_forum_url": str(forum_payload.get("url") or ""),
+                    "wordpress_topic_title": topic_title,
+                    "wordpress_user_id": str((_wp_author_payload(topic_payload) or {}).get("id") or ""),
+                    "wordpress_link": str(topic_payload.get("url") or ""),
+                    "wordpress_created_at": (source_created_at.isoformat() if source_created_at else str(topic_payload.get("date") or "")),
+                    "wordpress_last_active_time": str(topic_payload.get("last_active_time") or ""),
+                }
+                content_html = str(topic_payload.get("content_html") or "")
+                if content_html and content_html != text:
+                    topic_metadata["wordpress_content_html"] = content_html
+
+                if dry_run:
+                    topics_imported += 1
+                    topic_item = None
+                else:
+                    try:
+                        with transaction.atomic():
+                            topic_item = FeedItem.objects.create(
+                                community=group.community,
+                                group=group,
+                                event=None,
+                                actor=author,
+                                verb="posted",
+                                target_content_type=group_ct,
+                                target_object_id=group.id,
+                                metadata=topic_metadata,
+                            )
+                            if source_created_at:
+                                FeedItem.objects.filter(pk=topic_item.pk).update(created_at=source_created_at)
+                        topics_imported += 1
+                    except Exception as exc:  # pragma: no cover - defensive import safety
+                        failed += 1
+                        logger.exception("Unable to import WordPress bbPress topic %s: %s", topic_id, exc)
+                        continue
+
+            if topic_item is None:
+                # Dry-run can still count replies without a local feed item.
+                try:
+                    reply_payloads = client.get_all_imaa_connect_forum_topic_replies(topic_id, per_page=100, max_pages=max_pages)
+                    replies_processed += len(reply_payloads)
+                    replies_imported += len([r for r in reply_payloads if _text(r.get("content_text") or r.get("content_html") or r.get("content"))])
+                except Exception:
+                    failed += 1
+                continue
+
+            reply_result = _import_wordpress_topic_replies(
+                client=client,
+                feed_item=topic_item,
+                topic_payload=topic_payload,
+                fallback_actor=fallback_actor,
+                dry_run=dry_run,
+                max_pages=max_pages,
+            )
+            replies_processed += int(reply_result.get("processed") or 0)
+            replies_imported += int(reply_result.get("imported") or 0)
+            replies_skipped_existing += int(reply_result.get("skipped_existing") or 0)
+            replies_skipped_empty += int(reply_result.get("skipped_empty") or 0)
+            failed += int(reply_result.get("failed") or 0)
+
+    return {
+        "processed_forums": processed_forums,
+        "skipped_unmapped_forums": skipped_unmapped_forums,
+        "skipped_public_forums": skipped_public_forums,
+        "topics_processed": topics_processed,
+        "topics_imported": topics_imported,
+        "topics_skipped_existing": topics_skipped_existing,
+        "topics_skipped_empty": topics_skipped_empty,
+        "replies_processed": replies_processed,
+        "replies_imported": replies_imported,
+        "replies_skipped_existing": replies_skipped_existing,
+        "replies_skipped_empty": replies_skipped_empty,
+        "failed": failed,
+        "dry_run": bool(dry_run),
+        "group_forums_only": bool(group_forums_only),
+    }
 
 
 def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -> Dict[str, int]:
