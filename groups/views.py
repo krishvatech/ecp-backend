@@ -53,8 +53,10 @@ from .wordpress_group_sync import (
     import_wordpress_group_activity_comments_for_source,
     import_wordpress_source_group_content,
     refresh_wordpress_group_sources,
+    sync_enabled_wordpress_full_group_content,
     sync_enabled_wordpress_sources_to_connect_groups,
     sync_enabled_wordpress_source_members,
+    sync_wordpress_source_full_group_content,
     sync_wordpress_source_members,
     sync_wordpress_source_to_connect_group,
 )
@@ -3129,6 +3131,20 @@ class UsersLookupView(APIView):
         return Response(out)
 
 
+
+def _wp_bool(value, *, default: bool = False) -> bool:
+    if value in (None, ""):
+        return default
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+def _wp_int(value, *, default: int | None = None) -> int | None:
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError("Value must be an integer.")
+
 class WordPressGroupSourcePagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = "page_size"
@@ -3459,6 +3475,78 @@ class WordPressGroupSourceSyncCommentsView(APIView):
         data = WordPressGroupSourceSerializer(source, context={"request": request}).data
         data["comment_sync"] = result
         return Response(data)
+
+
+
+class WordPressGroupSourceSyncFullContentView(APIView):
+    """
+    Admin-only full sync for one WordPress group.
+
+    This safely treats a WordPress group's forum as part of that same group:
+    group shell -> members -> group posts -> group comments -> group forum
+    topics/replies. Public/global forums are never imported here.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request, wp_group_id):
+        source = get_object_or_404(WordPressGroupSource, wp_group_id=wp_group_id)
+        if not source.sync_enabled:
+            return Response(
+                {"detail": "Enable sync for this WordPress group before running full content sync."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            max_pages = _wp_int(request.data.get("max_pages"), default=100)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        dry_run = _wp_bool(request.data.get("dry_run"), default=False)
+        try:
+            result = sync_wordpress_source_full_group_content(
+                source,
+                actor=request.user,
+                dry_run=dry_run,
+                include_members=_wp_bool(request.data.get("include_members"), default=True),
+                include_posts=_wp_bool(request.data.get("include_posts"), default=True),
+                include_comments=_wp_bool(request.data.get("include_comments"), default=True),
+                include_forum=_wp_bool(request.data.get("include_forum"), default=True),
+                max_pages=max_pages or 100,
+            )
+        except Exception as exc:
+            return Response(
+                {
+                    "detail": "Unable to run full WordPress group content sync.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source.refresh_from_db()
+        data = WordPressGroupSourceSerializer(source, context={"request": request}).data
+        data["full_content_sync"] = result
+        return Response(data)
+
+
+class WordPressGroupSourceSyncEnabledFullContentView(APIView):
+    """Admin-only bulk full group-content sync for enabled WordPress groups."""
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request):
+        try:
+            max_pages = _wp_int(request.data.get("max_pages"), default=100)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = sync_enabled_wordpress_full_group_content(
+            actor=request.user,
+            dry_run=_wp_bool(request.data.get("dry_run"), default=False),
+            include_members=_wp_bool(request.data.get("include_members"), default=True),
+            include_posts=_wp_bool(request.data.get("include_posts"), default=True),
+            include_comments=_wp_bool(request.data.get("include_comments"), default=True),
+            include_forum=_wp_bool(request.data.get("include_forum"), default=True),
+            max_pages=max_pages or 100,
+        )
+        return Response({"ok": True, **result})
 
 
 class WordPressForumContentImportView(APIView):

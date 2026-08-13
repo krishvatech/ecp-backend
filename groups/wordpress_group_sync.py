@@ -1046,11 +1046,41 @@ def _forum_group_slug(forum_payload: Dict[str, Any]) -> str:
     return ""
 
 
-def _source_for_forum_payload(forum_payload: Dict[str, Any]) -> WordPressGroupSource | None:
+def _normalized_slug(value: Any) -> str:
+    return slugify(unquote(str(value or "").strip())).strip("-")
+
+
+def _forum_slug_matches_source(forum_payload: Dict[str, Any], source: WordPressGroupSource) -> bool:
+    """Return true when a /groups/<slug>/forum/ payload belongs to this WP group source."""
+    forum_slug = _normalized_slug(_forum_group_slug(forum_payload))
+    if not forum_slug:
+        return False
+
+    candidate_slugs = {
+        _normalized_slug(source.slug),
+        _normalized_slug((source.raw_payload or {}).get("slug") if isinstance(source.raw_payload, dict) else ""),
+    }
+    candidate_slugs.discard("")
+    return forum_slug in candidate_slugs
+
+
+def _source_for_forum_payload(
+    forum_payload: Dict[str, Any],
+    *,
+    source: WordPressGroupSource | None = None,
+) -> WordPressGroupSource | None:
     """Map a WordPress group forum to its already-linked WordPressGroupSource."""
     group_slug = _forum_group_slug(forum_payload)
     if not group_slug:
         return None
+
+    if source is not None:
+        if not _forum_slug_matches_source(forum_payload, source):
+            return None
+        if not source.sync_enabled or not source.linked_group_id:
+            return None
+        return source
+
     return (
         WordPressGroupSource.objects.filter(
             slug=group_slug,
@@ -1167,6 +1197,7 @@ def import_wordpress_forum_content(
     group_forums_only: bool = True,
     max_forums: int | None = None,
     max_pages: int = 100,
+    source: WordPressGroupSource | None = None,
 ) -> Dict[str, int]:
     """
     Import mapped WordPress bbPress group forum topics and replies.
@@ -1175,7 +1206,14 @@ def import_wordpress_forum_content(
     and whose slug matches an enabled, linked WordPressGroupSource. Public/global
     /forums/forum/<slug>/ forums are skipped until an explicit mapping decision is
     made, avoiding accidental content placement in the wrong Connect group.
+
+    When ``source`` is supplied, only that source's own /groups/<slug>/forum/
+    forum is eligible. This supports a safe "full group content" sync where a
+    group's forum content is imported into the same linked Connect group.
     """
+    if source is not None and (not source.sync_enabled or not source.linked_group_id):
+        raise ValueError("The WordPress source must be enabled and linked before importing its group forum.")
+
     client = WordPressAPIClient.for_group_sync()
     forums = client.get_all_imaa_connect_forum_content_forums(per_page=100, max_pages=max_pages)
     if max_forums is not None:
@@ -1185,6 +1223,7 @@ def import_wordpress_forum_content(
     processed_forums = 0
     skipped_unmapped_forums = 0
     skipped_public_forums = 0
+    skipped_other_group_forums = 0
     topics_processed = 0
     topics_imported = 0
     topics_skipped_existing = 0
@@ -1200,15 +1239,19 @@ def import_wordpress_forum_content(
         if not forum_id:
             failed += 1
             continue
-        if group_forums_only and not _forum_group_slug(forum_payload):
+        forum_group_slug = _forum_group_slug(forum_payload)
+        if group_forums_only and not forum_group_slug:
             skipped_public_forums += 1
             continue
-        source = _source_for_forum_payload(forum_payload)
-        if not source or not source.linked_group_id:
+        mapped_source = _source_for_forum_payload(forum_payload, source=source)
+        if source is not None and forum_group_slug and mapped_source is None:
+            skipped_other_group_forums += 1
+            continue
+        if not mapped_source or not mapped_source.linked_group_id:
             skipped_unmapped_forums += 1
             continue
 
-        group = source.linked_group
+        group = mapped_source.linked_group
         fallback_actor = _fallback_actor_for_group(group, actor=actor)
         if not fallback_actor:
             failed += 1
@@ -1255,6 +1298,8 @@ def import_wordpress_forum_content(
                     "wordpress_forum_id": str(forum_id),
                     "wordpress_forum_title": _text(forum_payload.get("title")),
                     "wordpress_forum_url": str(forum_payload.get("url") or ""),
+                    "wordpress_group_id": str(mapped_source.wp_group_id),
+                    "wordpress_group_slug": str(mapped_source.slug or ""),
                     "wordpress_topic_title": topic_title,
                     "wordpress_user_id": str((_wp_author_payload(topic_payload) or {}).get("id") or ""),
                     "wordpress_link": str(topic_payload.get("url") or ""),
@@ -1317,6 +1362,7 @@ def import_wordpress_forum_content(
         "processed_forums": processed_forums,
         "skipped_unmapped_forums": skipped_unmapped_forums,
         "skipped_public_forums": skipped_public_forums,
+        "skipped_other_group_forums": skipped_other_group_forums,
         "topics_processed": topics_processed,
         "topics_imported": topics_imported,
         "topics_skipped_existing": topics_skipped_existing,
@@ -1328,7 +1374,32 @@ def import_wordpress_forum_content(
         "failed": failed,
         "dry_run": bool(dry_run),
         "group_forums_only": bool(group_forums_only),
+        "wp_group_id": source.wp_group_id if source is not None else None,
     }
+
+
+def import_wordpress_group_forum_content_for_source(
+    source: WordPressGroupSource,
+    *,
+    actor=None,
+    dry_run: bool = False,
+    max_pages: int = 100,
+) -> Dict[str, int]:
+    """Import only the bbPress forum attached to one linked WordPress group.
+
+    The forum must be a group forum URL: /groups/<source.slug>/forum/. Public
+    bbPress forums are intentionally not imported here. This keeps group sync
+    safe: a WordPress group's forum content can only land in that same group's
+    linked Connect group.
+    """
+    return import_wordpress_forum_content(
+        actor=actor,
+        dry_run=dry_run,
+        group_forums_only=True,
+        max_forums=None,
+        max_pages=max_pages,
+        source=source,
+    )
 
 
 def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -> Dict[str, int]:
@@ -1468,6 +1539,166 @@ def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -
         "remote_members": len(members),
     }
 
+
+
+def sync_wordpress_source_full_group_content(
+    source: WordPressGroupSource,
+    *,
+    actor=None,
+    dry_run: bool = False,
+    include_members: bool = True,
+    include_posts: bool = True,
+    include_comments: bool = True,
+    include_forum: bool = True,
+    max_pages: int = 100,
+) -> Dict[str, Any]:
+    """Run the safe full WordPress group-content pipeline for one source.
+
+    This keeps the user's proposed model: when a WordPress group is linked to a
+    Connect group, its group-owned forum is treated as part of that group. The
+    workflow remains additive/idempotent and never deletes WordPress or Connect
+    content. Public/global bbPress forums are still excluded here.
+    """
+    if not source.sync_enabled:
+        raise ValueError("Enable sync for this WordPress group before running full group content sync.")
+
+    result: Dict[str, Any] = {
+        "wp_group_id": source.wp_group_id,
+        "name": source.name,
+        "dry_run": bool(dry_run),
+        "group_sync": None,
+        "member_sync": None,
+        "post_sync": None,
+        "comment_sync": None,
+        "forum_sync": None,
+    }
+
+    if source.linked_group_id:
+        group = source.linked_group
+        result["group_sync"] = {
+            "connect_group_id": group.id if group else source.linked_group_id,
+            "group_created": False,
+            "skipped_existing_link": True,
+        }
+    elif dry_run:
+        raise ValueError("Dry-run full content sync requires an already linked Connect group.")
+    else:
+        group, created = sync_wordpress_source_to_connect_group(source, actor=actor)
+        source.refresh_from_db()
+        result["group_sync"] = {
+            "connect_group_id": group.id,
+            "group_created": created,
+            "skipped_existing_link": False,
+        }
+
+    if include_members:
+        if dry_run:
+            result["member_sync"] = {"skipped": True, "reason": "Member sync is write-only and is skipped during dry-run."}
+        else:
+            result["member_sync"] = sync_wordpress_source_members(source, actor=actor)
+            source.refresh_from_db()
+
+    if include_posts:
+        result["post_sync"] = import_wordpress_source_group_content(
+            source,
+            actor=actor,
+            dry_run=dry_run,
+            max_pages=max_pages,
+        )
+
+    if include_comments:
+        result["comment_sync"] = import_wordpress_group_activity_comments_for_source(
+            source,
+            actor=actor,
+            dry_run=dry_run,
+            max_pages=max_pages,
+        )
+
+    if include_forum:
+        result["forum_sync"] = import_wordpress_group_forum_content_for_source(
+            source,
+            actor=actor,
+            dry_run=dry_run,
+            max_pages=max_pages,
+        )
+
+    return result
+
+
+def sync_enabled_wordpress_full_group_content(
+    *,
+    actor=None,
+    dry_run: bool = False,
+    include_members: bool = True,
+    include_posts: bool = True,
+    include_comments: bool = True,
+    include_forum: bool = True,
+    max_pages: int = 100,
+) -> Dict[str, Any]:
+    """Run full group content sync for enabled WordPress sources.
+
+    This endpoint is intentionally explicit and separate from the lightweight
+    member/group sync buttons because forum imports can be large.
+    """
+    totals: Dict[str, Any] = {
+        "groups_processed": 0,
+        "groups_failed": 0,
+        "dry_run": bool(dry_run),
+        "include_members": bool(include_members),
+        "include_posts": bool(include_posts),
+        "include_comments": bool(include_comments),
+        "include_forum": bool(include_forum),
+        "post_imported": 0,
+        "post_skipped_existing": 0,
+        "comment_imported": 0,
+        "comment_skipped_existing": 0,
+        "forum_processed_forums": 0,
+        "forum_topics_imported": 0,
+        "forum_topics_skipped_existing": 0,
+        "forum_replies_imported": 0,
+        "forum_replies_skipped_existing": 0,
+        "failed": 0,
+        "results": [],
+    }
+    qs = WordPressGroupSource.objects.filter(sync_enabled=True).select_related("linked_group").order_by("name")
+    for source in qs:
+        try:
+            result = sync_wordpress_source_full_group_content(
+                source,
+                actor=actor,
+                dry_run=dry_run,
+                include_members=include_members,
+                include_posts=include_posts,
+                include_comments=include_comments,
+                include_forum=include_forum,
+                max_pages=max_pages,
+            )
+        except Exception as exc:  # pragma: no cover - defensive bulk logging
+            totals["groups_failed"] += 1
+            totals["failed"] += 1
+            logger.exception("Unable to run full WordPress group content sync for %s: %s", source.wp_group_id, exc)
+            totals["results"].append({"wp_group_id": source.wp_group_id, "name": source.name, "error": str(exc)})
+            continue
+
+        totals["groups_processed"] += 1
+        post_sync = result.get("post_sync") or {}
+        comment_sync = result.get("comment_sync") or {}
+        forum_sync = result.get("forum_sync") or {}
+        totals["post_imported"] += int(post_sync.get("imported") or 0)
+        totals["post_skipped_existing"] += int(post_sync.get("skipped_existing") or 0)
+        totals["comment_imported"] += int(comment_sync.get("comments_imported") or 0)
+        totals["comment_skipped_existing"] += int(comment_sync.get("skipped_existing") or 0)
+        totals["forum_processed_forums"] += int(forum_sync.get("processed_forums") or 0)
+        totals["forum_topics_imported"] += int(forum_sync.get("topics_imported") or 0)
+        totals["forum_topics_skipped_existing"] += int(forum_sync.get("topics_skipped_existing") or 0)
+        totals["forum_replies_imported"] += int(forum_sync.get("replies_imported") or 0)
+        totals["forum_replies_skipped_existing"] += int(forum_sync.get("replies_skipped_existing") or 0)
+        totals["failed"] += int(post_sync.get("failed") or 0)
+        totals["failed"] += int(comment_sync.get("failed") or 0)
+        totals["failed"] += int(forum_sync.get("failed") or 0)
+        totals["results"].append(result)
+
+    return totals
 
 def sync_enabled_wordpress_source_members(*, actor=None) -> Dict[str, int]:
     """Sync members for all enabled WordPress sources that already have/produce a Connect group."""
