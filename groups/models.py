@@ -238,6 +238,64 @@ class WordPressGroupSource(models.Model):
         return f"{self.name} ({self.wp_group_id})"
 
 
+class WordPressForumSource(models.Model):
+    """
+    Read-only catalog of public/separate bbPress forums discovered from WordPress.
+
+    These are forums whose URLs are not under /groups/<slug>/forum/. They do not
+    have WordPress group members, so they must be explicitly linked to a public
+    Connect group before topics/replies are imported.
+    """
+
+    SOURCE_TYPE_PUBLIC = "public"
+    SOURCE_TYPE_GROUP = "group"
+    SOURCE_TYPE_CHOICES = [
+        (SOURCE_TYPE_PUBLIC, "Public/separate forum"),
+        (SOURCE_TYPE_GROUP, "Group-connected forum"),
+    ]
+
+    wp_forum_id = models.PositiveIntegerField(unique=True, db_index=True)
+    title = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255, blank=True, db_index=True)
+    description = models.TextField(blank=True)
+    status = models.CharField(max_length=50, blank=True, db_index=True)
+    source_type = models.CharField(
+        max_length=20,
+        choices=SOURCE_TYPE_CHOICES,
+        default=SOURCE_TYPE_PUBLIC,
+        db_index=True,
+    )
+    group_slug = models.SlugField(max_length=255, blank=True, db_index=True)
+    topic_count = models.PositiveIntegerField(default=0)
+    reply_count = models.PositiveIntegerField(default=0)
+    forum_url = models.URLField(blank=True)
+    sync_enabled = models.BooleanField(default=False, db_index=True)
+    linked_group = models.OneToOneField(
+        Group,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="wordpress_forum_source",
+    )
+    raw_payload = models.JSONField(default=dict, blank=True)
+    last_fetched_at = models.DateTimeField(null=True, blank=True)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    last_imported_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["title"]
+        indexes = [
+            models.Index(fields=["source_type", "title"]),
+            models.Index(fields=["sync_enabled", "title"]),
+            models.Index(fields=["last_fetched_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.title} ({self.wp_forum_id})"
+
+
 
 class GroupMembership(models.Model):
     ROLE_ADMIN = 'admin'

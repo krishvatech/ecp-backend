@@ -6,7 +6,7 @@ from community.models import Community
 from django.contrib.auth import get_user_model
 from users.serializers import UserMiniSerializer
 from users.models import Experience
-from .models import Group, GroupMembership, PromotionRequest, GroupNotification, WordPressGroupSource
+from .models import Group, GroupMembership, PromotionRequest, GroupNotification, WordPressForumSource, WordPressGroupSource
 
 User = get_user_model()
 
@@ -686,6 +686,38 @@ class WordPressGroupSourceSerializer(serializers.ModelSerializer):
             metadata__source_object_type="buddypress_activity",
             is_deleted=False,
         ).count()
+
+
+class WordPressForumSourceSerializer(serializers.ModelSerializer):
+    linked_group_id = serializers.IntegerField(source="linked_group.id", read_only=True)
+    linked_group_name = serializers.CharField(source="linked_group.name", read_only=True)
+    linked_group_slug = serializers.CharField(source="linked_group.slug", read_only=True)
+
+    class Meta:
+        model = WordPressForumSource
+        fields = [
+            "id",
+            "wp_forum_id",
+            "title",
+            "slug",
+            "description",
+            "status",
+            "source_type",
+            "group_slug",
+            "topic_count",
+            "reply_count",
+            "forum_url",
+            "sync_enabled",
+            "linked_group_id",
+            "linked_group_name",
+            "linked_group_slug",
+            "last_fetched_at",
+            "last_synced_at",
+            "last_imported_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
 
 
 class WordPressGroupSourceToggleSerializer(serializers.Serializer):

@@ -2,7 +2,7 @@
 from django.contrib import admin, messages
 from django.db.models import Q
 
-from .models import Group, GroupMembership, PromotionRequest, WordPressGroupSource
+from .models import Group, GroupMembership, PromotionRequest, WordPressForumSource, WordPressGroupSource
 from .soft_delete import restore_group_deletion_batches, soft_delete_group_tree
 
 
@@ -107,6 +107,7 @@ class GroupAdmin(admin.ModelAdmin):
             obj.source == Group.SOURCE_WORDPRESS
             or bool(obj.source_group_id)
             or WordPressGroupSource.objects.filter(linked_group_id=obj.id).exists()
+            or WordPressForumSource.objects.filter(linked_group_id=obj.id).exists()
         )
         if wordpress_managed:
             self.message_user(
@@ -143,6 +144,21 @@ class WordPressGroupSourceAdmin(admin.ModelAdmin):
         'wp_group_id', 'name', 'slug', 'description', 'status', 'member_count',
         'group_url', 'raw_payload', 'last_fetched_at', 'last_synced_at', 'last_members_synced_at',
         'created_at', 'updated_at'
+    )
+
+
+@admin.register(WordPressForumSource)
+class WordPressForumSourceAdmin(admin.ModelAdmin):
+    list_display = (
+        'wp_forum_id', 'title', 'slug', 'source_type', 'topic_count', 'reply_count',
+        'sync_enabled', 'linked_group', 'last_fetched_at', 'last_synced_at', 'last_imported_at'
+    )
+    list_filter = ('sync_enabled', 'source_type', 'status', 'last_fetched_at')
+    search_fields = ('title', 'slug', 'description', 'wp_forum_id')
+    readonly_fields = (
+        'wp_forum_id', 'title', 'slug', 'description', 'status', 'source_type',
+        'group_slug', 'topic_count', 'reply_count', 'forum_url', 'raw_payload',
+        'last_fetched_at', 'last_synced_at', 'last_imported_at', 'created_at', 'updated_at'
     )
 
 

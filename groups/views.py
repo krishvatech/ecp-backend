@@ -29,7 +29,7 @@ from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParam
 
 from community.models import Community
 from activity_feed.models import FeedItem, Poll
-from .models import Group, GroupMembership, PromotionRequest, GroupNotification, GroupParentAssociation, WordPressGroupSource
+from .models import Group, GroupMembership, PromotionRequest, GroupNotification, GroupParentAssociation, WordPressForumSource, WordPressGroupSource
 from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content, GroupSuperuserOnly
 from .serializers import (
     GroupSerializer,
@@ -42,6 +42,7 @@ from .serializers import (
     PromotionRequestOutSerializer,
     GroupNotificationSerializer,
     SuggestedGroupSerializer,
+    WordPressForumSourceSerializer,
     WordPressGroupSourceSerializer,
     WordPressGroupSourceToggleSerializer,
 )
@@ -59,6 +60,11 @@ from .wordpress_group_sync import (
     sync_wordpress_source_full_group_content,
     sync_wordpress_source_members,
     sync_wordpress_source_to_connect_group,
+)
+from .wordpress_public_forum_sync import (
+    import_wordpress_public_forum_source_content,
+    refresh_wordpress_public_forum_sources,
+    sync_wordpress_forum_source_to_connect_group,
 )
 from friends.models import Friendship
 from users.serializers import UserMiniSerializer
@@ -3151,6 +3157,22 @@ class WordPressGroupSourcePagination(PageNumberPagination):
     max_page_size = 200
 
 
+
+
+def _wp_public_forum_bool(value, *, default: bool = False) -> bool:
+    if value in (None, ""):
+        return default
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+
+def _wp_public_forum_int(value, *, default: int | None = None) -> int | None:
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError("Value must be an integer.")
+
 class WordPressGroupSourceStatsView(APIView):
     """
     Admin-only production readiness summary for WordPress group/user sync.
@@ -3607,6 +3629,113 @@ class WordPressGroupSourceSyncEnabledCommentsView(APIView):
         dry_run = str(request.data.get("dry_run", "")).lower() in {"1", "true", "yes"}
         result = import_enabled_wordpress_group_activity_comments(actor=request.user, dry_run=dry_run)
         return Response({"ok": True, **result})
+
+
+class WordPressForumSourceListView(APIView):
+    """Admin-only list of discovered public/separate WordPress bbPress forums."""
+    permission_classes = [GroupSuperuserOnly]
+    pagination_class = WordPressGroupSourcePagination
+
+    def get(self, request):
+        qs = WordPressForumSource.objects.select_related("linked_group").all()
+
+        search = (request.query_params.get("search") or "").strip()
+        if search:
+            search_q = (
+                Q(title__icontains=search)
+                | Q(slug__icontains=search)
+                | Q(description__icontains=search)
+            )
+            if search.isdigit():
+                search_q |= Q(wp_forum_id=int(search))
+            qs = qs.filter(search_q)
+
+        source_type = (request.query_params.get("source_type") or "public").strip().lower()
+        if source_type in {"public", "group"}:
+            qs = qs.filter(source_type=source_type)
+
+        linked = request.query_params.get("linked")
+        if linked in {"1", "true", "True", "yes"}:
+            qs = qs.filter(linked_group__isnull=False)
+        elif linked in {"0", "false", "False", "no"}:
+            qs = qs.filter(linked_group__isnull=True)
+
+        has_content = request.query_params.get("has_content")
+        if has_content in {"1", "true", "True", "yes"}:
+            qs = qs.filter(Q(topic_count__gt=0) | Q(reply_count__gt=0))
+        elif has_content in {"0", "false", "False", "no"}:
+            qs = qs.filter(topic_count__lte=0, reply_count__lte=0)
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(qs.order_by("title"), request, view=self)
+        serializer = WordPressForumSourceSerializer(page, many=True, context={"request": request})
+        return paginator.get_paginated_response(serializer.data)
+
+
+class WordPressForumSourceRefreshView(APIView):
+    """Admin-only refresh of public/separate bbPress forums from WordPress."""
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request):
+        try:
+            max_pages = _wp_public_forum_int(request.data.get("max_pages"), default=100)
+            result = refresh_wordpress_public_forum_sources(max_pages=max_pages or 100)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response(
+                {"detail": "Unable to refresh WordPress public forums.", "error": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"ok": True, **result})
+
+
+class WordPressForumSourceSyncGroupView(APIView):
+    """Admin-only create/update public Connect group for one WordPress public forum."""
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request, wp_forum_id):
+        source = get_object_or_404(WordPressForumSource, wp_forum_id=wp_forum_id)
+        try:
+            group, created = sync_wordpress_forum_source_to_connect_group(source, actor=request.user)
+        except Exception as exc:
+            return Response(
+                {"detail": "Unable to create or update the Connect group for this WordPress forum.", "error": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source.refresh_from_db()
+        data = WordPressForumSourceSerializer(source, context={"request": request}).data
+        data["group_created"] = created
+        data["connect_group_id"] = group.id
+        return Response(data)
+
+
+class WordPressForumSourceImportContentView(APIView):
+    """Admin-only import topics/replies for one explicitly-linked public forum."""
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request, wp_forum_id):
+        source = get_object_or_404(WordPressForumSource, wp_forum_id=wp_forum_id)
+        try:
+            max_pages = _wp_public_forum_int(request.data.get("max_pages"), default=100)
+            result = import_wordpress_public_forum_source_content(
+                source,
+                actor=request.user,
+                dry_run=_wp_public_forum_bool(request.data.get("dry_run"), default=False),
+                max_pages=max_pages or 100,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response(
+                {"detail": "Unable to import WordPress public forum content.", "error": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source.refresh_from_db()
+        data = WordPressForumSourceSerializer(source, context={"request": request}).data
+        data["forum_import"] = result
+        return Response(data)
+
 
 
 class GroupNotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
