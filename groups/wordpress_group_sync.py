@@ -7,6 +7,7 @@ WordPressGroupSource. Phase 2 can also create/update selected Connect Group rows
 import html
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timezone as datetime_timezone
 from typing import Any, Dict, Iterable
 from urllib.parse import unquote, urlparse
@@ -101,6 +102,43 @@ def normalize_buddypress_group(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# BuddyPress member-count lookups are plain HTTP reads with no ORM access, so a
+# small bounded pool is safe. Kept modest to avoid hammering the WordPress host.
+_MEMBER_COUNT_FETCH_WORKERS = 8
+
+
+def _prefetch_member_counts(client, wp_group_ids) -> Dict[int, int]:
+    """
+    Resolve real BuddyPress member counts concurrently.
+
+    The groups list endpoint reports total_member_count=0 for private groups, so
+    each one needs its own members request. Doing that inline during the DB pass
+    made a full refresh take minutes for a few hundred groups, which is long
+    enough for the browser to give up waiting on the response.
+    """
+    counts: Dict[int, int] = {}
+    if client is None or not wp_group_ids:
+        return counts
+
+    workers = min(_MEMBER_COUNT_FETCH_WORKERS, len(wp_group_ids))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(client.get_buddypress_group_member_count, gid): gid
+            for gid in wp_group_ids
+        }
+        for future in as_completed(futures):
+            wp_group_id = futures[future]
+            try:
+                counts[wp_group_id] = future.result()
+            except Exception as exc:  # pragma: no cover - network safety
+                logger.warning(
+                    "Unable to fetch member count for WordPress group %s: %s",
+                    wp_group_id,
+                    exc,
+                )
+    return counts
+
+
 def refresh_wordpress_group_sources(groups: Iterable[Dict[str, Any]] | None = None) -> Dict[str, int]:
     """
     Refresh discovered WordPress groups.
@@ -121,27 +159,31 @@ def refresh_wordpress_group_sources(groups: Iterable[Dict[str, Any]] | None = No
     updated = 0
     skipped = 0
 
+    normalized_groups = []
     for payload in groups:
         normalized = normalize_buddypress_group(payload)
-        wp_group_id = normalized.get("wp_group_id")
-        if not wp_group_id:
+        if not normalized.get("wp_group_id"):
             skipped += 1
             logger.warning("Skipping WordPress group without ID: %s", payload)
             continue
+        normalized_groups.append(normalized)
 
+    # BuddyPress group list can return total_member_count=0 for private groups
+    # even when the admin screen shows members. The members endpoint exposes the
+    # real count in the X-WP-Total header. Resolve those up front and in
+    # parallel so the DB pass below performs no network I/O.
+    pending_count_ids = list({
+        normalized["wp_group_id"]
+        for normalized in normalized_groups
+        if normalized["member_count"] == 0
+    })
+    prefetched_counts = _prefetch_member_counts(client, pending_count_ids)
+
+    for normalized in normalized_groups:
+        wp_group_id = normalized["wp_group_id"]
         member_count = normalized["member_count"]
-        if member_count == 0 and client is not None:
-            # BuddyPress group list can return total_member_count=0 for private
-            # groups even when the admin screen shows members. The members
-            # endpoint exposes the real count in the X-WP-Total header.
-            try:
-                member_count = client.get_buddypress_group_member_count(wp_group_id)
-            except Exception as exc:  # pragma: no cover - network safety
-                logger.warning(
-                    "Unable to fetch member count for WordPress group %s: %s",
-                    wp_group_id,
-                    exc,
-                )
+        if member_count == 0:
+            member_count = prefetched_counts.get(wp_group_id, member_count)
 
         defaults = {
             "name": normalized["name"],
