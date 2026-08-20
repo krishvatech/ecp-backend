@@ -2,6 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from groups.views import (
     GroupViewSet,
+    PublicGroupLandingView,
     UsersLookupView,
     GroupNotificationViewSet,
     WordPressForumSourceSyncGroupView,
@@ -31,6 +32,11 @@ router.register(r'group-notifications', GroupNotificationViewSet, basename='grou
 
 urlpatterns = [
     path('users-lookup/', UsersLookupView.as_view(), name='users-lookup'),
+    path(
+        'groups/public/<slug:slug>/',
+        PublicGroupLandingView.as_view(),
+        name='public-group-landing',
+    ),
     path('groups/wordpress-sources/', WordPressGroupSourceListView.as_view(), name='wordpress-group-sources'),
     path('groups/wordpress-sources/refresh/', WordPressGroupSourceRefreshView.as_view(), name='wordpress-group-sources-refresh'),
     path('groups/wordpress-sources/stats/', WordPressGroupSourceStatsView.as_view(), name='wordpress-group-sources-stats'),

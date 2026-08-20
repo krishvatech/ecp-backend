@@ -78,6 +78,11 @@ class Group(models.Model):
     description = models.TextField(blank=True)
     visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default=VISIBILITY_PUBLIC)
     join_policy = models.CharField(max_length=10, choices=JOIN_POLICY_CHOICES, default=JOIN_OPEN)
+    public_landing_enabled = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Allow unauthenticated visitors to view a public landing page for this group.",
+    )
     cover_image = models.ImageField(upload_to='group_covers/', blank=True, null=True)
     logo = models.ImageField(upload_to='group_logos/', blank=True, null=True)
     message_mode = models.CharField(max_length=20, choices=MSG_MODE_CHOICES, default=MSG_MODE_ALL, db_index=True)

@@ -11,7 +11,7 @@ from django.core import signing
 from rest_framework import status, viewsets, serializers, mixins, filters
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAuthenticatedOrReadOnly
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.pagination import PageNumberPagination
@@ -33,6 +33,7 @@ from .models import Group, GroupMembership, PromotionRequest, GroupNotification,
 from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content, GroupSuperuserOnly
 from .serializers import (
     GroupSerializer,
+    PublicGroupLandingSerializer,
     GroupMemberOutSerializer,
     CreateFeedPostSerializer,
     FeedItemIdSerializer,
@@ -69,6 +70,46 @@ from .wordpress_public_forum_sync import (
 from friends.models import Friendship
 from users.serializers import UserMiniSerializer
 from users.models import Experience, UserProfile
+
+
+class PublicGroupLandingView(APIView):
+    """
+    Public, read-only preview for a group.
+
+    Only groups that are both public and explicitly opted in via
+    ``public_landing_enabled`` are exposed here. The dedicated serializer keeps
+    internal owner, membership, parent-link and source-sync data out of the
+    unauthenticated response.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        group = (
+            Group.objects
+            .filter(
+                slug=slug,
+                visibility=Group.VISIBILITY_PUBLIC,
+                public_landing_enabled=True,
+            )
+            .annotate(
+                member_count=Count(
+                    "memberships",
+                    filter=Q(memberships__status=GroupMembership.STATUS_ACTIVE),
+                )
+            )
+            .first()
+        )
+
+        if not group:
+            raise NotFound("Public group landing page not found.")
+
+        return Response(
+            PublicGroupLandingSerializer(
+                group,
+                context={"request": request},
+            ).data
+        )
 
 
 class GroupViewSet(viewsets.ModelViewSet):
@@ -336,13 +377,16 @@ class GroupViewSet(viewsets.ModelViewSet):
         event: {type:"event", title, starts_at?, ends_at?, text?}
         """
         group = self.get_object()
-        if group.parent_id:
-            uid = getattr(request.user, "id", None)
-            if not (
-                self._can_moderate_any(request, group) or
-                (uid and self._is_active_member(uid, group))
-            ):
-                return Response({"detail": "Only sub-group members can view its posts."}, status=403)
+        uid = getattr(request.user, "id", None)
+        can_access_group_content = bool(
+            self._can_moderate_any(request, group)
+            or (uid and self._is_active_member(uid, group))
+        )
+        if not can_access_group_content:
+            return Response(
+                {"detail": "Only active group members can view group posts."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         FeedItem = self._get_feeditem_model()
         if not FeedItem:
@@ -1035,6 +1079,17 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="members")
     def members(self, request, pk=None):
         group = self.get_object()
+        uid = getattr(request.user, "id", None)
+        can_access_group_content = bool(
+            self._can_moderate_any(request, group)
+            or (uid and self._is_active_member(uid, group))
+        )
+        if not can_access_group_content:
+            return Response(
+                {"detail": "Only active group members can view group members."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         memberships = (
             GroupMembership.objects.filter(
                 group=group, status=GroupMembership.STATUS_ACTIVE

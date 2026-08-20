@@ -12,6 +12,27 @@ User = get_user_model()
 
 
 
+class PublicGroupLandingSerializer(serializers.ModelSerializer):
+    """Minimal, safe representation for unauthenticated group landing pages."""
+
+    member_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Group
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "description",
+            "visibility",
+            "join_policy",
+            "cover_image",
+            "logo",
+            "member_count",
+        ]
+        read_only_fields = fields
+
+
 class GroupSerializer(serializers.ModelSerializer):
     member_count = serializers.IntegerField(read_only=True)
     created_by = serializers.SerializerMethodField(read_only=True)
@@ -49,6 +70,7 @@ class GroupSerializer(serializers.ModelSerializer):
         fields = [
             "id", "name", "slug", "description",
             "visibility", "join_policy",
+            "public_landing_enabled",
             "cover_image", "remove_cover_image",
             "logo", "remove_logo",
             "member_count", "created_by", "owner",
