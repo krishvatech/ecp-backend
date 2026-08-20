@@ -3297,16 +3297,16 @@ class StaffUserViewSet(viewsets.ModelViewSet):
 
         # Sync permissions
         if user.is_staff:
-            sync_staff_group(username=user.username, is_staff=True)
+            sync_staff_group(username=user.email, is_staff=True)
         
         if user.is_superuser:
             # Platform admins should also be in staff group usually
             if not user.is_staff:
                 user.is_staff = True
                 user.save(update_fields=["is_staff"])
-                sync_staff_group(username=user.username, is_staff=True)
+                sync_staff_group(username=user.email, is_staff=True)
 
-            add_user_to_group(username=user.username, group_name="platform_admin")
+            add_user_to_group(username=user.email, group_name="platform_admin")
 
             # Note: Saleor staff syncing is now managed only via SALEOR STAFF tab (add-to-saleor-staff action)
             logger.info(f"User {user.email} created as superuser. Use SALEOR STAFF tab to add to Saleor.")
@@ -3333,24 +3333,24 @@ class StaffUserViewSet(viewsets.ModelViewSet):
 
         # Sync Staff
         if old_is_staff != updated_user.is_staff:
-            sync_staff_group(username=updated_user.username, is_staff=updated_user.is_staff)
+            sync_staff_group(username=updated_user.email, is_staff=updated_user.is_staff)
 
         # Sync Superuser -> Platform Admin
         if updated_user.is_superuser != old_is_superuser:
             if updated_user.is_superuser:
                 # Promoted to superuser
-                add_user_to_group(username=updated_user.username, group_name="platform_admin")
+                add_user_to_group(username=updated_user.email, group_name="platform_admin")
                 # Ensure staff too (required for admin access usually)
                 if not updated_user.is_staff:
                     updated_user.is_staff = True
                     updated_user.save(update_fields=["is_staff"])
-                    sync_staff_group(username=updated_user.username, is_staff=True)
+                    sync_staff_group(username=updated_user.email, is_staff=True)
 
                 # Note: Saleor staff syncing is now managed only via SALEOR STAFF tab (add-to-saleor-staff action)
                 logger.info(f"User {updated_user.email} promoted to superuser. Use SALEOR STAFF tab to add to Saleor.")
             else:
                 # Demoted from superuser
-                remove_user_from_group(username=updated_user.username, group_name="platform_admin")
+                remove_user_from_group(username=updated_user.email, group_name="platform_admin")
 
                 # Automatically remove from Saleor when demoting from superuser
                 removal_result = remove_platform_admin_from_saleor(updated_user.email, auth_token=saleor_token)
@@ -3370,11 +3370,14 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         if not request.user.is_superuser:
             qs = qs.filter(is_superuser=False)
         target_qs = qs.exclude(is_staff=bool(is_staff))
-        usernames = list(target_qs.values_list("username", flat=True))
+        users = list(target_qs.values("email"))
 
         updated = qs.update(is_staff=bool(is_staff))
-        for uname in usernames:
-            sync_staff_group(username=uname, is_staff=bool(is_staff))
+        for user in users:
+            sync_staff_group(
+                username=user["email"],
+                is_staff=bool(is_staff),
+            )
         return Response({"updated": updated})
 
     @staticmethod
@@ -3595,7 +3598,7 @@ class StaffUserViewSet(viewsets.ModelViewSet):
 
         # Create in Cognito with the provided password
         cognito_success = create_cognito_user(
-            username=user.username,
+            username=user.email,
             email=user.email,
             temp_password=password,  # Use provided password instead of temporary
             first_name=user.first_name or "",
@@ -3608,14 +3611,14 @@ class StaffUserViewSet(viewsets.ModelViewSet):
 
         # Sync permissions
         if user.is_staff:
-            sync_staff_group(username=user.username, is_staff=True)
+            sync_staff_group(username=user.email, is_staff=True)
 
         if user.is_superuser:
             if not user.is_staff:
                 user.is_staff = True
                 user.save(update_fields=["is_staff"])
-                sync_staff_group(username=user.username, is_staff=True)
-            add_user_to_group(username=user.username, group_name="platform_admin")
+                sync_staff_group(username=user.email, is_staff=True)
+            add_user_to_group(username=user.email, group_name="platform_admin")
             sync_result = sync_platform_admin_to_saleor(
                 user_email=user.email,
                 first_name=user.first_name,

@@ -4,6 +4,50 @@ from django.conf import settings
 
 log = logging.getLogger(__name__)
 
+
+
+def get_cognito_username_by_email(email: str):
+    """
+    Resolve Cognito username from email.
+    Django username and Cognito username can be different.
+    """
+    if not email:
+        return None
+
+    region = getattr(settings, "COGNITO_REGION", "") or ""
+    pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
+
+    if not region or not pool_id:
+        return None
+
+    try:
+        client = boto3.client(
+            "cognito-idp",
+            region_name=region,
+        )
+
+        response = client.list_users(
+            UserPoolId=pool_id,
+            Filter=f'email = "{email}"',
+            Limit=1,
+        )
+
+        users = response.get("Users", [])
+
+        if users:
+            return users[0]["Username"]
+
+    except Exception as exc:
+        log.warning(
+            "Failed resolving Cognito user email=%s: %s",
+            email,
+            exc,
+            exc_info=True,
+        )
+
+    return None
+
+
 def sync_staff_group(*, username: str, is_staff: bool) -> None:
     region = getattr(settings, "COGNITO_REGION", "") or ""
     pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
@@ -15,6 +59,12 @@ def sync_staff_group(*, username: str, is_staff: bool) -> None:
 
     try:
         client = boto3.client("cognito-idp", region_name=region)
+
+        resolved_username = get_cognito_username_by_email(username)
+
+        if resolved_username:
+            username = resolved_username
+
         if is_staff:
             client.admin_add_user_to_group(UserPoolId=pool_id, Username=username, GroupName=group)
             log.info("Cognito staff sync: added user=%s to group=%s", username, group)
@@ -78,6 +128,12 @@ def add_user_to_group(*, username: str, group_name: str) -> bool:
 
     try:
         client = boto3.client("cognito-idp", region_name=region)
+
+        resolved_username = get_cognito_username_by_email(username)
+
+        if resolved_username:
+            username = resolved_username
+
         client.admin_add_user_to_group(UserPoolId=pool_id, Username=username, GroupName=group_name)
         log.info("Added user=%s to Cognito group=%s", username, group_name)
         return True
@@ -108,7 +164,18 @@ def remove_user_from_group(*, username: str, group_name: str) -> bool:
 
     try:
         client = boto3.client("cognito-idp", region_name=region)
-        client.admin_remove_user_from_group(UserPoolId=pool_id, Username=username, GroupName=group_name)
+
+        resolved_username = get_cognito_username_by_email(username)
+
+        if resolved_username:
+            username = resolved_username
+
+        client.admin_remove_user_from_group(
+            UserPoolId=pool_id,
+            Username=username,
+            GroupName=group_name,
+        )
+
         log.info("Removed user=%s from Cognito group=%s", username, group_name)
         return True
     except Exception as exc:
