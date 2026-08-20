@@ -11,6 +11,20 @@ from .models import Group, GroupMembership, PromotionRequest, GroupNotification,
 User = get_user_model()
 
 
+def validate_group_description_words(value):
+    """
+    Shared ``description`` rule for every writable group serializer.
+
+    The limit is a word count (whitespace-separated tokens), not a character
+    count. Only incoming writes are checked, so groups that already store a
+    longer description keep loading and can still be edited down.
+    """
+    if value and len(value.split()) > Group.DESCRIPTION_MAX_WORDS:
+        raise serializers.ValidationError(
+            f"Description cannot exceed {Group.DESCRIPTION_MAX_WORDS} words."
+        )
+    return value
+
 
 class PublicGroupLandingSerializer(serializers.ModelSerializer):
     """Minimal, safe representation for unauthenticated group landing pages."""
@@ -23,6 +37,7 @@ class PublicGroupLandingSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "slug",
+            "short_description",
             "description",
             "visibility",
             "join_policy",
@@ -68,7 +83,7 @@ class GroupSerializer(serializers.ModelSerializer):
     class Meta:
         model = Group
         fields = [
-            "id", "name", "slug", "description",
+            "id", "name", "slug", "short_description", "description",
             "visibility", "join_policy",
             "public_landing_enabled",
             "cover_image", "remove_cover_image",
@@ -103,6 +118,9 @@ class GroupSerializer(serializers.ModelSerializer):
         # source_group_id mandatory for normal local group creation. The database
         # constraint remains authoritative for trusted sync writes.
         validators = []
+
+    def validate_description(self, value):
+        return validate_group_description_words(value)
 
     def validate(self, attrs):
         """
@@ -549,7 +567,7 @@ class GroupCreateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Group
         fields = [
-            'id', 'name', 'slug', 'description', 'visibility',
+            'id', 'name', 'slug', 'short_description', 'description', 'visibility',
             'cover_image', 'logo', 'parent_id', 'community',
             'remove_cover_image', 'remove_logo'
         ]
@@ -557,6 +575,9 @@ class GroupCreateUpdateSerializer(serializers.ModelSerializer):
             'community': {'required': False, 'allow_null': True},
             'slug': {'required': False},
         }
+
+    def validate_description(self, value):
+        return validate_group_description_words(value)
 
     def validate(self, attrs):
         parent_id = attrs.pop('parent_id', None)
@@ -620,6 +641,7 @@ class SuggestedGroupSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "slug",
+            "short_description",
             "description",
             "visibility",
             "join_policy",

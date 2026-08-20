@@ -73,8 +73,19 @@ class Group(models.Model):
     )
 
 
+    # Maximum number of whitespace-separated words accepted for ``description``
+    # on API writes. Existing rows are never re-validated, so historical data
+    # keeps loading unchanged.
+    DESCRIPTION_MAX_WORDS = 2000
+
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=220, unique=True, db_index=True)
+    short_description = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Short headline/tagline shown wherever the group is summarised.",
+    )
     description = models.TextField(blank=True)
     visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default=VISIBILITY_PUBLIC)
     join_policy = models.CharField(max_length=10, choices=JOIN_POLICY_CHOICES, default=JOIN_OPEN)

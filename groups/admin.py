@@ -16,7 +16,7 @@ class GroupAdmin(admin.ModelAdmin):
         'is_deleted', 'deletion_source', 'visibility', 'source', 'created_at',
         'posts_comments_enabled', 'posts_creation_restricted', 'forum_enabled',
     )
-    search_fields = ('name', 'slug', 'description', 'source_group_id', 'source_slug')
+    search_fields = ('name', 'slug', 'short_description', 'description', 'source_group_id', 'source_slug')
     readonly_fields = (
         'created_at', 'updated_at', 'source_synced_at', 'is_deleted', 'deleted_at',
         'deleted_by', 'deletion_source', 'deletion_batch_id',
@@ -25,7 +25,7 @@ class GroupAdmin(admin.ModelAdmin):
 
     fieldsets = (
         ('Basic Information', {
-            'fields': ('name', 'slug', 'description', 'visibility', 'join_policy')
+            'fields': ('name', 'slug', 'short_description', 'description', 'visibility', 'join_policy')
         }),
         ('Images', {
             'fields': ('cover_image', 'logo')
