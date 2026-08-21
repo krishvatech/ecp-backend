@@ -19,6 +19,7 @@ from django.contrib.auth import update_session_auth_hash
 from django.http import HttpResponse
 from django.conf import settings
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from users.cache_utils import (
     USER_DETAIL_CACHE_TTL_SECONDS,
@@ -77,6 +78,12 @@ from .saleor_connection import (
     get_valid_saleor_token_for_user,
     handle_saleor_callback,
 )
+from .linkedin_profile_import import (
+    LinkedInProfileImportError,
+    extract_profile_pdf_text,
+    structure_profile_text,
+)
+from .linkedin_profile_import_service import import_linkedin_profile_data
 from .serializers import (
     UserSerializer,
     EmailTokenObtainPairSerializer,
@@ -6142,4 +6149,85 @@ class AdminMergeDuplicateUsersView(APIView):
             return Response(
                 {"error": f"Error during merge: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class LinkedInProfileImportConfirmView(APIView):
+    """Import previously reviewed LinkedIn profile preview data."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        profile_data = request.data.get("profile_data")
+        if not isinstance(profile_data, dict):
+            return Response(
+                {"success": False, "message": "profile_data is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = import_linkedin_profile_data(
+                user=request.user,
+                profile_data=profile_data,
+            )
+        except ValidationError as exc:
+            return Response(
+                {"success": False, "message": "; ".join(exc.messages)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as exc:
+            return Response(
+                {"success": False, "message": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "success": True,
+                "message": "LinkedIn profile imported successfully.",
+                "data": result,
+            }
+        )
+
+
+class LinkedInProfileImportPreviewView(APIView):
+    """Return structured profile data parsed from an uploaded LinkedIn PDF.
+
+    Discovery-stage endpoint: the upload is never persisted and no profile
+    record is written.  The response is a preview only.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        uploaded_file = request.FILES.get("file")
+
+        if not uploaded_file:
+            return Response(
+                {"success": False, "message": "PDF file is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if uploaded_file.content_type != "application/pdf":
+            return Response(
+                {"success": False, "message": "Only PDF files are supported."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            extracted_text = extract_profile_pdf_text(uploaded_file.file)
+            profile_data = structure_profile_text(extracted_text)
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "LinkedIn profile preview generated successfully.",
+                    "data": profile_data,
+                }
+            )
+
+        except LinkedInProfileImportError as exc:
+            return Response(
+                {"success": False, "message": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
             )

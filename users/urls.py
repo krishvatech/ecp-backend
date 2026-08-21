@@ -53,6 +53,7 @@ from .views import (
     SaleorConnectionDisconnectView,
 
 )
+from .views import LinkedInProfileImportPreviewView, LinkedInProfileImportConfirmView
 from .wordpress_webhook import WordPressWebhookView, WordPressUserSyncView, WordPressProfileSyncAuthenticatedView
 from .account_login_status import AccountLoginStatusView
 
@@ -137,6 +138,18 @@ urlpatterns = [
     path("skills/search/", EscoSkillSearchView.as_view(), name="esco-skill-search"),
     path("languages/search/", IsoLanguageSearchView.as_view(), name="iso-language-search"),
     path("cities/search/", GeoCitySearchView.as_view(), name="geonames-city-search"),
+
+    # LinkedIn PDF profile import (preview only, nothing is persisted)
+    path(
+        "linkedin-profile/import-preview/",
+        LinkedInProfileImportPreviewView.as_view(),
+        name="linkedin-profile-import-preview",
+    ),
+    path(
+        "linkedin-profile/import-confirm/",
+        LinkedInProfileImportConfirmView.as_view(),
+        name="linkedin-profile-import-confirm",
+    ),
 
     # Email alias management
     path("users/me/email-aliases/", AddEmailAliasView.as_view(), name="add-email-alias"),
