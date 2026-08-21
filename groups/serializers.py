@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from users.serializers import UserMiniSerializer
 from users.models import Experience
 from .models import Group, GroupMembership, PromotionRequest, GroupNotification, WordPressForumSource, WordPressGroupSource
+from .permissions import group_permissions
 
 User = get_user_model()
 
@@ -54,6 +55,7 @@ class GroupSerializer(serializers.ModelSerializer):
     remove_cover_image = serializers.BooleanField(write_only=True, required=False, default=False)
     remove_logo = serializers.BooleanField(write_only=True, required=False, default=False)
     current_user_role = serializers.SerializerMethodField(read_only=True)
+    permissions = serializers.SerializerMethodField(read_only=True)
 
     # NEW ↓
     membership_status = serializers.SerializerMethodField(read_only=True)
@@ -91,6 +93,7 @@ class GroupSerializer(serializers.ModelSerializer):
             "member_count", "created_by", "owner",
             "created_at", "updated_at",
             "current_user_role",
+            "permissions",
             "membership_status",  # NEW
             "invited",            # NEW
             "community_id",
@@ -110,6 +113,7 @@ class GroupSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id", "slug", "member_count", "created_by", "owner", "created_at", "updated_at",
+            "permissions",
             "parent_group", "parent_groups", "parent_links",
             "source", "source_group_id", "source_slug", "source_url", "source_synced_at",
         ]
@@ -143,6 +147,11 @@ class GroupSerializer(serializers.ModelSerializer):
         # Public groups allow open/approval/invite
         if vis == Group.VISIBILITY_PUBLIC and jp not in {Group.JOIN_OPEN, Group.JOIN_APPROVAL, Group.JOIN_INVITE}:
             raise serializers.ValidationError({"join_policy": "Public groups must be 'open', 'approval', or 'invite'."})
+
+        # A landing page is only meaningful for a public group. Turning a group
+        # private silently switches it off rather than rejecting the change.
+        if vis != Group.VISIBILITY_PUBLIC:
+            attrs["public_landing_enabled"] = False
 
         # Sub-group rules (parent-dependent)
         if parent:
@@ -283,6 +292,38 @@ class GroupSerializer(serializers.ModelSerializer):
             .values_list("role", flat=True)
             .first()
         )
+
+    def get_permissions(self, obj):
+        """Capability flags for the requesting user on this specific group.
+
+        Uses the membership role/status already annotated by
+        ``GroupViewSet._optimize_group_queryset`` so list responses stay at one
+        query; falls back to the shared helper when the annotation is absent.
+        """
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        uid = getattr(user, "id", None)
+        if not uid or not getattr(user, "is_authenticated", False):
+            return group_permissions(None, obj)
+
+        if not hasattr(obj, "_current_membership_role"):
+            return group_permissions(user, obj)
+
+        staff = bool(getattr(user, "is_staff", False) or getattr(user, "is_superuser", False))
+        owner = obj.created_by_id == uid or getattr(obj, "owner_id", None) == uid
+
+        role = None
+        if getattr(obj, "_current_membership_status", None) == GroupMembership.STATUS_ACTIVE:
+            role = obj._current_membership_role
+
+        manage = bool(staff or owner or role == GroupMembership.ROLE_ADMIN)
+        return {
+            "can_edit": manage,
+            "can_manage_members": manage,
+            "can_set_roles": manage,
+            "can_assign_admin_role": bool(staff or owner),
+            "can_moderate_posts": bool(manage or role == GroupMembership.ROLE_MODERATOR),
+        }
 
     def get_membership_status(self, obj):
         request = self.context.get("request")
