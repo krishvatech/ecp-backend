@@ -30,7 +30,18 @@ from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParam
 from community.models import Community
 from activity_feed.models import FeedItem, Poll
 from .models import Group, GroupMembership, PromotionRequest, GroupNotification, GroupParentAssociation, WordPressForumSource, WordPressGroupSource
-from .permissions import GroupCreateByAdminOnly, is_moderator, can_moderate_content, GroupSuperuserOnly
+from .permissions import (
+    GroupCreateByAdminOnly,
+    GroupSuperuserOnly,
+    can_assign_admin_role,
+    can_manage_group,
+    can_moderate_content,
+    can_review_join_requests,
+    effective_group_role,
+    group_permissions,
+    is_moderator,
+    is_platform_staff,
+)
 from .serializers import (
     GroupSerializer,
     PublicGroupLandingSerializer,
@@ -671,46 +682,40 @@ class GroupViewSet(viewsets.ModelViewSet):
                     pass
                 raise NotFound(f"Group '{lookup}' not found.")
 
-    # Use: True if user is ADMIN in this group (staff-only restriction applies).
+    # Use: True if user holds an ACTIVE ADMIN membership in this group.
+    # Group-level role only — Django staff is a separate, platform-level axis.
     # Ordering: Not applicable.
     def _is_admin(self, user_id, group) -> bool:
-        ADMIN = getattr(GroupMembership, "ROLE_ADMIN", "admin")
-        ACTIVE = getattr(GroupMembership, "STATUS_ACTIVE", "active")
-        # STAFF-ONLY ADMIN/MOD: must be staff AND active
         return GroupMembership.objects.filter(
-            group=group, user_id=user_id, role=ADMIN, status=ACTIVE, user__is_staff=True
+            group=group,
+            user_id=user_id,
+            role=GroupMembership.ROLE_ADMIN,
+            status=GroupMembership.STATUS_ACTIVE,
         ).exists()
 
-    # Use: True if user is ADMIN in this group (without staff requirement).
+    # Use: True if user is ADMIN in this group regardless of membership status.
     # Ordering: Not applicable.
     def _is_admin_any(self, user_id, group) -> bool:
         return GroupMembership.objects.filter(
             group=group, user_id=user_id, role=GroupMembership.ROLE_ADMIN
         ).exists()
 
-    # Use: True if user is MODERATOR in this group (staff-only).
+    # Use: True if user holds an ACTIVE MODERATOR membership in this group.
+    # Group-level role only — a normal (non-staff) user can moderate here.
     # Ordering: Not applicable.
     def _is_moderator(self, user_id, group) -> bool:
-        MOD = getattr(GroupMembership, "ROLE_MODERATOR", "moderator")
-        ACTIVE = getattr(GroupMembership, "STATUS_ACTIVE", "active")
-        # STAFF-ONLY ADMIN/MOD: must be staff AND active
         return GroupMembership.objects.filter(
-            group=group, user_id=user_id, role=MOD, status=ACTIVE, user__is_staff=True
+            group=group,
+            user_id=user_id,
+            role=GroupMembership.ROLE_MODERATOR,
+            status=GroupMembership.STATUS_ACTIVE,
         ).exists()
 
-    # Use: Can current request user manage this group (owner/creator/staff).
+    # Use: Can current request user manage this group (platform staff, owner/creator,
+    # or group admin). Group admins are scoped to this group only.
     # Ordering: Not applicable.
     def _can_manage(self, request, group: Group) -> bool:
-        uid = getattr(request.user, "id", None)
-        return bool(
-            request.user
-            and request.user.is_authenticated
-            and (
-                request.user.is_staff
-                or group.created_by_id == uid
-                or (hasattr(group, "owner_id") and group.owner_id == uid)
-            )
-        )
+        return can_manage_group(getattr(request, "user", None), group)
 
     # Use: Can current user invite by email (allows non-staff admins/owners).
     def _can_invite_by_email(self, request, group: Group) -> bool:
@@ -744,11 +749,10 @@ class GroupViewSet(viewsets.ModelViewSet):
             return parent.community
         return None
 
-    # Use: Can current user set roles (manage OR admin(staff)).
+    # Use: Can current user set member roles (platform staff, owner, or group admin).
     # Ordering: Not applicable.
     def _can_set_roles(self, request, group: Group) -> bool:
-        uid = getattr(request.user, "id", None)
-        return self._can_manage(request, group) or (uid and self._is_admin(uid, group))
+        return self._can_manage(request, group)
 
     # Use (Endpoint): POST /api/groups/  (with sub-group support)
     # - Top-level create requires staff; sub-group create allowed for parent owner/admin/staff.
@@ -1324,7 +1328,9 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path=r"member-requests/approve/(?P<user_id>\d+)")
     def approve_member_request_one(self, request, pk=None, user_id=None):
         group = self.get_object()
-        if not self._can_set_roles(request, group):
+        # Owner/group admin/moderator/platform staff. Reviewing who joins is part
+        # of moderation, so group moderators can act here without Django staff.
+        if not can_review_join_requests(request.user, group):
             return Response({"detail": "Forbidden"}, status=403)
 
         uid = int(user_id)
@@ -1342,7 +1348,8 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path=r"member-requests/reject/(?P<user_id>\d+)")
     def reject_member_request_one(self, request, pk=None, user_id=None):
         group = self.get_object()
-        if not self._can_set_roles(request, group):
+        # Same reviewers as approve: owner/group admin/moderator/platform staff.
+        if not can_review_join_requests(request.user, group):
             return Response({"detail": "Forbidden"}, status=403)
 
         uid = int(user_id)
@@ -1501,12 +1508,18 @@ class GroupViewSet(viewsets.ModelViewSet):
     def moderator_can_i(self, request, pk=None):
         group = self.get_object()
         uid = getattr(request.user, "id", None)
+        perms = group_permissions(request.user, group)
         out = {
             "is_owner_or_creator": (group.created_by_id == uid) or (getattr(group, "owner_id", None) == uid),
             "is_admin": self._is_admin(uid, group),
             "is_moderator": self._is_moderator(uid, group),
+            "is_platform_staff": is_platform_staff(request.user),
+            "role": effective_group_role(request.user, group),
+            "permissions": perms,
         }
-        can = self._can_moderate_any(request, group)
+        # Flattened aliases so callers can read capabilities without the nesting.
+        out.update(perms)
+        can = perms["can_moderate_posts"]
         is_active_member = bool(uid and self._is_active_member(uid, group))
         can_create_post = bool(
             can
@@ -1545,18 +1558,12 @@ class GroupViewSet(viewsets.ModelViewSet):
     def _can_moderate_any(self, request, group) -> bool:
         """
         True if the user can moderate content for this group:
-        site staff, group owner/creator, group admin, or group moderator.
+        platform staff, group owner/creator, group admin, or group moderator.
+
+        Group admins and moderators need no Django staff flag, and their rights
+        stop at this group.
         """
-        uid = getattr(request.user, "id", None)
-        return bool(
-            request.user and request.user.is_authenticated and (
-                request.user.is_staff
-                or group.created_by_id == uid
-                or getattr(group, "owner_id", None) == uid
-                or self._is_admin(uid, group)
-                or self._is_moderator(uid, group)
-            )
-        )
+        return can_moderate_content(getattr(request, "user", None), group)
 
 
     # Use: ContentType id helper for a model class.
@@ -2019,27 +2026,36 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         return Response({"ok": True, "deleted": "soft"})
 
-    # Use (Endpoint): POST /api/groups/{id}/set-role
-    # - Owner/admin sets role (admin/mod/member) with staff-only restriction for admin/mod.
+    # Use: Shared role-assignment logic behind set-role / change-role / members role PATCH.
     # Ordering: Not applicable.
-    @action(detail=True, methods=["post"], url_path="set-role")
-    def set_role(self, request, pk=None):
+    def _assign_member_role(self, request, group: Group, raw_user_id, raw_role):
         """
-        Admin/Owner sets role:
-        Body: { "user_id": <int>, "role": "admin"|"moderator"|"member" }
-        STAFF-ONLY ADMIN/MOD: Only staff users can be 'admin' or 'moderator'.
+        Assign a group-level role to an existing member.
+
+        Roles are group-scoped: the target does NOT need to be Django staff, and
+        being granted 'admin'/'moderator' here confers no platform privileges.
+
+        Caller must be platform staff, the group owner/creator, or a group admin.
+        Granting or revoking 'admin' is further reserved for owner/platform staff
+        so a group admin cannot mint peers or unseat one.
         """
-        group = self.get_object()
         if not self._can_set_roles(request, group):
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-        uid = request.data.get("user_id")
-        role_in = (request.data.get("role") or "").strip().lower()
-        if not uid or role_in not in {"admin", "moderator", "member"}:
-            return Response({"detail": "user_id and valid role are required"}, status=status.HTTP_400_BAD_REQUEST)
+        role_in = (raw_role or "").strip().lower()
+        role_map = {
+            "admin": GroupMembership.ROLE_ADMIN,
+            "moderator": GroupMembership.ROLE_MODERATOR,
+            "member": GroupMembership.ROLE_MEMBER,
+        }
+        if not raw_user_id or role_in not in role_map:
+            return Response(
+                {"detail": "user_id and valid role are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
-            uid_int = int(uid)
+            uid_int = int(raw_user_id)
         except Exception:
             return Response({"detail": "user_id must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -2052,24 +2068,41 @@ class GroupViewSet(viewsets.ModelViewSet):
         except GroupMembership.DoesNotExist:
             return Response({"detail": "Not a member"}, status=status.HTTP_404_NOT_FOUND)
 
-        # STAFF-ONLY ADMIN/MOD
-        if role_in in {"admin", "moderator"}:
-            User = get_user_model()
-            target_user = User.objects.filter(pk=uid_int).first()
-            if not target_user or not target_user.is_staff:
-                return Response(
-                    {"detail": "Only staff users can be assigned as admin or moderator."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        new_role = role_map[role_in]
+        if membership.role == new_role:
+            return Response({"ok": True, "role": new_role, "unchanged": True}, status=status.HTTP_200_OK)
 
-        role_map = {
-            "admin": GroupMembership.ROLE_ADMIN,
-            "moderator": GroupMembership.ROLE_MODERATOR,
-            "member": GroupMembership.ROLE_MEMBER,
-        }
-        membership.role = role_map[role_in]
+        # Only owner/platform staff may hand out or take away the admin role.
+        touches_admin = GroupMembership.ROLE_ADMIN in {new_role, membership.role}
+        if touches_admin and not can_assign_admin_role(request.user, group):
+            return Response(
+                {"detail": "Only the group owner or platform staff can assign or remove the admin role."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Elevated roles are meaningless on an inactive membership.
+        if new_role != GroupMembership.ROLE_MEMBER and membership.status != GroupMembership.STATUS_ACTIVE:
+            return Response(
+                {"detail": "Only active members can be made admin or moderator."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        membership.role = new_role
         membership.save(update_fields=["role"])
-        return Response({"ok": True}, status=status.HTTP_200_OK)
+        return Response({"ok": True, "user_id": uid_int, "role": new_role}, status=status.HTTP_200_OK)
+
+    # Use (Endpoint): POST /api/groups/{id}/set-role
+    # - Owner/group-admin/staff sets a member's group role (admin/moderator/member).
+    # Ordering: Not applicable.
+    @action(detail=True, methods=["post"], url_path="set-role")
+    def set_role(self, request, pk=None):
+        """
+        Body: { "user_id": <int>, "role": "admin"|"moderator"|"member" }
+        """
+        group = self.get_object()
+        return self._assign_member_role(
+            request, group, request.data.get("user_id"), request.data.get("role")
+        )
 
     # Use (Endpoint): POST /api/groups/{id}/change-role
     # - Alias to set_role.
@@ -2077,6 +2110,19 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="change-role")
     def change_role(self, request, pk=None):
         return self.set_role(request, pk)
+
+    # Use (Endpoint): PATCH /api/groups/{id}/members/{user_id}/role/
+    # - RESTful equivalent of set-role. Body: { "role": "moderator" }
+    # Ordering: Not applicable.
+    @action(
+        detail=True,
+        methods=["patch"],
+        url_path=r"members/(?P<user_id>\d+)/role",
+        parser_classes=[JSONParser],
+    )
+    def set_member_role(self, request, pk=None, user_id=None):
+        group = self.get_object()
+        return self._assign_member_role(request, group, user_id, request.data.get("role"))
 
     # Use (Endpoint): POST /api/groups/{id}/promotion/request
     # - Staff moderator requests promotion to admin.
@@ -2099,9 +2145,9 @@ class GroupViewSet(viewsets.ModelViewSet):
             return Response({"detail": "You are not a member of this group."}, status=status.HTTP_400_BAD_REQUEST)
 
         MOD = GroupMembership.ROLE_MODERATOR
-        if membership.role != MOD or not getattr(membership.user, "is_staff", False):
+        if membership.role != MOD or membership.status != GroupMembership.STATUS_ACTIVE:
             return Response(
-                {"detail": "Only staff moderators can request promotion to admin."},
+                {"detail": "Only active moderators of this group can request promotion to admin."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -2166,12 +2212,15 @@ class GroupViewSet(viewsets.ModelViewSet):
         """
         Body: { "request_ids": [int, ...] } OR { "user_ids": [int, ...] }
         Sets membership.role = ADMIN and marks requests APPROVED.
-        STAFF-ONLY: if the target user is not staff, auto-reject with reason.
+        Granting the admin role is reserved for the group owner / platform staff.
         """
         group = self.get_object()
         decider_id = getattr(request.user, "id", None)
-        if not self._can_set_roles(request, group):
-            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        if not can_assign_admin_role(request.user, group):
+            return Response(
+                {"detail": "Only the group owner or platform staff can approve admin promotions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         req_ids = request.data.get("request_ids") or []
         user_ids = request.data.get("user_ids") or []
@@ -2209,12 +2258,13 @@ class GroupViewSet(viewsets.ModelViewSet):
                     r.save(update_fields=["status", "reviewed_by", "reviewed_at", "reason"])
                     continue
 
-                # STAFF-ONLY ADMIN/MOD: reject if user is not staff
-                if not getattr(m.user, "is_staff", False):
+                # Group roles are group-scoped, so staff status is irrelevant here.
+                # An inactive membership still cannot hold an elevated role.
+                if m.status != GroupMembership.STATUS_ACTIVE:
                     r.status = PromotionRequest.STATUS_REJECTED
                     r.reviewed_by_id = decider_id
                     r.reviewed_at = timezone.now()
-                    r.reason = (r.reason or "") + " [auto-rejected: user is not staff]"
+                    r.reason = (r.reason or "") + " [auto-rejected: membership is not active]"
                     r.save(update_fields=["status", "reviewed_by", "reviewed_at", "reason"])
                     continue
 
