@@ -208,11 +208,14 @@ def send_template_email(template_key, to_email, context, subject_override=None, 
     # --- Step 3: Render subject, html_body, text_body ---
     try:
         if db_template:
-            # Render DB-stored template strings through Django template engine
+            # Render DB-stored template strings through Django template engine.
+            # Subject and plain-text body are not HTML, so autoescape is disabled for
+            # them - otherwise titles like "M&A in Asia" arrive as "M&amp;A in Asia".
             ctx = Context(context)
-            subject = DjangoTemplate(db_template.subject).render(ctx)
+            plain_ctx = Context(context, autoescape=False)
+            subject = DjangoTemplate(db_template.subject).render(plain_ctx)
             html_body = DjangoTemplate(db_template.html_body).render(ctx)
-            text_body = DjangoTemplate(db_template.text_body).render(ctx)
+            text_body = DjangoTemplate(db_template.text_body).render(plain_ctx)
         else:
             # Fallback to file templates
             subject = subject_override or f"[{template_key}]"

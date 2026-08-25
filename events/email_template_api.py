@@ -36,11 +36,12 @@ def event_frontend_url(event):
 
 
 def event_location_text(event):
-    parts = [getattr(event, "location", "") or ""]
-    country = getattr(event, "location_country", "") or ""
-    if country:
-        parts.append(country)
-    return ", ".join([part for part in parts if part])
+    location = (getattr(event, "location", "") or "").strip()
+    country = (getattr(event, "location_country", "") or "").strip()
+    # Skip the country when the location already ends with it ("Singapore, Singapore")
+    if country and not location.lower().endswith(country.lower()):
+        return ", ".join([part for part in [location, country] if part])
+    return location or country
 
 
 def build_event_email_sample_context(event, template_key, user=None):
@@ -113,6 +114,11 @@ def build_event_email_sample_context(event, template_key, user=None):
         "suggestion_message": "Could we meet the next afternoon instead?",
         "location": "Networking Lounge",
     })
+
+    # Event page, agenda, calendar and social links - the same builder the real
+    # decision emails use, so preview and send-test match what recipients get.
+    from events.services.communication import build_event_link_context
+    context.update(build_event_link_context(event))
     return context
 
 

@@ -4,10 +4,81 @@ Handles configurable email templates for application outcomes with support for
 track, submission mode, outcome, and tier-specific customization.
 """
 import logging
+from datetime import timezone as dt_timezone
+from urllib.parse import quote, urlencode
+
+from django.conf import settings
 from django.utils import timezone
 from users.email_utils import send_template_email, format_event_time_for_email, get_support_email
 
 logger = logging.getLogger(__name__)
+
+
+def build_event_link_context(event):
+    """
+    Build the shared link/calendar variables used by application decision emails.
+
+    Returns a dict with event_url, event_website_url, agenda_url, profile_link,
+    payment_link, community_link, linkedin_url and the three add-to-calendar links.
+    """
+    frontend_base = (getattr(settings, 'FRONTEND_URL', '') or '').rstrip('/')
+    slug = event.slug or event.id
+    event_url = f"{frontend_base}/events/{slug}"
+    event_website_url = event.wordpress_event_url or event_url
+
+    # Location string used for the calendar entries - prefer the venue, fall back to the city
+    venue_parts = [p for p in [event.venue_name, event.venue_address] if p]
+    calendar_location = ", ".join(dict.fromkeys(venue_parts)) or (event.location or '')
+
+    def _utc_stamp(dt):
+        return dt.astimezone(dt_timezone.utc).strftime('%Y%m%dT%H%M%SZ') if dt else ''
+
+    def _iso(dt):
+        return dt.astimezone(dt_timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') if dt else ''
+
+    start_stamp = _utc_stamp(event.start_time)
+    end_stamp = _utc_stamp(event.end_time)
+    google_cal_link = outlook_cal_link = yahoo_cal_link = ''
+
+    if start_stamp and end_stamp:
+        google_cal_link = "https://calendar.google.com/calendar/render?" + urlencode({
+            'action': 'TEMPLATE',
+            'text': event.title,
+            'dates': f"{start_stamp}/{end_stamp}",
+            'details': event_url,
+            'location': calendar_location,
+        })
+        outlook_cal_link = "https://outlook.office.com/calendar/0/deeplink/compose?" + urlencode({
+            'path': '/calendar/action/compose',
+            'rru': 'addevent',
+            'subject': event.title,
+            'startdt': _iso(event.start_time),
+            'enddt': _iso(event.end_time),
+            'location': calendar_location,
+            'body': event_url,
+        })
+        yahoo_cal_link = "https://calendar.yahoo.com/?" + urlencode({
+            'v': '60',
+            'title': event.title,
+            'st': start_stamp,
+            'et': end_stamp,
+            'in_loc': calendar_location,
+            'desc': event_url,
+        })
+
+    return {
+        'event_url': event_url,
+        'event_website_url': event_website_url,
+        'agenda_url': f"{event_url}#agenda",
+        'profile_link': f"{frontend_base}/account/profile",
+        # No dedicated checkout route yet - the event page carries the payment step.
+        'payment_link': event_url,
+        'community_link': f"{frontend_base}/community",
+        'linkedin_url': f"https://www.linkedin.com/sharing/share-offsite/?url={quote(event_website_url, safe='')}",
+        'google_cal_link': google_cal_link,
+        'outlook_cal_link': outlook_cal_link,
+        'yahoo_cal_link': yahoo_cal_link,
+    }
 
 
 def build_email_context(track_application, outcome=None, tier=None):
@@ -90,8 +161,11 @@ def build_email_context(track_application, outcome=None, tier=None):
         'completion_link': '',  # Set by caller if third-party nominee
         'payment_link_placeholder': '{{payment_link}}',  # Placeholder for payment system
         'support_email': get_support_email(),
-        'app_name': 'Community Platform',
+        'app_name': 'IMAA Connect',
     }
+
+    # Event page, agenda, calendar and social links
+    context.update(build_event_link_context(event))
 
     return context
 

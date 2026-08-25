@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ event_name }}</title>
+</head>
+<!--
+  All styling is inline on purpose: webmail clients (tempmail, Gmail, Outlook.com)
+  strip <head><style> blocks, which leaves the email completely unstyled.
+-->
+<body style="margin:0; padding:0; background-color:#f4f5f7; font-family:Arial,Helvetica,sans-serif; color:#2b2b2b;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f4f5f7; padding:24px 0;">
+  <tr>
+    <td align="center">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="640" style="max-width:640px; width:100%; background-color:#ffffff; border-radius:6px;">
+
+        <!-- Header -->
+        <tr>
+          <td style="background-color:#0b2545; padding:28px 32px; border-radius:6px 6px 0 0;">
+            <h1 style="margin:0; font-family:Arial,Helvetica,sans-serif; font-size:22px; line-height:1.35; font-weight:bold; color:#ffffff;">
+              Your place at {{ event_name }} is confirmed
+            </h1>
+            <p style="margin:8px 0 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:1.5; color:#c7d5e8;">
+              {{ event_date_str }}{% if event_location %} &middot; {{ event_location }}{% endif %}
+            </p>
+          </td>
+        </tr>
+
+        <!-- Body -->
+        <tr>
+          <td style="padding:28px 32px; font-family:Arial,Helvetica,sans-serif; font-size:15px; line-height:1.6; color:#2b2b2b;">
+
+            <p style="margin:0 0 16px;">Dear {% firstof applicant_first_name applicant_name %},</p>
+
+            <p style="margin:0 0 16px;">We are pleased to officially welcome you to
+              <strong>{{ event_name }}</strong> on <strong>{{ event_date_str }}</strong>{% if event_location %}
+              at <strong>{{ event_location }}</strong>{% endif %}.</p>
+
+            <p style="margin:0 0 16px;">Hosted by the M&amp;A Association Singapore and officially co-partnered with
+              the Institute for Mergers, Acquisitions and Alliances (IMAA), this exclusive one-day conference brings
+              together leading corporate executives, private equity investors, and top-tier advisors from across the
+              region. As Asia-Pacific deal markets navigate macro uncertainties and shifting regulatory frameworks,
+              the conference provides an essential arena to dissect the strategies driving the next wave of
+              cross-border transactions and selective consolidations.</p>
+
+            <p style="margin:0 0 24px;">We are honored to have you with us.</p>
+
+            <!-- Event Details -->
+            <h2 style="margin:0 0 12px; padding:0 0 8px; font-family:Arial,Helvetica,sans-serif; font-size:17px; line-height:1.4; color:#0b2545; border-bottom:1px solid #e3e7ee;">Event Details</h2>
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 24px; font-family:Arial,Helvetica,sans-serif; font-size:15px; line-height:1.6; color:#2b2b2b;">
+              {% if track_label %}
+              <tr>
+                <td style="padding:7px 12px 7px 0; width:170px; color:#5a6a80; vertical-align:top;">Track</td>
+                <td style="padding:7px 0; vertical-align:top;"><strong>{{ track_label }}</strong></td>
+              </tr>
+              {% endif %}
+              <tr>
+                <td style="padding:7px 12px 7px 0; width:170px; color:#5a6a80; vertical-align:top;">Date</td>
+                <td style="padding:7px 0; vertical-align:top;">{% if is_multi_day and event_date_range_str %}{{ event_date_range_str }}{% else %}{{ event_date_str }}{% endif %}</td>
+              </tr>
+              {% if event_start_str %}
+              <tr>
+                <td style="padding:7px 12px 7px 0; width:170px; color:#5a6a80; vertical-align:top;">Time</td>
+                <td style="padding:7px 0; vertical-align:top;">{{ event_start_str }}{% if event_end_str %} &ndash; {{ event_end_str }}{% endif %}{% if event_timezone %} ({{ event_timezone }}){% endif %}</td>
+              </tr>
+              {% endif %}
+              {% if event_location %}
+              <tr>
+                <td style="padding:7px 12px 7px 0; width:170px; color:#5a6a80; vertical-align:top;">Venue</td>
+                <td style="padding:7px 0; vertical-align:top;">{{ event_location }}</td>
+              </tr>
+              {% endif %}
+              {% if accepted_tier_label or tier_label %}
+              <tr>
+                <td style="padding:7px 12px 7px 0; width:170px; color:#5a6a80; vertical-align:top;">Registration Tier</td>
+                <td style="padding:7px 0; vertical-align:top;">{% firstof accepted_tier_label tier_label %}</td>
+              </tr>
+              {% endif %}
+              {% if amount_due %}
+              <tr>
+                <td style="padding:7px 12px 7px 0; width:170px; color:#5a6a80; vertical-align:top;">Amount Due</td>
+                <td style="padding:7px 0; vertical-align:top;"><strong>{{ currency|default:"USD" }} {{ amount_due }}</strong></td>
+              </tr>
+              {% endif %}
+            </table>
+
+            <!-- Next Steps -->
+            <h2 style="margin:0 0 12px; padding:0 0 8px; font-family:Arial,Helvetica,sans-serif; font-size:17px; line-height:1.4; color:#0b2545; border-bottom:1px solid #e3e7ee;">Next Steps</h2>
+            {% if amount_due %}
+              <p style="margin:0 0 16px;">{{ payment_message|default:"To secure your seat, please complete your registration payment using the link below:" }}</p>
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px;">
+                <tr>
+                  <td align="center" bgcolor="#0b2545" style="background-color:#0b2545; border-radius:4px;">
+                    <a href="{{ payment_link }}" target="_blank" style="display:inline-block; padding:13px 26px; font-family:Arial,Helvetica,sans-serif; font-size:15px; font-weight:bold; line-height:1; color:#ffffff; text-decoration:none; border-radius:4px;">Complete Payment &amp; Confirm Pass</a>
+                  </td>
+                </tr>
+              </table>
+            {% else %}
+              <p style="margin:0 0 16px;">Your complimentary seat is confirmed! Please finalize your attendee details
+                below to complete your registration profile:</p>
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px;">
+                <tr>
+                  <td align="center" bgcolor="#0b2545" style="background-color:#0b2545; border-radius:4px;">
+                    <a href="{% firstof completion_link profile_link %}" target="_blank" style="display:inline-block; padding:13px 26px; font-family:Arial,Helvetica,sans-serif; font-size:15px; font-weight:bold; line-height:1; color:#ffffff; text-decoration:none; border-radius:4px;">Complete Attendee Profile</a>
+                  </td>
+                </tr>
+              </table>
+            {% endif %}
+
+            {% if custom_message %}
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 24px;">
+              <tr>
+                <td style="background-color:#f7f9fc; border-left:4px solid #0b2545; padding:14px 18px; font-family:Arial,Helvetica,sans-serif; font-size:15px; line-height:1.6; color:#2b2b2b;">
+                  {{ custom_message|linebreaksbr }}
+                </td>
+              </tr>
+            </table>
+            {% endif %}
+
+            <!-- Agenda -->
+            <h2 style="margin:0 0 12px; padding:0 0 8px; font-family:Arial,Helvetica,sans-serif; font-size:17px; line-height:1.4; color:#0b2545; border-bottom:1px solid #e3e7ee;">The Agenda Highlights</h2>
+            <p style="margin:0 0 16px;">This summit examines the strategic, financial, and operational drivers shaping
+              transactions across Southeast Asia and the wider Asia-Pacific landscape.</p>
+            <p style="margin:0 0 16px;">Key sessions will explore shifting geopolitical trends, regulatory shifts,
+              cross-border restructuring, and private equity buyout strategies. Industry experts will share practical
+              insights on deal sourcing, modern valuation frameworks, target integration, and tech-driven due
+              diligence.</p>
+            <p style="margin:0 0 24px;"><a href="{{ agenda_url }}" target="_blank" style="color:#0b2545; font-weight:bold; text-decoration:underline;">View Full Agenda &rarr;</a></p>
+
+            <!-- Calendar -->
+            <h2 style="margin:0 0 12px; padding:0 0 8px; font-family:Arial,Helvetica,sans-serif; font-size:17px; line-height:1.4; color:#0b2545; border-bottom:1px solid #e3e7ee;">Save to Your Calendar</h2>
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px;">
+              <tr>
+                <td align="center" bgcolor="#ffffff" style="background-color:#ffffff; border:1px solid #0b2545; border-radius:4px;">
+                  <a href="{{ google_cal_link }}" target="_blank" style="display:inline-block; padding:11px 18px; font-family:Arial,Helvetica,sans-serif; font-size:14px; font-weight:bold; line-height:1; color:#0b2545; text-decoration:none; border-radius:4px;">Add to Google Calendar</a>
+                </td>
+                <td style="width:10px; font-size:0; line-height:0;">&nbsp;</td>
+                <td align="center" bgcolor="#ffffff" style="background-color:#ffffff; border:1px solid #0b2545; border-radius:4px;">
+                  <a href="{{ outlook_cal_link }}" target="_blank" style="display:inline-block; padding:11px 18px; font-family:Arial,Helvetica,sans-serif; font-size:14px; font-weight:bold; line-height:1; color:#0b2545; text-decoration:none; border-radius:4px;">Add to Outlook</a>
+                </td>
+                <td style="width:10px; font-size:0; line-height:0;">&nbsp;</td>
+                <td align="center" bgcolor="#ffffff" style="background-color:#ffffff; border:1px solid #0b2545; border-radius:4px;">
+                  <a href="{{ yahoo_cal_link }}" target="_blank" style="display:inline-block; padding:11px 18px; font-family:Arial,Helvetica,sans-serif; font-size:14px; font-weight:bold; line-height:1; color:#0b2545; text-decoration:none; border-radius:4px;">Add to Yahoo Calendar</a>
+                </td>
+              </tr>
+            </table>
+
+            <!-- Venue -->
+            <h2 style="margin:0 0 12px; padding:0 0 8px; font-family:Arial,Helvetica,sans-serif; font-size:17px; line-height:1.4; color:#0b2545; border-bottom:1px solid #e3e7ee;">Venue &amp; Travel Information</h2>
+            <p style="margin:0 0 16px;"><strong>Venue Location:</strong> {{ event_location }}</p>
+            <p style="margin:0 0 16px;">For delegates traveling internationally, we recommend booking flights to
+              Singapore Changi Airport (SIN). For convenient access to the venue, we suggest staying within Central
+              Singapore.</p>
+            <p style="margin:0 0 24px;">If you have any questions, mobility needs, or specific dietary requirements,
+              simply reply directly to this email &mdash; our operations team is happy to assist at
+              <a href="mailto:{{ support_email }}" style="color:#0b2545; text-decoration:underline;">{{ support_email }}</a>.</p>
+
+            <!-- Connect -->
+            <h2 style="margin:0 0 12px; padding:0 0 8px; font-family:Arial,Helvetica,sans-serif; font-size:17px; line-height:1.4; color:#0b2545; border-bottom:1px solid #e3e7ee;">Connect &amp; Share</h2>
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 24px; font-family:Arial,Helvetica,sans-serif; font-size:15px; line-height:1.6; color:#2b2b2b;">
+              <tr>
+                <td style="padding:0 0 10px; vertical-align:top;">
+                  <strong>Spread the Word:</strong> Share your attendance on
+                  <a href="{{ linkedin_url }}" target="_blank" style="color:#0b2545; text-decoration:underline;">LinkedIn</a>
+                  and tag us to connect with fellow delegates ahead of the summit. Use our official hashtag
+                  <strong>#MandAinAsia2026</strong> to join the conversation.
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:0; vertical-align:top;">
+                  <strong>Event Hub:</strong> Access the official event website
+                  <a href="{{ event_website_url }}" target="_blank" style="color:#0b2545; text-decoration:underline;">here</a>
+                  and mark your attendance on our community page
+                  <a href="{{ community_link }}" target="_blank" style="color:#0b2545; text-decoration:underline;">here</a>.
+                </td>
+              </tr>
+            </table>
+
+            <p style="margin:0 0 16px;">We look forward to welcoming you soon!</p>
+            <p style="margin:0;">Best regards,<br>{{ app_name }} Operations Team</p>
+
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td style="background-color:#f4f5f7; padding:18px 32px; border-radius:0 0 6px 6px; font-family:Arial,Helvetica,sans-serif; font-size:12px; line-height:1.5; color:#6b7684; text-align:center;">
+            &copy; {{ app_name }}. All rights reserved.
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>

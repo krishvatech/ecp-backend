@@ -1,0 +1,51 @@
+Dear {% firstof applicant_first_name applicant_name %},
+
+We are pleased to officially welcome you to {{ event_name }} on {{ event_date_str }}{% if event_location %} at {{ event_location }}{% endif %}.
+
+Hosted by the M&A Association Singapore and officially co-partnered with the Institute for Mergers, Acquisitions and Alliances (IMAA), this exclusive one-day conference brings together leading corporate executives, private equity investors, and top-tier advisors from across the region. As Asia-Pacific deal markets navigate macro uncertainties and shifting regulatory frameworks, the conference provides an essential arena to dissect the strategies driving the next wave of cross-border transactions and selective consolidations.
+
+We are honored to have you with us.
+
+EVENT DETAILS
+{% if track_label %}Track: {{ track_label }}
+{% endif %}Date: {% if is_multi_day and event_date_range_str %}{{ event_date_range_str }}{% else %}{{ event_date_str }}{% endif %}
+{% if event_start_str %}Time: {{ event_start_str }}{% if event_end_str %} - {{ event_end_str }}{% endif %}{% if event_timezone %} ({{ event_timezone }}){% endif %}
+{% endif %}{% if event_location %}Venue: {{ event_location }}
+{% endif %}{% if accepted_tier_label or tier_label %}Registration Tier: {% firstof accepted_tier_label tier_label %}
+{% endif %}{% if amount_due %}Amount Due: {{ currency|default:"USD" }} {{ amount_due }}
+{% endif %}
+
+NEXT STEPS
+{% if amount_due %}{{ payment_message|default:"To secure your seat, please complete your registration payment using the link below:" }}
+Complete Payment & Confirm Pass: {{ payment_link }}
+{% else %}Your complimentary seat is confirmed! Please finalize your attendee details below to complete your registration profile:
+Complete Attendee Profile: {% firstof completion_link profile_link %}
+{% endif %}
+{% if custom_message %}{{ custom_message }}
+{% endif %}
+THE AGENDA HIGHLIGHTS
+This summit examines the strategic, financial, and operational drivers shaping transactions across Southeast Asia and the wider Asia-Pacific landscape.
+
+Key sessions will explore shifting geopolitical trends, regulatory shifts, cross-border restructuring, and private equity buyout strategies. Industry experts will share practical insights on deal sourcing, modern valuation frameworks, target integration, and tech-driven due diligence.
+
+View Full Agenda: {{ agenda_url }}
+
+SAVE TO YOUR CALENDAR
+Google Calendar: {{ google_cal_link }}
+Outlook: {{ outlook_cal_link }}
+Yahoo Calendar: {{ yahoo_cal_link }}
+
+VENUE & TRAVEL INFORMATION
+Venue Location: {{ event_location }}
+For delegates traveling internationally, we recommend booking flights to Singapore Changi Airport (SIN). For convenient access to the venue, we suggest staying within Central Singapore.
+
+If you have any questions, mobility needs, or specific dietary requirements, simply reply directly to this email - our operations team is happy to assist at {{ support_email }}.
+
+CONNECT & SHARE
+- Spread the Word: Share your attendance on LinkedIn ({{ linkedin_url }}) and tag us to connect with fellow delegates ahead of the summit. Use our official hashtag #MandAinAsia2026 to join the conversation.
+- Event Hub: Access the official event website here ({{ event_website_url }}) and mark your attendance on our community page here ({{ community_link }}).
+
+We look forward to welcoming you soon!
+
+Best regards,
+{{ app_name }} Operations Team

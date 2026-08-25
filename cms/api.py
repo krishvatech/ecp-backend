@@ -353,10 +353,13 @@ def validate_required_placeholders(template_key, html_body, mjml_body="", text_b
 def render_template_parts(subject, html_body, text_body, context):
     validate_template_syntax(subject, html_body, text_body)
     ctx = Context(context)
+    # Subject and plain-text body are not HTML - escaping them turns titles like
+    # "M&A in Asia" into "M&amp;A in Asia" in the preview and the test email.
+    plain_ctx = Context(context, autoescape=False)
     return {
-        "rendered_subject": DjangoTemplate(subject).render(ctx),
+        "rendered_subject": DjangoTemplate(subject).render(plain_ctx),
         "rendered_html": DjangoTemplate(html_body or "").render(ctx),
-        "rendered_text": DjangoTemplate(text_body or "").render(ctx),
+        "rendered_text": DjangoTemplate(text_body or "").render(plain_ctx),
     }
 
 
