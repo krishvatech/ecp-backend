@@ -136,6 +136,50 @@ EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "False") == "True"
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@example.com")
 DEFAULT_REPLY_TO_EMAIL = os.getenv("DEFAULT_REPLY_TO_EMAIL", "").strip()
 SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", DEFAULT_REPLY_TO_EMAIL or DEFAULT_FROM_EMAIL)
+
+# Salesforce CRM integration. CRM synchronization remains inactive until a
+# CRMConnection row is explicitly enabled; these settings alone trigger no
+# network requests. Secrets must come from the environment/secret manager.
+SALESFORCE_LOGIN_URL = os.getenv("SALESFORCE_LOGIN_URL", "https://login.salesforce.com").rstrip("/")
+SALESFORCE_CLIENT_ID = os.getenv("SALESFORCE_CLIENT_ID", "")
+SALESFORCE_CLIENT_SECRET = os.getenv("SALESFORCE_CLIENT_SECRET", "")
+SALESFORCE_API_VERSION = os.getenv("SALESFORCE_API_VERSION", "v61.0")
+SALESFORCE_REQUEST_TIMEOUT = float(os.getenv("SALESFORCE_REQUEST_TIMEOUT", "15"))
+SALESFORCE_CONTACT_EXTERNAL_ID_FIELD = os.getenv(
+    "SALESFORCE_CONTACT_EXTERNAL_ID_FIELD",
+    "IMAA_Connect_User_ID__c",
+)
+SALESFORCE_CONTACT_COMPANY_FIELD = os.getenv(
+    "SALESFORCE_CONTACT_COMPANY_FIELD",
+    "Company__c",
+)
+SALESFORCE_CONTACT_COUNTRY_CODE_FIELD = os.getenv(
+    "SALESFORCE_CONTACT_COUNTRY_CODE_FIELD",
+    "",
+)
+SALESFORCE_CONTACT_PROFILE_STATUS_FIELD = os.getenv(
+    "SALESFORCE_CONTACT_PROFILE_STATUS_FIELD",
+    "",
+)
+SALESFORCE_CONTACT_ACTIVE_FIELD = os.getenv(
+    "SALESFORCE_CONTACT_ACTIVE_FIELD",
+    "",
+)
+CRM_SYNC_MAX_RETRIES = int(os.getenv("CRM_SYNC_MAX_RETRIES", "5"))
+CRM_SYNC_RETRY_BASE_SECONDS = int(os.getenv("CRM_SYNC_RETRY_BASE_SECONDS", "30"))
+CRM_SYNC_RETRY_MAX_SECONDS = int(os.getenv("CRM_SYNC_RETRY_MAX_SECONDS", "3600"))
+CRM_SYNC_PROCESSING_TIMEOUT_SECONDS = int(
+    os.getenv("CRM_SYNC_PROCESSING_TIMEOUT_SECONDS", "600")
+)
+CRM_SYNC_ENABLED = os.getenv("CRM_SYNC_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+CRM_SYNC_STAFF_USERS = os.getenv("CRM_SYNC_STAFF_USERS", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+CRM_SYNC_IMPORTED_USERS = os.getenv("CRM_SYNC_IMPORTED_USERS", "true").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 # false = send paid-invoice email immediately on the mark-paid request (after commit);
 # true = dispatch via Celery worker.
 INVOICE_EMAIL_ASYNC = os.getenv("INVOICE_EMAIL_ASYNC", "false").lower() in ("1", "true", "yes", "on")
@@ -269,6 +313,7 @@ INSTALLED_APPS = [
     "moderation",
     "courses",
     "invoicing",
+    "crm_integrations.apps.CRMIntegrationsConfig",
 
     "drf_spectacular",
     "drf_spectacular_sidecar",
@@ -699,6 +744,15 @@ CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULE = {}
+
+if CRM_SYNC_ENABLED:
+    CELERY_BEAT_SCHEDULE.update({
+        "dispatch-due-crm-sync-events": {
+            "task": "crm_integrations.dispatch_due_sync_events",
+            "schedule": timedelta(minutes=1),
+            "args": (100,),
+        },
+    })
 
 # OPTIMIZATION: Reduced frequency for 100+ concurrent user scalability
 CELERY_BEAT_SCHEDULE.update({
