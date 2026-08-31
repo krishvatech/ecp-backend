@@ -1,9 +1,11 @@
-"""Newsletter preference models.
+"""Newsletter preference and Mautic synchronization models.
 
 ECP PostgreSQL is the source of truth for newsletter consent/preferences.
-External marketing providers (for example Mautic) synchronize from this state
-in later phases.
+Mautic is an external delivery/marketing system synchronized from durable
+NewsletterSyncEvent records.
 """
+
+import uuid
 
 from django.conf import settings
 from django.db import models
@@ -76,3 +78,82 @@ class NewsletterSubscription(models.Model):
     def __str__(self):
         state = "subscribed" if self.is_subscribed else "unsubscribed"
         return f"{self.user_id}:{self.category.slug} ({state})"
+
+
+class MauticContactMapping(models.Model):
+    """Stable mapping between one ECP user and one Mautic contact."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="mautic_contact_mapping",
+    )
+    mautic_contact_id = models.CharField(max_length=64, unique=True)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["user_id"]
+
+    def __str__(self):
+        return f"user:{self.user_id} -> mautic:{self.mautic_contact_id}"
+
+
+class NewsletterSyncEvent(models.Model):
+    """Durable desired-state event for ECP -> Mautic synchronization.
+
+    user_id is stored as text rather than a ForeignKey so an event remains
+    inspectable/recoverable even if the local user is later deleted.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+        SUCCEEDED = "succeeded", "Succeeded"
+        RETRYING = "retrying", "Retrying"
+        FAILED = "failed", "Failed"
+        SKIPPED = "skipped", "Skipped"
+
+    event_uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    idempotency_key = models.CharField(max_length=255, unique=True)
+    user_id = models.CharField(max_length=128, db_index=True)
+    category = models.ForeignKey(
+        NewsletterCategory,
+        on_delete=models.PROTECT,
+        related_name="sync_events",
+    )
+    desired_subscribed = models.BooleanField()
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
+    last_error = models.TextField(blank=True, default="")
+    next_retry_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(
+                fields=["status", "created_at"],
+                name="newsletter_sync_queue_idx",
+            ),
+            models.Index(
+                fields=["user_id", "category"],
+                name="newsletter_sync_target_idx",
+            ),
+        ]
+
+    def __str__(self):
+        desired = "subscribed" if self.desired_subscribed else "unsubscribed"
+        return (
+            f"user:{self.user_id} category:{self.category.slug} "
+            f"{desired} [{self.status}]"
+        )

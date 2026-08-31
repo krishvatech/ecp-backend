@@ -1,6 +1,11 @@
 from django.contrib import admin
 
-from .models import NewsletterCategory, NewsletterSubscription
+from .models import (
+    MauticContactMapping,
+    NewsletterCategory,
+    NewsletterSubscription,
+    NewsletterSyncEvent,
+)
 
 
 @admin.register(NewsletterCategory)
@@ -38,3 +43,56 @@ class NewsletterSubscriptionAdmin(admin.ModelAdmin):
     )
     readonly_fields = ("created_at", "updated_at")
     autocomplete_fields = ("user", "category")
+
+
+@admin.register(MauticContactMapping)
+class MauticContactMappingAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "mautic_contact_id",
+        "last_synced_at",
+        "updated_at",
+    )
+    search_fields = (
+        "user__email",
+        "user__username",
+        "mautic_contact_id",
+    )
+    readonly_fields = ("created_at", "updated_at")
+    autocomplete_fields = ("user",)
+
+
+@admin.register(NewsletterSyncEvent)
+class NewsletterSyncEventAdmin(admin.ModelAdmin):
+    list_display = (
+        "event_uuid",
+        "user_id",
+        "category",
+        "desired_subscribed",
+        "status",
+        "attempt_count",
+        "next_retry_at",
+        "updated_at",
+    )
+    list_filter = ("status", "desired_subscribed", "category")
+    search_fields = (
+        "event_uuid",
+        "idempotency_key",
+        "user_id",
+        "last_error",
+    )
+    readonly_fields = (
+        "event_uuid",
+        "idempotency_key",
+        "user_id",
+        "category",
+        "desired_subscribed",
+        "status",
+        "attempt_count",
+        "last_error",
+        "next_retry_at",
+        "processing_started_at",
+        "completed_at",
+        "created_at",
+        "updated_at",
+    )

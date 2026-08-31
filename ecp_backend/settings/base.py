@@ -191,6 +191,16 @@ MAUTIC_BASE_URL = os.getenv("MAUTIC_BASE_URL", "").strip().rstrip("/")
 MAUTIC_USERNAME = os.getenv("MAUTIC_USERNAME", "").strip()
 MAUTIC_PASSWORD = os.getenv("MAUTIC_PASSWORD", "")
 MAUTIC_REQUEST_TIMEOUT = float(os.getenv("MAUTIC_REQUEST_TIMEOUT", "15"))
+MAUTIC_SYNC_MAX_RETRIES = int(os.getenv("MAUTIC_SYNC_MAX_RETRIES", "5"))
+MAUTIC_SYNC_RETRY_BASE_SECONDS = int(
+    os.getenv("MAUTIC_SYNC_RETRY_BASE_SECONDS", "30")
+)
+MAUTIC_SYNC_RETRY_MAX_SECONDS = int(
+    os.getenv("MAUTIC_SYNC_RETRY_MAX_SECONDS", "3600")
+)
+MAUTIC_SYNC_PROCESSING_TIMEOUT_SECONDS = int(
+    os.getenv("MAUTIC_SYNC_PROCESSING_TIMEOUT_SECONDS", "600")
+)
 
 # false = send paid-invoice email immediately on the mark-paid request (after commit);
 # true = dispatch via Celery worker.
