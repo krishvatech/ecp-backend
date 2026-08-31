@@ -777,6 +777,15 @@ if CRM_SYNC_ENABLED:
         },
     })
 
+if MAUTIC_SYNC_ENABLED:
+    CELERY_BEAT_SCHEDULE.update({
+        "dispatch-due-newsletter-sync-events": {
+            "task": "newsletter.dispatch_due_sync_events",
+            "schedule": timedelta(minutes=1),
+            "args": (100,),
+        },
+    })
+
 # OPTIMIZATION: Reduced frequency for 100+ concurrent user scalability
 CELERY_BEAT_SCHEDULE.update({
     "dispatch_suggestion_digest_local_9am": {
