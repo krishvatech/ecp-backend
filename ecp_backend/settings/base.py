@@ -180,6 +180,18 @@ CRM_SYNC_STAFF_USERS = os.getenv("CRM_SYNC_STAFF_USERS", "false").strip().lower(
 CRM_SYNC_IMPORTED_USERS = os.getenv("CRM_SYNC_IMPORTED_USERS", "true").strip().lower() in {
     "1", "true", "yes", "on",
 }
+
+# Mautic newsletter integration. ECP PostgreSQL remains the source of truth for
+# newsletter preferences. This flag defaults to disabled so importing settings
+# never triggers or enables synchronization by itself.
+MAUTIC_SYNC_ENABLED = os.getenv("MAUTIC_SYNC_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+MAUTIC_BASE_URL = os.getenv("MAUTIC_BASE_URL", "").strip().rstrip("/")
+MAUTIC_USERNAME = os.getenv("MAUTIC_USERNAME", "").strip()
+MAUTIC_PASSWORD = os.getenv("MAUTIC_PASSWORD", "")
+MAUTIC_REQUEST_TIMEOUT = float(os.getenv("MAUTIC_REQUEST_TIMEOUT", "15"))
+
 # false = send paid-invoice email immediately on the mark-paid request (after commit);
 # true = dispatch via Celery worker.
 INVOICE_EMAIL_ASYNC = os.getenv("INVOICE_EMAIL_ASYNC", "false").lower() in ("1", "true", "yes", "on")
