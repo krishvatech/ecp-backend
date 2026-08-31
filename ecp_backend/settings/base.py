@@ -314,6 +314,7 @@ INSTALLED_APPS = [
     "courses",
     "invoicing",
     "crm_integrations.apps.CRMIntegrationsConfig",
+    "newsletter.apps.NewsletterConfig",
 
     "drf_spectacular",
     "drf_spectacular_sidecar",
@@ -862,18 +863,6 @@ CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000  # Restart worker every 1000 tasks to f
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Process one task at a time (not 4x the concurrent limit)
 CELERY_TASK_TIME_LIMIT = 300  # 5 minute hard limit per task
 CELERY_TASK_SOFT_TIME_LIMIT = 240  # 4 minute soft limit (graceful shutdown)
-
-# Django ORM connection management
-# Close stale connections after each request
-from django.db import connections
-
-def close_old_connections(sender, **kwargs):
-    """Close database connections that have been idle."""
-    for conn in connections.all():
-        conn.close_if_unusable_or_obsolete()
-
-from django.core.signals import request_finished
-request_finished.connect(close_old_connections)
 
 # Memory management
 import gc

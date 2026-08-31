@@ -108,6 +108,7 @@ urlpatterns = [
     path("api/activity/", include("activity_feed.urls")),
     path("api/engagements/", include("engagements.urls")),
     path("api/moderation/", include("moderation.urls")),
+    path("api/", include("newsletter.urls")),
 
     # Invoicing
     path("api/", include("invoicing.urls")),
