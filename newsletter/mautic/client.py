@@ -182,6 +182,53 @@ class MauticClient:
             )
         return contact
 
+
+    @staticmethod
+    def _email_from_response(response, context: str) -> dict[str, Any]:
+        data = MauticClient._json_object(response, context)
+        email = data.get("email")
+        if not isinstance(email, dict) or not email.get("id"):
+            raise TemporaryMauticError(
+                f"{context} returned an invalid response"
+            )
+        return email
+
+    def get_email(self, email_id: int | str) -> dict[str, Any]:
+        email_id = str(email_id or "").strip()
+        if not email_id:
+            raise PermanentMauticError("Mautic email ID is required")
+
+        response = self._request("GET", f"emails/{email_id}")
+        return self._email_from_response(response, "Mautic email lookup")
+
+    def create_email(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._request("POST", "emails/new", data=payload)
+        return self._email_from_response(response, "Mautic email creation")
+
+    def update_email(
+        self,
+        email_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        email_id = str(email_id or "").strip()
+        if not email_id:
+            raise PermanentMauticError("Mautic email ID is required")
+
+        response = self._request(
+            "PATCH",
+            f"emails/{email_id}/edit",
+            data=payload,
+        )
+        return self._email_from_response(response, "Mautic email update")
+
+    def delete_email(self, email_id: int | str) -> dict[str, Any]:
+        email_id = str(email_id or "").strip()
+        if not email_id:
+            raise PermanentMauticError("Mautic email ID is required")
+
+        response = self._request("DELETE", f"emails/{email_id}/delete")
+        return self._email_from_response(response, "Mautic email deletion")
+
     def add_contact_to_segment(
         self,
         segment_id: int | str,
