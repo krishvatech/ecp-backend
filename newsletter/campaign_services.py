@@ -31,6 +31,12 @@ class CampaignMauticSyncFailed(APIException):
     default_code = "mautic_sync_failed"
 
 
+class CampaignMauticDeleteFailed(APIException):
+    status_code = 502
+    default_detail = "Mautic newsletter draft deletion failed."
+    default_code = "mautic_delete_failed"
+
+
 def list_campaigns():
     return (
         NewsletterCampaign.objects.select_related("created_by", "updated_by")
@@ -189,8 +195,32 @@ def update_campaign(campaign, validated_data, *, user):
     return campaign
 
 
-@transaction.atomic
 def delete_draft_campaign(campaign):
     if campaign.status != NewsletterCampaign.Status.DRAFT:
         raise CampaignNotEditable("Only draft newsletter campaigns can be deleted.")
+
+    mautic_email_id = str(campaign.mautic_email_id or "").strip()
+    if not mautic_email_id:
+        campaign.delete()
+        return
+
+    if not getattr(settings, "MAUTIC_SYNC_ENABLED", False):
+        raise CampaignMauticUnavailable(
+            "Mautic newsletter synchronization is disabled; "
+            "the linked Mautic draft was not deleted."
+        )
+
+    try:
+        MauticClient().delete_email(mautic_email_id)
+    except TemporaryMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticUnavailable(
+            "Mautic newsletter draft deletion is temporarily unavailable."
+        ) from exc
+    except PermanentMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticDeleteFailed(
+            "Mautic rejected the newsletter draft deletion."
+        ) from exc
+
     campaign.delete()
