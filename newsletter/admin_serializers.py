@@ -84,3 +84,7 @@ class NewsletterCampaignSerializer(serializers.ModelSerializer):
 
     def get_mautic_email_id(self, obj):
         return obj.mautic_email_id or None
+
+
+class NewsletterCampaignTestEmailSerializer(serializers.Serializer):
+    email = serializers.EmailField()

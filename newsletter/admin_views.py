@@ -8,6 +8,7 @@ from moderation.permissions import IsStaffOrSuperuser
 from .admin_serializers import (
     NewsletterAdminCategorySerializer,
     NewsletterCampaignSerializer,
+    NewsletterCampaignTestEmailSerializer,
 )
 from .campaign_services import (
     CampaignNotEditable,
@@ -16,6 +17,7 @@ from .campaign_services import (
     get_campaign,
     list_active_categories,
     list_campaigns,
+    send_campaign_test_email,
     sync_campaign_to_mautic,
     update_campaign,
 )
@@ -94,6 +96,27 @@ class NewsletterAdminCampaignPreviewView(APIView):
                 "html_content": campaign.html_content,
                 "plain_text": campaign.plain_text,
                 "status": campaign.status,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class NewsletterAdminCampaignTestEmailView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request, uuid):
+        serializer = NewsletterCampaignTestEmailSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        result = send_campaign_test_email(
+            _get_campaign_or_404(uuid),
+            serializer.validated_data["email"],
+            actor=request.user,
+        )
+        return Response(
+            {
+                "success": True,
+                "recipient_email": result["recipient_email"],
             },
             status=status.HTTP_200_OK,
         )
