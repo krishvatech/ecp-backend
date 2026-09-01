@@ -80,6 +80,66 @@ class NewsletterSubscription(models.Model):
         return f"{self.user_id}:{self.category.slug} ({state})"
 
 
+class NewsletterCampaign(models.Model):
+    """Admin-authored newsletter broadcast draft owned by ECP."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        SCHEDULED = "scheduled", "Scheduled"
+        SENDING = "sending", "Sending"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    name = models.CharField(max_length=180)
+    subject = models.CharField(max_length=190, blank=True, default="")
+    preview_text = models.CharField(max_length=255, blank=True, default="")
+    from_name = models.CharField(max_length=120, blank=True, default="")
+    from_email = models.EmailField(blank=True, default="")
+    html_content = models.TextField(blank=True, default="")
+    plain_text = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    audiences = models.ManyToManyField(
+        NewsletterCategory,
+        blank=True,
+        related_name="campaigns",
+    )
+    scheduled_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    send_started_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    mautic_email_id = models.CharField(max_length=64, blank=True, default="")
+    last_synced_to_mautic_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_newsletter_campaigns",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_newsletter_campaigns",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return self.name
+
+
 class MauticContactMapping(models.Model):
     """Stable mapping between one ECP user and one Mautic contact."""
 
