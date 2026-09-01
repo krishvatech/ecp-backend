@@ -283,6 +283,36 @@ class MauticClient:
             )
         return data
 
+    def send_email_to_segments(
+        self,
+        email_id: int | str,
+        segment_ids: list[int | str] | tuple[int | str, ...],
+    ) -> dict[str, Any]:
+        email_id = str(email_id or "").strip()
+        normalized_segment_ids = [
+            str(segment_id or "").strip()
+            for segment_id in (segment_ids or [])
+            if str(segment_id or "").strip()
+        ]
+        if not email_id:
+            raise PermanentMauticError("Mautic email ID is required")
+        if not normalized_segment_ids:
+            raise PermanentMauticError(
+                "At least one Mautic segment ID is required"
+            )
+
+        response = self._request(
+            "POST",
+            f"emails/{email_id}/send",
+            data=self._email_form_data({"lists": normalized_segment_ids}),
+        )
+        data = self._json_object(response, "Mautic segment email send")
+        if not data.get("success"):
+            raise TemporaryMauticError(
+                "Mautic segment email send returned an unsuccessful response"
+            )
+        return data
+
     def add_contact_to_segment(
         self,
         segment_id: int | str,

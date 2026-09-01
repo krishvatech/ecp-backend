@@ -149,6 +149,59 @@ class MauticEmailClientTests(SimpleTestCase):
         with self.assertRaises(TemporaryMauticError):
             client.send_email_to_contact(42, 51)
 
+    def test_send_email_to_segments_uses_broadcast_route_and_list_encoding(self):
+        client, session = self.make_client(
+            response(
+                200,
+                {
+                    "success": 1,
+                    "sentCount": 3,
+                    "failedRecipients": [],
+                },
+            )
+        )
+
+        result = client.send_email_to_segments(42, [7, "22"])
+
+        self.assertEqual(result["sentCount"], 3)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/emails/42/send"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["data"],
+            [("lists[]", "7"), ("lists[]", "22")],
+        )
+
+    def test_send_email_to_segments_rejects_missing_email_or_segments(self):
+        client, session = self.make_client()
+
+        for email_id, segment_ids in (
+            ("", [7]),
+            (42, []),
+            (42, ["", "  "]),
+        ):
+            with self.subTest(email_id=email_id, segment_ids=segment_ids):
+                with self.assertRaises(PermanentMauticError):
+                    client.send_email_to_segments(email_id, segment_ids)
+
+        session.request.assert_not_called()
+
+    def test_send_email_to_segments_requires_success_response(self):
+        client, _ = self.make_client(
+            response(
+                200,
+                {
+                    "success": 0,
+                    "sentCount": 0,
+                    "failedRecipients": [],
+                },
+            )
+        )
+
+        with self.assertRaises(TemporaryMauticError):
+            client.send_email_to_segments(42, [7])
+
     def test_missing_email_id_is_rejected(self):
         client, session = self.make_client()
 
