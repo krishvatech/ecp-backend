@@ -184,10 +184,28 @@ class MauticClient:
 
 
     @staticmethod
-    def _email_from_response(response, context: str) -> dict[str, Any]:
+    def _email_form_data(payload: dict[str, Any]) -> list[tuple[str, Any]]:
+        """Encode Mautic email form collections using Symfony array notation."""
+        form_data = []
+        for key, value in payload.items():
+            if isinstance(value, (list, tuple)):
+                form_data.extend((f"{key}[]", item) for item in value)
+            elif isinstance(value, bool):
+                form_data.append((key, "1" if value else "0"))
+            else:
+                form_data.append((key, value))
+        return form_data
+
+    @staticmethod
+    def _email_from_response(
+        response,
+        context: str,
+        *,
+        require_id: bool = True,
+    ) -> dict[str, Any]:
         data = MauticClient._json_object(response, context)
         email = data.get("email")
-        if not isinstance(email, dict) or not email.get("id"):
+        if not isinstance(email, dict) or (require_id and not email.get("id")):
             raise TemporaryMauticError(
                 f"{context} returned an invalid response"
             )
@@ -202,7 +220,11 @@ class MauticClient:
         return self._email_from_response(response, "Mautic email lookup")
 
     def create_email(self, payload: dict[str, Any]) -> dict[str, Any]:
-        response = self._request("POST", "emails/new", data=payload)
+        response = self._request(
+            "POST",
+            "emails/new",
+            data=self._email_form_data(payload),
+        )
         return self._email_from_response(response, "Mautic email creation")
 
     def update_email(
@@ -217,7 +239,7 @@ class MauticClient:
         response = self._request(
             "PATCH",
             f"emails/{email_id}/edit",
-            data=payload,
+            data=self._email_form_data(payload),
         )
         return self._email_from_response(response, "Mautic email update")
 
@@ -227,7 +249,11 @@ class MauticClient:
             raise PermanentMauticError("Mautic email ID is required")
 
         response = self._request("DELETE", f"emails/{email_id}/delete")
-        return self._email_from_response(response, "Mautic email deletion")
+        return self._email_from_response(
+            response,
+            "Mautic email deletion",
+            require_id=False,
+        )
 
     def add_contact_to_segment(
         self,

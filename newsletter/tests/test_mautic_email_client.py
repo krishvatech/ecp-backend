@@ -62,7 +62,16 @@ class MauticEmailClientTests(SimpleTestCase):
             session.request.call_args.args[:2],
             ("POST", "http://mautic.local/api/emails/new"),
         )
-        self.assertEqual(session.request.call_args.kwargs["data"], payload)
+        self.assertEqual(
+            session.request.call_args.kwargs["data"],
+            [
+                ("name", "Draft"),
+                ("subject", "Draft subject"),
+                ("emailType", "list"),
+                ("lists[]", 1),
+                ("isPublished", "0"),
+            ],
+        )
 
     def test_update_email_patches_same_email(self):
         payload = {"subject": "Updated"}
@@ -77,14 +86,36 @@ class MauticEmailClientTests(SimpleTestCase):
             session.request.call_args.args[:2],
             ("PATCH", "http://mautic.local/api/emails/42/edit"),
         )
-        self.assertEqual(session.request.call_args.kwargs["data"], payload)
+        self.assertEqual(
+            session.request.call_args.kwargs["data"],
+            [("subject", "Updated")],
+        )
 
-    def test_delete_email_uses_expected_route(self):
-        client, session = self.make_client(response(200, {"email": {"id": 42}}))
+    def test_email_form_data_repeats_multiple_list_values(self):
+        encoded = MauticClient._email_form_data(
+            {
+                "lists": [1, 2],
+                "excludedLists": [3],
+                "isPublished": True,
+            }
+        )
+
+        self.assertEqual(
+            encoded,
+            [
+                ("lists[]", 1),
+                ("lists[]", 2),
+                ("excludedLists[]", 3),
+                ("isPublished", "1"),
+            ],
+        )
+
+    def test_delete_email_uses_expected_route_and_accepts_null_deleted_id(self):
+        client, session = self.make_client(response(200, {"email": {"id": None}}))
 
         deleted = client.delete_email(42)
 
-        self.assertEqual(deleted["id"], 42)
+        self.assertIsNone(deleted["id"])
         self.assertEqual(
             session.request.call_args.args[:2],
             ("DELETE", "http://mautic.local/api/emails/42/delete"),
