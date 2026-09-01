@@ -3,6 +3,7 @@ from django.urls import path
 from .admin_views import (
     NewsletterAdminCampaignDetailView,
     NewsletterAdminCampaignListCreateView,
+    NewsletterAdminCampaignPreviewView,
     NewsletterAdminCampaignSyncView,
     NewsletterAdminCategoryListView,
 )
@@ -24,6 +25,11 @@ urlpatterns = [
         "newsletter/admin/campaigns/<uuid:uuid>/",
         NewsletterAdminCampaignDetailView.as_view(),
         name="newsletter-admin-campaign-detail",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/preview/",
+        NewsletterAdminCampaignPreviewView.as_view(),
+        name="newsletter-admin-campaign-preview",
     ),
     path(
         "newsletter/admin/campaigns/<uuid:uuid>/sync/",

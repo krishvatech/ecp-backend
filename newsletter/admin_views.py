@@ -79,6 +79,26 @@ class NewsletterAdminCampaignDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class NewsletterAdminCampaignPreviewView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, uuid):
+        campaign = _get_campaign_or_404(uuid)
+        return Response(
+            {
+                "name": campaign.name,
+                "subject": campaign.subject,
+                "preview_text": campaign.preview_text,
+                "from_name": campaign.from_name,
+                "from_email": campaign.from_email,
+                "html_content": campaign.html_content,
+                "plain_text": campaign.plain_text,
+                "status": campaign.status,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class NewsletterAdminCampaignSyncView(APIView):
     permission_classes = [IsStaffOrSuperuser]
 
