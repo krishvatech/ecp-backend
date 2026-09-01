@@ -140,6 +140,61 @@ class NewsletterCampaign(models.Model):
         return self.name
 
 
+class NewsletterCampaignSendEvent(models.Model):
+    """One durable, single-use send request for a newsletter campaign.
+
+    A campaign may have only one send event for its lifetime. This is stricter
+    than preference synchronization because a broadcast must never be blindly
+    retried after an ambiguous provider response.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+        SUCCEEDED = "succeeded", "Succeeded"
+        FAILED = "failed", "Failed"
+
+    event_uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    idempotency_key = models.CharField(max_length=255, unique=True)
+    campaign = models.OneToOneField(
+        NewsletterCampaign,
+        on_delete=models.PROTECT,
+        related_name="send_event",
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="requested_newsletter_campaign_sends",
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    provider_send_started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(
+                fields=["status", "created_at"],
+                name="newsletter_send_queue_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"campaign:{self.campaign_id} [{self.status}]"
+
+
 class MauticContactMapping(models.Model):
     """Stable mapping between one ECP user and one Mautic contact."""
 
