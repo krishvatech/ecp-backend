@@ -121,6 +121,34 @@ class MauticEmailClientTests(SimpleTestCase):
             ("DELETE", "http://mautic.local/api/emails/42/delete"),
         )
 
+    def test_send_email_to_contact_uses_single_contact_route(self):
+        client, session = self.make_client(response(200, {"success": True}))
+
+        result = client.send_email_to_contact(42, 51)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/emails/42/contact/51/send"),
+        )
+        self.assertNotIn("data", session.request.call_args.kwargs)
+
+    def test_send_email_to_contact_rejects_missing_ids(self):
+        client, session = self.make_client()
+
+        for email_id, contact_id in (("", 51), (42, "")):
+            with self.subTest(email_id=email_id, contact_id=contact_id):
+                with self.assertRaises(PermanentMauticError):
+                    client.send_email_to_contact(email_id, contact_id)
+
+        session.request.assert_not_called()
+
+    def test_send_email_to_contact_requires_success_response(self):
+        client, _ = self.make_client(response(200, {"success": False}))
+
+        with self.assertRaises(TemporaryMauticError):
+            client.send_email_to_contact(42, 51)
+
     def test_missing_email_id_is_rejected(self):
         client, session = self.make_client()
 

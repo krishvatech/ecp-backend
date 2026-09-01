@@ -123,6 +123,24 @@ class MauticClientTests(SimpleTestCase):
             ("PATCH", "http://mautic.local/api/contacts/51/edit"),
         )
 
+    def test_delete_contact_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(response(200, {"contact": {"id": None}}))
+
+        client.delete_contact(51)
+
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("DELETE", "http://mautic.local/api/contacts/51/delete"),
+        )
+
+    def test_delete_contact_requires_contact_id(self):
+        client, session = self.make_mautic_client()
+
+        with self.assertRaises(PermanentMauticError):
+            client.delete_contact("")
+
+        session.request.assert_not_called()
+
     def test_add_contact_to_segment_calls_expected_endpoint(self):
         client, session = self.make_mautic_client(response(200, {"success": 1}))
 

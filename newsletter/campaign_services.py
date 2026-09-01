@@ -1,3 +1,5 @@
+import logging
+
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
@@ -9,6 +11,9 @@ from rest_framework.exceptions import APIException
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.payloads import build_campaign_email_payload
 from .models import NewsletterCampaign, NewsletterCategory
+
+
+logger = logging.getLogger(__name__)
 
 
 class CampaignNotEditable(serializers.ValidationError):
@@ -35,6 +40,12 @@ class CampaignMauticDeleteFailed(APIException):
     status_code = 502
     default_detail = "Mautic newsletter draft deletion failed."
     default_code = "mautic_delete_failed"
+
+
+class CampaignMauticTestEmailFailed(APIException):
+    status_code = 502
+    default_detail = "Mautic newsletter test email failed."
+    default_code = "mautic_test_email_failed"
 
 
 def list_campaigns():
@@ -163,6 +174,64 @@ def sync_campaign_to_mautic(campaign, *, actor=None):
         update_fields.append("updated_by")
     campaign.save(update_fields=update_fields)
     return campaign
+
+
+def send_campaign_test_email(campaign, recipient_email, *, actor=None):
+    recipient = str(recipient_email or "").strip().lower()
+    if not recipient:
+        raise CampaignMauticValidationError("Test recipient email is required.")
+
+    try:
+        validate_email(recipient)
+    except DjangoValidationError as exc:
+        raise CampaignMauticValidationError(
+            "Test recipient email must be valid."
+        ) from exc
+
+    campaign = sync_campaign_to_mautic(campaign, actor=actor)
+    client = MauticClient()
+    temporary_contact = False
+    contact_id = ""
+
+    try:
+        contact = client.find_contact_by_email(recipient)
+        if contact is None:
+            contact = client.create_contact({"email": recipient})
+            temporary_contact = True
+
+        contact_id = str(contact.get("id") or "").strip()
+        if not contact_id:
+            raise TemporaryMauticError(
+                "Mautic test recipient returned an invalid contact"
+            )
+
+        client.send_email_to_contact(campaign.mautic_email_id, contact_id)
+    except TemporaryMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticUnavailable(
+            "Mautic newsletter test email is temporarily unavailable."
+        ) from exc
+    except PermanentMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticTestEmailFailed(
+            "Mautic rejected the newsletter test email."
+        ) from exc
+    finally:
+        if temporary_contact and contact_id:
+            try:
+                client.delete_contact(contact_id)
+            except (TemporaryMauticError, PermanentMauticError):
+                logger.warning(
+                    "Could not delete temporary Mautic newsletter test contact id=%s",
+                    contact_id,
+                    exc_info=True,
+                )
+
+    return {
+        "recipient_email": recipient,
+        "contact_id": contact_id,
+        "temporary_contact": temporary_contact,
+    }
 
 
 @transaction.atomic

@@ -182,6 +182,11 @@ class MauticClient:
             )
         return contact
 
+    def delete_contact(self, contact_id: int | str) -> None:
+        contact_id = str(contact_id or "").strip()
+        if not contact_id:
+            raise PermanentMauticError("Mautic contact ID is required")
+        self._request("DELETE", f"contacts/{contact_id}/delete")
 
     @staticmethod
     def _email_form_data(payload: dict[str, Any]) -> list[tuple[str, Any]]:
@@ -254,6 +259,29 @@ class MauticClient:
             "Mautic email deletion",
             require_id=False,
         )
+
+    def send_email_to_contact(
+        self,
+        email_id: int | str,
+        contact_id: int | str,
+    ) -> dict[str, Any]:
+        email_id = str(email_id or "").strip()
+        contact_id = str(contact_id or "").strip()
+        if not email_id or not contact_id:
+            raise PermanentMauticError(
+                "Mautic email ID and contact ID are required"
+            )
+
+        response = self._request(
+            "POST",
+            f"emails/{email_id}/contact/{contact_id}/send",
+        )
+        data = self._json_object(response, "Mautic single-contact email send")
+        if not data.get("success"):
+            raise TemporaryMauticError(
+                "Mautic single-contact email send returned an unsuccessful response"
+            )
+        return data
 
     def add_contact_to_segment(
         self,
