@@ -1,11 +1,34 @@
+from django.conf import settings
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import validate_email
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import serializers
+from rest_framework.exceptions import APIException
 
+from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic.payloads import build_campaign_email_payload
 from .models import NewsletterCampaign, NewsletterCategory
 
 
 class CampaignNotEditable(serializers.ValidationError):
     pass
+
+
+class CampaignMauticValidationError(serializers.ValidationError):
+    pass
+
+
+class CampaignMauticUnavailable(APIException):
+    status_code = 503
+    default_detail = "Mautic newsletter synchronization is unavailable."
+    default_code = "mautic_unavailable"
+
+
+class CampaignMauticSyncFailed(APIException):
+    status_code = 502
+    default_detail = "Mautic newsletter synchronization failed."
+    default_code = "mautic_sync_failed"
 
 
 def list_campaigns():
@@ -35,6 +58,105 @@ def _categories_from_slugs(slugs):
     return list(
         NewsletterCategory.objects.filter(slug__in=unique_slugs, is_active=True)
     )
+
+
+def validate_campaign_for_mautic_sync(campaign):
+    if campaign.status != NewsletterCampaign.Status.DRAFT:
+        raise CampaignMauticValidationError(
+            "Only draft newsletter campaigns can be synchronized to Mautic."
+        )
+
+    required_fields = (
+        ("name", "Campaign name is required before Mautic sync."),
+        ("subject", "Campaign subject is required before Mautic sync."),
+        ("from_name", "Campaign sender name is required before Mautic sync."),
+        ("from_email", "Campaign sender email is required before Mautic sync."),
+    )
+    for field, message in required_fields:
+        if not str(getattr(campaign, field, "") or "").strip():
+            raise CampaignMauticValidationError(message)
+
+    try:
+        validate_email(campaign.from_email)
+    except DjangoValidationError as exc:
+        raise CampaignMauticValidationError(
+            "Campaign sender email must be valid before Mautic sync."
+        ) from exc
+
+    if not (
+        str(campaign.html_content or "").strip()
+        or str(campaign.plain_text or "").strip()
+    ):
+        raise CampaignMauticValidationError(
+            "Campaign content is required before Mautic sync."
+        )
+
+    audiences = list(campaign.audiences.all().order_by("slug", "id"))
+    if not audiences:
+        raise CampaignMauticValidationError(
+            "At least one newsletter audience is required before Mautic sync."
+        )
+
+    for category in audiences:
+        if not category.is_active:
+            raise CampaignMauticValidationError(
+                f"Newsletter audience '{category.name}' is inactive."
+            )
+        if not str(category.mautic_segment_id or "").strip():
+            raise CampaignMauticValidationError(
+                f"Newsletter audience '{category.name}' is not mapped to a Mautic segment."
+            )
+
+    return audiences
+
+
+def _record_mautic_sync_error(campaign, error):
+    campaign.last_error = str(error or "Mautic newsletter synchronization failed.")[:500]
+    campaign.save(update_fields=["last_error", "updated_at"])
+
+
+def sync_campaign_to_mautic(campaign, *, actor=None):
+    if not getattr(settings, "MAUTIC_SYNC_ENABLED", False):
+        raise CampaignMauticUnavailable(
+            "Mautic newsletter synchronization is disabled."
+        )
+
+    validate_campaign_for_mautic_sync(campaign)
+    payload = build_campaign_email_payload(campaign, publish=False)
+
+    try:
+        client = MauticClient()
+        existing_email_id = str(campaign.mautic_email_id or "").strip()
+
+        if existing_email_id:
+            client.update_email(existing_email_id, payload)
+        else:
+            email = client.create_email(payload)
+            campaign.mautic_email_id = str(email["id"])
+    except TemporaryMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticUnavailable(
+            "Mautic newsletter synchronization is temporarily unavailable."
+        ) from exc
+    except PermanentMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticSyncFailed(
+            "Mautic rejected the newsletter campaign synchronization."
+        ) from exc
+
+    campaign.last_synced_to_mautic_at = timezone.now()
+    campaign.last_error = ""
+    update_fields = [
+        "mautic_email_id",
+        "last_synced_to_mautic_at",
+        "last_error",
+        "updated_at",
+    ]
+    if actor is not None:
+        campaign.updated_by = actor
+        update_fields.append("updated_by")
+    campaign.save(update_fields=update_fields)
+    return campaign
 
 
 @transaction.atomic
