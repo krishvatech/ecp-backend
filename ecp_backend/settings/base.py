@@ -789,6 +789,11 @@ if MAUTIC_SYNC_ENABLED:
             "schedule": timedelta(minutes=1),
             "args": (100,),
         },
+        "dispatch-due-newsletter-scheduled-campaigns": {
+            "task": "newsletter.dispatch_due_scheduled_campaigns",
+            "schedule": timedelta(minutes=1),
+            "args": (100,),
+        },
     })
 
 # OPTIMIZATION: Reduced frequency for 100+ concurrent user scalability

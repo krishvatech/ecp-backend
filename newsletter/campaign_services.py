@@ -36,6 +36,10 @@ class CampaignSendNotAllowed(serializers.ValidationError):
     pass
 
 
+class CampaignScheduleNotAllowed(serializers.ValidationError):
+    pass
+
+
 class CampaignMauticUnavailable(APIException):
     status_code = 503
     default_detail = "Mautic newsletter synchronization is unavailable."
@@ -89,17 +93,12 @@ def _categories_from_slugs(slugs):
     )
 
 
-def validate_campaign_for_mautic_sync(campaign):
-    if campaign.status != NewsletterCampaign.Status.DRAFT:
-        raise CampaignMauticValidationError(
-            "Only draft newsletter campaigns can be synchronized to Mautic."
-        )
-
+def validate_campaign_delivery_readiness(campaign):
     required_fields = (
-        ("name", "Campaign name is required before Mautic sync."),
-        ("subject", "Campaign subject is required before Mautic sync."),
-        ("from_name", "Campaign sender name is required before Mautic sync."),
-        ("from_email", "Campaign sender email is required before Mautic sync."),
+        ("name", "Campaign name is required before delivery."),
+        ("subject", "Campaign subject is required before delivery."),
+        ("from_name", "Campaign sender name is required before delivery."),
+        ("from_email", "Campaign sender email is required before delivery."),
     )
     for field, message in required_fields:
         if not str(getattr(campaign, field, "") or "").strip():
@@ -109,7 +108,7 @@ def validate_campaign_for_mautic_sync(campaign):
         validate_email(campaign.from_email)
     except DjangoValidationError as exc:
         raise CampaignMauticValidationError(
-            "Campaign sender email must be valid before Mautic sync."
+            "Campaign sender email must be valid before delivery."
         ) from exc
 
     if not (
@@ -117,13 +116,13 @@ def validate_campaign_for_mautic_sync(campaign):
         or str(campaign.plain_text or "").strip()
     ):
         raise CampaignMauticValidationError(
-            "Campaign content is required before Mautic sync."
+            "Campaign content is required before delivery."
         )
 
     audiences = list(campaign.audiences.all().order_by("slug", "id"))
     if not audiences:
         raise CampaignMauticValidationError(
-            "At least one newsletter audience is required before Mautic sync."
+            "At least one newsletter audience is required before delivery."
         )
 
     for category in audiences:
@@ -139,6 +138,25 @@ def validate_campaign_for_mautic_sync(campaign):
     return audiences
 
 
+def validate_campaign_for_mautic_sync(campaign):
+    if campaign.status != NewsletterCampaign.Status.DRAFT:
+        raise CampaignMauticValidationError(
+            "Only draft newsletter campaigns can be synchronized to Mautic."
+        )
+    return validate_campaign_delivery_readiness(campaign)
+
+
+def validate_campaign_for_worker_delivery(campaign):
+    if campaign.status not in {
+        NewsletterCampaign.Status.DRAFT,
+        NewsletterCampaign.Status.SCHEDULED,
+    }:
+        raise CampaignMauticValidationError(
+            "Newsletter campaign is not eligible for delivery."
+        )
+    return validate_campaign_delivery_readiness(campaign)
+
+
 def _record_mautic_sync_error(campaign, error):
     campaign.last_error = str(error or "Mautic newsletter synchronization failed.")[:500]
     campaign.save(update_fields=["last_error", "updated_at"])
@@ -151,6 +169,50 @@ def sync_campaign_to_mautic(campaign, *, actor=None):
         )
 
     validate_campaign_for_mautic_sync(campaign)
+    payload = build_campaign_email_payload(campaign, publish=False)
+
+    try:
+        client = MauticClient()
+        existing_email_id = str(campaign.mautic_email_id or "").strip()
+
+        if existing_email_id:
+            client.update_email(existing_email_id, payload)
+        else:
+            email = client.create_email(payload)
+            campaign.mautic_email_id = str(email["id"])
+    except TemporaryMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticUnavailable(
+            "Mautic newsletter synchronization is temporarily unavailable."
+        ) from exc
+    except PermanentMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticSyncFailed(
+            "Mautic rejected the newsletter campaign synchronization."
+        ) from exc
+
+    campaign.last_synced_to_mautic_at = timezone.now()
+    campaign.last_error = ""
+    update_fields = [
+        "mautic_email_id",
+        "last_synced_to_mautic_at",
+        "last_error",
+        "updated_at",
+    ]
+    if actor is not None:
+        campaign.updated_by = actor
+        update_fields.append("updated_by")
+    campaign.save(update_fields=update_fields)
+    return campaign
+
+
+def sync_campaign_for_worker_delivery(campaign, *, actor=None):
+    if not getattr(settings, "MAUTIC_SYNC_ENABLED", False):
+        raise CampaignMauticUnavailable(
+            "Mautic newsletter synchronization is disabled."
+        )
+
+    validate_campaign_for_worker_delivery(campaign)
     payload = build_campaign_email_payload(campaign, publish=False)
 
     try:
@@ -369,6 +431,117 @@ def delete_draft_campaign(campaign):
         raise pending_error from pending_cause
 
 
+@transaction.atomic
+def schedule_campaign(campaign, *, scheduled_at, user):
+    now = timezone.now()
+    if scheduled_at is None:
+        raise CampaignScheduleNotAllowed("Scheduled time is required.")
+    if scheduled_at <= now:
+        raise CampaignScheduleNotAllowed(
+            "Scheduled time must be strictly in the future."
+        )
+
+    campaign = (
+        NewsletterCampaign.objects.select_for_update()
+        .prefetch_related("audiences")
+        .get(pk=campaign.pk)
+    )
+    existing_event = NewsletterCampaignSendEvent.objects.filter(
+        campaign_id=campaign.pk
+    ).first()
+
+    if campaign.status == NewsletterCampaign.Status.DRAFT:
+        if existing_event is not None:
+            raise CampaignScheduleNotAllowed(
+                "Newsletter campaign cannot be scheduled after send has been requested."
+            )
+    elif campaign.status == NewsletterCampaign.Status.SCHEDULED:
+        if existing_event is not None:
+            raise CampaignScheduleNotAllowed(
+                "Scheduled newsletter campaign cannot be rescheduled after send has been requested."
+            )
+    else:
+        raise CampaignScheduleNotAllowed(
+            "Newsletter campaign cannot be scheduled in its current status."
+        )
+
+    validate_campaign_delivery_readiness(campaign)
+    campaign.status = NewsletterCampaign.Status.SCHEDULED
+    campaign.scheduled_at = scheduled_at
+    campaign.updated_by = user
+    campaign.last_error = ""
+    campaign.save(
+        update_fields=[
+            "status",
+            "scheduled_at",
+            "updated_by",
+            "last_error",
+            "updated_at",
+        ]
+    )
+    return campaign
+
+
+@transaction.atomic
+def cancel_scheduled_campaign(campaign, *, user):
+    now = timezone.now()
+    event = (
+        NewsletterCampaignSendEvent.objects.select_for_update()
+        .filter(campaign_id=campaign.pk)
+        .first()
+    )
+    campaign = NewsletterCampaign.objects.select_for_update().get(pk=campaign.pk)
+
+    if campaign.status != NewsletterCampaign.Status.SCHEDULED:
+        raise CampaignScheduleNotAllowed(
+            "Only scheduled newsletter campaigns can be cancelled."
+        )
+
+    if event is None:
+        event = (
+            NewsletterCampaignSendEvent.objects.select_for_update()
+            .filter(campaign_id=campaign.pk)
+            .first()
+        )
+
+    if event is not None:
+        if event.provider_send_started_at is not None:
+            raise CampaignScheduleNotAllowed(
+                "Newsletter campaign cannot be cancelled after provider delivery has started."
+            )
+        if event.status == NewsletterCampaignSendEvent.Status.SUCCEEDED:
+            raise CampaignScheduleNotAllowed(
+                "Newsletter campaign has already been sent."
+            )
+
+        event.status = NewsletterCampaignSendEvent.Status.FAILED
+        event.completed_at = now
+        event.last_error = (
+            "Newsletter campaign cancelled before provider delivery started."
+        )
+        event.save(
+            update_fields=[
+                "status",
+                "completed_at",
+                "last_error",
+                "updated_at",
+            ]
+        )
+
+    campaign.status = NewsletterCampaign.Status.CANCELLED
+    campaign.updated_by = user
+    campaign.last_error = ""
+    campaign.save(
+        update_fields=[
+            "status",
+            "updated_by",
+            "last_error",
+            "updated_at",
+        ]
+    )
+    return campaign
+
+
 def _campaign_send_dispatchable(event):
     return (
         event.provider_send_started_at is None
@@ -383,17 +556,25 @@ def _campaign_send_dispatchable(event):
 
 def request_campaign_send(campaign, *, user):
     """Create/reuse one send event and dispatch it only after commit."""
-    if not getattr(settings, "MAUTIC_SYNC_ENABLED", False):
-        raise CampaignMauticUnavailable(
-            "Mautic newsletter synchronization is disabled."
-        )
-
     with transaction.atomic():
         campaign = (
             NewsletterCampaign.objects.select_for_update()
             .prefetch_related("audiences")
             .get(pk=campaign.pk)
         )
+
+        # Lifecycle safety is evaluated from the locked database row before the
+        # provider feature flag so Send Now can never bypass ECP scheduling.
+        if campaign.status == NewsletterCampaign.Status.SCHEDULED:
+            raise CampaignSendNotAllowed(
+                "Scheduled newsletter campaign cannot be sent before its scheduled time."
+            )
+
+        if not getattr(settings, "MAUTIC_SYNC_ENABLED", False):
+            raise CampaignMauticUnavailable(
+                "Mautic newsletter synchronization is disabled."
+            )
+
         event = NewsletterCampaignSendEvent.objects.filter(
             campaign=campaign
         ).first()

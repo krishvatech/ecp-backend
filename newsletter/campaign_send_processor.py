@@ -19,7 +19,7 @@ from .campaign_services import (
     CampaignMauticSyncFailed,
     CampaignMauticUnavailable,
     CampaignMauticValidationError,
-    sync_campaign_to_mautic,
+    sync_campaign_for_worker_delivery,
 )
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.payloads import build_campaign_email_payload
@@ -85,6 +85,21 @@ def _claim_send_event(event_id: int) -> NewsletterCampaignSendEvent | None:
         if not claimable:
             return None
 
+        campaign = (
+            NewsletterCampaign.objects.select_for_update()
+            .filter(pk=event.campaign_id)
+            .first()
+        )
+        if (
+            campaign is not None
+            and campaign.status == NewsletterCampaign.Status.SCHEDULED
+            and (
+                campaign.scheduled_at is None
+                or campaign.scheduled_at > now
+            )
+        ):
+            return None
+
         event.status = NewsletterCampaignSendEvent.Status.PROCESSING
         event.attempt_count += 1
         event.processing_started_at = now
@@ -104,7 +119,7 @@ def _claim_send_event(event_id: int) -> NewsletterCampaignSendEvent | None:
 
 
 def _record_pre_provider_failure(event_id: int, campaign_id: int, error: str) -> None:
-    """Fail the event while keeping the draft campaign safe to retry."""
+    """Fail the event while keeping pre-provider campaign state safe."""
     now = timezone.now()
     message = str(error or "Newsletter campaign preparation failed.")[:500]
 
@@ -121,7 +136,10 @@ def _record_pre_provider_failure(event_id: int, campaign_id: int, error: str) ->
         )
         NewsletterCampaign.objects.filter(
             pk=campaign_id,
-            status=NewsletterCampaign.Status.DRAFT,
+            status__in=[
+                NewsletterCampaign.Status.DRAFT,
+                NewsletterCampaign.Status.SCHEDULED,
+            ],
         ).update(
             last_error=message,
             updated_at=now,
@@ -151,7 +169,10 @@ def _mark_provider_send_started(
             NewsletterCampaign.objects.select_for_update()
             .filter(
                 pk=event.campaign_id,
-                status=NewsletterCampaign.Status.DRAFT,
+                status__in=[
+                    NewsletterCampaign.Status.DRAFT,
+                    NewsletterCampaign.Status.SCHEDULED,
+                ],
             )
             .first()
         )
@@ -281,11 +302,14 @@ def process_campaign_send_event(event_id: int) -> dict:
             "processed": True,
         }
 
-    if campaign.status != NewsletterCampaign.Status.DRAFT:
+    if campaign.status not in {
+        NewsletterCampaign.Status.DRAFT,
+        NewsletterCampaign.Status.SCHEDULED,
+    }:
         _record_pre_provider_failure(
             event.pk,
             campaign.pk,
-            "Newsletter campaign is no longer a draft.",
+            "Newsletter campaign is no longer eligible for delivery.",
         )
         return {
             "event_id": event.pk,
@@ -294,7 +318,7 @@ def process_campaign_send_event(event_id: int) -> dict:
         }
 
     try:
-        campaign = sync_campaign_to_mautic(
+        campaign = sync_campaign_for_worker_delivery(
             campaign,
             actor=event.requested_by,
         )

@@ -53,6 +53,14 @@ def dispatch_due_newsletter_campaign_send_events(batch_size: int = 100):
     return dispatch_due_campaign_send_events(batch_size=batch_size)
 
 
+@shared_task(name="newsletter.dispatch_due_scheduled_campaigns")
+def dispatch_due_newsletter_scheduled_campaigns(batch_size: int = 100):
+    """Dispatch due ECP-scheduled newsletter campaigns."""
+    from .campaign_send_operations import dispatch_due_scheduled_campaigns
+
+    return dispatch_due_scheduled_campaigns(batch_size=batch_size)
+
+
 @shared_task(name="newsletter.dispatch_due_sync_events")
 def dispatch_due_newsletter_sync_events(batch_size: int = 100):
     """Dispatch due/stale durable events for recovery processing."""

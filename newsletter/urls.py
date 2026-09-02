@@ -1,9 +1,11 @@
 from django.urls import path
 
 from .admin_views import (
+    NewsletterAdminCampaignCancelView,
     NewsletterAdminCampaignDetailView,
     NewsletterAdminCampaignListCreateView,
     NewsletterAdminCampaignPreviewView,
+    NewsletterAdminCampaignScheduleView,
     NewsletterAdminCampaignSendView,
     NewsletterAdminCampaignSyncView,
     NewsletterAdminCampaignTestEmailView,
@@ -47,6 +49,16 @@ urlpatterns = [
         "newsletter/admin/campaigns/<uuid:uuid>/send/",
         NewsletterAdminCampaignSendView.as_view(),
         name="newsletter-admin-campaign-send",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/schedule/",
+        NewsletterAdminCampaignScheduleView.as_view(),
+        name="newsletter-admin-campaign-schedule",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/cancel/",
+        NewsletterAdminCampaignCancelView.as_view(),
+        name="newsletter-admin-campaign-cancel",
     ),
     path(
         "newsletter/admin/categories/",

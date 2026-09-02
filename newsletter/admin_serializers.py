@@ -88,3 +88,7 @@ class NewsletterCampaignSerializer(serializers.ModelSerializer):
 
 class NewsletterCampaignTestEmailSerializer(serializers.Serializer):
     email = serializers.EmailField()
+
+
+class NewsletterCampaignScheduleSerializer(serializers.Serializer):
+    scheduled_at = serializers.DateTimeField(required=True)

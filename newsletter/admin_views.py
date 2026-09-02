@@ -7,17 +7,21 @@ from moderation.permissions import IsStaffOrSuperuser
 
 from .admin_serializers import (
     NewsletterAdminCategorySerializer,
+    NewsletterCampaignScheduleSerializer,
     NewsletterCampaignSerializer,
     NewsletterCampaignTestEmailSerializer,
 )
 from .campaign_services import (
     CampaignNotEditable,
+    CampaignScheduleNotAllowed,
+    cancel_scheduled_campaign,
     create_campaign,
     delete_draft_campaign,
     get_campaign,
     list_active_categories,
     list_campaigns,
     request_campaign_send,
+    schedule_campaign,
     send_campaign_test_email,
     sync_campaign_draft_to_mautic,
     update_campaign,
@@ -150,6 +154,41 @@ class NewsletterAdminCampaignSendView(APIView):
             },
             status=status.HTTP_202_ACCEPTED,
         )
+
+
+class NewsletterAdminCampaignScheduleView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request, uuid):
+        serializer = NewsletterCampaignScheduleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            campaign = schedule_campaign(
+                _get_campaign_or_404(uuid),
+                scheduled_at=serializer.validated_data["scheduled_at"],
+                user=request.user,
+            )
+        except CampaignScheduleNotAllowed as exc:
+            return Response({"detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+
+        response = NewsletterCampaignSerializer(campaign)
+        return Response(response.data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminCampaignCancelView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request, uuid):
+        try:
+            campaign = cancel_scheduled_campaign(
+                _get_campaign_or_404(uuid),
+                user=request.user,
+            )
+        except CampaignScheduleNotAllowed as exc:
+            return Response({"detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+
+        response = NewsletterCampaignSerializer(campaign)
+        return Response(response.data, status=status.HTTP_200_OK)
 
 
 class NewsletterAdminCategoryListView(APIView):

@@ -57,7 +57,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         self.campaign.refresh_from_db()
 
     @patch("newsletter.campaign_send_processor.MauticClient")
-    @patch("newsletter.campaign_send_processor.sync_campaign_to_mautic")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
     def test_success_publishes_and_broadcasts_once(self, sync, client_cls):
         self.campaign.mautic_email_id = "77"
         self.campaign.save(update_fields=["mautic_email_id"])
@@ -96,7 +96,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         client.send_email_to_segments.assert_called_once_with("77", [31])
 
     @patch("newsletter.campaign_send_processor.MauticClient")
-    @patch("newsletter.campaign_send_processor.sync_campaign_to_mautic")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
     def test_successful_event_cannot_send_again(self, sync, client_cls):
         self.campaign.mautic_email_id = "77"
         self.campaign.save(update_fields=["mautic_email_id"])
@@ -120,7 +120,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
 
     @patch("newsletter.campaign_send_processor.MauticClient")
     @patch(
-        "newsletter.campaign_send_processor.sync_campaign_to_mautic",
+        "newsletter.campaign_send_processor.sync_campaign_for_worker_delivery",
         side_effect=CampaignMauticUnavailable("Mautic unavailable"),
     )
     def test_sync_failure_before_provider_boundary_is_retry_safe(
@@ -141,7 +141,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         client_cls.assert_not_called()
 
     @patch("newsletter.campaign_send_processor.MauticClient")
-    @patch("newsletter.campaign_send_processor.sync_campaign_to_mautic")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
     def test_publish_failure_before_provider_boundary_is_retry_safe(
         self,
         sync,
@@ -168,7 +168,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         client_cls.return_value.send_email_to_segments.assert_not_called()
 
     @patch("newsletter.campaign_send_processor.MauticClient")
-    @patch("newsletter.campaign_send_processor.sync_campaign_to_mautic")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
     def test_pre_provider_failed_event_can_retry_same_event(
         self,
         sync,
@@ -202,7 +202,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         self.assertEqual(client.send_email_to_segments.call_count, 1)
 
     @patch("newsletter.campaign_send_processor.MauticClient")
-    @patch("newsletter.campaign_send_processor.sync_campaign_to_mautic")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
     def test_transport_failure_after_provider_boundary_is_terminal(
         self,
         sync,
@@ -233,7 +233,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         self.assertEqual(client.send_email_to_segments.call_count, 1)
 
     @patch("newsletter.campaign_send_processor.MauticClient")
-    @patch("newsletter.campaign_send_processor.sync_campaign_to_mautic")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
     def test_permanent_broadcast_failure_is_terminal(
         self,
         sync,
@@ -262,7 +262,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
 
     @override_settings(MAUTIC_SYNC_ENABLED=False)
     @patch("newsletter.campaign_send_processor.MauticClient")
-    @patch("newsletter.campaign_send_processor.sync_campaign_to_mautic")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
     def test_disabled_sync_does_not_claim_or_call_provider(
         self,
         sync,
@@ -283,7 +283,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         client_cls.assert_not_called()
 
     @patch("newsletter.campaign_send_processor.MauticClient")
-    @patch("newsletter.campaign_send_processor.sync_campaign_to_mautic")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
     def test_non_draft_campaign_fails_before_provider_call(
         self,
         sync,
@@ -307,7 +307,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         client_cls.assert_not_called()
 
     @patch("newsletter.campaign_send_processor.MauticClient")
-    @patch("newsletter.campaign_send_processor.sync_campaign_to_mautic")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
     def test_processing_event_is_not_claimed_twice(self, sync, client_cls):
         NewsletterCampaignSendEvent.objects.filter(pk=self.event.pk).update(
             status=NewsletterCampaignSendEvent.Status.PROCESSING,
@@ -321,7 +321,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         client_cls.assert_not_called()
 
     @patch("newsletter.campaign_send_processor.MauticClient")
-    @patch("newsletter.campaign_send_processor.sync_campaign_to_mautic")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
     def test_stale_pre_provider_processing_event_can_be_recovered(
         self,
         sync,
@@ -354,7 +354,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         client.send_email_to_segments.assert_called_once_with("77", [31])
 
     @patch("newsletter.campaign_send_processor.MauticClient")
-    @patch("newsletter.campaign_send_processor.sync_campaign_to_mautic")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
     def test_stale_post_provider_processing_event_is_never_recovered(
         self,
         sync,
@@ -374,5 +374,234 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         result = process_campaign_send_event(self.event.pk)
 
         self.assertFalse(result["processed"])
+        sync.assert_not_called()
+        client_cls.assert_not_called()
+
+    @patch("newsletter.campaign_send_processor.MauticClient")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
+    def test_scheduled_campaign_can_send_successfully(self, sync, client_cls):
+        scheduled = NewsletterCampaign.objects.create(
+            name="Scheduled Processor",
+            subject="Scheduled processor subject",
+            from_name="IMAA Connect",
+            from_email="newsletter@example.test",
+            html_content="<p>Scheduled body</p>",
+            plain_text="Scheduled body",
+            status=NewsletterCampaign.Status.SCHEDULED,
+            scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+        scheduled.audiences.set([self.category])
+        event = NewsletterCampaignSendEvent.objects.create(
+            campaign=scheduled,
+            requested_by=self.staff,
+            idempotency_key=f"mautic:newsletter:campaign:{scheduled.uuid}:send",
+        )
+        scheduled.mautic_email_id = "88"
+        scheduled.save(update_fields=["mautic_email_id"])
+        sync.return_value = scheduled
+        client = client_cls.return_value
+        client.update_email.return_value = {"id": 88}
+        client.send_email_to_segments.return_value = {
+            "success": 1,
+            "sentCount": 3,
+            "failedRecipients": [],
+        }
+
+        result = process_campaign_send_event(event.pk)
+
+        event.refresh_from_db()
+        scheduled.refresh_from_db()
+        self.assertEqual(event.status, NewsletterCampaignSendEvent.Status.SUCCEEDED)
+        self.assertEqual(scheduled.status, NewsletterCampaign.Status.SENT)
+        self.assertIsNotNone(scheduled.send_started_at)
+        self.assertIsNotNone(scheduled.sent_at)
+        self.assertIsNotNone(scheduled.scheduled_at)
+        self.assertEqual(result["sent_count"], 3)
+        client.send_email_to_segments.assert_called_once_with("88", [31])
+
+    @patch("newsletter.campaign_send_processor.MauticClient")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
+    def test_future_scheduled_campaign_event_cannot_send_early(
+        self,
+        sync,
+        client_cls,
+    ):
+        scheduled = NewsletterCampaign.objects.create(
+            name="Future Scheduled Processor",
+            subject="Scheduled processor subject",
+            from_name="IMAA Connect",
+            from_email="newsletter@example.test",
+            html_content="<p>Scheduled body</p>",
+            plain_text="Scheduled body",
+            status=NewsletterCampaign.Status.SCHEDULED,
+            scheduled_at=timezone.now() + timedelta(hours=1),
+        )
+        scheduled.audiences.set([self.category])
+        event = NewsletterCampaignSendEvent.objects.create(
+            campaign=scheduled,
+            requested_by=self.staff,
+            idempotency_key=f"mautic:newsletter:campaign:{scheduled.uuid}:send",
+        )
+
+        early = process_campaign_send_event(event.pk)
+
+        event.refresh_from_db()
+        scheduled.refresh_from_db()
+        self.assertFalse(early["processed"])
+        self.assertEqual(event.status, NewsletterCampaignSendEvent.Status.PENDING)
+        self.assertEqual(event.attempt_count, 0)
+        self.assertIsNone(event.provider_send_started_at)
+        self.assertEqual(scheduled.status, NewsletterCampaign.Status.SCHEDULED)
+        sync.assert_not_called()
+        client_cls.assert_not_called()
+
+        NewsletterCampaign.objects.filter(pk=scheduled.pk).update(
+            scheduled_at=timezone.now() - timedelta(minutes=1),
+            mautic_email_id="88",
+        )
+        scheduled.refresh_from_db()
+        sync.return_value = scheduled
+        client = client_cls.return_value
+        client.update_email.return_value = {"id": 88}
+        client.send_email_to_segments.return_value = {
+            "success": 1,
+            "sentCount": 1,
+            "failedRecipients": [],
+        }
+
+        due = process_campaign_send_event(event.pk)
+
+        event.refresh_from_db()
+        scheduled.refresh_from_db()
+        self.assertTrue(due["processed"])
+        self.assertEqual(event.status, NewsletterCampaignSendEvent.Status.SUCCEEDED)
+        self.assertEqual(scheduled.status, NewsletterCampaign.Status.SENT)
+        client.send_email_to_segments.assert_called_once_with("88", [31])
+
+    @patch("newsletter.campaign_send_processor.MauticClient")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
+    def test_missing_scheduled_at_campaign_event_cannot_send(
+        self,
+        sync,
+        client_cls,
+    ):
+        scheduled = NewsletterCampaign.objects.create(
+            name="Missing Scheduled At Processor",
+            subject="Scheduled processor subject",
+            from_name="IMAA Connect",
+            from_email="newsletter@example.test",
+            html_content="<p>Scheduled body</p>",
+            plain_text="Scheduled body",
+            status=NewsletterCampaign.Status.SCHEDULED,
+        )
+        scheduled.audiences.set([self.category])
+        event = NewsletterCampaignSendEvent.objects.create(
+            campaign=scheduled,
+            requested_by=self.staff,
+            idempotency_key=f"mautic:newsletter:campaign:{scheduled.uuid}:send",
+        )
+
+        result = process_campaign_send_event(event.pk)
+
+        event.refresh_from_db()
+        scheduled.refresh_from_db()
+        self.assertFalse(result["processed"])
+        self.assertEqual(event.status, NewsletterCampaignSendEvent.Status.PENDING)
+        self.assertEqual(event.attempt_count, 0)
+        self.assertIsNone(event.provider_send_started_at)
+        self.assertEqual(scheduled.status, NewsletterCampaign.Status.SCHEDULED)
+        sync.assert_not_called()
+        client_cls.assert_not_called()
+
+    @patch("newsletter.campaign_send_processor.MauticClient")
+    @patch(
+        "newsletter.campaign_send_processor.sync_campaign_for_worker_delivery",
+        side_effect=CampaignMauticUnavailable("Mautic unavailable"),
+    )
+    def test_scheduled_pre_provider_failure_remains_scheduled(
+        self,
+        _sync,
+        client_cls,
+    ):
+        scheduled = NewsletterCampaign.objects.create(
+            name="Scheduled Pre Failure",
+            subject="Scheduled processor subject",
+            from_name="IMAA Connect",
+            from_email="newsletter@example.test",
+            html_content="<p>Scheduled body</p>",
+            status=NewsletterCampaign.Status.SCHEDULED,
+            scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+        scheduled.audiences.set([self.category])
+        event = NewsletterCampaignSendEvent.objects.create(
+            campaign=scheduled,
+            requested_by=self.staff,
+            idempotency_key=f"mautic:newsletter:campaign:{scheduled.uuid}:send",
+        )
+
+        result = process_campaign_send_event(event.pk)
+
+        event.refresh_from_db()
+        scheduled.refresh_from_db()
+        self.assertEqual(event.status, NewsletterCampaignSendEvent.Status.FAILED)
+        self.assertIsNone(event.provider_send_started_at)
+        self.assertEqual(scheduled.status, NewsletterCampaign.Status.SCHEDULED)
+        self.assertTrue(result["retry_safe"])
+        client_cls.assert_not_called()
+
+    @patch("newsletter.campaign_send_processor.MauticClient")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
+    def test_scheduled_provider_failure_becomes_failed(self, sync, client_cls):
+        scheduled = NewsletterCampaign.objects.create(
+            name="Scheduled Provider Failure",
+            subject="Scheduled processor subject",
+            from_name="IMAA Connect",
+            from_email="newsletter@example.test",
+            html_content="<p>Scheduled body</p>",
+            status=NewsletterCampaign.Status.SCHEDULED,
+            scheduled_at=timezone.now() - timedelta(minutes=1),
+            mautic_email_id="88",
+        )
+        scheduled.audiences.set([self.category])
+        event = NewsletterCampaignSendEvent.objects.create(
+            campaign=scheduled,
+            requested_by=self.staff,
+            idempotency_key=f"mautic:newsletter:campaign:{scheduled.uuid}:send",
+        )
+        sync.return_value = scheduled
+        client_cls.return_value.update_email.return_value = {"id": 88}
+        client_cls.return_value.send_email_to_segments.side_effect = (
+            TemporaryMauticError("provider timed out")
+        )
+
+        result = process_campaign_send_event(event.pk)
+
+        event.refresh_from_db()
+        scheduled.refresh_from_db()
+        self.assertEqual(event.status, NewsletterCampaignSendEvent.Status.FAILED)
+        self.assertIsNotNone(event.provider_send_started_at)
+        self.assertEqual(scheduled.status, NewsletterCampaign.Status.FAILED)
+        self.assertFalse(result["retry_safe"])
+
+    @patch("newsletter.campaign_send_processor.MauticClient")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
+    def test_cancelled_scheduled_campaign_never_calls_mautic(self, sync, client_cls):
+        scheduled = NewsletterCampaign.objects.create(
+            name="Cancelled Scheduled Processor",
+            status=NewsletterCampaign.Status.CANCELLED,
+            scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+        event = NewsletterCampaignSendEvent.objects.create(
+            campaign=scheduled,
+            requested_by=self.staff,
+            idempotency_key=f"mautic:newsletter:campaign:{scheduled.uuid}:send",
+        )
+
+        result = process_campaign_send_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, NewsletterCampaignSendEvent.Status.FAILED)
+        self.assertIsNone(event.provider_send_started_at)
+        self.assertTrue(result["processed"])
         sync.assert_not_called()
         client_cls.assert_not_called()

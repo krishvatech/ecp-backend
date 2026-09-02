@@ -8,13 +8,16 @@ from django.utils import timezone
 from newsletter.campaign_send_events import create_campaign_send_event
 from newsletter.campaign_send_operations import (
     dispatch_due_campaign_send_events,
+    dispatch_due_scheduled_campaigns,
     due_campaign_send_event_ids,
+    due_scheduled_campaign_ids,
 )
 from newsletter.models import (
     NewsletterCampaign,
     NewsletterCampaignSendEvent,
 )
 from newsletter.tasks import dispatch_due_newsletter_campaign_send_events
+from newsletter.tasks import dispatch_due_newsletter_scheduled_campaigns
 
 
 User = get_user_model()
@@ -135,6 +138,89 @@ class NewsletterCampaignSendRecoveryTests(TestCase):
         self.assertEqual(result["selected"], 0)
         delay.assert_not_called()
 
+    def test_cancelled_campaign_event_is_never_recovered(self):
+        event = self._event("Cancelled Recovery")
+        NewsletterCampaignSendEvent.objects.filter(pk=event.pk).update(
+            status=NewsletterCampaignSendEvent.Status.FAILED,
+            last_error="Newsletter campaign cancelled before provider delivery started.",
+            completed_at=timezone.now(),
+        )
+        NewsletterCampaign.objects.filter(pk=event.campaign_id).update(
+            status=NewsletterCampaign.Status.CANCELLED,
+            scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        self.assertNotIn(event.pk, due_campaign_send_event_ids())
+
+    @patch(
+        "newsletter.campaign_send_operations.dispatch_campaign_send_event_safely"
+    )
+    def test_due_scheduled_campaign_creates_one_event_and_dispatches(self, dispatch):
+        campaign = NewsletterCampaign.objects.create(
+            name="Due Scheduled",
+            status=NewsletterCampaign.Status.SCHEDULED,
+            scheduled_at=timezone.now() - timedelta(minutes=1),
+            updated_by=self.staff,
+        )
+
+        selected = due_scheduled_campaign_ids()
+        first = dispatch_due_scheduled_campaigns()
+        second = dispatch_due_scheduled_campaigns()
+
+        self.assertIn(campaign.pk, selected)
+        self.assertEqual(
+            NewsletterCampaignSendEvent.objects.filter(campaign=campaign).count(),
+            1,
+        )
+        event = NewsletterCampaignSendEvent.objects.get(campaign=campaign)
+        self.assertEqual(event.requested_by, self.staff)
+        self.assertEqual(first["created"], 1)
+        self.assertEqual(second["created"], 0)
+        self.assertEqual(dispatch.call_count, 2)
+
+    @patch(
+        "newsletter.campaign_send_operations.dispatch_campaign_send_event_safely"
+    )
+    def test_scheduled_dispatch_skips_future_disabled_and_cancelled(self, dispatch):
+        NewsletterCampaign.objects.create(
+            name="Future Scheduled",
+            status=NewsletterCampaign.Status.SCHEDULED,
+            scheduled_at=timezone.now() + timedelta(minutes=5),
+        )
+        NewsletterCampaign.objects.create(
+            name="Cancelled Scheduled",
+            status=NewsletterCampaign.Status.CANCELLED,
+            scheduled_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        self.assertEqual(due_scheduled_campaign_ids(), [])
+
+        with override_settings(MAUTIC_SYNC_ENABLED=False):
+            result = dispatch_due_scheduled_campaigns()
+
+        self.assertTrue(result["disabled"])
+        dispatch.assert_not_called()
+
+    @patch(
+        "newsletter.campaign_send_operations.dispatch_campaign_send_event_safely",
+        return_value=False,
+    )
+    def test_scheduled_broker_failure_keeps_durable_event(self, dispatch):
+        campaign = NewsletterCampaign.objects.create(
+            name="Scheduled Broker Failure",
+            status=NewsletterCampaign.Status.SCHEDULED,
+            scheduled_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        result = dispatch_due_scheduled_campaigns()
+
+        event = NewsletterCampaignSendEvent.objects.get(campaign=campaign)
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(event.status, NewsletterCampaignSendEvent.Status.PENDING)
+        self.assertIsNone(event.provider_send_started_at)
+        dispatch.assert_called_once_with(event.pk)
+
 
 class NewsletterCampaignSendRecoveryTaskTests(SimpleTestCase):
     @patch(
@@ -157,4 +243,27 @@ class NewsletterCampaignSendRecoveryTaskTests(SimpleTestCase):
         self.assertEqual(
             dispatch_due_newsletter_campaign_send_events.name,
             "newsletter.dispatch_due_campaign_send_events",
+        )
+
+    @patch(
+        "newsletter.campaign_send_operations.dispatch_due_scheduled_campaigns"
+    )
+    def test_scheduled_dispatch_task_delegates(self, dispatch):
+        dispatch.return_value = {
+            "disabled": False,
+            "selected": 1,
+            "created": 1,
+            "dispatched": 1,
+            "failed": 0,
+        }
+
+        result = dispatch_due_newsletter_scheduled_campaigns.run(batch_size=10)
+
+        dispatch.assert_called_once_with(batch_size=10)
+        self.assertEqual(result["created"], 1)
+
+    def test_scheduled_dispatch_task_name_is_stable(self):
+        self.assertEqual(
+            dispatch_due_newsletter_scheduled_campaigns.name,
+            "newsletter.dispatch_due_scheduled_campaigns",
         )
