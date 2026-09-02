@@ -17,8 +17,9 @@ from .campaign_services import (
     get_campaign,
     list_active_categories,
     list_campaigns,
+    request_campaign_send,
     send_campaign_test_email,
-    sync_campaign_to_mautic,
+    sync_campaign_draft_to_mautic,
     update_campaign,
 )
 from .models import NewsletterCampaign
@@ -126,12 +127,29 @@ class NewsletterAdminCampaignSyncView(APIView):
     permission_classes = [IsStaffOrSuperuser]
 
     def post(self, request, uuid):
-        campaign = sync_campaign_to_mautic(
+        campaign = sync_campaign_draft_to_mautic(
             _get_campaign_or_404(uuid),
             actor=request.user,
         )
         serializer = NewsletterCampaignSerializer(campaign)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminCampaignSendView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request, uuid):
+        event = request_campaign_send(
+            _get_campaign_or_404(uuid),
+            user=request.user,
+        )
+        return Response(
+            {
+                "accepted": True,
+                "status": event.status,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class NewsletterAdminCategoryListView(APIView):

@@ -4,6 +4,7 @@ from .admin_views import (
     NewsletterAdminCampaignDetailView,
     NewsletterAdminCampaignListCreateView,
     NewsletterAdminCampaignPreviewView,
+    NewsletterAdminCampaignSendView,
     NewsletterAdminCampaignSyncView,
     NewsletterAdminCampaignTestEmailView,
     NewsletterAdminCategoryListView,
@@ -41,6 +42,11 @@ urlpatterns = [
         "newsletter/admin/campaigns/<uuid:uuid>/sync/",
         NewsletterAdminCampaignSyncView.as_view(),
         name="newsletter-admin-campaign-sync",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/send/",
+        NewsletterAdminCampaignSendView.as_view(),
+        name="newsletter-admin-campaign-send",
     ),
     path(
         "newsletter/admin/categories/",

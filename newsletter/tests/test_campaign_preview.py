@@ -86,7 +86,7 @@ class NewsletterAdminCampaignPreviewAPITests(TestCase):
         }
         self.client.force_authenticate(user=self.staff)
 
-        with patch("newsletter.admin_views.sync_campaign_to_mautic") as sync_mock:
+        with patch("newsletter.admin_views.sync_campaign_draft_to_mautic") as sync_mock:
             response = self.client.get(self.url)
 
         self.assertEqual(response.status_code, 200)

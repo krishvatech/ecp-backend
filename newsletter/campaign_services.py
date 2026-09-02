@@ -8,9 +8,17 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import APIException
 
+from .campaign_send_events import (
+    create_campaign_send_event,
+    dispatch_campaign_send_event_safely,
+)
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.payloads import build_campaign_email_payload
-from .models import NewsletterCampaign, NewsletterCategory
+from .models import (
+    NewsletterCampaign,
+    NewsletterCampaignSendEvent,
+    NewsletterCategory,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +29,10 @@ class CampaignNotEditable(serializers.ValidationError):
 
 
 class CampaignMauticValidationError(serializers.ValidationError):
+    pass
+
+
+class CampaignSendNotAllowed(serializers.ValidationError):
     pass
 
 
@@ -176,6 +188,40 @@ def sync_campaign_to_mautic(campaign, *, actor=None):
     return campaign
 
 
+def sync_campaign_draft_to_mautic(campaign, *, actor=None, action="synchronized"):
+    """Synchronize an admin draft while serializing against Send Now."""
+    pending_error = None
+    synced_campaign = None
+
+    with transaction.atomic():
+        campaign = (
+            NewsletterCampaign.objects.select_for_update()
+            .prefetch_related("audiences")
+            .get(pk=campaign.pk)
+        )
+        if NewsletterCampaignSendEvent.objects.filter(
+            campaign_id=campaign.pk
+        ).exists():
+            raise CampaignSendNotAllowed(
+                f"Newsletter campaign cannot be {action} after send has been requested."
+            )
+
+        try:
+            synced_campaign = sync_campaign_to_mautic(
+                campaign,
+                actor=actor,
+            )
+        except (CampaignMauticUnavailable, CampaignMauticSyncFailed) as exc:
+            # sync_campaign_to_mautic records last_error before translating
+            # Mautic failures. Catch inside the transaction so that error state
+            # commits, then re-raise after releasing the campaign row lock.
+            pending_error = exc
+
+    if pending_error is not None:
+        raise pending_error
+    return synced_campaign
+
+
 def send_campaign_test_email(campaign, recipient_email, *, actor=None):
     recipient = str(recipient_email or "").strip().lower()
     if not recipient:
@@ -188,7 +234,11 @@ def send_campaign_test_email(campaign, recipient_email, *, actor=None):
             "Test recipient email must be valid."
         ) from exc
 
-    campaign = sync_campaign_to_mautic(campaign, actor=actor)
+    campaign = sync_campaign_draft_to_mautic(
+        campaign,
+        actor=actor,
+        action="test emailed",
+    )
     client = MauticClient()
     temporary_contact = False
     contact_id = ""
@@ -247,10 +297,23 @@ def create_campaign(validated_data, *, user):
     return campaign
 
 
+def _ensure_campaign_can_change(campaign, *, action):
+    if campaign.status != NewsletterCampaign.Status.DRAFT:
+        raise CampaignNotEditable(
+            f"Only draft newsletter campaigns can be {action}."
+        )
+    if NewsletterCampaignSendEvent.objects.filter(
+        campaign_id=campaign.pk
+    ).exists():
+        raise CampaignNotEditable(
+            "Newsletter campaign cannot be changed after send has been requested."
+        )
+
+
 @transaction.atomic
 def update_campaign(campaign, validated_data, *, user):
-    if campaign.status != NewsletterCampaign.Status.DRAFT:
-        raise CampaignNotEditable("Only draft newsletter campaigns can be edited.")
+    campaign = NewsletterCampaign.objects.select_for_update().get(pk=campaign.pk)
+    _ensure_campaign_can_change(campaign, action="edited")
 
     audience_slugs = validated_data.pop("audience_slugs", None)
     for field, value in validated_data.items():
@@ -265,31 +328,100 @@ def update_campaign(campaign, validated_data, *, user):
 
 
 def delete_draft_campaign(campaign):
-    if campaign.status != NewsletterCampaign.Status.DRAFT:
-        raise CampaignNotEditable("Only draft newsletter campaigns can be deleted.")
+    pending_error = None
+    pending_cause = None
 
-    mautic_email_id = str(campaign.mautic_email_id or "").strip()
-    if not mautic_email_id:
-        campaign.delete()
-        return
+    with transaction.atomic():
+        campaign = NewsletterCampaign.objects.select_for_update().get(pk=campaign.pk)
+        _ensure_campaign_can_change(campaign, action="deleted")
 
+        mautic_email_id = str(campaign.mautic_email_id or "").strip()
+        if not mautic_email_id:
+            campaign.delete()
+            return
+
+        if not getattr(settings, "MAUTIC_SYNC_ENABLED", False):
+            raise CampaignMauticUnavailable(
+                "Mautic newsletter synchronization is disabled; "
+                "the linked Mautic draft was not deleted."
+            )
+
+        try:
+            MauticClient().delete_email(mautic_email_id)
+        except TemporaryMauticError as exc:
+            _record_mautic_sync_error(campaign, exc)
+            pending_error = CampaignMauticUnavailable(
+                "Mautic newsletter draft deletion is temporarily unavailable."
+            )
+            pending_cause = exc
+        except PermanentMauticError as exc:
+            _record_mautic_sync_error(campaign, exc)
+            pending_error = CampaignMauticDeleteFailed(
+                "Mautic rejected the newsletter draft deletion."
+            )
+            pending_cause = exc
+        else:
+            campaign.delete()
+
+    # Raise after the transaction commits so last_error survives provider
+    # failures while the row remained locked against concurrent send requests.
+    if pending_error is not None:
+        raise pending_error from pending_cause
+
+
+def _campaign_send_dispatchable(event):
+    return (
+        event.provider_send_started_at is None
+        and event.status
+        in {
+            NewsletterCampaignSendEvent.Status.PENDING,
+            NewsletterCampaignSendEvent.Status.PROCESSING,
+            NewsletterCampaignSendEvent.Status.FAILED,
+        }
+    )
+
+
+def request_campaign_send(campaign, *, user):
+    """Create/reuse one send event and dispatch it only after commit."""
     if not getattr(settings, "MAUTIC_SYNC_ENABLED", False):
         raise CampaignMauticUnavailable(
-            "Mautic newsletter synchronization is disabled; "
-            "the linked Mautic draft was not deleted."
+            "Mautic newsletter synchronization is disabled."
         )
 
-    try:
-        MauticClient().delete_email(mautic_email_id)
-    except TemporaryMauticError as exc:
-        _record_mautic_sync_error(campaign, exc)
-        raise CampaignMauticUnavailable(
-            "Mautic newsletter draft deletion is temporarily unavailable."
-        ) from exc
-    except PermanentMauticError as exc:
-        _record_mautic_sync_error(campaign, exc)
-        raise CampaignMauticDeleteFailed(
-            "Mautic rejected the newsletter draft deletion."
-        ) from exc
+    with transaction.atomic():
+        campaign = (
+            NewsletterCampaign.objects.select_for_update()
+            .prefetch_related("audiences")
+            .get(pk=campaign.pk)
+        )
+        event = NewsletterCampaignSendEvent.objects.filter(
+            campaign=campaign
+        ).first()
 
-    campaign.delete()
+        if event is None:
+            validate_campaign_for_mautic_sync(campaign)
+            event = create_campaign_send_event(
+                campaign,
+                requested_by=user,
+            )
+        elif event.status == NewsletterCampaignSendEvent.Status.SUCCEEDED:
+            raise CampaignSendNotAllowed(
+                "Newsletter campaign has already been sent."
+            )
+        elif (
+            event.status == NewsletterCampaignSendEvent.Status.FAILED
+            and event.provider_send_started_at is not None
+        ):
+            raise CampaignSendNotAllowed(
+                "Newsletter campaign cannot be retried because provider "
+                "delivery may already have started."
+            )
+
+        if _campaign_send_dispatchable(event):
+            transaction.on_commit(
+                lambda event_id=event.pk: dispatch_campaign_send_event_safely(
+                    event_id
+                )
+            )
+
+        return event

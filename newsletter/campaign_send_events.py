@@ -2,9 +2,33 @@
 
 from __future__ import annotations
 
+import logging
+
 from django.db import transaction
 
 from .models import NewsletterCampaign, NewsletterCampaignSendEvent
+
+
+logger = logging.getLogger(__name__)
+
+
+def dispatch_campaign_send_event_safely(event_id: int) -> None:
+    """Best-effort dispatch of a durable campaign send event.
+
+    Broker failure must not make the API request fail. The event stays in its
+    durable database state and can be safely redispatched later when its
+    provider-send boundary has not been crossed.
+    """
+    try:
+        from .tasks import process_newsletter_campaign_send_event
+
+        process_newsletter_campaign_send_event.delay(event_id)
+    except Exception:
+        logger.exception(
+            "Could not dispatch newsletter campaign send event_id=%s; "
+            "durable state retained",
+            event_id,
+        )
 
 
 def build_campaign_send_idempotency_key(campaign: NewsletterCampaign) -> str:
