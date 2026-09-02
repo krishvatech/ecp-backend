@@ -83,6 +83,37 @@ def _is_unsubscribe_event(event: dict) -> bool:
     return False
 
 
+def _is_bounce_subscription_change(event: dict) -> bool:
+    if _lower_str(event.get("channel")) not in {"", "email"}:
+        return False
+
+    bounce_values = {
+        "bounce",
+        "bounced",
+        "hard_bounce",
+        "hard-bounce",
+        "hard bounce",
+        "soft_bounce",
+        "soft-bounce",
+        "soft bounce",
+    }
+    for key in (
+        "reason",
+        "status",
+        "type",
+        "action",
+        "event",
+        "dncReason",
+        "dnc_reason",
+        "channelStatus",
+        "channel_status",
+    ):
+        if _lower_str(event.get(key)) in bounce_values:
+            return True
+
+    return False
+
+
 def _hit_from_event(event: dict) -> dict:
     hit = event.get("hit") or {}
     if isinstance(hit, dict):
@@ -192,10 +223,11 @@ def _iter_event_items(payload: dict):
 
 def _event_type_for_provider_event(provider_event_type: str, event: dict) -> str:
     event_type = EVENT_TYPE_MAP[provider_event_type]
-    if (
-        provider_event_type == "mautic.lead_channel_subscription_changed"
-        and not _is_unsubscribe_event(event)
-    ):
+    if provider_event_type == "mautic.lead_channel_subscription_changed":
+        if _is_bounce_subscription_change(event):
+            return NewsletterCampaignTrackingEvent.EventType.BOUNCED
+        if _is_unsubscribe_event(event):
+            return NewsletterCampaignTrackingEvent.EventType.UNSUBSCRIBED
         return ""
     return event_type
 
