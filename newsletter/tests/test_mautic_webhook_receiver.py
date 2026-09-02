@@ -73,6 +73,29 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
         payload.update(overrides)
         return payload
 
+    def click_payload(self, **overrides):
+        payload = {
+            "hit": {
+                "id": 501,
+                "source": "email",
+                "sourceId": 77,
+                "url": "https://example.test/story",
+                "lead": {
+                    "id": 101,
+                    "fields": {
+                        "core": {
+                            "email": {
+                                "value": "recipient@example.test",
+                            },
+                        },
+                    },
+                },
+            },
+            "timestamp": "2026-09-02T10:15:00+00:00",
+        }
+        payload.update(overrides)
+        return payload
+
     def test_valid_signature_creates_opened_event(self):
         response = self.signed_post(
             {
@@ -111,6 +134,53 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
             event.event_type,
             NewsletterCampaignTrackingEvent.EventType.DELIVERED,
         )
+
+    def test_valid_signature_creates_clicked_event(self):
+        response = self.signed_post(
+            {
+                "mautic.page_on_hit": [
+                    self.click_payload(),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["created"], 1)
+        event = NewsletterCampaignTrackingEvent.objects.get()
+        self.assertEqual(
+            event.event_type,
+            NewsletterCampaignTrackingEvent.EventType.CLICKED,
+        )
+        self.assertEqual(event.mautic_contact_id, "101")
+        self.assertEqual(event.recipient_email, "recipient@example.test")
+        self.assertEqual(event.provider_event_id, "501")
+        self.assertEqual(event.url, "https://example.test/story")
+        self.assertEqual(event.payload["hit"]["url"], "https://example.test/story")
+        self.assertEqual(event.occurred_at.isoformat(), "2026-09-02T10:15:00+00:00")
+
+    def test_click_event_can_match_campaign_with_deprecated_hit_email(self):
+        response = self.signed_post(
+            {
+                "mautic.page_on_hit": [
+                    self.click_payload(
+                        hit={
+                            "id": 502,
+                            "email": {"id": 77},
+                            "url": "https://example.test/deprecated",
+                            "lead": {"id": 101},
+                        }
+                    ),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        event = NewsletterCampaignTrackingEvent.objects.get()
+        self.assertEqual(
+            event.event_type,
+            NewsletterCampaignTrackingEvent.EventType.CLICKED,
+        )
+        self.assertEqual(event.url, "https://example.test/deprecated")
 
     def test_invalid_signature_returns_401(self):
         response = self.signed_post(
@@ -152,6 +222,22 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
         self.assertEqual(second.data["duplicate"], 1)
         self.assertEqual(NewsletterCampaignTrackingEvent.objects.count(), 1)
 
+    def test_duplicate_click_provider_event_id_does_not_create_duplicate(self):
+        payload = {
+            "mautic.page_on_hit": [
+                self.click_payload(hit={**self.click_payload()["hit"], "id": 503}),
+            ],
+        }
+
+        first = self.signed_post(payload)
+        second = self.signed_post(payload)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data["created"], 1)
+        self.assertEqual(second.data["duplicate"], 1)
+        self.assertEqual(NewsletterCampaignTrackingEvent.objects.count(), 1)
+
     def test_unknown_mautic_email_id_returns_200_ignored(self):
         response = self.signed_post(
             {
@@ -168,11 +254,38 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
         self.assertEqual(response.data["ignored"], 1)
         self.assertFalse(NewsletterCampaignTrackingEvent.objects.exists())
 
+    def test_unknown_click_campaign_is_ignored_safely(self):
+        response = self.signed_post(
+            {
+                "mautic.page_on_hit": [
+                    self.click_payload(hit={**self.click_payload()["hit"], "sourceId": 999}),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["ignored"], 1)
+        self.assertFalse(NewsletterCampaignTrackingEvent.objects.exists())
+
     def test_unknown_contact_creates_event_with_null_user(self):
         response = self.signed_post(
             {
                 "mautic.email_on_open": [
                     self.event_payload(idHash="unknown-contact-hash"),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        event = NewsletterCampaignTrackingEvent.objects.get()
+        self.assertIsNone(event.user)
+        self.assertEqual(event.mautic_contact_id, "101")
+
+    def test_unknown_click_contact_creates_event_with_null_user(self):
+        response = self.signed_post(
+            {
+                "mautic.page_on_hit": [
+                    self.click_payload(),
                 ],
             }
         )
@@ -231,6 +344,35 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
                 event_type=NewsletterCampaignTrackingEvent.EventType.DELIVERED,
             ).count(),
             1,
+        )
+
+    def test_batched_click_payload_creates_multiple_events(self):
+        response = self.signed_post(
+            {
+                "mautic.page_on_hit": [
+                    self.click_payload(hit={**self.click_payload()["hit"], "id": 601}),
+                    self.click_payload(
+                        hit={
+                            **self.click_payload()["hit"],
+                            "id": 602,
+                            "url": "https://example.test/second",
+                        }
+                    ),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["created"], 2)
+        self.assertEqual(
+            NewsletterCampaignTrackingEvent.objects.filter(
+                event_type=NewsletterCampaignTrackingEvent.EventType.CLICKED,
+            ).count(),
+            2,
+        )
+        self.assertEqual(
+            set(NewsletterCampaignTrackingEvent.objects.values_list("url", flat=True)),
+            {"https://example.test/story", "https://example.test/second"},
         )
 
     def test_missing_timestamp_falls_back_to_now(self):

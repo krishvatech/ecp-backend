@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 EVENT_TYPE_MAP = {
     "mautic.email_on_open": NewsletterCampaignTrackingEvent.EventType.OPENED,
     "mautic.email_on_send": NewsletterCampaignTrackingEvent.EventType.DELIVERED,
+    "mautic.page_on_hit": NewsletterCampaignTrackingEvent.EventType.CLICKED,
 }
 
 
@@ -47,17 +48,39 @@ def _safe_str(value) -> str:
     return str(value or "").strip()
 
 
+def _hit_from_event(event: dict) -> dict:
+    hit = event.get("hit") or {}
+    if isinstance(hit, dict):
+        return hit
+    return {}
+
+
 def _email_id_from_event(event: dict) -> str:
     email = event.get("email") or {}
-    if not isinstance(email, dict):
-        return ""
-    return _safe_str(email.get("id"))
+    if isinstance(email, dict):
+        email_id = _safe_str(email.get("id"))
+        if email_id:
+            return email_id
+
+    hit = _hit_from_event(event)
+    email = hit.get("email") or {}
+    if isinstance(email, dict):
+        email_id = _safe_str(email.get("id"))
+        if email_id:
+            return email_id
+
+    if _safe_str(hit.get("source")).lower() == "email":
+        return _safe_str(hit.get("sourceId") or hit.get("sourceID"))
+    return ""
 
 
 def _contact_from_event(event: dict) -> dict:
     contact = event.get("contact") or {}
-    if isinstance(contact, dict):
+    if isinstance(contact, dict) and contact:
         return contact
+    lead = _hit_from_event(event).get("lead") or {}
+    if isinstance(lead, dict):
+        return lead
     return {}
 
 
@@ -91,7 +114,14 @@ def _provider_event_id_from_event(event: dict) -> str:
         value = _safe_str(event.get(key))
         if value:
             return value
-    return ""
+    return _safe_str(_hit_from_event(event).get("id"))
+
+
+def _url_from_event(event: dict) -> str:
+    url = _safe_str(event.get("url"))
+    if url:
+        return url
+    return _safe_str(_hit_from_event(event).get("url"))
 
 
 def _occurred_at_from_event(event: dict):
@@ -156,6 +186,7 @@ def _create_tracking_event(provider_event_type: str, event: dict) -> str:
                 event_type=EVENT_TYPE_MAP[provider_event_type],
                 source=source,
                 provider_event_id=provider_event_id,
+                url=_url_from_event(event),
                 payload=event,
                 occurred_at=_occurred_at_from_event(event),
             )
