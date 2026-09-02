@@ -82,6 +82,9 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         self.assertIsNotNone(self.event.provider_send_started_at)
         self.assertIsNotNone(self.event.completed_at)
         self.assertEqual(self.event.last_error, "")
+        self.assertEqual(self.event.provider_sent_count, 4)
+        self.assertEqual(self.event.provider_failed_count, 0)
+        self.assertEqual(self.event.provider_failed_recipients, [])
         self.assertEqual(self.campaign.status, NewsletterCampaign.Status.SENT)
         self.assertIsNotNone(self.campaign.send_started_at)
         self.assertIsNotNone(self.campaign.sent_at)
@@ -117,6 +120,42 @@ class NewsletterCampaignSendProcessorTests(TestCase):
             NewsletterCampaignSendEvent.Status.SUCCEEDED,
         )
         client_cls.return_value.send_email_to_segments.assert_called_once()
+
+    @patch("newsletter.campaign_send_processor.MauticClient")
+    @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
+    def test_success_stores_provider_failed_recipient_summary(
+        self,
+        sync,
+        client_cls,
+    ):
+        self.campaign.mautic_email_id = "77"
+        self.campaign.save(update_fields=["mautic_email_id"])
+        sync.return_value = self.campaign
+        failed_recipients = [
+            {"email": "bad-one@example.test", "reason": "bounced"},
+            {"email": "bad-two@example.test", "reason": "invalid"},
+        ]
+        client_cls.return_value.send_email_to_segments.return_value = {
+            "success": 1,
+            "sentCount": 8,
+            "failedRecipients": failed_recipients,
+        }
+
+        result = process_campaign_send_event(self.event.pk)
+
+        self.refresh()
+        self.assertEqual(
+            self.event.status,
+            NewsletterCampaignSendEvent.Status.SUCCEEDED,
+        )
+        self.assertEqual(self.event.provider_sent_count, 8)
+        self.assertEqual(self.event.provider_failed_count, 2)
+        self.assertEqual(
+            self.event.provider_failed_recipients,
+            failed_recipients,
+        )
+        self.assertEqual(result["sent_count"], 8)
+        self.assertEqual(result["failed_recipients"], failed_recipients)
 
     @patch("newsletter.campaign_send_processor.MauticClient")
     @patch(

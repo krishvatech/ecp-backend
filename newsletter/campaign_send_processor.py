@@ -232,8 +232,23 @@ def _record_terminal_send_failure(event_id: int, campaign_id: int, error: str) -
         )
 
 
-def _record_send_success(event_id: int, campaign_id: int) -> None:
+def _provider_sent_count(result: dict) -> int:
+    try:
+        return max(0, int(result.get("sentCount") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _provider_failed_recipients(result: dict) -> list:
+    failed_recipients = result.get("failedRecipients") or []
+    if isinstance(failed_recipients, list):
+        return failed_recipients
+    return []
+
+
+def _record_send_success(event_id: int, campaign_id: int, result: dict) -> None:
     now = timezone.now()
+    failed_recipients = _provider_failed_recipients(result)
 
     with transaction.atomic():
         NewsletterCampaignSendEvent.objects.filter(
@@ -243,6 +258,9 @@ def _record_send_success(event_id: int, campaign_id: int) -> None:
         ).update(
             status=NewsletterCampaignSendEvent.Status.SUCCEEDED,
             last_error="",
+            provider_sent_count=_provider_sent_count(result),
+            provider_failed_count=len(failed_recipients),
+            provider_failed_recipients=failed_recipients,
             completed_at=now,
             updated_at=now,
         )
@@ -408,7 +426,7 @@ def process_campaign_send_event(event_id: int) -> dict:
             "retry_safe": False,
         }
 
-    _record_send_success(event.pk, sending_campaign.pk)
+    _record_send_success(event.pk, sending_campaign.pk, result)
     return {
         "event_id": event.pk,
         "status": NewsletterCampaignSendEvent.Status.SUCCEEDED,

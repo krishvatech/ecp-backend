@@ -49,6 +49,9 @@ class NewsletterCampaignSendEventCreationTests(TestCase):
         self.assertEqual(event.attempt_count, 0)
         self.assertIsNone(event.processing_started_at)
         self.assertIsNone(event.provider_send_started_at)
+        self.assertEqual(event.provider_sent_count, 0)
+        self.assertEqual(event.provider_failed_count, 0)
+        self.assertEqual(event.provider_failed_recipients, [])
         self.assertIsNone(event.completed_at)
         self.assertEqual(event.last_error, "")
 
