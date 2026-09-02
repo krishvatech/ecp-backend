@@ -11,6 +11,7 @@ from .admin_serializers import (
     NewsletterCampaignSerializer,
     NewsletterCampaignTestEmailSerializer,
 )
+from .analytics_services import get_campaign_analytics
 from .campaign_services import (
     CampaignNotEditable,
     CampaignScheduleNotAllowed,
@@ -102,6 +103,16 @@ class NewsletterAdminCampaignPreviewView(APIView):
                 "plain_text": campaign.plain_text,
                 "status": campaign.status,
             },
+            status=status.HTTP_200_OK,
+        )
+
+
+class NewsletterAdminCampaignAnalyticsView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, uuid):
+        return Response(
+            get_campaign_analytics(_get_campaign_or_404(uuid)),
             status=status.HTTP_200_OK,
         )
 
