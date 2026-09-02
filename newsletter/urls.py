@@ -12,6 +12,7 @@ from .admin_views import (
     NewsletterAdminCategoryListView,
 )
 from .views import NewsletterPreferencesView
+from .webhooks import MauticNewsletterWebhookView
 
 
 urlpatterns = [
@@ -64,5 +65,10 @@ urlpatterns = [
         "newsletter/admin/categories/",
         NewsletterAdminCategoryListView.as_view(),
         name="newsletter-admin-category-list",
+    ),
+    path(
+        "newsletter/webhooks/mautic/",
+        MauticNewsletterWebhookView.as_view(),
+        name="newsletter-mautic-webhook",
     ),
 ]

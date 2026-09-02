@@ -1,0 +1,249 @@
+import base64
+import hashlib
+import hmac
+import json
+
+from django.contrib.auth import get_user_model
+from django.test import TestCase, override_settings
+from django.urls import reverse
+from django.utils import timezone
+from rest_framework.test import APIClient
+
+from newsletter.models import (
+    MauticContactMapping,
+    NewsletterCampaign,
+    NewsletterCampaignTrackingEvent,
+)
+
+
+User = get_user_model()
+
+
+@override_settings(MAUTIC_WEBHOOK_SECRET="webhook-secret")
+class MauticNewsletterWebhookReceiverTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.url = reverse("newsletter-mautic-webhook")
+        self.campaign = NewsletterCampaign.objects.create(
+            name="Webhook Campaign",
+            subject="Webhook subject",
+            mautic_email_id="77",
+        )
+        self.user = User.objects.create_user(
+            username="mautic-webhook-user",
+            email="mautic-webhook-user@example.test",
+            password="test-password",
+        )
+
+    def signed_post(self, payload, *, signature=None):
+        if isinstance(payload, bytes):
+            body = payload
+        else:
+            body = json.dumps(payload).encode("utf-8")
+        if signature is None:
+            digest = hmac.new(
+                b"webhook-secret",
+                body,
+                hashlib.sha256,
+            ).digest()
+            signature = base64.b64encode(digest).decode()
+        return self.client.post(
+            self.url,
+            data=body,
+            content_type="application/json",
+            HTTP_WEBHOOK_SIGNATURE=signature,
+        )
+
+    def event_payload(self, **overrides):
+        payload = {
+            "email": {"id": 77, "name": "Webhook Campaign"},
+            "contact": {
+                "id": 101,
+                "fields": {
+                    "core": {
+                        "email": {
+                            "value": "recipient@example.test",
+                        },
+                    },
+                },
+            },
+            "idHash": "send-hash-1",
+            "timestamp": "2026-09-02T10:00:00+00:00",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_valid_signature_creates_opened_event(self):
+        response = self.signed_post(
+            {
+                "mautic.email_on_open": [
+                    self.event_payload(idHash="open-hash-1"),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["created"], 1)
+        event = NewsletterCampaignTrackingEvent.objects.get()
+        self.assertEqual(event.campaign, self.campaign)
+        self.assertEqual(
+            event.event_type,
+            NewsletterCampaignTrackingEvent.EventType.OPENED,
+        )
+        self.assertEqual(event.mautic_contact_id, "101")
+        self.assertEqual(event.recipient_email, "recipient@example.test")
+        self.assertEqual(event.provider_event_id, "open-hash-1")
+        self.assertEqual(event.payload["idHash"], "open-hash-1")
+        self.assertEqual(event.occurred_at.isoformat(), "2026-09-02T10:00:00+00:00")
+
+    def test_valid_signature_creates_delivered_event(self):
+        response = self.signed_post(
+            {
+                "mautic.email_on_send": [
+                    self.event_payload(idHash="send-hash-2"),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        event = NewsletterCampaignTrackingEvent.objects.get()
+        self.assertEqual(
+            event.event_type,
+            NewsletterCampaignTrackingEvent.EventType.DELIVERED,
+        )
+
+    def test_invalid_signature_returns_401(self):
+        response = self.signed_post(
+            {"mautic.email_on_open": [self.event_payload()]},
+            signature="not-valid",
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(NewsletterCampaignTrackingEvent.objects.exists())
+
+    def test_missing_signature_returns_401(self):
+        response = self.signed_post(
+            {"mautic.email_on_open": [self.event_payload()]},
+            signature="",
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(NewsletterCampaignTrackingEvent.objects.exists())
+
+    def test_invalid_json_returns_400(self):
+        response = self.signed_post(b"{not-json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(NewsletterCampaignTrackingEvent.objects.exists())
+
+    def test_duplicate_provider_event_id_does_not_create_duplicate(self):
+        payload = {
+            "mautic.email_on_open": [
+                self.event_payload(idHash="duplicate-hash"),
+            ],
+        }
+
+        first = self.signed_post(payload)
+        second = self.signed_post(payload)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data["created"], 1)
+        self.assertEqual(second.data["duplicate"], 1)
+        self.assertEqual(NewsletterCampaignTrackingEvent.objects.count(), 1)
+
+    def test_unknown_mautic_email_id_returns_200_ignored(self):
+        response = self.signed_post(
+            {
+                "mautic.email_on_open": [
+                    self.event_payload(
+                        email={"id": 999, "name": "Unknown Campaign"},
+                        idHash="unknown-email-hash",
+                    ),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["ignored"], 1)
+        self.assertFalse(NewsletterCampaignTrackingEvent.objects.exists())
+
+    def test_unknown_contact_creates_event_with_null_user(self):
+        response = self.signed_post(
+            {
+                "mautic.email_on_open": [
+                    self.event_payload(idHash="unknown-contact-hash"),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        event = NewsletterCampaignTrackingEvent.objects.get()
+        self.assertIsNone(event.user)
+        self.assertEqual(event.mautic_contact_id, "101")
+
+    def test_known_mautic_contact_maps_user(self):
+        MauticContactMapping.objects.create(
+            user=self.user,
+            mautic_contact_id="101",
+        )
+
+        response = self.signed_post(
+            {
+                "mautic.email_on_open": [
+                    self.event_payload(idHash="known-contact-hash"),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        event = NewsletterCampaignTrackingEvent.objects.get()
+        self.assertEqual(event.user, self.user)
+
+    def test_multiple_events_in_one_payload_create_multiple_tracking_events(self):
+        response = self.signed_post(
+            {
+                "mautic.email_on_open": [
+                    self.event_payload(idHash="multi-open-1"),
+                    self.event_payload(idHash="multi-open-2"),
+                ],
+                "mautic.email_on_send": [
+                    self.event_payload(idHash="multi-send-1"),
+                ],
+                "mautic.unknown_event": [
+                    {"id": "ignored-event"},
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["created"], 3)
+        self.assertEqual(response.data["ignored"], 1)
+        self.assertEqual(NewsletterCampaignTrackingEvent.objects.count(), 3)
+        self.assertEqual(
+            NewsletterCampaignTrackingEvent.objects.filter(
+                event_type=NewsletterCampaignTrackingEvent.EventType.OPENED,
+            ).count(),
+            2,
+        )
+        self.assertEqual(
+            NewsletterCampaignTrackingEvent.objects.filter(
+                event_type=NewsletterCampaignTrackingEvent.EventType.DELIVERED,
+            ).count(),
+            1,
+        )
+
+    def test_missing_timestamp_falls_back_to_now(self):
+        before = timezone.now()
+
+        response = self.signed_post(
+            {
+                "mautic.email_on_open": [
+                    self.event_payload(idHash="no-timestamp", timestamp=""),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        event = NewsletterCampaignTrackingEvent.objects.get()
+        self.assertGreaterEqual(event.occurred_at, before)
