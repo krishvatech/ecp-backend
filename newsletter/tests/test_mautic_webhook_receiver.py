@@ -12,6 +12,8 @@ from rest_framework.test import APIClient
 from newsletter.models import (
     MauticContactMapping,
     NewsletterCampaign,
+    NewsletterCategory,
+    NewsletterSubscription,
     NewsletterCampaignTrackingEvent,
 )
 
@@ -96,6 +98,28 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
         payload.update(overrides)
         return payload
 
+    def unsubscribe_payload(self, **overrides):
+        payload = {
+            "email": {"id": 77, "name": "Webhook Campaign"},
+            "contact": {
+                "id": 101,
+                "fields": {
+                    "core": {
+                        "email": {
+                            "value": "recipient@example.test",
+                        },
+                    },
+                },
+            },
+            "eventId": "unsubscribe-event-1",
+            "channel": "email",
+            "subscribed": False,
+            "reason": "unsubscribed",
+            "timestamp": "2026-09-02T10:30:00+00:00",
+        }
+        payload.update(overrides)
+        return payload
+
     def test_valid_signature_creates_opened_event(self):
         response = self.signed_post(
             {
@@ -157,6 +181,29 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
         self.assertEqual(event.url, "https://example.test/story")
         self.assertEqual(event.payload["hit"]["url"], "https://example.test/story")
         self.assertEqual(event.occurred_at.isoformat(), "2026-09-02T10:15:00+00:00")
+
+    def test_valid_signature_creates_unsubscribed_event(self):
+        response = self.signed_post(
+            {
+                "mautic.lead_channel_subscription_changed": [
+                    self.unsubscribe_payload(),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["created"], 1)
+        event = NewsletterCampaignTrackingEvent.objects.get()
+        self.assertEqual(event.campaign, self.campaign)
+        self.assertEqual(
+            event.event_type,
+            NewsletterCampaignTrackingEvent.EventType.UNSUBSCRIBED,
+        )
+        self.assertEqual(event.mautic_contact_id, "101")
+        self.assertEqual(event.recipient_email, "recipient@example.test")
+        self.assertEqual(event.provider_event_id, "unsubscribe-event-1")
+        self.assertEqual(event.payload["reason"], "unsubscribed")
+        self.assertEqual(event.occurred_at.isoformat(), "2026-09-02T10:30:00+00:00")
 
     def test_click_event_can_match_campaign_with_deprecated_hit_email(self):
         response = self.signed_post(
@@ -238,6 +285,22 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
         self.assertEqual(second.data["duplicate"], 1)
         self.assertEqual(NewsletterCampaignTrackingEvent.objects.count(), 1)
 
+    def test_duplicate_unsubscribe_provider_event_id_does_not_create_duplicate(self):
+        payload = {
+            "mautic.lead_channel_subscription_changed": [
+                self.unsubscribe_payload(eventId="unsubscribe-duplicate"),
+            ],
+        }
+
+        first = self.signed_post(payload)
+        second = self.signed_post(payload)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data["created"], 1)
+        self.assertEqual(second.data["duplicate"], 1)
+        self.assertEqual(NewsletterCampaignTrackingEvent.objects.count(), 1)
+
     def test_unknown_mautic_email_id_returns_200_ignored(self):
         response = self.signed_post(
             {
@@ -259,6 +322,22 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
             {
                 "mautic.page_on_hit": [
                     self.click_payload(hit={**self.click_payload()["hit"], "sourceId": 999}),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["ignored"], 1)
+        self.assertFalse(NewsletterCampaignTrackingEvent.objects.exists())
+
+    def test_unknown_unsubscribe_campaign_is_ignored_safely(self):
+        response = self.signed_post(
+            {
+                "mautic.lead_channel_subscription_changed": [
+                    self.unsubscribe_payload(
+                        email={"id": 999, "name": "Unknown Campaign"},
+                        eventId="unknown-unsubscribe-campaign",
+                    ),
                 ],
             }
         )
@@ -295,6 +374,20 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
         self.assertIsNone(event.user)
         self.assertEqual(event.mautic_contact_id, "101")
 
+    def test_unknown_unsubscribe_contact_creates_event_with_null_user(self):
+        response = self.signed_post(
+            {
+                "mautic.lead_channel_subscription_changed": [
+                    self.unsubscribe_payload(eventId="unknown-unsubscribe-contact"),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        event = NewsletterCampaignTrackingEvent.objects.get()
+        self.assertIsNone(event.user)
+        self.assertEqual(event.mautic_contact_id, "101")
+
     def test_known_mautic_contact_maps_user(self):
         MauticContactMapping.objects.create(
             user=self.user,
@@ -305,6 +398,24 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
             {
                 "mautic.email_on_open": [
                     self.event_payload(idHash="known-contact-hash"),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        event = NewsletterCampaignTrackingEvent.objects.get()
+        self.assertEqual(event.user, self.user)
+
+    def test_known_mautic_contact_maps_user_for_unsubscribe(self):
+        MauticContactMapping.objects.create(
+            user=self.user,
+            mautic_contact_id="101",
+        )
+
+        response = self.signed_post(
+            {
+                "mautic.lead_channel_subscription_changed": [
+                    self.unsubscribe_payload(eventId="known-unsubscribe-contact"),
                 ],
             }
         )
@@ -374,6 +485,86 @@ class MauticNewsletterWebhookReceiverTests(TestCase):
             set(NewsletterCampaignTrackingEvent.objects.values_list("url", flat=True)),
             {"https://example.test/story", "https://example.test/second"},
         )
+
+    def test_batched_unsubscribe_payload_creates_multiple_events(self):
+        response = self.signed_post(
+            {
+                "mautic.lead_channel_subscription_changed": [
+                    self.unsubscribe_payload(eventId="unsubscribe-batch-1"),
+                    self.unsubscribe_payload(
+                        eventId="unsubscribe-batch-2",
+                        contact={
+                            "id": 102,
+                            "email": "second-recipient@example.test",
+                        },
+                    ),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["created"], 2)
+        self.assertEqual(
+            NewsletterCampaignTrackingEvent.objects.filter(
+                event_type=NewsletterCampaignTrackingEvent.EventType.UNSUBSCRIBED,
+            ).count(),
+            2,
+        )
+        self.assertEqual(
+            set(
+                NewsletterCampaignTrackingEvent.objects.values_list(
+                    "mautic_contact_id",
+                    flat=True,
+                )
+            ),
+            {"101", "102"},
+        )
+
+    def test_subscribe_channel_change_is_ignored(self):
+        response = self.signed_post(
+            {
+                "mautic.lead_channel_subscription_changed": [
+                    self.unsubscribe_payload(
+                        eventId="subscribe-change",
+                        subscribed=True,
+                        reason="subscribed",
+                    ),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["ignored"], 1)
+        self.assertFalse(NewsletterCampaignTrackingEvent.objects.exists())
+
+    def test_unsubscribe_webhook_does_not_change_newsletter_subscription(self):
+        category = NewsletterCategory.objects.create(
+            name="Webhook Preference Category",
+            slug="webhook-preference-category",
+        )
+        subscription = NewsletterSubscription.objects.create(
+            user=self.user,
+            category=category,
+            is_subscribed=True,
+            subscribed_at=timezone.now(),
+        )
+        MauticContactMapping.objects.create(
+            user=self.user,
+            mautic_contact_id="101",
+        )
+
+        response = self.signed_post(
+            {
+                "mautic.lead_channel_subscription_changed": [
+                    self.unsubscribe_payload(eventId="preference-unchanged"),
+                ],
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        subscription.refresh_from_db()
+        self.assertTrue(subscription.is_subscribed)
+        self.assertIsNone(subscription.unsubscribed_at)
 
     def test_missing_timestamp_falls_back_to_now(self):
         before = timezone.now()

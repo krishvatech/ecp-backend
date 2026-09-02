@@ -28,6 +28,9 @@ EVENT_TYPE_MAP = {
     "mautic.email_on_open": NewsletterCampaignTrackingEvent.EventType.OPENED,
     "mautic.email_on_send": NewsletterCampaignTrackingEvent.EventType.DELIVERED,
     "mautic.page_on_hit": NewsletterCampaignTrackingEvent.EventType.CLICKED,
+    "mautic.lead_channel_subscription_changed": (
+        NewsletterCampaignTrackingEvent.EventType.UNSUBSCRIBED
+    ),
 }
 
 
@@ -46,6 +49,38 @@ def _validate_mautic_signature(payload_bytes: bytes, signature: str) -> bool:
 
 def _safe_str(value) -> str:
     return str(value or "").strip()
+
+
+def _lower_str(value) -> str:
+    return _safe_str(value).lower()
+
+
+def _is_false_value(value) -> bool:
+    if value is False:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"false", "0", "no", "unsubscribed"}
+    if isinstance(value, int):
+        return value == 0
+    return False
+
+
+def _is_unsubscribe_event(event: dict) -> bool:
+    if _lower_str(event.get("channel")) not in {"", "email"}:
+        return False
+
+    if _is_false_value(event.get("subscribed")):
+        return True
+    if _is_false_value(event.get("isSubscribed")):
+        return True
+    if _is_false_value(event.get("subscribedStatus")):
+        return True
+
+    for key in ("reason", "status", "type", "action"):
+        if _lower_str(event.get(key)) in {"unsubscribe", "unsubscribed"}:
+            return True
+
+    return False
 
 
 def _hit_from_event(event: dict) -> dict:
@@ -155,7 +190,21 @@ def _iter_event_items(payload: dict):
                 yield provider_event_type, None, 1
 
 
+def _event_type_for_provider_event(provider_event_type: str, event: dict) -> str:
+    event_type = EVENT_TYPE_MAP[provider_event_type]
+    if (
+        provider_event_type == "mautic.lead_channel_subscription_changed"
+        and not _is_unsubscribe_event(event)
+    ):
+        return ""
+    return event_type
+
+
 def _create_tracking_event(provider_event_type: str, event: dict) -> str:
+    event_type = _event_type_for_provider_event(provider_event_type, event)
+    if not event_type:
+        return "ignored"
+
     email_id = _email_id_from_event(event)
     campaign = NewsletterCampaign.objects.filter(mautic_email_id=email_id).first()
     if campaign is None:
@@ -183,7 +232,7 @@ def _create_tracking_event(provider_event_type: str, event: dict) -> str:
                 user=mapping.user if mapping else None,
                 mautic_contact_id=mautic_contact_id,
                 recipient_email=_recipient_email_from_event(event),
-                event_type=EVENT_TYPE_MAP[provider_event_type],
+                event_type=event_type,
                 source=source,
                 provider_event_id=provider_event_id,
                 url=_url_from_event(event),
