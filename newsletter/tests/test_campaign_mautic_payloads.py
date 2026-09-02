@@ -1,6 +1,9 @@
 from django.test import TestCase
 
-from newsletter.mautic.payloads import build_campaign_email_payload
+from newsletter.mautic.payloads import (
+    build_campaign_email_payload,
+    build_test_email_payload,
+)
 from newsletter.models import NewsletterCampaign, NewsletterCategory
 
 
@@ -58,3 +61,16 @@ class CampaignMauticPayloadTests(TestCase):
 
         self.campaign.refresh_from_db()
         self.assertEqual(self.campaign.mautic_email_id, original_email_id)
+
+    def test_test_email_payload_is_not_attached_to_segments(self):
+        payload = build_test_email_payload(self.campaign)
+
+        self.assertEqual(payload["name"], "September Newsletter - Test")
+        self.assertEqual(payload["subject"], "September updates")
+        self.assertEqual(payload["fromName"], "IMAA Connect")
+        self.assertEqual(payload["fromAddress"], "newsletter@example.test")
+        self.assertEqual(payload["plainText"], "Hello")
+        self.assertEqual(payload["customHtml"], "<p>Hello</p>")
+        self.assertEqual(payload["emailType"], "template")
+        self.assertIs(payload["isPublished"], True)
+        self.assertNotIn("lists", payload)

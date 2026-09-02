@@ -35,3 +35,18 @@ def build_campaign_email_payload(
         "lists": segment_ids,
         "isPublished": bool(publish),
     }
+
+
+def build_test_email_payload(campaign) -> dict[str, Any]:
+    """Build an isolated Mautic email payload for a single test send."""
+
+    return {
+        "name": f"{campaign.name} - Test",
+        "subject": campaign.subject,
+        "fromName": campaign.from_name,
+        "fromAddress": campaign.from_email,
+        "plainText": campaign.plain_text,
+        "customHtml": campaign.html_content,
+        "emailType": "template",
+        "isPublished": True,
+    }
