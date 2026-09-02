@@ -301,10 +301,15 @@ class MauticClient:
                 "At least one Mautic segment ID is required"
             )
 
+        # Mautic 7 passes request "lists" values directly into
+        # EmailModel::sendEmailToLists(), which expects List entities and calls
+        # getId() on each item. Supplying raw segment IDs therefore causes a
+        # provider-side 500. The email is already synchronized with its target
+        # segments before broadcast, so omit "lists" and let Mautic resolve the
+        # attached List entities from the Email itself.
         response = self._request(
             "POST",
             f"emails/{email_id}/send",
-            data=self._email_form_data({"lists": normalized_segment_ids}),
         )
         data = self._json_object(response, "Mautic segment email send")
         if not data.get("success"):

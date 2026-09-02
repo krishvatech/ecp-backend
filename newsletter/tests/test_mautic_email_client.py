@@ -149,7 +149,7 @@ class MauticEmailClientTests(SimpleTestCase):
         with self.assertRaises(TemporaryMauticError):
             client.send_email_to_contact(42, 51)
 
-    def test_send_email_to_segments_uses_broadcast_route_and_list_encoding(self):
+    def test_send_email_to_segments_uses_email_attached_segments(self):
         client, session = self.make_client(
             response(
                 200,
@@ -168,10 +168,7 @@ class MauticEmailClientTests(SimpleTestCase):
             session.request.call_args.args[:2],
             ("POST", "http://mautic.local/api/emails/42/send"),
         )
-        self.assertEqual(
-            session.request.call_args.kwargs["data"],
-            [("lists[]", "7"), ("lists[]", "22")],
-        )
+        self.assertNotIn("data", session.request.call_args.kwargs)
 
     def test_send_email_to_segments_rejects_missing_email_or_segments(self):
         client, session = self.make_client()
