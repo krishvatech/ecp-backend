@@ -198,6 +198,64 @@ class NewsletterCampaignSendEvent(models.Model):
         return f"campaign:{self.campaign_id} [{self.status}]"
 
 
+class NewsletterCampaignTrackingEvent(models.Model):
+    """Append-only provider tracking event for newsletter analytics."""
+
+    class EventType(models.TextChoices):
+        DELIVERED = "delivered", "Delivered"
+        OPENED = "opened", "Opened"
+        CLICKED = "clicked", "Clicked"
+        UNSUBSCRIBED = "unsubscribed", "Unsubscribed"
+        BOUNCED = "bounced", "Bounced"
+        FAILED = "failed", "Failed"
+
+    event_uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    campaign = models.ForeignKey(
+        NewsletterCampaign,
+        on_delete=models.PROTECT,
+        related_name="tracking_events",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    mautic_contact_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        db_index=True,
+    )
+    recipient_email = models.EmailField(blank=True, default="", db_index=True)
+    event_type = models.CharField(max_length=16, choices=EventType.choices)
+    source = models.CharField(max_length=32, default="mautic", db_index=True)
+    provider_event_id = models.CharField(max_length=255, blank=True, default="")
+    url = models.URLField(blank=True, default="")
+    payload = models.JSONField(blank=True, default=dict)
+    occurred_at = models.DateTimeField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["occurred_at", "created_at", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source", "provider_event_id"],
+                condition=~models.Q(provider_event_id=""),
+                name="newsletter_tracking_provider_event_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["campaign", "event_type", "occurred_at"],
+                name="newsletter_tracking_rollup_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"campaign:{self.campaign_id} [{self.event_type}]"
+
+
 class MauticContactMapping(models.Model):
     """Stable mapping between one ECP user and one Mautic contact."""
 

@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import (
     MauticContactMapping,
     NewsletterCampaign,
+    NewsletterCampaignTrackingEvent,
     NewsletterCategory,
     NewsletterSubscription,
     NewsletterSyncEvent,
@@ -89,6 +90,50 @@ class MauticContactMappingAdmin(admin.ModelAdmin):
     )
     readonly_fields = ("created_at", "updated_at")
     autocomplete_fields = ("user",)
+
+
+@admin.register(NewsletterCampaignTrackingEvent)
+class NewsletterCampaignTrackingEventAdmin(admin.ModelAdmin):
+    list_display = (
+        "event_uuid",
+        "campaign",
+        "event_type",
+        "source",
+        "recipient_email",
+        "mautic_contact_id",
+        "occurred_at",
+        "created_at",
+    )
+    list_filter = ("event_type", "source", "occurred_at")
+    search_fields = (
+        "event_uuid",
+        "campaign__name",
+        "campaign__subject",
+        "recipient_email",
+        "mautic_contact_id",
+        "provider_event_id",
+    )
+    readonly_fields = (
+        "event_uuid",
+        "campaign",
+        "user",
+        "mautic_contact_id",
+        "recipient_email",
+        "event_type",
+        "source",
+        "provider_event_id",
+        "url",
+        "payload",
+        "occurred_at",
+        "created_at",
+    )
+    autocomplete_fields = ("campaign", "user")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(NewsletterSyncEvent)
