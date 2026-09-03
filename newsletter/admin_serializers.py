@@ -6,8 +6,13 @@ from .models import NewsletterAudience, NewsletterCampaign, NewsletterCategory
 class NewsletterAdminCategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = NewsletterCategory
-        fields = ["slug", "name", "description", "is_active"]
-        read_only_fields = fields
+        fields = ["slug", "name", "description", "is_active", "mautic_segment_id", "created_at", "updated_at"]
+        read_only_fields = ["slug", "mautic_segment_id", "created_at", "updated_at"]
+
+    def validate_name(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Category name is required.")
+        return value.strip()
 
 
 class NewsletterAudienceAdminSerializer(serializers.ModelSerializer):

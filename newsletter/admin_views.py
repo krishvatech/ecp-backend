@@ -2,6 +2,7 @@ from django.http import Http404
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+import logging
 
 from moderation.permissions import IsStaffOrSuperuser
 
@@ -28,7 +29,10 @@ from .campaign_services import (
     sync_campaign_draft_to_mautic,
     update_campaign,
 )
-from .models import NewsletterAudience, NewsletterCampaign
+from .models import NewsletterAudience, NewsletterCampaign, NewsletterCategory
+from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+
+logger = logging.getLogger(__name__)
 
 
 def _get_campaign_or_404(uuid):
@@ -266,3 +270,119 @@ class NewsletterAdminCategoryListView(APIView):
             many=True,
         )
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        serializer = NewsletterAdminCategorySerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # Auto-generate slug from name
+        from django.utils.text import slugify
+        name = serializer.validated_data.get('name', '').strip()
+        if not name:
+            return Response(
+                {'name': 'Category name is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        slug = slugify(name)
+
+        # Ensure unique slug
+        base_slug = slug
+        counter = 1
+        while NewsletterCategory.objects.filter(slug=slug).exists():
+            slug = f"{base_slug}-{counter}"
+            counter += 1
+
+        category = NewsletterCategory.objects.create(
+            name=name,
+            slug=slug,
+            description=serializer.validated_data.get('description', ''),
+            is_active=True,
+            mautic_segment_id='',
+        )
+
+        logger.info(f"Created category {slug}. Mautic segment needs to be linked manually via /link-mautic-segment/ endpoint.")
+
+        return Response(
+            NewsletterAdminCategorySerializer(category).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class NewsletterAdminCategoryDetailView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def patch(self, request, slug):
+        try:
+            category = NewsletterCategory.objects.get(slug=slug)
+        except NewsletterCategory.DoesNotExist:
+            raise Http404
+
+        serializer = NewsletterAdminCategorySerializer(
+            category, data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+
+        # Note: Mautic segment updates are not supported in this version of Mautic's API
+        # Segments are read-only and must be edited directly in Mautic UI
+        category = serializer.save()
+
+        if 'name' in request.data or 'description' in request.data:
+            if category.mautic_segment_id:
+                logger.info(
+                    f"Category {slug} updated. "
+                    f"Note: To update the Mautic segment '{category.mautic_segment_id}', "
+                    f"please edit it directly in Mautic UI (Contacts → Segments)"
+                )
+
+        return Response(NewsletterAdminCategorySerializer(category).data)
+
+    def delete(self, request, slug):
+        try:
+            category = NewsletterCategory.objects.get(slug=slug)
+        except NewsletterCategory.DoesNotExist:
+            raise Http404
+
+        category.is_active = False
+        category.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class NewsletterAdminCategoryLinkMauticSegmentView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request, slug):
+        """Link a Mautic segment to a newsletter category."""
+        try:
+            category = NewsletterCategory.objects.get(slug=slug)
+        except NewsletterCategory.DoesNotExist:
+            raise Http404
+
+        segment_id = request.data.get('mautic_segment_id', '').strip()
+        if not segment_id:
+            return Response(
+                {'error': 'mautic_segment_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Optional: validate segment exists in Mautic
+        try:
+            from .mautic import MauticClient
+            client = MauticClient()
+            # Try to fetch the segment to verify it exists
+            client._request('GET', f'segments/{segment_id}')
+        except Exception as e:
+            return Response(
+                {'error': f'Mautic segment validation failed: {str(e)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Link the segment
+        category.mautic_segment_id = segment_id
+        category.save(update_fields=['mautic_segment_id', 'updated_at'])
+
+        return Response(
+            NewsletterAdminCategorySerializer(category).data,
+            status=status.HTTP_200_OK
+        )

@@ -12,6 +12,8 @@ from .admin_views import (
     NewsletterAdminCampaignSendView,
     NewsletterAdminCampaignSyncView,
     NewsletterAdminCampaignTestEmailView,
+    NewsletterAdminCategoryDetailView,
+    NewsletterAdminCategoryLinkMauticSegmentView,
     NewsletterAdminCategoryListView,
 )
 from .views import NewsletterPreferencesView
@@ -83,6 +85,16 @@ urlpatterns = [
         "newsletter/admin/categories/",
         NewsletterAdminCategoryListView.as_view(),
         name="newsletter-admin-category-list",
+    ),
+    path(
+        "newsletter/admin/categories/<slug:slug>/",
+        NewsletterAdminCategoryDetailView.as_view(),
+        name="newsletter-admin-category-detail",
+    ),
+    path(
+        "newsletter/admin/categories/<slug:slug>/link-mautic-segment/",
+        NewsletterAdminCategoryLinkMauticSegmentView.as_view(),
+        name="newsletter-admin-category-link-mautic-segment",
     ),
     path(
         "newsletter/webhooks/mautic/",
