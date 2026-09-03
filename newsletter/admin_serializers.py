@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import NewsletterCampaign, NewsletterCategory
+from .models import NewsletterAudience, NewsletterCampaign, NewsletterCategory
 
 
 class NewsletterAdminCategorySerializer(serializers.ModelSerializer):
@@ -8,6 +8,33 @@ class NewsletterAdminCategorySerializer(serializers.ModelSerializer):
         model = NewsletterCategory
         fields = ["slug", "name", "description", "is_active"]
         read_only_fields = fields
+
+
+class NewsletterAudienceAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NewsletterAudience
+        fields = [
+            "uuid",
+            "name",
+            "description",
+            "audience_type",
+            "status",
+            "estimated_count",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "uuid",
+            "estimated_count",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_name(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Audience name is required.")
+        return value.strip()
 
 
 class NewsletterCampaignSerializer(serializers.ModelSerializer):

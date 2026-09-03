@@ -32,6 +32,66 @@ class NewsletterCategory(models.Model):
         return self.name
 
 
+class NewsletterAudience(models.Model):
+    """ECP-owned audience definition for future newsletter targeting."""
+
+    class AudienceType(models.TextChoices):
+        STATIC = "static", "Static"
+        DYNAMIC = "dynamic", "Dynamic"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        ACTIVE = "active", "Active"
+        ARCHIVED = "archived", "Archived"
+
+    uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    name = models.CharField(max_length=180)
+    description = models.TextField(blank=True, default="")
+    audience_type = models.CharField(
+        max_length=16,
+        choices=AudienceType.choices,
+        default=AudienceType.STATIC,
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
+    rule_definition = models.JSONField(blank=True, default=dict)
+    estimated_count = models.IntegerField(null=True, blank=True)
+    mautic_segment_id = models.CharField(max_length=64, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_newsletter_audiences",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(
+                fields=["status"],
+                name="newsletter_audience_status_idx",
+            ),
+            models.Index(
+                fields=["is_active"],
+                name="newsletter_audience_active_idx",
+            ),
+            models.Index(
+                fields=["created_at"],
+                name="newsletter_aud_created_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
 class NewsletterSubscription(models.Model):
     class Source(models.TextChoices):
         USER = "user", "User"

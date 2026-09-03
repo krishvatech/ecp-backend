@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 from moderation.permissions import IsStaffOrSuperuser
 
 from .admin_serializers import (
+    NewsletterAudienceAdminSerializer,
     NewsletterAdminCategorySerializer,
     NewsletterCampaignScheduleSerializer,
     NewsletterCampaignSerializer,
@@ -27,7 +28,7 @@ from .campaign_services import (
     sync_campaign_draft_to_mautic,
     update_campaign,
 )
-from .models import NewsletterCampaign
+from .models import NewsletterAudience, NewsletterCampaign
 
 
 def _get_campaign_or_404(uuid):
@@ -35,6 +36,60 @@ def _get_campaign_or_404(uuid):
         return get_campaign(uuid)
     except (NewsletterCampaign.DoesNotExist, ValueError):
         raise Http404
+
+
+def _get_audience_or_404(uuid):
+    try:
+        return NewsletterAudience.objects.get(uuid=uuid)
+    except (NewsletterAudience.DoesNotExist, ValueError):
+        raise Http404
+
+
+class NewsletterAdminAudienceListCreateView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request):
+        audiences = NewsletterAudience.objects.filter(is_active=True).order_by(
+            "-created_at",
+            "-id",
+        )
+        serializer = NewsletterAudienceAdminSerializer(audiences, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        serializer = NewsletterAudienceAdminSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        audience = serializer.save(created_by=request.user)
+        response = NewsletterAudienceAdminSerializer(audience)
+        return Response(response.data, status=status.HTTP_201_CREATED)
+
+
+class NewsletterAdminAudienceDetailView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, uuid):
+        serializer = NewsletterAudienceAdminSerializer(_get_audience_or_404(uuid))
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request, uuid):
+        audience = _get_audience_or_404(uuid)
+        serializer = NewsletterAudienceAdminSerializer(
+            audience,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        audience = serializer.save()
+        response = NewsletterAudienceAdminSerializer(audience)
+        return Response(response.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, uuid):
+        audience = _get_audience_or_404(uuid)
+        audience.status = NewsletterAudience.Status.ARCHIVED
+        audience.is_active = False
+        audience.save(update_fields=["status", "is_active", "updated_at"])
+        serializer = NewsletterAudienceAdminSerializer(audience)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class NewsletterAdminCampaignListCreateView(APIView):

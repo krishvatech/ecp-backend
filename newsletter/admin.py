@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from .models import (
     MauticContactMapping,
+    NewsletterAudience,
     NewsletterCampaign,
     NewsletterCampaignTrackingEvent,
     NewsletterCategory,
@@ -23,6 +24,22 @@ class NewsletterCategoryAdmin(admin.ModelAdmin):
     search_fields = ("name", "slug", "mautic_segment_id")
     readonly_fields = ("created_at", "updated_at")
     prepopulated_fields = {"slug": ("name",)}
+
+
+@admin.register(NewsletterAudience)
+class NewsletterAudienceAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "audience_type",
+        "status",
+        "is_active",
+        "estimated_count",
+        "updated_at",
+    )
+    list_filter = ("audience_type", "status", "is_active")
+    search_fields = ("name", "description", "mautic_segment_id")
+    readonly_fields = ("uuid", "created_at", "updated_at")
+    autocomplete_fields = ("created_by",)
 
 
 @admin.register(NewsletterSubscription)
