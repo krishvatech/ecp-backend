@@ -1,4 +1,5 @@
 import uuid
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -6,6 +7,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from newsletter.mautic import TemporaryMauticError
 from newsletter.models import (
     NewsletterCampaign,
     NewsletterCampaignSendEvent,
@@ -227,6 +229,156 @@ class NewsletterCampaignAnalyticsAPITests(TestCase):
         self.assertEqual(response.data["rates"]["open_rate"], 0)
         self.assertEqual(response.data["rates"]["click_rate"], 0)
         self.assertEqual(response.data["rates"]["unsubscribe_rate"], 0)
+
+    @patch("newsletter.analytics_services.MauticClient")
+    def test_campaign_without_mautic_email_id_uses_ecp_only(self, client_cls):
+        self.authenticate_staff()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        client_cls.assert_not_called()
+        self.assertEqual(response.data["metadata"]["sources"], ["ecp"])
+        self.assertIsNone(response.data["metadata"]["mautic_email_id"])
+        self.assertFalse(response.data["metadata"]["mautic_available"])
+
+    @patch("newsletter.analytics_services.MauticClient")
+    def test_mautic_stats_success_adds_metadata_and_open_counts(self, client_cls):
+        self.campaign.mautic_email_id = "77"
+        self.campaign.save(update_fields=["mautic_email_id"])
+        client_cls.return_value.get_email_stats.return_value = {
+            "total": 3,
+            "data": [
+                {
+                    "id": 1,
+                    "email_id": 77,
+                    "lead_id": 101,
+                    "email_address": "first@example.test",
+                    "is_read": True,
+                },
+                {
+                    "id": 2,
+                    "email_id": 77,
+                    "lead_id": 102,
+                    "email_address": "second@example.test",
+                    "date_read": "2026-09-03T10:00:00+00:00",
+                },
+                {
+                    "id": 3,
+                    "email_id": 77,
+                    "lead_id": 103,
+                    "email_address": "third@example.test",
+                    "is_read": False,
+                },
+            ],
+        }
+        self.authenticate_staff()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        client_cls.return_value.get_email_stats.assert_called_once_with("77")
+        self.assertEqual(response.data["engagement"]["opened_count"], 2)
+        self.assertEqual(response.data["engagement"]["unique_open_count"], 2)
+        self.assertEqual(response.data["metadata"]["sources"], ["ecp", "mautic"])
+        self.assertEqual(response.data["metadata"]["mautic_email_id"], "77")
+        self.assertTrue(response.data["metadata"]["mautic_available"])
+        self.assertEqual(response.data["metadata"]["mautic_stats_count"], 3)
+
+    @patch("newsletter.analytics_services.MauticClient")
+    def test_mautic_stats_unavailable_returns_ecp_analytics_with_warning(self, client_cls):
+        self.campaign.mautic_email_id = "77"
+        self.campaign.save(update_fields=["mautic_email_id"])
+        self.create_tracking_event(
+            NewsletterCampaignTrackingEvent.EventType.OPENED,
+            recipient_email="local-open@example.test",
+        )
+        client_cls.return_value.get_email_stats.side_effect = TemporaryMauticError(
+            "Stats unavailable"
+        )
+        self.authenticate_staff()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["engagement"]["opened_count"], 1)
+        self.assertEqual(response.data["engagement"]["unique_open_count"], 1)
+        self.assertEqual(response.data["metadata"]["sources"], ["ecp", "mautic"])
+        self.assertFalse(response.data["metadata"]["mautic_available"])
+        self.assertIn("Stats unavailable", response.data["metadata"]["warnings"])
+
+    @patch("newsletter.analytics_services.MauticClient")
+    def test_mautic_open_counts_replace_webhook_opens_without_double_counting(
+        self,
+        client_cls,
+    ):
+        self.campaign.mautic_email_id = "77"
+        self.campaign.save(update_fields=["mautic_email_id"])
+        self.create_send_event(provider_sent_count=10, provider_failed_count=0)
+        self.create_tracking_event(
+            NewsletterCampaignTrackingEvent.EventType.OPENED,
+            recipient_email="webhook-open@example.test",
+        )
+        client_cls.return_value.get_email_stats.return_value = {
+            "total": 2,
+            "data": [
+                {
+                    "id": 1,
+                    "lead_id": 101,
+                    "email_address": "first@example.test",
+                    "is_read": True,
+                },
+                {
+                    "id": 2,
+                    "lead_id": 101,
+                    "email_address": "first@example.test",
+                    "last_opened": "2026-09-03T10:00:00+00:00",
+                },
+            ],
+        }
+        self.authenticate_staff()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["engagement"]["opened_count"], 2)
+        self.assertEqual(response.data["engagement"]["unique_open_count"], 1)
+        self.assertEqual(response.data["rates"]["open_rate"], 0.1)
+
+    @patch("newsletter.analytics_services.MauticClient")
+    def test_existing_webhook_click_counts_remain_when_mautic_stats_are_used(
+        self,
+        client_cls,
+    ):
+        self.campaign.mautic_email_id = "77"
+        self.campaign.save(update_fields=["mautic_email_id"])
+        self.create_tracking_event(
+            NewsletterCampaignTrackingEvent.EventType.CLICKED,
+            mautic_contact_id="101",
+        )
+        self.create_tracking_event(
+            NewsletterCampaignTrackingEvent.EventType.CLICKED,
+            mautic_contact_id="101",
+        )
+        client_cls.return_value.get_email_stats.return_value = {
+            "total": 1,
+            "data": [
+                {
+                    "id": 1,
+                    "lead_id": 101,
+                    "email_address": "first@example.test",
+                    "is_read": True,
+                },
+            ],
+        }
+        self.authenticate_staff()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["engagement"]["opened_count"], 1)
+        self.assertEqual(response.data["engagement"]["clicked_count"], 2)
+        self.assertEqual(response.data["engagement"]["unique_click_count"], 1)
 
     def test_rates_use_delivered_count_then_provider_sent_count(self):
         self.create_send_event(provider_sent_count=10, provider_failed_count=0)

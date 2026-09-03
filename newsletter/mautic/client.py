@@ -224,6 +224,27 @@ class MauticClient:
         response = self._request("GET", f"emails/{email_id}")
         return self._email_from_response(response, "Mautic email lookup")
 
+    def get_email_stats(self, email_id: int | str) -> dict[str, Any]:
+        email_id = str(email_id or "").strip()
+        if not email_id:
+            raise PermanentMauticError("Mautic email ID is required")
+
+        response = self._request(
+            "GET",
+            "stats/email_stats",
+            params={
+                "where[0][col]": "email_id",
+                "where[0][expr]": "eq",
+                "where[0][val]": email_id,
+            },
+        )
+        data = self._json_object(response, "Mautic email statistics lookup")
+        if "data" not in data and "stats" not in data and "total" not in data:
+            raise TemporaryMauticError(
+                "Mautic email statistics lookup returned an invalid response"
+            )
+        return data
+
     def create_email(self, payload: dict[str, Any]) -> dict[str, Any]:
         response = self._request(
             "POST",

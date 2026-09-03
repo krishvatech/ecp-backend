@@ -123,6 +123,76 @@ class MauticClientTests(SimpleTestCase):
             ("PATCH", "http://mautic.local/api/contacts/51/edit"),
         )
 
+    def test_get_email_stats_returns_raw_stats_response(self):
+        payload = {
+            "total": 1,
+            "data": [
+                {
+                    "id": 101,
+                    "email_id": 77,
+                    "email_address": "member@example.com",
+                    "is_read": True,
+                    "is_failed": False,
+                }
+            ],
+        }
+        client, session = self.make_mautic_client(response(200, payload))
+
+        stats = client.get_email_stats(" 77 ")
+
+        self.assertEqual(stats, payload)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/stats/email_stats"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {
+                "where[0][col]": "email_id",
+                "where[0][expr]": "eq",
+                "where[0][val]": "77",
+            },
+        )
+
+    def test_get_email_stats_allows_empty_response(self):
+        payload = {"total": 0, "data": []}
+        client, _ = self.make_mautic_client(response(200, payload))
+
+        self.assertEqual(client.get_email_stats(77), payload)
+
+    def test_get_email_stats_requires_email_id(self):
+        client, session = self.make_mautic_client()
+
+        with self.assertRaisesRegex(PermanentMauticError, "email ID is required"):
+            client.get_email_stats("")
+
+        session.request.assert_not_called()
+
+    def test_get_email_stats_temporary_failure(self):
+        client, _ = self.make_mautic_client(
+            response(503, {"errors": [{"message": "Stats unavailable"}]})
+        )
+
+        with self.assertRaises(TemporaryMauticError):
+            client.get_email_stats(77)
+
+    def test_get_email_stats_permanent_failure(self):
+        client, _ = self.make_mautic_client(
+            response(403, {"errors": [{"message": "Access denied"}]})
+        )
+
+        with self.assertRaisesRegex(PermanentMauticError, "Access denied"):
+            client.get_email_stats(77)
+
+    def test_get_email_stats_rejects_unexpected_response(self):
+        client, _ = self.make_mautic_client(response(200, {"email": {"id": 77}}))
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "email statistics lookup returned an invalid response",
+        ):
+            client.get_email_stats(77)
+
     def test_delete_contact_calls_expected_endpoint(self):
         client, session = self.make_mautic_client(response(200, {"contact": {"id": None}}))
 
