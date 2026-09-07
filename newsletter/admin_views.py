@@ -20,6 +20,10 @@ from .admin_serializers import (
     NewsletterCampaignTestEmailSerializer,
 )
 from .analytics_services import get_campaign_analytics
+from .category_analytics import (
+    build_category_contact_timeline,
+    resolve_contact_timeline_range,
+)
 from .campaign_services import (
     CampaignNotEditable,
     CampaignScheduleNotAllowed,
@@ -616,6 +620,41 @@ class NewsletterAdminCategoryContactsView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class NewsletterAdminCategoryContactAnalyticsView(APIView):
+    """Return an ECP-owned Added / Removed / Total contact timeline."""
+
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, slug):
+        try:
+            category = NewsletterCategory.objects.get(slug=slug)
+        except NewsletterCategory.DoesNotExist:
+            raise Http404
+
+        try:
+            start_date, end_date = resolve_contact_timeline_range(
+                from_value=request.query_params.get("from"),
+                to_value=request.query_params.get("to"),
+            )
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = build_category_contact_timeline(
+            category,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        data["category"] = {
+            "slug": category.slug,
+            "name": category.name,
+            "mautic_segment_id": category.mautic_segment_id or None,
+        }
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class NewsletterAdminCategoryDetailView(APIView):

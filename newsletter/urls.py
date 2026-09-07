@@ -12,6 +12,7 @@ from .admin_views import (
     NewsletterAdminCampaignSendView,
     NewsletterAdminCampaignSyncView,
     NewsletterAdminCampaignTestEmailView,
+    NewsletterAdminCategoryContactAnalyticsView,
     NewsletterAdminCategoryContactsView,
     NewsletterAdminCategoryDetailView,
     NewsletterAdminCategoryLinkMauticSegmentView,
@@ -88,6 +89,11 @@ urlpatterns = [
         "newsletter/admin/categories/",
         NewsletterAdminCategoryListView.as_view(),
         name="newsletter-admin-category-list",
+    ),
+    path(
+        "newsletter/admin/categories/<slug:slug>/contact-analytics/",
+        NewsletterAdminCategoryContactAnalyticsView.as_view(),
+        name="newsletter-admin-category-contact-analytics",
     ),
     path(
         "newsletter/admin/categories/<slug:slug>/contacts/",
