@@ -15,6 +15,8 @@ from .admin_views import (
     NewsletterAdminCategoryDetailView,
     NewsletterAdminCategoryLinkMauticSegmentView,
     NewsletterAdminCategoryListView,
+    NewsletterAdminCategorySyncMauticView,
+    NewsletterAdminMauticSegmentListView,
 )
 from .views import NewsletterPreferencesView
 from .webhooks import MauticNewsletterWebhookView
@@ -95,6 +97,16 @@ urlpatterns = [
         "newsletter/admin/categories/<slug:slug>/link-mautic-segment/",
         NewsletterAdminCategoryLinkMauticSegmentView.as_view(),
         name="newsletter-admin-category-link-mautic-segment",
+    ),
+    path(
+        "newsletter/admin/categories/<slug:slug>/sync-mautic/",
+        NewsletterAdminCategorySyncMauticView.as_view(),
+        name="newsletter-admin-category-sync-mautic",
+    ),
+    path(
+        "newsletter/admin/mautic/segments/",
+        NewsletterAdminMauticSegmentListView.as_view(),
+        name="newsletter-admin-mautic-segment-list",
     ),
     path(
         "newsletter/webhooks/mautic/",

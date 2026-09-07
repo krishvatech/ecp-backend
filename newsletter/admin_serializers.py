@@ -15,6 +15,13 @@ class NewsletterAdminCategorySerializer(serializers.ModelSerializer):
         return value.strip()
 
 
+class NewsletterCategoryPublicSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NewsletterCategory
+        fields = ["slug", "name", "description", "is_active", "created_at", "updated_at"]
+        read_only_fields = fields
+
+
 class NewsletterAudienceAdminSerializer(serializers.ModelSerializer):
     class Meta:
         model = NewsletterAudience
@@ -43,7 +50,7 @@ class NewsletterAudienceAdminSerializer(serializers.ModelSerializer):
 
 
 class NewsletterCampaignSerializer(serializers.ModelSerializer):
-    audiences = NewsletterAdminCategorySerializer(many=True, read_only=True)
+    audiences = NewsletterCategoryPublicSerializer(many=True, read_only=True)
     mautic_email_id = serializers.SerializerMethodField()
     audience_slugs = serializers.ListField(
         child=serializers.SlugField(),

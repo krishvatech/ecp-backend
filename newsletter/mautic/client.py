@@ -281,6 +281,61 @@ class MauticClient:
             require_id=False,
         )
 
+    @staticmethod
+    def _segment_from_response(response, context: str) -> dict[str, Any]:
+        data = MauticClient._json_object(response, context)
+        segment = data.get("list") or data.get("segment")
+        if not isinstance(segment, dict) or not segment.get("id"):
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return segment
+
+    def list_segments(self, **params) -> dict[str, Any]:
+        response = self._request("GET", "segments", params=params or None)
+        data = self._json_object(response, "Mautic segment list")
+        if "lists" in data:
+            segments = data["lists"]
+        elif "segments" in data:
+            segments = data["segments"]
+        else:
+            raise TemporaryMauticError(
+                "Mautic segment list returned an invalid response"
+            )
+        if not isinstance(segments, (dict, list)):
+            raise TemporaryMauticError("Mautic segment list returned an invalid response")
+        return data
+
+    def get_segment(self, segment_id: int | str) -> dict[str, Any]:
+        segment_id = str(segment_id or "").strip()
+        if not segment_id:
+            raise PermanentMauticError("Mautic segment ID is required")
+
+        response = self._request("GET", f"segments/{segment_id}")
+        return self._segment_from_response(response, "Mautic segment lookup")
+
+    def create_segment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._request("POST", "segments/new", data=payload)
+        return self._segment_from_response(response, "Mautic segment creation")
+
+    def update_segment(
+        self,
+        segment_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        segment_id = str(segment_id or "").strip()
+        if not segment_id:
+            raise PermanentMauticError("Mautic segment ID is required")
+
+        response = self._request("PATCH", f"segments/{segment_id}/edit", data=payload)
+        return self._segment_from_response(response, "Mautic segment update")
+
+    def delete_segment(self, segment_id: int | str) -> dict[str, Any]:
+        segment_id = str(segment_id or "").strip()
+        if not segment_id:
+            raise PermanentMauticError("Mautic segment ID is required")
+
+        response = self._request("DELETE", f"segments/{segment_id}/delete")
+        return self._segment_from_response(response, "Mautic segment deletion")
+
     def send_email_to_contact(
         self,
         email_id: int | str,

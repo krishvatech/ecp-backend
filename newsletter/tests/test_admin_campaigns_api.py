@@ -1,5 +1,7 @@
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from unittest.mock import call, patch
+
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -273,8 +275,537 @@ class NewsletterAdminCampaignAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         slugs = {item["slug"] for item in response.data}
         self.assertIn("imaa-events", slugs)
-        self.assertNotIn("inactive-newsletter", slugs)
         self.assertTrue(all("mautic_segment_id" not in item for item in response.data))
+
+    def test_admin_categories_returns_inactive_for_reactivation(self):
+        self._authenticate(self.staff)
+
+        response = self.client.get(self.categories_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "inactive-newsletter",
+            {item["slug"] for item in response.data},
+        )
+
+    def test_admin_categories_can_opt_into_mautic_internal_ids(self):
+        self._authenticate(self.staff)
+        self.category.mautic_segment_id = "1"
+        self.category.save(update_fields=["mautic_segment_id"])
+
+        response = self.client.get(self.categories_url, {"include_mautic": "true"})
+
+        self.assertEqual(response.status_code, 200)
+        by_slug = {item["slug"]: item for item in response.data}
+        self.assertEqual(by_slug["imaa-events"]["mautic_segment_id"], "1")
+
+    @override_settings(MAUTIC_SYNC_ENABLED=False)
+    def test_create_category_remains_local_only_when_mautic_disabled(self):
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            self.categories_url,
+            {"name": "Board Updates", "description": "Board news."},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        category = NewsletterCategory.objects.get(slug="board-updates")
+        self.assertEqual(category.mautic_segment_id, "")
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_create_category_creates_static_mautic_segment(self, client_cls):
+        client = client_cls.return_value
+        client.list_segments.return_value = {"lists": {}}
+        client.create_segment.return_value = {"id": 44}
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            self.categories_url,
+            {"name": "Board Updates", "description": "Board news."},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        category = NewsletterCategory.objects.get(slug="board-updates")
+        self.assertEqual(category.mautic_segment_id, "44")
+        client.create_segment.assert_called_once_with(
+            {
+                "name": "Board Updates",
+                "description": "Board news.",
+                "isPublished": True,
+                "isPreferenceCenter": False,
+                "filters": [],
+                "alias": "board-updates",
+            }
+        )
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_create_category_reuses_static_segment_by_alias(self, client_cls):
+        client = client_cls.return_value
+        client.list_segments.return_value = {
+            "lists": {"45": {"id": 45, "alias": "board-updates", "filters": []}}
+        }
+        client.update_segment.return_value = {"id": 45}
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            self.categories_url,
+            {"name": "Board Updates"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            NewsletterCategory.objects.get(slug="board-updates").mautic_segment_id,
+            "45",
+        )
+        client.create_segment.assert_not_called()
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_create_category_rejects_dynamic_segment_with_same_alias(self, client_cls):
+        client = client_cls.return_value
+        client.list_segments.return_value = {
+            "lists": {
+                "45": {
+                    "id": 45,
+                    "alias": "board-updates",
+                    "filters": [{"field": "email"}],
+                }
+            }
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            self.categories_url,
+            {"name": "Board Updates"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertFalse(NewsletterCategory.objects.filter(slug="board-updates").exists())
+        client.create_segment.assert_not_called()
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_create_category_rejects_same_alias_static_mapped_elsewhere(self, client_cls):
+        NewsletterCategory.objects.create(
+            name="Mapped Elsewhere",
+            slug="mapped-elsewhere",
+            mautic_segment_id="45",
+        )
+        client = client_cls.return_value
+        client.list_segments.return_value = {
+            "lists": {"45": {"id": 45, "alias": "board-updates", "filters": []}}
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            self.categories_url,
+            {"name": "Board Updates"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertFalse(NewsletterCategory.objects.filter(slug="board-updates").exists())
+        client.create_segment.assert_not_called()
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_create_category_provider_failure_rolls_back_local_row(self, client_cls):
+        from newsletter.mautic import TemporaryMauticError
+
+        client = client_cls.return_value
+        client.list_segments.side_effect = TemporaryMauticError("Mautic unavailable")
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            self.categories_url,
+            {"name": "Broken Updates"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertFalse(
+            NewsletterCategory.objects.filter(slug="broken-updates").exists()
+        )
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_created_remote_segment_is_unpublished_if_local_mapping_save_fails(
+        self,
+        client_cls,
+    ):
+        original_save = NewsletterCategory.save
+        client = client_cls.return_value
+        client.list_segments.return_value = {"lists": {}}
+        client.create_segment.return_value = {"id": 88}
+
+        def save_with_mapping_failure(instance, *args, **kwargs):
+            if (
+                instance.slug == "broken-updates"
+                and str(instance.mautic_segment_id) == "88"
+            ):
+                raise RuntimeError("local save failed")
+            return original_save(instance, *args, **kwargs)
+
+        self.client.raise_request_exception = False
+        self._authenticate(self.staff)
+        with patch.object(NewsletterCategory, "save", save_with_mapping_failure):
+            response = self.client.post(
+                self.categories_url,
+                {"name": "Broken Updates"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 500)
+        client.update_segment.assert_called_with("88", {"isPublished": False})
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_reused_remote_segment_is_not_compensated_if_local_mapping_save_fails(
+        self,
+        client_cls,
+    ):
+        original_save = NewsletterCategory.save
+        client = client_cls.return_value
+        client.list_segments.return_value = {
+            "lists": {"88": {"id": 88, "alias": "broken-updates", "filters": []}}
+        }
+
+        def save_with_mapping_failure(instance, *args, **kwargs):
+            if (
+                instance.slug == "broken-updates"
+                and str(instance.mautic_segment_id) == "88"
+            ):
+                raise RuntimeError("local save failed")
+            return original_save(instance, *args, **kwargs)
+
+        self.client.raise_request_exception = False
+        self._authenticate(self.staff)
+        with patch.object(NewsletterCategory, "save", save_with_mapping_failure):
+            response = self.client.post(
+                self.categories_url,
+                {"name": "Broken Updates"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn(
+            call("88", {"isPublished": False}),
+            client.update_segment.call_args_list,
+        )
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_patch_category_syncs_metadata_without_changing_slug(self, client_cls):
+        self.category.mautic_segment_id = "1"
+        self.category.save(update_fields=["mautic_segment_id"])
+        client = client_cls.return_value
+        client.get_segment.return_value = {"id": 1, "filters": []}
+        client.update_segment.return_value = {"id": 1}
+        self._authenticate(self.staff)
+
+        response = self.client.patch(
+            reverse("newsletter-admin-category-detail", args=[self.category.slug]),
+            {"name": "IMAA Eventss Renamed", "description": "Updated."},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.category.refresh_from_db()
+        self.assertEqual(self.category.slug, "imaa-events")
+        client.update_segment.assert_called_once_with(
+            "1",
+            {
+                "name": "IMAA Eventss Renamed",
+                "description": "Updated.",
+                "isPublished": True,
+                "isPreferenceCenter": False,
+                "filters": [],
+            },
+        )
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_patch_inactive_category_active_publishes_segment(self, client_cls):
+        self.inactive_category.mautic_segment_id = "55"
+        self.inactive_category.save(update_fields=["mautic_segment_id"])
+        client = client_cls.return_value
+        client.get_segment.return_value = {"id": 55, "filters": []}
+        client.update_segment.return_value = {"id": 55}
+        self._authenticate(self.staff)
+
+        response = self.client.patch(
+            reverse("newsletter-admin-category-detail", args=[self.inactive_category.slug]),
+            {"is_active": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        client.update_segment.assert_called_once_with(
+            "55",
+            {
+                "name": "Inactive Newsletter",
+                "description": "",
+                "isPublished": True,
+                "isPreferenceCenter": False,
+                "filters": [],
+            },
+        )
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_delete_category_unpublishes_segment(self, client_cls):
+        self.category.mautic_segment_id = "1"
+        self.category.save(update_fields=["mautic_segment_id"])
+        client_cls.return_value.update_segment.return_value = {"id": 1}
+        self._authenticate(self.staff)
+
+        response = self.client.delete(
+            reverse("newsletter-admin-category-detail", args=[self.category.slug])
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.category.refresh_from_db()
+        self.assertFalse(self.category.is_active)
+        client_cls.return_value.update_segment.assert_called_once_with(
+            "1",
+            {"isPublished": False},
+        )
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_link_existing_static_segment_queues_reconciliation(self, client_cls):
+        client_cls.return_value.get_segment.return_value = {
+            "id": 99,
+            "name": "External",
+            "filters": [],
+        }
+        subscriber = User.objects.create_user(
+            username="subscriber",
+            email="subscriber@example.test",
+        )
+        NewsletterSubscription.objects.create(
+            user=subscriber,
+            category=self.category,
+            is_subscribed=True,
+        )
+        self.category.mautic_segment_id = ""
+        self.category.save(update_fields=["mautic_segment_id"])
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse(
+                "newsletter-admin-category-link-mautic-segment",
+                args=[self.category.slug],
+            ),
+            {"mautic_segment_id": "99"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.category.refresh_from_db()
+        self.assertEqual(self.category.mautic_segment_id, "99")
+        self.assertEqual(response.data["reconciliation_queued"], 1)
+        self.assertEqual(NewsletterSyncEvent.objects.count(), 1)
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_link_dynamic_segment_is_rejected(self, client_cls):
+        client_cls.return_value.get_segment.return_value = {
+            "id": 99,
+            "filters": [{"field": "email", "operator": "like"}],
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse(
+                "newsletter-admin-category-link-mautic-segment",
+                args=[self.category.slug],
+            ),
+            {"mautic_segment_id": "99"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_link_duplicate_segment_mapping_is_rejected(self, client_cls):
+        self.other_category.mautic_segment_id = "99"
+        self.other_category.save(update_fields=["mautic_segment_id"])
+        client_cls.return_value.get_segment.return_value = {"id": 99, "filters": []}
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse(
+                "newsletter-admin-category-link-mautic-segment",
+                args=[self.category.slug],
+            ),
+            {"mautic_segment_id": "99"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_admin_can_list_mautic_segments(self, client_cls):
+        self.category.mautic_segment_id = "1"
+        self.category.save(update_fields=["mautic_segment_id"])
+        client_cls.return_value.list_segments.return_value = {
+            "lists": {
+                "1": {
+                    "id": 1,
+                    "name": "IMAA Events",
+                    "alias": "imaa-events",
+                    "description": "Events",
+                    "isPublished": True,
+                    "filters": [],
+                },
+                "2": {
+                    "id": 2,
+                    "name": "Dynamic",
+                    "alias": "dynamic",
+                    "filters": [{"field": "email"}],
+                },
+            }
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.get(reverse("newsletter-admin-mautic-segment-list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data[0]["id"], "1")
+        self.assertTrue(response.data[0]["is_static"])
+        self.assertTrue(response.data[0]["mapped_in_ecp"])
+        self.assertTrue(response.data[1]["is_dynamic"])
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_admin_mautic_segments_normalizes_provider_booleans(self, client_cls):
+        client_cls.return_value.list_segments.return_value = {
+            "lists": {
+                "1": {"id": 1, "isPublished": "0", "filters": []},
+                "2": {"id": 2, "isPublished": "1", "filters": []},
+                "3": {"id": 3, "isPublished": "false", "filters": []},
+                "4": {"id": 4, "isPublished": "true", "filters": []},
+            }
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.get(reverse("newsletter-admin-mautic-segment-list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["isPublished"] for item in response.data],
+            [False, True, False, True],
+        )
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_sync_mautic_repairs_missing_segment_and_queues_reconciliation(
+        self,
+        client_cls,
+    ):
+        from newsletter.mautic import PermanentMauticError
+
+        client = client_cls.return_value
+        client.get_segment.side_effect = PermanentMauticError(
+            "Mautic API request failed (HTTP 404)"
+        )
+        client.list_segments.return_value = {"lists": {}}
+        client.create_segment.return_value = {"id": 77}
+        subscriber = User.objects.create_user(
+            username="repair-subscriber",
+            email="repair@example.test",
+        )
+        NewsletterSubscription.objects.create(
+            user=subscriber,
+            category=self.category,
+            is_subscribed=True,
+        )
+        self.category.mautic_segment_id = "404"
+        self.category.save(update_fields=["mautic_segment_id"])
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse("newsletter-admin-category-sync-mautic", args=[self.category.slug])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.category.refresh_from_db()
+        self.assertEqual(self.category.mautic_segment_id, "77")
+        self.assertEqual(response.data["reconciliation_queued"], 1)
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_sync_mautic_rejects_dynamic_segment_with_same_alias(self, client_cls):
+        self.category.mautic_segment_id = "404"
+        self.category.save(update_fields=["mautic_segment_id"])
+        from newsletter.mautic import PermanentMauticError
+
+        client = client_cls.return_value
+        client.get_segment.side_effect = PermanentMauticError(
+            "Mautic API request failed (HTTP 404)"
+        )
+        client.list_segments.return_value = {
+            "lists": {
+                "77": {
+                    "id": 77,
+                    "alias": self.category.slug,
+                    "filters": [{"field": "email"}],
+                }
+            }
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse("newsletter-admin-category-sync-mautic", args=[self.category.slug])
+        )
+
+        self.assertEqual(response.status_code, 502)
+        client.create_segment.assert_not_called()
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_sync_mautic_auth_error_does_not_create_replacement(self, client_cls):
+        self.category.mautic_segment_id = "1"
+        self.category.save(update_fields=["mautic_segment_id"])
+        from newsletter.mautic import PermanentMauticError
+
+        client = client_cls.return_value
+        client.get_segment.side_effect = PermanentMauticError(
+            "Mautic API request failed (HTTP 403)"
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse("newsletter-admin-category-sync-mautic", args=[self.category.slug])
+        )
+
+        self.assertEqual(response.status_code, 502)
+        client.create_segment.assert_not_called()
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_sync_mautic_temporary_error_does_not_create_replacement(self, client_cls):
+        self.category.mautic_segment_id = "1"
+        self.category.save(update_fields=["mautic_segment_id"])
+        from newsletter.mautic import TemporaryMauticError
+
+        client = client_cls.return_value
+        client.get_segment.side_effect = TemporaryMauticError("Mautic unavailable")
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse("newsletter-admin-category-sync-mautic", args=[self.category.slug])
+        )
+
+        self.assertEqual(response.status_code, 502)
+        client.create_segment.assert_not_called()
 
     def test_crud_has_no_mautic_or_preference_sync_side_effects(self):
         self._authenticate(self.staff)

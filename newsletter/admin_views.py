@@ -1,4 +1,7 @@
 from django.http import Http404
+from django.conf import settings
+from django.db import transaction
+from django.utils.text import slugify
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -9,6 +12,7 @@ from moderation.permissions import IsStaffOrSuperuser
 from .admin_serializers import (
     NewsletterAudienceAdminSerializer,
     NewsletterAdminCategorySerializer,
+    NewsletterCategoryPublicSerializer,
     NewsletterCampaignScheduleSerializer,
     NewsletterCampaignSerializer,
     NewsletterCampaignTestEmailSerializer,
@@ -21,7 +25,6 @@ from .campaign_services import (
     create_campaign,
     delete_draft_campaign,
     get_campaign,
-    list_active_categories,
     list_campaigns,
     request_campaign_send,
     schedule_campaign,
@@ -29,8 +32,14 @@ from .campaign_services import (
     sync_campaign_draft_to_mautic,
     update_campaign,
 )
-from .models import NewsletterAudience, NewsletterCampaign, NewsletterCategory
+from .models import (
+    NewsletterAudience,
+    NewsletterCampaign,
+    NewsletterCategory,
+    NewsletterSubscription,
+)
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .sync_events import create_newsletter_sync_event
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +56,165 @@ def _get_audience_or_404(uuid):
         return NewsletterAudience.objects.get(uuid=uuid)
     except (NewsletterAudience.DoesNotExist, ValueError):
         raise Http404
+
+
+def _mautic_enabled():
+    return bool(getattr(settings, "MAUTIC_SYNC_ENABLED", False))
+
+
+def _segment_filters(segment):
+    filters = segment.get("filters")
+    if filters in (None, "", [], {}):
+        return []
+    if isinstance(filters, dict):
+        return [item for item in filters.values() if item]
+    return filters
+
+
+def _segment_is_static(segment):
+    return not bool(_segment_filters(segment))
+
+
+def _normalize_provider_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    return bool(value)
+
+
+def _segment_payload_for_category(category, *, include_alias=False):
+    payload = {
+        "name": category.name,
+        "description": category.description,
+        "isPublished": bool(category.is_active),
+        "isPreferenceCenter": False,
+        "filters": [],
+    }
+    if include_alias:
+        payload["alias"] = category.slug
+    return payload
+
+
+def _segments_from_response(data):
+    segments = data.get("lists") or data.get("segments") or {}
+    if isinstance(segments, dict):
+        return [segment for segment in segments.values() if isinstance(segment, dict)]
+    if isinstance(segments, list):
+        return [segment for segment in segments if isinstance(segment, dict)]
+    return []
+
+
+def _find_segment_by_exact_alias(client, alias):
+    data = client.list_segments(search=f"alias:{alias}", limit=20)
+    for segment in _segments_from_response(data):
+        if str(segment.get("alias") or "").strip() == alias:
+            return segment
+    return None
+
+
+def _mapped_category_for_segment(segment_id, *, exclude_category=None):
+    qs = NewsletterCategory.objects.filter(mautic_segment_id=str(segment_id))
+    if exclude_category is not None:
+        qs = qs.exclude(pk=exclude_category.pk)
+    return qs.first()
+
+
+def _queue_category_reconciliation(category):
+    event_ids = []
+    subscriptions = NewsletterSubscription.objects.filter(category=category).select_related(
+        "category"
+    )
+    for subscription in subscriptions.iterator():
+        event = create_newsletter_sync_event(subscription)
+        event_ids.append(event.pk)
+
+    def dispatch_events():
+        from .tasks import process_newsletter_sync_event
+
+        for event_id in event_ids:
+            try:
+                process_newsletter_sync_event.delay(event_id)
+            except Exception:
+                logger.exception(
+                    "Could not dispatch newsletter reconciliation event_id=%s",
+                    event_id,
+                )
+
+    if event_ids:
+        transaction.on_commit(dispatch_events)
+    return len(event_ids)
+
+
+def _provider_error_response(exc):
+    return Response(
+        {"detail": str(exc) or "Mautic segment operation failed."},
+        status=status.HTTP_502_BAD_GATEWAY,
+    )
+
+
+def _compensate_created_segment(client, segment_id):
+    try:
+        client.update_segment(segment_id, {"isPublished": False})
+    except Exception:
+        logger.exception(
+            "Could not compensate newly-created Mautic segment_id=%s",
+            segment_id,
+        )
+
+
+def _is_missing_segment_error(exc):
+    return "HTTP 404" in str(exc)
+
+
+def _ensure_category_segment(category):
+    client = MauticClient()
+    segment_id = str(category.mautic_segment_id or "").strip()
+    if segment_id:
+        try:
+            segment = client.get_segment(segment_id)
+        except PermanentMauticError as exc:
+            if not _is_missing_segment_error(exc):
+                raise
+            segment = None
+        if segment is not None:
+            if not _segment_is_static(segment):
+                raise PermanentMauticError("Mapped Mautic segment is dynamic.")
+            client.update_segment(segment_id, _segment_payload_for_category(category))
+            return segment_id, False
+
+    existing = _find_segment_by_exact_alias(client, category.slug)
+    if existing is not None:
+        if not _segment_is_static(existing):
+            raise PermanentMauticError(
+                "A dynamic Mautic segment already uses this newsletter slug."
+            )
+        segment_id = str(existing["id"])
+        mapped = _mapped_category_for_segment(segment_id, exclude_category=category)
+        if mapped is not None:
+            raise PermanentMauticError(
+                "Mautic segment is already mapped to another newsletter category."
+            )
+        client.update_segment(segment_id, _segment_payload_for_category(category))
+        category.mautic_segment_id = segment_id
+        category.save(update_fields=["mautic_segment_id", "updated_at"])
+        return segment_id, True
+
+    segment = client.create_segment(
+        _segment_payload_for_category(category, include_alias=True)
+    )
+    category.mautic_segment_id = str(segment["id"])
+    try:
+        category.save(update_fields=["mautic_segment_id", "updated_at"])
+    except Exception:
+        _compensate_created_segment(client, category.mautic_segment_id)
+        raise
+    return category.mautic_segment_id, True
 
 
 class NewsletterAdminAudienceListCreateView(APIView):
@@ -265,8 +433,16 @@ class NewsletterAdminCategoryListView(APIView):
     permission_classes = [IsStaffOrSuperuser]
 
     def get(self, request):
-        serializer = NewsletterAdminCategorySerializer(
-            list_active_categories(),
+        include_mautic = str(
+            request.query_params.get("include_mautic", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        serializer_class = (
+            NewsletterAdminCategorySerializer
+            if include_mautic
+            else NewsletterCategoryPublicSerializer
+        )
+        serializer = serializer_class(
+            NewsletterCategory.objects.all().order_by("name"),
             many=True,
         )
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -276,8 +452,6 @@ class NewsletterAdminCategoryListView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        # Auto-generate slug from name
-        from django.utils.text import slugify
         name = serializer.validated_data.get('name', '').strip()
         if not name:
             return Response(
@@ -294,15 +468,19 @@ class NewsletterAdminCategoryListView(APIView):
             slug = f"{base_slug}-{counter}"
             counter += 1
 
-        category = NewsletterCategory.objects.create(
-            name=name,
-            slug=slug,
-            description=serializer.validated_data.get('description', ''),
-            is_active=True,
-            mautic_segment_id='',
-        )
-
-        logger.info(f"Created category {slug}. Mautic segment needs to be linked manually via /link-mautic-segment/ endpoint.")
+        try:
+            with transaction.atomic():
+                category = NewsletterCategory.objects.create(
+                    name=name,
+                    slug=slug,
+                    description=serializer.validated_data.get('description', ''),
+                    is_active=True,
+                    mautic_segment_id='',
+                )
+                if _mautic_enabled():
+                    _ensure_category_segment(category)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
 
         return Response(
             NewsletterAdminCategorySerializer(category).data,
@@ -324,17 +502,20 @@ class NewsletterAdminCategoryDetailView(APIView):
         )
         serializer.is_valid(raise_exception=True)
 
-        # Note: Mautic segment updates are not supported in this version of Mautic's API
-        # Segments are read-only and must be edited directly in Mautic UI
-        category = serializer.save()
-
-        if 'name' in request.data or 'description' in request.data:
-            if category.mautic_segment_id:
-                logger.info(
-                    f"Category {slug} updated. "
-                    f"Note: To update the Mautic segment '{category.mautic_segment_id}', "
-                    f"please edit it directly in Mautic UI (Contacts → Segments)"
-                )
+        try:
+            with transaction.atomic():
+                category = serializer.save()
+                if _mautic_enabled() and str(category.mautic_segment_id or "").strip():
+                    client = MauticClient()
+                    segment = client.get_segment(category.mautic_segment_id)
+                    if not _segment_is_static(segment):
+                        raise PermanentMauticError("Mapped Mautic segment is dynamic.")
+                    client.update_segment(
+                        category.mautic_segment_id,
+                        _segment_payload_for_category(category),
+                    )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
 
         return Response(NewsletterAdminCategorySerializer(category).data)
 
@@ -344,8 +525,17 @@ class NewsletterAdminCategoryDetailView(APIView):
         except NewsletterCategory.DoesNotExist:
             raise Http404
 
-        category.is_active = False
-        category.save()
+        try:
+            with transaction.atomic():
+                category.is_active = False
+                category.save(update_fields=["is_active", "updated_at"])
+                if _mautic_enabled() and str(category.mautic_segment_id or "").strip():
+                    MauticClient().update_segment(
+                        category.mautic_segment_id,
+                        {"isPublished": False},
+                    )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -366,23 +556,94 @@ class NewsletterAdminCategoryLinkMauticSegmentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Optional: validate segment exists in Mautic
         try:
-            from .mautic import MauticClient
             client = MauticClient()
-            # Try to fetch the segment to verify it exists
-            client._request('GET', f'segments/{segment_id}')
-        except Exception as e:
+            segment = client.get_segment(segment_id)
+            if not _segment_is_static(segment):
+                return Response(
+                    {'error': 'Dynamic Mautic segments cannot be linked to newsletter subscription lists.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            mapped = _mapped_category_for_segment(segment_id, exclude_category=category)
+            if mapped is not None:
+                return Response(
+                    {'error': f'Mautic segment is already mapped to newsletter category {mapped.slug}.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            with transaction.atomic():
+                mapping_changed = str(category.mautic_segment_id or "").strip() != segment_id
+                category.mautic_segment_id = segment_id
+                category.save(update_fields=['mautic_segment_id', 'updated_at'])
+                queued = _queue_category_reconciliation(category) if mapping_changed else 0
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        data = NewsletterAdminCategorySerializer(category).data
+        data["reconciliation_queued"] = queued
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminMauticSegmentListView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request):
+        try:
+            segments = _segments_from_response(MauticClient().list_segments(limit=200))
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        mapped_ids = set(
+            NewsletterCategory.objects.exclude(mautic_segment_id="")
+            .values_list("mautic_segment_id", flat=True)
+        )
+        return Response(
+            [
+                {
+                    "id": str(segment.get("id")),
+                    "name": segment.get("name") or "",
+                    "alias": segment.get("alias") or "",
+                    "description": segment.get("description") or "",
+                    "isPublished": _normalize_provider_bool(
+                        segment.get("isPublished", segment.get("is_published", False))
+                    ),
+                    "is_static": _segment_is_static(segment),
+                    "is_dynamic": not _segment_is_static(segment),
+                    "mapped_in_ecp": str(segment.get("id")) in mapped_ids,
+                }
+                for segment in segments
+            ],
+            status=status.HTTP_200_OK,
+        )
+
+
+class NewsletterAdminCategorySyncMauticView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request, slug):
+        try:
+            category = NewsletterCategory.objects.get(slug=slug)
+        except NewsletterCategory.DoesNotExist:
+            raise Http404
+
+        if not _mautic_enabled():
             return Response(
-                {'error': f'Mautic segment validation failed: {str(e)}'},
-                status=status.HTTP_400_BAD_REQUEST
+                {"detail": "Mautic newsletter synchronization is disabled."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Link the segment
-        category.mautic_segment_id = segment_id
-        category.save(update_fields=['mautic_segment_id', 'updated_at'])
+        try:
+            with transaction.atomic():
+                previous_segment_id = str(category.mautic_segment_id or "").strip()
+                segment_id, mapping_changed = _ensure_category_segment(category)
+                mapped = _mapped_category_for_segment(segment_id, exclude_category=category)
+                if mapped is not None:
+                    raise PermanentMauticError(
+                        "Mautic segment is already mapped to another newsletter category."
+                    )
+                queued = _queue_category_reconciliation(category) if mapping_changed or previous_segment_id != segment_id else 0
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
 
-        return Response(
-            NewsletterAdminCategorySerializer(category).data,
-            status=status.HTTP_200_OK
-        )
+        data = NewsletterAdminCategorySerializer(category).data
+        data["reconciliation_queued"] = queued
+        return Response(data, status=status.HTTP_200_OK)

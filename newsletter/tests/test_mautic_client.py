@@ -211,6 +211,83 @@ class MauticClientTests(SimpleTestCase):
 
         session.request.assert_not_called()
 
+    def test_list_segments_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(200, {"lists": {"3": {"id": 3, "alias": "imaa-events"}}})
+        )
+
+        data = client.list_segments(search="alias:imaa-events", limit=20)
+
+        self.assertEqual(data["lists"]["3"]["id"], 3)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/segments"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {"search": "alias:imaa-events", "limit": 20},
+        )
+
+    def test_list_segments_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(response(200, {}))
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "segment list returned an invalid response",
+        ):
+            client.list_segments()
+
+    def test_get_segment_returns_mautic_list_payload(self):
+        client, session = self.make_mautic_client(
+            response(200, {"list": {"id": 3, "name": "IMAA Events"}})
+        )
+
+        segment = client.get_segment(" 3 ")
+
+        self.assertEqual(segment["id"], 3)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/segments/3"),
+        )
+
+    def test_create_segment_calls_new_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(201, {"list": {"id": 4, "alias": "new-list"}})
+        )
+
+        segment = client.create_segment({"name": "New List", "filters": []})
+
+        self.assertEqual(segment["id"], 4)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/segments/new"),
+        )
+
+    def test_update_segment_calls_edit_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(200, {"list": {"id": 4, "name": "Updated"}})
+        )
+
+        segment = client.update_segment(4, {"name": "Updated"})
+
+        self.assertEqual(segment["id"], 4)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("PATCH", "http://mautic.local/api/segments/4/edit"),
+        )
+
+    def test_delete_segment_calls_delete_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(200, {"list": {"id": 4, "name": "Deleted"}})
+        )
+
+        client.delete_segment(4)
+
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("DELETE", "http://mautic.local/api/segments/4/delete"),
+        )
+
     def test_add_contact_to_segment_calls_expected_endpoint(self):
         client, session = self.make_mautic_client(response(200, {"success": 1}))
 
