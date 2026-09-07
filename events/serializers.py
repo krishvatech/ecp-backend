@@ -3905,7 +3905,7 @@ class EventApplicationSubmitSerializer(serializers.Serializer):
     """Serializer for submitting an application - write-only, used for POST requests."""
     first_name = serializers.CharField(max_length=150, required=True, help_text="First name is required")
     last_name = serializers.CharField(max_length=150, required=True, help_text="Last name is required")
-    email = serializers.CharField(max_length=254, required=True, help_text="Email is required")
+    email = serializers.EmailField(max_length=254, required=True, help_text="A valid email address is required")
     job_title = serializers.CharField(max_length=200, required=True, help_text="Job title is required")
     company_name = serializers.CharField(max_length=200, required=True, help_text="Company name is required")
     location = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
