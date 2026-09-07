@@ -170,6 +170,13 @@ class Event(models.Model):
         default='open',
         help_text="Registration flow: 'open' for instant registration, 'apply' for application review"
     )
+    allow_guest_applications = models.BooleanField(
+        default=True,
+        help_text=(
+            "For application-required events, allow people to submit an application "
+            "without signing in. This does not change guest registration or paid checkout rules."
+        ),
+    )
     preapproval_code_enabled = models.BooleanField(default=False)
     preapproval_allowlist_enabled = models.BooleanField(default=False)
     attendee_marker_enabled = models.BooleanField(default=False)
@@ -3848,6 +3855,8 @@ class EventApplication(models.Model):
     email = models.EmailField(blank=True, default='')
     job_title = models.CharField(max_length=200, blank=True, default='')
     company_name = models.CharField(max_length=200, blank=True, default='')
+    location = models.CharField(max_length=255, blank=True, default='')
+    phone = models.CharField(max_length=50, blank=True, default='')
     linkedin_url = models.URLField(blank=True, default='')
     attendee_marker_value = models.BooleanField(default=False)
     comments = models.TextField(blank=True, default='')
