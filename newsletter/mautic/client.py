@@ -107,6 +107,43 @@ class MauticClient:
         self._request("GET", "contacts", params={"limit": 1})
         return True
 
+    def get_contact(self, contact_id) -> dict[str, Any]:
+        normalized = str(contact_id or "").strip()
+        if not normalized:
+            raise PermanentMauticError("Mautic contact id is required")
+        response = self._request("GET", f"contacts/{normalized}")
+        data = self._json_object(response, "Mautic contact detail")
+        contact = data.get("contact")
+        if not isinstance(contact, dict):
+            raise TemporaryMauticError("Mautic contact detail returned an invalid response")
+        return contact
+
+    def get_contact_activity(self, contact_id, **params) -> dict[str, Any]:
+        normalized = str(contact_id or "").strip()
+        if not normalized:
+            raise PermanentMauticError("Mautic contact id is required")
+        response = self._request(
+            "GET",
+            f"contacts/{normalized}/activity",
+            params=params or None,
+        )
+        data = self._json_object(response, "Mautic contact activity")
+        if not isinstance(data.get("events"), (dict, list)):
+            raise TemporaryMauticError("Mautic contact activity returned invalid events")
+        return data
+
+    def list_contacts(self, **params) -> dict[str, Any]:
+        response = self._request("GET", "contacts", params=params or None)
+        data = self._json_object(response, "Mautic contact list")
+        if "contacts" not in data:
+            raise TemporaryMauticError(
+                "Mautic contact list returned an invalid response"
+            )
+        contacts = data["contacts"]
+        if not isinstance(contacts, (dict, list)):
+            raise TemporaryMauticError("Mautic contact list returned invalid contacts")
+        return data
+
     def find_contact_by_email(self, email: str) -> dict[str, Any] | None:
         normalized = str(email or "").strip().lower()
         if not normalized:

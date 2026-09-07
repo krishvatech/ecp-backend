@@ -46,6 +46,124 @@ class MauticClientTests(SimpleTestCase):
         self.assertEqual(kwargs["auth"].username, "api-user")
         self.assertEqual(kwargs["auth"].password, "secret")
 
+    def test_get_contact_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(200, {"contact": {"id": 2, "points": 0}})
+        )
+
+        contact = client.get_contact("2")
+
+        self.assertEqual(contact["id"], 2)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/contacts/2"),
+        )
+
+    def test_get_contact_requires_contact_id(self):
+        client, _ = self.make_mautic_client()
+
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "contact id is required",
+        ):
+            client.get_contact("")
+
+    def test_get_contact_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(response(200, {"contact": []}))
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "contact detail returned an invalid response",
+        ):
+            client.get_contact("2")
+
+    def test_get_contact_activity_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "events": [],
+                    "total": 0,
+                    "page": 1,
+                    "limit": 25,
+                    "maxPages": 1.0,
+                },
+            )
+        )
+
+        data = client.get_contact_activity("2", page=1, limit=25)
+
+        self.assertEqual(data["total"], 0)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/contacts/2/activity"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {"page": 1, "limit": 25},
+        )
+
+    def test_get_contact_activity_requires_contact_id(self):
+        client, _ = self.make_mautic_client()
+
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "contact id is required",
+        ):
+            client.get_contact_activity("")
+
+    def test_get_contact_activity_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(
+            response(200, {"events": None})
+        )
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "activity returned invalid events",
+        ):
+            client.get_contact_activity("2")
+
+    def test_list_contacts_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "total": 1,
+                    "contacts": {
+                        "2": {
+                            "id": 2,
+                            "fields": {
+                                "core": {
+                                    "email": {"value": "ravi@example.com"},
+                                }
+                            },
+                        }
+                    },
+                },
+            )
+        )
+
+        data = client.list_contacts(start=0, limit=25, search="Ravi")
+
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/contacts"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {"start": 0, "limit": 25, "search": "Ravi"},
+        )
+
+    def test_list_contacts_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(response(200, {"total": 0}))
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "contact list returned an invalid response",
+        ):
+            client.list_contacts()
+
     def test_find_contact_by_email_matches_nested_mautic_fields(self):
         client, session = self.make_mautic_client(
             response(

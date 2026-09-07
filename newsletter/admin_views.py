@@ -24,6 +24,12 @@ from .category_analytics import (
     build_category_contact_timeline,
     resolve_contact_timeline_range,
 )
+from .contact_services import (
+    get_admin_contact,
+    get_admin_contact_engagement,
+    list_admin_contact_activity,
+    list_admin_contacts,
+)
 from .campaign_services import (
     CampaignNotEditable,
     CampaignScheduleNotAllowed,
@@ -435,6 +441,120 @@ class NewsletterAdminCampaignCancelView(APIView):
 
         response = NewsletterCampaignSerializer(campaign)
         return Response(response.data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminContactListView(APIView):
+    """List the full Mautic contact directory with ECP enrichment."""
+
+    permission_classes = [IsStaffOrSuperuser]
+    default_page_size = 25
+    max_page_size = 100
+
+    def get(self, request):
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(
+                request.query_params.get("page_size", self.default_page_size)
+            )
+        except (TypeError, ValueError):
+            page_size = self.default_page_size
+        page_size = max(1, min(page_size, self.max_page_size))
+        search = str(request.query_params.get("search", "") or "").strip()
+
+        try:
+            data = list_admin_contacts(
+                page=page,
+                page_size=page_size,
+                search=search,
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminContactDetailView(APIView):
+    """Return one Mautic contact with ECP mapping and consent state."""
+
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, mautic_contact_id):
+        try:
+            data = get_admin_contact(mautic_contact_id)
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminContactActivityView(APIView):
+    """Return paginated real Mautic activity for one contact."""
+
+    permission_classes = [IsStaffOrSuperuser]
+    default_page_size = 25
+    max_page_size = 100
+
+    def get(self, request, mautic_contact_id):
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(
+                request.query_params.get("page_size", self.default_page_size)
+            )
+        except (TypeError, ValueError):
+            page_size = self.default_page_size
+        page_size = max(1, min(page_size, self.max_page_size))
+
+        try:
+            data = list_admin_contact_activity(
+                mautic_contact_id,
+                page=page,
+                page_size=page_size,
+            )
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminContactEngagementView(APIView):
+    """Return a date-ranged cumulative engagement series from Mautic activity."""
+
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, mautic_contact_id):
+        try:
+            data = get_admin_contact_engagement(
+                mautic_contact_id,
+                from_value=request.query_params.get("from"),
+                to_value=request.query_params.get("to"),
+            )
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class NewsletterAdminCategoryListView(APIView):
