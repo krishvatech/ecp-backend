@@ -3789,22 +3789,32 @@ class EventViewSet(viewsets.ModelViewSet):
     def apply(self, request, pk=None):
         """
         Apply to an event with 'apply' registration type.
-        POST: Submit application (AUTHENTICATED ONLY - FIX 1)
-        GET: Check own application status (authenticated only)
-
-        FIX 1: Require authentication for applications to ensure accepted applicants
-        become proper attendees with EventRegistration records.
+        POST: Submit an application as an authenticated user, or as a guest when
+        the event has allow_guest_applications enabled.
+        GET: Check application status for an authenticated user, or by email for
+        an existing guest application.
         """
         event = self.get_object()
+        # Guest JWT principals are authenticated at the transport layer but are not
+        # Django User accounts. Treat them as guests for application ownership,
+        # profile validation, and the per-event guest-application toggle.
+        is_registered_user = bool(
+            request.user.is_authenticated and not getattr(request.user, "is_guest", False)
+        )
 
         if event.registration_type != 'apply':
             return Response({'detail': 'This event uses standard registration.'}, status=400)
 
         if request.method == 'POST':
-            # FIX 1: Require authentication to apply
-            if not request.user.is_authenticated:
+            # Guest applications are configurable per application-required event.
+            # Default is enabled so new application events accept guest applicants
+            # unless an organizer explicitly requires sign-in.
+            if not is_registered_user and not event.allow_guest_applications:
                 return Response(
-                    {'detail': 'You must be registered and logged in to apply for this event.'},
+                    {
+                        'detail': 'You must be registered and logged in to apply for this event.',
+                        'code': 'authentication_required',
+                    },
                     status=401
                 )
 
@@ -3830,7 +3840,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         if request.method == 'GET':
             # Authenticated users: return their latest active application
-            if request.user.is_authenticated:
+            if is_registered_user:
                 app = EventApplication.get_latest_active_application(event=event, user=request.user)
                 if app:
                     # Fetch fresh with prefetch for latest track applications
@@ -3856,7 +3866,7 @@ class EventViewSet(viewsets.ModelViewSet):
         data = serializer.validated_data
 
         # ✅ For authenticated users, validate lead-generation fields
-        if request.user.is_authenticated:
+        if is_registered_user:
             is_lead_gen_complete, missing_fields = self._get_missing_lead_gen_fields(request.user)
             if not is_lead_gen_complete:
                 return Response({
@@ -4050,9 +4060,9 @@ class EventViewSet(viewsets.ModelViewSet):
             from events.models import EventRegistration
             existing_registration = EventRegistration.objects.filter(
                 event=locked_event,
-                user__email=email if request.user.is_authenticated else None,
+                user__email=email if is_registered_user else None,
                 status__in=['registered', 'cancellation_requested']
-            ).first() if request.user.is_authenticated else None
+            ).first() if is_registered_user else None
 
             if existing_registration:
                 return Response(
@@ -4336,7 +4346,7 @@ class EventViewSet(viewsets.ModelViewSet):
             now = timezone.now()
             status_value = "approved" if is_preapproved else "pending"
             reviewed_at = now if is_preapproved else None
-            reviewed_by = request.user if is_preapproved and request.user.is_authenticated else None
+            reviewed_by = request.user if is_preapproved and is_registered_user else None
 
             nomination_config = next(
                 (
@@ -4370,12 +4380,14 @@ class EventViewSet(viewsets.ModelViewSet):
             if reusable_app:
                 # Update the cancelled/declined application back to pending/approved
                 app = reusable_app
-                app.user = request.user if request.user.is_authenticated else app.user
+                app.user = request.user if is_registered_user else app.user
                 app.first_name = (data.get("first_name") or "").strip()
                 app.last_name = (data.get("last_name") or "").strip()
                 app.email = email
                 app.job_title = (data.get("job_title") or "").strip()
                 app.company_name = (data.get("company_name") or "").strip()
+                app.location = (data.get("location") or "").strip()
+                app.phone = (data.get("phone") or "").strip()
                 app.linkedin_url = (data.get("linkedin_url") or "").strip()
                 app.attendee_marker_value = attendee_marker_value
                 app.comments = comments
@@ -4403,12 +4415,14 @@ class EventViewSet(viewsets.ModelViewSet):
                 # Create new application
                 app = EventApplication.objects.create(
                     event=locked_event,
-                    user=request.user if request.user.is_authenticated else None,
+                    user=request.user if is_registered_user else None,
                     first_name=(data.get("first_name") or "").strip(),
                     last_name=(data.get("last_name") or "").strip(),
                     email=email,
                     job_title=(data.get("job_title") or "").strip(),
                     company_name=(data.get("company_name") or "").strip(),
+                    location=(data.get("location") or "").strip(),
+                    phone=(data.get("phone") or "").strip(),
                     linkedin_url=(data.get("linkedin_url") or "").strip(),
                     attendee_marker_value=attendee_marker_value,
                     comments=comments,
@@ -4434,7 +4448,7 @@ class EventViewSet(viewsets.ModelViewSet):
             if code_obj and is_preapproved:
                 code_obj.status = EventPreApprovalCode.STATUS_USED
                 code_obj.used_by_application = app
-                code_obj.used_by_user = request.user if request.user.is_authenticated else None
+                code_obj.used_by_user = request.user if is_registered_user else None
                 code_obj.used_by_email = email
                 code_obj.used_at = now
                 code_obj.save(update_fields=["status", "used_by_application", "used_by_user", "used_by_email", "used_at"])
@@ -4650,7 +4664,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
                 # FIX 7: Use track-specific pre-approval flags, not global is_preapproved
                 track_reviewed_at = now if track_is_preapproved else None
-                track_reviewed_by = request.user if track_is_preapproved and request.user.is_authenticated else None
+                track_reviewed_by = request.user if track_is_preapproved and is_registered_user else None
 
                 # Create track application
                 track_app = EventApplicationTrackApplication.objects.create(
@@ -4687,7 +4701,7 @@ class EventViewSet(viewsets.ModelViewSet):
                         if code_to_mark:
                             code_to_mark.status = EventPreApprovalCode.STATUS_USED
                             code_to_mark.used_by_application = app
-                            code_to_mark.used_by_user = request.user if request.user.is_authenticated else None
+                            code_to_mark.used_by_user = request.user if is_registered_user else None
                             code_to_mark.used_by_email = email
                             code_to_mark.used_at = now
                             code_to_mark.save(update_fields=["status", "used_by_application", "used_by_user", "used_by_email", "used_at"])
@@ -4695,7 +4709,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
             # FIX 2: Auto-accept pre-approved track applications independently (per-track, not global)
             # Do NOT depend on global is_preapproved flag - check each track's individual status
-            if request.user.is_authenticated:
+            if is_registered_user:
                 # Auto-accept pre-approved applications using the proper acceptance flow
                 # This ensures roles are assigned, attendee origins created, and forms triggered
                 from events.services.application_decisions import accept_track_application

@@ -1518,6 +1518,7 @@ class EventSerializer(serializers.ModelSerializer):
             "currency",
             "is_free",
             "registration_type",
+            "allow_guest_applications",
             "preapproval_code_enabled",
             "preapproval_allowlist_enabled",
             "attendee_marker_enabled",
@@ -3246,7 +3247,7 @@ class MyEventCardSerializer(serializers.ModelSerializer):
             "preview_image", "cover_image", "waiting_room_image", "location", "location_city",
             "location_country", "category", "is_live", "recording_url", "replay_available",
             "replay_visible_to_participants", "price", "price_label", "currency", "is_free",
-            "registration_type", "waiting_room_enabled", "waiting_room_grace_period_minutes",
+            "registration_type", "allow_guest_applications", "waiting_room_enabled", "waiting_room_grace_period_minutes",
             "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer", "lounge_enabled_after", "lounge_after_buffer",
             "is_multi_day", "sessions_summary", "cancellation_message", "recommended_event", "created_by_id",
@@ -3287,7 +3288,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         model = Event
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
-            "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type",
+            "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type", "allow_guest_applications",
             "preapproval_code_enabled", "preapproval_allowlist_enabled", "attendee_marker_enabled", "attendee_marker_label",
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer",
@@ -3416,7 +3417,7 @@ class EventListSerializer(serializers.ModelSerializer):
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
             "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country",
             "category", "is_live", "recording_url", "replay_available", "replay_availability_duration",
-            "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type",
+            "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type", "allow_guest_applications",
             "preapproval_code_enabled", "preapproval_allowlist_enabled", "attendee_marker_enabled", "attendee_marker_label",
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room",
             "networking_tables_enabled_waiting_room", "auto_admit_seconds",
@@ -3449,7 +3450,7 @@ class EventLandingSerializer(serializers.ModelSerializer):
             "id", "slug", "title", "description", "start_time", "end_time", "timezone", "status",
             "preview_image", "cover_image", "location", "location_city", "location_country",
             "category", "format", "event_type", "price", "price_label", "currency", "is_free",
-            "registration_type", "is_pinned", "pin_priority", "pinned_at", "is_featured",
+            "registration_type", "allow_guest_applications", "is_pinned", "pin_priority", "pinned_at", "is_featured",
         )
 
     def get_event_type(self, obj):
@@ -3882,7 +3883,7 @@ class EventApplicationSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'event_id', 'user_id', 'applicant_name',
             'first_name', 'last_name', 'email',
-            'job_title', 'company_name', 'linkedin_url',
+            'job_title', 'company_name', 'location', 'phone', 'linkedin_url',
             'attendee_marker_value', 'comments',
             'status', 'application_status', 'applied_at', 'reviewed_at',
             'reviewed_by_id', 'rejection_message',
@@ -3907,6 +3908,8 @@ class EventApplicationSubmitSerializer(serializers.Serializer):
     email = serializers.CharField(max_length=254, required=True, help_text="Email is required")
     job_title = serializers.CharField(max_length=200, required=True, help_text="Job title is required")
     company_name = serializers.CharField(max_length=200, required=True, help_text="Company name is required")
+    location = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    phone = serializers.CharField(max_length=50, required=False, allow_blank=True, default='')
     linkedin_url = serializers.URLField(required=False, allow_blank=True, default='')
     attendee_marker_value = serializers.BooleanField(required=False, default=False)
     comments = serializers.CharField(required=False, allow_blank=True, default='')
