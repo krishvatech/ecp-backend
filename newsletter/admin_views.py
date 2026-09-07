@@ -1,6 +1,8 @@
 from django.http import Http404
 from django.conf import settings
+from django.core.paginator import Paginator
 from django.db import transaction
+from django.db.models import Q
 from django.utils.text import slugify
 from rest_framework import status
 from rest_framework.response import Response
@@ -33,10 +35,12 @@ from .campaign_services import (
     update_campaign,
 )
 from .models import (
+    MauticContactMapping,
     NewsletterAudience,
     NewsletterCampaign,
     NewsletterCategory,
     NewsletterSubscription,
+    NewsletterSyncEvent,
 )
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .sync_events import create_newsletter_sync_event
@@ -485,6 +489,132 @@ class NewsletterAdminCategoryListView(APIView):
         return Response(
             NewsletterAdminCategorySerializer(category).data,
             status=status.HTTP_201_CREATED,
+        )
+
+
+class NewsletterAdminCategoryContactsView(APIView):
+    """List the current ECP subscribers for one newsletter subscription list.
+
+    ECP PostgreSQL remains the source of truth. This endpoint intentionally
+    does not call Mautic; provider IDs/status are read from the existing local
+    mapping and durable sync-event records.
+    """
+
+    permission_classes = [IsStaffOrSuperuser]
+    default_page_size = 25
+    max_page_size = 100
+
+    def get(self, request, slug):
+        try:
+            category = NewsletterCategory.objects.get(slug=slug)
+        except NewsletterCategory.DoesNotExist:
+            raise Http404
+
+        subscriptions = (
+            NewsletterSubscription.objects.filter(
+                category=category,
+                is_subscribed=True,
+            )
+            .select_related("user")
+            .order_by("-subscribed_at", "-updated_at", "id")
+        )
+
+        search = str(request.query_params.get("search", "") or "").strip()
+        if search:
+            subscriptions = subscriptions.filter(
+                Q(user__email__icontains=search)
+                | Q(user__first_name__icontains=search)
+                | Q(user__last_name__icontains=search)
+                | Q(user__username__icontains=search)
+            )
+
+        try:
+            page_size = int(
+                request.query_params.get("page_size", self.default_page_size)
+            )
+        except (TypeError, ValueError):
+            page_size = self.default_page_size
+        page_size = max(1, min(page_size, self.max_page_size))
+
+        paginator = Paginator(subscriptions, page_size)
+        page_obj = paginator.get_page(request.query_params.get("page", 1))
+        page_subscriptions = list(page_obj.object_list)
+
+        user_ids = [subscription.user_id for subscription in page_subscriptions]
+        mappings = {
+            mapping.user_id: mapping
+            for mapping in MauticContactMapping.objects.filter(user_id__in=user_ids)
+        }
+
+        user_id_strings = [str(user_id) for user_id in user_ids]
+        latest_events = {}
+        for event in NewsletterSyncEvent.objects.filter(
+            category=category,
+            user_id__in=user_id_strings,
+        ).order_by("user_id", "-created_at", "-id"):
+            latest_events.setdefault(event.user_id, event)
+
+        results = []
+        for subscription in page_subscriptions:
+            user = subscription.user
+            mapping = mappings.get(subscription.user_id)
+            latest_event = latest_events.get(str(subscription.user_id))
+            full_name = " ".join(
+                part
+                for part in (
+                    str(getattr(user, "first_name", "") or "").strip(),
+                    str(getattr(user, "last_name", "") or "").strip(),
+                )
+                if part
+            )
+            if latest_event is not None:
+                sync_status = latest_event.status
+                sync_error = latest_event.last_error
+            elif mapping is not None and mapping.last_synced_at is not None:
+                sync_status = "succeeded"
+                sync_error = ""
+            elif mapping is not None:
+                sync_status = "mapped"
+                sync_error = ""
+            else:
+                sync_status = "not_synced"
+                sync_error = ""
+
+            results.append(
+                {
+                    "user_id": subscription.user_id,
+                    "name": full_name or user.email or getattr(user, "username", ""),
+                    "email": user.email,
+                    "subscribed": True,
+                    "subscribed_at": subscription.subscribed_at,
+                    "source": subscription.source,
+                    "mautic_contact_id": (
+                        mapping.mautic_contact_id if mapping is not None else None
+                    ),
+                    "last_synced_at": (
+                        mapping.last_synced_at if mapping is not None else None
+                    ),
+                    "sync_status": sync_status,
+                    "sync_error": sync_error,
+                }
+            )
+
+        return Response(
+            {
+                "category": {
+                    "slug": category.slug,
+                    "name": category.name,
+                    "description": category.description,
+                    "is_active": category.is_active,
+                    "mautic_segment_id": category.mautic_segment_id or None,
+                },
+                "count": paginator.count,
+                "page": page_obj.number,
+                "page_size": page_size,
+                "num_pages": paginator.num_pages,
+                "results": results,
+            },
+            status=status.HTTP_200_OK,
         )
 
 

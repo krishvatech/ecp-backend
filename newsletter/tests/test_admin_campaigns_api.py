@@ -53,6 +53,13 @@ class NewsletterAdminCampaignAPITests(TestCase):
     def _campaign_detail_url(self, campaign):
         return reverse("newsletter-admin-campaign-detail", args=[campaign.uuid])
 
+    def _category_contacts_url(self, category=None):
+        category = category or self.category
+        return reverse(
+            "newsletter-admin-category-contacts",
+            args=[category.slug],
+        )
+
     def _campaign_payload(self, **overrides):
         payload = {
             "name": "September Deal Newsletter",
@@ -77,6 +84,7 @@ class NewsletterAdminCampaignAPITests(TestCase):
             ("patch", detail_url, {"name": "Updated"}),
             ("delete", detail_url, None),
             ("get", self.categories_url, None),
+            ("get", self._category_contacts_url(), None),
         ]
 
         for method, url, payload in endpoints:
@@ -298,6 +306,161 @@ class NewsletterAdminCampaignAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         by_slug = {item["slug"]: item for item in response.data}
         self.assertEqual(by_slug["imaa-events"]["mautic_segment_id"], "1")
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_category_contacts_returns_only_current_subscribers_without_provider_call(
+        self,
+        client_cls,
+    ):
+        subscribed = User.objects.create_user(
+            username="segment-subscriber",
+            email="segment-subscriber@example.test",
+            first_name="Segment",
+            last_name="Subscriber",
+        )
+        unsubscribed = User.objects.create_user(
+            username="segment-unsubscribed",
+            email="segment-unsubscribed@example.test",
+            first_name="Former",
+            last_name="Subscriber",
+        )
+        other_segment = User.objects.create_user(
+            username="other-segment",
+            email="other-segment@example.test",
+        )
+        NewsletterSubscription.objects.create(
+            user=subscribed,
+            category=self.category,
+            is_subscribed=True,
+            subscribed_at=timezone.now(),
+        )
+        NewsletterSubscription.objects.create(
+            user=unsubscribed,
+            category=self.category,
+            is_subscribed=False,
+            unsubscribed_at=timezone.now(),
+        )
+        NewsletterSubscription.objects.create(
+            user=other_segment,
+            category=self.other_category,
+            is_subscribed=True,
+            subscribed_at=timezone.now(),
+        )
+        mapping = MauticContactMapping.objects.create(
+            user=subscribed,
+            mautic_contact_id="321",
+            last_synced_at=timezone.now(),
+        )
+        NewsletterSyncEvent.objects.create(
+            idempotency_key="contacts:list:subscriber",
+            user_id=str(subscribed.pk),
+            category=self.category,
+            desired_subscribed=True,
+            status=NewsletterSyncEvent.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+        )
+        self.category.mautic_segment_id = "1"
+        self.category.save(update_fields=["mautic_segment_id"])
+        self._authenticate(self.staff)
+
+        response = self.client.get(self._category_contacts_url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["category"]["slug"], "imaa-events")
+        self.assertEqual(response.data["category"]["mautic_segment_id"], "1")
+        self.assertEqual(len(response.data["results"]), 1)
+        contact = response.data["results"][0]
+        self.assertEqual(contact["user_id"], subscribed.pk)
+        self.assertEqual(contact["name"], "Segment Subscriber")
+        self.assertEqual(contact["email"], "segment-subscriber@example.test")
+        self.assertEqual(contact["mautic_contact_id"], "321")
+        self.assertEqual(contact["last_synced_at"], mapping.last_synced_at)
+        self.assertEqual(contact["sync_status"], NewsletterSyncEvent.Status.SUCCEEDED)
+        client_cls.assert_not_called()
+
+    def test_category_contacts_searches_name_email_and_username(self):
+        matching = User.objects.create_user(
+            username="special-handle",
+            email="alice@example.test",
+            first_name="Alice",
+            last_name="Example",
+        )
+        nonmatching = User.objects.create_user(
+            username="ordinary-handle",
+            email="bob@example.test",
+            first_name="Bob",
+            last_name="Example",
+        )
+        for user in (matching, nonmatching):
+            NewsletterSubscription.objects.create(
+                user=user,
+                category=self.category,
+                is_subscribed=True,
+                subscribed_at=timezone.now(),
+            )
+        self._authenticate(self.staff)
+
+        by_name = self.client.get(
+            self._category_contacts_url(),
+            {"search": "Alice"},
+        )
+        self.assertEqual(by_name.status_code, 200)
+        self.assertEqual(by_name.data["count"], 1)
+        self.assertEqual(by_name.data["results"][0]["user_id"], matching.pk)
+
+        by_username = self.client.get(
+            self._category_contacts_url(),
+            {"search": "special-handle"},
+        )
+        self.assertEqual(by_username.status_code, 200)
+        self.assertEqual(by_username.data["count"], 1)
+        self.assertEqual(by_username.data["results"][0]["user_id"], matching.pk)
+
+    def test_category_contacts_is_paginated_and_page_size_is_bounded(self):
+        for index in range(3):
+            user = User.objects.create_user(
+                username=f"page-subscriber-{index}",
+                email=f"page-subscriber-{index}@example.test",
+            )
+            NewsletterSubscription.objects.create(
+                user=user,
+                category=self.category,
+                is_subscribed=True,
+                subscribed_at=timezone.now(),
+            )
+        self._authenticate(self.staff)
+
+        response = self.client.get(
+            self._category_contacts_url(),
+            {"page": 1, "page_size": 2},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 3)
+        self.assertEqual(response.data["page"], 1)
+        self.assertEqual(response.data["page_size"], 2)
+        self.assertEqual(response.data["num_pages"], 2)
+        self.assertEqual(len(response.data["results"]), 2)
+
+        bounded = self.client.get(
+            self._category_contacts_url(),
+            {"page_size": 1000},
+        )
+        self.assertEqual(bounded.status_code, 200)
+        self.assertEqual(bounded.data["page_size"], 100)
+
+    def test_category_contacts_unknown_category_returns_404(self):
+        self._authenticate(self.staff)
+
+        response = self.client.get(
+            reverse(
+                "newsletter-admin-category-contacts",
+                args=["missing-newsletter"],
+            )
+        )
+
+        self.assertEqual(response.status_code, 404)
 
     @override_settings(MAUTIC_SYNC_ENABLED=False)
     def test_create_category_remains_local_only_when_mautic_disabled(self):
