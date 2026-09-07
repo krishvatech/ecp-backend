@@ -96,3 +96,14 @@ class GuestApplicationSettingTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         application = EventApplication.objects.get(event=self.event, email=applicant.email)
         self.assertEqual(application.user_id, applicant.id)
+
+    def test_guest_application_rejects_invalid_email(self):
+        response = self.client.post(
+            self.url,
+            {**self.payload, "email": "sifoka"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("email", response.data)
+        self.assertFalse(EventApplication.objects.filter(event=self.event, email="sifoka").exists())
