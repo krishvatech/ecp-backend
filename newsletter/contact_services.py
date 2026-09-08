@@ -15,7 +15,7 @@ from typing import Any
 
 from django.utils import timezone
 
-from .mautic import MauticClient
+from .mautic import MauticClient, TemporaryMauticError
 from .models import MauticContactMapping, NewsletterCategory, NewsletterSubscription
 
 
@@ -104,6 +104,81 @@ def _contact_info(contact: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _contact_stage(contact: dict[str, Any]) -> dict[str, Any] | None:
+    stage = contact.get("stage")
+    if not isinstance(stage, dict):
+        return None
+
+    stage_id = stage.get("id")
+    if stage_id in (None, ""):
+        return None
+
+    weight = stage.get("weight")
+    try:
+        weight = int(weight) if weight not in (None, "") else None
+    except (TypeError, ValueError):
+        weight = None
+
+    category = stage.get("category")
+    return {
+        "id": str(stage_id),
+        "name": str(stage.get("name") or "").strip(),
+        "description": str(stage.get("description") or ""),
+        "weight": weight,
+        "category": category if isinstance(category, dict) else None,
+    }
+
+
+def move_admin_contact_to_stage(
+    mautic_contact_id,
+    stage_id,
+) -> dict[str, Any]:
+    """Move one Mautic contact to one Mautic lifecycle stage."""
+    contact_id = str(mautic_contact_id or "").strip()
+    target_stage_id = str(stage_id or "").strip()
+    if not contact_id:
+        raise ValueError("Mautic contact ID is required.")
+    if not target_stage_id:
+        raise ValueError("stage_id is required.")
+
+    client = MauticClient()
+    contact = client.get_contact(contact_id)
+    client.get_stage(target_stage_id)
+
+    current_stage = _contact_stage(contact)
+    if current_stage is not None and current_stage["id"] == target_stage_id:
+        return current_stage
+
+    client.add_contact_to_stage(target_stage_id, contact_id)
+    updated_contact = client.get_contact(contact_id)
+    updated_stage = _contact_stage(updated_contact)
+    if updated_stage is None or updated_stage["id"] != target_stage_id:
+        raise TemporaryMauticError(
+            "Mautic did not confirm the requested contact stage change."
+        )
+    return updated_stage
+
+
+def clear_admin_contact_stage(mautic_contact_id) -> None:
+    """Remove one contact from its current Mautic lifecycle stage."""
+    contact_id = str(mautic_contact_id or "").strip()
+    if not contact_id:
+        raise ValueError("Mautic contact ID is required.")
+
+    client = MauticClient()
+    contact = client.get_contact(contact_id)
+    current_stage = _contact_stage(contact)
+    if current_stage is None:
+        return
+
+    client.remove_contact_from_stage(current_stage["id"], contact_id)
+    updated_contact = client.get_contact(contact_id)
+    if _contact_stage(updated_contact) is not None:
+        raise TemporaryMauticError(
+            "Mautic did not confirm removal of the contact stage."
+        )
+
+
 def get_admin_contact(mautic_contact_id) -> dict[str, Any]:
     """Return one Mautic contact enriched with ECP identity and consent state."""
     contact = MauticClient().get_contact(mautic_contact_id)
@@ -158,6 +233,7 @@ def get_admin_contact(mautic_contact_id) -> dict[str, Any]:
         "email": info["email"],
         "location": _contact_location(contact),
         "points": points,
+        "current_stage": _contact_stage(contact),
         "last_active_at": (
             contact.get("lastActive")
             or contact.get("last_active")
@@ -446,6 +522,7 @@ def list_admin_contacts(
                 "email": email,
                 "location": _contact_location(contact),
                 "points": points,
+                "current_stage": _contact_stage(contact),
                 "last_active_at": (
                     contact.get("lastActive")
                     or contact.get("last_active")

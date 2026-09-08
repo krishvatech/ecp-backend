@@ -16,6 +16,7 @@ from .admin_views import (
     NewsletterAdminContactDetailView,
     NewsletterAdminContactEngagementView,
     NewsletterAdminContactListView,
+    NewsletterAdminContactStageView,
     NewsletterAdminCategoryContactAnalyticsView,
     NewsletterAdminCategoryContactsView,
     NewsletterAdminCategoryDetailView,
@@ -105,6 +106,11 @@ urlpatterns = [
         "newsletter/admin/contacts/<str:mautic_contact_id>/",
         NewsletterAdminContactDetailView.as_view(),
         name="newsletter-admin-contact-detail",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/stage/",
+        NewsletterAdminContactStageView.as_view(),
+        name="newsletter-admin-contact-stage",
     ),
     path(
         "newsletter/admin/contacts/<str:mautic_contact_id>/activity/",

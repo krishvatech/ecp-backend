@@ -25,10 +25,12 @@ from .category_analytics import (
     resolve_contact_timeline_range,
 )
 from .contact_services import (
+    clear_admin_contact_stage,
     get_admin_contact,
     get_admin_contact_engagement,
     list_admin_contact_activity,
     list_admin_contacts,
+    move_admin_contact_to_stage,
 )
 from .campaign_services import (
     CampaignNotEditable,
@@ -492,6 +494,82 @@ class NewsletterAdminContactDetailView(APIView):
             return _provider_error_response(exc)
 
         return Response(data, status=status.HTTP_200_OK)
+
+
+def _contact_stage_provider_error_response(exc):
+    message = str(exc)
+    if isinstance(exc, PermanentMauticError):
+        if "HTTP 404" in message:
+            raise Http404
+        if any(
+            f"HTTP {code}" in message
+            for code in (400, 409, 422)
+        ):
+            return Response(
+                {"detail": message},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    return _provider_error_response(exc)
+
+
+class NewsletterAdminContactStageView(APIView):
+    """Move or clear one contact's Mautic lifecycle stage."""
+
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request, mautic_contact_id):
+        unsupported = sorted(set(request.data.keys()) - {"stage_id"})
+        if unsupported:
+            return Response(
+                {
+                    "detail": (
+                        "Unsupported contact stage field(s): "
+                        + ", ".join(unsupported)
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        stage_id = str(request.data.get("stage_id") or "").strip()
+        if not stage_id:
+            return Response(
+                {"detail": "stage_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            current_stage = move_admin_contact_to_stage(
+                mautic_contact_id,
+                stage_id,
+            )
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _contact_stage_provider_error_response(exc)
+
+        return Response(
+            {
+                "mautic_contact_id": str(mautic_contact_id),
+                "current_stage": current_stage,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request, mautic_contact_id):
+        try:
+            clear_admin_contact_stage(mautic_contact_id)
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _contact_stage_provider_error_response(exc)
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class NewsletterAdminContactActivityView(APIView):
