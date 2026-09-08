@@ -329,6 +329,467 @@ class MauticClientTests(SimpleTestCase):
 
         session.request.assert_not_called()
 
+    def test_list_point_actions_calls_expected_endpoint_and_accepts_empty_list(self):
+        client, session = self.make_mautic_client(
+            response(200, {"total": 0, "points": []})
+        )
+
+        data = client.list_point_actions(start=0, limit=100)
+
+        self.assertEqual(data, {"total": 0, "points": []})
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/points"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {"start": 0, "limit": 100},
+        )
+
+    def test_list_point_actions_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(response(200, {"total": 0}))
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "point action list returned an invalid response",
+        ):
+            client.list_point_actions()
+
+    def test_list_point_action_types_returns_provider_types(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "pointActionTypes": {
+                        "email.open": "Opens an email",
+                        "url.hit": "Visits specific URL",
+                    }
+                },
+            )
+        )
+
+        action_types = client.list_point_action_types()
+
+        self.assertEqual(
+            action_types,
+            {
+                "email.open": "Opens an email",
+                "url.hit": "Visits specific URL",
+            },
+        )
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/points/actions/types"),
+        )
+
+    def test_get_point_action_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "point": {
+                        "id": 8,
+                        "name": "Newsletter open",
+                        "type": "email.open",
+                        "delta": 2,
+                    }
+                },
+            )
+        )
+
+        point = client.get_point_action(" 8 ")
+
+        self.assertEqual(point["id"], 8)
+        self.assertEqual(point["delta"], 2)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/points/8"),
+        )
+
+    def test_create_and_update_point_action_use_standard_endpoints(self):
+        payload = {
+            "name": "Newsletter open",
+            "type": "email.open",
+            "delta": 2,
+            "repeatable": True,
+            "properties": {},
+            "isPublished": True,
+        }
+        client, session = self.make_mautic_client(
+            response(
+                201,
+                {
+                    "point": {
+                        "id": 8,
+                        **payload,
+                    }
+                },
+            )
+        )
+
+        created = client.create_point_action(payload)
+
+        self.assertEqual(created["id"], 8)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/points/new"),
+        )
+        self.assertEqual(session.request.call_args.kwargs["data"], payload)
+
+        session.reset_mock()
+        session.request.return_value = response(
+            200,
+            {
+                "point": {
+                    "id": 8,
+                    **payload,
+                    "delta": 5,
+                }
+            },
+        )
+
+        updated = client.update_point_action(8, {"delta": 5})
+
+        self.assertEqual(updated["delta"], 5)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("PATCH", "http://mautic.local/api/points/8/edit"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["data"],
+            {"delta": 5},
+        )
+
+    def test_create_point_action_persists_type_specific_properties_in_second_step(self):
+        client, session = self.make_mautic_client()
+        session.request.side_effect = [
+            response(
+                201,
+                {
+                    "point": {
+                        "id": 9,
+                        "name": "Important URL",
+                        "type": "url.hit",
+                        "delta": 3,
+                        "properties": [],
+                    }
+                },
+            ),
+            response(
+                200,
+                {
+                    "point": {
+                        "id": 9,
+                        "name": "Important URL",
+                        "type": "url.hit",
+                        "delta": 3,
+                        "properties": {
+                            "page_url": "https://example.com/important",
+                            "page_hits": 1,
+                        },
+                    }
+                },
+            ),
+            response(
+                200,
+                {
+                    "point": {
+                        "id": 9,
+                        "name": "Important URL",
+                        "type": "url.hit",
+                        "delta": 3,
+                        "properties": {
+                            "page_url": "https://example.com/important",
+                            "page_hits": 1,
+                        },
+                    }
+                },
+            ),
+        ]
+
+        payload = {
+            "name": "Important URL",
+            "type": "url.hit",
+            "delta": 3,
+            "repeatable": True,
+            "isPublished": True,
+            "properties[page_url]": "https://example.com/important",
+            "properties[page_hits]": 1,
+        }
+
+        created = client.create_point_action(payload)
+
+        self.assertEqual(created["id"], 9)
+        self.assertEqual(
+            created["properties"]["page_url"],
+            "https://example.com/important",
+        )
+        self.assertEqual(session.request.call_count, 3)
+
+        create_call, patch_call, fetch_call = session.request.call_args_list
+        self.assertEqual(
+            create_call.args[:2],
+            ("POST", "http://mautic.local/api/points/new"),
+        )
+        self.assertNotIn(
+            "properties[page_url]",
+            create_call.kwargs["data"],
+        )
+        self.assertNotIn(
+            "properties[page_hits]",
+            create_call.kwargs["data"],
+        )
+
+        self.assertEqual(
+            patch_call.args[:2],
+            ("PATCH", "http://mautic.local/api/points/9/edit"),
+        )
+        self.assertEqual(
+            patch_call.kwargs["data"],
+            {
+                "properties[page_url]": "https://example.com/important",
+                "properties[page_hits]": 1,
+                "type": "url.hit",
+            },
+        )
+
+        self.assertEqual(
+            fetch_call.args[:2],
+            ("GET", "http://mautic.local/api/points/9"),
+        )
+
+    def test_create_point_action_cleans_up_partial_entity_when_properties_fail(self):
+        client, session = self.make_mautic_client()
+        session.request.side_effect = [
+            response(
+                201,
+                {
+                    "point": {
+                        "id": 10,
+                        "name": "Broken URL",
+                        "type": "url.hit",
+                        "delta": 3,
+                        "properties": [],
+                    }
+                },
+            ),
+            response(
+                422,
+                {
+                    "errors": [
+                        {"message": "Invalid Point Action properties"}
+                    ]
+                },
+            ),
+            response(
+                200,
+                {
+                    "point": {
+                        "id": None,
+                        "name": "Broken URL",
+                    }
+                },
+            ),
+        ]
+
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "Invalid Point Action properties",
+        ):
+            client.create_point_action(
+                {
+                    "name": "Broken URL",
+                    "type": "url.hit",
+                    "delta": 3,
+                    "properties[page_url]": "not-a-valid-url",
+                }
+            )
+
+        self.assertEqual(session.request.call_count, 3)
+        cleanup_call = session.request.call_args_list[2]
+        self.assertEqual(
+            cleanup_call.args[:2],
+            ("DELETE", "http://mautic.local/api/points/10/delete"),
+        )
+
+    def test_create_point_action_cleans_up_when_provider_does_not_persist_properties(self):
+        client, session = self.make_mautic_client()
+        session.request.side_effect = [
+            response(
+                201,
+                {
+                    "point": {
+                        "id": 11,
+                        "name": "URL action",
+                        "type": "url.hit",
+                        "delta": 3,
+                        "properties": [],
+                    }
+                },
+            ),
+            response(
+                200,
+                {
+                    "point": {
+                        "id": 11,
+                        "name": "URL action",
+                        "type": "url.hit",
+                        "delta": 3,
+                        "properties": [],
+                    }
+                },
+            ),
+            response(
+                200,
+                {
+                    "point": {
+                        "id": 11,
+                        "name": "URL action",
+                        "type": "url.hit",
+                        "delta": 3,
+                        "properties": [],
+                    }
+                },
+            ),
+            response(
+                200,
+                {
+                    "point": {
+                        "id": None,
+                        "name": "URL action",
+                    }
+                },
+            ),
+        ]
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "properties were not persisted",
+        ):
+            client.create_point_action(
+                {
+                    "name": "URL action",
+                    "type": "url.hit",
+                    "delta": 3,
+                    "properties[page_url]": "https://example.com/action",
+                }
+            )
+
+        cleanup_call = session.request.call_args_list[-1]
+        self.assertEqual(
+            cleanup_call.args[:2],
+            ("DELETE", "http://mautic.local/api/points/11/delete"),
+        )
+
+    def test_delete_point_action_accepts_response_without_id(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "point": {
+                        "id": None,
+                        "name": "Newsletter open",
+                    }
+                },
+            )
+        )
+
+        deleted = client.delete_point_action(8)
+
+        self.assertIsNone(deleted["id"])
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("DELETE", "http://mautic.local/api/points/8/delete"),
+        )
+
+    def test_point_action_methods_require_id(self):
+        client, session = self.make_mautic_client()
+
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "point action ID is required",
+        ):
+            client.get_point_action("")
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "point action ID is required",
+        ):
+            client.update_point_action("", {"delta": 2})
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "point action ID is required",
+        ):
+            client.delete_point_action("")
+
+        session.request.assert_not_called()
+
+    def test_adjust_contact_points_calls_mautic_and_forwards_audit_labels(self):
+        client, session = self.make_mautic_client(
+            response(200, {"success": 1})
+        )
+
+        result = client.adjust_contact_points(
+            12,
+            "plus",
+            5,
+            event_name="Manual engagement adjustment",
+            action_name="ECP Newsletter",
+        )
+
+        self.assertEqual(result, {"success": 1})
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "POST",
+                "http://mautic.local/api/contacts/12/points/plus/5",
+            ),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["data"],
+            {
+                "eventName": "Manual engagement adjustment",
+                "actionName": "ECP Newsletter",
+            },
+        )
+
+    def test_adjust_contact_points_supports_minus_and_validates_input(self):
+        client, session = self.make_mautic_client(
+            response(200, {"success": 1})
+        )
+
+        client.adjust_contact_points(12, "minus", 3)
+
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "POST",
+                "http://mautic.local/api/contacts/12/points/minus/3",
+            ),
+        )
+        self.assertIsNone(session.request.call_args.kwargs["data"])
+
+        invalid_cases = [
+            ("", "plus", 1),
+            ("12", "set", 1),
+            ("12", "plus", 0),
+            ("12", "plus", True),
+            ("12", "plus", "abc"),
+        ]
+        for contact_id, operator, amount in invalid_cases:
+            with self.assertRaises(PermanentMauticError):
+                client.adjust_contact_points(contact_id, operator, amount)
+
+    def test_adjust_contact_points_rejects_unsuccessful_provider_response(self):
+        client, _ = self.make_mautic_client(
+            response(200, {"success": 0})
+        )
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "unsuccessful response",
+        ):
+            client.adjust_contact_points(12, "plus", 5)
+
     def test_list_stages_calls_expected_endpoint_and_accepts_empty_list(self):
         client, session = self.make_mautic_client(
             response(200, {"total": 0, "stages": []})

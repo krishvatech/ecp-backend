@@ -226,6 +226,233 @@ class MauticClient:
         self._request("DELETE", f"contacts/{contact_id}/delete")
 
     @staticmethod
+    def _point_from_response(
+        response,
+        context: str,
+        *,
+        require_id: bool = True,
+    ) -> dict[str, Any]:
+        data = MauticClient._json_object(response, context)
+        point = data.get("point")
+        if not isinstance(point, dict) or (require_id and not point.get("id")):
+            raise TemporaryMauticError(
+                f"{context} returned an invalid response"
+            )
+        return point
+
+    def list_point_actions(self, **params) -> dict[str, Any]:
+        response = self._request("GET", "points", params=params or None)
+        data = self._json_object(response, "Mautic point action list")
+        points = data.get("points")
+        if not isinstance(points, (dict, list)):
+            raise TemporaryMauticError(
+                "Mautic point action list returned an invalid response"
+            )
+        return data
+
+    def list_point_action_types(self) -> dict[str, str]:
+        response = self._request("GET", "points/actions/types")
+        data = self._json_object(response, "Mautic point action type list")
+        action_types = data.get("pointActionTypes")
+        if not isinstance(action_types, dict):
+            raise TemporaryMauticError(
+                "Mautic point action type list returned an invalid response"
+            )
+        return {
+            str(action_type): str(label)
+            for action_type, label in action_types.items()
+        }
+
+    def get_point_action(self, point_id: int | str) -> dict[str, Any]:
+        point_id = str(point_id or "").strip()
+        if not point_id:
+            raise PermanentMauticError("Mautic point action ID is required")
+
+        response = self._request("GET", f"points/{point_id}")
+        return self._point_from_response(
+            response,
+            "Mautic point action lookup",
+        )
+
+    @staticmethod
+    def _point_action_property_fields(
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            str(key): value
+            for key, value in payload.items()
+            if str(key).startswith("properties[")
+        }
+
+    @staticmethod
+    def _point_action_property_alias(field_name: str) -> str:
+        prefix = "properties["
+        if not str(field_name).startswith(prefix):
+            return ""
+        remainder = str(field_name)[len(prefix):]
+        alias, separator, _ = remainder.partition("]")
+        return alias if separator else ""
+
+    @staticmethod
+    def _point_property_matches(actual, expected) -> bool:
+        if isinstance(expected, (list, tuple)):
+            actual_values = actual if isinstance(actual, (list, tuple)) else [actual]
+            return [str(value) for value in actual_values] == [
+                str(value) for value in expected
+            ]
+        return str(actual) == str(expected)
+
+    def create_point_action(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        property_fields = self._point_action_property_fields(payload)
+        if not property_fields:
+            response = self._request("POST", "points/new", data=payload)
+            return self._point_from_response(
+                response,
+                "Mautic point action creation",
+            )
+
+        # Mautic 7.1.3 only builds the type-specific properties form once the
+        # Point entity already has its action type. Create the base entity
+        # first, then PATCH the dynamic properties after an ID exists.
+        base_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in property_fields
+        }
+        response = self._request("POST", "points/new", data=base_payload)
+        created = self._point_from_response(
+            response,
+            "Mautic point action creation",
+        )
+        point_id = created["id"]
+
+        patch_payload = dict(property_fields)
+        point_type = str(created.get("type") or base_payload.get("type") or "").strip()
+        if point_type:
+            patch_payload["type"] = point_type
+
+        try:
+            self.update_point_action(point_id, patch_payload)
+            fetched = self.get_point_action(point_id)
+            properties = fetched.get("properties")
+            if not isinstance(properties, dict):
+                raise TemporaryMauticError(
+                    "Mautic point action properties were not persisted"
+                )
+
+            for field_name, expected in property_fields.items():
+                alias = self._point_action_property_alias(field_name)
+                if not alias or alias not in properties:
+                    raise TemporaryMauticError(
+                        "Mautic point action properties were not persisted"
+                    )
+                if not self._point_property_matches(properties.get(alias), expected):
+                    raise TemporaryMauticError(
+                        "Mautic point action properties were not persisted"
+                    )
+            return fetched
+        except (PermanentMauticError, TemporaryMauticError):
+            # Do not leave a partially configured Point Action in Mautic if
+            # the required second-step property persistence fails.
+            try:
+                self.delete_point_action(point_id)
+            except (PermanentMauticError, TemporaryMauticError):
+                pass
+            raise
+
+    def update_point_action(
+        self,
+        point_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        point_id = str(point_id or "").strip()
+        if not point_id:
+            raise PermanentMauticError("Mautic point action ID is required")
+
+        response = self._request(
+            "PATCH",
+            f"points/{point_id}/edit",
+            data=payload,
+        )
+        return self._point_from_response(
+            response,
+            "Mautic point action update",
+        )
+
+    def delete_point_action(
+        self,
+        point_id: int | str,
+    ) -> dict[str, Any]:
+        point_id = str(point_id or "").strip()
+        if not point_id:
+            raise PermanentMauticError("Mautic point action ID is required")
+
+        response = self._request("DELETE", f"points/{point_id}/delete")
+        return self._point_from_response(
+            response,
+            "Mautic point action deletion",
+            require_id=False,
+        )
+
+    def adjust_contact_points(
+        self,
+        contact_id: int | str,
+        operator: str,
+        amount: int,
+        *,
+        event_name: str = "",
+        action_name: str = "",
+    ) -> dict[str, Any]:
+        contact_id = str(contact_id or "").strip()
+        normalized_operator = str(operator or "").strip().lower()
+        if not contact_id:
+            raise PermanentMauticError("Mautic contact ID is required")
+        if normalized_operator not in {"plus", "minus"}:
+            raise PermanentMauticError(
+                "Mautic point operator must be 'plus' or 'minus'"
+            )
+        if isinstance(amount, bool):
+            raise PermanentMauticError(
+                "Mautic point adjustment amount must be a positive integer"
+            )
+        try:
+            normalized_amount = int(amount)
+        except (TypeError, ValueError) as exc:
+            raise PermanentMauticError(
+                "Mautic point adjustment amount must be a positive integer"
+            ) from exc
+        if normalized_amount <= 0:
+            raise PermanentMauticError(
+                "Mautic point adjustment amount must be a positive integer"
+            )
+
+        payload = {}
+        normalized_event_name = str(event_name or "").strip()
+        normalized_action_name = str(action_name or "").strip()
+        if normalized_event_name:
+            payload["eventName"] = normalized_event_name
+        if normalized_action_name:
+            payload["actionName"] = normalized_action_name
+
+        response = self._request(
+            "POST",
+            (
+                f"contacts/{contact_id}/points/"
+                f"{normalized_operator}/{normalized_amount}"
+            ),
+            data=payload or None,
+        )
+        data = self._json_object(response, "Mautic contact point adjustment")
+        if not data.get("success"):
+            raise TemporaryMauticError(
+                "Mautic contact point adjustment returned an unsuccessful response"
+            )
+        return data
+
+    @staticmethod
     def _email_form_data(payload: dict[str, Any]) -> list[tuple[str, Any]]:
         """Encode Mautic email form collections using Symfony array notation."""
         form_data = []
