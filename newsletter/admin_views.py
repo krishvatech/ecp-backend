@@ -557,6 +557,205 @@ class NewsletterAdminContactEngagementView(APIView):
         return Response(data, status=status.HTTP_200_OK)
 
 
+def _stages_from_response(data):
+    stages = data.get("stages") or []
+    if isinstance(stages, dict):
+        return [stage for stage in stages.values() if isinstance(stage, dict)]
+    if isinstance(stages, list):
+        return [stage for stage in stages if isinstance(stage, dict)]
+    return []
+
+
+def _normalize_stage(stage):
+    stage_id = stage.get("id")
+    weight = stage.get("weight")
+    try:
+        weight = int(weight) if weight is not None and weight != "" else None
+    except (TypeError, ValueError):
+        weight = None
+
+    category = stage.get("category")
+    return {
+        "id": str(stage_id) if stage_id is not None else None,
+        "name": str(stage.get("name") or ""),
+        "description": str(stage.get("description") or ""),
+        "weight": weight,
+        "isPublished": _normalize_provider_bool(
+            stage.get("isPublished", stage.get("is_published", False))
+        ),
+        "category": category if isinstance(category, dict) else None,
+        "dateAdded": stage.get("dateAdded"),
+        "dateModified": stage.get("dateModified"),
+        "publishUp": stage.get("publishUp"),
+        "publishDown": stage.get("publishDown"),
+    }
+
+
+def _parse_stage_request_payload(data, *, partial=False):
+    allowed_fields = {"name", "description", "weight", "isPublished"}
+    unsupported = sorted(set(data.keys()) - allowed_fields)
+    if unsupported:
+        raise ValueError(
+            "Unsupported stage field(s): " + ", ".join(unsupported)
+        )
+
+    payload = {}
+
+    if not partial or "name" in data:
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise ValueError("Stage name is required.")
+        payload["name"] = name
+
+    if "description" in data:
+        payload["description"] = str(data.get("description") or "").strip()
+
+    if "weight" in data:
+        value = data.get("weight")
+        if isinstance(value, bool):
+            raise ValueError("Stage weight must be an integer.")
+        try:
+            payload["weight"] = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise ValueError("Stage weight must be an integer.")
+
+    if "isPublished" in data:
+        value = data.get("isPublished")
+        if isinstance(value, bool):
+            payload["isPublished"] = value
+        elif isinstance(value, int) and value in {0, 1}:
+            payload["isPublished"] = bool(value)
+        else:
+            normalized = str(value or "").strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                payload["isPublished"] = True
+            elif normalized in {"0", "false", "no", "off"}:
+                payload["isPublished"] = False
+            else:
+                raise ValueError("Stage isPublished must be a boolean.")
+
+    if partial and not payload:
+        raise ValueError("At least one stage field is required.")
+
+    return payload
+
+
+def _stage_provider_error_response(exc):
+    if isinstance(exc, PermanentMauticError) and "HTTP 404" in str(exc):
+        raise Http404
+    return _provider_error_response(exc)
+
+
+class NewsletterAdminStageListCreateView(APIView):
+    """List and create Mautic lifecycle stages."""
+
+    permission_classes = [IsStaffOrSuperuser]
+    default_page_size = 25
+    max_page_size = 100
+
+    def get(self, request):
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(
+                request.query_params.get("page_size", self.default_page_size)
+            )
+        except (TypeError, ValueError):
+            page_size = self.default_page_size
+        page_size = max(1, min(page_size, self.max_page_size))
+        search = str(request.query_params.get("search", "") or "").strip()
+
+        params = {
+            "start": (page - 1) * page_size,
+            "limit": page_size,
+        }
+        if search:
+            params["search"] = search
+
+        try:
+            data = MauticClient().list_stages(**params)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        stages = _stages_from_response(data)
+        try:
+            total = max(0, int(data.get("total", len(stages))))
+        except (TypeError, ValueError):
+            total = len(stages)
+
+        return Response(
+            {
+                "count": total,
+                "page": page,
+                "page_size": page_size,
+                "num_pages": (
+                    (total + page_size - 1) // page_size if total else 0
+                ),
+                "results": [_normalize_stage(stage) for stage in stages],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request):
+        try:
+            payload = _parse_stage_request_payload(request.data)
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            stage = MauticClient().create_stage(payload)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        return Response(
+            _normalize_stage(stage),
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class NewsletterAdminStageDetailView(APIView):
+    """Read, update, or delete one Mautic lifecycle stage."""
+
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, stage_id):
+        try:
+            stage = MauticClient().get_stage(stage_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _stage_provider_error_response(exc)
+
+        return Response(_normalize_stage(stage), status=status.HTTP_200_OK)
+
+    def patch(self, request, stage_id):
+        try:
+            payload = _parse_stage_request_payload(request.data, partial=True)
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            stage = MauticClient().update_stage(stage_id, payload)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _stage_provider_error_response(exc)
+
+        return Response(_normalize_stage(stage), status=status.HTTP_200_OK)
+
+    def delete(self, request, stage_id):
+        try:
+            MauticClient().delete_stage(stage_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _stage_provider_error_response(exc)
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class NewsletterAdminCategoryListView(APIView):
     permission_classes = [IsStaffOrSuperuser]
 

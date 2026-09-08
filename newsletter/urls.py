@@ -23,6 +23,8 @@ from .admin_views import (
     NewsletterAdminCategoryListView,
     NewsletterAdminCategorySyncMauticView,
     NewsletterAdminMauticSegmentListView,
+    NewsletterAdminStageDetailView,
+    NewsletterAdminStageListCreateView,
 )
 from .views import NewsletterPreferencesView
 from .webhooks import MauticNewsletterWebhookView
@@ -113,6 +115,16 @@ urlpatterns = [
         "newsletter/admin/contacts/<str:mautic_contact_id>/engagement-analytics/",
         NewsletterAdminContactEngagementView.as_view(),
         name="newsletter-admin-contact-engagement",
+    ),
+    path(
+        "newsletter/admin/stages/",
+        NewsletterAdminStageListCreateView.as_view(),
+        name="newsletter-admin-stage-list",
+    ),
+    path(
+        "newsletter/admin/stages/<str:stage_id>/",
+        NewsletterAdminStageDetailView.as_view(),
+        name="newsletter-admin-stage-detail",
     ),
     path(
         "newsletter/admin/categories/<slug:slug>/contact-analytics/",
