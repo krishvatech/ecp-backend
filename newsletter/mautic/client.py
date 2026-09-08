@@ -453,6 +453,171 @@ class MauticClient:
         return data
 
     @staticmethod
+    def _point_trigger_from_response(
+        response,
+        context: str,
+        *,
+        require_id: bool = True,
+    ) -> dict[str, Any]:
+        data = MauticClient._json_object(response, context)
+        trigger = data.get("trigger")
+        if not isinstance(trigger, dict) or (
+            require_id and not trigger.get("id")
+        ):
+            raise TemporaryMauticError(
+                f"{context} returned an invalid response"
+            )
+        return trigger
+
+    def list_point_triggers(self, **params) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            "points/triggers",
+            params=params or None,
+        )
+        data = self._json_object(response, "Mautic point trigger list")
+        triggers = data.get("triggers")
+        if not isinstance(triggers, (dict, list)):
+            raise TemporaryMauticError(
+                "Mautic point trigger list returned an invalid response"
+            )
+        return data
+
+    def list_point_trigger_event_types(self) -> dict[str, str]:
+        response = self._request(
+            "GET",
+            "points/triggers/events/types",
+        )
+        data = self._json_object(
+            response,
+            "Mautic point trigger event type list",
+        )
+        event_types = data.get("eventTypes")
+        if not isinstance(event_types, dict):
+            raise TemporaryMauticError(
+                "Mautic point trigger event type list returned an invalid response"
+            )
+        return {
+            str(event_type): str(label)
+            for event_type, label in event_types.items()
+        }
+
+    def get_point_trigger(
+        self,
+        trigger_id: int | str,
+    ) -> dict[str, Any]:
+        trigger_id = str(trigger_id or "").strip()
+        if not trigger_id:
+            raise PermanentMauticError(
+                "Mautic point trigger ID is required"
+            )
+
+        response = self._request(
+            "GET",
+            f"points/triggers/{trigger_id}",
+        )
+        return self._point_trigger_from_response(
+            response,
+            "Mautic point trigger lookup",
+        )
+
+    def create_point_trigger(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = self._request(
+            "POST",
+            "points/triggers/new",
+            data=payload,
+        )
+        return self._point_trigger_from_response(
+            response,
+            "Mautic point trigger creation",
+        )
+
+    def update_point_trigger(
+        self,
+        trigger_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        trigger_id = str(trigger_id or "").strip()
+        if not trigger_id:
+            raise PermanentMauticError(
+                "Mautic point trigger ID is required"
+            )
+
+        response = self._request(
+            "PATCH",
+            f"points/triggers/{trigger_id}/edit",
+            data=payload,
+        )
+        return self._point_trigger_from_response(
+            response,
+            "Mautic point trigger update",
+        )
+
+    def delete_point_trigger(
+        self,
+        trigger_id: int | str,
+    ) -> dict[str, Any]:
+        trigger_id = str(trigger_id or "").strip()
+        if not trigger_id:
+            raise PermanentMauticError(
+                "Mautic point trigger ID is required"
+            )
+
+        response = self._request(
+            "DELETE",
+            f"points/triggers/{trigger_id}/delete",
+        )
+        return self._point_trigger_from_response(
+            response,
+            "Mautic point trigger deletion",
+            require_id=False,
+        )
+
+    def delete_point_trigger_events(
+        self,
+        trigger_id: int | str,
+        event_ids,
+    ) -> dict[str, Any]:
+        trigger_id = str(trigger_id or "").strip()
+        if not trigger_id:
+            raise PermanentMauticError(
+                "Mautic point trigger ID is required"
+            )
+        if isinstance(event_ids, (str, bytes)) or not isinstance(
+            event_ids,
+            (list, tuple, set),
+        ):
+            raise PermanentMauticError(
+                "Mautic point trigger event IDs must be a non-empty collection"
+            )
+
+        normalized_event_ids = [
+            str(event_id or "").strip()
+            for event_id in event_ids
+            if str(event_id or "").strip()
+        ]
+        if not normalized_event_ids:
+            raise PermanentMauticError(
+                "Mautic point trigger event IDs must be a non-empty collection"
+            )
+
+        response = self._request(
+            "DELETE",
+            f"points/triggers/{trigger_id}/events/delete",
+            data=[
+                ("events[]", event_id)
+                for event_id in normalized_event_ids
+            ],
+        )
+        return self._point_trigger_from_response(
+            response,
+            "Mautic point trigger event deletion",
+        )
+
+    @staticmethod
     def _email_form_data(payload: dict[str, Any]) -> list[tuple[str, Any]]:
         """Encode Mautic email form collections using Symfony array notation."""
         form_data = []

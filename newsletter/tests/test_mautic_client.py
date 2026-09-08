@@ -723,6 +723,255 @@ class MauticClientTests(SimpleTestCase):
 
         session.request.assert_not_called()
 
+    def test_list_point_triggers_calls_expected_endpoint_and_accepts_empty_list(self):
+        client, session = self.make_mautic_client(
+            response(200, {"total": 0, "triggers": []})
+        )
+
+        data = client.list_point_triggers(start=0, limit=100)
+
+        self.assertEqual(data, {"total": 0, "triggers": []})
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/points/triggers"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {"start": 0, "limit": 100},
+        )
+
+    def test_list_point_triggers_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(
+            response(200, {"total": 0})
+        )
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "point trigger list returned an invalid response",
+        ):
+            client.list_point_triggers()
+
+    def test_list_point_trigger_event_types_returns_provider_types(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "eventTypes": {
+                        "lead.changelists": "Modify contact's segments",
+                        "email.send": "Send an email",
+                    }
+                },
+            )
+        )
+
+        event_types = client.list_point_trigger_event_types()
+
+        self.assertEqual(
+            event_types,
+            {
+                "lead.changelists": "Modify contact's segments",
+                "email.send": "Send an email",
+            },
+        )
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "GET",
+                "http://mautic.local/api/points/triggers/events/types",
+            ),
+        )
+
+    def test_get_point_trigger_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "trigger": {
+                        "id": 4,
+                        "name": "Warm lead",
+                        "points": 25,
+                        "color": "a0acb8",
+                        "events": [],
+                    }
+                },
+            )
+        )
+
+        trigger = client.get_point_trigger(" 4 ")
+
+        self.assertEqual(trigger["id"], 4)
+        self.assertEqual(trigger["points"], 25)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "GET",
+                "http://mautic.local/api/points/triggers/4",
+            ),
+        )
+
+    def test_create_and_update_point_trigger_use_standard_endpoints(self):
+        payload = {
+            "name": "Warm lead",
+            "description": "Reached scoring threshold",
+            "points": 25,
+            "color": "f59e0b",
+            "triggerExistingLeads": False,
+            "isPublished": True,
+        }
+        client, session = self.make_mautic_client(
+            response(
+                201,
+                {
+                    "trigger": {
+                        "id": 4,
+                        **payload,
+                        "events": [],
+                    }
+                },
+            )
+        )
+
+        created = client.create_point_trigger(payload)
+
+        self.assertEqual(created["id"], 4)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "POST",
+                "http://mautic.local/api/points/triggers/new",
+            ),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["data"],
+            payload,
+        )
+
+        session.reset_mock()
+        session.request.return_value = response(
+            200,
+            {
+                "trigger": {
+                    "id": 4,
+                    **payload,
+                    "points": 50,
+                    "events": [],
+                }
+            },
+        )
+
+        updated = client.update_point_trigger(
+            4,
+            {"points": 50},
+        )
+
+        self.assertEqual(updated["points"], 50)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "PATCH",
+                "http://mautic.local/api/points/triggers/4/edit",
+            ),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["data"],
+            {"points": 50},
+        )
+
+    def test_delete_point_trigger_accepts_response_without_id(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "trigger": {
+                        "id": None,
+                        "name": "Warm lead",
+                    }
+                },
+            )
+        )
+
+        deleted = client.delete_point_trigger(4)
+
+        self.assertIsNone(deleted["id"])
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "DELETE",
+                "http://mautic.local/api/points/triggers/4/delete",
+            ),
+        )
+
+    def test_delete_point_trigger_events_uses_array_form_encoding(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "trigger": {
+                        "id": 4,
+                        "name": "Warm lead",
+                        "events": [],
+                    }
+                },
+            )
+        )
+
+        trigger = client.delete_point_trigger_events(
+            4,
+            [10, "11"],
+        )
+
+        self.assertEqual(trigger["id"], 4)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "DELETE",
+                "http://mautic.local/api/points/triggers/4/events/delete",
+            ),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["data"],
+            [
+                ("events[]", "10"),
+                ("events[]", "11"),
+            ],
+        )
+
+    def test_point_trigger_methods_validate_ids_and_event_ids(self):
+        client, session = self.make_mautic_client()
+
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "point trigger ID is required",
+        ):
+            client.get_point_trigger("")
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "point trigger ID is required",
+        ):
+            client.update_point_trigger("", {"points": 25})
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "point trigger ID is required",
+        ):
+            client.delete_point_trigger("")
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "point trigger ID is required",
+        ):
+            client.delete_point_trigger_events("", [1])
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "event IDs must be a non-empty collection",
+        ):
+            client.delete_point_trigger_events(4, [])
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "event IDs must be a non-empty collection",
+        ):
+            client.delete_point_trigger_events(4, "10")
+
+        session.request.assert_not_called()
+
     def test_adjust_contact_points_calls_mautic_and_forwards_audit_labels(self):
         client, session = self.make_mautic_client(
             response(200, {"success": 1})
