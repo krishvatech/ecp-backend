@@ -588,6 +588,37 @@ class MauticClient:
             )
         return event
 
+    def create_point_trigger_event(
+        self,
+        trigger_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        trigger_id = str(trigger_id or "").strip()
+        if not trigger_id:
+            raise PermanentMauticError(
+                "Mautic point trigger ID is required"
+            )
+        if not isinstance(payload, dict) or not payload:
+            raise PermanentMauticError(
+                "Mautic point trigger event creation payload is required"
+            )
+
+        event_payload = dict(payload)
+        event_payload["trigger"] = f"/api/v2/triggers/{trigger_id}"
+
+        response = self._request(
+            "POST",
+            "v2/trigger_events",
+            json=event_payload,
+            headers={
+                "Content-Type": "application/ld+json",
+            },
+        )
+        return self._point_trigger_event_from_response(
+            response,
+            "Mautic point trigger event creation",
+        )
+
     def get_point_trigger_event(
         self,
         event_id: int | str,

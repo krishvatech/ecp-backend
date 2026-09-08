@@ -901,6 +901,60 @@ class MauticClientTests(SimpleTestCase):
             ),
         )
 
+    def test_create_point_trigger_event_uses_direct_v2_resource(self):
+        payload = {
+            "name": "Add to segment",
+            "description": "Warm lead routing",
+            "type": "lead.changelists",
+            "order": 1,
+            "properties": {
+                "addToLists": [3],
+                "removeFromLists": [],
+            },
+        }
+        client, session = self.make_mautic_client(
+            response(
+                201,
+                {
+                    "@context": "/api/v2/contexts/TriggerEvent",
+                    "@id": "/api/v2/trigger_events/10",
+                    "@type": "TriggerEvent",
+                    "id": 10,
+                    **payload,
+                    "trigger": {
+                        "@id": "/api/v2/triggers/4",
+                        "@type": "Trigger",
+                    },
+                },
+            )
+        )
+
+        event = client.create_point_trigger_event(4, payload)
+
+        self.assertEqual(event["id"], 10)
+        self.assertEqual(event["type"], "lead.changelists")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "POST",
+                "http://mautic.local/api/v2/trigger_events",
+            ),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["json"],
+            {
+                **payload,
+                "trigger": "/api/v2/triggers/4",
+            },
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["headers"],
+            {
+                "Content-Type": "application/ld+json",
+            },
+        )
+        self.assertNotIn("trigger", payload)
+
     def test_get_point_trigger_event_uses_direct_v2_resource(self):
         client, session = self.make_mautic_client(
             response(
@@ -1031,6 +1085,21 @@ class MauticClientTests(SimpleTestCase):
         ):
             client.delete_point_trigger("")
 
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "point trigger ID is required",
+        ):
+            client.create_point_trigger_event("", {"name": "Event"})
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "event creation payload is required",
+        ):
+            client.create_point_trigger_event(4, {})
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "event creation payload is required",
+        ):
+            client.create_point_trigger_event(4, [])
         with self.assertRaisesRegex(
             PermanentMauticError,
             "point trigger event ID is required",
