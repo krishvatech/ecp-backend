@@ -17,6 +17,7 @@ from newsletter.processor import (
     process_newsletter_sync_event,
     retry_delay_seconds,
 )
+from users.models import UserProfile
 
 
 @override_settings(
@@ -82,6 +83,192 @@ class NewsletterSyncProcessorTests(TestCase):
         client.add_contact_to_segment.assert_called_once_with("77", "88")
         self.assertEqual(result["mautic_contact_id"], "88")
         self.assertFalse(result["created"])
+
+    @patch("newsletter.processor.MauticClient")
+    def test_existing_mapping_syncs_non_empty_ecp_profile_fields(self, client_cls):
+        UserProfile.objects.create(
+            user=self.user,
+            company="KrishvaTech",
+            job_title="Engineering Lead",
+            location_city="Surat",
+            location_country="India",
+            timezone="Asia/Kolkata",
+            links={
+                "linkedin": "https://linkedin.com/in/process-user",
+                "instagram": "https://instagram.com/process-user",
+                "facebook": "https://facebook.com/process-user",
+                "x": "https://x.com/process-user",
+                "github": "https://github.com/not-synced",
+            },
+        )
+        MauticContactMapping.objects.create(
+            user=self.user,
+            mautic_contact_id="188",
+        )
+        client = client_cls.return_value
+        client.update_contact.return_value = {"id": 188}
+        event = self.event()
+
+        process_newsletter_sync_event(event.pk)
+
+        client.update_contact.assert_called_once_with(
+            "188",
+            {
+                "email": "processor@example.com",
+                "firstname": "Process",
+                "lastname": "User",
+                "company": "KrishvaTech",
+                "position": "Engineering Lead",
+                "city": "Surat",
+                "country": "India",
+                "timezone": "Asia/Kolkata",
+                "linkedin": "https://linkedin.com/in/process-user",
+                "instagram": "https://instagram.com/process-user",
+                "facebook": "https://facebook.com/process-user",
+                "twitter": "https://x.com/process-user",
+            },
+        )
+
+    @patch("newsletter.processor.MauticClient")
+    def test_legacy_ecp_timezone_is_normalized_for_mautic(self, client_cls):
+        UserProfile.objects.create(
+            user=self.user,
+            timezone="Asia/Calcutta",
+        )
+        MauticContactMapping.objects.create(
+            user=self.user,
+            mautic_contact_id="191",
+        )
+        client = client_cls.return_value
+        client.update_contact.return_value = {"id": 191}
+        event = self.event()
+
+        process_newsletter_sync_event(event.pk)
+
+        client.update_contact.assert_called_once_with(
+            "191",
+            {
+                "email": "processor@example.com",
+                "firstname": "Process",
+                "lastname": "User",
+                "timezone": "Asia/Kolkata",
+            },
+        )
+        client.add_contact_to_segment.assert_called_once_with("77", "191")
+
+    @patch("newsletter.processor.MauticClient")
+    def test_invalid_optional_timezone_retries_without_blocking_sync(self, client_cls):
+        UserProfile.objects.create(
+            user=self.user,
+            timezone="Legacy/Unsupported",
+        )
+        MauticContactMapping.objects.create(
+            user=self.user,
+            mautic_contact_id="192",
+        )
+        client = client_cls.return_value
+        client.update_contact.side_effect = [
+            PermanentMauticError(
+                "Mautic API request failed (HTTP 400): timezone: The selected choice is invalid."
+            ),
+            {"id": 192},
+        ]
+        event = self.event()
+
+        process_newsletter_sync_event(event.pk)
+
+        self.assertEqual(client.update_contact.call_count, 2)
+        self.assertEqual(
+            client.update_contact.call_args_list[0].args,
+            (
+                "192",
+                {
+                    "email": "processor@example.com",
+                    "firstname": "Process",
+                    "lastname": "User",
+                    "timezone": "Legacy/Unsupported",
+                },
+            ),
+        )
+        self.assertEqual(
+            client.update_contact.call_args_list[1].args,
+            (
+                "192",
+                {
+                    "email": "processor@example.com",
+                    "firstname": "Process",
+                    "lastname": "User",
+                },
+            ),
+        )
+        client.add_contact_to_segment.assert_called_once_with("77", "192")
+
+    @patch("newsletter.processor.MauticClient")
+    def test_blank_ecp_profile_fields_do_not_clear_mautic_values(self, client_cls):
+        self.user.first_name = ""
+        self.user.last_name = ""
+        self.user.save(update_fields=["first_name", "last_name"])
+        UserProfile.objects.create(
+            user=self.user,
+            company="",
+            job_title="",
+            location_city="",
+            location_country="",
+            timezone="",
+            links={
+                "linkedin": " ",
+                "instagram": "",
+                "facebook": None,
+                "x": "   ",
+            },
+        )
+        MauticContactMapping.objects.create(
+            user=self.user,
+            mautic_contact_id="189",
+        )
+        client = client_cls.return_value
+        client.update_contact.return_value = {"id": 189}
+        event = self.event()
+
+        process_newsletter_sync_event(event.pk)
+
+        client.update_contact.assert_called_once_with(
+            "189",
+            {"email": "processor@example.com"},
+        )
+
+    @patch("newsletter.processor.MauticClient")
+    def test_unsubscribe_syncs_ecp_profile_before_segment_removal(self, client_cls):
+        NewsletterSubscription.objects.filter(pk=self.subscription.pk).update(
+            is_subscribed=False
+        )
+        UserProfile.objects.create(
+            user=self.user,
+            company="KrishvaTech",
+            job_title="Engineering Lead",
+        )
+        MauticContactMapping.objects.create(
+            user=self.user,
+            mautic_contact_id="190",
+        )
+        client = client_cls.return_value
+        client.update_contact.return_value = {"id": 190}
+        event = self.event(desired=False)
+
+        process_newsletter_sync_event(event.pk)
+
+        client.update_contact.assert_called_once_with(
+            "190",
+            {
+                "email": "processor@example.com",
+                "firstname": "Process",
+                "lastname": "User",
+                "company": "KrishvaTech",
+                "position": "Engineering Lead",
+                "timezone": "Asia/Kolkata",
+            },
+        )
+        client.remove_contact_from_segment.assert_called_once_with("77", "190")
 
     @patch("newsletter.processor.MauticClient")
     def test_missing_mapping_finds_existing_contact_and_saves_mapping(self, client_cls):

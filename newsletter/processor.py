@@ -145,16 +145,78 @@ def mark_retry_exhausted(event_id: int) -> None:
     )
 
 
+def _add_non_blank(payload: dict, key: str, value) -> None:
+    normalized = str(value or "").strip()
+    if normalized:
+        payload[key] = normalized
+
+
+_MAUTIC_TIMEZONE_ALIASES = {
+    "Asia/Calcutta": "Asia/Kolkata",
+}
+
+
+def _normalize_mautic_timezone(value) -> str:
+    normalized = str(value or "").strip()
+    return _MAUTIC_TIMEZONE_ALIASES.get(normalized, normalized)
+
+
+def _contact_write_with_timezone_fallback(write, payload: dict) -> dict:
+    try:
+        return write(payload)
+    except PermanentMauticError as exc:
+        if "timezone" not in payload or "timezone:" not in str(exc).lower():
+            raise
+
+        fallback_payload = dict(payload)
+        rejected_timezone = fallback_payload.pop("timezone", None)
+        logger.warning(
+            "Mautic rejected optional timezone %r; retrying contact sync without timezone",
+            rejected_timezone,
+        )
+        return write(fallback_payload)
+
+
 def _build_contact_payload(user) -> dict:
     email = str(getattr(user, "email", "") or "").strip().lower()
     if not email:
         raise PermanentMauticError("Email is required for Mautic newsletter sync")
 
-    return {
-        "email": email,
-        "firstname": str(getattr(user, "first_name", "") or "").strip(),
-        "lastname": str(getattr(user, "last_name", "") or "").strip(),
+    payload = {"email": email}
+    _add_non_blank(payload, "firstname", getattr(user, "first_name", ""))
+    _add_non_blank(payload, "lastname", getattr(user, "last_name", ""))
+
+    profile = getattr(user, "profile", None)
+    if profile is None:
+        return payload
+
+    profile_fields = {
+        "company": "company",
+        "job_title": "position",
+        "location_city": "city",
+        "location_country": "country",
     }
+    for profile_field, mautic_field in profile_fields.items():
+        _add_non_blank(payload, mautic_field, getattr(profile, profile_field, ""))
+
+    _add_non_blank(
+        payload,
+        "timezone",
+        _normalize_mautic_timezone(getattr(profile, "timezone", "")),
+    )
+
+    links = getattr(profile, "links", {})
+    if isinstance(links, dict):
+        social_fields = {
+            "linkedin": "linkedin",
+            "instagram": "instagram",
+            "facebook": "facebook",
+            "x": "twitter",
+        }
+        for profile_field, mautic_field in social_fields.items():
+            _add_non_blank(payload, mautic_field, links.get(profile_field))
+
+    return payload
 
 
 def _contact_id_from_result(contact: dict) -> str:
@@ -180,18 +242,33 @@ def _resolve_mautic_contact(
     mapping = MauticContactMapping.objects.filter(user=user).first()
 
     if mapping is not None:
-        contact = client.update_contact(mapping.mautic_contact_id, payload)
+        contact = _contact_write_with_timezone_fallback(
+            lambda contact_payload: client.update_contact(
+                mapping.mautic_contact_id,
+                contact_payload,
+            ),
+            payload,
+        )
         return _contact_id_from_result(contact), False
 
     contact = client.find_contact_by_email(payload["email"])
     if contact is None:
         if not create_if_missing:
             return None, False
-        contact = client.create_contact(payload)
+        contact = _contact_write_with_timezone_fallback(
+            client.create_contact,
+            payload,
+        )
         created = True
     else:
         contact_id = _contact_id_from_result(contact)
-        contact = client.update_contact(contact_id, payload)
+        contact = _contact_write_with_timezone_fallback(
+            lambda contact_payload: client.update_contact(
+                contact_id,
+                contact_payload,
+            ),
+            payload,
+        )
         created = False
 
     contact_id = _contact_id_from_result(contact)
