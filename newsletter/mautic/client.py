@@ -576,45 +576,83 @@ class MauticClient:
             require_id=False,
         )
 
-    def delete_point_trigger_events(
-        self,
-        trigger_id: int | str,
-        event_ids,
+    @staticmethod
+    def _point_trigger_event_from_response(
+        response,
+        context: str,
     ) -> dict[str, Any]:
-        trigger_id = str(trigger_id or "").strip()
-        if not trigger_id:
-            raise PermanentMauticError(
-                "Mautic point trigger ID is required"
+        event = MauticClient._json_object(response, context)
+        if not event.get("id"):
+            raise TemporaryMauticError(
+                f"{context} returned an invalid response"
             )
-        if isinstance(event_ids, (str, bytes)) or not isinstance(
-            event_ids,
-            (list, tuple, set),
-        ):
-            raise PermanentMauticError(
-                "Mautic point trigger event IDs must be a non-empty collection"
-            )
+        return event
 
-        normalized_event_ids = [
-            str(event_id or "").strip()
-            for event_id in event_ids
-            if str(event_id or "").strip()
-        ]
-        if not normalized_event_ids:
+    def get_point_trigger_event(
+        self,
+        event_id: int | str,
+    ) -> dict[str, Any]:
+        event_id = str(event_id or "").strip()
+        if not event_id:
             raise PermanentMauticError(
-                "Mautic point trigger event IDs must be a non-empty collection"
+                "Mautic point trigger event ID is required"
             )
 
         response = self._request(
-            "DELETE",
-            f"points/triggers/{trigger_id}/events/delete",
-            data=[
-                ("events[]", event_id)
-                for event_id in normalized_event_ids
-            ],
+            "GET",
+            f"v2/trigger_events/{event_id}",
         )
-        return self._point_trigger_from_response(
+        return self._point_trigger_event_from_response(
             response,
-            "Mautic point trigger event deletion",
+            "Mautic point trigger event lookup",
+        )
+
+    def update_point_trigger_event(
+        self,
+        event_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        event_id = str(event_id or "").strip()
+        if not event_id:
+            raise PermanentMauticError(
+                "Mautic point trigger event ID is required"
+            )
+        if not isinstance(payload, dict) or not payload:
+            raise PermanentMauticError(
+                "Mautic point trigger event update payload is required"
+            )
+
+        response = self._request(
+            "PATCH",
+            f"v2/trigger_events/{event_id}",
+            json=payload,
+            headers={
+                "Content-Type": "application/merge-patch+json",
+            },
+        )
+        return self._point_trigger_event_from_response(
+            response,
+            "Mautic point trigger event update",
+        )
+
+    def delete_point_trigger_event(
+        self,
+        event_id: int | str,
+    ) -> None:
+        event_id = str(event_id or "").strip()
+        if not event_id:
+            raise PermanentMauticError(
+                "Mautic point trigger event ID is required"
+            )
+
+        # The legacy
+        # /api/points/triggers/{triggerId}/events/delete endpoint returns an
+        # in-memory Trigger with the event removed but does not persist that
+        # deletion on Mautic 7.1.3. Use the direct API Platform resource,
+        # which performs the real entity deletion.
+        self._request(
+            "DELETE",
+            f"v2/trigger_events/{event_id}",
         )
 
     @staticmethod

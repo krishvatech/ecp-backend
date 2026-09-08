@@ -901,42 +901,118 @@ class MauticClientTests(SimpleTestCase):
             ),
         )
 
-    def test_delete_point_trigger_events_uses_array_form_encoding(self):
+    def test_get_point_trigger_event_uses_direct_v2_resource(self):
         client, session = self.make_mautic_client(
             response(
                 200,
                 {
-                    "trigger": {
-                        "id": 4,
-                        "name": "Warm lead",
-                        "events": [],
-                    }
+                    "@context": "/api/v2/contexts/TriggerEvent",
+                    "@id": "/api/v2/trigger_events/10",
+                    "@type": "TriggerEvent",
+                    "id": 10,
+                    "name": "Add to segment",
+                    "type": "lead.changelists",
+                    "order": 1,
+                    "properties": {
+                        "addToLists": [3],
+                    },
                 },
             )
         )
 
-        trigger = client.delete_point_trigger_events(
-            4,
-            [10, "11"],
+        event = client.get_point_trigger_event(" 10 ")
+
+        self.assertEqual(event["id"], 10)
+        self.assertEqual(event["type"], "lead.changelists")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "GET",
+                "http://mautic.local/api/v2/trigger_events/10",
+            ),
         )
 
-        self.assertEqual(trigger["id"], 4)
+    def test_get_point_trigger_event_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "@context": "/api/v2/contexts/TriggerEvent",
+                    "@type": "TriggerEvent",
+                },
+            )
+        )
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "point trigger event lookup returned an invalid response",
+        ):
+            client.get_point_trigger_event(10)
+
+    def test_update_point_trigger_event_uses_merge_patch_json(self):
+        payload = {
+            "name": "Updated segment event",
+            "description": "Updated through direct API",
+            "properties": {
+                "addToLists": [3],
+                "removeFromLists": [],
+            },
+        }
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "@context": "/api/v2/contexts/TriggerEvent",
+                    "@id": "/api/v2/trigger_events/10",
+                    "@type": "TriggerEvent",
+                    "id": 10,
+                    "name": "Updated segment event",
+                    "type": "lead.changelists",
+                    "order": 1,
+                    "properties": payload["properties"],
+                },
+            )
+        )
+
+        event = client.update_point_trigger_event(10, payload)
+
+        self.assertEqual(event["id"], 10)
+        self.assertEqual(event["name"], "Updated segment event")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "PATCH",
+                "http://mautic.local/api/v2/trigger_events/10",
+            ),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["json"],
+            payload,
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["headers"],
+            {
+                "Content-Type": "application/merge-patch+json",
+            },
+        )
+
+    def test_delete_point_trigger_event_uses_direct_v2_resource(self):
+        client, session = self.make_mautic_client(
+            response(204, None)
+        )
+
+        result = client.delete_point_trigger_event(10)
+
+        self.assertIsNone(result)
         self.assertEqual(
             session.request.call_args.args[:2],
             (
                 "DELETE",
-                "http://mautic.local/api/points/triggers/4/events/delete",
+                "http://mautic.local/api/v2/trigger_events/10",
             ),
         )
-        self.assertEqual(
-            session.request.call_args.kwargs["data"],
-            [
-                ("events[]", "10"),
-                ("events[]", "11"),
-            ],
-        )
 
-    def test_point_trigger_methods_validate_ids_and_event_ids(self):
+    def test_point_trigger_methods_validate_ids_and_event_payload(self):
         client, session = self.make_mautic_client()
 
         with self.assertRaisesRegex(
@@ -954,21 +1030,32 @@ class MauticClientTests(SimpleTestCase):
             "point trigger ID is required",
         ):
             client.delete_point_trigger("")
+
         with self.assertRaisesRegex(
             PermanentMauticError,
-            "point trigger ID is required",
+            "point trigger event ID is required",
         ):
-            client.delete_point_trigger_events("", [1])
+            client.get_point_trigger_event("")
         with self.assertRaisesRegex(
             PermanentMauticError,
-            "event IDs must be a non-empty collection",
+            "point trigger event ID is required",
         ):
-            client.delete_point_trigger_events(4, [])
+            client.update_point_trigger_event("", {"name": "Updated"})
         with self.assertRaisesRegex(
             PermanentMauticError,
-            "event IDs must be a non-empty collection",
+            "point trigger event ID is required",
         ):
-            client.delete_point_trigger_events(4, "10")
+            client.delete_point_trigger_event("")
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "event update payload is required",
+        ):
+            client.update_point_trigger_event(10, {})
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "event update payload is required",
+        ):
+            client.update_point_trigger_event(10, [])
 
         session.request.assert_not_called()
 
