@@ -329,6 +329,165 @@ class MauticClientTests(SimpleTestCase):
 
         session.request.assert_not_called()
 
+    def test_list_stages_calls_expected_endpoint_and_accepts_empty_list(self):
+        client, session = self.make_mautic_client(
+            response(200, {"total": 0, "stages": []})
+        )
+
+        data = client.list_stages(start=0, limit=30)
+
+        self.assertEqual(data, {"total": 0, "stages": []})
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/stages"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {"start": 0, "limit": 30},
+        )
+
+    def test_list_stages_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(response(200, {"total": 0}))
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "stage list returned an invalid response",
+        ):
+            client.list_stages()
+
+    def test_get_stage_returns_stage_payload(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "stage": {
+                        "id": 4,
+                        "name": "Engaged",
+                        "weight": 20,
+                        "isPublished": True,
+                    }
+                },
+            )
+        )
+
+        stage = client.get_stage(" 4 ")
+
+        self.assertEqual(stage["id"], 4)
+        self.assertEqual(stage["name"], "Engaged")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/stages/4"),
+        )
+
+    def test_get_stage_requires_stage_id(self):
+        client, session = self.make_mautic_client()
+
+        with self.assertRaisesRegex(PermanentMauticError, "stage ID is required"):
+            client.get_stage("")
+
+        session.request.assert_not_called()
+
+    def test_create_stage_calls_new_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(
+                201,
+                {
+                    "stage": {
+                        "id": 5,
+                        "name": "Subscriber",
+                        "weight": 10,
+                    }
+                },
+            )
+        )
+        payload = {
+            "name": "Subscriber",
+            "description": "Newsletter subscriber",
+            "weight": 10,
+            "isPublished": True,
+        }
+
+        stage = client.create_stage(payload)
+
+        self.assertEqual(stage["id"], 5)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/stages/new"),
+        )
+        self.assertEqual(session.request.call_args.kwargs["data"], payload)
+
+    def test_update_stage_calls_edit_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "stage": {
+                        "id": 5,
+                        "name": "Engaged",
+                        "weight": 20,
+                    }
+                },
+            )
+        )
+
+        stage = client.update_stage(5, {"name": "Engaged", "weight": 20})
+
+        self.assertEqual(stage["id"], 5)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("PATCH", "http://mautic.local/api/stages/5/edit"),
+        )
+
+    def test_delete_stage_accepts_mautic_response_without_id(self):
+        client, session = self.make_mautic_client(
+            response(200, {"stage": {"id": None, "name": "Subscriber"}})
+        )
+
+        deleted = client.delete_stage(5)
+
+        self.assertIsNone(deleted["id"])
+        self.assertEqual(deleted["name"], "Subscriber")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("DELETE", "http://mautic.local/api/stages/5/delete"),
+        )
+
+    def test_add_contact_to_stage_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(response(200, {"success": 1}))
+
+        client.add_contact_to_stage(5, 51)
+
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/stages/5/contact/51/add"),
+        )
+
+    def test_remove_contact_from_stage_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(response(200, {"success": 1}))
+
+        client.remove_contact_from_stage(5, 51)
+
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/stages/5/contact/51/remove"),
+        )
+
+    def test_stage_contact_assignment_requires_both_ids(self):
+        client, session = self.make_mautic_client()
+
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "stage ID and contact ID are required",
+        ):
+            client.add_contact_to_stage("", 51)
+
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "stage ID and contact ID are required",
+        ):
+            client.remove_contact_from_stage(5, "")
+
+        session.request.assert_not_called()
     def test_list_segments_calls_expected_endpoint(self):
         client, session = self.make_mautic_client(
             response(200, {"lists": {"3": {"id": 3, "alias": "imaa-events"}}})

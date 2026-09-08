@@ -319,6 +319,100 @@ class MauticClient:
         )
 
     @staticmethod
+    def _stage_from_response(
+        response,
+        context: str,
+        *,
+        require_id: bool = True,
+    ) -> dict[str, Any]:
+        data = MauticClient._json_object(response, context)
+        stage = data.get("stage")
+        if not isinstance(stage, dict) or (require_id and not stage.get("id")):
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return stage
+
+    def list_stages(self, **params) -> dict[str, Any]:
+        response = self._request("GET", "stages", params=params or None)
+        data = self._json_object(response, "Mautic stage list")
+        stages = data.get("stages")
+        if not isinstance(stages, (dict, list)):
+            raise TemporaryMauticError(
+                "Mautic stage list returned an invalid response"
+            )
+        return data
+
+    def get_stage(self, stage_id: int | str) -> dict[str, Any]:
+        stage_id = str(stage_id or "").strip()
+        if not stage_id:
+            raise PermanentMauticError("Mautic stage ID is required")
+
+        response = self._request("GET", f"stages/{stage_id}")
+        return self._stage_from_response(response, "Mautic stage lookup")
+
+    def create_stage(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._request("POST", "stages/new", data=payload)
+        return self._stage_from_response(response, "Mautic stage creation")
+
+    def update_stage(
+        self,
+        stage_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        stage_id = str(stage_id or "").strip()
+        if not stage_id:
+            raise PermanentMauticError("Mautic stage ID is required")
+
+        response = self._request(
+            "PATCH",
+            f"stages/{stage_id}/edit",
+            data=payload,
+        )
+        return self._stage_from_response(response, "Mautic stage update")
+
+    def delete_stage(self, stage_id: int | str) -> dict[str, Any]:
+        stage_id = str(stage_id or "").strip()
+        if not stage_id:
+            raise PermanentMauticError("Mautic stage ID is required")
+
+        response = self._request("DELETE", f"stages/{stage_id}/delete")
+        return self._stage_from_response(
+            response,
+            "Mautic stage deletion",
+            require_id=False,
+        )
+
+    def add_contact_to_stage(
+        self,
+        stage_id: int | str,
+        contact_id: int | str,
+    ) -> None:
+        stage_id = str(stage_id or "").strip()
+        contact_id = str(contact_id or "").strip()
+        if not stage_id or not contact_id:
+            raise PermanentMauticError(
+                "Mautic stage ID and contact ID are required"
+            )
+        self._request(
+            "POST",
+            f"stages/{stage_id}/contact/{contact_id}/add",
+        )
+
+    def remove_contact_from_stage(
+        self,
+        stage_id: int | str,
+        contact_id: int | str,
+    ) -> None:
+        stage_id = str(stage_id or "").strip()
+        contact_id = str(contact_id or "").strip()
+        if not stage_id or not contact_id:
+            raise PermanentMauticError(
+                "Mautic stage ID and contact ID are required"
+            )
+        self._request(
+            "POST",
+            f"stages/{stage_id}/contact/{contact_id}/remove",
+        )
+    @staticmethod
     def _segment_from_response(response, context: str) -> dict[str, Any]:
         data = MauticClient._json_object(response, context)
         segment = data.get("list") or data.get("segment")
