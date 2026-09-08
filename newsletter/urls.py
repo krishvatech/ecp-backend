@@ -13,6 +13,7 @@ from .admin_views import (
     NewsletterAdminCampaignSyncView,
     NewsletterAdminCampaignTestEmailView,
     NewsletterAdminContactActivityView,
+    NewsletterAdminContactBulkStageView,
     NewsletterAdminContactDetailView,
     NewsletterAdminContactEngagementView,
     NewsletterAdminContactListView,
@@ -24,6 +25,7 @@ from .admin_views import (
     NewsletterAdminCategoryListView,
     NewsletterAdminCategorySyncMauticView,
     NewsletterAdminMauticSegmentListView,
+    NewsletterAdminStageAnalyticsView,
     NewsletterAdminStageDetailView,
     NewsletterAdminStageListCreateView,
 )
@@ -103,6 +105,11 @@ urlpatterns = [
         name="newsletter-admin-contact-list",
     ),
     path(
+        "newsletter/admin/contacts/bulk-stage/",
+        NewsletterAdminContactBulkStageView.as_view(),
+        name="newsletter-admin-contact-bulk-stage",
+    ),
+    path(
         "newsletter/admin/contacts/<str:mautic_contact_id>/",
         NewsletterAdminContactDetailView.as_view(),
         name="newsletter-admin-contact-detail",
@@ -126,6 +133,11 @@ urlpatterns = [
         "newsletter/admin/stages/",
         NewsletterAdminStageListCreateView.as_view(),
         name="newsletter-admin-stage-list",
+    ),
+    path(
+        "newsletter/admin/stages/analytics/",
+        NewsletterAdminStageAnalyticsView.as_view(),
+        name="newsletter-admin-stage-analytics",
     ),
     path(
         "newsletter/admin/stages/<str:stage_id>/",

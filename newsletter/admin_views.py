@@ -25,9 +25,11 @@ from .category_analytics import (
     resolve_contact_timeline_range,
 )
 from .contact_services import (
+    bulk_update_admin_contact_stage,
     clear_admin_contact_stage,
     get_admin_contact,
     get_admin_contact_engagement,
+    get_admin_stage_analytics,
     list_admin_contact_activity,
     list_admin_contacts,
     move_admin_contact_to_stage,
@@ -465,15 +467,65 @@ class NewsletterAdminContactListView(APIView):
             page_size = self.default_page_size
         page_size = max(1, min(page_size, self.max_page_size))
         search = str(request.query_params.get("search", "") or "").strip()
+        stage_id = str(request.query_params.get("stage_id", "") or "").strip()
 
         try:
             data = list_admin_contacts(
                 page=page,
                 page_size=page_size,
                 search=search,
+                stage_id=stage_id,
+            )
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminContactBulkStageView(APIView):
+    """Move or clear a selected batch of Mautic contacts."""
+
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request):
+        allowed_fields = {"action", "contact_ids", "stage_id"}
+        unsupported = sorted(set(request.data.keys()) - allowed_fields)
+        if unsupported:
+            return Response(
+                {
+                    "detail": (
+                        "Unsupported bulk stage field(s): "
+                        + ", ".join(unsupported)
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        action = str(request.data.get("action") or "move").strip().lower()
+        if action not in {"move", "clear"}:
+            return Response(
+                {"detail": "action must be either 'move' or 'clear'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            data = bulk_update_admin_contact_stage(
+                request.data.get("contact_ids"),
+                stage_id=request.data.get("stage_id"),
+                clear=action == "clear",
+            )
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _contact_stage_provider_error_response(exc)
 
         return Response(data, status=status.HTTP_200_OK)
 
@@ -722,6 +774,20 @@ def _stage_provider_error_response(exc):
     if isinstance(exc, PermanentMauticError) and "HTTP 404" in str(exc):
         raise Http404
     return _provider_error_response(exc)
+
+
+class NewsletterAdminStageAnalyticsView(APIView):
+    """Return current Mautic contact distribution by lifecycle stage."""
+
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request):
+        try:
+            data = get_admin_stage_analytics()
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class NewsletterAdminStageListCreateView(APIView):

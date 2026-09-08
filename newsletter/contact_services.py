@@ -15,7 +15,7 @@ from typing import Any
 
 from django.utils import timezone
 
-from .mautic import MauticClient, TemporaryMauticError
+from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .models import MauticContactMapping, NewsletterCategory, NewsletterSubscription
 
 
@@ -446,11 +446,38 @@ def _provider_total(data: dict[str, Any], *, start: int, returned: int) -> int:
     return max(0, total)
 
 
+def _normalize_stage_filter(stage_id) -> str:
+    normalized = str(stage_id or "").strip()
+    if not normalized:
+        return ""
+    if normalized.lower() in {"none", "unstaged"}:
+        return "none"
+    if not normalized.isdigit() or int(normalized) <= 0:
+        raise ValueError("stage_id must be a positive integer or 'none'.")
+    return str(int(normalized))
+
+
+def _stage_contact_filter_params(stage_id) -> dict[str, Any]:
+    normalized = _normalize_stage_filter(stage_id)
+    if not normalized:
+        return {}
+    params = {
+        "where[0][col]": "stage_id",
+    }
+    if normalized == "none":
+        params["where[0][expr]"] = "isNull"
+    else:
+        params["where[0][expr]"] = "eq"
+        params["where[0][val]"] = normalized
+    return params
+
+
 def list_admin_contacts(
     *,
     page: int = 1,
     page_size: int = 25,
     search: str = "",
+    stage_id: str = "",
 ) -> dict[str, Any]:
     """List all Mautic contacts and enrich mapped contacts with ECP state."""
     page = max(1, int(page))
@@ -464,6 +491,7 @@ def list_admin_contacts(
     normalized_search = str(search or "").strip()
     if normalized_search:
         params["search"] = normalized_search
+    params.update(_stage_contact_filter_params(stage_id))
 
     provider_data = MauticClient().list_contacts(**params)
     provider_contacts = _contacts_from_response(provider_data)
@@ -556,4 +584,244 @@ def list_admin_contacts(
         "page_size": page_size,
         "num_pages": max(1, math.ceil(count / page_size)) if count else 1,
         "results": results,
+    }
+
+
+def _normalize_bulk_contact_ids(contact_ids) -> list[str]:
+    if not isinstance(contact_ids, (list, tuple)):
+        raise ValueError("contact_ids must be a list.")
+
+    normalized_ids = []
+    seen = set()
+    for raw_id in contact_ids:
+        contact_id = str(raw_id or "").strip()
+        if not contact_id or not contact_id.isdigit() or int(contact_id) <= 0:
+            raise ValueError("Every contact ID must be a positive integer.")
+        contact_id = str(int(contact_id))
+        if contact_id in seen:
+            continue
+        seen.add(contact_id)
+        normalized_ids.append(contact_id)
+
+    if not normalized_ids:
+        raise ValueError("At least one contact ID is required.")
+    if len(normalized_ids) > 100:
+        raise ValueError("A maximum of 100 contacts can be updated at once.")
+    return normalized_ids
+
+
+def _stage_reference(stage) -> dict[str, Any] | None:
+    if not isinstance(stage, dict):
+        return None
+    stage_id = stage.get("id")
+    if stage_id in (None, ""):
+        return None
+    try:
+        weight = int(stage.get("weight")) if stage.get("weight") not in (None, "") else None
+    except (TypeError, ValueError):
+        weight = None
+    return {
+        "id": str(stage_id),
+        "name": str(stage.get("name") or ""),
+        "weight": weight,
+    }
+
+
+def bulk_update_admin_contact_stage(
+    contact_ids,
+    *,
+    stage_id=None,
+    clear: bool = False,
+) -> dict[str, Any]:
+    """Move or clear up to 100 Mautic contacts with per-contact results."""
+    normalized_ids = _normalize_bulk_contact_ids(contact_ids)
+
+    target_stage_id = ""
+    if clear:
+        if str(stage_id or "").strip():
+            raise ValueError("stage_id must not be provided when clearing stages.")
+    else:
+        target_stage_id = _normalize_stage_filter(stage_id)
+        if not target_stage_id or target_stage_id == "none":
+            raise ValueError("A valid stage_id is required for bulk move.")
+
+    client = MauticClient()
+    target_stage = client.get_stage(target_stage_id) if not clear else None
+
+    results = []
+    changed = 0
+    failed = 0
+
+    for contact_id in normalized_ids:
+        try:
+            contact = client.get_contact(contact_id)
+            current_stage = _contact_stage(contact)
+
+            if clear:
+                if current_stage is None:
+                    results.append(
+                        {
+                            "mautic_contact_id": contact_id,
+                            "success": True,
+                            "changed": False,
+                            "current_stage": None,
+                        }
+                    )
+                    continue
+
+                client.remove_contact_from_stage(current_stage["id"], contact_id)
+                updated_contact = client.get_contact(contact_id)
+                updated_stage = _contact_stage(updated_contact)
+                if updated_stage is not None:
+                    raise TemporaryMauticError(
+                        "Mautic did not confirm removal of the contact stage."
+                    )
+                changed += 1
+                results.append(
+                    {
+                        "mautic_contact_id": contact_id,
+                        "success": True,
+                        "changed": True,
+                        "current_stage": None,
+                    }
+                )
+                continue
+
+            if current_stage is not None and current_stage["id"] == target_stage_id:
+                results.append(
+                    {
+                        "mautic_contact_id": contact_id,
+                        "success": True,
+                        "changed": False,
+                        "current_stage": current_stage,
+                    }
+                )
+                continue
+
+            client.add_contact_to_stage(target_stage_id, contact_id)
+            updated_contact = client.get_contact(contact_id)
+            updated_stage = _contact_stage(updated_contact)
+            if updated_stage is None or updated_stage["id"] != target_stage_id:
+                raise TemporaryMauticError(
+                    "Mautic did not confirm the requested contact stage change."
+                )
+            changed += 1
+            results.append(
+                {
+                    "mautic_contact_id": contact_id,
+                    "success": True,
+                    "changed": True,
+                    "current_stage": updated_stage,
+                }
+            )
+        except (PermanentMauticError, TemporaryMauticError, ValueError) as exc:
+            failed += 1
+            results.append(
+                {
+                    "mautic_contact_id": contact_id,
+                    "success": False,
+                    "changed": False,
+                    "error": str(exc) or "Mautic contact stage update failed.",
+                }
+            )
+
+    return {
+        "action": "clear" if clear else "move",
+        "stage_id": None if clear else target_stage_id,
+        "requested": len(normalized_ids),
+        "succeeded": len(normalized_ids) - failed,
+        "failed": failed,
+        "changed": changed,
+        "results": results,
+        "target_stage": _stage_reference(target_stage),
+    }
+
+
+def get_admin_stage_analytics() -> dict[str, Any]:
+    """Return provider-backed current contact distribution across Mautic stages."""
+    client = MauticClient()
+    all_contacts = client.list_contacts(start=0, limit=1)
+    total_contacts = _provider_total(
+        all_contacts,
+        start=0,
+        returned=len(_contacts_from_response(all_contacts)),
+    )
+
+    stages = []
+    start = 0
+    page_size = 100
+    while True:
+        data = client.list_stages(start=start, limit=page_size)
+        raw_stages = data.get("stages") or []
+        if isinstance(raw_stages, dict):
+            page_stages = [item for item in raw_stages.values() if isinstance(item, dict)]
+        elif isinstance(raw_stages, list):
+            page_stages = [item for item in raw_stages if isinstance(item, dict)]
+        else:
+            page_stages = []
+        stages.extend(page_stages)
+        try:
+            stage_total = max(0, int(data.get("total", len(page_stages))))
+        except (TypeError, ValueError):
+            stage_total = start + len(page_stages)
+        start += len(page_stages)
+        if not page_stages or start >= stage_total:
+            break
+
+    rows = []
+    staged_contacts = 0
+    for stage in stages:
+        raw_stage_id = stage.get("id")
+        if raw_stage_id in (None, ""):
+            continue
+        normalized_stage_id = str(raw_stage_id)
+        stage_contacts = client.list_contacts(
+            start=0,
+            limit=1,
+            **_stage_contact_filter_params(normalized_stage_id),
+        )
+        count = _provider_total(
+            stage_contacts,
+            start=0,
+            returned=len(_contacts_from_response(stage_contacts)),
+        )
+        staged_contacts += count
+        try:
+            weight = int(stage.get("weight")) if stage.get("weight") not in (None, "") else None
+        except (TypeError, ValueError):
+            weight = None
+        rows.append(
+            {
+                "id": normalized_stage_id,
+                "name": str(stage.get("name") or ""),
+                "weight": weight,
+                "count": count,
+                "percentage": round((count / total_contacts) * 100, 2) if total_contacts else 0.0,
+            }
+        )
+
+    rows.sort(
+        key=lambda item: (
+            item["weight"] is None,
+            item["weight"] if item["weight"] is not None else 0,
+            item["name"].lower(),
+            item["id"],
+        )
+    )
+    staged_contacts = min(total_contacts, staged_contacts)
+    return {
+        "total_contacts": total_contacts,
+        "staged_contacts": staged_contacts,
+        "unstaged_contacts": max(0, total_contacts - staged_contacts),
+        "staged_percentage": (
+            round((staged_contacts / total_contacts) * 100, 2)
+            if total_contacts
+            else 0.0
+        ),
+        "unstaged_percentage": (
+            round(((total_contacts - staged_contacts) / total_contacts) * 100, 2)
+            if total_contacts
+            else 0.0
+        ),
+        "stages": rows,
     }
