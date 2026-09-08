@@ -29,6 +29,12 @@ from .admin_views import (
     NewsletterAdminStageDetailView,
     NewsletterAdminStageListCreateView,
 )
+from .point_views import (
+    NewsletterAdminContactPointsView,
+    NewsletterAdminPointActionDetailView,
+    NewsletterAdminPointActionListCreateView,
+    NewsletterAdminPointActionTypesView,
+)
 from .views import NewsletterPreferencesView
 from .webhooks import MauticNewsletterWebhookView
 
@@ -110,6 +116,11 @@ urlpatterns = [
         name="newsletter-admin-contact-bulk-stage",
     ),
     path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/points/",
+        NewsletterAdminContactPointsView.as_view(),
+        name="newsletter-admin-contact-points",
+    ),
+    path(
         "newsletter/admin/contacts/<str:mautic_contact_id>/",
         NewsletterAdminContactDetailView.as_view(),
         name="newsletter-admin-contact-detail",
@@ -128,6 +139,21 @@ urlpatterns = [
         "newsletter/admin/contacts/<str:mautic_contact_id>/engagement-analytics/",
         NewsletterAdminContactEngagementView.as_view(),
         name="newsletter-admin-contact-engagement",
+    ),
+    path(
+        "newsletter/admin/points/types/",
+        NewsletterAdminPointActionTypesView.as_view(),
+        name="newsletter-admin-point-action-types",
+    ),
+    path(
+        "newsletter/admin/points/",
+        NewsletterAdminPointActionListCreateView.as_view(),
+        name="newsletter-admin-point-action-list",
+    ),
+    path(
+        "newsletter/admin/points/<str:point_id>/",
+        NewsletterAdminPointActionDetailView.as_view(),
+        name="newsletter-admin-point-action-detail",
     ),
     path(
         "newsletter/admin/stages/",
