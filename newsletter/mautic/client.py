@@ -1186,6 +1186,114 @@ class MauticClient:
         return self.delete_email(email_id)
 
     @staticmethod
+    def _campaign_form_data(
+        payload: dict[str, Any],
+    ) -> list[tuple[str, Any]]:
+        """Encode nested Mautic Campaign payloads using Symfony bracket keys."""
+        if not isinstance(payload, dict) or not payload:
+            raise PermanentMauticError(
+                "Mautic campaign payload is required"
+            )
+
+        form_data: list[tuple[str, Any]] = []
+
+        def walk(prefix: str, value: Any) -> None:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    child_key = f"{prefix}[{key}]" if prefix else str(key)
+                    walk(child_key, child)
+                return
+            if isinstance(value, (list, tuple)):
+                for index, child in enumerate(value):
+                    walk(f"{prefix}[{index}]", child)
+                return
+            if value is None:
+                form_data.append((prefix, ""))
+                return
+            if isinstance(value, bool):
+                form_data.append((prefix, "1" if value else "0"))
+                return
+            form_data.append((prefix, value))
+
+        walk("", payload)
+        return [(key, value) for key, value in form_data if key]
+
+    @staticmethod
+    def _campaign_from_response(
+        response,
+        context: str,
+        *,
+        require_id: bool = True,
+    ) -> dict[str, Any]:
+        data = MauticClient._json_object(response, context)
+        campaign = data.get("campaign")
+        if not isinstance(campaign, dict) or (
+            require_id and not campaign.get("id")
+        ):
+            raise TemporaryMauticError(
+                f"{context} returned an invalid response"
+            )
+        return campaign
+
+    def list_campaigns(self, **params) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            "campaigns",
+            params=params or None,
+        )
+        data = self._json_object(response, "Mautic campaign list")
+        campaigns = data.get("campaigns")
+        if not isinstance(campaigns, (dict, list)):
+            raise TemporaryMauticError(
+                "Mautic campaign list returned invalid campaigns"
+            )
+        return data
+
+    def get_campaign(self, campaign_id: int | str) -> dict[str, Any]:
+        campaign_id = str(campaign_id or "").strip()
+        if not campaign_id:
+            raise PermanentMauticError("Mautic campaign ID is required")
+        response = self._request("GET", f"campaigns/{campaign_id}")
+        return self._campaign_from_response(response, "Mautic campaign lookup")
+
+    def create_campaign(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._request(
+            "POST",
+            "campaigns/new",
+            data=self._campaign_form_data(payload),
+        )
+        return self._campaign_from_response(response, "Mautic campaign creation")
+
+    def update_campaign(
+        self,
+        campaign_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        campaign_id = str(campaign_id or "").strip()
+        if not campaign_id:
+            raise PermanentMauticError("Mautic campaign ID is required")
+        response = self._request(
+            "PATCH",
+            f"campaigns/{campaign_id}/edit",
+            data=self._campaign_form_data(payload),
+        )
+        return self._campaign_from_response(response, "Mautic campaign update")
+
+    def delete_campaign(self, campaign_id: int | str) -> dict[str, Any]:
+        campaign_id = str(campaign_id or "").strip()
+        if not campaign_id:
+            raise PermanentMauticError("Mautic campaign ID is required")
+        response = self._request(
+            "DELETE",
+            f"campaigns/{campaign_id}/delete",
+        )
+        return self._campaign_from_response(
+            response,
+            "Mautic campaign deletion",
+            require_id=False,
+        )
+
+    @staticmethod
     def _stage_from_response(
         response,
         context: str,
