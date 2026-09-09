@@ -30,6 +30,9 @@ class NewsletterAdminMauticCampaignsAPITests(TestCase):
             "newsletter-admin-mautic-campaign-detail",
             args=["2"],
         )
+        self.capabilities_url = reverse(
+            "newsletter-admin-mautic-campaign-capabilities"
+        )
 
     def _authenticate(self, user):
         self.client.force_authenticate(user=user)
@@ -134,6 +137,69 @@ class NewsletterAdminMauticCampaignsAPITests(TestCase):
         }
         payload.update(overrides)
         return payload
+
+    @patch("newsletter.native_campaign_views.MauticClient")
+    def test_capabilities_lists_provider_sources(self, client_cls):
+        client_cls.return_value.list_segments.return_value = {
+            "lists": {
+                "3": {
+                    "id": 3,
+                    "name": "IMAA Events",
+                    "alias": "imaa-events",
+                    "isPublished": True,
+                }
+            }
+        }
+        client_cls.return_value.list_forms.return_value = {
+            "forms": {
+                "7": {
+                    "id": 7,
+                    "name": "Signup",
+                    "alias": "signup",
+                    "isPublished": False,
+                }
+            }
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.get(self.capabilities_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["actions"], [])
+        self.assertFalse(response.data["builder_metadata"]["available"])
+        self.assertEqual(
+            response.data["sources"]["segments"],
+            [
+                {
+                    "id": "3",
+                    "name": "IMAA Events",
+                    "alias": "imaa-events",
+                    "isPublished": True,
+                }
+            ],
+        )
+        self.assertEqual(response.data["sources"]["forms"][0]["id"], "7")
+        client_cls.return_value.list_segments.assert_called_once_with(limit=200)
+        client_cls.return_value.list_forms.assert_called_once_with(limit=200)
+
+    def test_capabilities_requires_staff(self):
+        self._authenticate(self.normal_user)
+
+        response = self.client.get(self.capabilities_url)
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("newsletter.native_campaign_views.MauticClient")
+    def test_capabilities_maps_provider_failure(self, client_cls):
+        client_cls.return_value.list_segments.side_effect = TemporaryMauticError(
+            "Mautic segment list failed"
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.get(self.capabilities_url)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("Mautic segment list failed", response.data["detail"])
 
     def test_guest_and_normal_user_are_denied(self):
         for url in (self.list_url, self.detail_url):

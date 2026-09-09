@@ -1410,6 +1410,14 @@ class MauticClient:
             raise TemporaryMauticError("Mautic segment list returned an invalid response")
         return data
 
+    def list_forms(self, **params) -> dict[str, Any]:
+        response = self._request("GET", "forms", params=params or None)
+        data = self._json_object(response, "Mautic form list")
+        forms = data.get("forms")
+        if not isinstance(forms, (dict, list)):
+            raise TemporaryMauticError("Mautic form list returned an invalid response")
+        return data
+
     def get_segment(self, segment_id: int | str) -> dict[str, Any]:
         segment_id = str(segment_id or "").strip()
         if not segment_id:

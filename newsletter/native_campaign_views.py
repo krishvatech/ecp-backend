@@ -149,6 +149,18 @@ def _normalize_campaign(campaign: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_source_rows(value) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": str(row.get("id")) if row.get("id") is not None else None,
+            "name": str(row.get("name") or ""),
+            "alias": str(row.get("alias") or ""),
+            "isPublished": _provider_bool(row.get("isPublished", False)),
+        }
+        for row in _collection_items(value)
+    ]
+
+
 def _parse_source_ids(value, *, field_name: str) -> list[dict[str, int]]:
     if not isinstance(value, list):
         raise ValueError(f"Native Mautic Campaign {field_name} must be a list.")
@@ -429,6 +441,45 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
         return Response(
             _normalize_campaign(campaign),
             status=status.HTTP_201_CREATED,
+        )
+
+
+class NewsletterAdminMauticCampaignCapabilitiesView(APIView):
+    """Staff-only native Mautic Campaign Builder capability discovery API."""
+
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request):
+        try:
+            client = MauticClient()
+            segments = client.list_segments(limit=200)
+            forms = client.list_forms(limit=200)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        return Response(
+            {
+                "actions": [],
+                "conditions": [],
+                "decisions": [],
+                "connection_restrictions": {},
+                "builder_metadata": {
+                    "available": False,
+                    "reason": (
+                        "Mautic 7.1.3 builds Campaign Builder provider metadata "
+                        "internally via CampaignEvents::CAMPAIGN_ON_BUILD and "
+                        "does not expose a stable REST metadata endpoint."
+                    ),
+                    "source": "mautic-provider-audit",
+                },
+                "sources": {
+                    "segments": _normalize_source_rows(
+                        segments.get("lists", segments.get("segments"))
+                    ),
+                    "forms": _normalize_source_rows(forms.get("forms")),
+                },
+            },
+            status=status.HTTP_200_OK,
         )
 
 

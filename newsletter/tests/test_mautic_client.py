@@ -1684,6 +1684,29 @@ class MauticClientTests(SimpleTestCase):
         ):
             client.list_segments()
 
+    def test_list_forms_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(200, {"forms": {"7": {"id": 7, "name": "Signup"}}})
+        )
+
+        data = client.list_forms(limit=20)
+
+        self.assertEqual(data["forms"]["7"]["id"], 7)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/forms"),
+        )
+        self.assertEqual(session.request.call_args.kwargs["params"], {"limit": 20})
+
+    def test_list_forms_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(response(200, {}))
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "form list returned an invalid response",
+        ):
+            client.list_forms()
+
     def test_get_segment_returns_mautic_list_payload(self):
         client, session = self.make_mautic_client(
             response(200, {"list": {"id": 3, "name": "IMAA Events"}})
