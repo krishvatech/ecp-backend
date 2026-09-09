@@ -69,6 +69,7 @@ from .wordpress_group_sync import (
     sync_enabled_wordpress_full_group_content,
     sync_enabled_wordpress_sources_to_connect_groups,
     sync_enabled_wordpress_source_members,
+    sync_connect_members_to_wordpress,
     sync_wordpress_source_full_group_content,
     sync_wordpress_source_members,
     sync_wordpress_source_to_connect_group,
@@ -3527,6 +3528,54 @@ class WordPressGroupSourceSyncMembersView(APIView):
         data["member_sync"] = result
         return Response(data)
 
+
+
+class WordPressGroupSourceSyncToWordPressView(APIView):
+    """
+    Admin-only additive reverse sync from one Connect group to WordPress.
+
+    This can optionally create missing WordPress users with a random internal
+    password, then send a password setup/reset email. It never removes users
+    from either system and never modifies WordPress roles for existing members.
+    """
+    permission_classes = [GroupSuperuserOnly]
+
+    def post(self, request, wp_group_id):
+        source = get_object_or_404(WordPressGroupSource, wp_group_id=wp_group_id)
+        if not source.sync_enabled:
+            return Response(
+                {"detail": "Enable sync for this WordPress group before syncing Connect members back to WordPress."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not source.linked_group_id:
+            return Response(
+                {"detail": "Create/link the Connect group before syncing Connect members back to WordPress."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dry_run = bool(request.data.get("dry_run", False))
+        create_missing_users = bool(request.data.get("create_missing_users", False))
+        send_password_setup_email = bool(request.data.get("send_password_setup_email", True))
+        try:
+            result = sync_connect_members_to_wordpress(
+                source,
+                dry_run=dry_run,
+                create_missing_users=create_missing_users,
+                send_password_setup_email=send_password_setup_email,
+            )
+        except Exception as exc:
+            return Response(
+                {
+                    "detail": "Unable to sync Connect members back to WordPress.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        source.refresh_from_db()
+        data = WordPressGroupSourceSerializer(source, context={"request": request}).data
+        data["wordpress_reverse_sync"] = result
+        return Response(data)
 
 class WordPressGroupSourceSyncEnabledMembersView(APIView):
     """
