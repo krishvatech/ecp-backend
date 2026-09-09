@@ -49,6 +49,10 @@ from .point_views import (
     NewsletterAdminPointActionListCreateView,
     NewsletterAdminPointActionTypesView,
 )
+from .template_views import (
+    NewsletterAdminTemplateDetailView,
+    NewsletterAdminTemplateListCreateView,
+)
 from .views import NewsletterPreferencesView
 from .webhooks import MauticNewsletterWebhookView
 
@@ -118,6 +122,16 @@ urlpatterns = [
         "newsletter/admin/categories/",
         NewsletterAdminCategoryListView.as_view(),
         name="newsletter-admin-category-list",
+    ),
+    path(
+        "newsletter/admin/templates/",
+        NewsletterAdminTemplateListCreateView.as_view(),
+        name="newsletter-admin-template-list",
+    ),
+    path(
+        "newsletter/admin/templates/<str:template_id>/",
+        NewsletterAdminTemplateDetailView.as_view(),
+        name="newsletter-admin-template-detail",
     ),
     path(
         "newsletter/admin/contacts/",
