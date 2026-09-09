@@ -1009,6 +1009,183 @@ class MauticClient:
         )
 
     @staticmethod
+    def _email_collection_items(
+        data: dict[str, Any],
+        context: str,
+    ) -> list[dict[str, Any]]:
+        emails = data.get("emails")
+        if isinstance(emails, dict):
+            rows = list(emails.values())
+        elif isinstance(emails, list):
+            rows = list(emails)
+        else:
+            raise TemporaryMauticError(
+                f"{context} returned an invalid response"
+            )
+
+        if any(not isinstance(row, dict) for row in rows):
+            raise TemporaryMauticError(
+                f"{context} returned invalid emails"
+            )
+        return rows
+
+    @staticmethod
+    def _require_template_email(
+        email: dict[str, Any],
+        context: str,
+    ) -> dict[str, Any]:
+        if str(email.get("emailType") or "").strip() != "template":
+            raise PermanentMauticError(
+                f"{context} is not a Mautic template email"
+            )
+        return email
+
+    def list_email_templates(self, **params) -> dict[str, Any]:
+        """List only reusable Mautic template emails.
+
+        Mautic 7.1.3 ignores the legacy ``email_type`` list filter, so this
+        method walks the provider result set and filters by ``emailType`` in
+        ECP before applying template pagination.
+        """
+        query = dict(params or {})
+        raw_start = query.pop("start", 0)
+        raw_limit = query.pop("limit", 30)
+        query.pop("email_type", None)
+        query.pop("emailType", None)
+
+        try:
+            start = int(raw_start)
+            limit = int(raw_limit)
+        except (TypeError, ValueError) as exc:
+            raise PermanentMauticError(
+                "Mautic template pagination is invalid"
+            ) from exc
+
+        if isinstance(raw_start, bool) or isinstance(raw_limit, bool):
+            raise PermanentMauticError(
+                "Mautic template pagination is invalid"
+            )
+        if start < 0 or limit <= 0:
+            raise PermanentMauticError(
+                "Mautic template pagination is invalid"
+            )
+
+        templates: list[dict[str, Any]] = []
+        provider_start = 0
+        provider_limit = 100
+
+        while True:
+            response = self._request(
+                "GET",
+                "emails",
+                params={
+                    **query,
+                    "start": provider_start,
+                    "limit": provider_limit,
+                },
+            )
+            data = self._json_object(
+                response,
+                "Mautic email template list",
+            )
+            rows = self._email_collection_items(
+                data,
+                "Mautic email template list",
+            )
+            templates.extend(
+                row
+                for row in rows
+                if str(row.get("emailType") or "").strip() == "template"
+            )
+
+            provider_start += len(rows)
+            try:
+                provider_total = int(data.get("total"))
+            except (TypeError, ValueError):
+                provider_total = None
+
+            if not rows:
+                break
+            if provider_total is not None and provider_start >= provider_total:
+                break
+            if provider_total is None and len(rows) < provider_limit:
+                break
+
+        return {
+            "total": len(templates),
+            "start": start,
+            "limit": limit,
+            "emails": templates[start:start + limit],
+        }
+
+    def get_email_template(
+        self,
+        email_id: int | str,
+    ) -> dict[str, Any]:
+        return self._require_template_email(
+            self.get_email(email_id),
+            "Mautic email",
+        )
+
+    def create_email_template(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(payload, dict) or not payload:
+            raise PermanentMauticError(
+                "Mautic email template creation payload is required"
+            )
+
+        template_payload = dict(payload)
+        requested_type = str(
+            template_payload.get("emailType") or ""
+        ).strip()
+        if requested_type and requested_type != "template":
+            raise PermanentMauticError(
+                "Mautic email template type must be template"
+            )
+        template_payload["emailType"] = "template"
+
+        return self._require_template_email(
+            self.create_email(template_payload),
+            "Created Mautic email",
+        )
+
+    def update_email_template(
+        self,
+        email_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(payload, dict) or not payload:
+            raise PermanentMauticError(
+                "Mautic email template update payload is required"
+            )
+
+        self.get_email_template(email_id)
+
+        template_payload = dict(payload)
+        requested_type = str(
+            template_payload.get("emailType") or ""
+        ).strip()
+        if requested_type and requested_type != "template":
+            raise PermanentMauticError(
+                "Mautic email template type must be template"
+            )
+        template_payload["emailType"] = "template"
+
+        return self._require_template_email(
+            self.update_email(email_id, template_payload),
+            "Updated Mautic email",
+        )
+
+    def delete_email_template(
+        self,
+        email_id: int | str,
+    ) -> dict[str, Any]:
+        self.get_email_template(email_id)
+        return self.delete_email(email_id)
+
+    @staticmethod
     def _stage_from_response(
         response,
         context: str,
