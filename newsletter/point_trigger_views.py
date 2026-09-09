@@ -21,6 +21,7 @@ _TRIGGER_FIELDS = {
     "color",
     "triggerExistingLeads",
     "isPublished",
+    "group",
 }
 _TRIGGER_EVENT_FIELDS = {
     "name",
@@ -66,6 +67,21 @@ def _parse_integer(value, *, field_name: str) -> int:
         return int(str(value).strip())
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} must be an integer.") from exc
+
+
+def _parse_group_id(value) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, bool):
+        raise ValueError("Point Group ID must be a positive integer.")
+    normalized = str(value).strip()
+    try:
+        group_id = int(normalized)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Point Group ID must be a positive integer.") from exc
+    if group_id <= 0:
+        raise ValueError("Point Group ID must be a positive integer.")
+    return str(group_id)
 
 
 def _normalize_color(value) -> str:
@@ -220,6 +236,19 @@ def _parse_trigger_payload(data, *, partial: bool = False) -> dict[str, Any]:
             field_name="Point Trigger isPublished",
         )
 
+    if "group" in data:
+        group_id = _parse_group_id(data.get("group"))
+        if group_id:
+            payload["group"] = group_id
+        elif partial:
+            raise ValueError(
+                "Mautic 7.1.3 cannot clear an assigned Point Trigger Group "
+                "through its API. Choose another Point Group or leave the "
+                "Group unchanged."
+            )
+        # On create, an empty Group means create the Trigger without a Group,
+        # so the provider field is intentionally omitted.
+
     if partial and not payload:
         raise ValueError("At least one Point Trigger field is required.")
 
@@ -301,6 +330,11 @@ def _validate_event_type(
             f"Unsupported Mautic Point Trigger Event type: {event_type}."
         )
     return type_labels
+
+
+def _validate_point_group(client: MauticClient, group_id: str) -> None:
+    if group_id:
+        client.get_point_group(group_id)
 
 
 def _event_belongs_to_trigger(
@@ -410,8 +444,15 @@ class NewsletterAdminPointTriggerListCreateView(APIView):
 
         client = MauticClient()
         try:
+            if payload.get("group"):
+                _validate_point_group(client, payload["group"])
             trigger = client.create_point_trigger(payload)
             type_labels = client.list_point_trigger_event_types()
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -450,8 +491,15 @@ class NewsletterAdminPointTriggerDetailView(APIView):
 
         client = MauticClient()
         try:
+            if payload.get("group"):
+                _validate_point_group(client, payload["group"])
             trigger = client.update_point_trigger(trigger_id, payload)
             type_labels = client.list_point_trigger_event_types()
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 

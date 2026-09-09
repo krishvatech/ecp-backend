@@ -23,6 +23,7 @@ _POINT_FIELDS = {
     "repeatable",
     "isPublished",
     "properties",
+    "group",
 }
 
 
@@ -108,6 +109,23 @@ def _parse_bool(value, *, field_name: str) -> bool:
     raise ValueError(f"{field_name} must be a boolean.")
 
 
+def _parse_group_id(value, *, allow_clear: bool) -> str:
+    if value in (None, ""):
+        if allow_clear:
+            return ""
+        raise ValueError("Point Group ID is required.")
+    if isinstance(value, bool):
+        raise ValueError("Point Group ID must be a positive integer.")
+    normalized = str(value).strip()
+    try:
+        group_id = int(normalized)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Point Group ID must be a positive integer.") from exc
+    if group_id <= 0:
+        raise ValueError("Point Group ID must be a positive integer.")
+    return str(group_id)
+
+
 def _flatten_properties(properties) -> dict[str, Any]:
     if properties in (None, ""):
         return {}
@@ -177,6 +195,12 @@ def _parse_point_action_payload(data, *, partial: bool = False) -> dict[str, Any
     if "properties" in data:
         payload.update(_flatten_properties(data.get("properties")))
 
+    if "group" in data:
+        payload["group"] = _parse_group_id(
+            data.get("group"),
+            allow_clear=True,
+        )
+
     if partial and not payload:
         raise ValueError("At least one Point Action field is required.")
 
@@ -206,6 +230,11 @@ def _validate_point_type(client: MauticClient, point_type: str) -> dict[str, str
             f"Unsupported Mautic Point Action type: {point_type}."
         )
     return type_labels
+
+
+def _validate_point_group(client: MauticClient, group_id: str) -> None:
+    if group_id:
+        client.get_point_group(group_id)
 
 
 class NewsletterAdminPointActionTypesView(APIView):
@@ -296,6 +325,8 @@ class NewsletterAdminPointActionListCreateView(APIView):
 
         client = MauticClient()
         try:
+            if payload.get("group"):
+                _validate_point_group(client, payload["group"])
             type_labels = _validate_point_type(client, payload["type"])
             point = client.create_point_action(payload)
         except ValueError as exc:
@@ -342,6 +373,9 @@ class NewsletterAdminPointActionDetailView(APIView):
         client = MauticClient()
         try:
             type_labels = client.list_point_action_types()
+            if payload.get("group"):
+                _validate_point_group(client, payload["group"])
+
             if "type" in payload and payload["type"] not in type_labels:
                 return Response(
                     {
