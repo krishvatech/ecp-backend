@@ -397,6 +397,235 @@ class MauticClient:
             require_id=False,
         )
 
+    @staticmethod
+    def _point_group_from_response(
+        response,
+        context: str,
+        *,
+        require_id: bool = True,
+    ) -> dict[str, Any]:
+        data = MauticClient._json_object(response, context)
+        group = data.get("pointGroup")
+        if not isinstance(group, dict) or (
+            require_id and not group.get("id")
+        ):
+            raise TemporaryMauticError(
+                f"{context} returned an invalid response"
+            )
+        return group
+
+    def list_point_groups(self, **params) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            "points/groups",
+            params=params or None,
+        )
+        data = self._json_object(response, "Mautic point group list")
+        groups = data.get("pointGroups")
+        if not isinstance(groups, (dict, list)):
+            raise TemporaryMauticError(
+                "Mautic point group list returned an invalid response"
+            )
+        return data
+
+    def get_point_group(
+        self,
+        group_id: int | str,
+    ) -> dict[str, Any]:
+        group_id = str(group_id or "").strip()
+        if not group_id:
+            raise PermanentMauticError(
+                "Mautic point group ID is required"
+            )
+
+        response = self._request(
+            "GET",
+            f"points/groups/{group_id}",
+        )
+        return self._point_group_from_response(
+            response,
+            "Mautic point group lookup",
+        )
+
+    def create_point_group(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = self._request(
+            "POST",
+            "points/groups/new",
+            data=payload,
+        )
+        return self._point_group_from_response(
+            response,
+            "Mautic point group creation",
+        )
+
+    def update_point_group(
+        self,
+        group_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        group_id = str(group_id or "").strip()
+        if not group_id:
+            raise PermanentMauticError(
+                "Mautic point group ID is required"
+            )
+
+        response = self._request(
+            "PATCH",
+            f"points/groups/{group_id}/edit",
+            data=payload,
+        )
+        return self._point_group_from_response(
+            response,
+            "Mautic point group update",
+        )
+
+    def delete_point_group(
+        self,
+        group_id: int | str,
+    ) -> dict[str, Any]:
+        group_id = str(group_id or "").strip()
+        if not group_id:
+            raise PermanentMauticError(
+                "Mautic point group ID is required"
+            )
+
+        # Mautic 7.1.3 cascades Point Group deletion to linked Point Actions,
+        # Point Triggers, and contact group-score rows. Higher-level callers
+        # must perform dependency checks before invoking this low-level delete.
+        response = self._request(
+            "DELETE",
+            f"points/groups/{group_id}/delete",
+        )
+        return self._point_group_from_response(
+            response,
+            "Mautic point group deletion",
+            require_id=False,
+        )
+
+    @staticmethod
+    def _point_group_score_from_response(
+        response,
+        context: str,
+    ) -> dict[str, Any]:
+        data = MauticClient._json_object(response, context)
+        group_score = data.get("groupScore")
+        if not isinstance(group_score, dict) or "score" not in group_score:
+            raise TemporaryMauticError(
+                f"{context} returned an invalid response"
+            )
+        group = group_score.get("group")
+        if not isinstance(group, dict) or not group.get("id"):
+            raise TemporaryMauticError(
+                f"{context} returned an invalid response"
+            )
+        return group_score
+
+    def list_contact_point_groups(
+        self,
+        contact_id: int | str,
+    ) -> dict[str, Any]:
+        contact_id = str(contact_id or "").strip()
+        if not contact_id:
+            raise PermanentMauticError(
+                "Mautic contact ID is required"
+            )
+
+        response = self._request(
+            "GET",
+            f"contacts/{contact_id}/points/groups",
+        )
+        data = self._json_object(
+            response,
+            "Mautic contact point group list",
+        )
+        group_scores = data.get("groupScores")
+        if not isinstance(group_scores, (dict, list)):
+            raise TemporaryMauticError(
+                "Mautic contact point group list returned an invalid response"
+            )
+        return data
+
+    def get_contact_point_group(
+        self,
+        contact_id: int | str,
+        group_id: int | str,
+    ) -> dict[str, Any]:
+        contact_id = str(contact_id or "").strip()
+        group_id = str(group_id or "").strip()
+        if not contact_id or not group_id:
+            raise PermanentMauticError(
+                "Mautic contact ID and point group ID are required"
+            )
+
+        response = self._request(
+            "GET",
+            f"contacts/{contact_id}/points/groups/{group_id}",
+        )
+        return self._point_group_score_from_response(
+            response,
+            "Mautic contact point group lookup",
+        )
+
+    def adjust_contact_group_points(
+        self,
+        contact_id: int | str,
+        group_id: int | str,
+        operator: str,
+        amount: int,
+        *,
+        event_name: str = "",
+        action_name: str = "",
+    ) -> dict[str, Any]:
+        contact_id = str(contact_id or "").strip()
+        group_id = str(group_id or "").strip()
+        normalized_operator = str(operator or "").strip().lower()
+        if not contact_id or not group_id:
+            raise PermanentMauticError(
+                "Mautic contact ID and point group ID are required"
+            )
+        if normalized_operator not in {"plus", "minus"}:
+            raise PermanentMauticError(
+                "Mautic point group operator must be 'plus' or 'minus'"
+            )
+        if isinstance(amount, bool):
+            raise PermanentMauticError(
+                "Mautic point group adjustment amount must be a positive integer"
+            )
+        try:
+            normalized_amount = int(amount)
+        except (TypeError, ValueError) as exc:
+            raise PermanentMauticError(
+                "Mautic point group adjustment amount must be a positive integer"
+            ) from exc
+        if normalized_amount <= 0:
+            raise PermanentMauticError(
+                "Mautic point group adjustment amount must be a positive integer"
+            )
+
+        payload = {}
+        normalized_event_name = str(event_name or "").strip()
+        normalized_action_name = str(action_name or "").strip()
+        if normalized_event_name:
+            payload["eventName"] = normalized_event_name
+        if normalized_action_name:
+            payload["actionName"] = normalized_action_name
+
+        response = self._request(
+            "POST",
+            (
+                f"contacts/{contact_id}/points/groups/{group_id}/"
+                f"{normalized_operator}/{normalized_amount}"
+            ),
+            data=payload or None,
+        )
+        return self._point_group_score_from_response(
+            response,
+            "Mautic contact point group adjustment",
+        )
+
     def adjust_contact_points(
         self,
         contact_id: int | str,

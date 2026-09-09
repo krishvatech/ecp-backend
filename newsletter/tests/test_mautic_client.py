@@ -723,6 +723,310 @@ class MauticClientTests(SimpleTestCase):
 
         session.request.assert_not_called()
 
+    def test_list_point_groups_calls_expected_endpoint_and_accepts_empty_list(self):
+        client, session = self.make_mautic_client(
+            response(200, {"total": 0, "pointGroups": []})
+        )
+
+        data = client.list_point_groups(start=0, limit=100)
+
+        self.assertEqual(data, {"total": 0, "pointGroups": []})
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/points/groups"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {"start": 0, "limit": 100},
+        )
+
+    def test_list_point_groups_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(response(200, {"total": 0}))
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "point group list returned an invalid response",
+        ):
+            client.list_point_groups()
+
+    def test_point_group_crud_uses_standard_endpoints(self):
+        payload = {
+            "name": "Engagement",
+            "description": "Newsletter engagement score",
+            "isPublished": False,
+        }
+        client, session = self.make_mautic_client(
+            response(
+                201,
+                {
+                    "pointGroup": {
+                        "id": 4,
+                        **payload,
+                    }
+                },
+            )
+        )
+
+        created = client.create_point_group(payload)
+        self.assertEqual(created["id"], 4)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/points/groups/new"),
+        )
+        self.assertEqual(session.request.call_args.kwargs["data"], payload)
+
+        session.reset_mock()
+        session.request.return_value = response(
+            200,
+            {"pointGroup": {"id": 4, **payload}},
+        )
+        fetched = client.get_point_group(" 4 ")
+        self.assertEqual(fetched["name"], "Engagement")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/points/groups/4"),
+        )
+
+        session.reset_mock()
+        session.request.return_value = response(
+            200,
+            {
+                "pointGroup": {
+                    "id": 4,
+                    **payload,
+                    "name": "Engagement Updated",
+                }
+            },
+        )
+        updated = client.update_point_group(
+            4,
+            {"name": "Engagement Updated"},
+        )
+        self.assertEqual(updated["name"], "Engagement Updated")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("PATCH", "http://mautic.local/api/points/groups/4/edit"),
+        )
+
+        session.reset_mock()
+        session.request.return_value = response(
+            200,
+            {
+                "pointGroup": {
+                    "id": None,
+                    "name": "Engagement Updated",
+                }
+            },
+        )
+        deleted = client.delete_point_group(4)
+        self.assertIsNone(deleted["id"])
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("DELETE", "http://mautic.local/api/points/groups/4/delete"),
+        )
+
+    def test_point_group_methods_validate_ids(self):
+        client, session = self.make_mautic_client()
+
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "point group ID is required",
+        ):
+            client.get_point_group("")
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "point group ID is required",
+        ):
+            client.update_point_group("", {"name": "Updated"})
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "point group ID is required",
+        ):
+            client.delete_point_group("")
+
+        session.request.assert_not_called()
+
+    def test_list_contact_point_groups_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "total": 1,
+                    "groupScores": [
+                        {
+                            "score": 7,
+                            "group": {
+                                "id": 4,
+                                "name": "Engagement",
+                                "description": "",
+                            },
+                        }
+                    ],
+                },
+            )
+        )
+
+        data = client.list_contact_point_groups(12)
+
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["groupScores"][0]["score"], 7)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "GET",
+                "http://mautic.local/api/contacts/12/points/groups",
+            ),
+        )
+
+    def test_get_contact_point_group_returns_group_score(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "groupScore": {
+                        "score": 7,
+                        "group": {
+                            "id": 4,
+                            "name": "Engagement",
+                            "description": "",
+                        },
+                    }
+                },
+            )
+        )
+
+        score = client.get_contact_point_group(" 12 ", " 4 ")
+
+        self.assertEqual(score["score"], 7)
+        self.assertEqual(score["group"]["id"], 4)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "GET",
+                "http://mautic.local/api/contacts/12/points/groups/4",
+            ),
+        )
+
+    def test_adjust_contact_group_points_forwards_audit_labels(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "groupScore": {
+                        "score": 7,
+                        "group": {
+                            "id": 4,
+                            "name": "Engagement",
+                            "description": "",
+                        },
+                    }
+                },
+            )
+        )
+
+        score = client.adjust_contact_group_points(
+            12,
+            4,
+            "plus",
+            7,
+            event_name="Manual group adjustment",
+            action_name="ECP Newsletter",
+        )
+
+        self.assertEqual(score["score"], 7)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "POST",
+                "http://mautic.local/api/contacts/12/points/groups/4/plus/7",
+            ),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["data"],
+            {
+                "eventName": "Manual group adjustment",
+                "actionName": "ECP Newsletter",
+            },
+        )
+
+    def test_adjust_contact_group_points_supports_minus_and_validates_input(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "groupScore": {
+                        "score": 0,
+                        "group": {
+                            "id": 4,
+                            "name": "Engagement",
+                        },
+                    }
+                },
+            )
+        )
+
+        client.adjust_contact_group_points(12, 4, "minus", 3)
+
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "POST",
+                "http://mautic.local/api/contacts/12/points/groups/4/minus/3",
+            ),
+        )
+        self.assertIsNone(session.request.call_args.kwargs["data"])
+
+        invalid_cases = [
+            ("", "4", "plus", 1),
+            ("12", "", "plus", 1),
+            ("12", "4", "set", 1),
+            ("12", "4", "plus", 0),
+            ("12", "4", "plus", True),
+            ("12", "4", "plus", "abc"),
+        ]
+        for contact_id, group_id, operator, amount in invalid_cases:
+            with self.assertRaises(PermanentMauticError):
+                client.adjust_contact_group_points(
+                    contact_id,
+                    group_id,
+                    operator,
+                    amount,
+                )
+
+    def test_contact_point_group_methods_validate_and_reject_malformed_response(self):
+        client, session = self.make_mautic_client()
+
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "contact ID is required",
+        ):
+            client.list_contact_point_groups("")
+        with self.assertRaisesRegex(
+            PermanentMauticError,
+            "contact ID and point group ID are required",
+        ):
+            client.get_contact_point_group("", 4)
+
+        session.request.assert_not_called()
+
+        malformed_client, _ = self.make_mautic_client(
+            response(200, {"groupScore": {"score": 7}})
+        )
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "point group lookup returned an invalid response",
+        ):
+            malformed_client.get_contact_point_group(12, 4)
+
+        malformed_list_client, _ = self.make_mautic_client(
+            response(200, {"total": 0})
+        )
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "point group list returned an invalid response",
+        ):
+            malformed_list_client.list_contact_point_groups(12)
+
     def test_list_point_triggers_calls_expected_endpoint_and_accepts_empty_list(self):
         client, session = self.make_mautic_client(
             response(200, {"total": 0, "triggers": []})
