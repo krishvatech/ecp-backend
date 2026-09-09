@@ -9,6 +9,7 @@ Handles all API calls to the WordPress IMAA platform:
 import requests
 import logging
 import math
+import secrets
 from django.conf import settings
 from typing import Dict, Optional, Any, List
 from requests.auth import HTTPBasicAuth
@@ -136,6 +137,34 @@ class WordPressAPIClient:
         response.raise_for_status()
         return response
 
+
+    def ensure_buddypress_group_member(
+        self,
+        group_id: int,
+        user_id: int,
+        role: str = "member",
+    ) -> Dict[str, Any]:
+        """
+        Ensure an existing WordPress user is a member of a BuddyPress group via
+        the IMAA Connect User Bridge plugin.
+
+        This is used instead of the raw BuddyPress REST add-member endpoint
+        because the live site can return a generic 404 for some create/link
+        edge cases. The bridge runs inside WordPress and uses BuddyPress native
+        functions, while remaining additive-only.
+        """
+        response = self._post_resource(
+            f"/imaa-connect/v1/groups/{int(group_id)}/members/ensure",
+            payload={
+                "user_id": int(user_id),
+                "role": role or "member",
+            },
+        )
+        data = response.json() if response.content else {}
+        if not isinstance(data, dict) or not data.get("ok"):
+            raise ValueError("WordPress user bridge did not confirm group membership.")
+        return data
+
     def add_buddypress_group_member(self, group_id: int, user_id: int, role: str = "member") -> Dict[str, Any]:
         """
         Add an existing WordPress user to a BuddyPress group.
@@ -155,6 +184,147 @@ class WordPressAPIClient:
             },
         )
         return response.json() if response.content else {}
+
+
+    def create_or_link_wordpress_user(
+        self,
+        *,
+        email: str,
+        username: str,
+        first_name: str = "",
+        last_name: str = "",
+        name: str = "",
+        role: str = "subscriber",
+        wp_user_id: Optional[int] = None,
+        send_password_setup_email: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Create or link a WordPress user through the IMAA Connect User Bridge plugin.
+
+        This endpoint is used instead of the raw BuddyPress create-member endpoint
+        because the live WordPress site created a user without reliably saving
+        user_email through that raw endpoint. The bridge verifies the email is
+        saved before returning a user id.
+        """
+        email = str(email or "").strip().lower()
+        username = str(username or "").strip()
+        if not email or "@" not in email:
+            raise ValueError("A valid email is required to create/link a WordPress user.")
+        if not username:
+            username = email.split("@", 1)[0]
+
+        payload: Dict[str, Any] = {
+            "email": email,
+            "username": username,
+            "first_name": str(first_name or "")[:150],
+            "last_name": str(last_name or "")[:150],
+            "display_name": str(name or "")[:255],
+            "role": role or "subscriber",
+            "send_password_setup_email": bool(send_password_setup_email),
+        }
+        if wp_user_id:
+            payload["wp_user_id"] = int(wp_user_id)
+
+        response = self._post_resource("/imaa-connect/v1/users/create-or-link", payload=payload)
+        data = response.json() if response.content else {}
+        if not isinstance(data, dict) or not data.get("id"):
+            raise ValueError("WordPress user bridge did not return a user id.")
+
+        returned_email = str(data.get("email") or "").strip().lower()
+        if returned_email != email:
+            raise ValueError(
+                "WordPress user bridge returned a user without the expected email. "
+                f"expected={email!r} returned={returned_email!r}"
+            )
+        return data
+
+    def create_wordpress_user(
+        self,
+        *,
+        email: str,
+        username: str,
+        first_name: str = "",
+        last_name: str = "",
+        name: str = "",
+        role: str = "subscriber",
+    ) -> Dict[str, Any]:
+        """
+        Create a basic BuddyPress/WordPress user for temporary Connect -> WordPress sync.
+
+        A random strong password is generated only to satisfy WordPress user
+        creation requirements. The password is never returned, logged, stored, or
+        emailed by Connect. If the user needs WordPress access, call
+        request_password_setup_email() after creation so they can set their own
+        password through WordPress.
+
+        Endpoint:
+        /wp-json/buddypress/v1/members
+
+        Note: on the IMAA WordPress site, /wp-json/wp/v2/users is not exposed
+        for this integration and returns 404. BuddyPress exposes POST
+        /buddypress/v1/members and internally creates the WordPress user.
+        """
+        email = str(email or "").strip().lower()
+        username = str(username or "").strip()
+        if not email or "@" not in email:
+            raise ValueError("A valid email is required to create a WordPress user.")
+        if not username:
+            raise ValueError("A username is required to create a WordPress user.")
+
+        payload: Dict[str, Any] = {
+            "context": "edit",
+            "user_login": username,
+            "email": email,
+            "password": secrets.token_urlsafe(32),
+        }
+        display_name = str(name or "").strip() or " ".join(
+            part for part in [str(first_name or "").strip(), str(last_name or "").strip()] if part
+        ).strip()
+        if not display_name:
+            display_name = email.split("@", 1)[0]
+        payload["name"] = display_name[:255]
+        if role:
+            payload["roles"] = [role]
+
+        response = self._post_resource("/buddypress/v1/members", payload=payload)
+        data = response.json() if response.content else {}
+        if not isinstance(data, dict) or not data.get("id"):
+            raise ValueError("WordPress user creation did not return a user id.")
+        return data
+
+    def _wordpress_site_url(self) -> str:
+        """Return the WordPress site root from a REST root such as /wp-json."""
+        base_url = self.base_url.rstrip("/")
+        if base_url.endswith("/wp-json"):
+            return base_url[: -len("/wp-json")]
+        if "/wp-json" in base_url:
+            return base_url.split("/wp-json", 1)[0].rstrip("/")
+        return base_url
+
+    def request_password_setup_email(self, email_or_username: str) -> bool:
+        """
+        Best-effort request for WordPress to send its password setup/reset email.
+
+        WordPress core does not expose a standard authenticated REST endpoint for
+        this, so we submit the normal lost-password form after creating the user.
+        The generated password is never exposed by Connect.
+        """
+        login = str(email_or_username or "").strip()
+        if not login:
+            return False
+
+        url = f"{self._wordpress_site_url().rstrip('/')}/wp-login.php?action=lostpassword"
+        try:
+            response = requests.post(
+                url,
+                data={"user_login": login, "redirect_to": ""},
+                timeout=20,
+                allow_redirects=True,
+            )
+            return response.status_code < 400
+        except requests.exceptions.RequestException as exc:
+            logger.warning("Unable to request WordPress password setup email for %s: %s", login, exc)
+            return False
 
     def get_buddypress_groups(self, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
         """

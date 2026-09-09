@@ -3534,8 +3534,9 @@ class WordPressGroupSourceSyncToWordPressView(APIView):
     """
     Admin-only additive reverse sync from one Connect group to WordPress.
 
-    This does not create WordPress users, does not remove users from either
-    system, and does not modify WordPress roles for existing members.
+    This can optionally create missing WordPress users with a random internal
+    password, then send a password setup/reset email. It never removes users
+    from either system and never modifies WordPress roles for existing members.
     """
     permission_classes = [GroupSuperuserOnly]
 
@@ -3553,8 +3554,15 @@ class WordPressGroupSourceSyncToWordPressView(APIView):
             )
 
         dry_run = bool(request.data.get("dry_run", False))
+        create_missing_users = bool(request.data.get("create_missing_users", False))
+        send_password_setup_email = bool(request.data.get("send_password_setup_email", True))
         try:
-            result = sync_connect_members_to_wordpress(source, dry_run=dry_run)
+            result = sync_connect_members_to_wordpress(
+                source,
+                dry_run=dry_run,
+                create_missing_users=create_missing_users,
+                send_password_setup_email=send_password_setup_email,
+            )
         except Exception as exc:
             return Response(
                 {

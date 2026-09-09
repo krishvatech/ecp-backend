@@ -1591,6 +1591,98 @@ def _profile_for_connect_user(user: User) -> UserProfile | None:
         return None
 
 
+def _save_wordpress_profile_mapping(
+    user: User,
+    *,
+    wp_user_id: int,
+    email: str = "",
+    username: str = "",
+) -> None:
+    """Persist the durable WordPress user mapping on the local profile."""
+    if not wp_user_id:
+        return
+
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+    changed_fields: list[str] = []
+
+    if profile.wordpress_id != wp_user_id:
+        profile.wordpress_id = wp_user_id
+        changed_fields.append("wordpress_id")
+    if email and profile.wordpress_email != email:
+        profile.wordpress_email = email
+        changed_fields.append("wordpress_email")
+    if username and profile.wordpress_username != username:
+        profile.wordpress_username = username
+        changed_fields.append("wordpress_username")
+    if profile.wordpress_sync_status != UserProfile.WORDPRESS_SYNC_STATUS_SYNCED:
+        profile.wordpress_sync_status = UserProfile.WORDPRESS_SYNC_STATUS_SYNCED
+        changed_fields.append("wordpress_sync_status")
+
+    profile.wordpress_synced_at = timezone.now()
+    changed_fields.append("wordpress_synced_at")
+    profile.save(update_fields=list(dict.fromkeys(changed_fields)))
+
+
+def _connect_user_wordpress_username(user: User) -> str:
+    """Build a safe, deterministic WordPress username for a Connect-only user."""
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    local_part = email.split("@", 1)[0] if "@" in email else ""
+    full_name = str(user.get_full_name() or "").strip()
+    base = slugify(local_part or full_name or f"connect-user-{user.id}").replace("-", "_")
+    return (base or f"connect_user_{user.id}")[:55]
+
+
+def _create_wordpress_user_for_connect_member(
+    user: User,
+    client: WordPressAPIClient,
+    *,
+    send_password_setup_email: bool,
+) -> tuple[int | None, bool]:
+    """
+    Create/link a WordPress user through the IMAA bridge endpoint and return
+    (wp_user_id, setup_email_sent).
+
+    The bridge endpoint verifies user_email is saved in WordPress before it
+    returns, so password reset/setup can work by email.
+    """
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    if not email:
+        return None, False
+
+    first_name = str(getattr(user, "first_name", "") or "").strip()
+    last_name = str(getattr(user, "last_name", "") or "").strip()
+    name = str(user.get_full_name() or email).strip()
+    username = _connect_user_wordpress_username(user)
+
+    created_user = client.create_or_link_wordpress_user(
+        email=email,
+        username=username,
+        first_name=first_name,
+        last_name=last_name,
+        name=name,
+        role="subscriber",
+        send_password_setup_email=send_password_setup_email,
+    )
+
+    wp_user_id = _extract_wp_member_id(created_user) or _int(created_user.get("id"))
+    if not wp_user_id:
+        return None, False
+
+    wp_username = str(created_user.get("user_login") or "").strip() or _extract_username(
+        created_user,
+        {},
+        wp_user_id=wp_user_id,
+    )
+    _save_wordpress_profile_mapping(
+        user,
+        wp_user_id=wp_user_id,
+        email=email,
+        username=wp_username,
+    )
+
+    return wp_user_id, bool(created_user.get("password_setup_email_sent"))
+
+
 def _resolve_wordpress_user_id_for_connect_member(
     membership: GroupMembership,
     client: WordPressAPIClient,
@@ -1628,30 +1720,13 @@ def _resolve_wordpress_user_id_for_connect_member(
     if not wp_user_id:
         return None, "missing_wordpress_user"
 
-    if profile is None:
-        profile, _ = UserProfile.objects.get_or_create(user=membership.user)
-
-    changed_fields = []
-    if profile.wordpress_id != wp_user_id:
-        profile.wordpress_id = wp_user_id
-        changed_fields.append("wordpress_id")
-    if email and profile.wordpress_email != email:
-        profile.wordpress_email = email
-        changed_fields.append("wordpress_email")
-
     username = _extract_username(wp_user or {}, {}, wp_user_id=wp_user_id)
-    if username and profile.wordpress_username != username:
-        profile.wordpress_username = username
-        changed_fields.append("wordpress_username")
-
-    if profile.wordpress_sync_status != UserProfile.WORDPRESS_SYNC_STATUS_SYNCED:
-        profile.wordpress_sync_status = UserProfile.WORDPRESS_SYNC_STATUS_SYNCED
-        changed_fields.append("wordpress_sync_status")
-
-    profile.wordpress_synced_at = timezone.now()
-    changed_fields.append("wordpress_synced_at")
-    if changed_fields:
-        profile.save(update_fields=list(dict.fromkeys(changed_fields)))
+    _save_wordpress_profile_mapping(
+        membership.user,
+        wp_user_id=wp_user_id,
+        email=email,
+        username=username,
+    )
 
     return wp_user_id, "email_lookup"
 
@@ -1660,14 +1735,17 @@ def sync_connect_members_to_wordpress(
     source: WordPressGroupSource,
     *,
     dry_run: bool = False,
+    create_missing_users: bool = False,
+    send_password_setup_email: bool = True,
 ) -> Dict[str, int | bool]:
     """Add missing Connect members into the linked WordPress group.
 
     This is intentionally additive-only for the temporary migration period:
-    - add Connect members to WordPress when a WordPress user mapping exists
+    - add Connect members to WordPress
+    - optionally create missing WordPress users with a random internal password
+    - optionally send WordPress password setup/reset emails for newly created users
     - never remove members from WordPress
     - never remove members from Connect
-    - never create WordPress users automatically
     - never change/downgrade existing WordPress member roles
     """
     if not source.linked_group_id:
@@ -1698,6 +1776,11 @@ def sync_connect_members_to_wordpress(
     added = 0
     would_add = 0
     already_exists = 0
+    linked_existing_wordpress_users = 0
+    created_wordpress_users = 0
+    would_create_wordpress_users = 0
+    password_setup_emails_sent = 0
+    password_setup_emails_failed = 0
     skipped_missing_wordpress_user = 0
     skipped_missing_email = 0
     failed = 0
@@ -1706,12 +1789,47 @@ def sync_connect_members_to_wordpress(
         processed += 1
         wp_user_id, reason = _resolve_wordpress_user_id_for_connect_member(membership, client)
 
+        if reason == "email_lookup" and wp_user_id:
+            linked_existing_wordpress_users += 1
+
         if not wp_user_id:
             if reason == "missing_email":
                 skipped_missing_email += 1
+                continue
+
+            if reason == "missing_wordpress_user" and create_missing_users:
+                if dry_run:
+                    would_create_wordpress_users += 1
+                    would_add += 1
+                    continue
+
+                try:
+                    wp_user_id, email_sent = _create_wordpress_user_for_connect_member(
+                        membership.user,
+                        client,
+                        send_password_setup_email=send_password_setup_email,
+                    )
+                    if not wp_user_id:
+                        failed += 1
+                        continue
+                    created_wordpress_users += 1
+                    if send_password_setup_email:
+                        if email_sent:
+                            password_setup_emails_sent += 1
+                        else:
+                            password_setup_emails_failed += 1
+                except Exception as exc:  # pragma: no cover - remote WordPress safety
+                    failed += 1
+                    logger.exception(
+                        "Unable to create WordPress user for Connect user %s while syncing group %s: %s",
+                        membership.user_id,
+                        source.wp_group_id,
+                        exc,
+                    )
+                    continue
             else:
                 skipped_missing_wordpress_user += 1
-            continue
+                continue
 
         wp_user_id_key = str(wp_user_id)
         if wp_user_id_key in existing_wp_ids:
@@ -1725,7 +1843,7 @@ def sync_connect_members_to_wordpress(
         try:
             # Add only as a normal member during the temporary two-way sync.
             # Role promotion/demotion is deliberately out of scope for safety.
-            client.add_buddypress_group_member(
+            client.ensure_buddypress_group_member(
                 source.wp_group_id,
                 wp_user_id,
                 role="member",
@@ -1744,10 +1862,17 @@ def sync_connect_members_to_wordpress(
 
     return {
         "dry_run": dry_run,
+        "create_missing_users": create_missing_users,
+        "send_password_setup_email": send_password_setup_email,
         "processed": processed,
         "added": added,
         "would_add": would_add,
         "already_exists": already_exists,
+        "linked_existing_wordpress_users": linked_existing_wordpress_users,
+        "created_wordpress_users": created_wordpress_users,
+        "would_create_wordpress_users": would_create_wordpress_users,
+        "password_setup_emails_sent": password_setup_emails_sent,
+        "password_setup_emails_failed": password_setup_emails_failed,
         "skipped_missing_wordpress_user": skipped_missing_wordpress_user,
         "skipped_missing_email": skipped_missing_email,
         "failed": failed,
