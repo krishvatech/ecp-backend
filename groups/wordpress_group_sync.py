@@ -1583,6 +1583,178 @@ def sync_wordpress_source_members(source: WordPressGroupSource, *, actor=None) -
 
 
 
+
+def _profile_for_connect_user(user: User) -> UserProfile | None:
+    try:
+        return user.profile
+    except UserProfile.DoesNotExist:
+        return None
+
+
+def _resolve_wordpress_user_id_for_connect_member(
+    membership: GroupMembership,
+    client: WordPressAPIClient,
+) -> tuple[int | None, str]:
+    """Resolve the WordPress user ID for an existing Connect member.
+
+    Prefer the durable local mapping created by the normal WordPress -> Connect
+    sync. If a manually added Connect member has no mapping yet, try the custom
+    WordPress user-by-email endpoint and persist the discovered mapping.
+    """
+    profile = _profile_for_connect_user(membership.user)
+
+    wp_user_id = _int(getattr(profile, "wordpress_id", None)) if profile else 0
+    if wp_user_id:
+        return wp_user_id, "profile.wordpress_id"
+
+    wp_user_id = _int(membership.source_user_id)
+    if membership.source == GroupMembership.SOURCE_WORDPRESS and wp_user_id:
+        if profile is None:
+            profile, _ = UserProfile.objects.get_or_create(user=membership.user)
+        if profile.wordpress_id != wp_user_id:
+            profile.wordpress_id = wp_user_id
+            if membership.user.email and not profile.wordpress_email:
+                profile.wordpress_email = membership.user.email
+            profile.wordpress_synced_at = timezone.now()
+            profile.save(update_fields=["wordpress_id", "wordpress_email", "wordpress_synced_at"])
+        return wp_user_id, "membership.source_user_id"
+
+    email = str(getattr(membership.user, "email", "") or "").strip().lower()
+    if not email:
+        return None, "missing_email"
+
+    wp_user = client.get_imaa_connect_user_by_email(email)
+    wp_user_id = _extract_wp_member_id(wp_user or {})
+    if not wp_user_id:
+        return None, "missing_wordpress_user"
+
+    if profile is None:
+        profile, _ = UserProfile.objects.get_or_create(user=membership.user)
+
+    changed_fields = []
+    if profile.wordpress_id != wp_user_id:
+        profile.wordpress_id = wp_user_id
+        changed_fields.append("wordpress_id")
+    if email and profile.wordpress_email != email:
+        profile.wordpress_email = email
+        changed_fields.append("wordpress_email")
+
+    username = _extract_username(wp_user or {}, {}, wp_user_id=wp_user_id)
+    if username and profile.wordpress_username != username:
+        profile.wordpress_username = username
+        changed_fields.append("wordpress_username")
+
+    if profile.wordpress_sync_status != UserProfile.WORDPRESS_SYNC_STATUS_SYNCED:
+        profile.wordpress_sync_status = UserProfile.WORDPRESS_SYNC_STATUS_SYNCED
+        changed_fields.append("wordpress_sync_status")
+
+    profile.wordpress_synced_at = timezone.now()
+    changed_fields.append("wordpress_synced_at")
+    if changed_fields:
+        profile.save(update_fields=list(dict.fromkeys(changed_fields)))
+
+    return wp_user_id, "email_lookup"
+
+
+def sync_connect_members_to_wordpress(
+    source: WordPressGroupSource,
+    *,
+    dry_run: bool = False,
+) -> Dict[str, int | bool]:
+    """Add missing Connect members into the linked WordPress group.
+
+    This is intentionally additive-only for the temporary migration period:
+    - add Connect members to WordPress when a WordPress user mapping exists
+    - never remove members from WordPress
+    - never remove members from Connect
+    - never create WordPress users automatically
+    - never change/downgrade existing WordPress member roles
+    """
+    if not source.linked_group_id:
+        raise ValueError("This WordPress source is not linked to a Connect group yet.")
+
+    group = source.linked_group
+    if not group:
+        raise ValueError("Unable to resolve linked Connect group for this WordPress source.")
+
+    client = WordPressAPIClient.for_group_sync()
+    wp_members = client.get_all_buddypress_group_members(source.wp_group_id)
+    existing_wp_ids = {
+        str(_extract_wp_member_id(member))
+        for member in wp_members
+        if _extract_wp_member_id(member)
+    }
+
+    connect_memberships = list(
+        GroupMembership.objects.filter(
+            group=group,
+            status=GroupMembership.STATUS_ACTIVE,
+        )
+        .select_related("user", "user__profile")
+        .order_by("user__email", "user__id")
+    )
+
+    processed = 0
+    added = 0
+    would_add = 0
+    already_exists = 0
+    skipped_missing_wordpress_user = 0
+    skipped_missing_email = 0
+    failed = 0
+
+    for membership in connect_memberships:
+        processed += 1
+        wp_user_id, reason = _resolve_wordpress_user_id_for_connect_member(membership, client)
+
+        if not wp_user_id:
+            if reason == "missing_email":
+                skipped_missing_email += 1
+            else:
+                skipped_missing_wordpress_user += 1
+            continue
+
+        wp_user_id_key = str(wp_user_id)
+        if wp_user_id_key in existing_wp_ids:
+            already_exists += 1
+            continue
+
+        if dry_run:
+            would_add += 1
+            continue
+
+        try:
+            # Add only as a normal member during the temporary two-way sync.
+            # Role promotion/demotion is deliberately out of scope for safety.
+            client.add_buddypress_group_member(
+                source.wp_group_id,
+                wp_user_id,
+                role="member",
+            )
+            existing_wp_ids.add(wp_user_id_key)
+            added += 1
+        except Exception as exc:  # pragma: no cover - remote WordPress safety
+            failed += 1
+            logger.exception(
+                "Unable to add Connect user %s / WP user %s to WordPress group %s: %s",
+                membership.user_id,
+                wp_user_id,
+                source.wp_group_id,
+                exc,
+            )
+
+    return {
+        "dry_run": dry_run,
+        "processed": processed,
+        "added": added,
+        "would_add": would_add,
+        "already_exists": already_exists,
+        "skipped_missing_wordpress_user": skipped_missing_wordpress_user,
+        "skipped_missing_email": skipped_missing_email,
+        "failed": failed,
+        "remote_members": len(wp_members),
+    }
+
+
 def sync_wordpress_source_full_group_content(
     source: WordPressGroupSource,
     *,

@@ -113,6 +113,49 @@ class WordPressAPIClient:
         response.raise_for_status()
         return response
 
+
+    def _post_resource(self, path: str, payload: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None):
+        """
+        Generic POST helper for WordPress/BuddyPress REST resources.
+
+        `self.base_url` is expected to be the WordPress REST root, for example:
+        https://imaa-institute.org/wp-json
+        """
+        path = path if path.startswith("/") else f"/{path}"
+        url = f"{self.base_url.rstrip('/')}{path}"
+        headers = self._get_headers()
+        auth = self._get_auth()
+        response = requests.post(
+            url,
+            params=params or {},
+            json=payload or {},
+            headers=headers,
+            auth=auth,
+            timeout=20,
+        )
+        response.raise_for_status()
+        return response
+
+    def add_buddypress_group_member(self, group_id: int, user_id: int, role: str = "member") -> Dict[str, Any]:
+        """
+        Add an existing WordPress user to a BuddyPress group.
+
+        This is used for the temporary additive two-way sync from IMAA Connect
+        back to WordPress. It does not create WordPress users and it does not
+        remove or downgrade existing WordPress group members.
+
+        Endpoint:
+        /wp-json/buddypress/v1/groups/<group_id>/members
+        """
+        response = self._post_resource(
+            f"/buddypress/v1/groups/{int(group_id)}/members",
+            payload={
+                "user_id": int(user_id),
+                "role": role or "member",
+            },
+        )
+        return response.json() if response.content else {}
+
     def get_buddypress_groups(self, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
         """
         Fetch one page of BuddyPress groups from WordPress IMAA.
