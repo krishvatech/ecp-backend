@@ -29,6 +29,13 @@ from .admin_views import (
     NewsletterAdminStageDetailView,
     NewsletterAdminStageListCreateView,
 )
+from .point_group_views import (
+    NewsletterAdminContactPointGroupDetailView,
+    NewsletterAdminContactPointGroupsView,
+    NewsletterAdminPointGroupDeleteCheckView,
+    NewsletterAdminPointGroupDetailView,
+    NewsletterAdminPointGroupListCreateView,
+)
 from .point_trigger_views import (
     NewsletterAdminPointTriggerDetailView,
     NewsletterAdminPointTriggerEventDetailView,
@@ -156,6 +163,31 @@ urlpatterns = [
         "newsletter/admin/points/",
         NewsletterAdminPointActionListCreateView.as_view(),
         name="newsletter-admin-point-action-list",
+    ),
+    path(
+        "newsletter/admin/points/groups/",
+        NewsletterAdminPointGroupListCreateView.as_view(),
+        name="newsletter-admin-point-group-list",
+    ),
+    path(
+        "newsletter/admin/points/groups/<str:group_id>/delete-check/",
+        NewsletterAdminPointGroupDeleteCheckView.as_view(),
+        name="newsletter-admin-point-group-delete-check",
+    ),
+    path(
+        "newsletter/admin/points/groups/<str:group_id>/",
+        NewsletterAdminPointGroupDetailView.as_view(),
+        name="newsletter-admin-point-group-detail",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/point-groups/",
+        NewsletterAdminContactPointGroupsView.as_view(),
+        name="newsletter-admin-contact-point-group-list",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/point-groups/<str:group_id>/",
+        NewsletterAdminContactPointGroupDetailView.as_view(),
+        name="newsletter-admin-contact-point-group-detail",
     ),
     path(
         "newsletter/admin/points/triggers/event-types/",
