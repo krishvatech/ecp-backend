@@ -53,6 +53,10 @@ from .template_views import (
     NewsletterAdminTemplateDetailView,
     NewsletterAdminTemplateListCreateView,
 )
+from .native_campaign_views import (
+    NewsletterAdminMauticCampaignDetailView,
+    NewsletterAdminMauticCampaignListCreateView,
+)
 from .views import NewsletterPreferencesView
 from .webhooks import MauticNewsletterWebhookView
 
@@ -117,6 +121,19 @@ urlpatterns = [
         "newsletter/admin/campaigns/<uuid:uuid>/cancel/",
         NewsletterAdminCampaignCancelView.as_view(),
         name="newsletter-admin-campaign-cancel",
+    ),
+    # Native provider-owned Mautic Campaign API. This intentionally uses a
+    # separate path while the legacy ECP NewsletterCampaign endpoints are
+    # still present for safe migration and historical compatibility.
+    path(
+        "newsletter/admin/mautic-campaigns/",
+        NewsletterAdminMauticCampaignListCreateView.as_view(),
+        name="newsletter-admin-mautic-campaign-list",
+    ),
+    path(
+        "newsletter/admin/mautic-campaigns/<str:campaign_id>/",
+        NewsletterAdminMauticCampaignDetailView.as_view(),
+        name="newsletter-admin-mautic-campaign-detail",
     ),
     path(
         "newsletter/admin/categories/",
