@@ -5469,10 +5469,11 @@ class EventViewSet(viewsets.ModelViewSet):
 
         Request body:
         {
-          "action": "accept|decline|waitlist|assign_reviewer",
+          "action": "accept|decline|waitlist|assign_reviewer|delete",
           "track_application_ids": [1, 2, 3, ...],
           "tier_preference_id": 5,  // For accept action
           "reviewer_id": 10,  // For assign_reviewer action
+          "reason": "Optional reason",  // For delete action
         }
 
         For accept action: calls accept_track_application() service for each track app,
@@ -5482,7 +5483,8 @@ class EventViewSet(viewsets.ModelViewSet):
         from events.services.application_decisions import (
             accept_track_application,
             decline_track_application,
-            waitlist_track_application
+            waitlist_track_application,
+            delete_track_application,
         )
 
         event = self.get_object()
@@ -5581,6 +5583,18 @@ class EventViewSet(viewsets.ModelViewSet):
                 reviewer_id = request.data.get('reviewer_id')
                 # Safe bulk update for reviewer assignment (non-status-changing)
                 updated_count = qs.update(reviewed_by_id=reviewer_id)
+
+            elif action == 'delete':
+                reason = request.data.get('reason', '')
+                for chunk_start in range(0, len(track_apps_list), CHUNK_SIZE):
+                    chunk = track_apps_list[chunk_start:chunk_start + CHUNK_SIZE]
+                    with transaction.atomic():
+                        for track_app in chunk:
+                            try:
+                                delete_track_application(track_app, request.user, reason=reason)
+                                updated_count += 1
+                            except Exception as e:
+                                errors.append(f"Track app {track_app.id}: {str(e)}")
 
             else:
                 return Response({'detail': f'Invalid action: {action}'}, status=400)
