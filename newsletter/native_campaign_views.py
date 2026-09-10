@@ -88,6 +88,12 @@ def _normalize_campaign(campaign: dict[str, Any]) -> dict[str, Any]:
         else:
             child_values = []
 
+        properties = event.get("properties")
+        if isinstance(properties, list):
+            properties = {}
+        elif not isinstance(properties, dict):
+            properties = {}
+
         normalized_events.append(
             {
                 "id": str(event_id) if event_id is not None else None,
@@ -96,11 +102,7 @@ def _normalize_campaign(campaign: dict[str, Any]) -> dict[str, Any]:
                 "type": str(event.get("type") or ""),
                 "eventType": str(event.get("eventType") or ""),
                 "order": event.get("order"),
-                "properties": (
-                    event.get("properties")
-                    if isinstance(event.get("properties"), (dict, list))
-                    else {}
-                ),
+                "properties": properties,
                 "triggerInterval": event.get("triggerInterval"),
                 "triggerIntervalUnit": event.get("triggerIntervalUnit"),
                 "triggerMode": event.get("triggerMode"),
@@ -613,6 +615,30 @@ def _parse_campaign_payload(
     return payload
 
 
+def _format_campaign_for_builder(campaign: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": campaign.get("id"),
+        "name": campaign.get("name"),
+        "description": campaign.get("description"),
+        "isPublished": campaign.get("isPublished", False),
+        "sources": {
+            "segments": campaign.get("lists", []),
+            "forms": campaign.get("forms", []),
+        },
+        "events": [
+            {
+                "id": event.get("id"),
+                "key": event.get("type"),
+                "eventType": event.get("eventType"),
+                "properties": event.get("properties", {}),
+                "metadata": event,
+            }
+            for event in campaign.get("events", [])
+        ],
+        "canvasSettings": campaign.get("canvasSettings", {}),
+    }
+
+
 def _provider_error_response(exc):
     message = str(exc)
     if isinstance(exc, PermanentMauticError):
@@ -815,3 +841,21 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
             return _provider_error_response(exc)
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class NewsletterAdminMauticCampaignBuilderView(APIView):
+    """Staff-only native Mautic Campaign builder data API."""
+
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, campaign_id):
+        try:
+            campaign = MauticClient().get_campaign(campaign_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        normalized = _normalize_campaign(campaign)
+        return Response(
+            _format_campaign_for_builder(normalized),
+            status=status.HTTP_200_OK,
+        )
