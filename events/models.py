@@ -4345,7 +4345,15 @@ class EventApplicationTrackApplication(models.Model):
 
     class Meta:
         db_table = 'event_application_track_applications'
-        unique_together = [('application', 'track')]
+        # Uniqueness applies only to live rows: soft-deleted history must not
+        # block the applicant from applying to the same track again.
+        constraints = [
+            models.UniqueConstraint(
+                fields=['application', 'track'],
+                condition=models.Q(is_deleted=False),
+                name='unique_active_track_application_per_track',
+            )
+        ]
         indexes = [
             models.Index(fields=['application', 'status']),
             models.Index(fields=['track', 'status']),

@@ -142,6 +142,13 @@ def accept_track_application(
             from events.services.attendee_directory import _recalculate_registration_status
             _recalculate_registration_status(registration)
 
+            if not created:
+                # A reused registration (e.g. one cancelled by an earlier decline or
+                # delete) is active again, but the increment above only runs for newly
+                # created rows. Recount so the event total reflects reality.
+                from events.views import _recalculate_event_attending_count
+                _recalculate_event_attending_count(event.pk)
+
             # FIX 1: Trigger post-acceptance forms based on ORIGIN status, not registration status
             # This allows forms to trigger immediately when origin is confirmed, even if other
             # origins are still payment_pending. Form service is idempotent so safe to call multiple times.
