@@ -17,6 +17,7 @@ _CAMPAIGN_FIELDS = {
     "name",
     "description",
     "isPublished",
+    "sources",
     "lists",
     "forms",
     "events",
@@ -189,9 +190,257 @@ def _parse_source_ids(value, *, field_name: str) -> list[dict[str, int]]:
     return result
 
 
-def _parse_events(value) -> list[dict[str, Any]]:
+def _parse_sources(value) -> dict[str, list[dict[str, int]]]:
+    if not isinstance(value, dict):
+        raise ValueError("Native Mautic Campaign sources must be an object.")
+
+    unsupported = sorted(set(value.keys()) - {"segments", "lists", "forms"})
+    if unsupported:
+        raise ValueError(
+            "Unsupported Native Mautic Campaign source field(s): "
+            + ", ".join(unsupported)
+        )
+
+    parsed = {}
+    if "segments" in value or "lists" in value:
+        parsed["lists"] = _parse_source_ids(
+            value.get("segments", value.get("lists", [])),
+            field_name="sources.segments",
+        )
+    if "forms" in value:
+        parsed["forms"] = _parse_source_ids(
+            value.get("forms", []),
+            field_name="sources.forms",
+        )
+    return parsed
+
+
+def _is_builder_event(item: Any) -> bool:
+    return isinstance(item, dict) and (
+        "key" in item or "metadata" in item or "type" not in item
+    )
+
+
+def _uses_builder_events(value) -> bool:
+    return isinstance(value, list) and any(_is_builder_event(item) for item in value)
+
+
+def _request_uses_builder_events(data) -> bool:
+    return hasattr(data, "get") and _uses_builder_events(data.get("events"))
+
+
+def _event_capability_rows(capabilities: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for field, event_type in (
+        ("actions", "action"),
+        ("conditions", "condition"),
+        ("decisions", "decision"),
+    ):
+        for event in capabilities.get(field, []):
+            if isinstance(event, dict):
+                normalized = dict(event)
+                normalized.setdefault("eventType", event_type)
+                rows.append(normalized)
+    return rows
+
+
+def _event_key(event: dict[str, Any]) -> str:
+    return str(event.get("key") or event.get("type") or "").strip()
+
+
+def _json_safe(value: Any) -> bool:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, list):
+        return all(_json_safe(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _json_safe(child) for key, child in value.items())
+    return False
+
+
+def _option_value(option: Any) -> Any:
+    if isinstance(option, dict):
+        for field in ("value", "id", "key", "label", "name"):
+            if field in option:
+                return option.get(field)
+        return None
+    return option
+
+
+def _choice_values(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return [_option_value(option) for option in value]
+    if isinstance(value, dict):
+        choices = value.get("choices")
+        if isinstance(choices, dict):
+            return list(choices.keys())
+        if isinstance(choices, list):
+            return [_option_value(option) for option in choices]
+        options = value.get("options")
+        if isinstance(options, list):
+            return [_option_value(option) for option in options]
+    return []
+
+
+def _get_property(properties: dict[str, Any], path: list[str]) -> tuple[bool, Any]:
+    current: Any = properties
+    for part in path:
+        if not isinstance(current, dict) or part not in current:
+            return False, None
+        current = current[part]
+    return True, current
+
+
+def _iter_form_metadata_fields(value: Any, path: list[str] | None = None):
+    path = path or []
+    if not isinstance(value, dict):
+        return
+
+    for key, child in value.items():
+        child_path = [*path, str(key)]
+        if isinstance(child, dict):
+            has_field_hint = (
+                child.get("required") is True
+                or bool(_choice_values(child))
+                or child.get("type") in {"choice", "select", "boolean", "checkbox"}
+            )
+            if has_field_hint:
+                yield child_path, child
+            yield from _iter_form_metadata_fields(child, child_path)
+        elif isinstance(child, list):
+            yield child_path, child
+
+
+def _validate_builder_properties(
+    *,
+    event_index: int,
+    properties: Any,
+    capability: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(properties, dict):
+        raise ValueError(
+            f"Native Mautic Campaign event #{event_index} properties must be an object."
+        )
+    if not _json_safe(properties):
+        raise ValueError(
+            f"Native Mautic Campaign event #{event_index} properties must be JSON serializable."
+        )
+
+    form_options = capability.get("formTypeOptions")
+    for path, metadata in _iter_form_metadata_fields(form_options):
+        exists, value = _get_property(properties, path)
+        label = ".".join(path)
+        if isinstance(metadata, dict) and metadata.get("required") is True:
+            if not exists or value in (None, "", []):
+                raise ValueError(
+                    f"Native Mautic Campaign event #{event_index} missing required "
+                    f"property {label}."
+                )
+
+        choices = _choice_values(metadata)
+        if exists and choices:
+            values = value if isinstance(value, list) else [value]
+            allowed = {str(choice) for choice in choices if choice is not None}
+            invalid = [
+                choice
+                for choice in values
+                if choice not in (None, "") and str(choice) not in allowed
+            ]
+            if invalid:
+                raise ValueError(
+                    f"Native Mautic Campaign event #{event_index} has invalid "
+                    f"value for property {label}."
+                )
+
+    return properties
+
+
+def _parse_builder_events(
+    value,
+    *,
+    capabilities: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(capabilities, dict):
+        raise ValueError(
+            "Native Mautic Campaign runtime builder capabilities are required."
+        )
+
+    capability_index: dict[tuple[str, str], dict[str, Any]] = {}
+    for capability in _event_capability_rows(capabilities):
+        key = _event_key(capability)
+        event_type = str(capability.get("eventType") or "").strip()
+        if key and event_type:
+            capability_index[(event_type, key)] = capability
+
+    parsed = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Native Mautic Campaign event #{index} must be an object."
+            )
+
+        key = str(item.get("key") or item.get("type") or "").strip()
+        event_type = str(item.get("eventType") or "").strip()
+        if not key:
+            raise ValueError(f"Native Mautic Campaign event #{index} key is required.")
+        if event_type not in _EVENT_TYPES:
+            raise ValueError(
+                f"Native Mautic Campaign event #{index} eventType must be "
+                "action, condition, or decision."
+            )
+
+        capability = capability_index.get((event_type, key))
+        if not capability:
+            raise ValueError(
+                f"Native Mautic Campaign event #{index} is not available in "
+                "runtime Mautic Campaign Builder capabilities."
+            )
+
+        properties = _validate_builder_properties(
+            event_index=index,
+            properties=item.get("properties", {}),
+            capability=capability,
+        )
+        event_id = str(item.get("id") or f"new_{index}").strip()
+        if not event_id or event_id.startswith("event-"):
+            event_id = f"new_{index}"
+
+        event = {
+            "id": event_id,
+            "name": str(item.get("name") or capability.get("label") or key).strip(),
+            "type": key,
+            "eventType": event_type,
+            "properties": properties,
+            "children": [],
+            "order": item.get("order", index),
+        }
+
+        for field in (
+            "description",
+            "triggerInterval",
+            "triggerIntervalUnit",
+            "triggerMode",
+            "triggerDate",
+            "parent",
+            "decisionPath",
+        ):
+            if field in item:
+                event[field] = item.get(field)
+
+        parsed.append(event)
+
+    return parsed
+
+
+def _parse_events(
+    value,
+    *,
+    capabilities: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         raise ValueError("Native Mautic Campaign events must be a list.")
+    if _uses_builder_events(value):
+        return _parse_builder_events(value, capabilities=capabilities)
 
     parsed = []
     for index, item in enumerate(value):
@@ -285,7 +534,12 @@ def _parse_canvas(value) -> dict[str, Any]:
     }
 
 
-def _parse_campaign_payload(data, *, partial: bool = False) -> dict[str, Any]:
+def _parse_campaign_payload(
+    data,
+    *,
+    partial: bool = False,
+    capabilities: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not hasattr(data, "keys"):
         raise ValueError("Native Mautic Campaign payload must be an object.")
 
@@ -296,6 +550,9 @@ def _parse_campaign_payload(data, *, partial: bool = False) -> dict[str, Any]:
         )
 
     payload: dict[str, Any] = {}
+
+    if "sources" in data:
+        payload.update(_parse_sources(data.get("sources")))
 
     if not partial or "name" in data:
         name = str(data.get("name") or "").strip()
@@ -326,7 +583,10 @@ def _parse_campaign_payload(data, *, partial: bool = False) -> dict[str, Any]:
             )
 
     if "events" in data:
-        payload["events"] = _parse_events(data.get("events"))
+        payload["events"] = _parse_events(
+            data.get("events"),
+            capabilities=capabilities,
+        )
 
     if "canvasSettings" in data:
         payload["canvasSettings"] = _parse_canvas(data.get("canvasSettings"))
@@ -426,7 +686,20 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
 
     def post(self, request):
         try:
-            payload = _parse_campaign_payload(request.data)
+            client = MauticClient()
+            capabilities = (
+                client.get_campaign_builder_capabilities()
+                if _request_uses_builder_events(request.data)
+                else None
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        try:
+            payload = _parse_campaign_payload(
+                request.data,
+                capabilities=capabilities,
+            )
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
@@ -434,7 +707,7 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
             )
 
         try:
-            campaign = MauticClient().create_campaign(payload)
+            campaign = client.create_campaign(payload)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -501,9 +774,20 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
 
     def patch(self, request, campaign_id):
         try:
+            client = MauticClient()
+            capabilities = (
+                client.get_campaign_builder_capabilities()
+                if _request_uses_builder_events(request.data)
+                else None
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        try:
             payload = _parse_campaign_payload(
                 request.data,
                 partial=True,
+                capabilities=capabilities,
             )
         except ValueError as exc:
             return Response(
@@ -512,7 +796,7 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
             )
 
         try:
-            campaign = MauticClient().update_campaign(
+            campaign = client.update_campaign(
                 campaign_id,
                 payload,
             )
