@@ -1418,6 +1418,26 @@ class MauticClient:
             raise TemporaryMauticError("Mautic form list returned an invalid response")
         return data
 
+    def get_campaign_builder_capabilities(self) -> dict[str, Any]:
+        response = self._request("GET", "ecp/campaign-builder/capabilities")
+        data = self._json_object(
+            response,
+            "Mautic campaign builder capabilities",
+        )
+        for field in ("actions", "conditions", "decisions"):
+            if not isinstance(data.get(field), list):
+                raise TemporaryMauticError(
+                    "Mautic campaign builder capabilities returned "
+                    f"invalid {field}"
+                )
+        connection_restrictions = data.get("connectionRestrictions", {})
+        if not isinstance(connection_restrictions, dict):
+            raise TemporaryMauticError(
+                "Mautic campaign builder capabilities returned invalid "
+                "connectionRestrictions"
+            )
+        return data
+
     def get_segment(self, segment_id: int | str) -> dict[str, Any]:
         segment_id = str(segment_id or "").strip()
         if not segment_id:

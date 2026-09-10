@@ -452,6 +452,7 @@ class NewsletterAdminMauticCampaignCapabilitiesView(APIView):
     def get(self, request):
         try:
             client = MauticClient()
+            capabilities = client.get_campaign_builder_capabilities()
             segments = client.list_segments(limit=200)
             forms = client.list_forms(limit=200)
         except (TemporaryMauticError, PermanentMauticError) as exc:
@@ -459,19 +460,18 @@ class NewsletterAdminMauticCampaignCapabilitiesView(APIView):
 
         return Response(
             {
-                "actions": [],
-                "conditions": [],
-                "decisions": [],
-                "connection_restrictions": {},
+                "actions": capabilities.get("actions", []),
+                "conditions": capabilities.get("conditions", []),
+                "decisions": capabilities.get("decisions", []),
+                "connection_restrictions": capabilities.get(
+                    "connectionRestrictions",
+                    {},
+                ),
                 "builder_metadata": {
-                    "available": False,
-                    "reason": (
-                        "Mautic 7.1.3 builds Campaign Builder provider metadata "
-                        "internally via CampaignEvents::CAMPAIGN_ON_BUILD and "
-                        "does not expose a stable REST metadata endpoint."
-                    ),
-                    "source": "mautic-provider-audit",
+                    "available": True,
+                    "source": "runtime-mautic-eventcollector-plugin-bridge",
                 },
+                "form_schema": capabilities.get("formSchema"),
                 "sources": {
                     "segments": _normalize_source_rows(
                         segments.get("lists", segments.get("segments"))

@@ -140,6 +140,46 @@ class NewsletterAdminMauticCampaignsAPITests(TestCase):
 
     @patch("newsletter.native_campaign_views.MauticClient")
     def test_capabilities_lists_provider_sources(self, client_cls):
+        client_cls.return_value.get_campaign_builder_capabilities.return_value = {
+            "actions": [
+                {
+                    "key": "lead.changepoints",
+                    "type": "lead.changepoints",
+                    "eventType": "action",
+                    "label": "Adjust contact points",
+                    "formType": "Mautic\\LeadBundle\\Form\\Type\\PointActionType",
+                    "triggerModes": {
+                        "available": True,
+                        "modes": ["immediate", "interval", "date"],
+                    },
+                }
+            ],
+            "conditions": [
+                {
+                    "key": "lead.field_value",
+                    "type": "lead.field_value",
+                    "eventType": "condition",
+                    "label": "Contact field value",
+                }
+            ],
+            "decisions": [
+                {
+                    "key": "page.pagehit",
+                    "type": "page.pagehit",
+                    "eventType": "decision",
+                    "label": "Visits a page",
+                }
+            ],
+            "connectionRestrictions": {
+                "lead.changepoints": {
+                    "source": {"action": [], "condition": [], "decision": []},
+                }
+            },
+            "formSchema": {
+                "available": False,
+                "reason": "Symfony forms are not normalized yet.",
+            },
+        }
         client_cls.return_value.list_segments.return_value = {
             "lists": {
                 "3": {
@@ -165,8 +205,23 @@ class NewsletterAdminMauticCampaignsAPITests(TestCase):
         response = self.client.get(self.capabilities_url)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["actions"], [])
-        self.assertFalse(response.data["builder_metadata"]["available"])
+        self.assertEqual(response.data["actions"][0]["key"], "lead.changepoints")
+        self.assertEqual(response.data["conditions"][0]["key"], "lead.field_value")
+        self.assertEqual(response.data["decisions"][0]["key"], "page.pagehit")
+        self.assertEqual(
+            response.data["connection_restrictions"],
+            {
+                "lead.changepoints": {
+                    "source": {"action": [], "condition": [], "decision": []},
+                }
+            },
+        )
+        self.assertTrue(response.data["builder_metadata"]["available"])
+        self.assertEqual(
+            response.data["builder_metadata"]["source"],
+            "runtime-mautic-eventcollector-plugin-bridge",
+        )
+        self.assertFalse(response.data["form_schema"]["available"])
         self.assertEqual(
             response.data["sources"]["segments"],
             [
@@ -179,6 +234,7 @@ class NewsletterAdminMauticCampaignsAPITests(TestCase):
             ],
         )
         self.assertEqual(response.data["sources"]["forms"][0]["id"], "7")
+        client_cls.return_value.get_campaign_builder_capabilities.assert_called_once_with()
         client_cls.return_value.list_segments.assert_called_once_with(limit=200)
         client_cls.return_value.list_forms.assert_called_once_with(limit=200)
 
@@ -191,15 +247,17 @@ class NewsletterAdminMauticCampaignsAPITests(TestCase):
 
     @patch("newsletter.native_campaign_views.MauticClient")
     def test_capabilities_maps_provider_failure(self, client_cls):
-        client_cls.return_value.list_segments.side_effect = TemporaryMauticError(
-            "Mautic segment list failed"
+        client_cls.return_value.get_campaign_builder_capabilities.side_effect = (
+            TemporaryMauticError("Mautic capability bridge failed")
         )
         self._authenticate(self.staff)
 
         response = self.client.get(self.capabilities_url)
 
         self.assertEqual(response.status_code, 502)
-        self.assertIn("Mautic segment list failed", response.data["detail"])
+        self.assertIn("Mautic capability bridge failed", response.data["detail"])
+        client_cls.return_value.list_segments.assert_not_called()
+        client_cls.return_value.list_forms.assert_not_called()
 
     def test_guest_and_normal_user_are_denied(self):
         for url in (self.list_url, self.detail_url):

@@ -1707,6 +1707,67 @@ class MauticClientTests(SimpleTestCase):
         ):
             client.list_forms()
 
+    def test_get_campaign_builder_capabilities_calls_plugin_endpoint(self):
+        payload = {
+            "actions": [
+                {
+                    "key": "lead.changepoints",
+                    "type": "lead.changepoints",
+                    "eventType": "action",
+                    "label": "Adjust contact points",
+                }
+            ],
+            "conditions": [
+                {
+                    "key": "lead.field_value",
+                    "type": "lead.field_value",
+                    "eventType": "condition",
+                    "label": "Contact field value",
+                }
+            ],
+            "decisions": [
+                {
+                    "key": "page.pagehit",
+                    "type": "page.pagehit",
+                    "eventType": "decision",
+                    "label": "Visits a page",
+                }
+            ],
+            "connectionRestrictions": {"lead.changepoints": {"source": {}}},
+            "formSchema": {"available": False},
+        }
+        client, session = self.make_mautic_client(response(200, payload))
+
+        data = client.get_campaign_builder_capabilities()
+
+        self.assertEqual(data["actions"][0]["key"], "lead.changepoints")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "GET",
+                "http://mautic.local/api/ecp/campaign-builder/capabilities",
+            ),
+        )
+
+    def test_get_campaign_builder_capabilities_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "actions": {},
+                    "conditions": [],
+                    "decisions": [],
+                    "connectionRestrictions": {},
+                },
+            )
+        )
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "campaign builder capabilities returned invalid actions",
+        ):
+            client.get_campaign_builder_capabilities()
+
     def test_get_segment_returns_mautic_list_payload(self):
         client, session = self.make_mautic_client(
             response(200, {"list": {"id": 3, "name": "IMAA Events"}})
