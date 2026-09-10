@@ -4194,6 +4194,13 @@ class EventPreApprovalAllowlist(models.Model):
         super().save(*args, **kwargs)
 
 
+class ActiveTrackApplicationManager(models.Manager):
+    """Default manager that hides track applications removed by an admin."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
 class EventApplicationTrackApplication(models.Model):
     """
     Phase 7: Per-track application data within an overall event application.
@@ -4320,6 +4327,22 @@ class EventApplicationTrackApplication(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Soft-delete lifecycle. Removing an applicant from the review queue must not
+    # physically erase the historical application/decision row.
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deleted_track_applications",
+    )
+    deletion_reason = models.TextField(blank=True, default="")
+
+    objects = ActiveTrackApplicationManager()
+    all_objects = models.Manager()
+
     class Meta:
         db_table = 'event_application_track_applications'
         unique_together = [('application', 'track')]
@@ -4327,11 +4350,48 @@ class EventApplicationTrackApplication(models.Model):
             models.Index(fields=['application', 'status']),
             models.Index(fields=['track', 'status']),
             models.Index(fields=['application', 'created_at']),
+            models.Index(fields=['track', 'is_deleted']),
         ]
         ordering = ['-created_at']
 
     def __str__(self):
         return f"{self.application.email} → {self.track.label} ({self.get_status_display()})"
+
+    def soft_delete(self, *, user=None, reason=""):
+        """Hide this track application while retaining its audit/history row."""
+        if self.is_deleted:
+            return
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = user if getattr(user, "is_authenticated", False) else None
+        self.deletion_reason = str(reason or "").strip()
+        self.save(
+            update_fields=[
+                "is_deleted",
+                "deleted_at",
+                "deleted_by",
+                "deletion_reason",
+                "updated_at",
+            ]
+        )
+
+    def restore(self):
+        """Restore a previously deleted track application."""
+        if not self.is_deleted:
+            return
+        self.is_deleted = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.deletion_reason = ""
+        self.save(
+            update_fields=[
+                "is_deleted",
+                "deleted_at",
+                "deleted_by",
+                "deletion_reason",
+                "updated_at",
+            ]
+        )
 
 
 class TrackApplicationListVisibilityField(models.Model):

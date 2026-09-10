@@ -8,12 +8,16 @@ from django.db import transaction
 from events.models import (
     EventApplicationTrackApplication,
     EventRegistration,
+    EventAttendeeOrigin,
     EventParticipant,
     EventRole,
     TrackPricingTier,
 )
 from users.email_utils import send_application_decision_email
-from events.services.attendee_directory import create_or_update_attendee
+from events.services.attendee_directory import (
+    create_or_update_attendee,
+    _recalculate_registration_status,
+)
 from events.services.post_acceptance_forms import trigger_post_acceptance_forms
 
 
@@ -165,6 +169,60 @@ def accept_track_application(
         return track_application
 
 
+def _rollback_acceptance_side_effects(track_application):
+    """
+    Reverse the registration/role/attendee-origin side effects created by
+    accept_track_application(), without deleting any historical data.
+
+    Cancels the EventAttendeeOrigin record(s) tied to this track (preserving
+    them for audit history), drops the associated EventRole from the
+    registration only if no other active origin still needs it, and
+    recalculates the registration's attendee_status from its remaining
+    active origins.
+
+    If no active origins remain, the registration itself is cancelled through
+    the shared cancellation helper so the applicant is no longer counted as
+    attending and can apply again.
+    """
+    application = track_application.application
+    user = application.user
+    if not user:
+        return
+
+    registration = EventRegistration.objects.filter(
+        event=track_application.track.event, user=user
+    ).first()
+    if not registration:
+        return
+
+    origins = EventAttendeeOrigin.objects.filter(
+        registration=registration,
+        track=track_application.track,
+        status='active',
+    )
+    role_ids = list(origins.values_list('role_id', flat=True))
+    if not origins.exists():
+        return
+
+    origins.update(status='cancelled', origin_status='cancelled')
+
+    for role_id in role_ids:
+        still_needed = EventAttendeeOrigin.objects.filter(
+            registration=registration,
+            role_id=role_id,
+            status='active',
+        ).exists()
+        if not still_needed:
+            registration.roles.remove(role_id)
+
+    if registration.origins.filter(status='active').exists():
+        # Other accepted tracks still hold this registration open
+        _recalculate_registration_status(registration)
+    else:
+        from events.services.application_cancellation import _cancel_registration
+        _cancel_registration(registration, origin='application_decision')
+
+
 def decline_track_application(
     track_application,
     reviewer_user,
@@ -172,7 +230,10 @@ def decline_track_application(
     notes=None
 ):
     """
-    Decline a track application.
+    Decline a track application. Supports declining from pending as well as
+    from an already-accepted state, in which case acceptance side effects
+    (registration roles, attendee origins) are rolled back safely without
+    deleting historical records.
 
     Args:
         track_application: EventApplicationTrackApplication instance
@@ -184,6 +245,11 @@ def decline_track_application(
         track_application: Updated instance
     """
     with transaction.atomic():
+        was_accepted = track_application.status == EventApplicationTrackApplication.STATUS_ACCEPTED
+
+        if was_accepted:
+            _rollback_acceptance_side_effects(track_application)
+
         track_application.status = EventApplicationTrackApplication.STATUS_DECLINED
         track_application.declined_at = timezone.now()
         track_application.reviewed_by = reviewer_user
@@ -253,5 +319,49 @@ def waitlist_track_application(
                 import logging
                 logger = logging.getLogger(__name__)
                 logger.error(f"Failed to queue waitlist email task: {e}")
+
+        return track_application
+
+
+def delete_track_application(
+    track_application,
+    actor_user,
+    reason=""
+):
+    """
+    Soft-delete a track application (any status, including accepted).
+
+    If the application was accepted, rolls back the same acceptance side
+    effects as decline_track_application() (cancels attendee origins, drops
+    now-unneeded registration roles, recalculates attendee_status) so the
+    applicant is no longer treated as "already registered" for the event.
+    No historical records are hard-deleted.
+
+    Also mirrors decline_track_application()'s parent-status cascade: if the
+    parent EventApplication has no remaining (non-deleted) track applications
+    after this deletion, its status is set to 'cancelled' so eligibility
+    checks (event list badge, reapply gating) stop treating the removed
+    track application's stale parent status as still pending/active.
+
+    Args:
+        track_application: EventApplicationTrackApplication instance
+        actor_user: User performing the deletion
+        reason: Optional deletion reason
+
+    Returns:
+        track_application: Updated instance
+    """
+    with transaction.atomic():
+        if track_application.status == EventApplicationTrackApplication.STATUS_ACCEPTED:
+            _rollback_acceptance_side_effects(track_application)
+
+        track_application.soft_delete(user=actor_user, reason=reason)
+
+        # Update parent application status if it has no remaining active track applications
+        parent_app = track_application.application
+        if not parent_app.track_applications.exists():
+            parent_app.status = 'cancelled'
+            parent_app.cancelled_at = timezone.now()
+            parent_app.save(update_fields=['status', 'cancelled_at'])
 
         return track_application

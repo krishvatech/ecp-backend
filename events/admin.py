@@ -967,16 +967,19 @@ class FormFieldAdmin(admin.ModelAdmin):
 class EventApplicationTrackApplicationAdmin(admin.ModelAdmin):
     """Admin for EventApplicationTrackApplication - per-track application data."""
     list_display = (
-        'get_applicant_email', 'track', 'submission_mode', 'status',
+        'get_applicant_email', 'track', 'submission_mode', 'status', 'is_deleted',
         'created_at', 'reviewed_by', 'reviewed_at'
     )
-    list_filter = ('status', 'track__event', 'track', 'submission_mode', 'created_at')
+    list_filter = ('is_deleted', 'status', 'track__event', 'track', 'submission_mode', 'created_at')
     search_fields = (
         'application__email', 'application__first_name', 'application__last_name',
         'track__label'
     )
-    raw_id_fields = ('application', 'track', 'tier_preference', 'reviewed_by')
-    readonly_fields = ('application', 'track', 'submission_mode', 'form_answers', 'file_uploads', 'created_at', 'updated_at')
+    raw_id_fields = ('application', 'track', 'tier_preference', 'reviewed_by', 'deleted_by')
+    readonly_fields = (
+        'application', 'track', 'submission_mode', 'form_answers', 'file_uploads',
+        'created_at', 'updated_at', 'is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason',
+    )
     ordering = ['-created_at']
 
     fieldsets = (
@@ -994,13 +997,38 @@ class EventApplicationTrackApplicationAdmin(admin.ModelAdmin):
         ('Review', {
             'fields': ('reviewed_by', 'reviewed_at')
         }),
+        ('Deletion audit', {
+            'fields': ('is_deleted', 'deleted_at', 'deleted_by', 'deletion_reason'),
+            'classes': ('collapse',)
+        }),
         ('System', {
             'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
 
-    actions = ['mark_as_accepted', 'mark_as_declined', 'mark_as_waitlisted']
+    actions = [
+        'mark_as_accepted', 'mark_as_declined', 'mark_as_waitlisted',
+        'soft_delete_selected_track_applications', 'restore_selected_track_applications',
+    ]
+
+    def get_queryset(self, request):
+        return EventApplicationTrackApplication.all_objects.select_related(
+            'application', 'track', 'reviewed_by', 'deleted_by'
+        )
+
+    @admin.action(description='Soft delete selected track applications')
+    def soft_delete_selected_track_applications(self, request, queryset):
+        for track_application in queryset.filter(is_deleted=False):
+            track_application.soft_delete(
+                user=request.user,
+                reason='Removed from Django admin.',
+            )
+
+    @admin.action(description='Restore selected track applications')
+    def restore_selected_track_applications(self, request, queryset):
+        for track_application in queryset.filter(is_deleted=True):
+            track_application.restore()
 
     def get_applicant_email(self, obj):
         """Display applicant email."""
