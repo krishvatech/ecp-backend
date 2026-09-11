@@ -164,6 +164,48 @@ class MauticClientTests(SimpleTestCase):
         ):
             client.list_contacts()
 
+    def test_list_segment_contacts_via_bridge_calls_plugin_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "segment": {"id": 22, "name": "Native Static"},
+                    "total": 0,
+                    "contacts": [],
+                },
+            )
+        )
+
+        data = client.list_segment_contacts_via_bridge(
+            "22",
+            start=25,
+            limit=25,
+            search="Ada",
+        )
+
+        self.assertEqual(data["total"], 0)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/ecp/segments/22/contacts"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {
+                "start": 25,
+                "limit": 25,
+                "search": "Ada",
+            },
+        )
+
+    def test_list_segment_contacts_via_bridge_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(response(200, {"total": 0}))
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "segment contacts bridge returned invalid contacts",
+        ):
+            client.list_segment_contacts_via_bridge("22")
+
     def test_find_contact_by_email_matches_nested_mautic_fields(self):
         client, session = self.make_mautic_client(
             response(
@@ -239,6 +281,112 @@ class MauticClientTests(SimpleTestCase):
         self.assertEqual(
             session.request.call_args.args[:2],
             ("PATCH", "http://mautic.local/api/contacts/51/edit"),
+        )
+
+    def test_list_contact_fields_calls_official_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(200, {"fields": {"1": {"id": 1, "alias": "email"}}})
+        )
+
+        data = client.list_contact_fields()
+
+        self.assertEqual(data["fields"]["1"]["alias"], "email")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/contacts/list/fields"),
+        )
+
+    def test_list_tags_calls_official_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(200, {"tags": {"1": {"id": 1, "tag": "customer"}}})
+        )
+
+        data = client.list_tags(search="customer", limit=10)
+
+        self.assertEqual(data["tags"]["1"]["tag"], "customer")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/tags"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {"search": "customer", "limit": 10},
+        )
+
+    def test_contact_notes_use_official_endpoints(self):
+        client, session = self.make_mautic_client(
+            response(200, {"total": 1, "notes": [{"id": 7, "text": "Called"}]})
+        )
+
+        data = client.list_contact_notes(51, start=0, limit=25)
+
+        self.assertEqual(data["notes"][0]["id"], 7)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/contacts/51/notes"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {"start": 0, "limit": 25},
+        )
+
+        client, session = self.make_mautic_client(
+            response(201, {"note": {"id": 8, "text": "New note"}})
+        )
+
+        note = client.create_note({"lead": "51", "text": "New note", "type": "general"})
+
+        self.assertEqual(note["id"], 8)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/notes/new"),
+        )
+
+    def test_contact_dnc_uses_official_endpoints(self):
+        client, session = self.make_mautic_client(
+            response(200, {"contact": {"id": 51}})
+        )
+
+        client.add_contact_dnc(51, "email", reason=3, comments="Manual")
+
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/contacts/51/dnc/email/add"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["data"],
+            {"reason": 3, "comments": "Manual"},
+        )
+
+        client, session = self.make_mautic_client(
+            response(200, {"recordFound": True, "contact": {"id": 51}})
+        )
+
+        client.remove_contact_dnc(51, "email")
+
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/contacts/51/dnc/email/remove"),
+        )
+
+    def test_contact_companies_use_official_endpoints(self):
+        client, session = self.make_mautic_client(
+            response(200, {"total": 1, "companies": [{"id": 3, "name": "Acme"}]})
+        )
+
+        data = client.list_contact_companies(51)
+
+        self.assertEqual(data["companies"][0]["id"], 3)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/contacts/51/companies"),
+        )
+
+        client, session = self.make_mautic_client(response(200, {"success": 1}))
+        client.add_contact_to_company(3, 51)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/companies/3/contact/51/add"),
         )
 
     def test_get_email_stats_returns_raw_stats_response(self):

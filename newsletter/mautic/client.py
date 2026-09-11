@@ -225,6 +225,310 @@ class MauticClient:
             raise PermanentMauticError("Mautic contact ID is required")
         self._request("DELETE", f"contacts/{contact_id}/delete")
 
+    def list_contact_fields(self, **params) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            "contacts/list/fields",
+            params=params or None,
+        )
+        data = self._json_object(response, "Mautic contact field metadata")
+        if not isinstance(data, (dict,)):
+            raise TemporaryMauticError(
+                "Mautic contact field metadata returned an invalid response"
+            )
+        return data
+
+    @staticmethod
+    def _normalize_field_object(field_object) -> str:
+        """Map an ECP field object name onto a Mautic ``/api/fields/{object}`` path segment."""
+        normalized = str(field_object or "contact").strip().lower()
+        if normalized == "lead":
+            normalized = "contact"
+        if normalized not in {"contact", "company"}:
+            raise PermanentMauticError(
+                "Mautic field object must be either 'contact' or 'company'"
+            )
+        return normalized
+
+    @staticmethod
+    def _field_from_response(
+        response,
+        context: str,
+        *,
+        require_id: bool = True,
+    ) -> dict[str, Any]:
+        data = MauticClient._json_object(response, context)
+        field = data.get("field")
+        if not isinstance(field, dict) or (require_id and not field.get("id")):
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return field
+
+    def list_fields(self, field_object: str = "contact", **params) -> dict[str, Any]:
+        field_object = self._normalize_field_object(field_object)
+        response = self._request(
+            "GET",
+            f"fields/{field_object}",
+            params=params or None,
+        )
+        data = self._json_object(response, "Mautic field list")
+        fields = data.get("fields")
+        if not isinstance(fields, (dict, list)):
+            raise TemporaryMauticError("Mautic field list returned an invalid response")
+        return data
+
+    def get_field(self, field_object: str, field_id: int | str) -> dict[str, Any]:
+        field_object = self._normalize_field_object(field_object)
+        field_id = str(field_id or "").strip()
+        if not field_id:
+            raise PermanentMauticError("Mautic field ID is required")
+        response = self._request("GET", f"fields/{field_object}/{field_id}")
+        return self._field_from_response(response, "Mautic field lookup")
+
+    def create_field(
+        self,
+        field_object: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        field_object = self._normalize_field_object(field_object)
+        response = self._request("POST", f"fields/{field_object}/new", data=payload)
+        return self._field_from_response(response, "Mautic field creation")
+
+    def update_field(
+        self,
+        field_object: str,
+        field_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        field_object = self._normalize_field_object(field_object)
+        field_id = str(field_id or "").strip()
+        if not field_id:
+            raise PermanentMauticError("Mautic field ID is required")
+        response = self._request(
+            "PATCH",
+            f"fields/{field_object}/{field_id}/edit",
+            data=payload,
+        )
+        return self._field_from_response(response, "Mautic field update")
+
+    def delete_field(self, field_object: str, field_id: int | str) -> dict[str, Any]:
+        field_object = self._normalize_field_object(field_object)
+        field_id = str(field_id or "").strip()
+        if not field_id:
+            raise PermanentMauticError("Mautic field ID is required")
+        response = self._request("DELETE", f"fields/{field_object}/{field_id}/delete")
+        return self._field_from_response(
+            response,
+            "Mautic field deletion",
+            require_id=False,
+        )
+
+    def list_tags(self, **params) -> dict[str, Any]:
+        response = self._request("GET", "tags", params=params or None)
+        data = self._json_object(response, "Mautic tag list")
+        tags = data.get("tags")
+        if not isinstance(tags, (dict, list)):
+            raise TemporaryMauticError("Mautic tag list returned invalid tags")
+        return data
+
+    @staticmethod
+    def _tag_from_response(
+        response,
+        context: str,
+        *,
+        require_id: bool = True,
+    ) -> dict[str, Any]:
+        data = MauticClient._json_object(response, context)
+        tag = data.get("tag")
+        if not isinstance(tag, dict) or (require_id and not tag.get("id")):
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return tag
+
+    def get_tag(self, tag_id: int | str) -> dict[str, Any]:
+        tag_id = str(tag_id or "").strip()
+        if not tag_id:
+            raise PermanentMauticError("Mautic tag ID is required")
+        response = self._request("GET", f"tags/{tag_id}")
+        return self._tag_from_response(response, "Mautic tag lookup")
+
+    def create_tag(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._request("POST", "tags/new", data=payload)
+        return self._tag_from_response(response, "Mautic tag creation")
+
+    def update_tag(self, tag_id: int | str, payload: dict[str, Any]) -> dict[str, Any]:
+        tag_id = str(tag_id or "").strip()
+        if not tag_id:
+            raise PermanentMauticError("Mautic tag ID is required")
+        response = self._request("PATCH", f"tags/{tag_id}/edit", data=payload)
+        return self._tag_from_response(response, "Mautic tag update")
+
+    def delete_tag(self, tag_id: int | str) -> dict[str, Any]:
+        tag_id = str(tag_id or "").strip()
+        if not tag_id:
+            raise PermanentMauticError("Mautic tag ID is required")
+        response = self._request("DELETE", f"tags/{tag_id}/delete")
+        return self._tag_from_response(
+            response,
+            "Mautic tag deletion",
+            require_id=False,
+        )
+
+    def list_contact_notes(self, contact_id: int | str, **params) -> dict[str, Any]:
+        contact_id = str(contact_id or "").strip()
+        if not contact_id:
+            raise PermanentMauticError("Mautic contact ID is required")
+        response = self._request(
+            "GET",
+            f"contacts/{contact_id}/notes",
+            params=params or None,
+        )
+        data = self._json_object(response, "Mautic contact notes")
+        notes = data.get("notes")
+        if not isinstance(notes, (dict, list)):
+            raise TemporaryMauticError("Mautic contact notes returned invalid notes")
+        return data
+
+    def create_note(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._request("POST", "notes/new", data=payload)
+        data = self._json_object(response, "Mautic note creation")
+        note = data.get("note")
+        if not isinstance(note, dict) or not note.get("id"):
+            raise TemporaryMauticError("Mautic note creation returned an invalid response")
+        return note
+
+    def add_contact_dnc(
+        self,
+        contact_id: int | str,
+        channel: str = "email",
+        *,
+        reason: int | str = 3,
+        comments: str = "",
+    ) -> dict[str, Any]:
+        contact_id = str(contact_id or "").strip()
+        channel = str(channel or "email").strip()
+        if not contact_id or not channel:
+            raise PermanentMauticError("Mautic contact ID and DNC channel are required")
+        response = self._request(
+            "POST",
+            f"contacts/{contact_id}/dnc/{channel}/add",
+            data={"reason": reason, "comments": comments},
+        )
+        data = self._json_object(response, "Mautic contact DNC add")
+        contact = data.get("contact")
+        if not isinstance(contact, dict):
+            raise TemporaryMauticError("Mautic contact DNC add returned an invalid response")
+        return contact
+
+    def remove_contact_dnc(
+        self,
+        contact_id: int | str,
+        channel: str = "email",
+    ) -> dict[str, Any]:
+        contact_id = str(contact_id or "").strip()
+        channel = str(channel or "email").strip()
+        if not contact_id or not channel:
+            raise PermanentMauticError("Mautic contact ID and DNC channel are required")
+        response = self._request("POST", f"contacts/{contact_id}/dnc/{channel}/remove")
+        data = self._json_object(response, "Mautic contact DNC remove")
+        contact = data.get("contact")
+        if not isinstance(contact, dict):
+            raise TemporaryMauticError(
+                "Mautic contact DNC remove returned an invalid response"
+            )
+        return data
+
+    def list_contact_companies(self, contact_id: int | str) -> dict[str, Any]:
+        contact_id = str(contact_id or "").strip()
+        if not contact_id:
+            raise PermanentMauticError("Mautic contact ID is required")
+        response = self._request("GET", f"contacts/{contact_id}/companies")
+        data = self._json_object(response, "Mautic contact companies")
+        companies = data.get("companies")
+        if not isinstance(companies, (dict, list)):
+            raise TemporaryMauticError(
+                "Mautic contact companies returned invalid companies"
+            )
+        return data
+
+    def list_companies(self, **params) -> dict[str, Any]:
+        response = self._request("GET", "companies", params=params or None)
+        data = self._json_object(response, "Mautic company list")
+        companies = data.get("companies")
+        if not isinstance(companies, (dict, list)):
+            raise TemporaryMauticError("Mautic company list returned invalid companies")
+        return data
+
+    @staticmethod
+    def _company_from_response(
+        response,
+        context: str,
+        *,
+        require_id: bool = True,
+    ) -> dict[str, Any]:
+        data = MauticClient._json_object(response, context)
+        company = data.get("company")
+        if not isinstance(company, dict) or (require_id and not company.get("id")):
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return company
+
+    def get_company(self, company_id: int | str) -> dict[str, Any]:
+        company_id = str(company_id or "").strip()
+        if not company_id:
+            raise PermanentMauticError("Mautic company ID is required")
+        response = self._request("GET", f"companies/{company_id}")
+        return self._company_from_response(response, "Mautic company lookup")
+
+    def create_company(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._request("POST", "companies/new", data=payload)
+        return self._company_from_response(response, "Mautic company creation")
+
+    def update_company(
+        self,
+        company_id: int | str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        company_id = str(company_id or "").strip()
+        if not company_id:
+            raise PermanentMauticError("Mautic company ID is required")
+        response = self._request(
+            "PATCH",
+            f"companies/{company_id}/edit",
+            data=payload,
+        )
+        return self._company_from_response(response, "Mautic company update")
+
+    def delete_company(self, company_id: int | str) -> dict[str, Any]:
+        company_id = str(company_id or "").strip()
+        if not company_id:
+            raise PermanentMauticError("Mautic company ID is required")
+        response = self._request("DELETE", f"companies/{company_id}/delete")
+        return self._company_from_response(
+            response,
+            "Mautic company deletion",
+            require_id=False,
+        )
+
+    def add_contact_to_company(
+        self,
+        company_id: int | str,
+        contact_id: int | str,
+    ) -> None:
+        company_id = str(company_id or "").strip()
+        contact_id = str(contact_id or "").strip()
+        if not company_id or not contact_id:
+            raise PermanentMauticError("Mautic company ID and contact ID are required")
+        self._request("POST", f"companies/{company_id}/contact/{contact_id}/add")
+
+    def remove_contact_from_company(
+        self,
+        company_id: int | str,
+        contact_id: int | str,
+    ) -> None:
+        company_id = str(company_id or "").strip()
+        contact_id = str(contact_id or "").strip()
+        if not company_id or not contact_id:
+            raise PermanentMauticError("Mautic company ID and contact ID are required")
+        self._request("POST", f"companies/{company_id}/contact/{contact_id}/remove")
+
     @staticmethod
     def _point_from_response(
         response,
@@ -1438,6 +1742,39 @@ class MauticClient:
             )
         return data
 
+    def get_field_type_capabilities(self) -> dict[str, Any]:
+        """Read the supported custom-field type registry from the ECP bridge plugin.
+
+        Official Mautic REST exposes existing field definitions but not the registry of
+        field types Mautic will accept for a new field, so this comes from the bridge.
+        """
+        response = self._request("GET", "ecp/fields/types")
+        data = self._json_object(response, "Mautic field type capabilities")
+        types = data.get("types")
+        if not isinstance(types, list):
+            raise TemporaryMauticError(
+                "Mautic field type capabilities returned invalid types"
+            )
+        return data
+
+    def get_field_type_choices(self, field_type: str) -> dict[str, Any]:
+        """Read a Mautic reference option list (country/region/timezone/locale).
+
+        These lists live in Mautic's bundled reference data rather than in a field's
+        properties, so they are served by the ECP bridge plugin.
+        """
+        field_type = str(field_type or "").strip().lower()
+        if field_type not in {"country", "region", "timezone", "locale"}:
+            raise PermanentMauticError(
+                "Mautic reference choices are only available for "
+                "country, region, timezone, and locale fields"
+            )
+        response = self._request("GET", f"ecp/fields/choices/{field_type}")
+        data = self._json_object(response, "Mautic field choices")
+        if not isinstance(data.get("choices"), list):
+            raise TemporaryMauticError("Mautic field choices returned invalid choices")
+        return data
+
     def get_segment(self, segment_id: int | str) -> dict[str, Any]:
         segment_id = str(segment_id or "").strip()
         if not segment_id:
@@ -1445,6 +1782,28 @@ class MauticClient:
 
         response = self._request("GET", f"segments/{segment_id}")
         return self._segment_from_response(response, "Mautic segment lookup")
+
+    def list_segment_contacts_via_bridge(
+        self,
+        segment_id: int | str,
+        **params,
+    ) -> dict[str, Any]:
+        segment_id = str(segment_id or "").strip()
+        if not segment_id:
+            raise PermanentMauticError("Mautic segment ID is required")
+
+        response = self._request(
+            "GET",
+            f"ecp/segments/{segment_id}/contacts",
+            params=params or None,
+        )
+        data = self._json_object(response, "Mautic segment contacts bridge")
+        contacts = data.get("contacts")
+        if not isinstance(contacts, (dict, list)):
+            raise TemporaryMauticError(
+                "Mautic segment contacts bridge returned invalid contacts"
+            )
+        return data
 
     def create_segment(self, payload: dict[str, Any]) -> dict[str, Any]:
         response = self._request("POST", "segments/new", data=payload)

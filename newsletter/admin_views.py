@@ -8,6 +8,8 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 import logging
+import math
+import re
 
 from moderation.permissions import IsStaffOrSuperuser
 
@@ -27,12 +29,22 @@ from .category_analytics import (
 from .contact_services import (
     bulk_update_admin_contact_stage,
     clear_admin_contact_stage,
+    add_admin_contact_dnc,
+    create_admin_contact,
+    create_admin_contact_note,
     get_admin_contact,
     get_admin_contact_engagement,
+    list_admin_contact_companies,
+    list_admin_contact_field_metadata,
+    list_admin_contact_notes,
     get_admin_stage_analytics,
     list_admin_contact_activity,
     list_admin_contacts,
+    list_admin_tags,
     move_admin_contact_to_stage,
+    remove_admin_contact_dnc,
+    set_admin_contact_tag,
+    update_admin_contact,
 )
 from .campaign_services import (
     CampaignNotEditable,
@@ -106,6 +118,19 @@ def _normalize_provider_bool(value):
     return bool(value)
 
 
+def _parse_provider_bool(value, *, field_name):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{field_name} must be a boolean.")
+
+
 def _segment_payload_for_category(category, *, include_alias=False):
     payload = {
         "name": category.name,
@@ -141,6 +166,233 @@ def _mapped_category_for_segment(segment_id, *, exclude_category=None):
     if exclude_category is not None:
         qs = qs.exclude(pk=exclude_category.pk)
     return qs.first()
+
+
+def _reserved_subscription_list_for_alias(alias):
+    normalized = str(alias or "").strip()
+    if not normalized:
+        return None
+    return NewsletterCategory.objects.filter(slug=normalized).first()
+
+
+def _ensure_native_segment_is_not_managed(segment_id):
+    mapped = _mapped_category_for_segment(segment_id)
+    if mapped is not None:
+        return Response(
+            {
+                "detail": (
+                    "This Mautic segment is managed by the ECP Subscription "
+                    f"List '{mapped.name}'. Edit it from Subscription Lists."
+                )
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+    return None
+
+
+def _mapped_categories_by_segment_id():
+    return {
+        str(category.mautic_segment_id): category
+        for category in NewsletterCategory.objects.exclude(mautic_segment_id="")
+    }
+
+
+def _segment_count(segment, *field_names):
+    for field_name in field_names:
+        value = segment.get(field_name)
+        if value in (None, ""):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    return None
+
+
+def _normalize_mautic_segment(segment, mapped_categories=None):
+    mapped_categories = mapped_categories or _mapped_categories_by_segment_id()
+    raw_segment_id = segment.get("id")
+    segment_id = str(raw_segment_id) if raw_segment_id is not None else ""
+    filters = _segment_filters(segment)
+    mapped_category = mapped_categories.get(segment_id)
+    managed = mapped_category is not None
+
+    normalized = {
+        "id": segment_id,
+        "name": segment.get("name") or "",
+        "alias": segment.get("alias") or "",
+        "description": segment.get("description") or "",
+        "isPublished": _normalize_provider_bool(
+            segment.get("isPublished", segment.get("is_published", False))
+        ),
+        "is_static": not bool(filters),
+        "is_dynamic": bool(filters),
+        "filters": filters,
+        "filter_count": len(filters) if isinstance(filters, list) else None,
+        "contact_count": _segment_count(
+            segment,
+            "contactCount",
+            "leadCount",
+            "memberCount",
+            "contactsCount",
+            "membersCount",
+        ),
+        "dateAdded": segment.get("dateAdded") or segment.get("date_added"),
+        "dateModified": segment.get("dateModified") or segment.get("date_modified"),
+        "createdByUser": segment.get("createdByUser"),
+        "modifiedByUser": segment.get("modifiedByUser"),
+        "managed_by_subscription_list": managed,
+        "subscription_list_slug": mapped_category.slug if mapped_category else None,
+        "subscription_list_name": mapped_category.name if mapped_category else None,
+        "mapped_in_ecp": managed,
+    }
+    return normalized
+
+
+_SEGMENT_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _parse_native_segment_payload(data, *, partial=False):
+    allowed_fields = {"name", "alias", "description", "isPublished"}
+    unsupported = sorted(set(data.keys()) - allowed_fields)
+    if unsupported:
+        raise ValueError(
+            "Unsupported native Mautic Segment field(s): " + ", ".join(unsupported)
+        )
+
+    payload = {}
+    if not partial or "name" in data:
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise ValueError("Native Mautic Segment name is required.")
+        if len(name) > 190:
+            raise ValueError("Native Mautic Segment name cannot exceed 190 characters.")
+        payload["name"] = name
+
+    if "alias" in data:
+        alias = str(data.get("alias") or "").strip()
+        if alias:
+            if len(alias) > 190:
+                raise ValueError("Native Mautic Segment alias cannot exceed 190 characters.")
+            if not _SEGMENT_ALIAS_PATTERN.match(alias):
+                raise ValueError(
+                    "Native Mautic Segment alias may contain only letters, numbers, underscores, and hyphens."
+                )
+            if _reserved_subscription_list_for_alias(alias) is not None:
+                raise ValueError("This alias is reserved by an ECP Subscription List.")
+        payload["alias"] = alias
+
+    if "description" in data:
+        payload["description"] = str(data.get("description") or "")
+
+    if "isPublished" in data:
+        payload["isPublished"] = _parse_provider_bool(
+            data.get("isPublished"),
+            field_name="Native Mautic Segment isPublished",
+        )
+    elif not partial:
+        payload["isPublished"] = False
+
+    if not partial:
+        payload["filters"] = []
+    elif not payload:
+        raise ValueError("At least one native Mautic Segment field is required.")
+
+    return payload
+
+
+def _native_segment_provider_error_response(exc):
+    message = str(exc)
+    if isinstance(exc, PermanentMauticError):
+        if "HTTP 404" in message:
+            raise Http404
+        if any(f"HTTP {code}" in message for code in (400, 409, 422)):
+            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+    return _provider_error_response(exc)
+
+
+def _contacts_from_segment_response(data):
+    contacts = data.get("contacts", data.get("leads", {}))
+    if isinstance(contacts, dict):
+        return [contact for contact in contacts.values() if isinstance(contact, dict)]
+    if isinstance(contacts, list):
+        return [contact for contact in contacts if isinstance(contact, dict)]
+    return []
+
+
+def _contact_value(contact, alias):
+    value = contact.get(alias)
+    if isinstance(value, dict):
+        value = value.get("value")
+    if value not in (None, ""):
+        return value
+    fields = contact.get("fields")
+    if not isinstance(fields, dict):
+        return None
+    for group_name in ("all", "core"):
+        group = fields.get(group_name)
+        if not isinstance(group, dict):
+            continue
+        value = group.get(alias)
+        if isinstance(value, dict):
+            value = value.get("value")
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _normalize_segment_contact(contact):
+    contact_id = contact.get("id")
+    firstname = str(_contact_value(contact, "firstname") or "").strip()
+    lastname = str(_contact_value(contact, "lastname") or "").strip()
+    email = str(_contact_value(contact, "email") or "").strip()
+    company = _contact_value(contact, "company")
+    stage = contact.get("stage")
+    points = contact.get("points")
+    return {
+        "id": str(contact_id) if contact_id is not None else "",
+        "firstname": firstname,
+        "lastname": lastname,
+        "name": " ".join(part for part in (firstname, lastname) if part) or email,
+        "email": email,
+        "company": str(company or "").strip(),
+        "stage": stage if isinstance(stage, dict) else None,
+        "points": points,
+        "dateAdded": contact.get("dateAdded") or contact.get("date_added"),
+        "dateModified": contact.get("dateModified") or contact.get("date_modified"),
+    }
+
+
+def _parse_positive_id(value, *, field_name):
+    normalized = str(value or "").strip()
+    if not normalized or not normalized.isdigit() or int(normalized) <= 0:
+        raise ValueError(f"{field_name} must be a positive integer.")
+    return str(int(normalized))
+
+
+def _segment_membership_protection_response(segment):
+    mapped = _mapped_category_for_segment(segment.get("id"))
+    if mapped is not None:
+        return Response(
+            {
+                "detail": (
+                    "This segment is managed by Subscription Lists. Membership "
+                    "is controlled by newsletter consent synchronization."
+                )
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+    if not _segment_is_static(segment):
+        return Response(
+            {
+                "detail": (
+                    "Manual membership is available only for static native "
+                    "Mautic segments."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return None
 
 
 def _queue_category_reconciliation(category):
@@ -486,6 +738,16 @@ class NewsletterAdminContactListView(APIView):
 
         return Response(data, status=status.HTTP_200_OK)
 
+    def post(self, request):
+        try:
+            data = create_admin_contact(request.data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _contact_stage_provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_201_CREATED)
+
 
 class NewsletterAdminContactBulkStageView(APIView):
     """Move or clear a selected batch of Mautic contacts."""
@@ -538,6 +800,170 @@ class NewsletterAdminContactDetailView(APIView):
     def get(self, request, mautic_contact_id):
         try:
             data = get_admin_contact(mautic_contact_id)
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+    def patch(self, request, mautic_contact_id):
+        try:
+            data = update_admin_contact(mautic_contact_id, request.data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _contact_stage_provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminContactFieldMetadataView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request):
+        try:
+            data = list_admin_contact_field_metadata()
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminTagListView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request):
+        try:
+            data = list_admin_tags(
+                search=request.query_params.get("search", ""),
+                limit=request.query_params.get("limit", 100),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminContactTagsView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request, mautic_contact_id):
+        try:
+            data = set_admin_contact_tag(
+                mautic_contact_id,
+                request.data.get("tag"),
+                remove=False,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _contact_stage_provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminContactTagDetailView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def delete(self, request, mautic_contact_id, tag):
+        try:
+            data = set_admin_contact_tag(mautic_contact_id, tag, remove=True)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _contact_stage_provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminContactNotesView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+    default_page_size = 25
+    max_page_size = 100
+
+    def get(self, request, mautic_contact_id):
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+            page_size = max(
+                1,
+                min(
+                    int(request.query_params.get("page_size", self.default_page_size)),
+                    self.max_page_size,
+                ),
+            )
+            data = list_admin_contact_notes(
+                mautic_contact_id,
+                page=page,
+                page_size=page_size,
+                search=request.query_params.get("search", ""),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+    def post(self, request, mautic_contact_id):
+        try:
+            data = create_admin_contact_note(mautic_contact_id, request.data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _contact_stage_provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_201_CREATED)
+
+
+class NewsletterAdminContactDncView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request, mautic_contact_id):
+        try:
+            data = add_admin_contact_dnc(mautic_contact_id, request.data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _contact_stage_provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminContactDncDetailView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def delete(self, request, mautic_contact_id, channel):
+        try:
+            data = remove_admin_contact_dnc(mautic_contact_id, channel)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _contact_stage_provider_error_response(exc)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminContactCompaniesView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, mautic_contact_id):
+        try:
+            data = list_admin_contact_companies(mautic_contact_id)
         except PermanentMauticError as exc:
             if "HTTP 404" in str(exc):
                 raise Http404
@@ -1224,28 +1650,212 @@ class NewsletterAdminMauticSegmentListView(APIView):
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
-        mapped_ids = set(
-            NewsletterCategory.objects.exclude(mautic_segment_id="")
-            .values_list("mautic_segment_id", flat=True)
-        )
+        mapped_categories = _mapped_categories_by_segment_id()
         return Response(
             [
-                {
-                    "id": str(segment.get("id")),
-                    "name": segment.get("name") or "",
-                    "alias": segment.get("alias") or "",
-                    "description": segment.get("description") or "",
-                    "isPublished": _normalize_provider_bool(
-                        segment.get("isPublished", segment.get("is_published", False))
-                    ),
-                    "is_static": _segment_is_static(segment),
-                    "is_dynamic": not _segment_is_static(segment),
-                    "mapped_in_ecp": str(segment.get("id")) in mapped_ids,
-                }
+                _normalize_mautic_segment(segment, mapped_categories)
                 for segment in segments
             ],
             status=status.HTTP_200_OK,
         )
+
+    def post(self, request):
+        try:
+            payload = _parse_native_segment_payload(request.data)
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            segment = MauticClient().create_segment(payload)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _native_segment_provider_error_response(exc)
+
+        return Response(
+            _normalize_mautic_segment(segment),
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class NewsletterAdminMauticSegmentDetailView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, segment_id):
+        try:
+            segment = MauticClient().get_segment(segment_id)
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+
+        return Response(
+            _normalize_mautic_segment(segment),
+            status=status.HTTP_200_OK,
+        )
+
+    def patch(self, request, segment_id):
+        protected_response = _ensure_native_segment_is_not_managed(segment_id)
+        if protected_response is not None:
+            return protected_response
+
+        try:
+            payload = _parse_native_segment_payload(request.data, partial=True)
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            segment = MauticClient().update_segment(segment_id, payload)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _native_segment_provider_error_response(exc)
+
+        return Response(
+            _normalize_mautic_segment(segment),
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request, segment_id):
+        mapped = _mapped_category_for_segment(segment_id)
+        if mapped is not None:
+            return Response(
+                {
+                    "detail": (
+                        "This Mautic segment is managed by Subscription List "
+                        f"'{mapped.name}' and cannot be deleted here."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            MauticClient().delete_segment(segment_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _native_segment_provider_error_response(exc)
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class NewsletterAdminMauticSegmentContactsView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+    default_page_size = 25
+    max_page_size = 100
+
+    def get(self, request, segment_id):
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(
+                request.query_params.get("page_size", self.default_page_size)
+            )
+        except (TypeError, ValueError):
+            page_size = self.default_page_size
+        page_size = max(1, min(page_size, self.max_page_size))
+        search = str(request.query_params.get("search", "") or "").strip()
+        params = {
+            "start": (page - 1) * page_size,
+            "limit": page_size,
+        }
+        if search:
+            params["search"] = search
+
+        try:
+            client = MauticClient()
+            data = client.list_segment_contacts_via_bridge(segment_id, **params)
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _native_segment_provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _native_segment_provider_error_response(exc)
+
+        contacts = _contacts_from_segment_response(data)
+        try:
+            count = max(0, int(data.get("total", len(contacts))))
+        except (TypeError, ValueError):
+            count = len(contacts)
+
+        return Response(
+            {
+                "segment": _normalize_mautic_segment(data.get("segment") or {}),
+                "count": count,
+                "page": page,
+                "page_size": page_size,
+                "num_pages": math.ceil(count / page_size) if count else 0,
+                "results": [
+                    _normalize_segment_contact(contact)
+                    for contact in contacts
+                ],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request, segment_id):
+        try:
+            contact_id = _parse_positive_id(
+                request.data.get("contact_id"),
+                field_name="contact_id",
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            client = MauticClient()
+            segment = client.get_segment(segment_id)
+            protected_response = _segment_membership_protection_response(segment)
+            if protected_response is not None:
+                return protected_response
+            client.get_contact(contact_id)
+            client.add_contact_to_segment(segment_id, contact_id)
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _native_segment_provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _native_segment_provider_error_response(exc)
+
+        return Response(
+            {
+                "segment_id": str(segment_id),
+                "contact_id": contact_id,
+                "added": True,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class NewsletterAdminMauticSegmentContactDetailView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def delete(self, request, segment_id, contact_id):
+        try:
+            normalized_contact_id = _parse_positive_id(
+                contact_id,
+                field_name="contact_id",
+            )
+            client = MauticClient()
+            segment = client.get_segment(segment_id)
+            protected_response = _segment_membership_protection_response(segment)
+            if protected_response is not None:
+                return protected_response
+            client.remove_contact_from_segment(segment_id, normalized_contact_id)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _native_segment_provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _native_segment_provider_error_response(exc)
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class NewsletterAdminCategorySyncMauticView(APIView):

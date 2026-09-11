@@ -19,6 +19,22 @@ from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .models import MauticContactMapping, NewsletterCategory, NewsletterSubscription
 
 
+CORE_CONTACT_FIELDS = {
+    "firstname",
+    "lastname",
+    "email",
+    "phone",
+    "mobile",
+    "company",
+    "city",
+    "state",
+    "zipcode",
+    "country",
+    "timezone",
+    "preferred_locale",
+}
+
+
 def _contacts_from_response(data: dict[str, Any]) -> list[dict[str, Any]]:
     contacts = data.get("contacts")
     if isinstance(contacts, dict):
@@ -95,13 +111,81 @@ def _contact_info(contact: dict[str, Any]) -> dict[str, Any]:
         "email": str(_contact_field(contact, "email") or "").strip(),
         "phone": str(_contact_field(contact, "phone") or "").strip(),
         "mobile": str(_contact_field(contact, "mobile") or "").strip(),
+        "company": str(_contact_field(contact, "company") or "").strip(),
         "address1": str(_contact_field(contact, "address1") or "").strip(),
         "address2": str(_contact_field(contact, "address2") or "").strip(),
         "city": str(_contact_field(contact, "city") or "").strip(),
         "state": str(_contact_field(contact, "state") or "").strip(),
         "zipcode": str(_contact_field(contact, "zipcode") or "").strip(),
         "country": str(_contact_field(contact, "country") or "").strip(),
+        "timezone": str(_contact_field(contact, "timezone") or "").strip(),
+        "preferred_locale": str(
+            _contact_field(contact, "preferred_locale")
+            or _contact_field(contact, "preferredLocale")
+            or ""
+        ).strip(),
     }
+
+
+def _tags_from_contact(contact: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_tags = contact.get("tags")
+    if isinstance(raw_tags, dict):
+        candidates = raw_tags.values()
+    elif isinstance(raw_tags, list):
+        candidates = raw_tags
+    else:
+        return []
+    tags = []
+    for tag in candidates:
+        if isinstance(tag, dict):
+            label = str(tag.get("tag") or tag.get("name") or tag.get("label") or "").strip()
+            tag_id = tag.get("id")
+        else:
+            label = str(tag or "").strip()
+            tag_id = None
+        if label:
+            tags.append({"id": str(tag_id) if tag_id not in (None, "") else "", "tag": label})
+    return tags
+
+
+def _dnc_from_contact(contact: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = (
+        contact.get("doNotContact")
+        or contact.get("do_not_contact")
+        or contact.get("dnc")
+        or []
+    )
+    if isinstance(raw, dict):
+        candidates = raw.values()
+    elif isinstance(raw, list):
+        candidates = raw
+    else:
+        return []
+    restrictions = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        channel = str(item.get("channel") or item.get("channelName") or "").strip()
+        if not channel:
+            continue
+        restrictions.append(
+            {
+                "channel": channel,
+                "reason": item.get("reason"),
+                "comments": str(item.get("comments") or "").strip(),
+                "dateAdded": item.get("dateAdded") or item.get("date_added"),
+            }
+        )
+    return restrictions
+
+
+def _dict_values(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    values = data.get(key)
+    if isinstance(values, dict):
+        return [item for item in values.values() if isinstance(item, dict)]
+    if isinstance(values, list):
+        return [item for item in values if isinstance(item, dict)]
+    return []
 
 
 def _contact_stage(contact: dict[str, Any]) -> dict[str, Any] | None:
@@ -252,8 +336,222 @@ def get_admin_contact(mautic_contact_id) -> dict[str, Any]:
         ),
         "last_synced_at": mapping.last_synced_at if mapping is not None else None,
         "contact_info": info,
+        "custom_fields": _custom_field_values(contact),
+        "tags": _tags_from_contact(contact),
+        "communication_restrictions": _dnc_from_contact(contact),
         "subscription_lists": subscription_lists,
     }
+
+
+def _custom_field_values(contact: dict[str, Any]) -> dict[str, Any]:
+    fields = contact.get("fields")
+    if not isinstance(fields, dict):
+        return {}
+    custom_fields = {}
+    for group_name, group in fields.items():
+        if group_name in {"core", "social"} or not isinstance(group, dict):
+            continue
+        for alias, raw_value in group.items():
+            value = _field_value(raw_value)
+            custom_fields[str(alias)] = value
+    return custom_fields
+
+
+def _normalize_contact_payload(payload: dict[str, Any], *, partial: bool) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Contact payload must be an object.")
+    allowed = CORE_CONTACT_FIELDS | {"custom_fields"}
+    unsupported = sorted(set(payload.keys()) - allowed)
+    if unsupported:
+        raise ValueError("Unsupported contact field(s): " + ", ".join(unsupported))
+
+    data = {}
+    for field in CORE_CONTACT_FIELDS:
+        if field in payload:
+            data[field] = str(payload.get(field) or "").strip()
+
+    if not partial and not data.get("email"):
+        raise ValueError("email is required.")
+    if data.get("email") and "@" not in data["email"]:
+        raise ValueError("email must be valid.")
+
+    custom_fields = payload.get("custom_fields", {})
+    if custom_fields in (None, ""):
+        custom_fields = {}
+    if not isinstance(custom_fields, dict):
+        raise ValueError("custom_fields must be an object.")
+    for alias, value in custom_fields.items():
+        normalized_alias = str(alias or "").strip()
+        if not normalized_alias:
+            raise ValueError("custom field aliases cannot be empty.")
+        data[normalized_alias] = value
+
+    if partial and not data:
+        raise ValueError("At least one contact field is required.")
+    return data
+
+
+def create_admin_contact(payload: dict[str, Any]) -> dict[str, Any]:
+    contact = MauticClient().create_contact(_normalize_contact_payload(payload, partial=False))
+    return get_admin_contact(contact.get("id"))
+
+
+def update_admin_contact(mautic_contact_id, payload: dict[str, Any]) -> dict[str, Any]:
+    contact_id = str(mautic_contact_id or "").strip()
+    if not contact_id:
+        raise ValueError("Mautic contact ID is required.")
+    MauticClient().update_contact(
+        contact_id,
+        _normalize_contact_payload(payload, partial=True),
+    )
+    return get_admin_contact(contact_id)
+
+
+def _normalize_field(field: dict[str, Any]) -> dict[str, Any]:
+    properties = field.get("properties") if isinstance(field.get("properties"), dict) else {}
+    options = (
+        properties.get("list")
+        or properties.get("options")
+        or field.get("list")
+        or field.get("options")
+        or []
+    )
+    return {
+        "id": str(field.get("id") or ""),
+        "label": str(field.get("label") or field.get("name") or "").strip(),
+        "alias": str(field.get("alias") or "").strip(),
+        "type": str(field.get("type") or "").strip(),
+        "group": str(field.get("group") or field.get("groupName") or "").strip(),
+        "required": bool(field.get("isRequired", field.get("required", False))),
+        "published": bool(field.get("isPublished", field.get("published", True))),
+        "default_value": field.get("defaultValue", field.get("default_value")),
+        "choices": options if isinstance(options, list) else [],
+        "readable": True,
+        "writable": not bool(field.get("isReadOnly", field.get("readOnly", False))),
+    }
+
+
+def list_admin_contact_field_metadata() -> dict[str, Any]:
+    data = MauticClient().list_contact_fields()
+    field_source = data.get("fields") if isinstance(data.get("fields"), (dict, list)) else data
+    fields = [_normalize_field(field) for field in _dict_values({"fields": field_source}, "fields")]
+    fields = [field for field in fields if field["alias"]]
+    return {"count": len(fields), "results": fields}
+
+
+def list_admin_tags(*, search: str = "", limit: int = 100) -> dict[str, Any]:
+    params = {"limit": max(1, min(int(limit), 100))}
+    if str(search or "").strip():
+        params["search"] = str(search).strip()
+    data = MauticClient().list_tags(**params)
+    tags = []
+    for tag in _dict_values(data, "tags"):
+        label = str(tag.get("tag") or tag.get("name") or "").strip()
+        if label:
+            tags.append({"id": str(tag.get("id") or ""), "tag": label})
+    return {"count": len(tags), "results": tags}
+
+
+def set_admin_contact_tag(mautic_contact_id, tag_name: str, *, remove: bool = False) -> dict[str, Any]:
+    contact_id = str(mautic_contact_id or "").strip()
+    tag = str(tag_name or "").strip()
+    if not contact_id:
+        raise ValueError("Mautic contact ID is required.")
+    if not tag:
+        raise ValueError("tag is required.")
+    client = MauticClient()
+    contact = client.get_contact(contact_id)
+    current = [item["tag"] for item in _tags_from_contact(contact)]
+    if remove:
+        next_tags = [item for item in current if item.lower() != tag.lower()]
+    elif any(item.lower() == tag.lower() for item in current):
+        next_tags = current
+    else:
+        next_tags = current + [tag]
+    client.update_contact(contact_id, {"tags": next_tags})
+    return get_admin_contact(contact_id)
+
+
+def list_admin_contact_notes(mautic_contact_id, *, page: int = 1, page_size: int = 25, search: str = "") -> dict[str, Any]:
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 100))
+    start = (page - 1) * page_size
+    params = {"start": start, "limit": page_size}
+    if str(search or "").strip():
+        params["search"] = str(search).strip()
+    data = MauticClient().list_contact_notes(mautic_contact_id, **params)
+    notes = []
+    for note in _dict_values(data, "notes"):
+        notes.append(
+            {
+                "id": str(note.get("id") or ""),
+                "text": str(note.get("text") or note.get("note") or "").strip(),
+                "type": str(note.get("type") or "").strip(),
+                "createdByUser": note.get("createdByUser"),
+                "dateAdded": note.get("dateAdded") or note.get("date_added"),
+                "dateModified": note.get("dateModified") or note.get("date_modified"),
+            }
+        )
+    count = _provider_total(data, start=start, returned=len(notes))
+    return {
+        "count": count,
+        "page": page,
+        "page_size": page_size,
+        "num_pages": max(1, math.ceil(count / page_size)) if count else 1,
+        "results": notes,
+    }
+
+
+def create_admin_contact_note(mautic_contact_id, payload: dict[str, Any]) -> dict[str, Any]:
+    text = str(payload.get("text") or payload.get("note") or "").strip()
+    if not text:
+        raise ValueError("text is required.")
+    note_type = str(payload.get("type") or "general").strip()
+    note = MauticClient().create_note(
+        {
+            "lead": str(mautic_contact_id),
+            "text": text,
+            "type": note_type,
+        }
+    )
+    return {
+        "id": str(note.get("id") or ""),
+        "text": str(note.get("text") or note.get("note") or text).strip(),
+        "type": str(note.get("type") or note_type).strip(),
+        "createdByUser": note.get("createdByUser"),
+        "dateAdded": note.get("dateAdded") or note.get("date_added"),
+        "dateModified": note.get("dateModified") or note.get("date_modified"),
+    }
+
+
+def add_admin_contact_dnc(mautic_contact_id, payload: dict[str, Any]) -> dict[str, Any]:
+    channel = str(payload.get("channel") or "email").strip()
+    reason = payload.get("reason", 3)
+    comments = str(payload.get("comments") or "").strip()
+    MauticClient().add_contact_dnc(mautic_contact_id, channel, reason=reason, comments=comments)
+    return get_admin_contact(mautic_contact_id)
+
+
+def remove_admin_contact_dnc(mautic_contact_id, channel: str = "email") -> dict[str, Any]:
+    MauticClient().remove_contact_dnc(mautic_contact_id, channel)
+    return get_admin_contact(mautic_contact_id)
+
+
+def list_admin_contact_companies(mautic_contact_id) -> dict[str, Any]:
+    data = MauticClient().list_contact_companies(mautic_contact_id)
+    companies = []
+    for company in _dict_values(data, "companies"):
+        companies.append(
+            {
+                "id": str(company.get("id") or ""),
+                "name": str(company.get("companyname") or company.get("name") or "").strip(),
+                "email": str(company.get("companyemail") or company.get("email") or "").strip(),
+                "city": str(company.get("companycity") or company.get("city") or "").strip(),
+                "country": str(company.get("companycountry") or company.get("country") or "").strip(),
+                "is_primary": bool(company.get("is_primary", company.get("isPrimary", False))),
+            }
+        )
+    return {"count": len(companies), "results": companies}
 
 
 def _activity_events(data: dict[str, Any]) -> list[dict[str, Any]]:

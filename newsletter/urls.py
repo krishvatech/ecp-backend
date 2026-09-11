@@ -14,10 +14,18 @@ from .admin_views import (
     NewsletterAdminCampaignTestEmailView,
     NewsletterAdminContactActivityView,
     NewsletterAdminContactBulkStageView,
+    NewsletterAdminContactCompaniesView,
     NewsletterAdminContactDetailView,
+    NewsletterAdminContactDncDetailView,
+    NewsletterAdminContactDncView,
     NewsletterAdminContactEngagementView,
+    NewsletterAdminContactFieldMetadataView,
+    NewsletterAdminContactNotesView,
     NewsletterAdminContactListView,
     NewsletterAdminContactStageView,
+    NewsletterAdminContactTagDetailView,
+    NewsletterAdminContactTagsView,
+    NewsletterAdminTagListView,
     NewsletterAdminCategoryContactAnalyticsView,
     NewsletterAdminCategoryContactsView,
     NewsletterAdminCategoryDetailView,
@@ -25,6 +33,9 @@ from .admin_views import (
     NewsletterAdminCategoryListView,
     NewsletterAdminCategorySyncMauticView,
     NewsletterAdminMauticSegmentListView,
+    NewsletterAdminMauticSegmentDetailView,
+    NewsletterAdminMauticSegmentContactDetailView,
+    NewsletterAdminMauticSegmentContactsView,
     NewsletterAdminStageAnalyticsView,
     NewsletterAdminStageDetailView,
     NewsletterAdminStageListCreateView,
@@ -58,6 +69,22 @@ from .native_campaign_views import (
     NewsletterAdminMauticCampaignCapabilitiesView,
     NewsletterAdminMauticCampaignDetailView,
     NewsletterAdminMauticCampaignListCreateView,
+)
+from .company_views import (
+    NewsletterAdminCompanyContactDetailView,
+    NewsletterAdminCompanyContactsView,
+    NewsletterAdminCompanyDetailView,
+    NewsletterAdminCompanyListCreateView,
+)
+from .field_views import (
+    NewsletterAdminFieldChoicesView,
+    NewsletterAdminFieldDetailView,
+    NewsletterAdminFieldListCreateView,
+    NewsletterAdminFieldTypesView,
+)
+from .tag_views import (
+    NewsletterAdminTagDetailView,
+    NewsletterAdminTagDirectoryView,
 )
 from .views import NewsletterPreferencesView
 from .webhooks import MauticNewsletterWebhookView
@@ -173,14 +200,19 @@ urlpatterns = [
         name="newsletter-admin-contact-bulk-stage",
     ),
     path(
+        "newsletter/admin/contacts/field-metadata/",
+        NewsletterAdminContactFieldMetadataView.as_view(),
+        name="newsletter-admin-contact-field-metadata",
+    ),
+    path(
+        "newsletter/admin/tags/",
+        NewsletterAdminTagListView.as_view(),
+        name="newsletter-admin-tag-list",
+    ),
+    path(
         "newsletter/admin/contacts/<str:mautic_contact_id>/points/",
         NewsletterAdminContactPointsView.as_view(),
         name="newsletter-admin-contact-points",
-    ),
-    path(
-        "newsletter/admin/contacts/<str:mautic_contact_id>/",
-        NewsletterAdminContactDetailView.as_view(),
-        name="newsletter-admin-contact-detail",
     ),
     path(
         "newsletter/admin/contacts/<str:mautic_contact_id>/stage/",
@@ -196,6 +228,41 @@ urlpatterns = [
         "newsletter/admin/contacts/<str:mautic_contact_id>/engagement-analytics/",
         NewsletterAdminContactEngagementView.as_view(),
         name="newsletter-admin-contact-engagement",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/tags/",
+        NewsletterAdminContactTagsView.as_view(),
+        name="newsletter-admin-contact-tags",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/tags/<str:tag>/",
+        NewsletterAdminContactTagDetailView.as_view(),
+        name="newsletter-admin-contact-tag-detail",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/notes/",
+        NewsletterAdminContactNotesView.as_view(),
+        name="newsletter-admin-contact-notes",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/dnc/",
+        NewsletterAdminContactDncView.as_view(),
+        name="newsletter-admin-contact-dnc",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/dnc/<str:channel>/",
+        NewsletterAdminContactDncDetailView.as_view(),
+        name="newsletter-admin-contact-dnc-detail",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/companies/",
+        NewsletterAdminContactCompaniesView.as_view(),
+        name="newsletter-admin-contact-companies",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/",
+        NewsletterAdminContactDetailView.as_view(),
+        name="newsletter-admin-contact-detail",
     ),
     path(
         "newsletter/admin/points/types/",
@@ -306,6 +373,71 @@ urlpatterns = [
         "newsletter/admin/mautic/segments/",
         NewsletterAdminMauticSegmentListView.as_view(),
         name="newsletter-admin-mautic-segment-list",
+    ),
+    path(
+        "newsletter/admin/mautic/segments/<str:segment_id>/",
+        NewsletterAdminMauticSegmentDetailView.as_view(),
+        name="newsletter-admin-mautic-segment-detail",
+    ),
+    path(
+        "newsletter/admin/mautic/segments/<str:segment_id>/contacts/",
+        NewsletterAdminMauticSegmentContactsView.as_view(),
+        name="newsletter-admin-mautic-segment-contact-list",
+    ),
+    path(
+        "newsletter/admin/mautic/segments/<str:segment_id>/contacts/<str:contact_id>/",
+        NewsletterAdminMauticSegmentContactDetailView.as_view(),
+        name="newsletter-admin-mautic-segment-contact-detail",
+    ),
+    path(
+        "newsletter/admin/companies/",
+        NewsletterAdminCompanyListCreateView.as_view(),
+        name="newsletter-admin-company-list",
+    ),
+    path(
+        "newsletter/admin/companies/<str:company_id>/",
+        NewsletterAdminCompanyDetailView.as_view(),
+        name="newsletter-admin-company-detail",
+    ),
+    path(
+        "newsletter/admin/companies/<str:company_id>/contacts/",
+        NewsletterAdminCompanyContactsView.as_view(),
+        name="newsletter-admin-company-contact-list",
+    ),
+    path(
+        "newsletter/admin/companies/<str:company_id>/contacts/<str:contact_id>/",
+        NewsletterAdminCompanyContactDetailView.as_view(),
+        name="newsletter-admin-company-contact-detail",
+    ),
+    path(
+        "newsletter/admin/tags/directory/",
+        NewsletterAdminTagDirectoryView.as_view(),
+        name="newsletter-admin-tag-directory",
+    ),
+    path(
+        "newsletter/admin/tags/directory/<str:tag_id>/",
+        NewsletterAdminTagDetailView.as_view(),
+        name="newsletter-admin-tag-detail",
+    ),
+    path(
+        "newsletter/admin/fields/types/",
+        NewsletterAdminFieldTypesView.as_view(),
+        name="newsletter-admin-field-types",
+    ),
+    path(
+        "newsletter/admin/fields/choices/<str:field_type>/",
+        NewsletterAdminFieldChoicesView.as_view(),
+        name="newsletter-admin-field-choices",
+    ),
+    path(
+        "newsletter/admin/fields/<str:field_object>/",
+        NewsletterAdminFieldListCreateView.as_view(),
+        name="newsletter-admin-field-list",
+    ),
+    path(
+        "newsletter/admin/fields/<str:field_object>/<str:field_id>/",
+        NewsletterAdminFieldDetailView.as_view(),
+        name="newsletter-admin-field-detail",
     ),
     path(
         "newsletter/webhooks/mautic/",

@@ -845,7 +845,13 @@ class NewsletterAdminCampaignAPITests(TestCase):
         self.assertEqual(response.data[0]["id"], "1")
         self.assertTrue(response.data[0]["is_static"])
         self.assertTrue(response.data[0]["mapped_in_ecp"])
+        self.assertTrue(response.data[0]["managed_by_subscription_list"])
+        self.assertEqual(response.data[0]["subscription_list_slug"], "imaa-events")
+        self.assertEqual(response.data[0]["subscription_list_name"], "IMAA Events")
         self.assertTrue(response.data[1]["is_dynamic"])
+        self.assertFalse(response.data[1]["managed_by_subscription_list"])
+        self.assertIsNone(response.data[1]["subscription_list_slug"])
+        self.assertEqual(response.data[1]["filter_count"], 1)
 
     @patch("newsletter.admin_views.MauticClient")
     def test_admin_mautic_segments_normalizes_provider_booleans(self, client_cls):
@@ -866,6 +872,592 @@ class NewsletterAdminCampaignAPITests(TestCase):
             [item["isPublished"] for item in response.data],
             [False, True, False, True],
         )
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_admin_mautic_segments_preserves_provider_metadata(self, client_cls):
+        client_cls.return_value.list_segments.return_value = {
+            "lists": {
+                "9": {
+                    "id": 9,
+                    "name": "Native Segment",
+                    "alias": "native-segment",
+                    "description": "Provider segment",
+                    "isPublished": True,
+                    "filters": [],
+                    "contactCount": 17,
+                    "dateAdded": "2026-09-01T10:00:00+00:00",
+                    "dateModified": "2026-09-02T10:00:00+00:00",
+                },
+            }
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.get(reverse("newsletter-admin-mautic-segment-list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data[0]["contact_count"], 17)
+        self.assertEqual(response.data[0]["dateAdded"], "2026-09-01T10:00:00+00:00")
+        self.assertEqual(response.data[0]["dateModified"], "2026-09-02T10:00:00+00:00")
+        self.assertFalse(response.data[0]["managed_by_subscription_list"])
+        self.assertFalse(response.data[0]["mapped_in_ecp"])
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_admin_mautic_segment_detail_returns_mapped_annotation(self, client_cls):
+        self.category.mautic_segment_id = "1"
+        self.category.save(update_fields=["mautic_segment_id"])
+        client_cls.return_value.get_segment.return_value = {
+            "id": 1,
+            "name": "IMAA Events",
+            "alias": "imaa-events",
+            "description": "Events",
+            "isPublished": True,
+            "filters": [],
+            "contactCount": 8,
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.get(
+            reverse("newsletter-admin-mautic-segment-detail", args=["1"])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["id"], "1")
+        self.assertTrue(response.data["managed_by_subscription_list"])
+        self.assertTrue(response.data["mapped_in_ecp"])
+        self.assertEqual(response.data["subscription_list_slug"], "imaa-events")
+        self.assertEqual(response.data["subscription_list_name"], "IMAA Events")
+        self.assertEqual(response.data["contact_count"], 8)
+        client_cls.return_value.get_segment.assert_called_once_with("1")
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_admin_mautic_segment_detail_returns_unmapped_annotation(self, client_cls):
+        client_cls.return_value.get_segment.return_value = {
+            "id": 22,
+            "name": "Native Dynamic",
+            "alias": "native-dynamic",
+            "filters": [{"field": "email"}],
+            "isPublished": "1",
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.get(
+            reverse("newsletter-admin-mautic-segment-detail", args=["22"])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["managed_by_subscription_list"])
+        self.assertIsNone(response.data["subscription_list_slug"])
+        self.assertTrue(response.data["is_dynamic"])
+        self.assertEqual(response.data["filter_count"], 1)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_admin_mautic_segment_detail_provider_404_returns_404(self, client_cls):
+        from newsletter.mautic import PermanentMauticError
+
+        client_cls.return_value.get_segment.side_effect = PermanentMauticError(
+            "Mautic API request failed (HTTP 404)"
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.get(
+            reverse("newsletter-admin-mautic-segment-detail", args=["404"])
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_admin_mautic_segment_detail_requires_staff(self):
+        url = reverse("newsletter-admin-mautic-segment-detail", args=["1"])
+
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self._authenticate(self.normal_user)
+        self.assertEqual(self.client.get(url).status_code, 403)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_create_native_mautic_segment_success_creates_no_category(self, client_cls):
+        before_count = NewsletterCategory.objects.count()
+        client_cls.return_value.create_segment.return_value = {
+            "id": 90,
+            "name": "Board Targeting",
+            "alias": "board-targeting",
+            "description": "Native targeting segment",
+            "isPublished": True,
+            "filters": [],
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse("newsletter-admin-mautic-segment-list"),
+            {
+                "name": "Board Targeting",
+                "alias": "board-targeting",
+                "description": "Native targeting segment",
+                "isPublished": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(NewsletterCategory.objects.count(), before_count)
+        self.assertEqual(response.data["id"], "90")
+        self.assertFalse(response.data["managed_by_subscription_list"])
+        self.assertFalse(response.data["mapped_in_ecp"])
+        client_cls.return_value.create_segment.assert_called_once_with(
+            {
+                "name": "Board Targeting",
+                "alias": "board-targeting",
+                "description": "Native targeting segment",
+                "isPublished": True,
+                "filters": [],
+            }
+        )
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_create_native_mautic_segment_blocks_subscription_list_alias(self, client_cls):
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse("newsletter-admin-mautic-segment-list"),
+            {"name": "Collision", "alias": self.category.slug},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("reserved by an ECP Subscription List", response.data["detail"])
+        client_cls.return_value.create_segment.assert_not_called()
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_create_native_mautic_segment_provider_error_returns_400(self, client_cls):
+        from newsletter.mautic import PermanentMauticError
+
+        client_cls.return_value.create_segment.side_effect = PermanentMauticError(
+            "Mautic API request failed (HTTP 400): alias already exists"
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse("newsletter-admin-mautic-segment-list"),
+            {"name": "Duplicate", "alias": "duplicate"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_update_native_mautic_segment_success_sends_only_supplied_fields(self, client_cls):
+        client_cls.return_value.update_segment.return_value = {
+            "id": 22,
+            "name": "Updated Native",
+            "alias": "native",
+            "description": "Existing description",
+            "isPublished": True,
+            "filters": [{"field": "email"}],
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.patch(
+            reverse("newsletter-admin-mautic-segment-detail", args=["22"]),
+            {"name": "Updated Native"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["name"], "Updated Native")
+        self.assertTrue(response.data["is_dynamic"])
+        client_cls.return_value.update_segment.assert_called_once_with(
+            "22",
+            {"name": "Updated Native"},
+        )
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_update_native_mautic_segment_blocks_mapped_subscription_list_segment(self, client_cls):
+        self.category.mautic_segment_id = "3"
+        self.category.save(update_fields=["mautic_segment_id"])
+        self._authenticate(self.staff)
+
+        response = self.client.patch(
+            reverse("newsletter-admin-mautic-segment-detail", args=["3"]),
+            {"name": "Unsafe"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Edit it from Subscription Lists", response.data["detail"])
+        client_cls.return_value.update_segment.assert_not_called()
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_update_native_mautic_segment_blocks_subscription_list_alias(self, client_cls):
+        self._authenticate(self.staff)
+
+        response = self.client.patch(
+            reverse("newsletter-admin-mautic-segment-detail", args=["22"]),
+            {"alias": self.category.slug},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("reserved by an ECP Subscription List", response.data["detail"])
+        client_cls.return_value.update_segment.assert_not_called()
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_update_native_mautic_segment_rejects_filters(self, client_cls):
+        self._authenticate(self.staff)
+
+        response = self.client.patch(
+            reverse("newsletter-admin-mautic-segment-detail", args=["22"]),
+            {"filters": []},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        client_cls.return_value.update_segment.assert_not_called()
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_update_native_mautic_segment_provider_error_returns_400(self, client_cls):
+        from newsletter.mautic import PermanentMauticError
+
+        client_cls.return_value.update_segment.side_effect = PermanentMauticError(
+            "Mautic API request failed (HTTP 409): alias already exists"
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.patch(
+            reverse("newsletter-admin-mautic-segment-detail", args=["22"]),
+            {"alias": "duplicate"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_delete_native_mautic_segment_success_deletes_no_category(self, client_cls):
+        before_slugs = set(NewsletterCategory.objects.values_list("slug", flat=True))
+        self._authenticate(self.staff)
+
+        response = self.client.delete(
+            reverse("newsletter-admin-mautic-segment-detail", args=["22"])
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(
+            set(NewsletterCategory.objects.values_list("slug", flat=True)),
+            before_slugs,
+        )
+        client_cls.return_value.delete_segment.assert_called_once_with("22")
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_delete_native_mautic_segment_blocks_mapped_subscription_list_segment(self, client_cls):
+        self.category.mautic_segment_id = "3"
+        self.category.save(update_fields=["mautic_segment_id"])
+        self._authenticate(self.staff)
+
+        response = self.client.delete(
+            reverse("newsletter-admin-mautic-segment-detail", args=["3"])
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("cannot be deleted here", response.data["detail"])
+        self.category.refresh_from_db()
+        self.assertEqual(self.category.mautic_segment_id, "3")
+        client_cls.return_value.delete_segment.assert_not_called()
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_delete_native_mautic_segment_provider_error_returns_400(self, client_cls):
+        from newsletter.mautic import PermanentMauticError
+
+        client_cls.return_value.delete_segment.side_effect = PermanentMauticError(
+            "Mautic API request failed (HTTP 400): cannot delete"
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.delete(
+            reverse("newsletter-admin-mautic-segment-detail", args=["22"])
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_native_mautic_segment_mutations_require_staff(self, client_cls):
+        list_url = reverse("newsletter-admin-mautic-segment-list")
+        detail_url = reverse("newsletter-admin-mautic-segment-detail", args=["22"])
+
+        self.assertEqual(
+            self.client.post(list_url, {"name": "Native"}, format="json").status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.patch(detail_url, {"name": "Native"}, format="json").status_code,
+            401,
+        )
+        self.assertEqual(self.client.delete(detail_url).status_code, 401)
+
+        self._authenticate(self.normal_user)
+        self.assertEqual(
+            self.client.post(list_url, {"name": "Native"}, format="json").status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.patch(detail_url, {"name": "Native"}, format="json").status_code,
+            403,
+        )
+        self.assertEqual(self.client.delete(detail_url).status_code, 403)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_list_native_mautic_segment_contacts(self, client_cls):
+        client = client_cls.return_value
+        client.list_segment_contacts_via_bridge.return_value = {
+            "segment": {
+                "id": 22,
+                "name": "Native Static",
+                "alias": "native-static",
+                "filters": [],
+                "contactCount": 1,
+            },
+            "total": 1,
+            "contacts": [
+                {
+                    "id": 51,
+                    "firstname": "Ada",
+                    "lastname": "Lovelace",
+                    "email": "ada@example.test",
+                    "company": "Analytical Engines",
+                    "stage": {"id": 1, "name": "Lead"},
+                    "points": 12,
+                    "dateAdded": "2026-09-01T10:00:00+00:00",
+                    "dateModified": "2026-09-02T10:00:00+00:00",
+                }
+            ],
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.get(
+            reverse("newsletter-admin-mautic-segment-contact-list", args=["22"]),
+            {"page": 1, "page_size": 25, "search": "ada"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["segment"]["id"], "22")
+        self.assertEqual(response.data["results"][0]["id"], "51")
+        self.assertEqual(response.data["results"][0]["name"], "Ada Lovelace")
+        client.list_segment_contacts_via_bridge.assert_called_once_with(
+            "22",
+            start=0,
+            limit=25,
+            search="ada",
+        )
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_list_native_mautic_segment_contacts_empty_membership(self, client_cls):
+        client = client_cls.return_value
+        client.list_segment_contacts_via_bridge.return_value = {
+            "segment": {
+                "id": 22,
+                "name": "Native Static",
+                "alias": "native-static",
+                "filters": [],
+            },
+            "total": 0,
+            "contacts": [],
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.get(
+            reverse("newsletter-admin-mautic-segment-contact-list", args=["22"])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.data["num_pages"], 0)
+        self.assertEqual(response.data["results"], [])
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_list_native_mautic_segment_contacts_missing_segment_returns_404(
+        self,
+        client_cls,
+    ):
+        from newsletter.mautic import PermanentMauticError
+
+        client_cls.return_value.list_segment_contacts_via_bridge.side_effect = PermanentMauticError(
+            "Mautic API request failed (HTTP 404)"
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.get(
+            reverse("newsletter-admin-mautic-segment-contact-list", args=["404"])
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_list_native_mautic_segment_contacts_provider_error(self, client_cls):
+        from newsletter.mautic import TemporaryMauticError
+
+        client_cls.return_value.list_segment_contacts_via_bridge.side_effect = TemporaryMauticError(
+            "Mautic unavailable"
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.get(
+            reverse("newsletter-admin-mautic-segment-contact-list", args=["22"])
+        )
+
+        self.assertEqual(response.status_code, 502)
+
+    def test_list_native_mautic_segment_contacts_requires_staff(self):
+        url = reverse("newsletter-admin-mautic-segment-contact-list", args=["22"])
+
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self._authenticate(self.normal_user)
+        self.assertEqual(self.client.get(url).status_code, 403)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_add_contact_to_native_static_segment_success_preserves_local_state(self, client_cls):
+        before_categories = NewsletterCategory.objects.count()
+        before_subscriptions = NewsletterSubscription.objects.count()
+        before_events = NewsletterSyncEvent.objects.count()
+        client = client_cls.return_value
+        client.get_segment.return_value = {"id": 22, "name": "Native Static", "filters": []}
+        client.get_contact.return_value = {"id": 51}
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse("newsletter-admin-mautic-segment-contact-list", args=["22"]),
+            {"contact_id": "51"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["added"], True)
+        client.add_contact_to_segment.assert_called_once_with("22", "51")
+        self.assertEqual(NewsletterCategory.objects.count(), before_categories)
+        self.assertEqual(NewsletterSubscription.objects.count(), before_subscriptions)
+        self.assertEqual(NewsletterSyncEvent.objects.count(), before_events)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_add_contact_to_mapped_segment_blocked(self, client_cls):
+        self.category.mautic_segment_id = "3"
+        self.category.save(update_fields=["mautic_segment_id"])
+        client_cls.return_value.get_segment.return_value = {"id": 3, "filters": []}
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse("newsletter-admin-mautic-segment-contact-list", args=["3"]),
+            {"contact_id": "51"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("newsletter consent synchronization", response.data["detail"])
+        client_cls.return_value.add_contact_to_segment.assert_not_called()
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_add_contact_to_dynamic_segment_blocked(self, client_cls):
+        client_cls.return_value.get_segment.return_value = {
+            "id": 22,
+            "filters": [{"field": "email"}],
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse("newsletter-admin-mautic-segment-contact-list", args=["22"]),
+            {"contact_id": "51"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        client_cls.return_value.add_contact_to_segment.assert_not_called()
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_add_contact_to_native_segment_provider_error(self, client_cls):
+        from newsletter.mautic import TemporaryMauticError
+
+        client = client_cls.return_value
+        client.get_segment.return_value = {"id": 22, "filters": []}
+        client.get_contact.return_value = {"id": 51}
+        client.add_contact_to_segment.side_effect = TemporaryMauticError(
+            "Mautic unavailable"
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            reverse("newsletter-admin-mautic-segment-contact-list", args=["22"]),
+            {"contact_id": "51"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 502)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_remove_contact_from_native_static_segment_success_preserves_local_state(self, client_cls):
+        before_categories = NewsletterCategory.objects.count()
+        before_subscriptions = NewsletterSubscription.objects.count()
+        before_events = NewsletterSyncEvent.objects.count()
+        client_cls.return_value.get_segment.return_value = {
+            "id": 22,
+            "name": "Native Static",
+            "filters": [],
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.delete(
+            reverse("newsletter-admin-mautic-segment-contact-detail", args=["22", "51"])
+        )
+
+        self.assertEqual(response.status_code, 204)
+        client_cls.return_value.remove_contact_from_segment.assert_called_once_with("22", "51")
+        self.assertEqual(NewsletterCategory.objects.count(), before_categories)
+        self.assertEqual(NewsletterSubscription.objects.count(), before_subscriptions)
+        self.assertEqual(NewsletterSyncEvent.objects.count(), before_events)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_remove_contact_from_mapped_segment_blocked(self, client_cls):
+        self.category.mautic_segment_id = "3"
+        self.category.save(update_fields=["mautic_segment_id"])
+        client_cls.return_value.get_segment.return_value = {"id": 3, "filters": []}
+        self._authenticate(self.staff)
+
+        response = self.client.delete(
+            reverse("newsletter-admin-mautic-segment-contact-detail", args=["3", "51"])
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.category.refresh_from_db()
+        self.assertEqual(self.category.mautic_segment_id, "3")
+        client_cls.return_value.remove_contact_from_segment.assert_not_called()
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_remove_contact_from_native_segment_provider_error(self, client_cls):
+        from newsletter.mautic import TemporaryMauticError
+
+        client = client_cls.return_value
+        client.get_segment.return_value = {"id": 22, "filters": []}
+        client.remove_contact_from_segment.side_effect = TemporaryMauticError(
+            "Mautic unavailable"
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.delete(
+            reverse("newsletter-admin-mautic-segment-contact-detail", args=["22", "51"])
+        )
+
+        self.assertEqual(response.status_code, 502)
+
+    def test_native_mautic_segment_contact_mutations_require_staff(self):
+        list_url = reverse("newsletter-admin-mautic-segment-contact-list", args=["22"])
+        detail_url = reverse("newsletter-admin-mautic-segment-contact-detail", args=["22", "51"])
+
+        self.assertEqual(
+            self.client.post(list_url, {"contact_id": "51"}, format="json").status_code,
+            401,
+        )
+        self.assertEqual(self.client.delete(detail_url).status_code, 401)
+
+        self._authenticate(self.normal_user)
+        self.assertEqual(
+            self.client.post(list_url, {"contact_id": "51"}, format="json").status_code,
+            403,
+        )
+        self.assertEqual(self.client.delete(detail_url).status_code, 403)
 
     @override_settings(MAUTIC_SYNC_ENABLED=True)
     @patch("newsletter.admin_views.MauticClient")
