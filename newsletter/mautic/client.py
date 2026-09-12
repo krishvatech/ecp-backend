@@ -1276,6 +1276,12 @@ class MauticClient:
             )
         return data
 
+    def list_emails(self, **params) -> dict[str, Any]:
+        response = self._request("GET", "emails", params=params or None)
+        data = self._json_object(response, "Mautic email list")
+        self._email_collection_items(data, "Mautic email list")
+        return data
+
     def create_email(self, payload: dict[str, Any]) -> dict[str, Any]:
         response = self._request(
             "POST",
@@ -1742,6 +1748,16 @@ class MauticClient:
             )
         return data
 
+    def get_marketing_bridge_capabilities(self) -> dict[str, Any]:
+        response = self._request("GET", "ecp/capabilities")
+        data = self._json_object(response, "Mautic marketing bridge capabilities")
+        capabilities = data.get("capabilities")
+        if not isinstance(capabilities, list):
+            raise TemporaryMauticError(
+                "Mautic marketing bridge capabilities returned invalid capabilities"
+            )
+        return data
+
     def get_field_type_capabilities(self) -> dict[str, Any]:
         """Read the supported custom-field type registry from the ECP bridge plugin.
 
@@ -1802,6 +1818,19 @@ class MauticClient:
         if not isinstance(contacts, (dict, list)):
             raise TemporaryMauticError(
                 "Mautic segment contacts bridge returned invalid contacts"
+            )
+        return data
+
+    def get_segment_count_via_bridge(self, segment_id: int | str) -> dict[str, Any]:
+        segment_id = str(segment_id or "").strip()
+        if not segment_id:
+            raise PermanentMauticError("Mautic segment ID is required")
+
+        response = self._request("GET", f"ecp/segments/{segment_id}/count")
+        data = self._json_object(response, "Mautic segment count bridge")
+        if "total" not in data and "active" not in data:
+            raise TemporaryMauticError(
+                "Mautic segment count bridge returned an invalid response"
             )
         return data
 

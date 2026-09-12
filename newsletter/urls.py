@@ -70,6 +70,14 @@ from .native_campaign_views import (
     NewsletterAdminMauticCampaignDetailView,
     NewsletterAdminMauticCampaignListCreateView,
 )
+from .mautic_analytics_views import (
+    NewsletterAdminAnalyticsCampaignsView,
+    NewsletterAdminAnalyticsContactsView,
+    NewsletterAdminAnalyticsEmailsView,
+    NewsletterAdminAnalyticsOverviewView,
+    NewsletterAdminAnalyticsSegmentsView,
+)
+from .mautic_diagnostics_views import NewsletterAdminMauticDiagnosticsView
 from .company_views import (
     NewsletterAdminCompanyContactDetailView,
     NewsletterAdminCompanyContactsView,
@@ -173,6 +181,36 @@ urlpatterns = [
         "newsletter/admin/mautic-campaigns/<str:campaign_id>/builder/",
         NewsletterAdminMauticCampaignBuilderView.as_view(),
         name="newsletter-admin-mautic-campaign-builder",
+    ),
+    path(
+        "newsletter/admin/analytics/overview/",
+        NewsletterAdminAnalyticsOverviewView.as_view(),
+        name="newsletter-admin-analytics-overview",
+    ),
+    path(
+        "newsletter/admin/analytics/campaigns/",
+        NewsletterAdminAnalyticsCampaignsView.as_view(),
+        name="newsletter-admin-analytics-campaigns",
+    ),
+    path(
+        "newsletter/admin/analytics/emails/",
+        NewsletterAdminAnalyticsEmailsView.as_view(),
+        name="newsletter-admin-analytics-emails",
+    ),
+    path(
+        "newsletter/admin/analytics/contacts/",
+        NewsletterAdminAnalyticsContactsView.as_view(),
+        name="newsletter-admin-analytics-contacts",
+    ),
+    path(
+        "newsletter/admin/analytics/segments/",
+        NewsletterAdminAnalyticsSegmentsView.as_view(),
+        name="newsletter-admin-analytics-segments",
+    ),
+    path(
+        "newsletter/admin/settings/mautic-diagnostics/",
+        NewsletterAdminMauticDiagnosticsView.as_view(),
+        name="newsletter-admin-mautic-diagnostics",
     ),
     path(
         "newsletter/admin/categories/",
