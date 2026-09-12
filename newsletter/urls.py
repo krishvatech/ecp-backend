@@ -61,8 +61,15 @@ from .point_views import (
     NewsletterAdminPointActionTypesView,
 )
 from .template_views import (
+    NewsletterAdminTemplateCategoriesView,
     NewsletterAdminTemplateDetailView,
+    NewsletterAdminTemplateDuplicateView,
     NewsletterAdminTemplateListCreateView,
+    NewsletterAdminTemplatePreviewView,
+    NewsletterAdminTemplateTestSendView,
+    NewsletterAdminTemplateThemesView,
+    NewsletterAdminTemplateTokensView,
+    NewsletterAdminTemplateUsageView,
 )
 from .native_campaign_views import (
     NewsletterAdminMauticCampaignBuilderView,
@@ -227,6 +234,41 @@ urlpatterns = [
         "newsletter/admin/templates/",
         NewsletterAdminTemplateListCreateView.as_view(),
         name="newsletter-admin-template-list",
+    ),
+    path(
+        "newsletter/admin/templates/tokens/",
+        NewsletterAdminTemplateTokensView.as_view(),
+        name="newsletter-admin-template-tokens",
+    ),
+    path(
+        "newsletter/admin/templates/categories/",
+        NewsletterAdminTemplateCategoriesView.as_view(),
+        name="newsletter-admin-template-categories",
+    ),
+    path(
+        "newsletter/admin/templates/themes/",
+        NewsletterAdminTemplateThemesView.as_view(),
+        name="newsletter-admin-template-themes",
+    ),
+    path(
+        "newsletter/admin/templates/<str:template_id>/duplicate/",
+        NewsletterAdminTemplateDuplicateView.as_view(),
+        name="newsletter-admin-template-duplicate",
+    ),
+    path(
+        "newsletter/admin/templates/<str:template_id>/preview/",
+        NewsletterAdminTemplatePreviewView.as_view(),
+        name="newsletter-admin-template-preview",
+    ),
+    path(
+        "newsletter/admin/templates/<str:template_id>/test-send/",
+        NewsletterAdminTemplateTestSendView.as_view(),
+        name="newsletter-admin-template-test-send",
+    ),
+    path(
+        "newsletter/admin/templates/<str:template_id>/usage/",
+        NewsletterAdminTemplateUsageView.as_view(),
+        name="newsletter-admin-template-usage",
     ),
     path(
         "newsletter/admin/templates/<str:template_id>/",

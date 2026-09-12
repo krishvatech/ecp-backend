@@ -30,6 +30,22 @@ class NewsletterAdminTemplatesAPITests(TestCase):
             "newsletter-admin-template-detail",
             args=["18"],
         )
+        self.duplicate_url = reverse(
+            "newsletter-admin-template-duplicate",
+            args=["18"],
+        )
+        self.preview_url = reverse(
+            "newsletter-admin-template-preview",
+            args=["18"],
+        )
+        self.test_send_url = reverse(
+            "newsletter-admin-template-test-send",
+            args=["18"],
+        )
+        self.usage_url = reverse(
+            "newsletter-admin-template-usage",
+            args=["18"],
+        )
 
     def _authenticate(self, user):
         self.client.force_authenticate(user=user)
@@ -46,6 +62,8 @@ class NewsletterAdminTemplatesAPITests(TestCase):
             "plainText": "Plain content",
             "customHtml": "<h1>HTML content</h1>",
             "emailType": "template",
+            "category": {"id": 4, "title": "Email Updates"},
+            "template": "blank",
             "isPublished": False,
             "dateAdded": "2026-09-09T06:00:00+00:00",
             "dateModified": "2026-09-09T06:10:00+00:00",
@@ -211,6 +229,8 @@ class NewsletterAdminTemplatesAPITests(TestCase):
         self.assertEqual(response.data["id"], "18")
         self.assertEqual(response.data["name"], "Reusable Newsletter")
         self.assertFalse(response.data["isPublished"])
+        self.assertEqual(response.data["category"]["id"], "4")
+        self.assertEqual(response.data["template"], "blank")
         client.get_email_template.assert_called_once_with("18")
 
     @patch("newsletter.template_views.MauticClient")
@@ -271,6 +291,119 @@ class NewsletterAdminTemplatesAPITests(TestCase):
 
         self.assertEqual(response.status_code, 204)
         client.delete_email_template.assert_called_once_with("18")
+
+    @patch("newsletter.template_views.MauticClient")
+    def test_duplicate_creates_provider_draft_copy(self, client_cls):
+        client = client_cls.return_value
+        client.duplicate_email_template.return_value = self._template(
+            id=22,
+            name="Reusable Newsletter Copy",
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.post(self.duplicate_url, {}, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["id"], "22")
+        client.duplicate_email_template.assert_called_once_with("18", name=None)
+
+    @patch("newsletter.template_views.MauticClient")
+    def test_preview_returns_raw_html_preview_contract(self, client_cls):
+        client_cls.return_value.get_email_template.return_value = self._template()
+        self._authenticate(self.staff)
+
+        response = self.client.get(self.preview_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["type"], "raw_html")
+        self.assertEqual(response.data["tokenResolution"], "placeholders_only")
+        self.assertEqual(response.data["html"], "<h1>HTML content</h1>")
+
+    def test_test_send_reports_verified_gap_without_sending(self):
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            self.test_send_url,
+            {"email": "admin@example.test"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 501)
+        self.assertFalse(response.data["available"])
+        self.assertTrue(response.data["bridgeRequired"])
+
+    @patch("newsletter.template_views.MauticClient")
+    def test_usage_reports_dependency_gap_and_provider_guard(self, client_cls):
+        client_cls.return_value.get_email_template.return_value = self._template()
+        self._authenticate(self.staff)
+
+        response = self.client.get(self.usage_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["available"])
+        self.assertEqual(response.data["deletePolicy"], "provider_enforced")
+        self.assertEqual(response.data["template"]["id"], "18")
+
+    @patch("newsletter.template_views.MauticClient")
+    def test_tokens_are_generated_from_mautic_fields(self, client_cls):
+        client = client_cls.return_value
+        client.list_fields.side_effect = [
+            {"fields": [{"alias": "firstname", "label": "First Name"}]},
+            {"fields": [{"alias": "companyname", "label": "Company Name"}]},
+        ]
+        self._authenticate(self.staff)
+
+        response = self.client.get(reverse("newsletter-admin-template-tokens"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "{contactfield=firstname}",
+            [token["token"] for token in response.data["results"]],
+        )
+        self.assertIn(
+            "{companyfield=companyname}",
+            [token["token"] for token in response.data["results"]],
+        )
+
+    @patch("newsletter.template_views.MauticClient")
+    def test_categories_filters_email_bundle(self, client_cls):
+        client_cls.return_value.list_categories.return_value = {
+            "categories": [
+                {"id": 4, "title": "Email", "bundle": "email"},
+                {"id": 5, "title": "Assets", "bundle": "asset"},
+            ]
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.get(reverse("newsletter-admin-template-categories"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], "4")
+
+    @patch("newsletter.template_views.MauticClient")
+    def test_themes_filters_email_compatible_themes(self, client_cls):
+        client_cls.return_value.list_themes.return_value = {
+            "themes": {
+                "blank": {
+                    "key": "blank",
+                    "name": "Blank",
+                    "config": {"features": ["email"]},
+                },
+                "page": {
+                    "key": "page",
+                    "name": "Page",
+                    "config": {"features": ["page"]},
+                },
+            }
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.get(reverse("newsletter-admin-template-themes"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["key"], "blank")
 
     @patch("newsletter.template_views.MauticClient")
     def test_non_template_email_is_hidden_as_not_found(self, client_cls):

@@ -15,6 +15,19 @@ from moderation.permissions import IsStaffOrSuperuser
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 
 
+SYSTEM_TOKENS = [
+    {
+        "token": "{unsubscribe_url}",
+        "label": "Unsubscribe URL",
+        "group": "Email",
+    },
+    {
+        "token": "{webview_url}",
+        "label": "Web View URL",
+        "group": "Email",
+    },
+]
+
 _TEMPLATE_FIELDS = {
     "name",
     "subject",
@@ -24,6 +37,8 @@ _TEMPLATE_FIELDS = {
     "plainText",
     "customHtml",
     "isPublished",
+    "category",
+    "template",
 }
 
 
@@ -55,6 +70,17 @@ def _parse_bool(value, *, field_name: str) -> bool:
 
 def _normalize_template(email: dict[str, Any]) -> dict[str, Any]:
     email_id = email.get("id")
+    category = email.get("category")
+    if isinstance(category, dict):
+        normalized_category = {
+            "id": str(category.get("id")) if category.get("id") is not None else None,
+            "title": str(category.get("title") or category.get("name") or ""),
+        }
+    elif category:
+        normalized_category = {"id": str(category), "title": ""}
+    else:
+        normalized_category = None
+
     return {
         "id": str(email_id) if email_id is not None else None,
         "name": str(email.get("name") or "").strip(),
@@ -65,6 +91,8 @@ def _normalize_template(email: dict[str, Any]) -> dict[str, Any]:
         "plainText": str(email.get("plainText") or ""),
         "customHtml": str(email.get("customHtml") or ""),
         "emailType": str(email.get("emailType") or ""),
+        "category": normalized_category,
+        "template": str(email.get("template") or ""),
         "isPublished": _provider_bool(email.get("isPublished", False)),
         "dateAdded": email.get("dateAdded"),
         "dateModified": email.get("dateModified"),
@@ -96,6 +124,7 @@ def _parse_template_payload(data, *, partial: bool = False) -> dict[str, Any]:
         "fromName",
         "plainText",
         "customHtml",
+        "template",
     )
     for field in text_fields:
         if field not in data:
@@ -118,6 +147,23 @@ def _parse_template_payload(data, *, partial: bool = False) -> dict[str, Any]:
                 ) from exc
         payload["fromAddress"] = from_address
 
+    if "category" in data:
+        category = data.get("category")
+        if category in (None, ""):
+            payload["category"] = ""
+        else:
+            try:
+                category_id = int(category)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "Newsletter Template category must be a Mautic Category ID."
+                ) from exc
+            if category_id <= 0:
+                raise ValueError(
+                    "Newsletter Template category must be a Mautic Category ID."
+                )
+            payload["category"] = category_id
+
     if "isPublished" in data:
         payload["isPublished"] = _parse_bool(
             data.get("isPublished"),
@@ -131,6 +177,53 @@ def _parse_template_payload(data, *, partial: bool = False) -> dict[str, Any]:
         raise ValueError("At least one Newsletter Template field is required.")
 
     return payload
+
+
+def _collection_values(value) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        rows = value.values()
+    elif isinstance(value, list):
+        rows = value
+    else:
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _normalize_category(category: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(category.get("id")) if category.get("id") is not None else None,
+        "title": str(category.get("title") or category.get("name") or ""),
+        "alias": str(category.get("alias") or ""),
+        "bundle": str(category.get("bundle") or ""),
+        "color": str(category.get("color") or ""),
+    }
+
+
+def _normalize_theme(theme: dict[str, Any]) -> dict[str, Any]:
+    config = theme.get("config") if isinstance(theme.get("config"), dict) else {}
+    return {
+        "key": str(theme.get("key") or ""),
+        "name": str(theme.get("name") or config.get("name") or theme.get("key") or ""),
+        "features": config.get("features") if isinstance(config.get("features"), list) else [],
+        "builder": config.get("builder") if isinstance(config.get("builder"), list) else [],
+    }
+
+
+def _field_tokens(fields: dict[str, Any], *, group: str, prefix: str) -> list[dict[str, str]]:
+    tokens = []
+    for field in _collection_values(fields.get("fields")):
+        alias = str(field.get("alias") or "").strip()
+        if not alias:
+            continue
+        label = str(field.get("label") or alias)
+        tokens.append(
+            {
+                "token": f"{{{prefix}={alias}}}",
+                "label": label,
+                "group": group,
+            }
+        )
+    return tokens
 
 
 def _provider_error_response(exc):
@@ -270,3 +363,177 @@ class NewsletterAdminTemplateDetailView(APIView):
             return _provider_error_response(exc)
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class NewsletterAdminTemplateDuplicateView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request, template_id):
+        name = str(request.data.get("name") or "").strip()
+        if name and len(name) > 190:
+            return Response(
+                {"detail": "Newsletter Template name cannot exceed 190 characters."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            email = MauticClient().duplicate_email_template(
+                template_id,
+                name=name or None,
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        return Response(_normalize_template(email), status=status.HTTP_201_CREATED)
+
+
+class NewsletterAdminTemplatePreviewView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, template_id):
+        try:
+            email = MauticClient().get_email_template(template_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        template = _normalize_template(email)
+        return Response(
+            {
+                "type": "raw_html",
+                "tokenResolution": "placeholders_only",
+                "template": template,
+                "html": template["customHtml"],
+                "plainText": template["plainText"],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class NewsletterAdminTemplateTestSendView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def post(self, request, template_id):
+        return Response(
+            {
+                "available": False,
+                "detail": (
+                    "Mautic REST exposes contact/segment sends, but no verified "
+                    "template test-send endpoint for an arbitrary email address."
+                ),
+                "bridgeRequired": True,
+            },
+            status=status.HTTP_501_NOT_IMPLEMENTED,
+        )
+
+
+class NewsletterAdminTemplateTokensView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request):
+        try:
+            client = MauticClient()
+            contact_fields = client.list_fields("contact", start=0, limit=500)
+            company_fields = client.list_fields("company", start=0, limit=500)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        tokens = [
+            *SYSTEM_TOKENS,
+            *_field_tokens(contact_fields, group="Contact Fields", prefix="contactfield"),
+            *_field_tokens(company_fields, group="Company Fields", prefix="companyfield"),
+        ]
+        return Response(
+            {
+                "total": len(tokens),
+                "results": tokens,
+                "source": "mautic_rest_fields",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class NewsletterAdminTemplateCategoriesView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request):
+        try:
+            data = MauticClient().list_categories(start=0, limit=500)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        categories = [
+            _normalize_category(category)
+            for category in _collection_values(data.get("categories"))
+        ]
+        email_categories = [
+            category
+            for category in categories
+            if category["bundle"] in {"email", ""}
+        ]
+        return Response(
+            {
+                "count": len(email_categories),
+                "results": email_categories,
+                "source": "mautic_rest_categories",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class NewsletterAdminTemplateThemesView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request):
+        try:
+            data = MauticClient().list_themes()
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        themes = [
+            _normalize_theme(theme)
+            for theme in _collection_values(data.get("themes"))
+        ]
+        email_themes = [
+            theme
+            for theme in themes
+            if not theme["features"] or "email" in theme["features"]
+        ]
+        return Response(
+            {
+                "count": len(email_themes),
+                "results": email_themes,
+                "source": "mautic_rest_themes",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class NewsletterAdminTemplateUsageView(APIView):
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request, template_id):
+        try:
+            template = _normalize_template(MauticClient().get_email_template(template_id))
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        return Response(
+            {
+                "available": False,
+                "template": {
+                    "id": template["id"],
+                    "name": template["name"],
+                    "sentCount": template["sentCount"],
+                    "readCount": template["readCount"],
+                },
+                "dependencies": [],
+                "deletePolicy": "provider_enforced",
+                "detail": (
+                    "No verified Mautic REST endpoint exposes campaign/template "
+                    "dependency usage for template emails. Delete remains guarded "
+                    "by Mautic provider validation."
+                ),
+                "bridgeRequired": True,
+            },
+            status=status.HTTP_200_OK,
+        )

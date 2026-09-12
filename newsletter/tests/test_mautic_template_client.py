@@ -269,3 +269,81 @@ class MauticTemplateClientTests(SimpleTestCase):
             session.request.call_args_list[1].args[:2],
             ("DELETE", "http://mautic.local/api/emails/18/delete"),
         )
+
+    def test_duplicate_template_creates_draft_without_provider_metadata(self):
+        client, session = self.make_client()
+        session.request.side_effect = [
+            response(
+                200,
+                {
+                    "email": {
+                        "id": 18,
+                        "name": "Reusable",
+                        "subject": "Subject",
+                        "emailType": "template",
+                        "category": {"id": 4, "title": "Email"},
+                        "template": "blank",
+                        "customHtml": "<h1>HTML</h1>",
+                        "plainText": "Plain",
+                        "sentCount": 99,
+                        "readCount": 25,
+                    }
+                },
+            ),
+            response(
+                201,
+                {
+                    "email": {
+                        "id": 22,
+                        "name": "Reusable Copy",
+                        "emailType": "template",
+                    }
+                },
+            ),
+        ]
+
+        duplicated = client.duplicate_email_template(18)
+
+        self.assertEqual(duplicated["id"], 22)
+        form_data = session.request.call_args_list[1].kwargs["data"]
+        self.assertIn(("name", "Reusable Copy"), form_data)
+        self.assertIn(("isPublished", "0"), form_data)
+        self.assertIn(("category", 4), form_data)
+        self.assertIn(("template", "blank"), form_data)
+        self.assertNotIn(("id", 18), form_data)
+        self.assertNotIn(("sentCount", 99), form_data)
+        self.assertNotIn(("readCount", 25), form_data)
+
+    def test_list_categories_uses_official_rest_endpoint(self):
+        client, session = self.make_client()
+        session.request.return_value = response(
+            200,
+            {"categories": [{"id": 4, "bundle": "email"}]},
+        )
+
+        result = client.list_categories(start=0, limit=500)
+
+        self.assertEqual(result["categories"][0]["id"], 4)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/categories"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["params"],
+            {"start": 0, "limit": 500},
+        )
+
+    def test_list_themes_uses_official_rest_endpoint(self):
+        client, session = self.make_client()
+        session.request.return_value = response(
+            200,
+            {"themes": {"blank": {"key": "blank"}}},
+        )
+
+        result = client.list_themes()
+
+        self.assertEqual(result["themes"]["blank"]["key"], "blank")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/themes"),
+        )

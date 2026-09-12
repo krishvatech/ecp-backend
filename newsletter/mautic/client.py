@@ -238,6 +238,24 @@ class MauticClient:
             )
         return data
 
+    def list_categories(self, **params) -> dict[str, Any]:
+        response = self._request("GET", "categories", params=params or None)
+        data = self._json_object(response, "Mautic category list")
+        categories = data.get("categories")
+        if not isinstance(categories, (dict, list)):
+            raise TemporaryMauticError(
+                "Mautic category list returned invalid categories"
+            )
+        return data
+
+    def list_themes(self, **params) -> dict[str, Any]:
+        response = self._request("GET", "themes", params=params or None)
+        data = self._json_object(response, "Mautic theme list")
+        themes = data.get("themes")
+        if not isinstance(themes, (dict, list)):
+            raise TemporaryMauticError("Mautic theme list returned invalid themes")
+        return data
+
     @staticmethod
     def _normalize_field_object(field_object) -> str:
         """Map an ECP field object name onto a Mautic ``/api/fields/{object}`` path segment."""
@@ -1494,6 +1512,40 @@ class MauticClient:
     ) -> dict[str, Any]:
         self.get_email_template(email_id)
         return self.delete_email(email_id)
+
+    def duplicate_email_template(
+        self,
+        email_id: int | str,
+        *,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        source = self.get_email_template(email_id)
+        clone_fields = (
+            "subject",
+            "preheaderText",
+            "fromName",
+            "fromAddress",
+            "plainText",
+            "customHtml",
+            "template",
+            "language",
+            "publicPreview",
+        )
+        payload = {
+            key: source[key]
+            for key in clone_fields
+            if key in source and source.get(key) is not None
+        }
+        payload["name"] = name or f"{str(source.get('name') or '').strip()} Copy".strip()
+        payload["isPublished"] = False
+
+        category = source.get("category")
+        if isinstance(category, dict) and category.get("id"):
+            payload["category"] = category["id"]
+        elif category:
+            payload["category"] = category
+
+        return self.create_email_template(payload)
 
     @staticmethod
     def _campaign_form_data(

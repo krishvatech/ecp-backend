@@ -345,6 +345,39 @@ class NewsletterAdminMauticDashboardAPITests(TestCase):
             ],
         )
 
+    @override_settings(TIME_ZONE="Asia/Kolkata")
+    @patch("newsletter.mautic_dashboard_services.get_mautic_diagnostics")
+    @patch("newsletter.mautic_dashboard_services.MauticClient")
+    def test_contacts_created_uses_provider_timestamp_date_without_local_shift(self, client_cls, diagnostics):
+        client = self._mock_provider(client_cls)
+        client.list_contacts.side_effect = [
+            {
+                "total": 5,
+                "contacts": [
+                    {"id": 1, "dateAdded": "2026-09-09T23:59:59+00:00"},
+                    {"id": 2, "dateAdded": "2026-09-10T00:00:00+00:00"},
+                    {"id": 3, "dateAdded": "2026-09-12T23:59:59+00:00"},
+                    {"id": 4, "dateAdded": "2026-09-12T23:30:00-04:00"},
+                    {"id": 5, "dateAdded": "not-a-date"},
+                ],
+            },
+            {"total": 0, "contacts": []},
+        ]
+        diagnostics.return_value = {"diagnostics": {"warnings": []}}
+        self._authenticate()
+
+        response = self.client.get(self.url, {"from": "2026-09-10", "to": "2026-09-12"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data["contacts_created"]["series"],
+            [
+                {"date": "2026-09-10", "count": 1},
+                {"date": "2026-09-11", "count": 0},
+                {"date": "2026-09-12", "count": 2},
+            ],
+        )
+
     @patch("newsletter.mautic_dashboard_services.get_mautic_diagnostics")
     @patch("newsletter.mautic_dashboard_services.MauticClient")
     def test_contacts_created_provider_failure_is_section_scoped(self, client_cls, diagnostics):

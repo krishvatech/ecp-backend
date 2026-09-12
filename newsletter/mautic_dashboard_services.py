@@ -86,7 +86,7 @@ def _contacts_created(client: MauticClient, date_range: dict[str, Any]) -> dict[
         added_at = _parse_provider_datetime(contact.get("dateAdded") or contact.get("date_added"))
         if not added_at:
             continue
-        bucket = timezone.localtime(added_at).date()
+        bucket = added_at.date()
         if start <= bucket <= end:
             buckets[bucket.isoformat()] += 1
 
