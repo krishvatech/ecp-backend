@@ -78,6 +78,7 @@ from .mautic_analytics_views import (
     NewsletterAdminAnalyticsSegmentsView,
 )
 from .mautic_diagnostics_views import NewsletterAdminMauticDiagnosticsView
+from .mautic_dashboard_views import NewsletterAdminDashboardView
 from .company_views import (
     NewsletterAdminCompanyContactDetailView,
     NewsletterAdminCompanyContactsView,
@@ -108,6 +109,11 @@ urlpatterns = [
         "newsletter/admin/audiences/",
         NewsletterAdminAudienceListCreateView.as_view(),
         name="newsletter-admin-audience-list",
+    ),
+    path(
+        "newsletter/admin/dashboard/",
+        NewsletterAdminDashboardView.as_view(),
+        name="newsletter-admin-dashboard",
     ),
     path(
         "newsletter/admin/audiences/<uuid:uuid>/",

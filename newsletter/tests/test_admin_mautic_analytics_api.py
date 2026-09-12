@@ -1,11 +1,12 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
 
 from newsletter.mautic import TemporaryMauticError
+from newsletter.mautic_analytics_services import _count_new_contacts
 
 
 User = get_user_model()
@@ -83,6 +84,19 @@ class NewsletterAdminMauticAnalyticsAPITests(TestCase):
         self.assertEqual(metrics["clicks"]["value"], 1)
         self.assertEqual(metrics["bounces"]["value"], 1)
         self.assertEqual(metrics["new_contacts"]["scope"], "date_range")
+        self.assertEqual(
+            client.list_contacts.call_args_list[1].kwargs,
+            {
+                "start": 0,
+                "limit": 1,
+                "where[0][col]": "dateAdded",
+                "where[0][expr]": "gte",
+                "where[0][val]": "2026-09-01 00:00:00",
+                "where[1][col]": "dateAdded",
+                "where[1][expr]": "lte",
+                "where[1][val]": "2026-09-12 23:59:59",
+            },
+        )
 
     def test_overview_rejects_invalid_date_range(self):
         self._authenticate()
@@ -169,6 +183,28 @@ class NewsletterAdminMauticAnalyticsAPITests(TestCase):
         metrics = {row["key"]: row for row in response.data["metrics"]}
         self.assertFalse(metrics["dnc"]["available"])
         self.assertEqual(response.data["stage_distribution"]["stages"][0]["count"], 3)
+        self.assertEqual(
+            client.list_contacts.call_args_list[1].kwargs,
+            {
+                "start": 0,
+                "limit": 1,
+                "where[0][col]": "dateAdded",
+                "where[0][expr]": "gte",
+                "where[0][val]": "2026-09-01 00:00:00",
+            },
+        )
+
+    @patch("newsletter.mautic_analytics_services.get_admin_stage_analytics")
+    @patch("newsletter.mautic_analytics_services.MauticClient")
+    def test_contacts_provider_failure_returns_502(self, client_cls, stage_analytics):
+        client = client_cls.return_value
+        client.list_contacts.side_effect = TemporaryMauticError("contacts down")
+        stage_analytics.return_value = {"total_contacts": 0, "stages": []}
+        self._authenticate()
+
+        response = self.client.get(self.contacts_url, {"from": "2026-09-01", "to": "2026-09-12"})
+
+        self.assertEqual(response.status_code, 502)
 
     @patch("newsletter.mautic_analytics_services.MauticClient")
     def test_segments_uses_existing_count_bridge(self, client_cls):
@@ -187,3 +223,39 @@ class NewsletterAdminMauticAnalyticsAPITests(TestCase):
         self.assertEqual(response.data["results"][0]["totalContacts"], 20)
         self.assertEqual(response.data["results"][0]["activeContacts"], 18)
         client.get_segment_count_via_bridge.assert_called_once_with(9)
+
+
+class NewContactsDateRangeServiceTests(SimpleTestCase):
+    def test_builds_inclusive_mautic_date_added_range_filters(self):
+        class Client:
+            def __init__(self):
+                self.kwargs = None
+
+            def list_contacts(self, **kwargs):
+                self.kwargs = kwargs
+                return {"total": 3}
+
+        client = Client()
+        count = _count_new_contacts(client, {"from": "2026-08-13", "to": "2026-09-12"})
+
+        self.assertEqual(count, 3)
+        self.assertEqual(
+            client.kwargs,
+            {
+                "start": 0,
+                "limit": 1,
+                "where[0][col]": "dateAdded",
+                "where[0][expr]": "gte",
+                "where[0][val]": "2026-08-13 00:00:00",
+                "where[1][col]": "dateAdded",
+                "where[1][expr]": "lte",
+                "where[1][val]": "2026-09-12 23:59:59",
+            },
+        )
+
+    def test_returns_unavailable_without_date_range(self):
+        class Client:
+            def list_contacts(self, **kwargs):
+                raise AssertionError("date-filtered Mautic request should not be made")
+
+        self.assertIsNone(_count_new_contacts(Client(), {"from": None, "to": None}))

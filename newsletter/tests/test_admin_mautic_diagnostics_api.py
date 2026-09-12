@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -53,6 +54,30 @@ class NewsletterAdminMauticDiagnosticsAPITests(TestCase):
 
     def _authenticate(self, user=None):
         self.client.force_authenticate(user=user or self.staff)
+
+    def _create_sync_event(self, *, category, key, user_id, status, created_at=None, **kwargs):
+        event = NewsletterSyncEvent.objects.create(
+            idempotency_key=key,
+            user_id=user_id,
+            category=category,
+            desired_subscribed=kwargs.pop("desired_subscribed", True),
+            status=status,
+            **kwargs,
+        )
+        if created_at is not None:
+            NewsletterSyncEvent.objects.filter(pk=event.pk).update(created_at=created_at)
+            event.created_at = created_at
+        return event
+
+    def _mock_healthy_mautic(self, client_cls):
+        client_cls.return_value.health_check.return_value = True
+        client_cls.return_value.get_marketing_bridge_capabilities.return_value = {"capabilities": []}
+        client_cls.return_value.get_campaign_builder_capabilities.return_value = {
+            "actions": [],
+            "conditions": [],
+            "decisions": [],
+            "connectionRestrictions": {},
+        }
 
     def test_auth_is_preserved(self):
         response = self.client.get(self.url)
@@ -191,24 +216,16 @@ class NewsletterAdminMauticDiagnosticsAPITests(TestCase):
 
     @patch("newsletter.mautic_diagnostics_services.MauticClient")
     def test_sync_status_counts_newsletter_queue_only(self, client_cls):
-        client_cls.return_value.health_check.return_value = True
-        client_cls.return_value.get_marketing_bridge_capabilities.return_value = {"capabilities": []}
-        client_cls.return_value.get_campaign_builder_capabilities.return_value = {
-            "actions": [],
-            "conditions": [],
-            "decisions": [],
-            "connectionRestrictions": {},
-        }
+        self._mock_healthy_mautic(client_cls)
         category = NewsletterCategory.objects.create(name="Updates", slug="updates")
-        NewsletterSyncEvent.objects.create(
-            idempotency_key="pending",
+        self._create_sync_event(
+            key="pending",
             user_id="1",
             category=category,
-            desired_subscribed=True,
             status=NewsletterSyncEvent.Status.PENDING,
         )
-        NewsletterSyncEvent.objects.create(
-            idempotency_key="failed",
+        self._create_sync_event(
+            key="failed",
             user_id="2",
             category=category,
             desired_subscribed=False,
@@ -222,4 +239,214 @@ class NewsletterAdminMauticDiagnosticsAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["sync"]["pending"], 1)
         self.assertEqual(response.data["sync"]["failed"], 1)
+        self.assertTrue(response.data["sync"]["current_warning"])
+        self.assertIn(
+            "Newsletter sync has failed or retrying events.",
+            response.data["diagnostics"]["warnings"],
+        )
         self.assertTrue(response.data["background_processing"]["newsletter_sync_scheduled"])
+
+    @patch("newsletter.mautic_diagnostics_services.MauticClient")
+    def test_sync_warning_ignores_historical_recovered_failures(self, client_cls):
+        self._mock_healthy_mautic(client_cls)
+        category = NewsletterCategory.objects.create(name="Recovered", slug="recovered")
+        base_time = timezone.now() - timedelta(minutes=10)
+        self._create_sync_event(
+            key="failed-before-success",
+            user_id="1",
+            category=category,
+            status=NewsletterSyncEvent.Status.FAILED,
+            last_error="previous provider timeout",
+            created_at=base_time,
+        )
+        self._create_sync_event(
+            key="success-after-failure",
+            user_id="1",
+            category=category,
+            status=NewsletterSyncEvent.Status.SUCCEEDED,
+            attempt_count=2,
+            completed_at=timezone.now(),
+            created_at=base_time + timedelta(minutes=1),
+        )
+        self._authenticate()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["sync"]["failed"], 0)
+        self.assertEqual(response.data["sync"]["retrying"], 0)
+        self.assertFalse(response.data["sync"]["current_warning"])
+        self.assertIsNone(response.data["sync"]["latest_failure_at"])
+        self.assertEqual(response.data["sync"]["latest_failure"], "")
+        self.assertNotIn(
+            "Newsletter sync has failed or retrying events.",
+            response.data["diagnostics"]["warnings"],
+        )
+
+    @patch("newsletter.mautic_diagnostics_services.MauticClient")
+    def test_sync_warning_is_current_for_retrying_events(self, client_cls):
+        self._mock_healthy_mautic(client_cls)
+        category = NewsletterCategory.objects.create(name="Retrying", slug="retrying")
+        self._create_sync_event(
+            key="retrying",
+            user_id="1",
+            category=category,
+            status=NewsletterSyncEvent.Status.RETRYING,
+            last_error="temporary provider timeout",
+        )
+        self._authenticate()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["sync"]["retrying"], 1)
+        self.assertTrue(response.data["sync"]["current_warning"])
+        self.assertIn(
+            "Newsletter sync has failed or retrying events.",
+            response.data["diagnostics"]["warnings"],
+        )
+
+    @patch("newsletter.mautic_diagnostics_services.MauticClient")
+    def test_failed_subscribe_followed_by_successful_unsubscribe_is_not_current(self, client_cls):
+        self._mock_healthy_mautic(client_cls)
+        category = NewsletterCategory.objects.create(name="State Change", slug="state-change")
+        base_time = timezone.now() - timedelta(minutes=10)
+        self._create_sync_event(
+            key="subscribe-failed",
+            user_id="1",
+            category=category,
+            desired_subscribed=True,
+            status=NewsletterSyncEvent.Status.FAILED,
+            last_error="subscribe failed",
+            created_at=base_time,
+        )
+        self._create_sync_event(
+            key="unsubscribe-succeeded",
+            user_id="1",
+            category=category,
+            desired_subscribed=False,
+            status=NewsletterSyncEvent.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+            created_at=base_time + timedelta(minutes=1),
+        )
+        self._authenticate()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["sync"]["failed"], 0)
+        self.assertFalse(response.data["sync"]["current_warning"])
+
+    @patch("newsletter.mautic_diagnostics_services.MauticClient")
+    def test_success_for_different_target_does_not_resolve_failed_target(self, client_cls):
+        self._mock_healthy_mautic(client_cls)
+        category = NewsletterCategory.objects.create(name="Different Targets", slug="different-targets")
+        base_time = timezone.now() - timedelta(minutes=10)
+        self._create_sync_event(
+            key="target-a-failed",
+            user_id="1",
+            category=category,
+            status=NewsletterSyncEvent.Status.FAILED,
+            last_error="target A failed",
+            created_at=base_time,
+        )
+        self._create_sync_event(
+            key="target-b-succeeded",
+            user_id="2",
+            category=category,
+            status=NewsletterSyncEvent.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+            created_at=base_time + timedelta(minutes=1),
+        )
+        self._authenticate()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["sync"]["failed"], 1)
+        self.assertTrue(response.data["sync"]["current_warning"])
+        self.assertEqual(response.data["sync"]["latest_failure"], "target A failed")
+
+    @patch("newsletter.mautic_diagnostics_services.MauticClient")
+    def test_multiple_targets_count_only_each_latest_state(self, client_cls):
+        self._mock_healthy_mautic(client_cls)
+        category = NewsletterCategory.objects.create(name="Many", slug="many")
+        other_category = NewsletterCategory.objects.create(name="Other Many", slug="other-many")
+        base_time = timezone.now() - timedelta(minutes=10)
+        self._create_sync_event(
+            key="u1-old-failed",
+            user_id="1",
+            category=category,
+            status=NewsletterSyncEvent.Status.FAILED,
+            created_at=base_time,
+        )
+        self._create_sync_event(
+            key="u1-new-success",
+            user_id="1",
+            category=category,
+            status=NewsletterSyncEvent.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+            created_at=base_time + timedelta(minutes=1),
+        )
+        self._create_sync_event(
+            key="u2-processing",
+            user_id="2",
+            category=category,
+            status=NewsletterSyncEvent.Status.PROCESSING,
+            created_at=base_time + timedelta(minutes=2),
+        )
+        self._create_sync_event(
+            key="u3-retrying",
+            user_id="3",
+            category=other_category,
+            status=NewsletterSyncEvent.Status.RETRYING,
+            last_error="still retrying",
+            created_at=base_time + timedelta(minutes=3),
+        )
+        self._create_sync_event(
+            key="u4-pending",
+            user_id="4",
+            category=other_category,
+            status=NewsletterSyncEvent.Status.PENDING,
+            created_at=base_time + timedelta(minutes=4),
+        )
+        self._authenticate()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["sync"]["failed"], 0)
+        self.assertEqual(response.data["sync"]["retrying"], 1)
+        self.assertEqual(response.data["sync"]["processing"], 1)
+        self.assertEqual(response.data["sync"]["pending"], 1)
+        self.assertTrue(response.data["sync"]["current_warning"])
+
+    @patch("newsletter.mautic_diagnostics_services.MauticClient")
+    def test_latest_state_tie_uses_highest_id(self, client_cls):
+        self._mock_healthy_mautic(client_cls)
+        category = NewsletterCategory.objects.create(name="Tie", slug="tie")
+        same_time = timezone.now() - timedelta(minutes=5)
+        self._create_sync_event(
+            key="tie-success",
+            user_id="1",
+            category=category,
+            status=NewsletterSyncEvent.Status.SUCCEEDED,
+            completed_at=timezone.now(),
+            created_at=same_time,
+        )
+        self._create_sync_event(
+            key="tie-failed",
+            user_id="1",
+            category=category,
+            status=NewsletterSyncEvent.Status.FAILED,
+            last_error="tie failure wins by id",
+            created_at=same_time,
+        )
+        self._authenticate()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["sync"]["failed"], 1)
+        self.assertTrue(response.data["sync"]["current_warning"])
+        self.assertEqual(response.data["sync"]["latest_failure"], "tie failure wins by id")

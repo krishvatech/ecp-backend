@@ -198,12 +198,18 @@ def _bool(value) -> bool:
 def _count_new_contacts(client: MauticClient, date_range: dict[str, Any]) -> int | None:
     if not date_range.get("from") and not date_range.get("to"):
         return None
-    parts = []
+    params: dict[str, Any] = {"start": 0, "limit": 1}
+    index = 0
     if date_range.get("from"):
-        parts.append(f"date_added:gte:{date_range['from']}")
+        params[f"where[{index}][col]"] = "dateAdded"
+        params[f"where[{index}][expr]"] = "gte"
+        params[f"where[{index}][val]"] = f"{date_range['from']} 00:00:00"
+        index += 1
     if date_range.get("to"):
-        parts.append(f"date_added:lte:{date_range['to']}")
-    data = client.list_contacts(start=0, limit=1, search=" ".join(parts))
+        params[f"where[{index}][col]"] = "dateAdded"
+        params[f"where[{index}][expr]"] = "lte"
+        params[f"where[{index}][val]"] = f"{date_range['to']} 23:59:59"
+    data = client.list_contacts(**params)
     return _total(data)
 
 

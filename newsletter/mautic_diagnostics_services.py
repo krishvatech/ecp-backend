@@ -5,7 +5,7 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 from django.conf import settings
-from django.db.models import Count, Max
+from django.db.models import Count, Max, OuterRef, Subquery
 from django.urls import reverse
 from django.utils import timezone
 
@@ -182,28 +182,40 @@ def _webhook_status(request=None) -> dict:
 
 
 def _sync_status() -> dict:
+    current_events = _current_sync_events_queryset()
     counts = {
         row["status"]: row["count"]
-        for row in NewsletterSyncEvent.objects.values("status").annotate(count=Count("id"))
+        for row in current_events.values("status").annotate(count=Count("id"))
     }
+    failed = counts.get(NewsletterSyncEvent.Status.FAILED, 0)
+    retrying = counts.get(NewsletterSyncEvent.Status.RETRYING, 0)
     latest_success = NewsletterSyncEvent.objects.filter(
         status=NewsletterSyncEvent.Status.SUCCEEDED
     ).aggregate(value=Max("completed_at"))["value"]
-    latest_failure = NewsletterSyncEvent.objects.filter(
+    latest_failure = current_events.filter(
         status__in=[NewsletterSyncEvent.Status.FAILED, NewsletterSyncEvent.Status.RETRYING]
-    ).order_by("-updated_at").first()
+    ).order_by("-created_at", "-id").first()
     return {
         "enabled": bool(getattr(settings, "MAUTIC_SYNC_ENABLED", False)),
         "status": "Enabled" if getattr(settings, "MAUTIC_SYNC_ENABLED", False) else "Disabled",
         "pending": counts.get(NewsletterSyncEvent.Status.PENDING, 0),
         "processing": counts.get(NewsletterSyncEvent.Status.PROCESSING, 0),
-        "retrying": counts.get(NewsletterSyncEvent.Status.RETRYING, 0),
-        "failed": counts.get(NewsletterSyncEvent.Status.FAILED, 0),
+        "retrying": retrying,
+        "failed": failed,
         "succeeded": counts.get(NewsletterSyncEvent.Status.SUCCEEDED, 0),
+        "current_warning": failed > 0 or retrying > 0,
         "latest_success_at": latest_success,
         "latest_failure_at": latest_failure.updated_at if latest_failure else None,
         "latest_failure": _truncate(latest_failure.last_error) if latest_failure else "",
     }
+
+
+def _current_sync_events_queryset():
+    latest_for_target = NewsletterSyncEvent.objects.filter(
+        user_id=OuterRef("user_id"),
+        category_id=OuterRef("category_id"),
+    ).order_by("-created_at", "-id")
+    return NewsletterSyncEvent.objects.filter(id=Subquery(latest_for_target.values("id")[:1]))
 
 
 def _background_processing_status() -> dict:
@@ -229,7 +241,7 @@ def _warnings(config, rest, marketing_bridge, campaign_bridge, webhook, sync) ->
         warnings.append("Campaign Builder Bridge is unavailable.")
     if webhook["last_received_at"] is None:
         warnings.append("Webhook receiver has not recorded a Mautic event yet.")
-    if sync["failed"] or sync["retrying"]:
+    if sync.get("current_warning"):
         warnings.append("Newsletter sync has failed or retrying events.")
     return warnings
 
