@@ -284,6 +284,17 @@ def _choice_values(value: Any) -> list[Any]:
     return []
 
 
+def _schema_choice_values(choices: Any) -> list[Any]:
+    values: list[Any] = []
+    choice_rows = choices if isinstance(choices, list) else []
+    for choice in choice_rows:
+        if isinstance(choice, dict) and isinstance(choice.get("choices"), list):
+            values.extend(_schema_choice_values(choice.get("choices")))
+        else:
+            values.append(_option_value(choice))
+    return values
+
+
 def _get_property(properties: dict[str, Any], path: list[str]) -> tuple[bool, Any]:
     current: Any = properties
     for part in path:
@@ -313,6 +324,28 @@ def _iter_form_metadata_fields(value: Any, path: list[str] | None = None):
             yield child_path, child
 
 
+def _iter_schema_fields(fields: Any, path: list[str] | None = None):
+    path = path or []
+    if not isinstance(fields, list):
+        return
+
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        if field.get("renderable") is False:
+            continue
+        name = str(field.get("name") or "").strip()
+        if not name:
+            continue
+        child_path = [*path, name]
+        children = field.get("children")
+        choices = field.get("choices")
+        if isinstance(children, list) and not choices:
+            yield from _iter_schema_fields(children, child_path)
+            continue
+        yield child_path, field
+
+
 def _validate_builder_properties(
     *,
     event_index: int,
@@ -328,8 +361,19 @@ def _validate_builder_properties(
             f"Native Mautic Campaign event #{event_index} properties must be JSON serializable."
         )
 
-    form_options = capability.get("formTypeOptions")
-    for path, metadata in _iter_form_metadata_fields(form_options):
+    schema = capability.get("formSchema")
+    schema_fields = (
+        list(_iter_schema_fields(schema.get("fields")))
+        if isinstance(schema, dict) and schema.get("available") is True
+        else []
+    )
+    metadata_fields = (
+        []
+        if schema_fields
+        else list(_iter_form_metadata_fields(capability.get("formTypeOptions")))
+    )
+
+    for path, metadata in [*schema_fields, *metadata_fields]:
         exists, value = _get_property(properties, path)
         label = ".".join(path)
         if isinstance(metadata, dict) and metadata.get("required") is True:
@@ -339,7 +383,11 @@ def _validate_builder_properties(
                     f"property {label}."
                 )
 
-        choices = _choice_values(metadata)
+        choices = (
+            _schema_choice_values(metadata.get("choices"))
+            if isinstance(metadata, dict) and isinstance(metadata.get("choices"), list)
+            else _choice_values(metadata)
+        )
         if exists and choices:
             values = value if isinstance(value, list) else [value]
             allowed = {str(choice) for choice in choices if choice is not None}
@@ -536,6 +584,182 @@ def _parse_canvas(value) -> dict[str, Any]:
     }
 
 
+def _canvas_node(node_id: Any, column: int, depth: int) -> dict[str, Any]:
+    return {
+        "id": str(node_id),
+        "positionX": str(380 + column * 240),
+        "positionY": str(100 + depth * 160),
+    }
+
+
+def _canvas_connection(source: Any, target: Any, source_anchor: str) -> dict[str, Any]:
+    return {
+        "sourceId": str(source),
+        "targetId": str(target),
+        "anchors": {"source": source_anchor, "target": "top"},
+    }
+
+
+def _normalized_canvas_node(node: Any, fallback_column: int) -> dict[str, Any] | None:
+    """Mautic dereferences ``id`` on every canvas node, so drop unusable ones."""
+    if not isinstance(node, dict):
+        return None
+    node_id = node.get("id")
+    if node_id in (None, ""):
+        return None
+
+    normalized = dict(node)
+    normalized["id"] = str(node_id)
+    normalized.setdefault("positionX", str(380 + fallback_column * 240))
+    normalized.setdefault("positionY", "100")
+    return normalized
+
+
+def _normalized_canvas_connection(connection: Any) -> dict[str, Any] | None:
+    """Mautic dereferences ``sourceId``/``targetId``/``anchors`` on every connection."""
+    if not isinstance(connection, dict):
+        return None
+    source = connection.get("sourceId") or connection.get("source")
+    target = connection.get("targetId") or connection.get("target")
+    if source in (None, "") or target in (None, ""):
+        return None
+
+    normalized = dict(connection)
+    normalized["sourceId"] = str(source)
+    normalized["targetId"] = str(target)
+    anchors = normalized.get("anchors")
+    if not isinstance(anchors, dict) or not anchors.get("source"):
+        normalized["anchors"] = {"source": "bottom", "target": "top"}
+    return normalized
+
+
+def _event_depths(events: list[dict[str, Any]]) -> dict[str, int]:
+    parents = {
+        str(event.get("id")): str(event["parent"])
+        for event in events
+        if event.get("parent") not in (None, "")
+    }
+    known = {str(event.get("id")) for event in events}
+    depths: dict[str, int] = {}
+
+    for event_id in known:
+        depth = 0
+        seen = {event_id}
+        cursor = event_id
+        while cursor in parents and parents[cursor] in known:
+            cursor = parents[cursor]
+            if cursor in seen:  # defensive: never spin on a cyclic payload
+                break
+            seen.add(cursor)
+            depth += 1
+        depths[event_id] = depth
+
+    return depths
+
+
+def _provider_canvas_graph(
+    events: list[dict[str, Any]],
+    *,
+    source_node_id: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Describe the event graph the way Mautic's own Campaign Builder does.
+
+    Mautic only applies campaign events when ``canvasSettings`` is present, and it
+    reads parent/child relationships from canvas connections rather than from each
+    event's ``parent`` field, so the graph has to be expressed here.
+    """
+    known = {str(event.get("id")) for event in events if event.get("id") not in (None, "")}
+    depths = _event_depths(events)
+
+    nodes: list[dict[str, Any]] = []
+    connections: list[dict[str, Any]] = []
+    columns: dict[int, int] = {}
+
+    if source_node_id:
+        nodes.append(_canvas_node(source_node_id, 0, 0))
+
+    for event in events:
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            continue
+
+        depth = depths.get(event_id, 0) + 1
+        column = columns.get(depth, 0)
+        columns[depth] = column + 1
+        nodes.append(_canvas_node(event_id, column, depth))
+
+        parent_id = event.get("parent")
+        parent_id = str(parent_id) if parent_id not in (None, "") else ""
+        if parent_id and parent_id in known:
+            decision_path = str(event.get("decisionPath") or "")
+            anchor = decision_path if decision_path in ("yes", "no") else "bottom"
+            connections.append(_canvas_connection(parent_id, event_id, anchor))
+        elif source_node_id:
+            connections.append(
+                _canvas_connection(source_node_id, event_id, "leadsource")
+            )
+
+    return nodes, connections
+
+
+def _build_campaign_canvas_settings(
+    events: list[dict[str, Any]],
+    client_canvas: dict[str, Any] | None,
+    *,
+    lists: Any,
+    forms: Any,
+) -> dict[str, Any]:
+    """Merge the caller's own canvas with the provider-native event graph."""
+    source_node_id = "lists"
+    if isinstance(lists, list) and isinstance(forms, list):
+        if not lists and forms:
+            source_node_id = "forms"
+        elif not lists and not forms:
+            source_node_id = None
+
+    provider_nodes, provider_connections = _provider_canvas_graph(
+        events,
+        source_node_id=source_node_id,
+    )
+
+    client_nodes = [
+        node
+        for node in (
+            _normalized_canvas_node(node, index)
+            for index, node in enumerate(
+                (client_canvas or {}).get("nodes") or []
+            )
+        )
+        if node is not None
+    ]
+    # A caller that already placed a node for an event keeps its own position.
+    client_nodes_by_id = {node["id"]: node for node in client_nodes}
+    merged_provider_nodes = [
+        {**node, **client_nodes_by_id.get(node["id"], {})} for node in provider_nodes
+    ]
+    provider_ids = {node["id"] for node in provider_nodes}
+
+    provider_edges = {
+        (connection["sourceId"], connection["targetId"])
+        for connection in provider_connections
+    }
+    client_connections = [
+        connection
+        for connection in (
+            _normalized_canvas_connection(connection)
+            for connection in ((client_canvas or {}).get("connections") or [])
+        )
+        if connection is not None
+        and (connection["sourceId"], connection["targetId"]) not in provider_edges
+    ]
+
+    return {
+        "nodes": [node for node in client_nodes if node["id"] not in provider_ids]
+        + merged_provider_nodes,
+        "connections": client_connections + provider_connections,
+    }
+
+
 def _parse_campaign_payload(
     data,
     *,
@@ -604,15 +828,39 @@ def _parse_campaign_payload(
             )
         payload.setdefault("lists", [])
         payload.setdefault("forms", [])
-        payload.setdefault(
-            "canvasSettings",
-            {"nodes": [], "connections": []},
+
+    # Mautic ignores the whole `events` array unless `canvasSettings` describes the
+    # graph as well, so every request that carries events must carry a canvas.
+    if "events" in payload:
+        payload["canvasSettings"] = _build_campaign_canvas_settings(
+            payload["events"],
+            payload.get("canvasSettings"),
+            lists=payload.get("lists"),
+            forms=payload.get("forms"),
         )
+    elif not partial:
+        payload.setdefault("canvasSettings", {"nodes": [], "connections": []})
 
     if partial and not payload:
         raise ValueError("At least one Native Mautic Campaign field is required.")
 
     return payload
+
+
+def _active_events_only(events: Any, active_event_ids: Any) -> list[dict[str, Any]]:
+    """Keep the events the provider still counts as part of the workflow."""
+    rows = events if isinstance(events, list) else []
+    if not isinstance(active_event_ids, list):
+        return rows
+
+    active = {str(event_id) for event_id in active_event_ids}
+    return [
+        event
+        for event in rows
+        if not isinstance(event, dict)
+        or event.get("id") is None
+        or str(event.get("id")) in active
+    ]
 
 
 def _format_campaign_for_builder(campaign: dict[str, Any]) -> dict[str, Any]:
@@ -782,6 +1030,176 @@ class NewsletterAdminMauticCampaignCapabilitiesView(APIView):
         )
 
 
+_REFERENCE_CHOICE_SOURCES = {"country", "region", "timezone", "locale"}
+_EVENT_FIELD_CHOICE_SOURCE = "event_field"
+
+
+def _normalize_choice_rows(rows: Any) -> list[dict[str, Any]]:
+    normalized = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        value = row.get("value")
+        if value is None:
+            continue
+        choice = {
+            "value": value,
+            "label": str(row.get("label") or value),
+        }
+        if row.get("group"):
+            choice["group"] = str(row["group"])
+        normalized.append(choice)
+    return normalized
+
+
+def _filter_reference_choices(
+    choices: list[dict[str, Any]],
+    *,
+    search: str,
+    values: list[str],
+) -> list[dict[str, Any]]:
+    if values:
+        wanted = {str(value) for value in values}
+        return [choice for choice in choices if str(choice["value"]) in wanted]
+
+    if search:
+        needle = search.lower()
+        return [
+            choice
+            for choice in choices
+            if needle in str(choice["label"]).lower()
+            or needle in str(choice["value"]).lower()
+        ]
+
+    return choices
+
+
+class NewsletterAdminMauticCampaignChoicesView(APIView):
+    """Staff-only lookup for campaign event choices that are not inlined.
+
+    Reference catalogs (country/region/timezone/locale) come from the field metadata
+    bridge that already publishes them; everything else is resolved by the campaign
+    event's own provider form. Django only routes and normalizes.
+    """
+
+    permission_classes = [IsStaffOrSuperuser]
+    default_page_size = 50
+    max_page_size = 200
+
+    def get(self, request):
+        source = str(request.query_params.get("source", "") or "").strip().lower()
+        search = str(request.query_params.get("search", "") or "").strip()
+        # Accept both `values=a&values=b` and the bracket form some HTTP clients
+        # emit, so a value lookup can never silently fall through to a full page.
+        values = [
+            str(value)
+            for value in (
+                request.query_params.getlist("values")
+                or request.query_params.getlist("values[]")
+            )
+            if str(value) != ""
+        ]
+
+        try:
+            start = max(0, int(request.query_params.get("start", 0)))
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            limit = int(request.query_params.get("limit", self.default_page_size))
+        except (TypeError, ValueError):
+            limit = self.default_page_size
+        limit = max(1, min(limit, self.max_page_size))
+
+        if source in _REFERENCE_CHOICE_SOURCES:
+            return self._reference_choices(
+                source,
+                search=search,
+                values=values,
+                start=start,
+                limit=limit,
+            )
+
+        if source == _EVENT_FIELD_CHOICE_SOURCE:
+            return self._event_field_choices(
+                request,
+                search=search,
+                values=values,
+                start=start,
+                limit=limit,
+            )
+
+        return Response(
+            {"detail": f'Unsupported campaign choice source "{source}".'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    def _reference_choices(self, source, *, search, values, start, limit):
+        try:
+            data = MauticClient().get_field_type_choices(source)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        choices = _filter_reference_choices(
+            _normalize_choice_rows(data.get("choices")),
+            search=search,
+            values=values,
+        )
+        total = len(choices)
+        page = choices if values else choices[start : start + limit]
+
+        return Response(
+            {
+                "source": source,
+                "results": page,
+                "total": total,
+                "start": 0 if values else start,
+                "limit": total if values else limit,
+                "hasMore": False if values else (start + limit) < total,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def _event_field_choices(self, request, *, search, values, start, limit):
+        event_type = str(request.query_params.get("eventType", "") or "").strip()
+        key = str(request.query_params.get("key", "") or "").strip()
+        field = str(request.query_params.get("field", "") or "").strip()
+
+        if not event_type or not key or not field:
+            return Response(
+                {
+                    "detail": (
+                        "Campaign event field choices require eventType, key and field."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            data = MauticClient().get_campaign_builder_event_field_choices(
+                event_type=event_type,
+                key=key,
+                field=field,
+                search=search,
+                start=start,
+                limit=limit,
+                values=values,
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        return Response(
+            {
+                "source": _EVENT_FIELD_CHOICE_SOURCE,
+                "results": _normalize_choice_rows(data.get("choices")),
+                "total": data.get("total", 0),
+                "start": data.get("start", start),
+                "limit": data.get("limit", limit),
+                "hasMore": bool(data.get("hasMore")),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class NewsletterAdminMauticCampaignDetailView(APIView):
     """Staff-only native Mautic Campaign detail, update and delete API."""
 
@@ -843,6 +1261,58 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class NewsletterAdminMauticCampaignEventView(APIView):
+    """Staff-only deletion of a single provider campaign workflow event.
+
+    Deletion is the one campaign builder operation official Mautic REST cannot
+    perform, so it is routed to the campaign builder bridge, which runs Mautic's
+    own campaign event deletion. Django validates and normalizes only.
+    """
+
+    permission_classes = [IsStaffOrSuperuser]
+
+    def delete(self, request, campaign_id, event_id):
+        campaign_id = str(campaign_id or "").strip()
+        event_id = str(event_id or "").strip()
+        if not campaign_id.isdigit() or not event_id.isdigit():
+            return Response(
+                {
+                    "detail": (
+                        "Native Mautic Campaign and event IDs must be provider IDs."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = MauticClient().delete_campaign_event(campaign_id, event_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            if isinstance(exc, PermanentMauticError) and "HTTP 403" in str(exc):
+                return Response(
+                    {"detail": str(exc)},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            return _provider_error_response(exc)
+
+        deleted = result.get("deleted")
+        return Response(
+            {
+                "deleted": deleted if isinstance(deleted, dict) else {"id": event_id},
+                "detachedChildren": [
+                    str(child)
+                    for child in (result.get("detachedChildren") or [])
+                    if child not in (None, "")
+                ],
+                "remainingEventIds": [
+                    str(remaining)
+                    for remaining in (result.get("remainingEventIds") or [])
+                    if remaining not in (None, "")
+                ],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class NewsletterAdminMauticCampaignBuilderView(APIView):
     """Staff-only native Mautic Campaign builder data API."""
 
@@ -850,11 +1320,20 @@ class NewsletterAdminMauticCampaignBuilderView(APIView):
 
     def get(self, request, campaign_id):
         try:
-            campaign = MauticClient().get_campaign(campaign_id)
+            client = MauticClient()
+            campaign = client.get_campaign(campaign_id)
+            # Mautic deletes campaign events by stamping them `deleted`, and the
+            # campaign endpoint keeps returning them without that field, so the
+            # provider has to say which events are still part of the workflow.
+            states = client.get_campaign_event_states(campaign_id)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
         normalized = _normalize_campaign(campaign)
+        normalized["events"] = _active_events_only(
+            normalized.get("events"),
+            states.get("activeEventIds"),
+        )
         return Response(
             _format_campaign_for_builder(normalized),
             status=status.HTTP_200_OK,

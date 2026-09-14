@@ -1800,6 +1800,103 @@ class MauticClient:
             )
         return data
 
+    def get_campaign_builder_event_field_choices(
+        self,
+        *,
+        event_type: str,
+        key: str,
+        field: str,
+        search: str = "",
+        start: int = 0,
+        limit: int = 50,
+        values: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve one campaign event field's choices from the provider on demand.
+
+        Large provider choice lists are no longer inlined into the capabilities
+        response, and only the event's own Symfony form can resolve them, so the
+        campaign builder bridge serves a filtered, paged slice of that same form.
+        """
+        event_type = str(event_type or "").strip()
+        key = str(key or "").strip()
+        field = str(field or "").strip()
+        if not event_type or not key or not field:
+            raise PermanentMauticError(
+                "Mautic campaign event field choices require an event type, key and field"
+            )
+
+        params: list[tuple[str, Any]] = [
+            ("eventType", event_type),
+            ("key", key),
+            ("field", field),
+        ]
+        for value in values or []:
+            params.append(("values[]", str(value)))
+        if not values:
+            if search:
+                params.append(("search", search))
+            params.append(("start", max(0, int(start))))
+            params.append(("limit", max(1, int(limit))))
+
+        response = self._request(
+            "GET",
+            "ecp/campaign-builder/choices",
+            params=params,
+        )
+        data = self._json_object(response, "Mautic campaign event field choices")
+        if not isinstance(data.get("choices"), list):
+            raise TemporaryMauticError(
+                "Mautic campaign event field choices returned invalid choices"
+            )
+        return data
+
+    def get_campaign_event_states(self, campaign_id: int | str) -> dict[str, Any]:
+        """Read which of a campaign's events Mautic still considers active.
+
+        Mautic deletes campaign events by stamping them `deleted`, and the official
+        campaign endpoint serializes the raw events association: soft-deleted events
+        are still returned and the `deleted` field is not exposed at all, so active
+        and deleted events are indistinguishable over official REST.
+        """
+        campaign_id = str(campaign_id or "").strip()
+        if not campaign_id:
+            raise PermanentMauticError("Mautic campaign ID is required")
+
+        response = self._request(
+            "GET",
+            f"ecp/campaign-builder/campaigns/{campaign_id}/events",
+        )
+        data = self._json_object(response, "Mautic campaign event states")
+        if not isinstance(data.get("activeEventIds"), list):
+            raise TemporaryMauticError(
+                "Mautic campaign event states returned invalid activeEventIds"
+            )
+        return data
+
+    def delete_campaign_event(
+        self,
+        campaign_id: int | str,
+        event_id: int | str,
+    ) -> dict[str, Any]:
+        """Delete one campaign workflow event through the campaign builder bridge.
+
+        Official REST exposes campaign events read-only, and omitting an event from
+        a campaign update does not remove it, so deletion goes through the bridge
+        that drives Mautic's own campaign event deletion.
+        """
+        campaign_id = str(campaign_id or "").strip()
+        event_id = str(event_id or "").strip()
+        if not campaign_id or not event_id:
+            raise PermanentMauticError(
+                "Mautic campaign ID and event ID are required"
+            )
+
+        response = self._request(
+            "DELETE",
+            f"ecp/campaign-builder/campaigns/{campaign_id}/events/{event_id}",
+        )
+        return self._json_object(response, "Mautic campaign event deletion")
+
     def get_marketing_bridge_capabilities(self) -> dict[str, Any]:
         response = self._request("GET", "ecp/capabilities")
         data = self._json_object(response, "Mautic marketing bridge capabilities")

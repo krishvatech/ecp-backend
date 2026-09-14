@@ -74,7 +74,9 @@ from .template_views import (
 from .native_campaign_views import (
     NewsletterAdminMauticCampaignBuilderView,
     NewsletterAdminMauticCampaignCapabilitiesView,
+    NewsletterAdminMauticCampaignChoicesView,
     NewsletterAdminMauticCampaignDetailView,
+    NewsletterAdminMauticCampaignEventView,
     NewsletterAdminMauticCampaignListCreateView,
 )
 from .mautic_analytics_views import (
@@ -186,9 +188,19 @@ urlpatterns = [
         name="newsletter-admin-mautic-campaign-capabilities",
     ),
     path(
+        "newsletter/admin/mautic-campaigns/choices/",
+        NewsletterAdminMauticCampaignChoicesView.as_view(),
+        name="newsletter-admin-mautic-campaign-choices",
+    ),
+    path(
         "newsletter/admin/mautic-campaigns/<str:campaign_id>/",
         NewsletterAdminMauticCampaignDetailView.as_view(),
         name="newsletter-admin-mautic-campaign-detail",
+    ),
+    path(
+        "newsletter/admin/mautic-campaigns/<str:campaign_id>/events/<str:event_id>/",
+        NewsletterAdminMauticCampaignEventView.as_view(),
+        name="newsletter-admin-mautic-campaign-event",
     ),
     path(
         "newsletter/admin/mautic-campaigns/<str:campaign_id>/builder/",

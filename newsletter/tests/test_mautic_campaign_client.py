@@ -172,3 +172,79 @@ class MauticCampaignClientTests(SimpleTestCase):
         session.request.return_value = response(200, {"campaign": []})
         with self.assertRaisesRegex(TemporaryMauticError, "campaign lookup returned an invalid response"):
             client.get_campaign(2)
+
+    def test_delete_campaign_event_calls_the_campaign_builder_bridge(self):
+        client, session = self.make_client()
+        session.request.return_value = response(200, {
+            "deleted": {"id": 26, "campaignId": 7},
+            "detachedChildren": [],
+            "remainingEventIds": [12, 23, 24, 25],
+        })
+
+        result = client.delete_campaign_event(7, 26)
+
+        self.assertEqual(result["deleted"], {"id": 26, "campaignId": 7})
+        self.assertEqual(result["remainingEventIds"], [12, 23, 24, 25])
+        method, url = session.request.call_args.args[:2]
+        self.assertEqual(method, "DELETE")
+        self.assertTrue(
+            url.endswith("/api/ecp/campaign-builder/campaigns/7/events/26"),
+            url,
+        )
+
+    def test_delete_campaign_event_requires_both_provider_ids(self):
+        client, session = self.make_client()
+
+        for campaign_id, event_id in ((None, 26), (7, None), ("", ""), (7, "  ")):
+            with self.assertRaisesRegex(PermanentMauticError, "campaign ID and event ID"):
+                client.delete_campaign_event(campaign_id, event_id)
+
+        session.request.assert_not_called()
+
+    def test_delete_campaign_event_surfaces_provider_failures(self):
+        client, session = self.make_client()
+        session.request.return_value = response(404, {"errors": [{"message": "nope"}]})
+
+        with self.assertRaises(PermanentMauticError):
+            client.delete_campaign_event(7, 99)
+
+    def test_delete_campaign_event_rejects_a_malformed_provider_response(self):
+        client, session = self.make_client()
+        session.request.return_value = response(200, ["not", "an", "object"])
+
+        with self.assertRaises(TemporaryMauticError):
+            client.delete_campaign_event(7, 26)
+
+    def test_get_campaign_event_states_reads_the_campaign_builder_bridge(self):
+        client, session = self.make_client()
+        session.request.return_value = response(200, {
+            "campaignId": 7,
+            "activeEventIds": [12, 23, 24, 25, 26],
+            "deletedEventIds": [27],
+        })
+
+        result = client.get_campaign_event_states(7)
+
+        self.assertEqual(result["activeEventIds"], [12, 23, 24, 25, 26])
+        self.assertEqual(result["deletedEventIds"], [27])
+        method, url = session.request.call_args.args[:2]
+        self.assertEqual(method, "GET")
+        self.assertTrue(
+            url.endswith("/api/ecp/campaign-builder/campaigns/7/events"),
+            url,
+        )
+
+    def test_get_campaign_event_states_requires_a_campaign_id(self):
+        client, session = self.make_client()
+
+        with self.assertRaisesRegex(PermanentMauticError, "campaign ID is required"):
+            client.get_campaign_event_states("")
+
+        session.request.assert_not_called()
+
+    def test_get_campaign_event_states_rejects_a_malformed_response(self):
+        client, session = self.make_client()
+        session.request.return_value = response(200, {"campaignId": 7})
+
+        with self.assertRaises(TemporaryMauticError):
+            client.get_campaign_event_states(7)
