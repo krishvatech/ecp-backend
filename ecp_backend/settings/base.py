@@ -203,6 +203,15 @@ MAUTIC_SYNC_PROCESSING_TIMEOUT_SECONDS = int(
     os.getenv("MAUTIC_SYNC_PROCESSING_TIMEOUT_SECONDS", "600")
 )
 
+# ECP -> Mautic signed identity assertions (Phase 1 foundation, not yet used by
+# any live Mautic call). The private key must come from the environment/secret
+# store only. TTL is validated (10-120s) when an assertion is issued.
+ECP_MAUTIC_IDENTITY_PRIVATE_KEY = os.getenv("ECP_MAUTIC_IDENTITY_PRIVATE_KEY", "")
+ECP_MAUTIC_IDENTITY_KEY_ID = os.getenv("ECP_MAUTIC_IDENTITY_KEY_ID", "").strip()
+ECP_MAUTIC_IDENTITY_ISSUER = os.getenv("ECP_MAUTIC_IDENTITY_ISSUER", "ecp").strip()
+ECP_MAUTIC_IDENTITY_AUDIENCE = os.getenv("ECP_MAUTIC_IDENTITY_AUDIENCE", "ecp-mautic").strip()
+ECP_MAUTIC_IDENTITY_TTL_SECONDS = os.getenv("ECP_MAUTIC_IDENTITY_TTL_SECONDS", "90").strip()
+
 # false = send paid-invoice email immediately on the mark-paid request (after commit);
 # true = dispatch via Celery worker.
 INVOICE_EMAIL_ASYNC = os.getenv("INVOICE_EMAIL_ASYNC", "false").lower() in ("1", "true", "yes", "on")

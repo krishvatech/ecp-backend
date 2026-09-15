@@ -71,10 +71,10 @@ def valid_structured_profile() -> dict:
         "location_city": "Surat",
         "location_country": "India",
         "current_job_title": "Software Engineer",
-        "current_company": "KrishvaTech",
+        "current_company": "ExampleCorp",
         "experiences": [
             {
-                "community_name": "KrishvaTech",
+                "community_name": "ExampleCorp",
                 "position": "Software Engineer",
                 "start_date": "2026-01-01",
                 "end_date": None,
@@ -134,25 +134,25 @@ class LinkedInProfilePdfExtractionTests(TestCase):
         pdf = build_text_pdf(
             "Shruti Makwana\n"
             "Software Engineer\n"
-            "KrishvaTech"
+            "ExampleCorp"
         )
 
         text = extract_profile_pdf_text(pdf)
 
         self.assertIn("Shruti Makwana", text)
         self.assertIn("Software Engineer", text)
-        self.assertIn("KrishvaTech", text)
+        self.assertIn("ExampleCorp", text)
 
     def test_extracts_text_from_multiple_pages(self):
         pdf = build_text_pdf(
-            "Experience\nKrishvaTech\nSoftware Engineer",
+            "Experience\nExampleCorp\nSoftware Engineer",
             "Education\nSaurashtra University\nBCA",
         )
 
         text = extract_profile_pdf_text(pdf)
 
         self.assertIn("Experience", text)
-        self.assertIn("KrishvaTech", text)
+        self.assertIn("ExampleCorp", text)
         self.assertIn("Education", text)
         self.assertIn("Saurashtra University", text)
 
@@ -312,11 +312,11 @@ class LinkedInProfileAiStructuringTests(TestCase):
         mock_post.return_value = mock_openai_response()
 
         result = structure_profile_text(
-            "Shruti Makwana\nExperience\nKrishvaTech\nSoftware Engineer\nJanuary 2026 - Present"
+            "Shruti Makwana\nExperience\nExampleCorp\nSoftware Engineer\nJanuary 2026 - Present"
         )
 
         self.assertEqual(result["full_name"], "Shruti Makwana")
-        self.assertEqual(result["current_company"], "KrishvaTech")
+        self.assertEqual(result["current_company"], "ExampleCorp")
 
         mock_post.assert_called_once()
         args, kwargs = mock_post.call_args

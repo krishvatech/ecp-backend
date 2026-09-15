@@ -89,6 +89,7 @@ from .mautic_analytics_views import (
     NewsletterAdminAnalyticsSegmentsView,
 )
 from .mautic_diagnostics_views import NewsletterAdminMauticDiagnosticsView
+from .mautic_identity_views import NewsletterAdminMauticIdentityStatusView
 from .mautic_dashboard_views import NewsletterAdminDashboardView
 from .company_views import (
     NewsletterAdminCompanyContactDetailView,
@@ -238,6 +239,11 @@ urlpatterns = [
         "newsletter/admin/settings/mautic-diagnostics/",
         NewsletterAdminMauticDiagnosticsView.as_view(),
         name="newsletter-admin-mautic-diagnostics",
+    ),
+    path(
+        "newsletter/admin/settings/mautic-identity/status/",
+        NewsletterAdminMauticIdentityStatusView.as_view(),
+        name="newsletter-admin-mautic-identity-status",
     ),
     path(
         "newsletter/admin/categories/",

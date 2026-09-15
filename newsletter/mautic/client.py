@@ -20,8 +20,11 @@ _TEMPORARY_STATUS_CODES = {408, 425, 429}
 
 
 class MauticClient:
-    def __init__(self, session=None):
+    def __init__(self, session=None, execution_identity=None):
         self.session = session or requests.Session()
+        # Metadata only (see newsletter.mautic.identity). Authentication below
+        # always uses the configured service account in Phase 1.
+        self.execution_identity = execution_identity
         self.base_url = str(getattr(settings, "MAUTIC_BASE_URL", "") or "").strip().rstrip("/")
         self.username = str(getattr(settings, "MAUTIC_USERNAME", "") or "").strip()
         self.password = str(getattr(settings, "MAUTIC_PASSWORD", "") or "")

@@ -88,7 +88,7 @@ class NewsletterSyncProcessorTests(TestCase):
     def test_existing_mapping_syncs_non_empty_ecp_profile_fields(self, client_cls):
         UserProfile.objects.create(
             user=self.user,
-            company="KrishvaTech",
+            company="ExampleCorp",
             job_title="Engineering Lead",
             location_city="Surat",
             location_country="India",
@@ -117,7 +117,7 @@ class NewsletterSyncProcessorTests(TestCase):
                 "email": "processor@example.com",
                 "firstname": "Process",
                 "lastname": "User",
-                "company": "KrishvaTech",
+                "company": "ExampleCorp",
                 "position": "Engineering Lead",
                 "city": "Surat",
                 "country": "India",
@@ -244,7 +244,7 @@ class NewsletterSyncProcessorTests(TestCase):
         )
         UserProfile.objects.create(
             user=self.user,
-            company="KrishvaTech",
+            company="ExampleCorp",
             job_title="Engineering Lead",
         )
         MauticContactMapping.objects.create(
@@ -263,7 +263,7 @@ class NewsletterSyncProcessorTests(TestCase):
                 "email": "processor@example.com",
                 "firstname": "Process",
                 "lastname": "User",
-                "company": "KrishvaTech",
+                "company": "ExampleCorp",
                 "position": "Engineering Lead",
                 "timezone": "Asia/Kolkata",
             },

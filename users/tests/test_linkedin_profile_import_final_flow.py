@@ -37,10 +37,10 @@ class LinkedInProfileImportFinalFlowTests(TestCase):
                 "location_city": "Surat",
                 "location_country": "India",
                 "current_job_title": "Software Engineer",
-                "current_company": "KrishvaTech",
+                "current_company": "ExampleCorp",
                 "experiences": [
                     {
-                        "community_name": "KrishvaTech",
+                        "community_name": "ExampleCorp",
                         "position": "Software Engineer",
                         "start_date": "2026-01-01",
                         "end_date": None,

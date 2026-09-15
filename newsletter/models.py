@@ -336,6 +336,96 @@ class MauticContactMapping(models.Model):
         return f"user:{self.user_id} -> mautic:{self.mautic_contact_id}"
 
 
+class MauticUserConnection(models.Model):
+    """Mapping between one ECP staff user and one Mautic *user* (not contact).
+
+    The ECP side is keyed by the immutable Django user primary key; Cognito subs
+    are not stored here because one ECP user may own several CognitoIdentity
+    rows. ``mautic_user_id`` is the authoritative Mautic identity. Username,
+    email, name and role are cached display metadata only and must never be
+    used to resolve identity.
+
+    Rows are never reused for a different Mautic user: reconnecting disables
+    the current row and creates a new one, which keeps an audit trail.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        ACTIVE = "active", "Active"
+        DISABLED = "disabled", "Disabled"
+        ERROR = "error", "Error"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="mautic_user_connections",
+    )
+    mautic_user_id = models.PositiveIntegerField()
+    mautic_username = models.CharField(max_length=191, blank=True, default="")
+    mautic_email = models.EmailField(blank=True, default="")
+    mautic_display_name = models.CharField(max_length=255, blank=True, default="")
+    mautic_role_name = models.CharField(max_length=191, blank=True, default="")
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    is_active = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_mautic_user_connections",
+    )
+    connected_at = models.DateTimeField(null=True, blank=True)
+    last_verified_at = models.DateTimeField(null=True, blank=True)
+    disabled_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=models.Q(is_active=True),
+                name="newsletter_mautic_user_conn_active_user_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=["mautic_user_id"],
+                condition=models.Q(is_active=True),
+                name="newsletter_mautic_user_conn_active_mautic_uniq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(mautic_user_id__gte=1),
+                name="newsletter_mautic_user_conn_mautic_id_positive",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(is_active=False) | models.Q(status="active"),
+                name="newsletter_mautic_user_conn_active_status",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["user", "is_active"],
+                name="newsletter_mautic_uconn_idx",
+            ),
+            models.Index(
+                fields=["mautic_user_id"],
+                name="newsletter_mauticuconn_mid_idx",
+            ),
+        ]
+
+    @property
+    def is_usable(self) -> bool:
+        return self.is_active and self.status == self.Status.ACTIVE
+
+    def __str__(self):
+        return f"user:{self.user_id} -> mautic-user:{self.mautic_user_id} [{self.status}]"
+
+
 class NewsletterSyncEvent(models.Model):
     """Durable desired-state event for ECP -> Mautic synchronization.
 

@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from .models import (
     MauticContactMapping,
+    MauticUserConnection,
     NewsletterAudience,
     NewsletterCampaign,
     NewsletterCampaignTrackingEvent,
@@ -187,3 +188,21 @@ class NewsletterSyncEventAdmin(admin.ModelAdmin):
         "created_at",
         "updated_at",
     )
+
+
+@admin.register(MauticUserConnection)
+class MauticUserConnectionAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "mautic_user_id",
+        "mautic_username",
+        "status",
+        "is_active",
+        "last_verified_at",
+        "updated_at",
+    )
+    list_filter = ("status", "is_active")
+    # Search is for locating rows only; identity is always mautic_user_id.
+    search_fields = ("user__username", "user__email", "mautic_username")
+    raw_id_fields = ("user", "created_by")
+    readonly_fields = ("connected_at", "disabled_at", "created_at", "updated_at")

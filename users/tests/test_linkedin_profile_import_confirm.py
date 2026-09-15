@@ -27,7 +27,7 @@ class LinkedInProfileImportConfirmTests(TestCase):
             "location": "Surat",
             "experiences": [
                 {
-                    "community_name": "KrishvaTech",
+                    "community_name": "ExampleCorp",
                     "position": "Software Engineer",
                     "start_date": "2026-01-01",
                     "end_date": None,
