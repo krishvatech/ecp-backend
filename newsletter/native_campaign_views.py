@@ -11,6 +11,11 @@ from rest_framework.views import APIView
 from moderation.permissions import IsStaffOrSuperuser
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic_reference_choices import (
+    REFERENCE_CHOICE_SOURCES,
+    normalize_choice_rows,
+    reference_choice_page,
+)
 
 
 _CAMPAIGN_FIELDS = {
@@ -324,19 +329,42 @@ def _iter_form_metadata_fields(value: Any, path: list[str] | None = None):
             yield child_path, child
 
 
+_NON_DATA_CONTROL_TYPES = {"action", "hidden", "internal"}
+_NON_DATA_BLOCK_PREFIXES = {"button", "submit", "reset", "hidden"}
+
+
+def _is_configurable_schema_field(field: Any) -> bool:
+    """Event data, as opposed to a provider UI control.
+
+    Buttons, submit/reset controls, hidden inputs and anything the provider form
+    does not map onto the event's properties are not configuration: an event made
+    only of those needs nothing filled in.
+    """
+    if not isinstance(field, dict) or not str(field.get("name") or "").strip():
+        return False
+    if field.get("renderable") is False or field.get("mapped") is False:
+        return False
+    if str(field.get("controlType") or "").lower() in _NON_DATA_CONTROL_TYPES:
+        return False
+
+    prefixes = field.get("blockPrefixes")
+    if isinstance(prefixes, list) and any(
+        str(prefix).lower() in _NON_DATA_BLOCK_PREFIXES for prefix in prefixes
+    ):
+        return False
+
+    return True
+
+
 def _iter_schema_fields(fields: Any, path: list[str] | None = None):
     path = path or []
     if not isinstance(fields, list):
         return
 
     for field in fields:
-        if not isinstance(field, dict):
-            continue
-        if field.get("renderable") is False:
+        if not _is_configurable_schema_field(field):
             continue
         name = str(field.get("name") or "").strip()
-        if not name:
-            continue
         child_path = [*path, name]
         children = field.get("children")
         choices = field.get("choices")
@@ -344,6 +372,101 @@ def _iter_schema_fields(fields: Any, path: list[str] | None = None):
             yield from _iter_schema_fields(children, child_path)
             continue
         yield child_path, field
+
+
+_NUMERIC_FIELD_MARKERS = ("number", "integer", "percent")
+
+
+def _is_numeric_schema_field(metadata: Any) -> bool:
+    """A provider field Mautic renders as a number input."""
+    if not isinstance(metadata, dict):
+        return False
+
+    prefixes = metadata.get("blockPrefixes")
+    if isinstance(prefixes, list) and any(
+        str(prefix).lower() in _NUMERIC_FIELD_MARKERS for prefix in prefixes
+    ):
+        return True
+
+    field_type = str(metadata.get("type") or "").lower()
+    return any(marker in field_type for marker in ("numbertype", "integertype"))
+
+
+def _is_blank_property(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _is_entity_identifier(data: Any) -> bool:
+    if isinstance(data, dict):
+        return data.get("id") not in (None, "")
+    if isinstance(data, bool):
+        return False
+    if isinstance(data, (int, float)):
+        return True
+    if isinstance(data, str):
+        try:
+            float(data.strip())
+        except (TypeError, ValueError):
+            return False
+        return data.strip() != ""
+    return False
+
+
+def _is_selectable_entity_choice(choice: Any) -> bool:
+    """Whether a choice in a provider entity selector identifies a stored entity.
+
+    Mautic's EntityLookupChoiceLoader prepends a "Create new…" => "new" choice to
+    every entity field that has a creation modal. It is a UI command that opens
+    that modal, never a selection, and unlike a real choice it carries no entity
+    identifier in `data`.
+    """
+    if not isinstance(choice, dict):
+        return True
+    data = choice.get("data")
+    if data is None:
+        data = choice.get("value")
+    return _is_entity_identifier(data)
+
+
+def _is_provider_command_value(metadata: Any, value: Any) -> bool:
+    if not isinstance(metadata, dict) or metadata.get("choiceKind") != "entity":
+        return False
+
+    for choice in _flat_schema_choices(metadata.get("choices")):
+        if str(_option_value(choice)) == str(value):
+            return not _is_selectable_entity_choice(choice)
+
+    return False
+
+
+def _flat_schema_choices(choices: Any) -> list[Any]:
+    flattened: list[Any] = []
+    for choice in choices if isinstance(choices, list) else []:
+        if isinstance(choice, dict) and isinstance(choice.get("choices"), list):
+            flattened.extend(_flat_schema_choices(choice["choices"]))
+            continue
+        flattened.append(choice)
+    return flattened
+
+
+def _is_configured_property(metadata: Any, exists: bool, value: Any) -> bool:
+    """A value counts as configuration unless it is blank or a UI command."""
+    if not exists or _is_blank_property(value):
+        return False
+
+    selected = value if isinstance(value, list) else [value]
+    return any(
+        not _is_blank_property(item) and not _is_provider_command_value(metadata, item)
+        for item in selected
+    )
+
+
+def _schema_field_label(path: list[str], metadata: Any) -> str:
+    if isinstance(metadata, dict):
+        label = metadata.get("label")
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+    return ".".join(path)
 
 
 def _validate_builder_properties(
@@ -373,15 +496,53 @@ def _validate_builder_properties(
         else list(_iter_form_metadata_fields(capability.get("formTypeOptions")))
     )
 
-    for path, metadata in [*schema_fields, *metadata_fields]:
+    all_fields = [*schema_fields, *metadata_fields]
+    required_fields = [
+        path
+        for path, metadata in all_fields
+        if isinstance(metadata, dict) and metadata.get("required") is True
+    ]
+    configured_fields = [
+        path
+        for path, metadata in all_fields
+        if _is_configured_property(metadata, *_get_property(properties, path))
+    ]
+
+    # An event whose provider form has no required field still has to be told what
+    # to do — an "add or remove tags" action with neither set, for instance, would
+    # be saved as a step that does nothing.
+    if all_fields and not required_fields and not configured_fields:
+        options = ", ".join(
+            _schema_field_label(path, metadata) for path, metadata in all_fields
+        )
+        raise ValueError(
+            f"Native Mautic Campaign event #{event_index} needs at least one of: "
+            f"{options}."
+        )
+
+    for path, metadata in all_fields:
         exists, value = _get_property(properties, path)
         label = ".".join(path)
         if isinstance(metadata, dict) and metadata.get("required") is True:
-            if not exists or value in (None, "", []):
+            if not _is_configured_property(metadata, exists, value):
                 raise ValueError(
                     f"Native Mautic Campaign event #{event_index} missing required "
                     f"property {label}."
                 )
+
+        if exists and not _is_blank_property(value) and _is_numeric_schema_field(metadata):
+            if isinstance(value, bool) or isinstance(value, (list, dict)):
+                raise ValueError(
+                    f"Native Mautic Campaign event #{event_index} property {label} "
+                    "must be a number."
+                )
+            try:
+                float(value)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"Native Mautic Campaign event #{event_index} property {label} "
+                    "must be a number."
+                ) from None
 
         choices = (
             _schema_choice_values(metadata.get("choices"))
@@ -582,6 +743,58 @@ def _parse_canvas(value) -> dict[str, Any]:
         "nodes": nodes,
         "connections": connections,
     }
+
+
+def _validate_event_graph(
+    events: list[dict[str, Any]],
+    client_canvas: dict[str, Any] | None,
+) -> None:
+    """Reject a workflow whose graph points at things that are not there."""
+    event_ids = {str(event.get("id")) for event in events if event.get("id") is not None}
+
+    for index, event in enumerate(events, start=1):
+        parent = event.get("parent")
+        if parent in (None, ""):
+            continue
+        parent = str(parent)
+        if parent == str(event.get("id")):
+            raise ValueError(
+                f"Native Mautic Campaign event #{index} cannot follow itself."
+            )
+        if parent not in event_ids:
+            raise ValueError(
+                f"Native Mautic Campaign event #{index} follows an event that is "
+                "not part of this campaign."
+            )
+
+    if not isinstance(client_canvas, dict):
+        return
+
+    node_ids = {
+        str(node.get("id"))
+        for node in (client_canvas.get("nodes") or [])
+        if isinstance(node, dict) and node.get("id") not in (None, "")
+    }
+    # The caller's own canvas is self-contained: its connections may only join its
+    # own nodes, the campaign sources, or events in this payload.
+    known = node_ids | event_ids | {"lists", "forms"}
+
+    for connection in client_canvas.get("connections") or []:
+        if not isinstance(connection, dict):
+            continue
+        source = connection.get("sourceId") or connection.get("source")
+        target = connection.get("targetId") or connection.get("target")
+        for endpoint in (source, target):
+            if endpoint in (None, ""):
+                raise ValueError(
+                    "Native Mautic Campaign canvas connections must name a source "
+                    "and a target."
+                )
+            if str(endpoint) not in known:
+                raise ValueError(
+                    "Native Mautic Campaign canvas connects to unknown node "
+                    f'"{endpoint}".'
+                )
 
 
 def _canvas_node(node_id: Any, column: int, depth: int) -> dict[str, Any]:
@@ -832,6 +1045,7 @@ def _parse_campaign_payload(
     # Mautic ignores the whole `events` array unless `canvasSettings` describes the
     # graph as well, so every request that carries events must carry a canvas.
     if "events" in payload:
+        _validate_event_graph(payload["events"], payload.get("canvasSettings"))
         payload["canvasSettings"] = _build_campaign_canvas_settings(
             payload["events"],
             payload.get("canvasSettings"),
@@ -1030,48 +1244,8 @@ class NewsletterAdminMauticCampaignCapabilitiesView(APIView):
         )
 
 
-_REFERENCE_CHOICE_SOURCES = {"country", "region", "timezone", "locale"}
+_REFERENCE_CHOICE_SOURCES = REFERENCE_CHOICE_SOURCES
 _EVENT_FIELD_CHOICE_SOURCE = "event_field"
-
-
-def _normalize_choice_rows(rows: Any) -> list[dict[str, Any]]:
-    normalized = []
-    for row in rows if isinstance(rows, list) else []:
-        if not isinstance(row, dict):
-            continue
-        value = row.get("value")
-        if value is None:
-            continue
-        choice = {
-            "value": value,
-            "label": str(row.get("label") or value),
-        }
-        if row.get("group"):
-            choice["group"] = str(row["group"])
-        normalized.append(choice)
-    return normalized
-
-
-def _filter_reference_choices(
-    choices: list[dict[str, Any]],
-    *,
-    search: str,
-    values: list[str],
-) -> list[dict[str, Any]]:
-    if values:
-        wanted = {str(value) for value in values}
-        return [choice for choice in choices if str(choice["value"]) in wanted]
-
-    if search:
-        needle = search.lower()
-        return [
-            choice
-            for choice in choices
-            if needle in str(choice["label"]).lower()
-            or needle in str(choice["value"]).lower()
-        ]
-
-    return choices
 
 
 class NewsletterAdminMauticCampaignChoicesView(APIView):
@@ -1139,25 +1313,15 @@ class NewsletterAdminMauticCampaignChoicesView(APIView):
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
-        choices = _filter_reference_choices(
-            _normalize_choice_rows(data.get("choices")),
+        page = reference_choice_page(
+            data.get("choices"),
             search=search,
             values=values,
+            start=start,
+            limit=limit,
         )
-        total = len(choices)
-        page = choices if values else choices[start : start + limit]
 
-        return Response(
-            {
-                "source": source,
-                "results": page,
-                "total": total,
-                "start": 0 if values else start,
-                "limit": total if values else limit,
-                "hasMore": False if values else (start + limit) < total,
-            },
-            status=status.HTTP_200_OK,
-        )
+        return Response({"source": source, **page}, status=status.HTTP_200_OK)
 
     def _event_field_choices(self, request, *, search, values, start, limit):
         event_type = str(request.query_params.get("eventType", "") or "").strip()
@@ -1190,7 +1354,7 @@ class NewsletterAdminMauticCampaignChoicesView(APIView):
         return Response(
             {
                 "source": _EVENT_FIELD_CHOICE_SOURCE,
-                "results": _normalize_choice_rows(data.get("choices")),
+                "results": normalize_choice_rows(data.get("choices")),
                 "total": data.get("total", 0),
                 "start": data.get("start", start),
                 "limit": data.get("limit", limit),

@@ -69,6 +69,10 @@ from .models import (
     NewsletterSyncEvent,
 )
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic_reference_choices import (
+    REFERENCE_CHOICE_SOURCES,
+    reference_choice_page,
+)
 from .sync_events import create_newsletter_sync_event
 
 logger = logging.getLogger(__name__)
@@ -92,13 +96,46 @@ def _mautic_enabled():
     return bool(getattr(settings, "MAUTIC_SYNC_ENABLED", False))
 
 
+def _normalize_segment_filter_row(row):
+    """Present a filter row the way Mautic evaluates it.
+
+    ContactSegmentFilterCrate reads `properties.filter` and only falls back to the
+    legacy top-level `filter`. A PATCH can leave a stale legacy value behind, so
+    resolving it the same way keeps the editor showing what actually runs.
+    """
+    if not isinstance(row, dict):
+        return row
+
+    properties = row.get("properties")
+    properties = dict(properties) if isinstance(properties, dict) else {}
+    if "filter" not in properties and "filter" in row:
+        properties["filter"] = row.get("filter")
+
+    normalized = {
+        "glue": row.get("glue") or "and",
+        "field": row.get("field"),
+        "object": row.get("object") or "lead",
+        "type": row.get("type"),
+        "operator": row.get("operator"),
+        "properties": properties,
+    }
+    for extra in ("display", "merged_property", "null_value", "decisionPath"):
+        if extra in row and extra not in ("display",):
+            normalized[extra] = row.get(extra)
+    return normalized
+
+
 def _segment_filters(segment):
     filters = segment.get("filters")
     if filters in (None, "", [], {}):
         return []
     if isinstance(filters, dict):
-        return [item for item in filters.values() if item]
-    return filters
+        rows = [item for item in filters.values() if item]
+    elif isinstance(filters, list):
+        rows = filters
+    else:
+        return []
+    return [_normalize_segment_filter_row(row) for row in rows]
 
 
 def _segment_is_static(segment):
@@ -252,8 +289,8 @@ def _normalize_mautic_segment(segment, mapped_categories=None):
 _SEGMENT_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
-def _parse_native_segment_payload(data, *, partial=False):
-    allowed_fields = {"name", "alias", "description", "isPublished"}
+def _parse_native_segment_payload(data, *, partial=False, filter_metadata=None):
+    allowed_fields = {"name", "alias", "description", "isPublished", "filters"}
     unsupported = sorted(set(data.keys()) - allowed_fields)
     if unsupported:
         raise ValueError(
@@ -293,12 +330,142 @@ def _parse_native_segment_payload(data, *, partial=False):
     elif not partial:
         payload["isPublished"] = False
 
-    if not partial:
+    if "filters" in data:
+        payload["filters"] = _parse_segment_filters(
+            data.get("filters"),
+            metadata=filter_metadata,
+        )
+    elif not partial:
+        # A segment created without filters is a static one, as before.
         payload["filters"] = []
-    elif not payload:
+
+    if partial and not payload:
         raise ValueError("At least one native Mautic Segment field is required.")
 
     return payload
+
+
+
+_SEGMENT_GLUES = {"and", "or"}
+
+
+def _filter_metadata_index(metadata):
+    """Provider fields keyed by (object, alias), plus the operator catalog."""
+    fields = {}
+    for field in (metadata or {}).get("fields") or []:
+        if not isinstance(field, dict):
+            continue
+        alias = str(field.get("alias") or "").strip()
+        if not alias:
+            continue
+        fields[(str(field.get("object") or ""), alias)] = field
+
+    operators = {}
+    for operator in (metadata or {}).get("operators") or []:
+        if isinstance(operator, dict) and operator.get("value") is not None:
+            operators[str(operator["value"])] = operator
+
+    return fields, operators
+
+
+def _blank_filter_value(value):
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _filter_value(row):
+    """Mautic stores the value under properties.filter; it also accepts it flat."""
+    properties = row.get("properties")
+    if isinstance(properties, dict) and "filter" in properties:
+        return properties.get("filter")
+    return row.get("filter")
+
+
+def _parse_segment_filters(value, *, metadata):
+    """Validate filter rows against the provider's own filter metadata.
+
+    Django owns no operator semantics, no field catalog and no query building: it
+    checks that each row names a field Mautic offers, an operator that field
+    accepts, and a value when that operator needs one.
+    """
+    if not isinstance(value, list):
+        raise ValueError("Native Mautic Segment filters must be a list.")
+
+    fields, operator_catalog = _filter_metadata_index(metadata)
+    if not fields:
+        raise ValueError(
+            "Native Mautic Segment filter metadata is unavailable; filters cannot "
+            "be validated."
+        )
+
+    parsed = []
+    for index, row in enumerate(value, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"Native Mautic Segment filter #{index} must be an object.")
+
+        alias = str(row.get("field") or "").strip()
+        if not alias:
+            raise ValueError(f"Native Mautic Segment filter #{index} field is required.")
+
+        obj = str(row.get("object") or "lead").strip()
+        field = fields.get((obj, alias))
+        if field is None:
+            raise ValueError(
+                f'Native Mautic Segment filter #{index} field "{alias}" is not '
+                "available in this Mautic instance."
+            )
+
+        operator = str(row.get("operator") or "").strip()
+        allowed = {
+            str(item.get("value"))
+            for item in field.get("operators") or []
+            if isinstance(item, dict)
+        }
+        if not operator:
+            raise ValueError(
+                f"Native Mautic Segment filter #{index} operator is required."
+            )
+        if allowed and operator not in allowed:
+            raise ValueError(
+                f'Native Mautic Segment filter #{index} operator "{operator}" is not '
+                f'available for "{field.get("label") or alias}".'
+            )
+
+        glue = str(row.get("glue") or "and").strip().lower()
+        if glue not in _SEGMENT_GLUES:
+            raise ValueError(
+                f"Native Mautic Segment filter #{index} glue must be and or or."
+            )
+
+        filter_value = _filter_value(row)
+        requires_value = operator_catalog.get(operator, {}).get("requiresValue", True)
+        if requires_value and _blank_filter_value(filter_value):
+            raise ValueError(
+                f'Native Mautic Segment filter #{index} needs a value for '
+                f'"{field.get("label") or alias}".'
+            )
+
+        parsed_row = {
+            "glue": glue,
+            "field": alias,
+            "object": str(field.get("object") or obj),
+            "type": str(row.get("type") or field.get("type") or "text"),
+            "operator": operator,
+        }
+        # Mautic's canonical storage shape; it normalizes a flat value into this.
+        parsed_row["properties"] = (
+            {} if _blank_filter_value(filter_value) else {"filter": filter_value}
+        )
+        parsed.append(parsed_row)
+
+    # Mautic itself forces the first row's glue to "and" when it loads a segment.
+    if parsed:
+        parsed[0]["glue"] = "and"
+
+    return parsed
+
+
+def _request_carries_segment_filters(data):
+    return hasattr(data, "get") and "filters" in data
 
 
 def _native_segment_provider_error_response(exc):
@@ -1661,7 +1828,22 @@ class NewsletterAdminMauticSegmentListView(APIView):
 
     def post(self, request):
         try:
-            payload = _parse_native_segment_payload(request.data)
+            client = MauticClient()
+            # Only a request that actually carries filters needs the provider's
+            # filter metadata to validate them against.
+            metadata = (
+                client.get_segment_filter_metadata()
+                if _request_carries_segment_filters(request.data)
+                else None
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _native_segment_provider_error_response(exc)
+
+        try:
+            payload = _parse_native_segment_payload(
+                request.data,
+                filter_metadata=metadata,
+            )
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
@@ -1669,13 +1851,102 @@ class NewsletterAdminMauticSegmentListView(APIView):
             )
 
         try:
-            segment = MauticClient().create_segment(payload)
+            segment = client.create_segment(payload)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _native_segment_provider_error_response(exc)
 
         return Response(
             _normalize_mautic_segment(segment),
             status=status.HTTP_201_CREATED,
+        )
+
+
+class NewsletterAdminMauticSegmentFilterChoicesView(APIView):
+    """Staff-only lookup for the reference catalogs a filter value can come from.
+
+    Mautic publishes country, region, timezone and locale whole — the bridge
+    endpoint takes no search or page arguments and the region catalog alone is
+    ~268 KB — so the provider's rows are narrowed and paged here rather than
+    being sent to a browser in full. No catalog is stored in ECP.
+    """
+
+    permission_classes = [IsStaffOrSuperuser]
+    default_page_size = 25
+    max_page_size = 200
+
+    def get(self, request):
+        source = str(request.query_params.get("source", "") or "").strip().lower()
+        if source not in REFERENCE_CHOICE_SOURCES:
+            return Response(
+                {"detail": f'Unsupported segment filter choice source "{source}".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        search = str(request.query_params.get("search", "") or "").strip()
+        # Accepts both `values=a&values=b` and the bracket form some clients emit.
+        values = [
+            str(value)
+            for value in (
+                request.query_params.getlist("values")
+                or request.query_params.getlist("values[]")
+            )
+            if str(value) != ""
+        ]
+
+        try:
+            start = max(0, int(request.query_params.get("start", 0)))
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            limit = int(request.query_params.get("limit", self.default_page_size))
+        except (TypeError, ValueError):
+            limit = self.default_page_size
+        limit = max(1, min(limit, self.max_page_size))
+
+        try:
+            data = MauticClient().get_field_type_choices(source)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        page = reference_choice_page(
+            data.get("choices"),
+            search=search,
+            values=values,
+            start=start,
+            limit=limit,
+        )
+
+        return Response({"source": source, **page}, status=status.HTTP_200_OK)
+
+
+class NewsletterAdminMauticSegmentFilterMetadataView(APIView):
+    """Staff-only discovery of the provider's segment filter metadata.
+
+    Everything a filter row needs — the fields Mautic offers, the operators each
+    field accepts, the value control and its options — comes from Mautic at
+    runtime. ECP keeps no catalog of its own.
+    """
+
+    permission_classes = [IsStaffOrSuperuser]
+
+    def get(self, request):
+        search = str(request.query_params.get("search", "") or "").strip()
+
+        try:
+            metadata = MauticClient().get_segment_filter_metadata(search)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        return Response(
+            {
+                "objects": metadata.get("objects", []),
+                "operators": metadata.get("operators", []),
+                "glue": metadata.get("glue", []),
+                "fields": metadata.get("fields", []),
+                "total": metadata.get("total", len(metadata.get("fields", []))),
+                "source": metadata.get("source"),
+            },
+            status=status.HTTP_200_OK,
         )
 
 
@@ -1703,7 +1974,21 @@ class NewsletterAdminMauticSegmentDetailView(APIView):
             return protected_response
 
         try:
-            payload = _parse_native_segment_payload(request.data, partial=True)
+            client = MauticClient()
+            metadata = (
+                client.get_segment_filter_metadata()
+                if _request_carries_segment_filters(request.data)
+                else None
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _native_segment_provider_error_response(exc)
+
+        try:
+            payload = _parse_native_segment_payload(
+                request.data,
+                partial=True,
+                filter_metadata=metadata,
+            )
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
@@ -1711,7 +1996,7 @@ class NewsletterAdminMauticSegmentDetailView(APIView):
             )
 
         try:
-            segment = MauticClient().update_segment(segment_id, payload)
+            segment = client.update_segment(segment_id, payload)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _native_segment_provider_error_response(exc)
 

@@ -1094,7 +1094,13 @@ class NewsletterAdminMauticCampaignMultiEventTests(TestCase):
                         "nodeType": "trigger",
                         "positionX": "60",
                         "positionY": "120",
-                    }
+                    },
+                    {
+                        "id": "node-action",
+                        "nodeType": "action",
+                        "positionX": "320",
+                        "positionY": "120",
+                    },
                 ],
                 "connections": [{"sourceId": "node-trigger", "targetId": "node-action"}],
             },
@@ -2037,3 +2043,782 @@ class NewsletterAdminMauticCampaignSoftDeletedEventTests(TestCase):
         # No usable provider answer: never silently drop the workflow.
         self.assertEqual(_active_events_only(events, None), events)
         self.assertEqual(_active_events_only(events, "nonsense"), events)
+
+
+class NewsletterAdminMauticCampaignSaveValidationTests(TestCase):
+    """Server-side validation of a campaign payload before it reaches Mautic.
+
+    Every rule comes from the provider's own form schema, so no event type is
+    named here either.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.staff = User.objects.create_user(
+            username="save-validation-staff",
+            email="save-validation-staff@example.test",
+            password="test-password",
+            is_staff=True,
+        )
+        self.client.force_authenticate(user=self.staff)
+        self.detail_url = reverse(
+            "newsletter-admin-mautic-campaign-detail",
+            args=["7"],
+        )
+
+    @staticmethod
+    def _capabilities():
+        return {
+            "actions": [
+                {
+                    "key": "email.send",
+                    "type": "email.send",
+                    "eventType": "action",
+                    "label": "Send email",
+                    "formSchema": {
+                        "available": True,
+                        "fields": [
+                            {
+                                "name": "email",
+                                "label": "Email to send",
+                                "required": True,
+                                "renderable": True,
+                                "choices": [{"label": "QA Email (23)", "value": "23"}],
+                            },
+                            {
+                                "name": "attempts",
+                                "label": "Attempts",
+                                "renderable": True,
+                                "blockPrefixes": ["form", "number", "_attempts"],
+                            },
+                        ],
+                    },
+                },
+                {
+                    "key": "lead.changetags",
+                    "type": "lead.changetags",
+                    "eventType": "action",
+                    "label": "Modify contact's tags",
+                    "formSchema": {
+                        "available": True,
+                        "fields": [
+                            {
+                                "name": "add_tags",
+                                "label": "Add tags",
+                                "multiple": True,
+                                "renderable": True,
+                                "choices": [{"label": "QA Tag", "value": "4"}],
+                            },
+                            {
+                                "name": "remove_tags",
+                                "label": "Remove tags",
+                                "multiple": True,
+                                "renderable": True,
+                                "choices": [{"label": "QA Tag", "value": "4"}],
+                            },
+                        ],
+                    },
+                },
+                {
+                    "key": "lead.changepoints",
+                    "type": "lead.changepoints",
+                    "eventType": "action",
+                    "label": "Adjust contact points",
+                    "formSchema": {
+                        "available": True,
+                        "fields": [
+                            {
+                                "name": "points",
+                                "label": "Points (+/-)",
+                                "required": True,
+                                "renderable": True,
+                                "blockPrefixes": ["form", "number", "_points"],
+                            }
+                        ],
+                    },
+                },
+            ],
+            "conditions": [],
+            "decisions": [],
+            "connectionRestrictions": {},
+        }
+
+    def _patch(self, events, canvas=None):
+        with patch("newsletter.native_campaign_views.MauticClient") as client_cls:
+            client_cls.return_value.get_campaign_builder_capabilities.return_value = (
+                self._capabilities()
+            )
+            client_cls.return_value.update_campaign.return_value = {
+                "id": 7,
+                "name": "QA Provider Schema Campaign",
+                "events": [],
+            }
+            response = self.client.patch(
+                self.detail_url,
+                {
+                    "name": "QA Provider Schema Campaign",
+                    "sources": {"segments": [10], "forms": []},
+                    "events": events,
+                    "canvasSettings": canvas or {"nodes": [], "connections": []},
+                },
+                format="json",
+            )
+            return response, client_cls.return_value.update_campaign
+
+    @staticmethod
+    def _event(event_id, key, properties, **extra):
+        event = {
+            "id": event_id,
+            "key": key,
+            "eventType": "action",
+            "properties": properties,
+        }
+        event.update(extra)
+        return event
+
+    def test_valid_payload_is_accepted_and_forwarded(self):
+        response, update = self._patch(
+            [
+                self._event("12", "email.send", {"email": "23", "attempts": 3}),
+                self._event("23", "lead.changetags", {"add_tags": ["4"]}),
+                self._event("25", "lead.changepoints", {"points": "10"}),
+            ]
+        )
+
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+        self.assertEqual(len(update.call_args.args[1]["events"]), 3)
+
+    def test_missing_required_property_is_rejected(self):
+        response, update = self._patch(
+            [self._event("12", "email.send", {"attempts": 3})]
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("missing required property email", response.data["detail"])
+        update.assert_not_called()
+
+    def test_event_with_nothing_configured_is_rejected(self):
+        """An "add or remove tags" step with neither set would do nothing."""
+        response, update = self._patch(
+            [self._event("23", "lead.changetags", {"add_tags": [], "remove_tags": []})]
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("at least one of: Add tags, Remove tags", response.data["detail"])
+        update.assert_not_called()
+
+    def test_one_side_configured_is_enough(self):
+        response, _ = self._patch(
+            [self._event("23", "lead.changetags", {"remove_tags": ["4"]})]
+        )
+
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+
+    def test_non_numeric_value_for_a_number_field_is_rejected(self):
+        response, update = self._patch(
+            [self._event("25", "lead.changepoints", {"points": "many"})]
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("must be a number", response.data["detail"])
+        update.assert_not_called()
+
+    def test_numeric_values_of_every_usual_shape_are_accepted(self):
+        for points in ("10", 10, "-5", 0, "0", 2.5):
+            with self.subTest(points=points):
+                response, _ = self._patch(
+                    [self._event("25", "lead.changepoints", {"points": points})]
+                )
+                self.assertEqual(response.status_code, 200, points)
+
+    def test_a_list_is_not_a_number(self):
+        response, update = self._patch(
+            [self._event("25", "lead.changepoints", {"points": ["10"]})]
+        )
+
+        self.assertEqual(response.status_code, 400)
+        update.assert_not_called()
+
+    def test_optional_number_is_only_checked_when_supplied(self):
+        ok, _ = self._patch([self._event("12", "email.send", {"email": "23"})])
+        self.assertEqual(ok.status_code, 200)
+
+        bad, update = self._patch(
+            [self._event("12", "email.send", {"email": "23", "attempts": "soon"})]
+        )
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("attempts must be a number", bad.data["detail"])
+        update.assert_not_called()
+
+    def test_unknown_choice_value_is_still_rejected(self):
+        response, update = self._patch(
+            [self._event("12", "email.send", {"email": "999"})]
+        )
+
+        self.assertEqual(response.status_code, 400)
+        update.assert_not_called()
+
+    def test_event_following_an_event_outside_the_campaign_is_rejected(self):
+        response, update = self._patch(
+            [
+                self._event("12", "email.send", {"email": "23"}),
+                self._event("23", "lead.changetags", {"add_tags": ["4"]}, parent="999"),
+            ]
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("not part of this campaign", response.data["detail"])
+        update.assert_not_called()
+
+    def test_event_following_itself_is_rejected(self):
+        response, update = self._patch(
+            [self._event("12", "email.send", {"email": "23"}, parent="12")]
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot follow itself", response.data["detail"])
+        update.assert_not_called()
+
+    def test_valid_parent_reference_is_accepted(self):
+        response, _ = self._patch(
+            [
+                self._event("12", "email.send", {"email": "23"}),
+                self._event("23", "lead.changetags", {"add_tags": ["4"]}, parent="12"),
+            ]
+        )
+
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+
+    def test_canvas_connection_to_an_unknown_node_is_rejected(self):
+        response, update = self._patch(
+            [self._event("12", "email.send", {"email": "23"})],
+            canvas={
+                "nodes": [{"id": "node-trigger", "nodeType": "trigger"}],
+                "connections": [
+                    {"sourceId": "node-trigger", "targetId": "node-missing"}
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("unknown node", response.data["detail"])
+        update.assert_not_called()
+
+    def test_canvas_connection_without_endpoints_is_rejected(self):
+        response, update = self._patch(
+            [self._event("12", "email.send", {"email": "23"})],
+            canvas={
+                "nodes": [{"id": "node-trigger", "nodeType": "trigger"}],
+                "connections": [{"sourceId": "node-trigger"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        update.assert_not_called()
+
+    def test_a_sound_caller_canvas_is_accepted(self):
+        response, _ = self._patch(
+            [self._event("12", "email.send", {"email": "23"})],
+            canvas={
+                "nodes": [
+                    {"id": "node-trigger", "nodeType": "trigger"},
+                    {"id": "node-a", "nodeType": "action", "eventId": "12"},
+                ],
+                "connections": [{"sourceId": "node-trigger", "targetId": "node-a"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+
+    def test_an_update_of_other_fields_is_not_affected_by_event_validation(self):
+        with patch("newsletter.native_campaign_views.MauticClient") as client_cls:
+            client_cls.return_value.update_campaign.return_value = {
+                "id": 7,
+                "name": "Renamed",
+            }
+
+            response = self.client.patch(
+                self.detail_url,
+                {"name": "Renamed"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            client_cls.return_value.update_campaign.call_args.args[1],
+            {"name": "Renamed"},
+        )
+
+    def test_provider_failure_handling_is_unchanged(self):
+        with patch("newsletter.native_campaign_views.MauticClient") as client_cls:
+            client_cls.return_value.get_campaign_builder_capabilities.return_value = (
+                self._capabilities()
+            )
+            client_cls.return_value.update_campaign.side_effect = TemporaryMauticError(
+                "Mautic API request failed (HTTP 503)"
+            )
+
+            response = self.client.patch(
+                self.detail_url,
+                {
+                    "sources": {"segments": [10], "forms": []},
+                    "events": [self._event("12", "email.send", {"email": "23"})],
+                    "canvasSettings": {"nodes": [], "connections": []},
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 502)
+
+
+class NewsletterAdminMauticCampaignConfigurableFieldTests(TestCase):
+    """What counts as configuration, and what a pure state change may skip."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.staff = User.objects.create_user(
+            username="configurable-field-staff",
+            email="configurable-field-staff@example.test",
+            password="test-password",
+            is_staff=True,
+        )
+        self.client.force_authenticate(user=self.staff)
+        self.detail_url = reverse(
+            "newsletter-admin-mautic-campaign-detail",
+            args=["7"],
+        )
+
+    @staticmethod
+    def _capabilities(fields):
+        return {
+            "actions": [
+                {
+                    "key": "provider.event",
+                    "type": "provider.event",
+                    "eventType": "action",
+                    "label": "Provider event",
+                    "formSchema": {"available": True, "fields": fields},
+                }
+            ],
+            "conditions": [],
+            "decisions": [],
+            "connectionRestrictions": {},
+        }
+
+    def _patch_event(self, fields, properties):
+        with patch("newsletter.native_campaign_views.MauticClient") as client_cls:
+            client_cls.return_value.get_campaign_builder_capabilities.return_value = (
+                self._capabilities(fields)
+            )
+            client_cls.return_value.update_campaign.return_value = {"id": 7, "name": "x"}
+
+            response = self.client.patch(
+                self.detail_url,
+                {
+                    "sources": {"segments": [10], "forms": []},
+                    "events": [
+                        {
+                            "id": "90",
+                            "key": "provider.event",
+                            "eventType": "action",
+                            "properties": properties,
+                        }
+                    ],
+                    "canvasSettings": {"nodes": [], "connections": []},
+                },
+                format="json",
+            )
+            return response, client_cls.return_value.update_campaign
+
+    def test_event_with_no_schema_fields_is_valid_with_empty_properties(self):
+        response, update = self._patch_event([], {})
+
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+        self.assertEqual(update.call_args.args[1]["events"][0]["properties"], {})
+
+    def test_event_with_only_non_data_controls_is_valid_with_empty_properties(self):
+        response, _ = self._patch_event(
+            [
+                {
+                    "name": "newEmailButton",
+                    "label": "New Email",
+                    "renderable": False,
+                    "controlType": "action",
+                    "blockPrefixes": ["button", "_newEmailButton"],
+                },
+                {
+                    "name": "save",
+                    "label": "Save",
+                    "controlType": "action",
+                    "blockPrefixes": ["submit", "_save"],
+                },
+                {"name": "uiOnly", "label": "UI only", "mapped": False},
+                {"name": "secret", "label": "Hidden", "blockPrefixes": ["hidden", "_s"]},
+            ],
+            {},
+        )
+
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+
+    def test_optional_configurable_fields_all_blank_are_rejected(self):
+        response, update = self._patch_event(
+            [
+                {"name": "add_tags", "label": "Add tags", "renderable": True},
+                {"name": "remove_tags", "label": "Remove tags", "renderable": True},
+            ],
+            {"add_tags": [], "remove_tags": ""},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("at least one of: Add tags, Remove tags", response.data["detail"])
+        update.assert_not_called()
+
+    def test_one_populated_optional_field_is_accepted(self):
+        response, _ = self._patch_event(
+            [
+                {"name": "add_tags", "label": "Add tags", "renderable": True},
+                {"name": "remove_tags", "label": "Remove tags", "renderable": True},
+            ],
+            {"remove_tags": ["4"]},
+        )
+
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+
+    def test_non_data_controls_do_not_make_an_event_look_configurable(self):
+        """One real field among the controls still carries the rule."""
+        fields = [
+            {"name": "newEmailButton", "renderable": False, "controlType": "action"},
+            {"name": "note", "label": "Note", "renderable": True},
+        ]
+
+        blank, update = self._patch_event(fields, {})
+        self.assertEqual(blank.status_code, 400)
+        self.assertIn("at least one of: Note", blank.data["detail"])
+        update.assert_not_called()
+
+        filled, _ = self._patch_event(fields, {"note": "hello"})
+        self.assertEqual(filled.status_code, 200)
+
+    def test_button_group_choice_field_is_real_configuration(self):
+        # ButtonGroupType's prefixes contain "button_group", not "button".
+        response, update = self._patch_event(
+            [
+                {
+                    "name": "email_type",
+                    "label": "Email type",
+                    "renderable": True,
+                    "blockPrefixes": ["form", "choice", "button_group", "_email_type"],
+                }
+            ],
+            {},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("at least one of: Email type", response.data["detail"])
+        update.assert_not_called()
+
+
+class NewsletterAdminMauticCampaignPublishedStateTests(TestCase):
+    """Switching a campaign off must never be blocked by its workflow."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.staff = User.objects.create_user(
+            username="published-state-staff",
+            email="published-state-staff@example.test",
+            password="test-password",
+            is_staff=True,
+        )
+        self.client.force_authenticate(user=self.staff)
+        self.detail_url = reverse(
+            "newsletter-admin-mautic-campaign-detail",
+            args=["7"],
+        )
+
+    @staticmethod
+    def _capabilities():
+        return {
+            "actions": [
+                {
+                    "key": "email.send",
+                    "type": "email.send",
+                    "eventType": "action",
+                    "label": "Send email",
+                    "formSchema": {
+                        "available": True,
+                        "fields": [
+                            {
+                                "name": "email",
+                                "label": "Email to send",
+                                "required": True,
+                                "renderable": True,
+                                "choices": [{"label": "QA Email (23)", "value": "23"}],
+                            }
+                        ],
+                    },
+                }
+            ],
+            "conditions": [],
+            "decisions": [],
+            "connectionRestrictions": {},
+        }
+
+    @patch("newsletter.native_campaign_views.MauticClient")
+    def test_pure_unpublish_skips_workflow_validation_entirely(self, client_cls):
+        client_cls.return_value.update_campaign.return_value = {
+            "id": 7,
+            "name": "QA Provider Schema Campaign",
+            "isPublished": False,
+        }
+
+        response = self.client.patch(
+            self.detail_url,
+            {"isPublished": False},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        # The provider call is the same one every other update uses.
+        client_cls.return_value.update_campaign.assert_called_once_with(
+            "7",
+            {"isPublished": False},
+        )
+        # Capabilities are not even fetched: there is no workflow to check.
+        client_cls.return_value.get_campaign_builder_capabilities.assert_not_called()
+
+    @patch("newsletter.native_campaign_views.MauticClient")
+    def test_unpublish_does_not_touch_campaign_events(self, client_cls):
+        client_cls.return_value.update_campaign.return_value = {"id": 7, "name": "x"}
+
+        self.client.patch(self.detail_url, {"isPublished": False}, format="json")
+
+        payload = client_cls.return_value.update_campaign.call_args.args[1]
+        self.assertNotIn("events", payload)
+        self.assertNotIn("canvasSettings", payload)
+        self.assertNotIn("lists", payload)
+        self.assertNotIn("forms", payload)
+
+    @patch("newsletter.native_campaign_views.MauticClient")
+    def test_publishing_with_an_invalid_workflow_is_still_rejected(self, client_cls):
+        client_cls.return_value.get_campaign_builder_capabilities.return_value = (
+            self._capabilities()
+        )
+
+        response = self.client.patch(
+            self.detail_url,
+            {
+                "isPublished": True,
+                "sources": {"segments": [10], "forms": []},
+                "events": [
+                    {
+                        "id": "12",
+                        "key": "email.send",
+                        "eventType": "action",
+                        "properties": {},
+                    }
+                ],
+                "canvasSettings": {"nodes": [], "connections": []},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("missing required property email", response.data["detail"])
+        client_cls.return_value.update_campaign.assert_not_called()
+
+    @patch("newsletter.native_campaign_views.MauticClient")
+    def test_a_state_change_that_also_submits_events_is_still_validated(self, client_cls):
+        """Unpublishing is only exempt while it submits nothing but the state."""
+        client_cls.return_value.get_campaign_builder_capabilities.return_value = (
+            self._capabilities()
+        )
+
+        response = self.client.patch(
+            self.detail_url,
+            {
+                "isPublished": False,
+                "sources": {"segments": [10], "forms": []},
+                "events": [
+                    {
+                        "id": "12",
+                        "key": "email.send",
+                        "eventType": "action",
+                        "properties": {},
+                    }
+                ],
+                "canvasSettings": {"nodes": [], "connections": []},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        client_cls.return_value.update_campaign.assert_not_called()
+
+    @patch("newsletter.native_campaign_views.MauticClient")
+    def test_unpublish_provider_failure_is_normalized_unchanged(self, client_cls):
+        client_cls.return_value.update_campaign.side_effect = TemporaryMauticError(
+            "Mautic API request failed (HTTP 503)"
+        )
+
+        response = self.client.patch(
+            self.detail_url,
+            {"isPublished": False},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 502)
+
+
+class NewsletterAdminMauticCampaignEntityChoiceTests(TestCase):
+    """A provider UI command is not a selection.
+
+    Mautic's EntityLookupChoiceLoader prepends "Create new…" => "new" to every
+    entity field that has a creation modal. It opens a modal in the browser and is
+    never a stored selection, so it cannot satisfy a required entity field.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.staff = User.objects.create_user(
+            username="entity-choice-staff",
+            email="entity-choice-staff@example.test",
+            password="test-password",
+            is_staff=True,
+        )
+        self.client.force_authenticate(user=self.staff)
+        self.detail_url = reverse(
+            "newsletter-admin-mautic-campaign-detail",
+            args=["7"],
+        )
+
+    @staticmethod
+    def _capabilities(field_overrides=None):
+        field = {
+            "name": "email",
+            "label": "Email to send",
+            "required": True,
+            "renderable": True,
+            "choiceKind": "entity",
+            "choiceMode": "inline",
+            "choices": [
+                {"label": "Create new...", "labelKey": None, "value": "new", "data": "new"},
+                {
+                    "label": "en",
+                    "choices": [
+                        {"label": "QA Email (23)", "value": "23", "data": 23},
+                    ],
+                },
+            ],
+        }
+        field.update(field_overrides or {})
+        return {
+            "actions": [
+                {
+                    "key": "email.send",
+                    "type": "email.send",
+                    "eventType": "action",
+                    "label": "Send email",
+                    "formSchema": {"available": True, "fields": [field]},
+                }
+            ],
+            "conditions": [],
+            "decisions": [],
+            "connectionRestrictions": {},
+        }
+
+    def _patch(self, properties, field_overrides=None):
+        with patch("newsletter.native_campaign_views.MauticClient") as client_cls:
+            client_cls.return_value.get_campaign_builder_capabilities.return_value = (
+                self._capabilities(field_overrides)
+            )
+            client_cls.return_value.update_campaign.return_value = {"id": 7, "name": "x"}
+
+            response = self.client.patch(
+                self.detail_url,
+                {
+                    "sources": {"segments": [10], "forms": []},
+                    "events": [
+                        {
+                            "id": "12",
+                            "key": "email.send",
+                            "eventType": "action",
+                            "properties": properties,
+                        }
+                    ],
+                    "canvasSettings": {"nodes": [], "connections": []},
+                },
+                format="json",
+            )
+            return response, client_cls.return_value.update_campaign
+
+    def test_a_real_entity_choice_satisfies_the_required_field(self):
+        response, update = self._patch({"email": "23"})
+
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+        self.assertEqual(update.call_args.args[1]["events"][0]["properties"]["email"], "23")
+
+    def test_the_create_new_command_does_not_satisfy_the_required_field(self):
+        response, update = self._patch({"email": "new"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("missing required property email", response.data["detail"])
+        update.assert_not_called()
+
+    def test_an_empty_required_entity_field_is_rejected(self):
+        response, update = self._patch({"email": ""})
+
+        self.assertEqual(response.status_code, 400)
+        update.assert_not_called()
+
+    def test_a_command_value_does_not_count_as_configuration_either(self):
+        """With nothing required, a command still configures nothing."""
+        response, update = self._patch(
+            {"email": "new"},
+            field_overrides={"required": False},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("at least one of: Email to send", response.data["detail"])
+        update.assert_not_called()
+
+    def test_a_multi_select_entity_field_needs_one_real_entity(self):
+        only_command, update = self._patch(
+            {"email": ["new"]},
+            field_overrides={"multiple": True},
+        )
+        self.assertEqual(only_command.status_code, 400)
+        update.assert_not_called()
+
+        with_entity, _ = self._patch(
+            {"email": ["new", "23"]},
+            field_overrides={"multiple": True},
+        )
+        self.assertEqual(with_entity.status_code, 200, getattr(with_entity, "data", None))
+
+    def test_entity_choices_carrying_an_id_object_are_selectable(self):
+        response, _ = self._patch(
+            {"email": "4"},
+            field_overrides={
+                "choices": [
+                    {"label": "Create new...", "value": "new", "data": "new"},
+                    {"label": "QA Tag", "value": "4", "data": {"id": 4}},
+                ]
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+
+    def test_a_non_entity_choice_field_is_unaffected(self):
+        """Plain choice fields have no command entry and keep working."""
+        response, _ = self._patch(
+            {"email": "new"},
+            field_overrides={
+                "choiceKind": "enum",
+                "choices": [
+                    {"label": "New contacts", "value": "new", "data": "new"},
+                    {"label": "All", "value": "all", "data": "all"},
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))

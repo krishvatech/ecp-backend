@@ -164,6 +164,89 @@ class MauticClientTests(SimpleTestCase):
         ):
             client.list_contacts()
 
+    def test_delete_segment_succeeds_without_an_id_in_the_response(self):
+        """Mautic answers a delete with the entity whose id it has already nulled.
+
+        This used to be read as a malformed response, so a deletion that really
+        happened was reported to the operator as a failure.
+        """
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "list": {
+                        "id": None,
+                        "name": "QA Segment Delete Test",
+                        "alias": "qa-segment-delete-test",
+                        "isPublished": False,
+                    }
+                },
+            )
+        )
+
+        result = client.delete_segment(20)
+
+        self.assertEqual(result["name"], "QA Segment Delete Test")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("DELETE", "http://mautic.local/api/segments/20/delete"),
+        )
+
+    def test_delete_segment_accepts_a_minimal_success_body(self):
+        client, _ = self.make_mautic_client(response(200, {"list": {}}))
+
+        self.assertEqual(client.delete_segment(20), {})
+
+    def test_delete_segment_still_rejects_a_response_without_the_entity(self):
+        client, _ = self.make_mautic_client(response(200, {"unexpected": True}))
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError, "segment deletion returned an invalid response"
+        ):
+            client.delete_segment(20)
+
+    def test_delete_segment_requires_an_id(self):
+        client, session = self.make_mautic_client()
+
+        with self.assertRaisesRegex(PermanentMauticError, "segment ID is required"):
+            client.delete_segment("")
+
+        session.request.assert_not_called()
+
+    def test_delete_segment_reports_a_missing_segment(self):
+        """A repeated delete: Mautic answers 404 Item was not found."""
+        client, _ = self.make_mautic_client(
+            response(404, {"errors": [{"message": "Item was not found."}]})
+        )
+
+        with self.assertRaises(PermanentMauticError):
+            client.delete_segment(20)
+
+    def test_delete_segment_reports_permission_denied(self):
+        client, _ = self.make_mautic_client(
+            response(403, {"errors": [{"message": "Access denied."}]})
+        )
+
+        with self.assertRaises(PermanentMauticError):
+            client.delete_segment(20)
+
+    def test_delete_segment_reports_a_provider_failure(self):
+        client, _ = self.make_mautic_client(response(503, {}))
+
+        with self.assertRaises(TemporaryMauticError):
+            client.delete_segment(20)
+
+    def test_reading_and_writing_a_segment_still_require_an_id(self):
+        """Only deletion drops that requirement."""
+        for method, args in (
+            ("get_segment", (20,)),
+            ("create_segment", ({"name": "x"},)),
+            ("update_segment", (20, {"name": "x"})),
+        ):
+            client, _ = self.make_mautic_client(response(200, {"list": {"id": None}}))
+            with self.assertRaises(TemporaryMauticError):
+                getattr(client, method)(*args)
+
     def test_list_segment_contacts_via_bridge_calls_plugin_endpoint(self):
         client, session = self.make_mautic_client(
             response(

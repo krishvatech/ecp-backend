@@ -34,6 +34,8 @@ from .admin_views import (
     NewsletterAdminCategorySyncMauticView,
     NewsletterAdminMauticSegmentListView,
     NewsletterAdminMauticSegmentDetailView,
+    NewsletterAdminMauticSegmentFilterChoicesView,
+    NewsletterAdminMauticSegmentFilterMetadataView,
     NewsletterAdminMauticSegmentContactDetailView,
     NewsletterAdminMauticSegmentContactsView,
     NewsletterAdminStageAnalyticsView,
@@ -471,6 +473,16 @@ urlpatterns = [
         "newsletter/admin/mautic/segments/",
         NewsletterAdminMauticSegmentListView.as_view(),
         name="newsletter-admin-mautic-segment-list",
+    ),
+    path(
+        "newsletter/admin/mautic/segments/filter-choices/",
+        NewsletterAdminMauticSegmentFilterChoicesView.as_view(),
+        name="newsletter-admin-mautic-segment-filter-choices",
+    ),
+    path(
+        "newsletter/admin/mautic/segments/filter-metadata/",
+        NewsletterAdminMauticSegmentFilterMetadataView.as_view(),
+        name="newsletter-admin-mautic-segment-filter-metadata",
     ),
     path(
         "newsletter/admin/mautic/segments/<str:segment_id>/",

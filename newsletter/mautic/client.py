@@ -1750,10 +1750,17 @@ class MauticClient:
             f"stages/{stage_id}/contact/{contact_id}/remove",
         )
     @staticmethod
-    def _segment_from_response(response, context: str) -> dict[str, Any]:
+    def _segment_from_response(
+        response,
+        context: str,
+        *,
+        require_id: bool = True,
+    ) -> dict[str, Any]:
         data = MauticClient._json_object(response, context)
-        segment = data.get("list") or data.get("segment")
-        if not isinstance(segment, dict) or not segment.get("id"):
+        # Key presence, not truthiness: a delete can legitimately answer with an
+        # empty entity, which an `or` chain would skip straight past.
+        segment = data["list"] if "list" in data else data.get("segment")
+        if not isinstance(segment, dict) or (require_id and not segment.get("id")):
             raise TemporaryMauticError(f"{context} returned an invalid response")
         return segment
 
@@ -1897,6 +1904,29 @@ class MauticClient:
         )
         return self._json_object(response, "Mautic campaign event deletion")
 
+    def get_segment_filter_metadata(self, search: str = "") -> dict[str, Any]:
+        """Read the metadata Mautic's own segment builder uses for a filter row.
+
+        Official REST publishes contact and company fields and accepts filters on
+        write, but nothing exposes which operators a field accepts, which value
+        control it needs, or the behavioural filters that are not contact fields at
+        all. That comes from ListModel::getChoiceFields() via the bridge.
+        """
+        params = {"search": search} if search else None
+        response = self._request(
+            "GET",
+            "ecp/segments/filter-metadata",
+            params=params,
+        )
+        data = self._json_object(response, "Mautic segment filter metadata")
+        if not isinstance(data.get("fields"), list) or not isinstance(
+            data.get("operators"), list
+        ):
+            raise TemporaryMauticError(
+                "Mautic segment filter metadata returned an invalid response"
+            )
+        return data
+
     def get_marketing_bridge_capabilities(self) -> dict[str, Any]:
         response = self._request("GET", "ecp/capabilities")
         data = self._json_object(response, "Mautic marketing bridge capabilities")
@@ -1983,8 +2013,25 @@ class MauticClient:
             )
         return data
 
+    @staticmethod
+    def _segment_form_data(payload: dict[str, Any]) -> list[tuple[str, Any]]:
+        """Encode a segment payload the way Symfony reads it.
+
+        A segment's filters are a list of objects, and plain form encoding flattens
+        those into unusable values — Mautic answers "filters: The collection is
+        invalid". The bracket encoding is the same one campaigns use.
+        """
+        if not isinstance(payload, dict) or not payload:
+            raise PermanentMauticError("Mautic segment payload is required")
+
+        return MauticClient._campaign_form_data(payload)
+
     def create_segment(self, payload: dict[str, Any]) -> dict[str, Any]:
-        response = self._request("POST", "segments/new", data=payload)
+        response = self._request(
+            "POST",
+            "segments/new",
+            data=self._segment_form_data(payload),
+        )
         return self._segment_from_response(response, "Mautic segment creation")
 
     def update_segment(
@@ -1996,7 +2043,11 @@ class MauticClient:
         if not segment_id:
             raise PermanentMauticError("Mautic segment ID is required")
 
-        response = self._request("PATCH", f"segments/{segment_id}/edit", data=payload)
+        response = self._request(
+            "PATCH",
+            f"segments/{segment_id}/edit",
+            data=self._segment_form_data(payload),
+        )
         return self._segment_from_response(response, "Mautic segment update")
 
     def delete_segment(self, segment_id: int | str) -> dict[str, Any]:
@@ -2004,8 +2055,15 @@ class MauticClient:
         if not segment_id:
             raise PermanentMauticError("Mautic segment ID is required")
 
+        # Mautic answers a delete with HTTP 200 and the serialized entity whose id
+        # Doctrine has already nulled, so an id is not part of the success
+        # contract here — as with every other entity's delete in this client.
         response = self._request("DELETE", f"segments/{segment_id}/delete")
-        return self._segment_from_response(response, "Mautic segment deletion")
+        return self._segment_from_response(
+            response,
+            "Mautic segment deletion",
+            require_id=False,
+        )
 
     def send_email_to_contact(
         self,
