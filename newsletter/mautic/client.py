@@ -18,6 +18,7 @@ from .exceptions import (
     PermanentMauticError,
     TemporaryMauticError,
 )
+from .operations import CAMPAIGN_CREATE, CAMPAIGN_UPDATE
 
 
 _TEMPORARY_STATUS_CODES = {408, 425, 429}
@@ -117,11 +118,15 @@ class MauticClient:
         self._raise_for_response(response, "Mautic API request failed")
         return response
 
-    def _bridge_request(self, method: str, path: str, **kwargs):
+    def _bridge_request(self, method: str, path: str, *, operation: str, **kwargs):
         """Call an ECP bridge endpoint with the service credentials plus a
-        single-use identity assertion naming the acting human user."""
+        single-use identity assertion naming the acting human user.
+
+        The assertion is bound to ``operation``, so the bridge accepts it only
+        on the route that performs it.
+        """
         headers = dict(kwargs.pop("headers", None) or {})
-        headers[ECP_IDENTITY_ASSERTION_HEADER] = self._assertion_provider()
+        headers[ECP_IDENTITY_ASSERTION_HEADER] = self._assertion_provider(operation)
         if self.correlation_id:
             headers[ECP_CORRELATION_HEADER] = str(self.correlation_id)
 
@@ -1675,7 +1680,12 @@ class MauticClient:
     def create_campaign(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = self._campaign_form_data(payload)
         if self._uses_asserted_user():
-            response = self._bridge_request("POST", "ecp/bridge/campaigns/new", data=data)
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/campaigns/new",
+                operation=CAMPAIGN_CREATE,
+                data=data,
+            )
         else:
             response = self._request("POST", "campaigns/new", data=data)
         return self._campaign_from_response(response, "Mautic campaign creation")
@@ -1693,6 +1703,7 @@ class MauticClient:
             response = self._bridge_request(
                 "PATCH",
                 f"ecp/bridge/campaigns/{campaign_id}/edit",
+                operation=CAMPAIGN_UPDATE,
                 data=data,
             )
         else:

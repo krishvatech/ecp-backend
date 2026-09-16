@@ -32,6 +32,7 @@ from newsletter.mautic.identity_assertion import (
     issue_identity_assertion,
     load_identity_assertion_settings,
 )
+from newsletter.mautic.operations import CAMPAIGN_CREATE, CAMPAIGN_UPDATE
 from newsletter.mautic_identity_services import (
     connect_mautic_user,
     disable_mautic_user_connection,
@@ -347,14 +348,16 @@ class MauticIdentityAssertionTests(_IdentityFixtures, TestCase):
     def test_assertion_contains_only_required_claims(self):
         self._active_connection(mautic_user_id=17)
 
-        issued = issue_identity_assertion(self.staff, now=self.NOW)
+        issued = issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE, now=self.NOW)
         claims = self._decode(issued.token)
         header = jwt.get_unverified_header(issued.token)
 
         self.assertEqual(
             set(claims),
-            {"iss", "aud", "sub", "mautic_user_id", "purpose", "iat", "exp", "jti"},
+            {"iss", "aud", "sub", "mautic_user_id", "purpose", "operation", "iat", "exp", "jti"},
         )
+        self.assertEqual(claims["operation"], CAMPAIGN_CREATE)
+        self.assertEqual(issued.operation, CAMPAIGN_CREATE)
         self.assertEqual(claims["iss"], "ecp")
         self.assertEqual(claims["aud"], "ecp-mautic")
         self.assertEqual(claims["sub"], str(self.staff.pk))
@@ -367,7 +370,7 @@ class MauticIdentityAssertionTests(_IdentityFixtures, TestCase):
     def test_assertion_ttl(self):
         self._active_connection()
 
-        issued = issue_identity_assertion(self.staff, now=self.NOW)
+        issued = issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE, now=self.NOW)
         claims = self._decode(issued.token)
 
         self.assertEqual(claims["iat"], int(self.NOW.timestamp()))
@@ -376,7 +379,7 @@ class MauticIdentityAssertionTests(_IdentityFixtures, TestCase):
 
     def test_expired_assertion_fails_standard_verification(self):
         self._active_connection()
-        issued = issue_identity_assertion(self.staff, now=self.NOW)
+        issued = issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE, now=self.NOW)
 
         with self.assertRaises(jwt.ExpiredSignatureError):
             jwt.decode(issued.token, PUBLIC_KEY, algorithms=["RS256"], audience="ecp-mautic")
@@ -386,46 +389,67 @@ class MauticIdentityAssertionTests(_IdentityFixtures, TestCase):
         for ttl in ("0", "9", "121", "3600", "abc"):
             with self.subTest(ttl=ttl), override_settings(ECP_MAUTIC_IDENTITY_TTL_SECONDS=ttl):
                 with self.assertRaises(MauticIdentityConfigurationError):
-                    issue_identity_assertion(self.staff)
+                    issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE)
 
     def test_each_assertion_has_unique_jti(self):
         self._active_connection()
 
-        jtis = {issue_identity_assertion(self.staff, now=self.NOW).jti for _ in range(25)}
+        jtis = {issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE, now=self.NOW).jti for _ in range(25)}
 
         self.assertEqual(len(jtis), 25)
         self.assertTrue(all(len(jti) >= 32 for jti in jtis))
 
+    def test_each_operation_is_signed_into_its_own_assertion(self):
+        self._active_connection()
+
+        for operation in (CAMPAIGN_CREATE, CAMPAIGN_UPDATE):
+            with self.subTest(operation=operation):
+                issued = issue_identity_assertion(self.staff, operation=operation, now=self.NOW)
+                self.assertEqual(self._decode(issued.token)["operation"], operation)
+
+    def test_operation_is_required(self):
+        self._active_connection()
+
+        with self.assertRaises(TypeError):
+            issue_identity_assertion(self.staff)
+
+    def test_unknown_operation_is_refused_before_signing(self):
+        self._active_connection()
+
+        for operation in ("", "campaign.delete", "CAMPAIGN.CREATE", "campaign.create ", None, 1):
+            with self.subTest(operation=operation), self.assertRaises(MauticIdentityAssertionError):
+                issue_identity_assertion(self.staff, operation=operation)
+
     def test_missing_mapping_is_rejected(self):
         with self.assertRaises(MauticUserConnectionMissingError):
-            issue_identity_assertion(self.staff)
+            issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE)
 
     def test_inactive_mapping_is_rejected(self):
         connect_mautic_user(self.staff, mautic_user_id=17)
         disable_mautic_user_connection(self.staff)
 
         with self.assertRaises(MauticUserConnectionInactiveError):
-            issue_identity_assertion(self.staff)
+            issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE)
 
     def test_non_staff_actor_is_rejected(self):
         self._active_connection(user=self.normal_user)
 
         with self.assertRaises(MauticActorRequiredError):
-            issue_identity_assertion(self.normal_user)
+            issue_identity_assertion(self.normal_user, operation=CAMPAIGN_CREATE)
 
     def test_background_and_system_purposes_cannot_mint_human_assertions(self):
         self._active_connection()
 
         for purpose in ("system", "background", "readonly", "anything"):
             with self.subTest(purpose=purpose), self.assertRaises(MauticIdentityAssertionError):
-                issue_identity_assertion(self.staff, purpose=purpose)
+                issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE, purpose=purpose)
 
     def test_escaped_newline_pem_is_accepted(self):
         self._active_connection()
         escaped = SIGNING_KEY_PEM.replace("\n", "\\n")
 
         with override_settings(ECP_MAUTIC_IDENTITY_PRIVATE_KEY=escaped):
-            issued = issue_identity_assertion(self.staff, now=self.NOW)
+            issued = issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE, now=self.NOW)
 
         self._decode(issued.token)
 
@@ -445,7 +469,7 @@ class MauticIdentityAssertionTests(_IdentityFixtures, TestCase):
         for name, overrides in cases.items():
             with self.subTest(name), override_settings(**overrides):
                 with self.assertRaises(MauticIdentityConfigurationError) as ctx:
-                    issue_identity_assertion(self.staff)
+                    issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE)
                 self.assertIsNone(ctx.exception.__cause__)
                 self.assertNotIn("PRIVATE KEY", str(ctx.exception))
 
@@ -454,7 +478,7 @@ class MauticIdentityAssertionTests(_IdentityFixtures, TestCase):
         root = logging.getLogger()
         with self.assertLogs(root, level="DEBUG") as captured:
             logging.getLogger("newsletter").debug("capture start")
-            issued = issue_identity_assertion(self.staff, now=self.NOW)
+            issued = issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE, now=self.NOW)
 
         output = "\n".join(captured.output)
         self.assertIn(issued.jti, output)

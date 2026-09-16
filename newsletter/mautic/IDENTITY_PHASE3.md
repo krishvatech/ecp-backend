@@ -67,6 +67,35 @@ Cognito user → ECP request.user → IsStaffOrSuperuser
   → service token restored in a finally block
 ```
 
+## Operation binding
+
+Each assertion names the single operation it authorises, and each bridge route
+accepts only its own:
+
+```
+claims: {iss, aud, sub, mautic_user_id, purpose: "interactive",
+         operation: "campaign.create" | "campaign.update", iat, exp, jti}
+```
+
+Without this, an assertion minted for one route could be presented to another
+inside its validity window — for example turning a create into an edit of an
+arbitrary campaign the user may edit.
+
+* **ECP** refuses to sign for an operation outside `ASSERTABLE_OPERATIONS`
+  (`newsletter/mautic/operations.py`); `operation` has no default.
+* **Mautic** compares the claim with the route's operation using
+  `hash_equals`. A mismatch is a 401, checked *before* the jti is consumed, so
+  a mis-routed assertion is not burned.
+* The operation strings are a contract: `operations.py` and the
+  `OPERATION_*` constants on `EcpBridgeCampaignApiController` must match.
+
+Adding an operation means adding it on both sides, together with its route.
+
+**Deploy order.** Mautic now rejects assertions without an `operation` claim,
+and older ECP builds do not send one. Deploy the Mautic plugin and ECP
+together, or keep `ECP_MAUTIC_PER_USER_EXECUTION_ENABLED` off until both are
+updated. With the flag off no assertions are sent, so there is no impact.
+
 ## Permissions
 
 Three layers, all required:
@@ -141,7 +170,7 @@ key itself.
 | 409 `mautic_user_not_connected` | No active mapping | Create one via `POST …/connections/` |
 | 409 `mautic_user_connection_inactive` | Mapping disabled | `POST …/connections/{id}/activate/` |
 | 503 `mautic_identity_not_configured` | ECP private key / key id missing | Set `ECP_MAUTIC_IDENTITY_*` |
-| 401 from the bridge | Bad, expired or replayed assertion; clock skew | Check `clockSkewSeconds`, and that both sides share `kid`, issuer and audience |
+| 401 from the bridge | Bad, expired or replayed assertion; clock skew; operation mismatch | Check `clockSkewSeconds`, that both sides share `kid`, issuer and audience, and that ECP and the plugin are on matching builds (operation binding) |
 | 403 `mautic_permission_denied` | Mapped Mautic user lacks the campaign permission | Adjust that user's Mautic role |
 | 503 at the bridge, `replayStorage.available=false` | Replay table missing | Install/reload the plugin schema so `ecp_identity_assertion_uses` exists |
 | Attribution shows the service account | Flag off, or the request used a non-migrated path | Only campaign create/update are migrated |

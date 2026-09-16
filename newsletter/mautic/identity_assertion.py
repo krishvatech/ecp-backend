@@ -28,6 +28,7 @@ from django.utils import timezone
 
 from .exceptions import MauticIdentityAssertionError, MauticIdentityConfigurationError
 from .identity import MauticExecutionContext, get_active_mautic_user_connection
+from .operations import ASSERTABLE_OPERATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class IssuedIdentityAssertion:
     jti: str
     key_id: str
     subject: str
+    operation: str
     mautic_user_id: int
     issued_at: datetime
     expires_at: datetime
@@ -131,15 +133,23 @@ def is_identity_assertion_configured() -> bool:
 def issue_identity_assertion(
     actor,
     *,
+    operation: str,
     purpose=MauticExecutionContext.INTERACTIVE,
     now: datetime | None = None,
 ) -> IssuedIdentityAssertion:
     """Sign an identity assertion for a mapped, active Marketing Hub user.
 
+    ``operation`` names the single Mautic operation the assertion authorises and
+    has no default: an assertion that is not bound to one operation could be
+    presented to any bridge route within its validity window.
+
     Raises ``MauticActorRequiredError``, ``MauticUserConnectionMissingError``,
     ``MauticUserConnectionInactiveError``, ``MauticIdentityAssertionError`` or
     ``MauticIdentityConfigurationError``.
     """
+    if operation not in ASSERTABLE_OPERATIONS:
+        # Refused at signing time, so an unbound assertion never exists.
+        raise MauticIdentityAssertionError("Unknown Mautic identity assertion operation")
     try:
         context = MauticExecutionContext(purpose)
     except ValueError:
@@ -165,6 +175,7 @@ def issue_identity_assertion(
         "sub": subject,
         "mautic_user_id": int(connection.mautic_user_id),
         "purpose": context.value,
+        "operation": operation,
         "iat": iat,
         "exp": exp,
         "jti": jti,
@@ -177,10 +188,12 @@ def issue_identity_assertion(
     )
 
     logger.info(
-        "Issued ECP Mautic identity assertion jti=%s ecp_user_id=%s mautic_user_id=%s kid=%s exp=%s",
+        "Issued ECP Mautic identity assertion jti=%s ecp_user_id=%s mautic_user_id=%s "
+        "operation=%s kid=%s exp=%s",
         jti,
         subject,
         connection.mautic_user_id,
+        operation,
         config.key_id,
         exp,
     )
@@ -189,6 +202,7 @@ def issue_identity_assertion(
         jti=jti,
         key_id=config.key_id,
         subject=subject,
+        operation=operation,
         mautic_user_id=int(connection.mautic_user_id),
         issued_at=issued_at,
         expires_at=datetime.fromtimestamp(exp, tz=dt_timezone.utc),

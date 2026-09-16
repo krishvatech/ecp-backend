@@ -242,6 +242,7 @@ class AssertedUserClientTests(_IdentityFixtures, TestCase):
         self.assertEqual(claims["sub"], str(self.staff.pk))
         self.assertEqual(claims["mautic_user_id"], 17)
         self.assertEqual(claims["purpose"], "interactive")
+        self.assertEqual(claims["operation"], "campaign.create")
 
     @override_settings(**PER_USER_ON)
     def test_client_exposes_the_jti_of_the_assertion_it_just_sent(self):
@@ -289,7 +290,9 @@ class AssertedUserClientTests(_IdentityFixtures, TestCase):
         call = session.last
         self.assertEqual(call["method"], "PATCH")
         self.assertTrue(call["url"].endswith("/api/ecp/bridge/campaigns/9/edit"))
-        self.assertIn(ECP_IDENTITY_ASSERTION_HEADER, call["headers"])
+        claims = self._decode(call["headers"][ECP_IDENTITY_ASSERTION_HEADER])
+        # Bound to update, so it cannot be replayed against the create route.
+        self.assertEqual(claims["operation"], "campaign.update")
 
     @override_settings(**PER_USER_ON)
     def test_each_bridge_call_mints_a_fresh_single_use_assertion(self):
