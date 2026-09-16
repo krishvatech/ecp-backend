@@ -110,6 +110,7 @@ def record_identity_failure(
     resource_id="",
     auth_mode: str = "",
     correlation_id: str = "",
+    assertion_jti: str = "",
 ) -> MauticIdentityAuditLog | None:
     """Audit a failure, classifying it with the shared error mapping."""
     http_status, code, _ = classify_identity_error(exc)
@@ -127,6 +128,7 @@ def record_identity_failure(
         resource_id=resource_id,
         auth_mode=auth_mode,
         correlation_id=correlation_id,
+        assertion_jti=assertion_jti,
         error_code=code,
         # The exception type only: provider text may echo request content.
         detail=type(exc).__name__,

@@ -60,6 +60,13 @@ MAUTIC_SETTINGS = {
     "MAUTIC_USERNAME": "api-user",
     "MAUTIC_PASSWORD": "super-secret",
     "MAUTIC_REQUEST_TIMEOUT": 3,
+    # Pinned so these suites assert "dormant, unsigned" behaviour
+    # deterministically, whatever the developer's own environment configures.
+    # IDENTITY_SETTINGS and PER_USER_ON override these where signing and
+    # per-user execution are the subject under test.
+    "ECP_MAUTIC_PER_USER_EXECUTION_ENABLED": False,
+    "ECP_MAUTIC_IDENTITY_PRIVATE_KEY": "",
+    "ECP_MAUTIC_IDENTITY_KEY_ID": "",
 }
 IDENTITY_SETTINGS = {
     **MAUTIC_SETTINGS,
@@ -470,6 +477,7 @@ class NewsletterAdminMauticIdentityStatusAPITests(_IdentityFixtures, TestCase):
         "auth_mode",
         "per_user_execution_enabled",
         "identity_signing_configured",
+        "interactive_blocked_code",
     }
 
     def setUp(self):

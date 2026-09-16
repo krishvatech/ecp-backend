@@ -207,6 +207,27 @@ def resolve_mautic_execution_identity(
     )
 
 
+class _AssertionMinter:
+    """Mints a fresh single-use assertion per bridge request.
+
+    Callable returning the token, so the client's provider contract is a plain
+    ``() -> str``. The jti of the most recent one is kept so the caller can
+    record which assertion authorised an operation; it is an identifier, not a
+    credential, and the token itself is never retained.
+    """
+
+    def __init__(self, actor):
+        self._actor = actor
+        self.last_jti = ""
+
+    def __call__(self) -> str:
+        from .identity_assertion import issue_identity_assertion
+
+        assertion = issue_identity_assertion(self._actor)
+        self.last_jti = assertion.jti
+        return assertion.token
+
+
 def get_mautic_client(
     actor=None,
     purpose=MauticExecutionContext.SYSTEM,
@@ -229,12 +250,7 @@ def get_mautic_client(
 
     assertion_provider = None
     if identity.auth_mode is MauticAuthMode.ASSERTED_USER:
-        from .identity_assertion import issue_identity_assertion
-
-        # A fresh single-use assertion is minted per bridge request; the client
-        # never holds a reusable token.
-        def assertion_provider() -> str:  # noqa: F811
-            return issue_identity_assertion(actor).token
+        assertion_provider = _AssertionMinter(actor)
 
     factory = client_factory or MauticClient
 

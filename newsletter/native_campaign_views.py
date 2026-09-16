@@ -14,6 +14,7 @@ from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.exceptions import MauticBridgeRejectedError, MauticIdentityError
 from .mautic.identity import MauticExecutionContext, get_mautic_client
 from .mautic_identity_audit import (
+    CORRELATION_HEADER,
     correlation_id_for_request,
     record_identity_audit,
     record_identity_failure,
@@ -1144,6 +1145,26 @@ def _auth_mode_label(client):
     return value if isinstance(value, str) else ""
 
 
+def _assertion_jti(client):
+    """Identifier of the assertion that authorised the call, for the audit row.
+
+    Defensive like ``_asserted_user_id``: a stubbed client simply has none.
+    """
+    value = getattr(client, "last_assertion_jti", "")
+    return value if isinstance(value, str) else ""
+
+
+def _with_correlation(response, correlation_id):
+    """Expose the correlation id to the caller so an action can be traced.
+
+    Mautic already logs and echoes the same id, so one Marketing Hub action is
+    traceable from the browser through both systems.
+    """
+    if correlation_id:
+        response[CORRELATION_HEADER] = str(correlation_id)
+    return response
+
+
 def _provider_error_response(exc):
     message = str(exc)
     if isinstance(exc, PermanentMauticError):
@@ -1233,7 +1254,7 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
                 resource="campaign",
                 correlation_id=correlation_id,
             )
-            return identity_error_response(exc)
+            return _with_correlation(identity_error_response(exc), correlation_id)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -1259,8 +1280,9 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
                 resource="campaign",
                 auth_mode=_auth_mode_label(client),
                 correlation_id=correlation_id,
+                assertion_jti=_assertion_jti(client),
             )
-            return identity_error_response(exc)
+            return _with_correlation(identity_error_response(exc), correlation_id)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -1273,10 +1295,14 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
             resource_id=campaign.get("id"),
             auth_mode=_auth_mode_label(client),
             correlation_id=correlation_id,
+            assertion_jti=_assertion_jti(client),
         )
-        return Response(
-            _normalize_campaign(campaign),
-            status=status.HTTP_201_CREATED,
+        return _with_correlation(
+            Response(
+                _normalize_campaign(campaign),
+                status=status.HTTP_201_CREATED,
+            ),
+            correlation_id,
         )
 
 
@@ -1474,7 +1500,7 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
                 resource_id=campaign_id,
                 correlation_id=correlation_id,
             )
-            return identity_error_response(exc)
+            return _with_correlation(identity_error_response(exc), correlation_id)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -1505,8 +1531,9 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
                 resource_id=campaign_id,
                 auth_mode=_auth_mode_label(client),
                 correlation_id=correlation_id,
+                assertion_jti=_assertion_jti(client),
             )
-            return identity_error_response(exc)
+            return _with_correlation(identity_error_response(exc), correlation_id)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -1519,10 +1546,14 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
             resource_id=campaign_id,
             auth_mode=_auth_mode_label(client),
             correlation_id=correlation_id,
+            assertion_jti=_assertion_jti(client),
         )
-        return Response(
-            _normalize_campaign(campaign),
-            status=status.HTTP_200_OK,
+        return _with_correlation(
+            Response(
+                _normalize_campaign(campaign),
+                status=status.HTTP_200_OK,
+            ),
+            correlation_id,
         )
 
     def delete(self, request, campaign_id):

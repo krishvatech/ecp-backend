@@ -574,3 +574,68 @@ class ConnectionServiceTests(_IdentityFixtures, TestCase):
 
         with self.assertRaises(MauticUserConnectionMissingError):
             activate_mautic_user_connection(connection)
+
+
+class IdentityStatusTruthfulnessTests(_IdentityFixtures, TestCase):
+    """The status endpoint must describe the live decision, not Phase 1 defaults."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.staff)
+        self.url = reverse("newsletter-admin-mautic-identity-status")
+
+    @override_settings(**PER_USER_OFF)
+    def test_flag_off_reports_the_service_account(self):
+        self._active_connection(mautic_user_id=17)
+
+        data = self.client.get(self.url).data
+
+        self.assertFalse(data["per_user_execution_enabled"])
+        self.assertEqual(data["auth_mode"], "service_account")
+        self.assertEqual(data["interactive_blocked_code"], "")
+
+    @override_settings(**PER_USER_ON)
+    def test_flag_on_with_a_mapping_reports_asserted_user(self):
+        self._active_connection(mautic_user_id=17)
+
+        data = self.client.get(self.url).data
+
+        self.assertTrue(data["per_user_execution_enabled"])
+        self.assertEqual(data["auth_mode"], "asserted_user")
+        self.assertEqual(data["interactive_blocked_code"], "")
+
+    @override_settings(**PER_USER_ON)
+    def test_flag_on_without_a_mapping_reports_the_blocking_reason(self):
+        data = self.client.get(self.url).data
+
+        self.assertTrue(data["per_user_execution_enabled"])
+        # Fail closed: there is no auth mode this user could act under.
+        self.assertIsNone(data["auth_mode"])
+        self.assertEqual(data["interactive_blocked_code"], "mautic_user_not_connected")
+
+    @override_settings(**PER_USER_ON)
+    def test_flag_on_with_a_disabled_mapping_is_distinguishable(self):
+        connection = self._active_connection(mautic_user_id=17)
+        deactivate_mautic_user_connection(connection, reason="revoked")
+
+        data = self.client.get(self.url).data
+
+        self.assertIsNone(data["auth_mode"])
+        self.assertEqual(
+            data["interactive_blocked_code"],
+            "mautic_user_connection_inactive",
+        )
+
+    @override_settings(**{**PER_USER_ON, "ECP_MAUTIC_IDENTITY_PRIVATE_KEY": ""})
+    def test_flag_on_without_signing_reports_a_configuration_problem(self):
+        self._active_connection(mautic_user_id=17)
+
+        data = self.client.get(self.url).data
+
+        self.assertFalse(data["identity_signing_configured"])
+        self.assertIsNone(data["auth_mode"])
+        self.assertEqual(
+            data["interactive_blocked_code"],
+            "mautic_identity_not_configured",
+        )

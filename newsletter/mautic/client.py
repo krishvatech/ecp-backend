@@ -138,6 +138,15 @@ class MauticClient:
     def _uses_asserted_user(self) -> bool:
         return self._assertion_provider is not None
 
+    @property
+    def last_assertion_jti(self) -> str:
+        """Identifier of the most recent assertion this client sent, if any.
+
+        Empty unless the provider tracks it, so a stubbed provider stays a
+        plain ``() -> str`` callable.
+        """
+        return str(getattr(self._assertion_provider, "last_jti", "") or "")
+
     @staticmethod
     def _json_object(response, context: str) -> dict[str, Any]:
         try:

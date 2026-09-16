@@ -11,7 +11,12 @@ from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from .mautic.exceptions import MauticIdentityError, MauticUserConnectionMissingError
-from .mautic.identity import MauticAuthMode, actor_has_marketing_hub_access
+from .mautic.identity import (
+    MauticExecutionContext,
+    actor_has_marketing_hub_access,
+    per_user_execution_enabled,
+    resolve_mautic_execution_identity,
+)
 from .mautic.identity_assertion import is_identity_assertion_configured
 from .models import MauticUserConnection
 
@@ -209,17 +214,39 @@ def get_mautic_identity_connection_status(user) -> dict:
         .first()
     )
     connected = bool(connection and connection.is_usable)
+    auth_mode, blocked_code = _interactive_auth_mode_for(user)
     return {
         "connected": connected,
         "status": connection.status if connection else "not_connected",
         "mautic_user_id": connection.mautic_user_id if connected else None,
         "mautic_username": (connection.mautic_username or None) if connected else None,
         "last_verified_at": connection.last_verified_at if connection else None,
-        # Phase 1: all Mautic calls still run as the configured service account.
-        "auth_mode": MauticAuthMode.SERVICE_ACCOUNT.value,
-        "per_user_execution_enabled": False,
+        "auth_mode": auth_mode,
+        "per_user_execution_enabled": per_user_execution_enabled(),
         "identity_signing_configured": is_identity_assertion_configured(),
+        "interactive_blocked_code": blocked_code,
     }
+
+
+def _interactive_auth_mode_for(user) -> tuple[str | None, str]:
+    """How an interactive Mautic action by ``user`` would actually authenticate.
+
+    Delegated to the resolver rather than recomputed here, so this status can
+    never drift from the real decision. When per-user execution is on but a
+    precondition is missing the resolver fails closed, and that is reported as
+    ``auth_mode: None`` plus the same code the endpoints return.
+    """
+    # Imported here: mautic_identity_errors imports the exception types this
+    # module also raises, and a module-level import would be circular.
+    from .mautic_identity_errors import classify_identity_error
+
+    try:
+        identity = resolve_mautic_execution_identity(
+            user, MauticExecutionContext.INTERACTIVE
+        )
+    except MauticIdentityError as exc:
+        return None, classify_identity_error(exc)[1]
+    return identity.auth_mode.value, ""
 
 
 def get_mautic_user_connection_or_raise(connection_id) -> MauticUserConnection:

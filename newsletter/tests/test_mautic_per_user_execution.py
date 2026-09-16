@@ -26,7 +26,8 @@ from newsletter.mautic.identity import (
     per_user_execution_enabled,
     resolve_mautic_execution_identity,
 )
-from newsletter.models import MauticUserConnection
+from newsletter.mautic_identity_audit import CORRELATION_HEADER
+from newsletter.models import MauticIdentityAuditLog, MauticUserConnection
 from newsletter.tests.test_mautic_user_identity import (
     IDENTITY_SETTINGS,
     MAUTIC_SETTINGS,
@@ -241,6 +242,37 @@ class AssertedUserClientTests(_IdentityFixtures, TestCase):
         self.assertEqual(claims["sub"], str(self.staff.pk))
         self.assertEqual(claims["mautic_user_id"], 17)
         self.assertEqual(claims["purpose"], "interactive")
+
+    @override_settings(**PER_USER_ON)
+    def test_client_exposes_the_jti_of_the_assertion_it_just_sent(self):
+        self._active_connection(mautic_user_id=17)
+        session = _SessionRecorder()
+
+        client = get_mautic_client(
+            actor=self.staff,
+            purpose=MauticExecutionContext.INTERACTIVE,
+            session=session,
+        )
+        self.assertEqual(client.last_assertion_jti, "")
+
+        client.create_campaign({"name": "Launch"})
+        first = client.last_assertion_jti
+        sent = self._decode(session.last["headers"][ECP_IDENTITY_ASSERTION_HEADER])
+        self.assertEqual(first, sent["jti"])
+
+        # Each bridge call mints its own assertion, so the tracked id moves on.
+        client.create_campaign({"name": "Second"})
+        self.assertNotEqual(client.last_assertion_jti, first)
+
+    @override_settings(**PER_USER_OFF)
+    def test_service_account_client_exposes_no_assertion_id(self):
+        client = get_mautic_client(
+            actor=self.staff,
+            purpose=MauticExecutionContext.INTERACTIVE,
+            session=_SessionRecorder(),
+        )
+
+        self.assertEqual(client.last_assertion_jti, "")
 
     @override_settings(**PER_USER_ON)
     def test_campaign_update_uses_bridge_edit_path(self):
@@ -472,6 +504,71 @@ class InteractiveCampaignApiTests(_IdentityFixtures, TestCase):
         response = self.client.post(self.create_url, self.CREATE_PAYLOAD, format="json")
 
         self.assertEqual(response.status_code, 403)
+
+    def test_successful_response_echoes_the_inbound_correlation_id(self):
+        self._active_connection(mautic_user_id=17)
+
+        with patch("newsletter.native_campaign_views.get_mautic_client") as factory:
+            factory.return_value.get_campaign_builder_capabilities.return_value = (
+                self.BUILDER_CAPABILITIES
+            )
+            factory.return_value.create_campaign.return_value = {"id": 5, "name": "Launch"}
+
+            response = self.client.post(
+                self.create_url,
+                self.CREATE_PAYLOAD,
+                format="json",
+                headers={CORRELATION_HEADER: "trace-123"},
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response[CORRELATION_HEADER], "trace-123")
+
+    def test_identity_failure_response_also_carries_the_correlation_id(self):
+        # Fail closed with no mapping, so the caller can still correlate the
+        # refusal with the Mautic-side logs.
+        with patch("newsletter.native_campaign_views.get_mautic_client") as factory:
+            factory.side_effect = MauticUserConnectionMissingError("not connected")
+
+            response = self.client.post(
+                self.create_url,
+                self.CREATE_PAYLOAD,
+                format="json",
+                headers={CORRELATION_HEADER: "trace-456"},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response[CORRELATION_HEADER], "trace-456")
+
+    def test_audit_row_records_which_assertion_authorised_the_call(self):
+        self._active_connection(mautic_user_id=17)
+
+        with patch("newsletter.native_campaign_views.get_mautic_client") as factory:
+            client = factory.return_value
+            client.get_campaign_builder_capabilities.return_value = self.BUILDER_CAPABILITIES
+            client.create_campaign.return_value = {"id": 5, "name": "Launch"}
+            client.last_assertion_jti = "jti-abc123"
+
+            response = self.client.post(self.create_url, self.CREATE_PAYLOAD, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        entry = MauticIdentityAuditLog.objects.latest("id")
+        self.assertEqual(entry.assertion_jti, "jti-abc123")
+
+    def test_audit_row_omits_a_jti_when_no_assertion_was_minted(self):
+        self._active_connection(mautic_user_id=17)
+
+        with patch("newsletter.native_campaign_views.get_mautic_client") as factory:
+            client = factory.return_value
+            client.get_campaign_builder_capabilities.return_value = self.BUILDER_CAPABILITIES
+            client.create_campaign.return_value = {"id": 5, "name": "Launch"}
+            # A client with no assertion tracking must not leak a Mock repr.
+            del client.last_assertion_jti
+
+            response = self.client.post(self.create_url, self.CREATE_PAYLOAD, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(MauticIdentityAuditLog.objects.latest("id").assertion_jti, "")
 
 
 @override_settings(**PER_USER_ON)

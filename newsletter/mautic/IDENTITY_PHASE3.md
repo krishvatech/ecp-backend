@@ -34,7 +34,7 @@ metadata only.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `…/mautic-identity/status/` | Connection state of the calling user |
+| GET | `…/mautic-identity/status/` | Connection state of the calling user, and how their next interactive action would authenticate |
 | GET | `…/mautic-identity/connections/` | List all mappings (`is_active`, `ecp_user_id`, paging) |
 | POST | `…/mautic-identity/connections/` | Create or refresh a mapping |
 | GET | `…/mautic-identity/connections/{id}/` | One mapping |
@@ -43,6 +43,12 @@ metadata only.
 | GET | `…/mautic-identity/audit/` | Query the audit trail |
 
 Prefix: `/api/newsletter/admin/settings/`.
+
+`status/` derives `auth_mode` from the same resolver the campaign endpoints
+use, so it can never drift from the real decision. When per-user execution is
+on but a precondition is missing, the resolver fails closed and the status
+says so: `auth_mode: null` plus `interactive_blocked_code` carrying the same
+code the endpoints would return.
 
 ## Execution flow
 
@@ -103,10 +109,16 @@ Never recorded: assertions, signatures, keys, passwords, Cognito tokens. The
 
 Auditing never breaks an operation: a write failure is logged and swallowed.
 
-The same `correlation_id` is sent to Mautic, logged on both sides, and echoed
-back in the `X-ECP-Correlation-Id` response header, so one Marketing Hub action
-can be traced end to end. Inbound values are untrusted: they are stripped to
-`[A-Za-z0-9_-]` and capped at 64 characters.
+`assertion_jti` names the single-use assertion that authorised the call, so an
+audit row can be matched to one row in the Mautic-side replay table. It is an
+identifier, never the assertion itself.
+
+The same `correlation_id` is sent to Mautic, logged on both sides, and returned
+in the `X-ECP-Correlation-Id` response header by both the Mautic bridge and the
+ECP campaign endpoints — on refusals as well as successes — so one Marketing
+Hub action can be traced from the browser through both systems. Inbound values
+are untrusted: they are stripped to `[A-Za-z0-9_-]` and capped at 64
+characters.
 
 ## Diagnostics
 
@@ -142,6 +154,30 @@ Trace any single action with
 One migration: `newsletter/migrations/0009_mauticidentityauditlog.py`
 (`CreateModel` only — no existing table is touched). Migrations are gitignored
 in this development repository, so it is generated locally and not committed.
+
+## Enabling it in a development environment
+
+Order matters: the flag is the last step, because it fails closed.
+
+1. **Key pair** — generate RSA 2048+ outside the repo. The private half goes to
+   ECP as `ECP_MAUTIC_IDENTITY_PRIVATE_KEY` (PEM, literal `\n` accepted); the
+   public half goes to Mautic as the `ecp_identity_public_key` parameter. Both
+   sides must agree on `kid`, issuer and audience. No key material is
+   committed, and the two halves are never in the same place.
+2. **Replay table** — install the plugin schema so
+   `ecp_identity_assertion_uses` exists. Until it does, the bridge refuses
+   every assertion rather than accepting one it cannot mark as used.
+3. **Verify Mautic first** — `GET /api/ecp/capabilities` must report
+   `identity.ready: true` and `replayStorage.available: true`.
+4. **Mappings** — connect each Marketing Hub user to their Mautic user id via
+   `POST …/connections/`. Users with no mapping will be refused once the flag
+   is on, so map before enabling.
+5. **Flag** — set `ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=true`. Confirm with
+   `GET …/mautic-identity/status/`: `auth_mode` should read `asserted_user`.
+
+Worth knowing: the flag and the signing settings are read from the
+environment, so test suites that assert dormant behaviour pin them explicitly
+rather than inheriting a developer's local values.
 
 ## Not in Phase 3
 
