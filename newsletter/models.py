@@ -426,6 +426,70 @@ class MauticUserConnection(models.Model):
         return f"user:{self.user_id} -> mautic-user:{self.mautic_user_id} [{self.status}]"
 
 
+class MauticIdentityAuditLog(models.Model):
+    """Append-only record of user-attributed Mautic operations.
+
+    Written for every asserted-user attempt, successful or not, so an operator
+    can answer "who did this in Mautic, and on whose behalf". Rows are never
+    updated or deleted by application code, and hold no credential material:
+    the assertion, its signature and the service password are never stored.
+    """
+
+    class Action(models.TextChoices):
+        CAMPAIGN_CREATE = "campaign.create", "Campaign create"
+        CAMPAIGN_UPDATE = "campaign.update", "Campaign update"
+        CONNECTION_CREATE = "connection.create", "Mautic user connection created"
+        CONNECTION_ACTIVATE = "connection.activate", "Mautic user connection activated"
+        CONNECTION_DEACTIVATE = "connection.deactivate", "Mautic user connection deactivated"
+
+    class Status(models.TextChoices):
+        SUCCEEDED = "succeeded", "Succeeded"
+        FAILED = "failed", "Failed"
+        DENIED = "denied", "Denied"
+
+    ecp_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="mautic_identity_audit_logs",
+    )
+    # Kept as plain text so the row survives user deletion.
+    ecp_user_label = models.CharField(max_length=191, blank=True, default="")
+    mautic_user_id = models.PositiveIntegerField(null=True, blank=True)
+    action = models.CharField(max_length=32, choices=Action.choices, db_index=True)
+    resource = models.CharField(max_length=64, blank=True, default="")
+    resource_id = models.CharField(max_length=64, blank=True, default="")
+    status = models.CharField(max_length=16, choices=Status.choices, db_index=True)
+    auth_mode = models.CharField(max_length=32, blank=True, default="")
+    correlation_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    # Assertion identifier only; never the assertion itself.
+    assertion_jti = models.CharField(max_length=128, blank=True, default="")
+    error_code = models.CharField(max_length=64, blank=True, default="")
+    detail = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(
+                fields=["ecp_user", "-created_at"],
+                name="newsletter_audit_user_idx",
+            ),
+            models.Index(
+                fields=["mautic_user_id", "-created_at"],
+                name="newsletter_audit_mautic_idx",
+            ),
+            models.Index(
+                fields=["action", "status", "-created_at"],
+                name="newsletter_audit_action_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.action} by ecp:{self.ecp_user_id} as mautic:{self.mautic_user_id} [{self.status}]"
+
+
 class NewsletterSyncEvent(models.Model):
     """Durable desired-state event for ECP -> Mautic synchronization.
 

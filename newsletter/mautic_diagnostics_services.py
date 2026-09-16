@@ -10,7 +10,13 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
-from .models import NewsletterCampaignTrackingEvent, NewsletterSyncEvent
+from .mautic.identity import per_user_execution_enabled
+from .mautic.identity_assertion import is_identity_assertion_configured
+from .models import (
+    MauticUserConnection,
+    NewsletterCampaignTrackingEvent,
+    NewsletterSyncEvent,
+)
 from .webhooks import EVENT_TYPE_MAP
 
 
@@ -23,7 +29,9 @@ def get_mautic_diagnostics(request=None) -> dict:
     webhook = _webhook_status(request)
     sync = _sync_status()
     background = _background_processing_status()
+    identity = _identity_status(request, marketing_bridge)
     warnings = _warnings(config, rest, marketing_bridge, campaign_bridge, webhook, sync)
+    warnings.extend(identity["warnings"])
 
     return {
         "checked_at": checked_at,
@@ -44,10 +52,61 @@ def get_mautic_diagnostics(request=None) -> dict:
         "webhook": webhook,
         "sync": sync,
         "background_processing": background,
+        "identity": identity,
         "diagnostics": {
             "status": "Healthy" if not warnings else "Degraded",
             "warnings": warnings,
         },
+    }
+
+
+def _identity_status(request=None, marketing_bridge: dict | None = None) -> dict:
+    """Per-user execution readiness. Booleans and counts only, never key material."""
+    signing_configured = is_identity_assertion_configured()
+    per_user_enabled = per_user_execution_enabled()
+
+    active_connections = MauticUserConnection.objects.filter(
+        is_active=True,
+        status=MauticUserConnection.Status.ACTIVE,
+    ).count()
+
+    actor = getattr(request, "user", None) if request is not None else None
+    actor_connected = False
+    if actor is not None and getattr(actor, "is_authenticated", False):
+        actor_connected = MauticUserConnection.objects.filter(
+            user_id=actor.pk,
+            is_active=True,
+            status=MauticUserConnection.Status.ACTIVE,
+        ).exists()
+
+    # Reported by the Mautic plugin's capabilities endpoint when reachable.
+    remote = {}
+    if isinstance(marketing_bridge, dict):
+        remote = marketing_bridge.get("identity") or {}
+
+    warnings = []
+    if per_user_enabled and not signing_configured:
+        warnings.append(
+            "Per-user Mautic execution is enabled but ECP identity signing is not configured."
+        )
+    if per_user_enabled and not active_connections:
+        warnings.append(
+            "Per-user Mautic execution is enabled but no Mautic user connections are active."
+        )
+    if per_user_enabled and remote and not remote.get("ready", True):
+        warnings.append("Mautic reports the identity bridge is not ready.")
+
+    return {
+        "per_user_execution_enabled": per_user_enabled,
+        "signing_configured": signing_configured,
+        "key_id_configured": bool(str(getattr(settings, "ECP_MAUTIC_IDENTITY_KEY_ID", "") or "").strip()),
+        "issuer": str(getattr(settings, "ECP_MAUTIC_IDENTITY_ISSUER", "") or "").strip() or None,
+        "audience": str(getattr(settings, "ECP_MAUTIC_IDENTITY_AUDIENCE", "") or "").strip() or None,
+        "active_connections": active_connections,
+        "current_user_connected": actor_connected,
+        "mautic_identity": remote or None,
+        "status": "Healthy" if not warnings else "Degraded",
+        "warnings": warnings,
     }
 
 
@@ -130,6 +189,8 @@ def _marketing_bridge_status(config: dict) -> dict:
         "version": data.get("version"),
         "mautic_version": data.get("mauticVersion"),
         "capabilities": [str(item) for item in data.get("capabilities", [])],
+        # Safe readiness flags reported by the plugin; never key material.
+        "identity": data.get("identity") if isinstance(data.get("identity"), dict) else None,
         "detail": "Marketing bridge capability endpoint responded.",
     }
 

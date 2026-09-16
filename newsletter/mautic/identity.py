@@ -213,6 +213,7 @@ def get_mautic_client(
     *,
     session=None,
     client_factory=None,
+    correlation_id=None,
 ) -> MauticClient:
     """Central construction point for Mautic API clients.
 
@@ -241,4 +242,5 @@ def get_mautic_client(
         session=session,
         execution_identity=identity,
         assertion_provider=assertion_provider,
+        correlation_id=correlation_id,
     )

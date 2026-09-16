@@ -89,7 +89,14 @@ from .mautic_analytics_views import (
     NewsletterAdminAnalyticsSegmentsView,
 )
 from .mautic_diagnostics_views import NewsletterAdminMauticDiagnosticsView
-from .mautic_identity_views import NewsletterAdminMauticIdentityStatusView
+from .mautic_identity_views import (
+    NewsletterAdminMauticConnectionActivateView,
+    NewsletterAdminMauticConnectionDeactivateView,
+    NewsletterAdminMauticConnectionDetailView,
+    NewsletterAdminMauticConnectionListCreateView,
+    NewsletterAdminMauticIdentityAuditView,
+    NewsletterAdminMauticIdentityStatusView,
+)
 from .mautic_dashboard_views import NewsletterAdminDashboardView
 from .company_views import (
     NewsletterAdminCompanyContactDetailView,
@@ -244,6 +251,31 @@ urlpatterns = [
         "newsletter/admin/settings/mautic-identity/status/",
         NewsletterAdminMauticIdentityStatusView.as_view(),
         name="newsletter-admin-mautic-identity-status",
+    ),
+    path(
+        "newsletter/admin/settings/mautic-identity/connections/",
+        NewsletterAdminMauticConnectionListCreateView.as_view(),
+        name="newsletter-admin-mautic-connection-list",
+    ),
+    path(
+        "newsletter/admin/settings/mautic-identity/connections/<int:connection_id>/",
+        NewsletterAdminMauticConnectionDetailView.as_view(),
+        name="newsletter-admin-mautic-connection-detail",
+    ),
+    path(
+        "newsletter/admin/settings/mautic-identity/connections/<int:connection_id>/activate/",
+        NewsletterAdminMauticConnectionActivateView.as_view(),
+        name="newsletter-admin-mautic-connection-activate",
+    ),
+    path(
+        "newsletter/admin/settings/mautic-identity/connections/<int:connection_id>/deactivate/",
+        NewsletterAdminMauticConnectionDeactivateView.as_view(),
+        name="newsletter-admin-mautic-connection-deactivate",
+    ),
+    path(
+        "newsletter/admin/settings/mautic-identity/audit/",
+        NewsletterAdminMauticIdentityAuditView.as_view(),
+        name="newsletter-admin-mautic-identity-audit",
     ),
     path(
         "newsletter/admin/categories/",

@@ -13,6 +13,13 @@ from moderation.permissions import IsStaffOrSuperuser
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.exceptions import MauticBridgeRejectedError, MauticIdentityError
 from .mautic.identity import MauticExecutionContext, get_mautic_client
+from .mautic_identity_audit import (
+    correlation_id_for_request,
+    record_identity_audit,
+    record_identity_failure,
+)
+from .mautic_identity_errors import identity_error_response
+from .models import MauticIdentityAuditLog
 from .mautic_reference_choices import (
     REFERENCE_CHOICE_SOURCES,
     normalize_choice_rows,
@@ -1103,23 +1110,7 @@ def _format_campaign_for_builder(campaign: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _identity_error_response(exc):
-    """Identity/bridge failures on the migrated per-user campaign paths.
-
-    Never exposes keys, assertions, or provider internals.
-    """
-    if isinstance(exc, MauticBridgeRejectedError):
-        return Response(
-            {"detail": "Your Mautic user is not allowed to perform this campaign operation."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-    return Response(
-        {"detail": "Mautic identity bridge is unavailable."},
-        status=status.HTTP_503_SERVICE_UNAVAILABLE,
-    )
-
-
-def _interactive_campaign_client(request):
+def _interactive_campaign_client(request, correlation_id):
     """Client for manual staff campaign create/update.
 
     Authenticates with the service account and, when per-user execution is
@@ -1132,7 +1123,25 @@ def _interactive_campaign_client(request):
         # Construct through this module's MauticClient so the service-account
         # path is unchanged from Phase 1.
         client_factory=MauticClient,
+        correlation_id=correlation_id,
     )
+
+
+def _asserted_user_id(client):
+    """Mapped Mautic user for audit purposes, or None on the service path."""
+    identity = getattr(client, "execution_identity", None)
+    try:
+        value = int(getattr(identity, "mautic_user_id", None))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _auth_mode_label(client):
+    identity = getattr(client, "execution_identity", None)
+    mode = getattr(identity, "auth_mode", None)
+    value = getattr(mode, "value", mode)
+    return value if isinstance(value, str) else ""
 
 
 def _provider_error_response(exc):
@@ -1207,15 +1216,24 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
         )
 
     def post(self, request):
+        correlation_id = correlation_id_for_request(request)
+        action = MauticIdentityAuditLog.Action.CAMPAIGN_CREATE
         try:
-            client = _interactive_campaign_client(request)
+            client = _interactive_campaign_client(request, correlation_id)
             capabilities = (
                 client.get_campaign_builder_capabilities()
                 if _request_uses_builder_events(request.data)
                 else None
             )
         except MauticIdentityError as exc:
-            return _identity_error_response(exc)
+            record_identity_failure(
+                action=action,
+                exc=exc,
+                actor=request.user,
+                resource="campaign",
+                correlation_id=correlation_id,
+            )
+            return identity_error_response(exc)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -1233,10 +1251,29 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
         try:
             campaign = client.create_campaign(payload)
         except (MauticBridgeRejectedError, MauticIdentityError) as exc:
-            return _identity_error_response(exc)
+            record_identity_failure(
+                action=action,
+                exc=exc,
+                actor=request.user,
+                mautic_user_id=_asserted_user_id(client),
+                resource="campaign",
+                auth_mode=_auth_mode_label(client),
+                correlation_id=correlation_id,
+            )
+            return identity_error_response(exc)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
+        record_identity_audit(
+            action=action,
+            status=MauticIdentityAuditLog.Status.SUCCEEDED,
+            actor=request.user,
+            mautic_user_id=_asserted_user_id(client),
+            resource="campaign",
+            resource_id=campaign.get("id"),
+            auth_mode=_auth_mode_label(client),
+            correlation_id=correlation_id,
+        )
         return Response(
             _normalize_campaign(campaign),
             status=status.HTTP_201_CREATED,
@@ -1419,15 +1456,25 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
         )
 
     def patch(self, request, campaign_id):
+        correlation_id = correlation_id_for_request(request)
+        action = MauticIdentityAuditLog.Action.CAMPAIGN_UPDATE
         try:
-            client = _interactive_campaign_client(request)
+            client = _interactive_campaign_client(request, correlation_id)
             capabilities = (
                 client.get_campaign_builder_capabilities()
                 if _request_uses_builder_events(request.data)
                 else None
             )
         except MauticIdentityError as exc:
-            return _identity_error_response(exc)
+            record_identity_failure(
+                action=action,
+                exc=exc,
+                actor=request.user,
+                resource="campaign",
+                resource_id=campaign_id,
+                correlation_id=correlation_id,
+            )
+            return identity_error_response(exc)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -1449,10 +1496,30 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
                 payload,
             )
         except (MauticBridgeRejectedError, MauticIdentityError) as exc:
-            return _identity_error_response(exc)
+            record_identity_failure(
+                action=action,
+                exc=exc,
+                actor=request.user,
+                mautic_user_id=_asserted_user_id(client),
+                resource="campaign",
+                resource_id=campaign_id,
+                auth_mode=_auth_mode_label(client),
+                correlation_id=correlation_id,
+            )
+            return identity_error_response(exc)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
+        record_identity_audit(
+            action=action,
+            status=MauticIdentityAuditLog.Status.SUCCEEDED,
+            actor=request.user,
+            mautic_user_id=_asserted_user_id(client),
+            resource="campaign",
+            resource_id=campaign_id,
+            auth_mode=_auth_mode_label(client),
+            correlation_id=correlation_id,
+        )
         return Response(
             _normalize_campaign(campaign),
             status=status.HTTP_200_OK,

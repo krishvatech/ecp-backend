@@ -22,12 +22,19 @@ from .exceptions import (
 
 _TEMPORARY_STATUS_CODES = {408, 425, 429}
 
-# Header consumed only by the ECP bridge endpoints in the Mautic plugin.
+# Headers consumed only by the ECP bridge endpoints in the Mautic plugin.
 ECP_IDENTITY_ASSERTION_HEADER = "X-ECP-Identity-Assertion"
+ECP_CORRELATION_HEADER = "X-ECP-Correlation-Id"
 
 
 class MauticClient:
-    def __init__(self, session=None, execution_identity=None, assertion_provider=None):
+    def __init__(
+        self,
+        session=None,
+        execution_identity=None,
+        assertion_provider=None,
+        correlation_id=None,
+    ):
         self.session = session or requests.Session()
         # Metadata only (see newsletter.mautic.identity). Authentication always
         # uses the configured service account.
@@ -36,6 +43,9 @@ class MauticClient:
         # ECP identity assertion. It is sent to the ECP bridge endpoints only,
         # in addition to (never instead of) the service credentials.
         self._assertion_provider = assertion_provider
+        # Correlates one ECP request with the Mautic-side audit entry. Not a
+        # credential, and sent to the bridge endpoints only.
+        self.correlation_id = correlation_id
         self.base_url = str(getattr(settings, "MAUTIC_BASE_URL", "") or "").strip().rstrip("/")
         self.username = str(getattr(settings, "MAUTIC_USERNAME", "") or "").strip()
         self.password = str(getattr(settings, "MAUTIC_PASSWORD", "") or "")
@@ -112,6 +122,8 @@ class MauticClient:
         single-use identity assertion naming the acting human user."""
         headers = dict(kwargs.pop("headers", None) or {})
         headers[ECP_IDENTITY_ASSERTION_HEADER] = self._assertion_provider()
+        if self.correlation_id:
+            headers[ECP_CORRELATION_HEADER] = str(self.correlation_id)
 
         try:
             return self._request(method, path, headers=headers, **kwargs)
