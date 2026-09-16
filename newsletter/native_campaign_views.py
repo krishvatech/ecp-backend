@@ -11,6 +11,8 @@ from rest_framework.views import APIView
 from moderation.permissions import IsStaffOrSuperuser
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic.exceptions import MauticBridgeRejectedError, MauticIdentityError
+from .mautic.identity import MauticExecutionContext, get_mautic_client
 from .mautic_reference_choices import (
     REFERENCE_CHOICE_SOURCES,
     normalize_choice_rows,
@@ -1101,6 +1103,38 @@ def _format_campaign_for_builder(campaign: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _identity_error_response(exc):
+    """Identity/bridge failures on the migrated per-user campaign paths.
+
+    Never exposes keys, assertions, or provider internals.
+    """
+    if isinstance(exc, MauticBridgeRejectedError):
+        return Response(
+            {"detail": "Your Mautic user is not allowed to perform this campaign operation."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return Response(
+        {"detail": "Mautic identity bridge is unavailable."},
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
+def _interactive_campaign_client(request):
+    """Client for manual staff campaign create/update.
+
+    Authenticates with the service account and, when per-user execution is
+    enabled and the actor has an active mapping, carries a signed assertion so
+    Mautic executes as the mapped user.
+    """
+    return get_mautic_client(
+        actor=request.user,
+        purpose=MauticExecutionContext.INTERACTIVE,
+        # Construct through this module's MauticClient so the service-account
+        # path is unchanged from Phase 1.
+        client_factory=MauticClient,
+    )
+
+
 def _provider_error_response(exc):
     message = str(exc)
     if isinstance(exc, PermanentMauticError):
@@ -1174,12 +1208,14 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
 
     def post(self, request):
         try:
-            client = MauticClient()
+            client = _interactive_campaign_client(request)
             capabilities = (
                 client.get_campaign_builder_capabilities()
                 if _request_uses_builder_events(request.data)
                 else None
             )
+        except MauticIdentityError as exc:
+            return _identity_error_response(exc)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -1196,6 +1232,8 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
 
         try:
             campaign = client.create_campaign(payload)
+        except (MauticBridgeRejectedError, MauticIdentityError) as exc:
+            return _identity_error_response(exc)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -1382,12 +1420,14 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
 
     def patch(self, request, campaign_id):
         try:
-            client = MauticClient()
+            client = _interactive_campaign_client(request)
             capabilities = (
                 client.get_campaign_builder_capabilities()
                 if _request_uses_builder_events(request.data)
                 else None
             )
+        except MauticIdentityError as exc:
+            return _identity_error_response(exc)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -1408,6 +1448,8 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
                 campaign_id,
                 payload,
             )
+        except (MauticBridgeRejectedError, MauticIdentityError) as exc:
+            return _identity_error_response(exc)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 

@@ -212,6 +212,14 @@ ECP_MAUTIC_IDENTITY_ISSUER = os.getenv("ECP_MAUTIC_IDENTITY_ISSUER", "ecp").stri
 ECP_MAUTIC_IDENTITY_AUDIENCE = os.getenv("ECP_MAUTIC_IDENTITY_AUDIENCE", "ecp-mautic").strip()
 ECP_MAUTIC_IDENTITY_TTL_SECONDS = os.getenv("ECP_MAUTIC_IDENTITY_TTL_SECONDS", "90").strip()
 
+# Phase 2 feature flag. When false (the default) every Mautic call keeps using
+# the shared service account exactly as before. When true, ONLY manual campaign
+# create/update from the Marketing Hub execute as the mapped Mautic user, via
+# the signed-assertion bridge; background work stays on the service account.
+ECP_MAUTIC_PER_USER_EXECUTION_ENABLED = os.getenv(
+    "ECP_MAUTIC_PER_USER_EXECUTION_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+
 # false = send paid-invoice email immediately on the mark-paid request (after commit);
 # true = dispatch via Celery worker.
 INVOICE_EMAIL_ASYNC = os.getenv("INVOICE_EMAIL_ASYNC", "false").lower() in ("1", "true", "yes", "on")

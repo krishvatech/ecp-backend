@@ -13,18 +13,29 @@ import requests
 from django.conf import settings
 from requests.auth import HTTPBasicAuth
 
-from .exceptions import PermanentMauticError, TemporaryMauticError
+from .exceptions import (
+    MauticBridgeRejectedError,
+    PermanentMauticError,
+    TemporaryMauticError,
+)
 
 
 _TEMPORARY_STATUS_CODES = {408, 425, 429}
 
+# Header consumed only by the ECP bridge endpoints in the Mautic plugin.
+ECP_IDENTITY_ASSERTION_HEADER = "X-ECP-Identity-Assertion"
+
 
 class MauticClient:
-    def __init__(self, session=None, execution_identity=None):
+    def __init__(self, session=None, execution_identity=None, assertion_provider=None):
         self.session = session or requests.Session()
-        # Metadata only (see newsletter.mautic.identity). Authentication below
-        # always uses the configured service account in Phase 1.
+        # Metadata only (see newsletter.mautic.identity). Authentication always
+        # uses the configured service account.
         self.execution_identity = execution_identity
+        # Set only in ASSERTED_USER mode: a callable returning a fresh signed
+        # ECP identity assertion. It is sent to the ECP bridge endpoints only,
+        # in addition to (never instead of) the service credentials.
+        self._assertion_provider = assertion_provider
         self.base_url = str(getattr(settings, "MAUTIC_BASE_URL", "") or "").strip().rstrip("/")
         self.username = str(getattr(settings, "MAUTIC_USERNAME", "") or "").strip()
         self.password = str(getattr(settings, "MAUTIC_PASSWORD", "") or "")
@@ -95,6 +106,25 @@ class MauticClient:
 
         self._raise_for_response(response, "Mautic API request failed")
         return response
+
+    def _bridge_request(self, method: str, path: str, **kwargs):
+        """Call an ECP bridge endpoint with the service credentials plus a
+        single-use identity assertion naming the acting human user."""
+        headers = dict(kwargs.pop("headers", None) or {})
+        headers[ECP_IDENTITY_ASSERTION_HEADER] = self._assertion_provider()
+
+        try:
+            return self._request(method, path, headers=headers, **kwargs)
+        except PermanentMauticError as exc:
+            message = str(exc)
+            if any(f"HTTP {code}" in message for code in (401, 403)):
+                # The bridge verified the service account but refused the human
+                # identity or its Mautic permissions.
+                raise MauticBridgeRejectedError(message) from exc
+            raise
+
+    def _uses_asserted_user(self) -> bool:
+        return self._assertion_provider is not None
 
     @staticmethod
     def _json_object(response, context: str) -> dict[str, Any]:
@@ -1622,11 +1652,11 @@ class MauticClient:
         return self._campaign_from_response(response, "Mautic campaign lookup")
 
     def create_campaign(self, payload: dict[str, Any]) -> dict[str, Any]:
-        response = self._request(
-            "POST",
-            "campaigns/new",
-            data=self._campaign_form_data(payload),
-        )
+        data = self._campaign_form_data(payload)
+        if self._uses_asserted_user():
+            response = self._bridge_request("POST", "ecp/bridge/campaigns/new", data=data)
+        else:
+            response = self._request("POST", "campaigns/new", data=data)
         return self._campaign_from_response(response, "Mautic campaign creation")
 
     def update_campaign(
@@ -1637,11 +1667,19 @@ class MauticClient:
         campaign_id = str(campaign_id or "").strip()
         if not campaign_id:
             raise PermanentMauticError("Mautic campaign ID is required")
-        response = self._request(
-            "PATCH",
-            f"campaigns/{campaign_id}/edit",
-            data=self._campaign_form_data(payload),
-        )
+        data = self._campaign_form_data(payload)
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/campaigns/{campaign_id}/edit",
+                data=data,
+            )
+        else:
+            response = self._request(
+                "PATCH",
+                f"campaigns/{campaign_id}/edit",
+                data=data,
+            )
         return self._campaign_from_response(response, "Mautic campaign update")
 
     def delete_campaign(self, campaign_id: int | str) -> dict[str, Any]:

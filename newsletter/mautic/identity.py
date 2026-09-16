@@ -12,24 +12,39 @@ Only ``INTERACTIVE`` may ever be executed as a mapped Mautic user. Background
 work must keep the service identity; the originating ECP user is carried as
 audit metadata only, so a queued job can never impersonate a human.
 
-PHASE 1: every context authenticates with the configured Mautic service
-account. ``get_mautic_client`` resolves and records identity metadata but does
-not change credentials. Existing call sites still construct ``MauticClient``
-directly and are intentionally not migrated yet.
+PHASE 2: when ``ECP_MAUTIC_PER_USER_EXECUTION_ENABLED`` is on, an INTERACTIVE
+context resolves to ``ASSERTED_USER``. That mode still authenticates the caller
+with the service credentials; it additionally attaches a short-lived signed
+assertion to the dedicated Mautic bridge endpoints, so Mautic can execute the
+operation as the mapped human user. Every other context stays on the service
+account, and only the migrated campaign create/update paths use the factory so
+far.
+
+With the flag on, per-user execution is mandatory for INTERACTIVE work: a
+missing or inactive mapping, or missing signing configuration, raises a
+``MauticIdentityError`` instead of quietly running as the service account. A
+human action must never be attributed to the shared identity when the operator
+has asked for per-user attribution.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
+
+from django.conf import settings
 
 from .client import MauticClient
 from .exceptions import (
     MauticActorRequiredError,
+    MauticIdentityConfigurationError,
     MauticIdentityError,
     MauticUserConnectionInactiveError,
     MauticUserConnectionMissingError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MauticExecutionContext(StrEnum):
@@ -41,9 +56,10 @@ class MauticExecutionContext(StrEnum):
 
 class MauticAuthMode(StrEnum):
     SERVICE_ACCOUNT = "service_account"
-    # Phase 2 adds a mode where the Mautic bridge executes as the user named in
-    # a verified ECP identity assertion. It must only be reachable from
-    # INTERACTIVE contexts.
+    # Service credentials still authenticate the caller; a signed assertion
+    # additionally names the human the bridge should execute as. Only reachable
+    # from INTERACTIVE contexts.
+    ASSERTED_USER = "asserted_user"
 
 
 @dataclass(frozen=True)
@@ -52,8 +68,8 @@ class MauticExecutionIdentity:
     auth_mode: MauticAuthMode
     # ECP user who triggered the work. Audit metadata only.
     actor_id: int | None = None
-    # Resolved mapped Mautic user for INTERACTIVE contexts. Not used for
-    # authentication in Phase 1.
+    # Resolved mapped Mautic user for INTERACTIVE contexts. Named in the signed
+    # assertion when auth_mode is ASSERTED_USER; never used as a credential.
     mautic_user_id: int | None = None
 
     @property
@@ -110,10 +126,47 @@ def get_active_mautic_user_connection(actor):
     raise MauticUserConnectionMissingError("No Mautic user connection exists for this user")
 
 
-def _auth_mode_for(context: MauticExecutionContext) -> MauticAuthMode:
-    # Single decision point for Phase 2. Do not add per-user credentials
-    # anywhere else.
-    return MauticAuthMode.SERVICE_ACCOUNT
+def per_user_execution_enabled() -> bool:
+    """Phase 2 feature flag. Off by default."""
+    return bool(getattr(settings, "ECP_MAUTIC_PER_USER_EXECUTION_ENABLED", False))
+
+
+def _auth_mode_for(
+    context: MauticExecutionContext,
+    *,
+    mautic_user_id: int | None,
+) -> MauticAuthMode:
+    """Single decision point for per-user execution.
+
+    Non-interactive contexts can never reach ASSERTED_USER, so background work
+    cannot execute as a human no matter what actor it carries.
+
+    With the flag on, every requirement for INTERACTIVE work is mandatory:
+    failing one raises rather than downgrading to the service account, because
+    a silent downgrade would attribute a human action to the shared identity.
+    """
+    if context is not MauticExecutionContext.INTERACTIVE:
+        return MauticAuthMode.SERVICE_ACCOUNT
+    if not per_user_execution_enabled():
+        return MauticAuthMode.SERVICE_ACCOUNT
+
+    if not mautic_user_id:
+        raise MauticUserConnectionMissingError(
+            "Per-user Mautic execution is enabled but this user has no active "
+            "Mautic user connection"
+        )
+
+    from .identity_assertion import is_identity_assertion_configured
+
+    if not is_identity_assertion_configured():
+        logger.error(
+            "Per-user Mautic execution is enabled but identity signing is not configured"
+        )
+        raise MauticIdentityConfigurationError(
+            "Mautic identity signing is not configured for per-user execution"
+        )
+
+    return MauticAuthMode.ASSERTED_USER
 
 
 def resolve_mautic_execution_identity(
@@ -126,7 +179,7 @@ def resolve_mautic_execution_identity(
     if context is not MauticExecutionContext.INTERACTIVE:
         return MauticExecutionIdentity(
             context=context,
-            auth_mode=_auth_mode_for(context),
+            auth_mode=_auth_mode_for(context, mautic_user_id=None),
             actor_id=actor_id,
         )
 
@@ -134,13 +187,21 @@ def resolve_mautic_execution_identity(
     try:
         mautic_user_id = get_active_mautic_user_connection(actor).mautic_user_id
     except (MauticUserConnectionMissingError, MauticUserConnectionInactiveError):
-        # Phase 1: an unmapped staff user keeps working through the service
-        # account exactly as before.
+        if per_user_execution_enabled():
+            # Fail closed: the operator asked for per-user attribution, so this
+            # operation must not run as the shared service account.
+            logger.warning(
+                "No active Mautic user connection for ECP user %s; refusing "
+                "interactive Mautic execution",
+                actor_id,
+            )
+            raise
+        # Flag off: unchanged Phase 1 behaviour.
         mautic_user_id = None
 
     return MauticExecutionIdentity(
         context=context,
-        auth_mode=_auth_mode_for(context),
+        auth_mode=_auth_mode_for(context, mautic_user_id=mautic_user_id),
         actor_id=actor_id,
         mautic_user_id=mautic_user_id,
     )
@@ -151,11 +212,33 @@ def get_mautic_client(
     purpose=MauticExecutionContext.SYSTEM,
     *,
     session=None,
+    client_factory=None,
 ) -> MauticClient:
     """Central construction point for Mautic API clients.
 
-    Phase 1 always returns a client authenticated with the configured service
-    account, for every context.
+    The returned client always authenticates with the configured service
+    account. In ASSERTED_USER mode it additionally carries a per-request signed
+    identity assertion, which it sends only to the dedicated bridge endpoints.
+
+    ``client_factory`` lets a caller keep its own module-level ``MauticClient``
+    as the construction point, so service-account behaviour (and the existing
+    tests that patch that name) stay exactly as they were.
     """
     identity = resolve_mautic_execution_identity(actor=actor, purpose=purpose)
-    return MauticClient(session=session, execution_identity=identity)
+
+    assertion_provider = None
+    if identity.auth_mode is MauticAuthMode.ASSERTED_USER:
+        from .identity_assertion import issue_identity_assertion
+
+        # A fresh single-use assertion is minted per bridge request; the client
+        # never holds a reusable token.
+        def assertion_provider() -> str:  # noqa: F811
+            return issue_identity_assertion(actor).token
+
+    factory = client_factory or MauticClient
+
+    return factory(
+        session=session,
+        execution_identity=identity,
+        assertion_provider=assertion_provider,
+    )

@@ -38,3 +38,11 @@ class MauticUserConnectionInactiveError(MauticIdentityError):
 
 class MauticIdentityAssertionError(MauticIdentityError):
     """An identity assertion cannot be issued for this actor or purpose."""
+
+
+class MauticBridgeRejectedError(PermanentMauticError):
+    """The Mautic identity bridge refused an asserted-user operation.
+
+    Subclasses PermanentMauticError so existing provider error handling keeps
+    working; views that care can report it as an authorization failure.
+    """
