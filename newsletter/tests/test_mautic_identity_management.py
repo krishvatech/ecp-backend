@@ -3,6 +3,7 @@
 import json
 from unittest.mock import Mock, patch
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework import status as http_status
@@ -26,6 +27,7 @@ from newsletter.mautic_identity_audit import (
 )
 from newsletter.mautic_identity_errors import classify_identity_error
 from newsletter.mautic_identity_services import (
+    VerifiedMauticUser,
     activate_mautic_user_connection,
     deactivate_mautic_user_connection,
 )
@@ -37,6 +39,8 @@ from newsletter.tests.test_mautic_per_user_execution import (
 )
 from newsletter.tests.test_mautic_user_identity import MAUTIC_SETTINGS, _IdentityFixtures
 
+User = get_user_model()
+
 
 def _campaign_fixtures():
     from newsletter.tests.test_admin_mautic_campaigns_api import (
@@ -46,37 +50,75 @@ def _campaign_fixtures():
     return fixtures._create_payload(), fixtures._builder_capabilities()
 
 
+def _verified_mautic_user(
+    mautic_user_id=21,
+    username="canonical-ravi",
+    email="canonical-ravi@mautic.test",
+    display_name="Canonical Ravi",
+    role_name="Marketing Admin",
+):
+    return VerifiedMauticUser(
+        mautic_user_id=mautic_user_id,
+        username=username,
+        email=email,
+        display_name=display_name,
+        role_name=role_name,
+        is_active=True,
+    )
+
+
 class MauticConnectionManagementApiTests(_IdentityFixtures, TestCase):
     def setUp(self):
         super().setUp()
+        self.superuser = User.objects.create_superuser(
+            username="identity-superuser",
+            email="identity-superuser@example.test",
+            password="test-password",
+        )
         self.client = APIClient()
-        self.client.force_authenticate(user=self.staff)
+        self.client.force_authenticate(user=self.superuser)
         self.list_url = reverse("newsletter-admin-mautic-connection-list")
 
     def _detail_url(self, name, connection):
         return reverse(name, kwargs={"connection_id": connection.pk})
 
-    def test_endpoints_require_marketing_hub_staff(self):
+    def test_admin_endpoints_require_superuser(self):
         anonymous = APIClient()
-        urls = [self.list_url, reverse("newsletter-admin-mautic-identity-audit")]
+        connection = self._active_connection(mautic_user_id=17)
+        urls = [
+            (self.list_url, "get"),
+            (self.list_url, "post"),
+            (self._detail_url("newsletter-admin-mautic-connection-detail", connection), "get"),
+            (self._detail_url("newsletter-admin-mautic-connection-activate", connection), "post"),
+            (self._detail_url("newsletter-admin-mautic-connection-deactivate", connection), "post"),
+            (reverse("newsletter-admin-mautic-identity-audit"), "get"),
+        ]
 
-        for url in urls:
+        for url, method in urls:
             with self.subTest(url=url):
-                self.assertIn(anonymous.get(url).status_code, (401, 403))
+                self.assertIn(getattr(anonymous, method)(url).status_code, (401, 403))
 
         self.client.force_authenticate(user=self.normal_user)
-        for url in urls:
+        for url, method in urls:
             with self.subTest(url=url, user="non-staff"):
-                self.assertEqual(self.client.get(url).status_code, 403)
+                self.assertEqual(getattr(self.client, method)(url).status_code, 403)
 
-    def test_create_connection(self):
+        self.client.force_authenticate(user=self.staff)
+        for url, method in urls:
+            with self.subTest(url=url, user="staff"):
+                self.assertEqual(getattr(self.client, method)(url).status_code, 403)
+
+        self.client.force_authenticate(user=self.superuser)
+        self.assertEqual(self.client.get(self.list_url).status_code, 200)
+
+    @patch("newsletter.mautic_identity_services.verify_mautic_user")
+    def test_create_connection(self, verify):
+        verify.return_value = _verified_mautic_user(mautic_user_id=21)
         response = self.client.post(
             self.list_url,
             {
                 "ecp_user_id": self.other_staff.pk,
                 "mautic_user_id": 21,
-                "mautic_username": "ravi",
-                "mautic_role_name": "Marketing",
             },
             format="json",
         )
@@ -84,9 +126,28 @@ class MauticConnectionManagementApiTests(_IdentityFixtures, TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["mautic_user_id"], 21)
         self.assertEqual(response.data["ecp_user_id"], self.other_staff.pk)
+        self.assertEqual(response.data["mautic_username"], "canonical-ravi")
+        self.assertEqual(response.data["mautic_display_name"], "Canonical Ravi")
+        self.assertEqual(response.data["mautic_role_name"], "Marketing Admin")
         self.assertEqual(response.data["status"], "active")
         self.assertTrue(response.data["is_active"])
         self.assertIsNotNone(response.data["connected_at"])
+        self.assertIsNotNone(response.data["last_verified_at"])
+
+    def test_create_connection_rejects_caller_supplied_mautic_metadata(self):
+        response = self.client.post(
+            self.list_url,
+            {
+                "ecp_user_id": self.other_staff.pk,
+                "mautic_user_id": 21,
+                "mautic_username": "fake-admin",
+                "mautic_role_name": "Super Administrator",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(MauticUserConnection.objects.exists())
 
     def test_create_connection_rejects_unknown_ecp_user(self):
         response = self.client.post(
@@ -117,7 +178,9 @@ class MauticConnectionManagementApiTests(_IdentityFixtures, TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "mautic_identity_error")
 
-    def test_mautic_user_already_connected_elsewhere_is_reported(self):
+    @patch("newsletter.mautic_identity_services.verify_mautic_user")
+    def test_mautic_user_already_connected_elsewhere_is_reported(self, verify):
+        verify.return_value = _verified_mautic_user(mautic_user_id=17)
         self._active_connection(user=self.staff, mautic_user_id=17)
 
         response = self.client.post(
@@ -167,7 +230,9 @@ class MauticConnectionManagementApiTests(_IdentityFixtures, TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.data["code"], "mautic_user_not_connected")
 
-    def test_deactivate_then_activate_roundtrip(self):
+    @patch("newsletter.mautic_identity_services.verify_mautic_user")
+    def test_deactivate_then_activate_roundtrip(self, verify):
+        verify.return_value = _verified_mautic_user(mautic_user_id=17, username="fresh")
         connection = self._active_connection(mautic_user_id=17)
 
         deactivated = self.client.post(
@@ -189,8 +254,12 @@ class MauticConnectionManagementApiTests(_IdentityFixtures, TestCase):
         connection.refresh_from_db()
         self.assertTrue(connection.is_usable)
         self.assertIsNone(connection.disabled_at)
+        self.assertEqual(connection.mautic_username, "fresh")
+        self.assertIsNotNone(connection.last_verified_at)
 
-    def test_activate_is_refused_when_the_user_already_has_another_active_mapping(self):
+    @patch("newsletter.mautic_identity_services.verify_mautic_user")
+    def test_activate_is_refused_when_the_user_already_has_another_active_mapping(self, verify):
+        verify.return_value = _verified_mautic_user(mautic_user_id=18)
         old = MauticUserConnection.objects.create(
             user=self.staff,
             mautic_user_id=18,
@@ -206,7 +275,9 @@ class MauticConnectionManagementApiTests(_IdentityFixtures, TestCase):
         old.refresh_from_db()
         self.assertFalse(old.is_active)
 
-    def test_activate_is_refused_when_mautic_user_belongs_to_another_ecp_user(self):
+    @patch("newsletter.mautic_identity_services.verify_mautic_user")
+    def test_activate_is_refused_when_mautic_user_belongs_to_another_ecp_user(self, verify):
+        verify.return_value = _verified_mautic_user(mautic_user_id=17)
         disabled = MauticUserConnection.objects.create(
             user=self.other_staff,
             mautic_user_id=17,
@@ -361,8 +432,13 @@ class CampaignAuditTrailTests(_IdentityFixtures, TestCase):
 class IdentityAuditApiTests(_IdentityFixtures, TestCase):
     def setUp(self):
         super().setUp()
+        self.superuser = User.objects.create_superuser(
+            username="identity-audit-superuser",
+            email="identity-audit-superuser@example.test",
+            password="test-password",
+        )
         self.client = APIClient()
-        self.client.force_authenticate(user=self.staff)
+        self.client.force_authenticate(user=self.superuser)
         self.url = reverse("newsletter-admin-mautic-identity-audit")
 
         record_identity_audit(
@@ -539,6 +615,16 @@ class IdentityDiagnosticsTests(_IdentityFixtures, TestCase):
 
 
 class ConnectionServiceTests(_IdentityFixtures, TestCase):
+    def _verified(self, mautic_user_id=17, username="verified"):
+        return VerifiedMauticUser(
+            mautic_user_id=mautic_user_id,
+            username=username,
+            email=f"{username}@mautic.test",
+            display_name="Verified User",
+            role_name="Marketing",
+            is_active=True,
+        )
+
     def test_activate_is_idempotent(self):
         connection = self._active_connection(mautic_user_id=17)
 
@@ -565,8 +651,12 @@ class ConnectionServiceTests(_IdentityFixtures, TestCase):
         self.staff.save(update_fields=["is_staff"])
         connection.refresh_from_db()
 
-        with self.assertRaises(MauticIdentityError):
-            activate_mautic_user_connection(connection)
+        with patch(
+            "newsletter.mautic_identity_services.verify_mautic_user",
+            return_value=self._verified(),
+        ):
+            with self.assertRaises(MauticIdentityError):
+                activate_mautic_user_connection(connection)
 
     def test_missing_connection_raises_identity_error(self):
         connection = self._active_connection(mautic_user_id=17)

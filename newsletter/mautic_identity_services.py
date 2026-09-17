@@ -7,10 +7,20 @@ look users up by email, and never change how Mautic API calls authenticate.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
-from .mautic.exceptions import MauticIdentityError, MauticUserConnectionMissingError
+from .mautic.client import MauticClient
+from .mautic.exceptions import (
+    MauticIdentityError,
+    MauticUserConnectionMissingError,
+    MauticUserVerificationInvalidError,
+    MauticUserVerificationUnavailableError,
+    PermanentMauticError,
+    TemporaryMauticError,
+)
 from .mautic.identity import (
     MauticExecutionContext,
     actor_has_marketing_hub_access,
@@ -19,6 +29,16 @@ from .mautic.identity import (
 )
 from .mautic.identity_assertion import is_identity_assertion_configured
 from .models import MauticUserConnection
+
+
+@dataclass(frozen=True)
+class VerifiedMauticUser:
+    mautic_user_id: int
+    username: str
+    email: str
+    display_name: str
+    role_name: str
+    is_active: bool
 
 
 def _normalize_mautic_user_id(value) -> int:
@@ -33,14 +53,89 @@ def _normalize_mautic_user_id(value) -> int:
     return normalized
 
 
+def _string(value, *, max_length: int) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise MauticUserVerificationUnavailableError("Mautic user response is malformed")
+    return value.strip()[:max_length]
+
+
+def _required_string(value, *, max_length: int) -> str:
+    result = _string(value, max_length=max_length)
+    if not result:
+        raise MauticUserVerificationUnavailableError("Mautic user response is malformed")
+    return result
+
+
+def normalize_verified_mautic_user(payload: dict, *, requested_user_id: int) -> VerifiedMauticUser:
+    if not isinstance(payload, dict):
+        raise MauticUserVerificationUnavailableError("Mautic user response is malformed")
+
+    try:
+        returned_id = int(payload.get("id"))
+    except (TypeError, ValueError):
+        raise MauticUserVerificationUnavailableError("Mautic user response is malformed") from None
+    if returned_id != requested_user_id:
+        raise MauticUserVerificationInvalidError(
+            "Mautic user verification returned a mismatched user"
+        )
+
+    is_published = payload.get("isPublished", payload.get("is_published", True))
+    if not isinstance(is_published, bool):
+        raise MauticUserVerificationUnavailableError("Mautic user response is malformed")
+    if not is_published:
+        raise MauticUserVerificationInvalidError("Mautic user is not active")
+
+    username = _required_string(payload.get("username"), max_length=191)
+    email = _required_string(payload.get("email"), max_length=254)
+    first_name = _string(payload.get("firstName", payload.get("first_name")), max_length=191)
+    last_name = _string(payload.get("lastName", payload.get("last_name")), max_length=191)
+    display_name = _string(payload.get("name"), max_length=255)
+    if not display_name:
+        display_name = f"{first_name} {last_name}".strip()[:255]
+
+    role = payload.get("role") or {}
+    if role is None:
+        role = {}
+    if not isinstance(role, dict):
+        raise MauticUserVerificationUnavailableError("Mautic user response is malformed")
+    role_name = _required_string(role.get("name"), max_length=191)
+
+    return VerifiedMauticUser(
+        mautic_user_id=returned_id,
+        username=username,
+        email=email,
+        display_name=display_name,
+        role_name=role_name,
+        is_active=is_published,
+    )
+
+
+def verify_mautic_user(mautic_user_id) -> VerifiedMauticUser:
+    requested_user_id = _normalize_mautic_user_id(mautic_user_id)
+    try:
+        payload = MauticClient().get_user(requested_user_id)
+    except TemporaryMauticError as exc:
+        raise MauticUserVerificationUnavailableError("Mautic user verification failed") from exc
+    except PermanentMauticError as exc:
+        raise MauticUserVerificationInvalidError("Mautic user could not be verified") from exc
+    return normalize_verified_mautic_user(payload, requested_user_id=requested_user_id)
+
+
+def _metadata_from_verified_user(verified: VerifiedMauticUser) -> dict:
+    return {
+        "mautic_username": verified.username,
+        "mautic_email": verified.email,
+        "mautic_display_name": verified.display_name,
+        "mautic_role_name": verified.role_name,
+    }
+
+
 def connect_mautic_user(
     user,
     *,
     mautic_user_id,
-    mautic_username: str = "",
-    mautic_email: str = "",
-    mautic_display_name: str = "",
-    mautic_role_name: str = "",
     created_by=None,
 ) -> MauticUserConnection:
     """Make ``mautic_user_id`` the single active Mautic identity for ``user``.
@@ -50,14 +145,12 @@ def connect_mautic_user(
     rejected rather than silently moved.
     """
     if not actor_has_marketing_hub_access(user):
-        raise MauticIdentityError("Only active Marketing Hub staff users can be connected to Mautic")
-    mautic_user_id = _normalize_mautic_user_id(mautic_user_id)
-    metadata = {
-        "mautic_username": str(mautic_username or "").strip()[:191],
-        "mautic_email": str(mautic_email or "").strip()[:254],
-        "mautic_display_name": str(mautic_display_name or "").strip()[:255],
-        "mautic_role_name": str(mautic_role_name or "").strip()[:191],
-    }
+        raise MauticIdentityError(
+            "Only active Marketing Hub staff users can be connected to Mautic"
+        )
+    verified_user = verify_mautic_user(mautic_user_id)
+    mautic_user_id = verified_user.mautic_user_id
+    metadata = _metadata_from_verified_user(verified_user)
     now = timezone.now()
 
     try:
@@ -82,8 +175,16 @@ def connect_mautic_user(
                 if connection.mautic_user_id == mautic_user_id:
                     for field_name, value in metadata.items():
                         setattr(connection, field_name, value)
+                    connection.last_verified_at = now
                     connection.last_error = ""
-                    connection.save(update_fields=[*metadata.keys(), "last_error", "updated_at"])
+                    connection.save(
+                        update_fields=[
+                            *metadata.keys(),
+                            "last_verified_at",
+                            "last_error",
+                            "updated_at",
+                        ]
+                    )
                     return connection
 
             for connection in active:
@@ -99,6 +200,7 @@ def connect_mautic_user(
                 is_active=True,
                 created_by=created_by,
                 connected_at=now,
+                last_verified_at=now,
                 **metadata,
             )
     except IntegrityError:
@@ -117,6 +219,16 @@ def activate_mautic_user_connection(connection, *, actor=None) -> MauticUserConn
         raise MauticIdentityError(
             "Only active Marketing Hub staff users can be connected to Mautic"
         )
+
+    existing = MauticUserConnection.objects.filter(pk=connection.pk).first()
+    if existing is None:
+        raise MauticUserConnectionMissingError("Mautic user connection no longer exists")
+    if existing.is_usable:
+        return existing
+
+    verified_user = verify_mautic_user(connection.mautic_user_id)
+    metadata = _metadata_from_verified_user(verified_user)
+    now = timezone.now()
 
     with transaction.atomic():
         locked = (
@@ -151,7 +263,10 @@ def activate_mautic_user_connection(connection, *, actor=None) -> MauticUserConn
         locked.status = MauticUserConnection.Status.ACTIVE
         locked.disabled_at = None
         locked.last_error = ""
-        locked.connected_at = locked.connected_at or timezone.now()
+        locked.connected_at = locked.connected_at or now
+        locked.last_verified_at = now
+        for field_name, value in metadata.items():
+            setattr(locked, field_name, value)
         locked.save(
             update_fields=[
                 "is_active",
@@ -159,6 +274,8 @@ def activate_mautic_user_connection(connection, *, actor=None) -> MauticUserConn
                 "disabled_at",
                 "last_error",
                 "connected_at",
+                "last_verified_at",
+                *metadata.keys(),
                 "updated_at",
             ]
         )

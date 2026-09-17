@@ -10,7 +10,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser
+from moderation.permissions import IsStaffOrSuperuser, IsSuperuser
 
 from .mautic.exceptions import MauticIdentityError
 from .mautic_identity_audit import correlation_id_for_request, record_identity_audit
@@ -62,7 +62,7 @@ class NewsletterAdminMauticIdentityStatusView(APIView):
 class NewsletterAdminMauticConnectionListCreateView(APIView):
     """List every Mautic user connection, or create/refresh one."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [IsSuperuser]
 
     def get(self, request):
         connections = MauticUserConnection.objects.select_related("user").all()
@@ -103,10 +103,6 @@ class NewsletterAdminMauticConnectionListCreateView(APIView):
             connection = connect_mautic_user(
                 target,
                 mautic_user_id=data["mautic_user_id"],
-                mautic_username=data.get("mautic_username", ""),
-                mautic_email=data.get("mautic_email", ""),
-                mautic_display_name=data.get("mautic_display_name", ""),
-                mautic_role_name=data.get("mautic_role_name", ""),
                 created_by=request.user,
             )
         except MauticIdentityError as exc:
@@ -129,7 +125,7 @@ class NewsletterAdminMauticConnectionListCreateView(APIView):
 
 
 class NewsletterAdminMauticConnectionDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [IsSuperuser]
 
     def get(self, request, connection_id):
         try:
@@ -143,7 +139,7 @@ class NewsletterAdminMauticConnectionDetailView(APIView):
 
 
 class NewsletterAdminMauticConnectionActivateView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [IsSuperuser]
 
     def post(self, request, connection_id):
         correlation_id = correlation_id_for_request(request)
@@ -172,7 +168,7 @@ class NewsletterAdminMauticConnectionActivateView(APIView):
 
 
 class NewsletterAdminMauticConnectionDeactivateView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [IsSuperuser]
 
     def post(self, request, connection_id):
         serializer = MauticUserConnectionDeactivateSerializer(data=request.data)
@@ -206,7 +202,7 @@ class NewsletterAdminMauticConnectionDeactivateView(APIView):
 class NewsletterAdminMauticIdentityAuditView(APIView):
     """Read-only, queryable audit trail. Records are never mutated here."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [IsSuperuser]
 
     def get(self, request):
         entries = MauticIdentityAuditLog.objects.all()

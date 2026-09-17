@@ -18,10 +18,13 @@ MAX_MAUTIC_USER_ID = 2147483647
 class MauticUserConnectionCreateSerializer(serializers.Serializer):
     ecp_user_id = serializers.IntegerField(min_value=1)
     mautic_user_id = serializers.IntegerField(min_value=1, max_value=MAX_MAUTIC_USER_ID)
-    mautic_username = serializers.CharField(max_length=191, required=False, allow_blank=True)
-    mautic_email = serializers.EmailField(required=False, allow_blank=True)
-    mautic_display_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    mautic_role_name = serializers.CharField(max_length=191, required=False, allow_blank=True)
+
+    UNSUPPORTED_METADATA_FIELDS = {
+        "mautic_username",
+        "mautic_email",
+        "mautic_display_name",
+        "mautic_role_name",
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -33,6 +36,18 @@ class MauticUserConnectionCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError("ECP user does not exist.")
         self.target_user = user
         return value
+
+    def validate(self, attrs):
+        supplied = set(getattr(self, "initial_data", {}) or {})
+        unsupported = sorted(supplied & self.UNSUPPORTED_METADATA_FIELDS)
+        if unsupported:
+            raise serializers.ValidationError(
+                {
+                    field: "Mautic user metadata is canonical and cannot be supplied."
+                    for field in unsupported
+                }
+            )
+        return attrs
 
 
 class MauticUserConnectionDeactivateSerializer(serializers.Serializer):

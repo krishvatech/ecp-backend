@@ -40,6 +40,14 @@ class MauticIdentityAssertionError(MauticIdentityError):
     """An identity assertion cannot be issued for this actor or purpose."""
 
 
+class MauticUserVerificationInvalidError(MauticIdentityError):
+    """A target Mautic user does not exist or is not usable for mapping."""
+
+
+class MauticUserVerificationUnavailableError(MauticIdentityError):
+    """Canonical Mautic user verification cannot currently be completed."""
+
+
 class MauticBridgeRejectedError(PermanentMauticError):
     """The Mautic identity bridge refused an asserted-user operation.
 

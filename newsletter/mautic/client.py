@@ -177,6 +177,17 @@ class MauticClient:
             raise TemporaryMauticError("Mautic contact detail returned an invalid response")
         return contact
 
+    def get_user(self, user_id) -> dict[str, Any]:
+        normalized = str(user_id or "").strip()
+        if not normalized or not normalized.isdigit() or int(normalized) < 1:
+            raise PermanentMauticError("Mautic user ID is required")
+        response = self._request("GET", f"users/{normalized}")
+        data = self._json_object(response, "Mautic user lookup")
+        user = data.get("user")
+        if not isinstance(user, dict) or not user.get("id"):
+            raise TemporaryMauticError("Mautic user lookup returned an invalid response")
+        return user
+
     def get_contact_activity(self, contact_id, **params) -> dict[str, Any]:
         normalized = str(contact_id or "").strip()
         if not normalized:

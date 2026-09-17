@@ -21,6 +21,8 @@ from .mautic.exceptions import (
     MauticIdentityError,
     MauticUserConnectionInactiveError,
     MauticUserConnectionMissingError,
+    MauticUserVerificationInvalidError,
+    MauticUserVerificationUnavailableError,
 )
 
 # Checked most-specific first; subclasses must precede their base.
@@ -62,6 +64,18 @@ _IDENTITY_ERROR_MAP = (
         status.HTTP_503_SERVICE_UNAVAILABLE,
         "mautic_identity_assertion_failed",
         "A Mautic identity assertion could not be issued for this action.",
+    ),
+    (
+        MauticUserVerificationInvalidError,
+        status.HTTP_400_BAD_REQUEST,
+        "mautic_user_verification_invalid",
+        "The requested Mautic user could not be verified as an active usable user.",
+    ),
+    (
+        MauticUserVerificationUnavailableError,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "mautic_user_verification_unavailable",
+        "Mautic user verification is temporarily unavailable. Try again later.",
     ),
 )
 

@@ -34,6 +34,7 @@ from newsletter.mautic.identity_assertion import (
 )
 from newsletter.mautic.operations import CAMPAIGN_CREATE, CAMPAIGN_UPDATE
 from newsletter.mautic_identity_services import (
+    VerifiedMauticUser,
     connect_mautic_user,
     disable_mautic_user_connection,
 )
@@ -164,18 +165,33 @@ class MauticUserConnectionModelTests(_IdentityFixtures, TestCase):
 
 
 class MauticUserConnectionServiceTests(_IdentityFixtures, TestCase):
+    def setUp(self):
+        super().setUp()
+        patcher = patch("newsletter.mautic_identity_services.verify_mautic_user")
+        self.verify_mautic_user = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.verify_mautic_user.side_effect = lambda mautic_user_id: VerifiedMauticUser(
+            mautic_user_id=int(mautic_user_id),
+            username=f"mautic-{mautic_user_id}",
+            email=f"mautic-{mautic_user_id}@example.test",
+            display_name=f"Mautic {mautic_user_id}",
+            role_name="Marketing",
+            is_active=True,
+        )
+
     def test_connect_creates_active_connection(self):
         connection = connect_mautic_user(
             self.staff,
             mautic_user_id=17,
-            mautic_username="ravi",
-            mautic_email="ravi@mautic.example.test",
             created_by=self.other_staff,
         )
 
         self.assertTrue(connection.is_usable)
         self.assertEqual(connection.created_by, self.other_staff)
+        self.assertEqual(connection.mautic_username, "mautic-17")
+        self.assertEqual(connection.mautic_email, "mautic-17@example.test")
         self.assertIsNotNone(connection.connected_at)
+        self.assertIsNotNone(connection.last_verified_at)
 
     def test_reconnect_to_different_mautic_user_disables_previous_row(self):
         first = connect_mautic_user(self.staff, mautic_user_id=17)
@@ -189,8 +205,16 @@ class MauticUserConnectionServiceTests(_IdentityFixtures, TestCase):
         self.assertEqual(get_active_mautic_user_connection(self.staff).pk, second.pk)
 
     def test_reconnect_same_mautic_user_updates_metadata_only(self):
-        first = connect_mautic_user(self.staff, mautic_user_id=17, mautic_username="old")
-        again = connect_mautic_user(self.staff, mautic_user_id=17, mautic_username="new")
+        first = connect_mautic_user(self.staff, mautic_user_id=17)
+        self.verify_mautic_user.side_effect = lambda mautic_user_id: VerifiedMauticUser(
+            mautic_user_id=int(mautic_user_id),
+            username="new",
+            email="new@example.test",
+            display_name="New",
+            role_name="Marketing",
+            is_active=True,
+        )
+        again = connect_mautic_user(self.staff, mautic_user_id=17)
 
         self.assertEqual(first.pk, again.pk)
         self.assertEqual(again.mautic_username, "new")
@@ -208,6 +232,7 @@ class MauticUserConnectionServiceTests(_IdentityFixtures, TestCase):
             connect_mautic_user(self.normal_user, mautic_user_id=17)
 
     def test_invalid_mautic_user_ids_are_rejected(self):
+        self.verify_mautic_user.side_effect = MauticIdentityError("Mautic user id must be a positive integer")
         for value in (0, -1, True, "abc", "17.0", None, 1.5):
             with self.subTest(value=value), self.assertRaises(MauticIdentityError):
                 connect_mautic_user(self.staff, mautic_user_id=value)
@@ -425,7 +450,7 @@ class MauticIdentityAssertionTests(_IdentityFixtures, TestCase):
             issue_identity_assertion(self.staff, operation=CAMPAIGN_CREATE)
 
     def test_inactive_mapping_is_rejected(self):
-        connect_mautic_user(self.staff, mautic_user_id=17)
+        self._active_connection(user=self.staff, mautic_user_id=17)
         disable_mautic_user_connection(self.staff)
 
         with self.assertRaises(MauticUserConnectionInactiveError):
@@ -548,7 +573,7 @@ class NewsletterAdminMauticIdentityStatusAPITests(_IdentityFixtures, TestCase):
         self.assertEqual(response.data["mautic_username"], "ravi")
 
     def test_disabled_connection_is_not_connected(self):
-        connect_mautic_user(self.staff, mautic_user_id=17, mautic_username="ravi")
+        self._active_connection(user=self.staff, mautic_user_id=17, mautic_username="ravi")
         disable_mautic_user_connection(self.staff)
         self.client.force_authenticate(user=self.staff)
 

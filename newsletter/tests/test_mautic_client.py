@@ -77,6 +77,49 @@ class MauticClientTests(SimpleTestCase):
         ):
             client.get_contact("2")
 
+    def test_get_user_calls_expected_endpoint(self):
+        client, session = self.make_mautic_client(
+            response(
+                200,
+                {
+                    "user": {
+                        "id": 17,
+                        "username": "ravi",
+                        "email": "ravi@mautic.test",
+                        "firstName": "Ravi",
+                        "lastName": "A",
+                        "isPublished": True,
+                        "role": {"id": 2, "name": "Marketing Admin"},
+                    }
+                },
+            )
+        )
+
+        user = client.get_user(17)
+
+        self.assertEqual(user["id"], 17)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("GET", "http://mautic.local/api/users/17"),
+        )
+
+    def test_get_user_requires_positive_numeric_id(self):
+        client, session = self.make_mautic_client()
+
+        with self.assertRaisesRegex(PermanentMauticError, "Mautic user ID is required"):
+            client.get_user("abc")
+
+        session.request.assert_not_called()
+
+    def test_get_user_rejects_malformed_response(self):
+        client, _ = self.make_mautic_client(response(200, {"user": []}))
+
+        with self.assertRaisesRegex(
+            TemporaryMauticError,
+            "Mautic user lookup returned an invalid response",
+        ):
+            client.get_user(17)
+
     def test_get_contact_activity_calls_expected_endpoint(self):
         client, session = self.make_mautic_client(
             response(
