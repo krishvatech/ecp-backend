@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -142,6 +142,7 @@ class NewsletterAdminMauticSegmentFilterMetadataTests(TestCase):
         self.assertEqual(response.status_code, 502)
 
 
+@override_settings(ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False)
 class NewsletterAdminMauticSegmentFilterWriteTests(TestCase):
     """Creating and updating dynamic segments through official REST."""
 
@@ -535,6 +536,7 @@ class NewsletterAdminMauticSegmentProtectionTests(TestCase):
         client_cls.return_value.delete_segment.assert_not_called()
 
 
+@override_settings(ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False)
 class NewsletterAdminMauticSegmentDeleteTests(TestCase):
     """Deleting a native segment must report what actually happened.
 

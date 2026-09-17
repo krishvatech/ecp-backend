@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 
 from moderation.permissions import IsStaffOrSuperuser
 
+from . import field_services as field_service_module
 from .field_services import (
     ProtectedMauticFieldError,
     create_admin_field,
@@ -19,6 +20,8 @@ from .field_services import (
     update_admin_field,
 )
 from .mautic import PermanentMauticError, TemporaryMauticError
+from .mautic.operations import FIELD_CREATE, FIELD_DELETE, FIELD_UPDATE
+from .mautic_identity_execution import run_interactive_mutation
 from .provider_errors import provider_error_response
 
 
@@ -53,11 +56,23 @@ class NewsletterAdminFieldListCreateView(APIView):
 
     def post(self, request, field_object):
         try:
-            data = create_admin_field(field_object, request.data)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=FIELD_CREATE,
+                resource="field",
+                mutate=lambda client: create_admin_field(
+                    field_object,
+                    request.data,
+                    client=client,
+                ),
+                client_factory=field_service_module.MauticClient,
+            )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _field_error(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -77,25 +92,52 @@ class NewsletterAdminFieldDetailView(APIView):
 
     def patch(self, request, field_object, field_id):
         try:
-            data = update_admin_field(field_object, field_id, request.data)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=FIELD_UPDATE,
+                resource="field",
+                resource_id=field_id,
+                mutate=lambda client: update_admin_field(
+                    field_object,
+                    field_id,
+                    request.data,
+                    client=client,
+                ),
+                client_factory=field_service_module.MauticClient,
+            )
         except ProtectedMauticFieldError as exc:
             return _protected_response(exc)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _field_error(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(data, status=status.HTTP_200_OK)
 
     def delete(self, request, field_object, field_id):
         try:
-            data = delete_admin_field(field_object, field_id)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=FIELD_DELETE,
+                resource="field",
+                resource_id=field_id,
+                mutate=lambda client: delete_admin_field(
+                    field_object,
+                    field_id,
+                    client=client,
+                ),
+                client_factory=field_service_module.MauticClient,
+            )
         except ProtectedMauticFieldError as exc:
             return _protected_response(exc)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _field_error(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(data, status=status.HTTP_200_OK)
 

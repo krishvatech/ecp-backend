@@ -97,7 +97,7 @@ def _require_tag_id(tag_id) -> str:
     return normalized
 
 
-def create_admin_tag(payload: dict[str, Any]) -> dict[str, Any]:
+def create_admin_tag(payload: dict[str, Any], *, client: MauticClient | None = None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Tag payload must be an object.")
     unsupported = sorted(set(payload.keys()) - {"tag"})
@@ -105,10 +105,11 @@ def create_admin_tag(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Unsupported tag field(s): " + ", ".join(unsupported))
 
     name = _normalize_tag_name(payload.get("tag"))
-    return normalize_admin_tag(MauticClient().create_tag({"tag": name}))
+    client = client or MauticClient()
+    return normalize_admin_tag(client.create_tag({"tag": name}))
 
 
-def update_admin_tag(tag_id, payload: dict[str, Any]) -> dict[str, Any]:
+def update_admin_tag(tag_id, payload: dict[str, Any], *, client: MauticClient | None = None) -> dict[str, Any]:
     tag_id = _require_tag_id(tag_id)
     if not isinstance(payload, dict):
         raise ValueError("Tag payload must be an object.")
@@ -117,10 +118,12 @@ def update_admin_tag(tag_id, payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Unsupported tag field(s): " + ", ".join(unsupported))
 
     name = _normalize_tag_name(payload.get("tag"))
-    return normalize_admin_tag(MauticClient().update_tag(tag_id, {"tag": name}))
+    client = client or MauticClient()
+    return normalize_admin_tag(client.update_tag(tag_id, {"tag": name}))
 
 
-def delete_admin_tag(tag_id) -> dict[str, Any]:
+def delete_admin_tag(tag_id, *, client: MauticClient | None = None) -> dict[str, Any]:
     tag_id = _require_tag_id(tag_id)
-    MauticClient().delete_tag(tag_id)
+    client = client or MauticClient()
+    client.delete_tag(tag_id)
     return {"deleted": True, "id": tag_id}

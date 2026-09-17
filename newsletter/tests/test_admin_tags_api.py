@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -21,6 +21,7 @@ TAG_LIST = {
 }
 
 
+@override_settings(ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False)
 class NewsletterAdminTagDirectoryAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()

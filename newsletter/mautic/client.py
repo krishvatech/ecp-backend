@@ -23,6 +23,21 @@ from .operations import (
     CAMPAIGN_DELETE,
     CAMPAIGN_EVENT_DELETE,
     CAMPAIGN_UPDATE,
+    CONTACT_CREATE,
+    CONTACT_TAG_ADD,
+    CONTACT_TAG_REMOVE,
+    CONTACT_UPDATE,
+    FIELD_CREATE,
+    FIELD_DELETE,
+    FIELD_UPDATE,
+    SEGMENT_CONTACT_ADD,
+    SEGMENT_CONTACT_REMOVE,
+    SEGMENT_CREATE,
+    SEGMENT_DELETE,
+    SEGMENT_UPDATE,
+    TAG_CREATE,
+    TAG_DELETE,
+    TAG_UPDATE,
 )
 
 
@@ -263,7 +278,15 @@ class MauticClient:
         if not str(payload.get("email") or "").strip():
             raise PermanentMauticError("Email is required to create a Mautic contact")
 
-        response = self._request("POST", "contacts/new", data=payload)
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/contacts/new",
+                operation=CONTACT_CREATE,
+                data=payload,
+            )
+        else:
+            response = self._request("POST", "contacts/new", data=payload)
         data = self._json_object(response, "Mautic contact creation")
         contact = data.get("contact")
         if not isinstance(contact, dict) or not contact.get("id"):
@@ -281,11 +304,19 @@ class MauticClient:
         if not contact_id:
             raise PermanentMauticError("Mautic contact ID is required")
 
-        response = self._request(
-            "PATCH",
-            f"contacts/{contact_id}/edit",
-            data=payload,
-        )
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/contacts/{contact_id}/edit",
+                operation=CONTACT_UPDATE,
+                data=payload,
+            )
+        else:
+            response = self._request(
+                "PATCH",
+                f"contacts/{contact_id}/edit",
+                data=payload,
+            )
         data = self._json_object(response, "Mautic contact update")
         contact = data.get("contact")
         if not isinstance(contact, dict) or not contact.get("id"):
@@ -383,7 +414,15 @@ class MauticClient:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         field_object = self._normalize_field_object(field_object)
-        response = self._request("POST", f"fields/{field_object}/new", data=payload)
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                f"ecp/bridge/fields/{field_object}/new",
+                operation=FIELD_CREATE,
+                data=payload,
+            )
+        else:
+            response = self._request("POST", f"fields/{field_object}/new", data=payload)
         return self._field_from_response(response, "Mautic field creation")
 
     def update_field(
@@ -396,11 +435,19 @@ class MauticClient:
         field_id = str(field_id or "").strip()
         if not field_id:
             raise PermanentMauticError("Mautic field ID is required")
-        response = self._request(
-            "PATCH",
-            f"fields/{field_object}/{field_id}/edit",
-            data=payload,
-        )
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/fields/{field_object}/{field_id}/edit",
+                operation=FIELD_UPDATE,
+                data=payload,
+            )
+        else:
+            response = self._request(
+                "PATCH",
+                f"fields/{field_object}/{field_id}/edit",
+                data=payload,
+            )
         return self._field_from_response(response, "Mautic field update")
 
     def delete_field(self, field_object: str, field_id: int | str) -> dict[str, Any]:
@@ -408,7 +455,14 @@ class MauticClient:
         field_id = str(field_id or "").strip()
         if not field_id:
             raise PermanentMauticError("Mautic field ID is required")
-        response = self._request("DELETE", f"fields/{field_object}/{field_id}/delete")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/fields/{field_object}/{field_id}/delete",
+                operation=FIELD_DELETE,
+            )
+        else:
+            response = self._request("DELETE", f"fields/{field_object}/{field_id}/delete")
         return self._field_from_response(
             response,
             "Mautic field deletion",
@@ -444,21 +498,44 @@ class MauticClient:
         return self._tag_from_response(response, "Mautic tag lookup")
 
     def create_tag(self, payload: dict[str, Any]) -> dict[str, Any]:
-        response = self._request("POST", "tags/new", data=payload)
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/tags/new",
+                operation=TAG_CREATE,
+                data=payload,
+            )
+        else:
+            response = self._request("POST", "tags/new", data=payload)
         return self._tag_from_response(response, "Mautic tag creation")
 
     def update_tag(self, tag_id: int | str, payload: dict[str, Any]) -> dict[str, Any]:
         tag_id = str(tag_id or "").strip()
         if not tag_id:
             raise PermanentMauticError("Mautic tag ID is required")
-        response = self._request("PATCH", f"tags/{tag_id}/edit", data=payload)
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/tags/{tag_id}/edit",
+                operation=TAG_UPDATE,
+                data=payload,
+            )
+        else:
+            response = self._request("PATCH", f"tags/{tag_id}/edit", data=payload)
         return self._tag_from_response(response, "Mautic tag update")
 
     def delete_tag(self, tag_id: int | str) -> dict[str, Any]:
         tag_id = str(tag_id or "").strip()
         if not tag_id:
             raise PermanentMauticError("Mautic tag ID is required")
-        response = self._request("DELETE", f"tags/{tag_id}/delete")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/tags/{tag_id}/delete",
+                operation=TAG_DELETE,
+            )
+        else:
+            response = self._request("DELETE", f"tags/{tag_id}/delete")
         return self._tag_from_response(
             response,
             "Mautic tag deletion",
@@ -2130,11 +2207,19 @@ class MauticClient:
         return MauticClient._campaign_form_data(payload)
 
     def create_segment(self, payload: dict[str, Any]) -> dict[str, Any]:
-        response = self._request(
-            "POST",
-            "segments/new",
-            data=self._segment_form_data(payload),
-        )
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/segments/new",
+                operation=SEGMENT_CREATE,
+                data=self._segment_form_data(payload),
+            )
+        else:
+            response = self._request(
+                "POST",
+                "segments/new",
+                data=self._segment_form_data(payload),
+            )
         return self._segment_from_response(response, "Mautic segment creation")
 
     def update_segment(
@@ -2146,11 +2231,19 @@ class MauticClient:
         if not segment_id:
             raise PermanentMauticError("Mautic segment ID is required")
 
-        response = self._request(
-            "PATCH",
-            f"segments/{segment_id}/edit",
-            data=self._segment_form_data(payload),
-        )
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/segments/{segment_id}/edit",
+                operation=SEGMENT_UPDATE,
+                data=self._segment_form_data(payload),
+            )
+        else:
+            response = self._request(
+                "PATCH",
+                f"segments/{segment_id}/edit",
+                data=self._segment_form_data(payload),
+            )
         return self._segment_from_response(response, "Mautic segment update")
 
     def delete_segment(self, segment_id: int | str) -> dict[str, Any]:
@@ -2161,7 +2254,14 @@ class MauticClient:
         # Mautic answers a delete with HTTP 200 and the serialized entity whose id
         # Doctrine has already nulled, so an id is not part of the success
         # contract here — as with every other entity's delete in this client.
-        response = self._request("DELETE", f"segments/{segment_id}/delete")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/segments/{segment_id}/delete",
+                operation=SEGMENT_DELETE,
+            )
+        else:
+            response = self._request("DELETE", f"segments/{segment_id}/delete")
         return self._segment_from_response(
             response,
             "Mautic segment deletion",
@@ -2237,10 +2337,17 @@ class MauticClient:
             raise PermanentMauticError(
                 "Mautic segment ID and contact ID are required"
             )
-        self._request(
-            "POST",
-            f"segments/{segment_id}/contact/{contact_id}/add",
-        )
+        if self._uses_asserted_user():
+            self._bridge_request(
+                "POST",
+                f"ecp/bridge/segments/{segment_id}/contact/{contact_id}/add",
+                operation=SEGMENT_CONTACT_ADD,
+            )
+        else:
+            self._request(
+                "POST",
+                f"segments/{segment_id}/contact/{contact_id}/add",
+            )
 
     def remove_contact_from_segment(
         self,
@@ -2253,7 +2360,54 @@ class MauticClient:
             raise PermanentMauticError(
                 "Mautic segment ID and contact ID are required"
             )
-        self._request(
-            "POST",
-            f"segments/{segment_id}/contact/{contact_id}/remove",
-        )
+        if self._uses_asserted_user():
+            self._bridge_request(
+                "POST",
+                f"ecp/bridge/segments/{segment_id}/contact/{contact_id}/remove",
+                operation=SEGMENT_CONTACT_REMOVE,
+            )
+        else:
+            self._request(
+                "POST",
+                f"segments/{segment_id}/contact/{contact_id}/remove",
+            )
+
+    def add_contact_tag(self, contact_id: int | str, tag: str, current_tags: list[str]) -> dict[str, Any]:
+        contact_id = str(contact_id or "").strip()
+        if not contact_id:
+            raise PermanentMauticError("Mautic contact ID is required")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/contacts/{contact_id}/tags/add",
+                operation=CONTACT_TAG_ADD,
+                data={"tags": current_tags},
+            )
+            data = self._json_object(response, "Mautic contact tag add")
+            contact = data.get("contact")
+            if not isinstance(contact, dict) or not contact.get("id"):
+                raise TemporaryMauticError(
+                    "Mautic contact tag add returned an invalid response"
+                )
+            return contact
+        return self.update_contact(contact_id, {"tags": current_tags})
+
+    def remove_contact_tag(self, contact_id: int | str, tag: str, current_tags: list[str]) -> dict[str, Any]:
+        contact_id = str(contact_id or "").strip()
+        if not contact_id:
+            raise PermanentMauticError("Mautic contact ID is required")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/contacts/{contact_id}/tags/remove",
+                operation=CONTACT_TAG_REMOVE,
+                data={"tag": tag, "tags": current_tags},
+            )
+            data = self._json_object(response, "Mautic contact tag remove")
+            contact = data.get("contact")
+            if not isinstance(contact, dict) or not contact.get("id"):
+                raise TemporaryMauticError(
+                    "Mautic contact tag remove returned an invalid response"
+                )
+            return contact
+        return self.update_contact(contact_id, {"tags": current_tags})

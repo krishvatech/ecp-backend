@@ -307,10 +307,15 @@ def _assert_type_is_supported(client: MauticClient, field_type: str) -> None:
         )
 
 
-def create_admin_field(field_object: str, payload: dict[str, Any]) -> dict[str, Any]:
+def create_admin_field(
+    field_object: str,
+    payload: dict[str, Any],
+    *,
+    client: MauticClient | None = None,
+) -> dict[str, Any]:
     field_object = normalize_field_object(field_object)
     data = _normalize_field_payload(payload, partial=False)
-    client = MauticClient()
+    client = client or MauticClient()
     _assert_type_is_supported(client, data.get("type"))
     field = client.create_field(field_object, data)
     return normalize_admin_field(field)
@@ -320,6 +325,8 @@ def update_admin_field(
     field_object: str,
     field_id,
     payload: dict[str, Any],
+    *,
+    client: MauticClient | None = None,
 ) -> dict[str, Any]:
     field_object = normalize_field_object(field_object)
     field_id = str(field_id or "").strip()
@@ -327,7 +334,7 @@ def update_admin_field(
         raise ValueError("Mautic field ID is required.")
 
     data = _normalize_field_payload(payload, partial=True)
-    client = MauticClient()
+    client = client or MauticClient()
     existing = normalize_admin_field(client.get_field(field_object, field_id))
 
     # Mautic's native field form disables the group selector on a fixed field.
@@ -339,13 +346,18 @@ def update_admin_field(
     return normalize_admin_field(client.update_field(field_object, field_id, data))
 
 
-def delete_admin_field(field_object: str, field_id) -> dict[str, Any]:
+def delete_admin_field(
+    field_object: str,
+    field_id,
+    *,
+    client: MauticClient | None = None,
+) -> dict[str, Any]:
     field_object = normalize_field_object(field_object)
     field_id = str(field_id or "").strip()
     if not field_id:
         raise ValueError("Mautic field ID is required.")
 
-    client = MauticClient()
+    client = client or MauticClient()
     existing = normalize_admin_field(client.get_field(field_object, field_id))
     # Mautic core refuses this outright (LeadBundle FieldController::deleteAction), so
     # ECP refuses it before the call rather than surfacing an opaque provider error.

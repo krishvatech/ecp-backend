@@ -18,6 +18,7 @@ from newsletter.models import (
 User = get_user_model()
 
 
+@override_settings(ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False)
 class NewsletterAdminCampaignAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()

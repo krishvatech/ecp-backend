@@ -68,6 +68,18 @@ from .models import (
     NewsletterSubscription,
     NewsletterSyncEvent,
 )
+from .mautic.operations import (
+    CONTACT_CREATE,
+    CONTACT_TAG_ADD,
+    CONTACT_TAG_REMOVE,
+    CONTACT_UPDATE,
+    SEGMENT_CONTACT_ADD,
+    SEGMENT_CONTACT_REMOVE,
+    SEGMENT_CREATE,
+    SEGMENT_DELETE,
+    SEGMENT_UPDATE,
+)
+from .mautic_identity_execution import run_interactive_mutation
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic_reference_choices import (
     REFERENCE_CHOICE_SOURCES,
@@ -907,11 +919,19 @@ class NewsletterAdminContactListView(APIView):
 
     def post(self, request):
         try:
-            data = create_admin_contact(request.data)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=CONTACT_CREATE,
+                resource="contact",
+                mutate=lambda client: create_admin_contact(request.data, client=client),
+                client_factory=MauticClient,
+            )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _contact_stage_provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -978,7 +998,18 @@ class NewsletterAdminContactDetailView(APIView):
 
     def patch(self, request, mautic_contact_id):
         try:
-            data = update_admin_contact(mautic_contact_id, request.data)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=CONTACT_UPDATE,
+                resource="contact",
+                resource_id=mautic_contact_id,
+                mutate=lambda client: update_admin_contact(
+                    mautic_contact_id,
+                    request.data,
+                    client=client,
+                ),
+                client_factory=MauticClient,
+            )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except PermanentMauticError as exc:
@@ -987,6 +1018,8 @@ class NewsletterAdminContactDetailView(APIView):
             return _contact_stage_provider_error_response(exc)
         except TemporaryMauticError as exc:
             return _provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(data, status=status.HTTP_200_OK)
 
@@ -1025,15 +1058,25 @@ class NewsletterAdminContactTagsView(APIView):
 
     def post(self, request, mautic_contact_id):
         try:
-            data = set_admin_contact_tag(
-                mautic_contact_id,
-                request.data.get("tag"),
-                remove=False,
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=CONTACT_TAG_ADD,
+                resource="contact_tag",
+                resource_id=mautic_contact_id,
+                mutate=lambda client: set_admin_contact_tag(
+                    mautic_contact_id,
+                    request.data.get("tag"),
+                    remove=False,
+                    client=client,
+                ),
+                client_factory=MauticClient,
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _contact_stage_provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(data, status=status.HTTP_200_OK)
 
@@ -1043,11 +1086,25 @@ class NewsletterAdminContactTagDetailView(APIView):
 
     def delete(self, request, mautic_contact_id, tag):
         try:
-            data = set_admin_contact_tag(mautic_contact_id, tag, remove=True)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=CONTACT_TAG_REMOVE,
+                resource="contact_tag",
+                resource_id=mautic_contact_id,
+                mutate=lambda client: set_admin_contact_tag(
+                    mautic_contact_id,
+                    tag,
+                    remove=True,
+                    client=client,
+                ),
+                client_factory=MauticClient,
+            )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _contact_stage_provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(data, status=status.HTTP_200_OK)
 
@@ -1851,9 +1908,17 @@ class NewsletterAdminMauticSegmentListView(APIView):
             )
 
         try:
-            segment = client.create_segment(payload)
+            segment, identity_response = run_interactive_mutation(
+                request,
+                action=SEGMENT_CREATE,
+                resource="segment",
+                mutate=lambda identity_client: identity_client.create_segment(payload),
+                client_factory=MauticClient,
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _native_segment_provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(
             _normalize_mautic_segment(segment),
@@ -1996,9 +2061,18 @@ class NewsletterAdminMauticSegmentDetailView(APIView):
             )
 
         try:
-            segment = client.update_segment(segment_id, payload)
+            segment, identity_response = run_interactive_mutation(
+                request,
+                action=SEGMENT_UPDATE,
+                resource="segment",
+                resource_id=segment_id,
+                mutate=lambda identity_client: identity_client.update_segment(segment_id, payload),
+                client_factory=MauticClient,
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _native_segment_provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(
             _normalize_mautic_segment(segment),
@@ -2019,9 +2093,18 @@ class NewsletterAdminMauticSegmentDetailView(APIView):
             )
 
         try:
-            MauticClient().delete_segment(segment_id)
+            _, identity_response = run_interactive_mutation(
+                request,
+                action=SEGMENT_DELETE,
+                resource="segment",
+                resource_id=segment_id,
+                mutate=lambda identity_client: identity_client.delete_segment(segment_id),
+                client_factory=MauticClient,
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _native_segment_provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -2098,13 +2181,25 @@ class NewsletterAdminMauticSegmentContactsView(APIView):
             if protected_response is not None:
                 return protected_response
             client.get_contact(contact_id)
-            client.add_contact_to_segment(segment_id, contact_id)
+            _, identity_response = run_interactive_mutation(
+                request,
+                action=SEGMENT_CONTACT_ADD,
+                resource="segment_contact",
+                resource_id=f"{segment_id}:{contact_id}",
+                mutate=lambda identity_client: identity_client.add_contact_to_segment(
+                    segment_id,
+                    contact_id,
+                ),
+                client_factory=MauticClient,
+            )
         except PermanentMauticError as exc:
             if "HTTP 404" in str(exc):
                 raise Http404
             return _native_segment_provider_error_response(exc)
         except TemporaryMauticError as exc:
             return _native_segment_provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(
             {
@@ -2130,7 +2225,17 @@ class NewsletterAdminMauticSegmentContactDetailView(APIView):
             protected_response = _segment_membership_protection_response(segment)
             if protected_response is not None:
                 return protected_response
-            client.remove_contact_from_segment(segment_id, normalized_contact_id)
+            _, identity_response = run_interactive_mutation(
+                request,
+                action=SEGMENT_CONTACT_REMOVE,
+                resource="segment_contact",
+                resource_id=f"{segment_id}:{normalized_contact_id}",
+                mutate=lambda identity_client: identity_client.remove_contact_from_segment(
+                    segment_id,
+                    normalized_contact_id,
+                ),
+                client_factory=MauticClient,
+            )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except PermanentMauticError as exc:
@@ -2139,6 +2244,8 @@ class NewsletterAdminMauticSegmentContactDetailView(APIView):
             return _native_segment_provider_error_response(exc)
         except TemporaryMauticError as exc:
             return _native_segment_provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 

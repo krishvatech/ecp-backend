@@ -154,6 +154,202 @@ class MauticClientTests(SimpleTestCase):
             ("DELETE", "http://mautic.local/api/ecp/campaign-builder/campaigns/7/events/26"),
         )
 
+    def test_asserted_audience_mutations_use_exact_bridge_operations(self):
+        cases = [
+            (
+                lambda client: client.create_segment({"name": "QA Segment"}),
+                {"list": {"id": 11, "name": "QA Segment"}},
+                "segment.create",
+                ("POST", "http://mautic.local/api/ecp/bridge/segments/new"),
+            ),
+            (
+                lambda client: client.update_segment(11, {"name": "QA Segment 2"}),
+                {"list": {"id": 11, "name": "QA Segment 2"}},
+                "segment.update",
+                ("PATCH", "http://mautic.local/api/ecp/bridge/segments/11/edit"),
+            ),
+            (
+                lambda client: client.delete_segment(11),
+                {"list": {"id": None, "name": "QA Segment 2"}},
+                "segment.delete",
+                ("DELETE", "http://mautic.local/api/ecp/bridge/segments/11/delete"),
+            ),
+            (
+                lambda client: client.add_contact_to_segment(11, 22),
+                {"success": True},
+                "segment.contact.add",
+                ("POST", "http://mautic.local/api/ecp/bridge/segments/11/contact/22/add"),
+            ),
+            (
+                lambda client: client.remove_contact_from_segment(11, 22),
+                {"success": True},
+                "segment.contact.remove",
+                ("POST", "http://mautic.local/api/ecp/bridge/segments/11/contact/22/remove"),
+            ),
+            (
+                lambda client: client.create_contact({"email": "qa@example.test"}),
+                {"contact": {"id": 22}},
+                "contact.create",
+                ("POST", "http://mautic.local/api/ecp/bridge/contacts/new"),
+            ),
+            (
+                lambda client: client.update_contact(22, {"firstname": "QA"}),
+                {"contact": {"id": 22}},
+                "contact.update",
+                ("PATCH", "http://mautic.local/api/ecp/bridge/contacts/22/edit"),
+            ),
+            (
+                lambda client: client.add_contact_tag(22, "qa-tag", ["qa-tag"]),
+                {"contact": {"id": 22}},
+                "contact.tag.add",
+                ("PATCH", "http://mautic.local/api/ecp/bridge/contacts/22/tags/add"),
+            ),
+            (
+                lambda client: client.remove_contact_tag(22, "qa-tag", []),
+                {"contact": {"id": 22}},
+                "contact.tag.remove",
+                ("PATCH", "http://mautic.local/api/ecp/bridge/contacts/22/tags/remove"),
+            ),
+            (
+                lambda client: client.create_tag({"tag": "qa-tag"}),
+                {"tag": {"id": 33}},
+                "tag.create",
+                ("POST", "http://mautic.local/api/ecp/bridge/tags/new"),
+            ),
+            (
+                lambda client: client.update_tag(33, {"tag": "qa-tag-2"}),
+                {"tag": {"id": 33}},
+                "tag.update",
+                ("PATCH", "http://mautic.local/api/ecp/bridge/tags/33/edit"),
+            ),
+            (
+                lambda client: client.delete_tag(33),
+                {"tag": {"id": None}},
+                "tag.delete",
+                ("DELETE", "http://mautic.local/api/ecp/bridge/tags/33/delete"),
+            ),
+            (
+                lambda client: client.create_field("contact", {"label": "QA Field", "alias": "qa_field"}),
+                {"field": {"id": 44}},
+                "field.create",
+                ("POST", "http://mautic.local/api/ecp/bridge/fields/contact/new"),
+            ),
+            (
+                lambda client: client.update_field("contact", 44, {"label": "QA Field 2"}),
+                {"field": {"id": 44}},
+                "field.update",
+                ("PATCH", "http://mautic.local/api/ecp/bridge/fields/contact/44/edit"),
+            ),
+            (
+                lambda client: client.delete_field("contact", 44),
+                {"field": {"id": None}},
+                "field.delete",
+                ("DELETE", "http://mautic.local/api/ecp/bridge/fields/contact/44/delete"),
+            ),
+        ]
+
+        for call, payload, operation, expected_request in cases:
+            with self.subTest(operation=operation):
+                client, session, operations = self.make_asserted_mautic_client(
+                    response(200, payload)
+                )
+
+                call(client)
+
+                self.assertEqual(operations, [operation])
+                self.assertEqual(session.request.call_args.args[:2], expected_request)
+
+    def test_service_account_audience_mutations_use_native_paths(self):
+        cases = [
+            (
+                lambda client: client.create_segment({"name": "QA Segment"}),
+                {"list": {"id": 11}},
+                ("POST", "http://mautic.local/api/segments/new"),
+            ),
+            (
+                lambda client: client.add_contact_tag(22, "qa-tag", ["qa-tag"]),
+                {"contact": {"id": 22}},
+                ("PATCH", "http://mautic.local/api/contacts/22/edit"),
+            ),
+            (
+                lambda client: client.remove_contact_tag(22, "qa-tag", []),
+                {"contact": {"id": 22}},
+                ("PATCH", "http://mautic.local/api/contacts/22/edit"),
+            ),
+            (
+                lambda client: client.create_contact({"email": "qa@example.test"}),
+                {"contact": {"id": 22}},
+                ("POST", "http://mautic.local/api/contacts/new"),
+            ),
+            (
+                lambda client: client.update_contact(22, {"firstname": "QA"}),
+                {"contact": {"id": 22}},
+                ("PATCH", "http://mautic.local/api/contacts/22/edit"),
+            ),
+            (
+                lambda client: client.update_segment(11, {"name": "QA Segment 2"}),
+                {"list": {"id": 11}},
+                ("PATCH", "http://mautic.local/api/segments/11/edit"),
+            ),
+            (
+                lambda client: client.delete_segment(11),
+                {"list": {"id": None}},
+                ("DELETE", "http://mautic.local/api/segments/11/delete"),
+            ),
+            (
+                lambda client: client.add_contact_to_segment(11, 22),
+                {"success": True},
+                ("POST", "http://mautic.local/api/segments/11/contact/22/add"),
+            ),
+            (
+                lambda client: client.remove_contact_from_segment(11, 22),
+                {"success": True},
+                ("POST", "http://mautic.local/api/segments/11/contact/22/remove"),
+            ),
+            (
+                lambda client: client.create_tag({"tag": "qa-tag"}),
+                {"tag": {"id": 33}},
+                ("POST", "http://mautic.local/api/tags/new"),
+            ),
+            (
+                lambda client: client.update_tag(33, {"tag": "qa-tag-2"}),
+                {"tag": {"id": 33}},
+                ("PATCH", "http://mautic.local/api/tags/33/edit"),
+            ),
+            (
+                lambda client: client.delete_tag(33),
+                {"tag": {"id": None}},
+                ("DELETE", "http://mautic.local/api/tags/33/delete"),
+            ),
+            (
+                lambda client: client.create_field("contact", {"label": "QA Field", "alias": "qa_field"}),
+                {"field": {"id": 44}},
+                ("POST", "http://mautic.local/api/fields/contact/new"),
+            ),
+            (
+                lambda client: client.update_field("contact", 44, {"label": "QA Field 2"}),
+                {"field": {"id": 44}},
+                ("PATCH", "http://mautic.local/api/fields/contact/44/edit"),
+            ),
+            (
+                lambda client: client.delete_field("contact", 44),
+                {"field": {"id": None}},
+                ("DELETE", "http://mautic.local/api/fields/contact/44/delete"),
+            ),
+        ]
+
+        for call, payload, expected_request in cases:
+            with self.subTest(expected_request=expected_request):
+                client, session = self.make_mautic_client(response(200, payload))
+
+                call(client)
+
+                self.assertEqual(session.request.call_args.args[:2], expected_request)
+                self.assertNotIn(
+                    "X-ECP-Identity-Assertion",
+                    dict(session.request.call_args.kwargs.get("headers") or {}),
+                )
+
     def test_get_user_calls_expected_endpoint(self):
         client, session = self.make_mautic_client(
             response(

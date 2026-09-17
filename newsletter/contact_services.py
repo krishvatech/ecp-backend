@@ -391,16 +391,23 @@ def _normalize_contact_payload(payload: dict[str, Any], *, partial: bool) -> dic
     return data
 
 
-def create_admin_contact(payload: dict[str, Any]) -> dict[str, Any]:
-    contact = MauticClient().create_contact(_normalize_contact_payload(payload, partial=False))
+def create_admin_contact(payload: dict[str, Any], *, client: MauticClient | None = None) -> dict[str, Any]:
+    client = client or MauticClient()
+    contact = client.create_contact(_normalize_contact_payload(payload, partial=False))
     return get_admin_contact(contact.get("id"))
 
 
-def update_admin_contact(mautic_contact_id, payload: dict[str, Any]) -> dict[str, Any]:
+def update_admin_contact(
+    mautic_contact_id,
+    payload: dict[str, Any],
+    *,
+    client: MauticClient | None = None,
+) -> dict[str, Any]:
     contact_id = str(mautic_contact_id or "").strip()
     if not contact_id:
         raise ValueError("Mautic contact ID is required.")
-    MauticClient().update_contact(
+    client = client or MauticClient()
+    client.update_contact(
         contact_id,
         _normalize_contact_payload(payload, partial=True),
     )
@@ -452,14 +459,20 @@ def list_admin_tags(*, search: str = "", limit: int = 100) -> dict[str, Any]:
     return {"count": len(tags), "results": tags}
 
 
-def set_admin_contact_tag(mautic_contact_id, tag_name: str, *, remove: bool = False) -> dict[str, Any]:
+def set_admin_contact_tag(
+    mautic_contact_id,
+    tag_name: str,
+    *,
+    remove: bool = False,
+    client: MauticClient | None = None,
+) -> dict[str, Any]:
     contact_id = str(mautic_contact_id or "").strip()
     tag = str(tag_name or "").strip()
     if not contact_id:
         raise ValueError("Mautic contact ID is required.")
     if not tag:
         raise ValueError("tag is required.")
-    client = MauticClient()
+    client = client or MauticClient()
     contact = client.get_contact(contact_id)
     current = [item["tag"] for item in _tags_from_contact(contact)]
     if remove:
@@ -468,7 +481,10 @@ def set_admin_contact_tag(mautic_contact_id, tag_name: str, *, remove: bool = Fa
         next_tags = current
     else:
         next_tags = current + [tag]
-    client.update_contact(contact_id, {"tags": next_tags})
+    if remove:
+        client.remove_contact_tag(contact_id, tag, next_tags)
+    else:
+        client.add_contact_tag(contact_id, tag, next_tags)
     return get_admin_contact(contact_id)
 
 
