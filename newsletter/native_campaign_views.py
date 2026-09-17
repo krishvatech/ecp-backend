@@ -1557,12 +1557,51 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
         )
 
     def delete(self, request, campaign_id):
+        correlation_id = correlation_id_for_request(request)
+        action = MauticIdentityAuditLog.Action.CAMPAIGN_DELETE
         try:
-            MauticClient().delete_campaign(campaign_id)
+            client = _interactive_campaign_client(request, correlation_id)
+        except MauticIdentityError as exc:
+            record_identity_failure(
+                action=action,
+                exc=exc,
+                actor=request.user,
+                resource="campaign",
+                resource_id=campaign_id,
+                correlation_id=correlation_id,
+            )
+            return _with_correlation(identity_error_response(exc), correlation_id)
+
+        try:
+            client.delete_campaign(campaign_id)
+        except (MauticBridgeRejectedError, MauticIdentityError) as exc:
+            record_identity_failure(
+                action=action,
+                exc=exc,
+                actor=request.user,
+                mautic_user_id=_asserted_user_id(client),
+                resource="campaign",
+                resource_id=campaign_id,
+                auth_mode=_auth_mode_label(client),
+                correlation_id=correlation_id,
+                assertion_jti=_assertion_jti(client),
+            )
+            return _with_correlation(identity_error_response(exc), correlation_id)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        record_identity_audit(
+            action=action,
+            status=MauticIdentityAuditLog.Status.SUCCEEDED,
+            actor=request.user,
+            mautic_user_id=_asserted_user_id(client),
+            resource="campaign",
+            resource_id=campaign_id,
+            auth_mode=_auth_mode_label(client),
+            correlation_id=correlation_id,
+            assertion_jti=_assertion_jti(client),
+        )
+        return _with_correlation(Response(status=status.HTTP_204_NO_CONTENT), correlation_id)
 
 
 class NewsletterAdminMauticCampaignEventView(APIView):
@@ -1576,6 +1615,8 @@ class NewsletterAdminMauticCampaignEventView(APIView):
     permission_classes = [IsStaffOrSuperuser]
 
     def delete(self, request, campaign_id, event_id):
+        correlation_id = correlation_id_for_request(request)
+        action = MauticIdentityAuditLog.Action.CAMPAIGN_EVENT_DELETE
         campaign_id = str(campaign_id or "").strip()
         event_id = str(event_id or "").strip()
         if not campaign_id.isdigit() or not event_id.isdigit():
@@ -1589,7 +1630,33 @@ class NewsletterAdminMauticCampaignEventView(APIView):
             )
 
         try:
-            result = MauticClient().delete_campaign_event(campaign_id, event_id)
+            client = _interactive_campaign_client(request, correlation_id)
+        except MauticIdentityError as exc:
+            record_identity_failure(
+                action=action,
+                exc=exc,
+                actor=request.user,
+                resource="campaign_event",
+                resource_id=event_id,
+                correlation_id=correlation_id,
+            )
+            return _with_correlation(identity_error_response(exc), correlation_id)
+
+        try:
+            result = client.delete_campaign_event(campaign_id, event_id)
+        except (MauticBridgeRejectedError, MauticIdentityError) as exc:
+            record_identity_failure(
+                action=action,
+                exc=exc,
+                actor=request.user,
+                mautic_user_id=_asserted_user_id(client),
+                resource="campaign_event",
+                resource_id=event_id,
+                auth_mode=_auth_mode_label(client),
+                correlation_id=correlation_id,
+                assertion_jti=_assertion_jti(client),
+            )
+            return _with_correlation(identity_error_response(exc), correlation_id)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             if isinstance(exc, PermanentMauticError) and "HTTP 403" in str(exc):
                 return Response(
@@ -1599,21 +1666,35 @@ class NewsletterAdminMauticCampaignEventView(APIView):
             return _provider_error_response(exc)
 
         deleted = result.get("deleted")
-        return Response(
-            {
-                "deleted": deleted if isinstance(deleted, dict) else {"id": event_id},
-                "detachedChildren": [
-                    str(child)
-                    for child in (result.get("detachedChildren") or [])
-                    if child not in (None, "")
-                ],
-                "remainingEventIds": [
-                    str(remaining)
-                    for remaining in (result.get("remainingEventIds") or [])
-                    if remaining not in (None, "")
-                ],
-            },
-            status=status.HTTP_200_OK,
+        record_identity_audit(
+            action=action,
+            status=MauticIdentityAuditLog.Status.SUCCEEDED,
+            actor=request.user,
+            mautic_user_id=_asserted_user_id(client),
+            resource="campaign_event",
+            resource_id=event_id,
+            auth_mode=_auth_mode_label(client),
+            correlation_id=correlation_id,
+            assertion_jti=_assertion_jti(client),
+        )
+        return _with_correlation(
+            Response(
+                {
+                    "deleted": deleted if isinstance(deleted, dict) else {"id": event_id},
+                    "detachedChildren": [
+                        str(child)
+                        for child in (result.get("detachedChildren") or [])
+                        if child not in (None, "")
+                    ],
+                    "remainingEventIds": [
+                        str(remaining)
+                        for remaining in (result.get("remainingEventIds") or [])
+                        if remaining not in (None, "")
+                    ],
+                },
+                status=status.HTTP_200_OK,
+            ),
+            correlation_id,
         )
 
 

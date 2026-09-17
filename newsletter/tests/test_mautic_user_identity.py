@@ -32,7 +32,12 @@ from newsletter.mautic.identity_assertion import (
     issue_identity_assertion,
     load_identity_assertion_settings,
 )
-from newsletter.mautic.operations import CAMPAIGN_CREATE, CAMPAIGN_UPDATE
+from newsletter.mautic.operations import (
+    CAMPAIGN_CREATE,
+    CAMPAIGN_DELETE,
+    CAMPAIGN_EVENT_DELETE,
+    CAMPAIGN_UPDATE,
+)
 from newsletter.mautic_identity_services import (
     VerifiedMauticUser,
     connect_mautic_user,
@@ -427,7 +432,12 @@ class MauticIdentityAssertionTests(_IdentityFixtures, TestCase):
     def test_each_operation_is_signed_into_its_own_assertion(self):
         self._active_connection()
 
-        for operation in (CAMPAIGN_CREATE, CAMPAIGN_UPDATE):
+        for operation in (
+            CAMPAIGN_CREATE,
+            CAMPAIGN_UPDATE,
+            CAMPAIGN_DELETE,
+            CAMPAIGN_EVENT_DELETE,
+        ):
             with self.subTest(operation=operation):
                 issued = issue_identity_assertion(self.staff, operation=operation, now=self.NOW)
                 self.assertEqual(self._decode(issued.token)["operation"], operation)
@@ -441,7 +451,16 @@ class MauticIdentityAssertionTests(_IdentityFixtures, TestCase):
     def test_unknown_operation_is_refused_before_signing(self):
         self._active_connection()
 
-        for operation in ("", "campaign.delete", "CAMPAIGN.CREATE", "campaign.create ", None, 1):
+        for operation in (
+            "",
+            "campaign.archive",
+            "campaign.event.create",
+            "campaign.event.update",
+            "CAMPAIGN.CREATE",
+            "campaign.create ",
+            None,
+            1,
+        ):
             with self.subTest(operation=operation), self.assertRaises(MauticIdentityAssertionError):
                 issue_identity_assertion(self.staff, operation=operation)
 

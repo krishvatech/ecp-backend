@@ -33,6 +33,17 @@ class MauticClientTests(SimpleTestCase):
             session.request.return_value = result
         return MauticClient(session=session), session
 
+    def make_asserted_mautic_client(self, result=None):
+        client, session = self.make_mautic_client(result)
+        operations = []
+
+        def assertion_provider(operation):
+            operations.append(operation)
+            return f"assertion-for-{operation}"
+
+        client._assertion_provider = assertion_provider
+        return client, session, operations
+
     def test_health_check_uses_basic_auth_and_timeout(self):
         client, session = self.make_mautic_client(response(200, {"contacts": {}}))
 
@@ -76,6 +87,72 @@ class MauticClientTests(SimpleTestCase):
             "contact detail returned an invalid response",
         ):
             client.get_contact("2")
+
+    def test_asserted_campaign_create_uses_bridge_operation(self):
+        client, session, operations = self.make_asserted_mautic_client(
+            response(201, {"campaign": {"id": 5, "name": "Launch"}})
+        )
+
+        campaign = client.create_campaign({"name": "Launch"})
+
+        self.assertEqual(campaign["id"], 5)
+        self.assertEqual(operations, ["campaign.create"])
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/ecp/bridge/campaigns/new"),
+        )
+
+    def test_asserted_campaign_create_with_events_still_uses_campaign_operation(self):
+        client, session, operations = self.make_asserted_mautic_client(
+            response(201, {"campaign": {"id": 5, "name": "Launch"}})
+        )
+
+        client.create_campaign({"name": "Launch", "events": [{"id": "new_1"}]})
+
+        self.assertEqual(operations, ["campaign.create"])
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/ecp/bridge/campaigns/new"),
+        )
+
+    def test_asserted_campaign_update_with_events_still_uses_campaign_operation(self):
+        client, session, operations = self.make_asserted_mautic_client(
+            response(200, {"campaign": {"id": 9, "name": "Renamed"}})
+        )
+
+        client.update_campaign(9, {"events": [{"id": "12"}]})
+
+        self.assertEqual(operations, ["campaign.update"])
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("PATCH", "http://mautic.local/api/ecp/bridge/campaigns/9/edit"),
+        )
+
+    def test_asserted_campaign_delete_uses_bridge_operation(self):
+        client, session, operations = self.make_asserted_mautic_client(
+            response(200, {"campaign": {"id": None, "name": "Deleted"}})
+        )
+
+        client.delete_campaign(9)
+
+        self.assertEqual(operations, ["campaign.delete"])
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("DELETE", "http://mautic.local/api/ecp/bridge/campaigns/9/delete"),
+        )
+
+    def test_asserted_campaign_event_delete_uses_bridge_operation(self):
+        client, session, operations = self.make_asserted_mautic_client(
+            response(200, {"deleted": {"id": 26, "campaignId": 7}})
+        )
+
+        client.delete_campaign_event(7, 26)
+
+        self.assertEqual(operations, ["campaign.event.delete"])
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("DELETE", "http://mautic.local/api/ecp/campaign-builder/campaigns/7/events/26"),
+        )
 
     def test_get_user_calls_expected_endpoint(self):
         client, session = self.make_mautic_client(

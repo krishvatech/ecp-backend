@@ -1803,7 +1803,7 @@ class NewsletterAdminMauticCampaignEventDeleteTests(TestCase):
 
         self.assertIn(response.status_code, (401, 403))
 
-    @patch("newsletter.native_campaign_views.MauticClient")
+    @patch("newsletter.native_campaign_views.get_mautic_client")
     def test_delete_rejects_non_staff(self, client_cls):
         self.client.force_authenticate(user=self.normal_user)
 
@@ -1812,7 +1812,7 @@ class NewsletterAdminMauticCampaignEventDeleteTests(TestCase):
         self.assertEqual(response.status_code, 403)
         client_cls.return_value.delete_campaign_event.assert_not_called()
 
-    @patch("newsletter.native_campaign_views.MauticClient")
+    @patch("newsletter.native_campaign_views.get_mautic_client")
     def test_staff_delete_uses_provider_campaign_and_event_ids(self, client_cls):
         client_cls.return_value.delete_campaign_event.return_value = self._deleted()
         self.client.force_authenticate(user=self.staff)
@@ -1827,7 +1827,7 @@ class NewsletterAdminMauticCampaignEventDeleteTests(TestCase):
             ["12", "23", "24", "25"],
         )
 
-    @patch("newsletter.native_campaign_views.MauticClient")
+    @patch("newsletter.native_campaign_views.get_mautic_client")
     def test_detached_children_are_reported(self, client_cls):
         client_cls.return_value.delete_campaign_event.return_value = self._deleted(
             detachedChildren=[27, 28],
@@ -1839,7 +1839,7 @@ class NewsletterAdminMauticCampaignEventDeleteTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["detachedChildren"], ["27", "28"])
 
-    @patch("newsletter.native_campaign_views.MauticClient")
+    @patch("newsletter.native_campaign_views.get_mautic_client")
     def test_non_numeric_ids_are_rejected_before_calling_the_provider(self, client_cls):
         self.client.force_authenticate(user=self.staff)
 
@@ -1853,7 +1853,7 @@ class NewsletterAdminMauticCampaignEventDeleteTests(TestCase):
         self.assertEqual(response.status_code, 400)
         client_cls.return_value.delete_campaign_event.assert_not_called()
 
-    @patch("newsletter.native_campaign_views.MauticClient")
+    @patch("newsletter.native_campaign_views.get_mautic_client")
     def test_unknown_campaign_or_event_is_not_found(self, client_cls):
         client_cls.return_value.delete_campaign_event.side_effect = (
             PermanentMauticError("Mautic API request failed (HTTP 404)")
@@ -1864,7 +1864,7 @@ class NewsletterAdminMauticCampaignEventDeleteTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
 
-    @patch("newsletter.native_campaign_views.MauticClient")
+    @patch("newsletter.native_campaign_views.get_mautic_client")
     def test_provider_permission_error_is_forbidden(self, client_cls):
         client_cls.return_value.delete_campaign_event.side_effect = (
             PermanentMauticError("Mautic API request failed (HTTP 403): Access denied.")
@@ -1876,7 +1876,7 @@ class NewsletterAdminMauticCampaignEventDeleteTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertIn("detail", response.data)
 
-    @patch("newsletter.native_campaign_views.MauticClient")
+    @patch("newsletter.native_campaign_views.get_mautic_client")
     def test_provider_conflict_is_reported_as_bad_request(self, client_cls):
         client_cls.return_value.delete_campaign_event.side_effect = (
             PermanentMauticError("Mautic API request failed (HTTP 409): conflict")
@@ -1887,7 +1887,7 @@ class NewsletterAdminMauticCampaignEventDeleteTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
 
-    @patch("newsletter.native_campaign_views.MauticClient")
+    @patch("newsletter.native_campaign_views.get_mautic_client")
     def test_provider_temporary_failure_is_normalized_to_502(self, client_cls):
         client_cls.return_value.delete_campaign_event.side_effect = (
             TemporaryMauticError("Mautic API request failed (HTTP 503)")
@@ -1898,7 +1898,7 @@ class NewsletterAdminMauticCampaignEventDeleteTests(TestCase):
 
         self.assertEqual(response.status_code, 502)
 
-    @patch("newsletter.native_campaign_views.MauticClient")
+    @patch("newsletter.native_campaign_views.get_mautic_client")
     def test_delete_does_not_touch_campaign_or_other_events(self, client_cls):
         client_cls.return_value.delete_campaign_event.return_value = self._deleted()
         self.client.force_authenticate(user=self.staff)
@@ -1911,7 +1911,7 @@ class NewsletterAdminMauticCampaignEventDeleteTests(TestCase):
         provider.create_campaign.assert_not_called()
         self.assertEqual(provider.delete_campaign_event.call_count, 1)
 
-    @patch("newsletter.native_campaign_views.MauticClient")
+    @patch("newsletter.native_campaign_views.get_mautic_client")
     def test_event_without_runtime_capability_is_still_deletable(self, client_cls):
         """Deletion identity is campaign ID + event ID; no form schema needed."""
         client_cls.return_value.delete_campaign_event.return_value = {

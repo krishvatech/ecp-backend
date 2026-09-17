@@ -295,6 +295,44 @@ class AssertedUserClientTests(_IdentityFixtures, TestCase):
         self.assertEqual(claims["operation"], "campaign.update")
 
     @override_settings(**PER_USER_ON)
+    def test_campaign_delete_uses_bridge_delete_path(self):
+        self._active_connection(mautic_user_id=17)
+        session = _SessionRecorder(payload={"campaign": {"id": None}})
+
+        client = get_mautic_client(
+            actor=self.staff,
+            purpose=MauticExecutionContext.INTERACTIVE,
+            session=session,
+        )
+        client.delete_campaign(9)
+
+        call = session.last
+        self.assertEqual(call["method"], "DELETE")
+        self.assertTrue(call["url"].endswith("/api/ecp/bridge/campaigns/9/delete"))
+        claims = self._decode(call["headers"][ECP_IDENTITY_ASSERTION_HEADER])
+        self.assertEqual(claims["operation"], "campaign.delete")
+
+    @override_settings(**PER_USER_ON)
+    def test_campaign_builder_event_delete_uses_bridge_path(self):
+        self._active_connection(mautic_user_id=17)
+        session = _SessionRecorder(payload={"deleted": {"id": 26, "campaignId": 7}})
+
+        client = get_mautic_client(
+            actor=self.staff,
+            purpose=MauticExecutionContext.INTERACTIVE,
+            session=session,
+        )
+        client.delete_campaign_event(7, 26)
+
+        call = session.last
+        self.assertEqual(call["method"], "DELETE")
+        self.assertTrue(
+            call["url"].endswith("/api/ecp/campaign-builder/campaigns/7/events/26")
+        )
+        claims = self._decode(call["headers"][ECP_IDENTITY_ASSERTION_HEADER])
+        self.assertEqual(claims["operation"], "campaign.event.delete")
+
+    @override_settings(**PER_USER_ON)
     def test_each_bridge_call_mints_a_fresh_single_use_assertion(self):
         self._active_connection(mautic_user_id=17)
         session = _SessionRecorder()
@@ -489,17 +527,24 @@ class InteractiveCampaignApiTests(_IdentityFixtures, TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertNotIn("key", response.data["detail"].lower())
 
-    def test_campaign_read_and_delete_remain_on_the_service_account(self):
+    def test_campaign_read_remains_on_the_service_account_but_delete_is_interactive(self):
         self._active_connection(mautic_user_id=17)
 
-        with patch("newsletter.native_campaign_views.MauticClient") as direct_client:
+        with patch("newsletter.native_campaign_views.MauticClient") as direct_client, patch(
+            "newsletter.native_campaign_views.get_mautic_client"
+        ) as factory:
             direct_client.return_value.get_campaign.return_value = {"id": 9}
-            direct_client.return_value.delete_campaign.return_value = {}
+            factory.return_value.delete_campaign.return_value = {}
 
             self.assertEqual(self.client.get(self.detail_url).status_code, 200)
             self.client.delete(self.detail_url)
 
         self.assertTrue(direct_client.called)
+        self.assertEqual(factory.call_args.kwargs["actor"], self.staff)
+        self.assertIs(
+            factory.call_args.kwargs["purpose"],
+            MauticExecutionContext.INTERACTIVE,
+        )
 
     def test_non_staff_user_is_still_rejected_before_any_identity_work(self):
         self.client.force_authenticate(user=self.normal_user)

@@ -438,6 +438,8 @@ class MauticIdentityAuditLog(models.Model):
     class Action(models.TextChoices):
         CAMPAIGN_CREATE = "campaign.create", "Campaign create"
         CAMPAIGN_UPDATE = "campaign.update", "Campaign update"
+        CAMPAIGN_DELETE = "campaign.delete", "Campaign delete"
+        CAMPAIGN_EVENT_DELETE = "campaign.event.delete", "Campaign event delete"
         CONNECTION_CREATE = "connection.create", "Mautic user connection created"
         CONNECTION_ACTIVATE = "connection.activate", "Mautic user connection activated"
         CONNECTION_DEACTIVATE = "connection.deactivate", "Mautic user connection deactivated"

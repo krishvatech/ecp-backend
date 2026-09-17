@@ -18,7 +18,12 @@ from .exceptions import (
     PermanentMauticError,
     TemporaryMauticError,
 )
-from .operations import CAMPAIGN_CREATE, CAMPAIGN_UPDATE
+from .operations import (
+    CAMPAIGN_CREATE,
+    CAMPAIGN_DELETE,
+    CAMPAIGN_EVENT_DELETE,
+    CAMPAIGN_UPDATE,
+)
 
 
 _TEMPORARY_STATUS_CODES = {408, 425, 429}
@@ -1729,10 +1734,17 @@ class MauticClient:
         campaign_id = str(campaign_id or "").strip()
         if not campaign_id:
             raise PermanentMauticError("Mautic campaign ID is required")
-        response = self._request(
-            "DELETE",
-            f"campaigns/{campaign_id}/delete",
-        )
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/campaigns/{campaign_id}/delete",
+                operation=CAMPAIGN_DELETE,
+            )
+        else:
+            response = self._request(
+                "DELETE",
+                f"campaigns/{campaign_id}/delete",
+            )
         return self._campaign_from_response(
             response,
             "Mautic campaign deletion",
@@ -1982,10 +1994,17 @@ class MauticClient:
                 "Mautic campaign ID and event ID are required"
             )
 
-        response = self._request(
-            "DELETE",
-            f"ecp/campaign-builder/campaigns/{campaign_id}/events/{event_id}",
-        )
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/campaign-builder/campaigns/{campaign_id}/events/{event_id}",
+                operation=CAMPAIGN_EVENT_DELETE,
+            )
+        else:
+            response = self._request(
+                "DELETE",
+                f"ecp/campaign-builder/campaigns/{campaign_id}/events/{event_id}",
+            )
         return self._json_object(response, "Mautic campaign event deletion")
 
     def get_segment_filter_metadata(self, search: str = "") -> dict[str, Any]:

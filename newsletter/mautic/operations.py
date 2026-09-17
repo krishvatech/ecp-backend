@@ -15,7 +15,16 @@ from __future__ import annotations
 
 CAMPAIGN_CREATE = "campaign.create"
 CAMPAIGN_UPDATE = "campaign.update"
+CAMPAIGN_DELETE = "campaign.delete"
+CAMPAIGN_EVENT_DELETE = "campaign.event.delete"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
-ASSERTABLE_OPERATIONS = frozenset({CAMPAIGN_CREATE, CAMPAIGN_UPDATE})
+ASSERTABLE_OPERATIONS = frozenset(
+    {
+        CAMPAIGN_CREATE,
+        CAMPAIGN_UPDATE,
+        CAMPAIGN_DELETE,
+        CAMPAIGN_EVENT_DELETE,
+    }
+)
