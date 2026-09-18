@@ -13,6 +13,13 @@ from rest_framework.views import APIView
 from moderation.permissions import IsStaffOrSuperuser
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic.operations import (
+    TEMPLATE_CREATE,
+    TEMPLATE_DELETE,
+    TEMPLATE_DUPLICATE,
+    TEMPLATE_UPDATE,
+)
+from .mautic_identity_execution import run_interactive_mutation
 
 
 SYSTEM_TOKENS = [
@@ -308,9 +315,17 @@ class NewsletterAdminTemplateListCreateView(APIView):
             )
 
         try:
-            email = MauticClient().create_email_template(payload)
+            email, error_response = run_interactive_mutation(
+                request,
+                action=TEMPLATE_CREATE,
+                resource="template",
+                mutate=lambda client: client.create_email_template(payload),
+                client_factory=MauticClient,
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
+        if error_response is not None:
+            return error_response
 
         return Response(
             _normalize_template(email),
@@ -344,12 +359,18 @@ class NewsletterAdminTemplateDetailView(APIView):
             )
 
         try:
-            email = MauticClient().update_email_template(
-                template_id,
-                payload,
+            email, error_response = run_interactive_mutation(
+                request,
+                action=TEMPLATE_UPDATE,
+                resource="template",
+                resource_id=template_id,
+                mutate=lambda client: client.update_email_template(template_id, payload),
+                client_factory=MauticClient,
             )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
+        if error_response is not None:
+            return error_response
 
         return Response(
             _normalize_template(email),
@@ -358,9 +379,18 @@ class NewsletterAdminTemplateDetailView(APIView):
 
     def delete(self, request, template_id):
         try:
-            MauticClient().delete_email_template(template_id)
+            _, error_response = run_interactive_mutation(
+                request,
+                action=TEMPLATE_DELETE,
+                resource="template",
+                resource_id=template_id,
+                mutate=lambda client: client.delete_email_template(template_id),
+                client_factory=MauticClient,
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
+        if error_response is not None:
+            return error_response
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -377,12 +407,21 @@ class NewsletterAdminTemplateDuplicateView(APIView):
             )
 
         try:
-            email = MauticClient().duplicate_email_template(
-                template_id,
-                name=name or None,
+            email, error_response = run_interactive_mutation(
+                request,
+                action=TEMPLATE_DUPLICATE,
+                resource="template",
+                resource_id=template_id,
+                mutate=lambda client: client.duplicate_email_template(
+                    template_id,
+                    name=name or None,
+                ),
+                client_factory=MauticClient,
             )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
+        if error_response is not None:
+            return error_response
 
         return Response(_normalize_template(email), status=status.HTTP_201_CREATED)
 

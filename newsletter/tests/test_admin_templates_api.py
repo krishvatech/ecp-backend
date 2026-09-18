@@ -1,16 +1,23 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
 from newsletter.mautic import PermanentMauticError, TemporaryMauticError
+from newsletter.mautic.operations import (
+    TEMPLATE_CREATE,
+    TEMPLATE_DELETE,
+    TEMPLATE_DUPLICATE,
+    TEMPLATE_UPDATE,
+)
 
 
 User = get_user_model()
 
 
+@override_settings(ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False)
 class NewsletterAdminTemplatesAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -194,6 +201,22 @@ class NewsletterAdminTemplatesAPITests(TestCase):
             }
         )
 
+    @patch("newsletter.template_views.run_interactive_mutation")
+    def test_create_uses_template_create_identity_operation(self, helper):
+        helper.return_value = (self._template(), None)
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            self.list_url,
+            {"name": "Reusable Newsletter"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(helper.call_args.kwargs["action"], TEMPLATE_CREATE)
+        self.assertEqual(helper.call_args.kwargs["resource"], "template")
+        self.assertNotIn("resource_id", helper.call_args.kwargs)
+
     @patch("newsletter.template_views.MauticClient")
     def test_create_rejects_invalid_payloads(self, client_cls):
         self._authenticate(self.staff)
@@ -262,6 +285,22 @@ class NewsletterAdminTemplatesAPITests(TestCase):
             },
         )
 
+    @patch("newsletter.template_views.run_interactive_mutation")
+    def test_patch_uses_template_update_identity_operation(self, helper):
+        helper.return_value = (self._template(name="Updated Newsletter"), None)
+        self._authenticate(self.staff)
+
+        response = self.client.patch(
+            self.detail_url,
+            {"name": "Updated Newsletter"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(helper.call_args.kwargs["action"], TEMPLATE_UPDATE)
+        self.assertEqual(helper.call_args.kwargs["resource"], "template")
+        self.assertEqual(helper.call_args.kwargs["resource_id"], "18")
+
     @patch("newsletter.template_views.MauticClient")
     def test_patch_rejects_empty_or_unsupported_payload(self, client_cls):
         self._authenticate(self.staff)
@@ -292,6 +331,18 @@ class NewsletterAdminTemplatesAPITests(TestCase):
         self.assertEqual(response.status_code, 204)
         client.delete_email_template.assert_called_once_with("18")
 
+    @patch("newsletter.template_views.run_interactive_mutation")
+    def test_delete_uses_template_delete_identity_operation(self, helper):
+        helper.return_value = ({}, None)
+        self._authenticate(self.staff)
+
+        response = self.client.delete(self.detail_url)
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(helper.call_args.kwargs["action"], TEMPLATE_DELETE)
+        self.assertEqual(helper.call_args.kwargs["resource"], "template")
+        self.assertEqual(helper.call_args.kwargs["resource_id"], "18")
+
     @patch("newsletter.template_views.MauticClient")
     def test_duplicate_creates_provider_draft_copy(self, client_cls):
         client = client_cls.return_value
@@ -306,6 +357,21 @@ class NewsletterAdminTemplatesAPITests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["id"], "22")
         client.duplicate_email_template.assert_called_once_with("18", name=None)
+
+    @patch("newsletter.template_views.run_interactive_mutation")
+    def test_duplicate_uses_template_duplicate_identity_operation(self, helper):
+        helper.return_value = (
+            self._template(id=22, name="Reusable Newsletter Copy"),
+            None,
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.post(self.duplicate_url, {}, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(helper.call_args.kwargs["action"], TEMPLATE_DUPLICATE)
+        self.assertEqual(helper.call_args.kwargs["resource"], "template")
+        self.assertEqual(helper.call_args.kwargs["resource_id"], "18")
 
     @patch("newsletter.template_views.MauticClient")
     def test_preview_returns_raw_html_preview_contract(self, client_cls):

@@ -30,6 +30,20 @@ class MauticTemplateClientTests(SimpleTestCase):
         session = Mock()
         return MauticClient(session=session), session
 
+    def make_asserted_client(self):
+        session = Mock()
+        assertion_provider = Mock(return_value="signed.jwt")
+        assertion_provider.last_jti = "jti-template-test"
+        return (
+            MauticClient(
+                session=session,
+                assertion_provider=assertion_provider,
+                correlation_id="corr-template-test",
+            ),
+            session,
+            assertion_provider,
+        )
+
     def test_list_templates_filters_mixed_email_types_in_ecp(self):
         client, session = self.make_client()
         session.request.return_value = response(
@@ -192,6 +206,26 @@ class MauticTemplateClientTests(SimpleTestCase):
                 }
             )
 
+    def test_asserted_create_template_uses_template_bridge_operation(self):
+        client, session, assertion_provider = self.make_asserted_client()
+        session.request.return_value = response(
+            201,
+            {"email": {"id": 18, "name": "Reusable", "emailType": "template"}},
+        )
+
+        created = client.create_email_template({"name": "Reusable"})
+
+        self.assertEqual(created["id"], 18)
+        assertion_provider.assert_called_once_with("template.create")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/ecp/bridge/templates/new"),
+        )
+        headers = session.request.call_args.kwargs["headers"]
+        self.assertEqual(headers["X-ECP-Identity-Assertion"], "signed.jwt")
+        self.assertEqual(headers["X-ECP-Correlation-Id"], "corr-template-test")
+        self.assertIn(("emailType", "template"), session.request.call_args.kwargs["data"])
+
     def test_update_template_verifies_existing_type_and_keeps_template_type(self):
         client, session = self.make_client()
         session.request.side_effect = [
@@ -237,6 +271,24 @@ class MauticTemplateClientTests(SimpleTestCase):
             session.request.call_args_list[1].kwargs["data"],
         )
 
+    def test_asserted_update_template_uses_template_bridge_operation_without_service_preread(self):
+        client, session, assertion_provider = self.make_asserted_client()
+        session.request.return_value = response(
+            200,
+            {"email": {"id": 18, "name": "Updated", "emailType": "template"}},
+        )
+
+        updated = client.update_email_template(18, {"name": "Updated"})
+
+        self.assertEqual(updated["name"], "Updated")
+        self.assertEqual(session.request.call_count, 1)
+        assertion_provider.assert_called_once_with("template.update")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("PATCH", "http://mautic.local/api/ecp/bridge/templates/18/edit"),
+        )
+        self.assertIn(("emailType", "template"), session.request.call_args.kwargs["data"])
+
     def test_delete_template_verifies_type_before_delete(self):
         client, session = self.make_client()
         session.request.side_effect = [
@@ -268,6 +320,23 @@ class MauticTemplateClientTests(SimpleTestCase):
         self.assertEqual(
             session.request.call_args_list[1].args[:2],
             ("DELETE", "http://mautic.local/api/emails/18/delete"),
+        )
+
+    def test_asserted_delete_template_uses_template_bridge_operation_without_service_preread(self):
+        client, session, assertion_provider = self.make_asserted_client()
+        session.request.return_value = response(
+            200,
+            {"email": {"id": None, "emailType": "template"}},
+        )
+
+        deleted = client.delete_email_template(18)
+
+        self.assertIsNone(deleted["id"])
+        self.assertEqual(session.request.call_count, 1)
+        assertion_provider.assert_called_once_with("template.delete")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("DELETE", "http://mautic.local/api/ecp/bridge/templates/18/delete"),
         )
 
     def test_duplicate_template_creates_draft_without_provider_metadata(self):
@@ -313,6 +382,24 @@ class MauticTemplateClientTests(SimpleTestCase):
         self.assertNotIn(("id", 18), form_data)
         self.assertNotIn(("sentCount", 99), form_data)
         self.assertNotIn(("readCount", 25), form_data)
+
+    def test_asserted_duplicate_template_uses_template_bridge_operation_without_service_preread(self):
+        client, session, assertion_provider = self.make_asserted_client()
+        session.request.return_value = response(
+            201,
+            {"email": {"id": 22, "name": "Copy", "emailType": "template"}},
+        )
+
+        duplicated = client.duplicate_email_template(18, name="Copy")
+
+        self.assertEqual(duplicated["id"], 22)
+        self.assertEqual(session.request.call_count, 1)
+        assertion_provider.assert_called_once_with("template.duplicate")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/ecp/bridge/templates/18/duplicate"),
+        )
+        self.assertEqual(session.request.call_args.kwargs["data"], {"name": "Copy"})
 
     def test_list_categories_uses_official_rest_endpoint(self):
         client, session = self.make_client()

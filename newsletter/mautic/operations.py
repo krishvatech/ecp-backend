@@ -32,6 +32,10 @@ TAG_DELETE = "tag.delete"
 FIELD_CREATE = "field.create"
 FIELD_UPDATE = "field.update"
 FIELD_DELETE = "field.delete"
+TEMPLATE_CREATE = "template.create"
+TEMPLATE_UPDATE = "template.update"
+TEMPLATE_DELETE = "template.delete"
+TEMPLATE_DUPLICATE = "template.duplicate"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
@@ -56,5 +60,9 @@ ASSERTABLE_OPERATIONS = frozenset(
         FIELD_CREATE,
         FIELD_UPDATE,
         FIELD_DELETE,
+        TEMPLATE_CREATE,
+        TEMPLATE_UPDATE,
+        TEMPLATE_DELETE,
+        TEMPLATE_DUPLICATE,
     }
 )

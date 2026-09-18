@@ -38,6 +38,10 @@ from .operations import (
     TAG_CREATE,
     TAG_DELETE,
     TAG_UPDATE,
+    TEMPLATE_CREATE,
+    TEMPLATE_DELETE,
+    TEMPLATE_DUPLICATE,
+    TEMPLATE_UPDATE,
 )
 
 
@@ -1626,6 +1630,18 @@ class MauticClient:
             )
         template_payload["emailType"] = "template"
 
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/templates/new",
+                operation=TEMPLATE_CREATE,
+                data=self._email_form_data(template_payload),
+            )
+            return self._require_template_email(
+                self._email_from_response(response, "Mautic email template creation"),
+                "Created Mautic email",
+            )
+
         return self._require_template_email(
             self.create_email(template_payload),
             "Created Mautic email",
@@ -1641,7 +1657,9 @@ class MauticClient:
                 "Mautic email template update payload is required"
             )
 
-        self.get_email_template(email_id)
+        email_id = str(email_id or "").strip()
+        if not email_id:
+            raise PermanentMauticError("Mautic email ID is required")
 
         template_payload = dict(payload)
         requested_type = str(
@@ -1653,6 +1671,19 @@ class MauticClient:
             )
         template_payload["emailType"] = "template"
 
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/templates/{email_id}/edit",
+                operation=TEMPLATE_UPDATE,
+                data=self._email_form_data(template_payload),
+            )
+            return self._require_template_email(
+                self._email_from_response(response, "Mautic email template update"),
+                "Updated Mautic email",
+            )
+
+        self.get_email_template(email_id)
         return self._require_template_email(
             self.update_email(email_id, template_payload),
             "Updated Mautic email",
@@ -1662,6 +1693,20 @@ class MauticClient:
         self,
         email_id: int | str,
     ) -> dict[str, Any]:
+        email_id = str(email_id or "").strip()
+        if not email_id:
+            raise PermanentMauticError("Mautic email ID is required")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/templates/{email_id}/delete",
+                operation=TEMPLATE_DELETE,
+            )
+            return self._email_from_response(
+                response,
+                "Mautic email template deletion",
+                require_id=False,
+            )
         self.get_email_template(email_id)
         return self.delete_email(email_id)
 
@@ -1671,6 +1716,24 @@ class MauticClient:
         *,
         name: str | None = None,
     ) -> dict[str, Any]:
+        email_id = str(email_id or "").strip()
+        if not email_id:
+            raise PermanentMauticError("Mautic email ID is required")
+        if self._uses_asserted_user():
+            payload = {}
+            if name is not None:
+                payload["name"] = name
+            response = self._bridge_request(
+                "POST",
+                f"ecp/bridge/templates/{email_id}/duplicate",
+                operation=TEMPLATE_DUPLICATE,
+                data=payload,
+            )
+            return self._require_template_email(
+                self._email_from_response(response, "Mautic email template duplicate"),
+                "Duplicated Mautic email",
+            )
+
         source = self.get_email_template(email_id)
         clone_fields = (
             "subject",
