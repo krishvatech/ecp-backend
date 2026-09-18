@@ -11,6 +11,13 @@ from rest_framework.views import APIView
 from moderation.permissions import IsStaffOrSuperuser
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic.operations import (
+    POINT_CONTACT_GROUP_ADJUST,
+    POINT_GROUP_CREATE,
+    POINT_GROUP_DELETE,
+    POINT_GROUP_UPDATE,
+)
+from .mautic_identity_execution import run_interactive_mutation
 
 
 _POINT_GROUP_FIELDS = {
@@ -263,7 +270,15 @@ class NewsletterAdminPointGroupListCreateView(APIView):
             )
 
         try:
-            group = MauticClient().create_point_group(payload)
+            group, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_GROUP_CREATE,
+                resource="point_group",
+                mutate=lambda client: client.create_point_group(payload),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -299,7 +314,16 @@ class NewsletterAdminPointGroupDetailView(APIView):
             )
 
         try:
-            group = MauticClient().update_point_group(group_id, payload)
+            group, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_GROUP_UPDATE,
+                resource="point_group",
+                resource_id=group_id,
+                mutate=lambda client: client.update_point_group(group_id, payload),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -327,7 +351,18 @@ class NewsletterAdminPointGroupDetailView(APIView):
                     },
                     status=status.HTTP_409_CONFLICT,
                 )
-            client.delete_point_group(group_id)
+            _, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_GROUP_DELETE,
+                resource="point_group",
+                resource_id=group_id,
+                mutate=lambda identity_client: identity_client.delete_point_group(
+                    group_id,
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -405,14 +440,25 @@ class NewsletterAdminContactPointGroupDetailView(APIView):
             before_data = client.list_contact_point_groups(mautic_contact_id)
             before_score = _score_for_group(before_data, group_id)
 
-            adjusted = client.adjust_contact_group_points(
-                mautic_contact_id,
-                group_id,
-                operator,
-                amount,
-                event_name=reason,
-                action_name="ECP Newsletter",
+            adjusted, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_CONTACT_GROUP_ADJUST,
+                resource="contact_point_group",
+                resource_id=f"{mautic_contact_id}:{group_id}",
+                mutate=lambda identity_client: (
+                    identity_client.adjust_contact_group_points(
+                        mautic_contact_id,
+                        group_id,
+                        operator,
+                        amount,
+                        event_name=reason,
+                        action_name="ECP Newsletter",
+                    )
+                ),
+                client_factory=MauticClient,
             )
+            if identity_response is not None:
+                return identity_response
             after = client.get_contact_point_group(mautic_contact_id, group_id)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)

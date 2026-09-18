@@ -449,6 +449,11 @@ class MauticIdentityAuditLog(models.Model):
         CONTACT_UPDATE = "contact.update", "Contact update"
         CONTACT_TAG_ADD = "contact.tag.add", "Contact tag add"
         CONTACT_TAG_REMOVE = "contact.tag.remove", "Contact tag remove"
+        COMPANY_CREATE = "company.create", "Company create"
+        COMPANY_UPDATE = "company.update", "Company update"
+        COMPANY_DELETE = "company.delete", "Company delete"
+        COMPANY_CONTACT_ADD = "company.contact.add", "Company contact add"
+        COMPANY_CONTACT_REMOVE = "company.contact.remove", "Company contact remove"
         TAG_CREATE = "tag.create", "Tag create"
         TAG_UPDATE = "tag.update", "Tag update"
         TAG_DELETE = "tag.delete", "Tag delete"
@@ -460,6 +465,32 @@ class MauticIdentityAuditLog(models.Model):
         TEMPLATE_DELETE = "template.delete", "Template delete"
         TEMPLATE_DUPLICATE = "template.duplicate", "Template duplicate"
         NEWSLETTER_TEST_SEND = "newsletter.test_send", "Newsletter test send"
+        POINT_ACTION_CREATE = "point.action.create", "Point action create"
+        POINT_ACTION_UPDATE = "point.action.update", "Point action update"
+        POINT_ACTION_DELETE = "point.action.delete", "Point action delete"
+        POINT_GROUP_CREATE = "point.group.create", "Point group create"
+        POINT_GROUP_UPDATE = "point.group.update", "Point group update"
+        POINT_GROUP_DELETE = "point.group.delete", "Point group delete"
+        POINT_CONTACT_ADJUST = "point.contact.adjust", "Point contact adjust"
+        POINT_CONTACT_GROUP_ADJUST = (
+            "point.contact_group.adjust",
+            "Point contact group adjust",
+        )
+        POINT_TRIGGER_CREATE = "point.trigger.create", "Point trigger create"
+        POINT_TRIGGER_UPDATE = "point.trigger.update", "Point trigger update"
+        POINT_TRIGGER_DELETE = "point.trigger.delete", "Point trigger delete"
+        POINT_TRIGGER_EVENT_CREATE = (
+            "point.trigger.event.create",
+            "Point trigger event create",
+        )
+        POINT_TRIGGER_EVENT_UPDATE = (
+            "point.trigger.event.update",
+            "Point trigger event update",
+        )
+        POINT_TRIGGER_EVENT_DELETE = (
+            "point.trigger.event.delete",
+            "Point trigger event delete",
+        )
         CONNECTION_CREATE = "connection.create", "Mautic user connection created"
         CONNECTION_ACTIVATE = "connection.activate", "Mautic user connection activated"
         CONNECTION_DEACTIVATE = "connection.deactivate", "Mautic user connection deactivated"

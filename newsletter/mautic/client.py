@@ -24,6 +24,11 @@ from .operations import (
     CAMPAIGN_EVENT_DELETE,
     CAMPAIGN_UPDATE,
     CONTACT_CREATE,
+    COMPANY_CONTACT_ADD,
+    COMPANY_CONTACT_REMOVE,
+    COMPANY_CREATE,
+    COMPANY_DELETE,
+    COMPANY_UPDATE,
     CONTACT_TAG_ADD,
     CONTACT_TAG_REMOVE,
     CONTACT_UPDATE,
@@ -43,6 +48,20 @@ from .operations import (
     TEMPLATE_DUPLICATE,
     TEMPLATE_UPDATE,
     NEWSLETTER_TEST_SEND,
+    POINT_ACTION_CREATE,
+    POINT_ACTION_DELETE,
+    POINT_ACTION_UPDATE,
+    POINT_CONTACT_ADJUST,
+    POINT_CONTACT_GROUP_ADJUST,
+    POINT_GROUP_CREATE,
+    POINT_GROUP_DELETE,
+    POINT_GROUP_UPDATE,
+    POINT_TRIGGER_CREATE,
+    POINT_TRIGGER_DELETE,
+    POINT_TRIGGER_EVENT_CREATE,
+    POINT_TRIGGER_EVENT_DELETE,
+    POINT_TRIGGER_EVENT_UPDATE,
+    POINT_TRIGGER_UPDATE,
 )
 
 
@@ -653,6 +672,14 @@ class MauticClient:
         return self._company_from_response(response, "Mautic company lookup")
 
     def create_company(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/companies/new",
+                operation=COMPANY_CREATE,
+                data=payload,
+            )
+            return self._company_from_response(response, "Mautic company creation")
         response = self._request("POST", "companies/new", data=payload)
         return self._company_from_response(response, "Mautic company creation")
 
@@ -664,6 +691,14 @@ class MauticClient:
         company_id = str(company_id or "").strip()
         if not company_id:
             raise PermanentMauticError("Mautic company ID is required")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/companies/{company_id}/edit",
+                operation=COMPANY_UPDATE,
+                data=payload,
+            )
+            return self._company_from_response(response, "Mautic company update")
         response = self._request(
             "PATCH",
             f"companies/{company_id}/edit",
@@ -675,6 +710,17 @@ class MauticClient:
         company_id = str(company_id or "").strip()
         if not company_id:
             raise PermanentMauticError("Mautic company ID is required")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/companies/{company_id}/delete",
+                operation=COMPANY_DELETE,
+            )
+            return self._company_from_response(
+                response,
+                "Mautic company deletion",
+                require_id=False,
+            )
         response = self._request("DELETE", f"companies/{company_id}/delete")
         return self._company_from_response(
             response,
@@ -691,6 +737,13 @@ class MauticClient:
         contact_id = str(contact_id or "").strip()
         if not company_id or not contact_id:
             raise PermanentMauticError("Mautic company ID and contact ID are required")
+        if self._uses_asserted_user():
+            self._bridge_request(
+                "POST",
+                f"ecp/bridge/companies/{company_id}/contact/{contact_id}/add",
+                operation=COMPANY_CONTACT_ADD,
+            )
+            return
         self._request("POST", f"companies/{company_id}/contact/{contact_id}/add")
 
     def remove_contact_from_company(
@@ -702,6 +755,13 @@ class MauticClient:
         contact_id = str(contact_id or "").strip()
         if not company_id or not contact_id:
             raise PermanentMauticError("Mautic company ID and contact ID are required")
+        if self._uses_asserted_user():
+            self._bridge_request(
+                "POST",
+                f"ecp/bridge/companies/{company_id}/contact/{contact_id}/remove",
+                operation=COMPANY_CONTACT_REMOVE,
+            )
+            return
         self._request("POST", f"companies/{company_id}/contact/{contact_id}/remove")
 
     @staticmethod
@@ -785,6 +845,18 @@ class MauticClient:
         self,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/points/new",
+                operation=POINT_ACTION_CREATE,
+                data=payload,
+            )
+            return self._point_from_response(
+                response,
+                "Mautic point action creation",
+            )
+
         property_fields = self._point_action_property_fields(payload)
         if not property_fields:
             response = self._request("POST", "points/new", data=payload)
@@ -851,6 +923,18 @@ class MauticClient:
         if not point_id:
             raise PermanentMauticError("Mautic point action ID is required")
 
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/points/{point_id}/edit",
+                operation=POINT_ACTION_UPDATE,
+                data=payload,
+            )
+            return self._point_from_response(
+                response,
+                "Mautic point action update",
+            )
+
         response = self._request(
             "PATCH",
             f"points/{point_id}/edit",
@@ -868,6 +952,18 @@ class MauticClient:
         point_id = str(point_id or "").strip()
         if not point_id:
             raise PermanentMauticError("Mautic point action ID is required")
+
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/points/{point_id}/delete",
+                operation=POINT_ACTION_DELETE,
+            )
+            return self._point_from_response(
+                response,
+                "Mautic point action deletion",
+                require_id=False,
+            )
 
         response = self._request("DELETE", f"points/{point_id}/delete")
         return self._point_from_response(
@@ -930,6 +1026,18 @@ class MauticClient:
         self,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/points/groups/new",
+                operation=POINT_GROUP_CREATE,
+                data=payload,
+            )
+            return self._point_group_from_response(
+                response,
+                "Mautic point group creation",
+            )
+
         response = self._request(
             "POST",
             "points/groups/new",
@@ -951,6 +1059,18 @@ class MauticClient:
                 "Mautic point group ID is required"
             )
 
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/points/groups/{group_id}/edit",
+                operation=POINT_GROUP_UPDATE,
+                data=payload,
+            )
+            return self._point_group_from_response(
+                response,
+                "Mautic point group update",
+            )
+
         response = self._request(
             "PATCH",
             f"points/groups/{group_id}/edit",
@@ -969,6 +1089,18 @@ class MauticClient:
         if not group_id:
             raise PermanentMauticError(
                 "Mautic point group ID is required"
+            )
+
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/points/groups/{group_id}/delete",
+                operation=POINT_GROUP_DELETE,
+            )
+            return self._point_group_from_response(
+                response,
+                "Mautic point group deletion",
+                require_id=False,
             )
 
         # Mautic 7.1.3 cascades Point Group deletion to linked Point Actions,
@@ -1092,6 +1224,21 @@ class MauticClient:
         if normalized_action_name:
             payload["actionName"] = normalized_action_name
 
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                (
+                    f"ecp/bridge/contacts/{contact_id}/points/groups/{group_id}/"
+                    f"{normalized_operator}/{normalized_amount}"
+                ),
+                operation=POINT_CONTACT_GROUP_ADJUST,
+                data=payload or None,
+            )
+            return self._point_group_score_from_response(
+                response,
+                "Mautic contact point group adjustment",
+            )
+
         response = self._request(
             "POST",
             (
@@ -1144,6 +1291,23 @@ class MauticClient:
             payload["eventName"] = normalized_event_name
         if normalized_action_name:
             payload["actionName"] = normalized_action_name
+
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                (
+                    f"ecp/bridge/contacts/{contact_id}/points/"
+                    f"{normalized_operator}/{normalized_amount}"
+                ),
+                operation=POINT_CONTACT_ADJUST,
+                data=payload or None,
+            )
+            data = self._json_object(response, "Mautic contact point adjustment")
+            if not data.get("success"):
+                raise TemporaryMauticError(
+                    "Mautic contact point adjustment returned an unsuccessful response"
+                )
+            return data
 
         response = self._request(
             "POST",
@@ -1233,6 +1397,18 @@ class MauticClient:
         self,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/points/triggers/new",
+                operation=POINT_TRIGGER_CREATE,
+                data=payload,
+            )
+            return self._point_trigger_from_response(
+                response,
+                "Mautic point trigger creation",
+            )
+
         response = self._request(
             "POST",
             "points/triggers/new",
@@ -1254,6 +1430,18 @@ class MauticClient:
                 "Mautic point trigger ID is required"
             )
 
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/points/triggers/{trigger_id}/edit",
+                operation=POINT_TRIGGER_UPDATE,
+                data=payload,
+            )
+            return self._point_trigger_from_response(
+                response,
+                "Mautic point trigger update",
+            )
+
         response = self._request(
             "PATCH",
             f"points/triggers/{trigger_id}/edit",
@@ -1272,6 +1460,18 @@ class MauticClient:
         if not trigger_id:
             raise PermanentMauticError(
                 "Mautic point trigger ID is required"
+            )
+
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/points/triggers/{trigger_id}/delete",
+                operation=POINT_TRIGGER_DELETE,
+            )
+            return self._point_trigger_from_response(
+                response,
+                "Mautic point trigger deletion",
+                require_id=False,
             )
 
         response = self._request(
@@ -1313,6 +1513,21 @@ class MauticClient:
 
         event_payload = dict(payload)
         event_payload["trigger"] = f"/api/v2/triggers/{trigger_id}"
+
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                f"ecp/bridge/points/triggers/{trigger_id}/events",
+                operation=POINT_TRIGGER_EVENT_CREATE,
+                json=event_payload,
+                headers={
+                    "Content-Type": "application/ld+json",
+                },
+            )
+            return self._point_trigger_event_from_response(
+                response,
+                "Mautic point trigger event creation",
+            )
 
         response = self._request(
             "POST",
@@ -1361,6 +1576,21 @@ class MauticClient:
                 "Mautic point trigger event update payload is required"
             )
 
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/points/triggers/events/{event_id}",
+                operation=POINT_TRIGGER_EVENT_UPDATE,
+                json=payload,
+                headers={
+                    "Content-Type": "application/merge-patch+json",
+                },
+            )
+            return self._point_trigger_event_from_response(
+                response,
+                "Mautic point trigger event update",
+            )
+
         response = self._request(
             "PATCH",
             f"v2/trigger_events/{event_id}",
@@ -1389,6 +1619,14 @@ class MauticClient:
         # in-memory Trigger with the event removed but does not persist that
         # deletion on Mautic 7.1.3. Use the direct API Platform resource,
         # which performs the real entity deletion.
+        if self._uses_asserted_user():
+            self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/points/triggers/events/{event_id}",
+                operation=POINT_TRIGGER_EVENT_DELETE,
+            )
+            return
+
         self._request(
             "DELETE",
             f"v2/trigger_events/{event_id}",

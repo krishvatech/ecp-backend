@@ -203,24 +203,26 @@ def _normalize_company_payload(
     return data
 
 
-def create_admin_company(payload: dict[str, Any]) -> dict[str, Any]:
+def create_admin_company(payload: dict[str, Any], *, client: MauticClient | None = None) -> dict[str, Any]:
     data = _normalize_company_payload(payload, partial=False)
-    company = MauticClient().create_company(data)
-    return get_admin_company(company.get("id"))
+    client = client or MauticClient()
+    company = client.create_company(data)
+    return normalize_admin_company(client.get_company(company.get("id")))
 
 
-def update_admin_company(company_id, payload: dict[str, Any]) -> dict[str, Any]:
+def update_admin_company(company_id, payload: dict[str, Any], *, client: MauticClient | None = None) -> dict[str, Any]:
     company_id = _require_company_id(company_id)
     # Only the aliases the caller actually sent are forwarded, so a PATCH never
     # overwrites company values the admin did not edit.
     data = _normalize_company_payload(payload, partial=True)
-    MauticClient().update_company(company_id, data)
-    return get_admin_company(company_id)
+    client = client or MauticClient()
+    client.update_company(company_id, data)
+    return normalize_admin_company(client.get_company(company_id))
 
 
-def delete_admin_company(company_id) -> dict[str, Any]:
+def delete_admin_company(company_id, *, client: MauticClient | None = None) -> dict[str, Any]:
     company_id = _require_company_id(company_id)
-    MauticClient().delete_company(company_id)
+    (client or MauticClient()).delete_company(company_id)
     return {"deleted": True, "id": company_id}
 
 
@@ -252,21 +254,21 @@ def list_admin_company_contacts(
     return data
 
 
-def add_admin_company_contact(company_id, contact_id) -> dict[str, Any]:
+def add_admin_company_contact(company_id, contact_id, *, client: MauticClient | None = None) -> dict[str, Any]:
     company_id = _require_company_id(company_id)
     contact_id = str(contact_id or "").strip()
     if not contact_id:
         raise ValueError("Mautic contact ID is required.")
 
-    MauticClient().add_contact_to_company(company_id, contact_id)
+    (client or MauticClient()).add_contact_to_company(company_id, contact_id)
     return {"company_id": company_id, "contact_id": contact_id, "associated": True}
 
 
-def remove_admin_company_contact(company_id, contact_id) -> dict[str, Any]:
+def remove_admin_company_contact(company_id, contact_id, *, client: MauticClient | None = None) -> dict[str, Any]:
     company_id = _require_company_id(company_id)
     contact_id = str(contact_id or "").strip()
     if not contact_id:
         raise ValueError("Mautic contact ID is required.")
 
-    MauticClient().remove_contact_from_company(company_id, contact_id)
+    (client or MauticClient()).remove_contact_from_company(company_id, contact_id)
     return {"company_id": company_id, "contact_id": contact_id, "associated": False}

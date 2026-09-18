@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 
 from moderation.permissions import IsStaffOrSuperuser
 
+from . import company_services
 from .company_services import (
     add_admin_company_contact,
     create_admin_company,
@@ -19,6 +20,14 @@ from .company_services import (
     update_admin_company,
 )
 from .mautic import PermanentMauticError, TemporaryMauticError
+from .mautic.operations import (
+    COMPANY_CONTACT_ADD,
+    COMPANY_CONTACT_REMOVE,
+    COMPANY_CREATE,
+    COMPANY_DELETE,
+    COMPANY_UPDATE,
+)
+from .mautic_identity_execution import run_interactive_mutation
 from .provider_errors import provider_error_response
 
 
@@ -62,7 +71,18 @@ class NewsletterAdminCompanyListCreateView(APIView):
 
     def post(self, request):
         try:
-            data = create_admin_company(request.data)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=COMPANY_CREATE,
+                resource="company",
+                mutate=lambda client: create_admin_company(
+                    request.data,
+                    client=client,
+                ),
+                client_factory=company_services.MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
@@ -86,7 +106,20 @@ class NewsletterAdminCompanyDetailView(APIView):
 
     def patch(self, request, company_id):
         try:
-            data = update_admin_company(company_id, request.data)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=COMPANY_UPDATE,
+                resource="company",
+                resource_id=company_id,
+                mutate=lambda client: update_admin_company(
+                    company_id,
+                    request.data,
+                    client=client,
+                ),
+                client_factory=company_services.MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
@@ -96,7 +129,19 @@ class NewsletterAdminCompanyDetailView(APIView):
 
     def delete(self, request, company_id):
         try:
-            data = delete_admin_company(company_id)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=COMPANY_DELETE,
+                resource="company",
+                resource_id=company_id,
+                mutate=lambda client: delete_admin_company(
+                    company_id,
+                    client=client,
+                ),
+                client_factory=company_services.MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
@@ -126,10 +171,21 @@ class NewsletterAdminCompanyContactsView(APIView):
 
     def post(self, request, company_id):
         try:
-            data = add_admin_company_contact(
-                company_id,
-                request.data.get("contact_id"),
+            contact_id = request.data.get("contact_id")
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=COMPANY_CONTACT_ADD,
+                resource="company_contact",
+                resource_id=f"{company_id}:{contact_id or ''}",
+                mutate=lambda client: add_admin_company_contact(
+                    company_id,
+                    contact_id,
+                    client=client,
+                ),
+                client_factory=company_services.MauticClient,
             )
+            if identity_response is not None:
+                return identity_response
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
@@ -143,7 +199,20 @@ class NewsletterAdminCompanyContactDetailView(APIView):
 
     def delete(self, request, company_id, contact_id):
         try:
-            data = remove_admin_company_contact(company_id, contact_id)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=COMPANY_CONTACT_REMOVE,
+                resource="company_contact",
+                resource_id=f"{company_id}:{contact_id}",
+                mutate=lambda client: remove_admin_company_contact(
+                    company_id,
+                    contact_id,
+                    client=client,
+                ),
+                client_factory=company_services.MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:

@@ -1,16 +1,25 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
 from newsletter.mautic import PermanentMauticError, TemporaryMauticError
+from newsletter.mautic.operations import (
+    POINT_TRIGGER_CREATE,
+    POINT_TRIGGER_DELETE,
+    POINT_TRIGGER_EVENT_CREATE,
+    POINT_TRIGGER_EVENT_DELETE,
+    POINT_TRIGGER_EVENT_UPDATE,
+    POINT_TRIGGER_UPDATE,
+)
 
 
 User = get_user_model()
 
 
+@override_settings(ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False)
 class NewsletterAdminPointTriggerAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -180,6 +189,28 @@ class NewsletterAdminPointTriggerAPITests(TestCase):
             }
         )
 
+    @patch("newsletter.point_trigger_views.run_interactive_mutation")
+    @patch("newsletter.point_trigger_views.MauticClient")
+    def test_create_trigger_uses_identity_operation(self, client_cls, identity_helper):
+        client = client_cls.return_value
+        client.list_point_trigger_event_types.return_value = {}
+        identity_helper.return_value = ({"id": 4, "name": "Warm lead", "points": 25}, None)
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            self.list_url,
+            {"name": "Warm lead", "points": 25},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], POINT_TRIGGER_CREATE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "point_trigger")
+
+        identity_helper.call_args.kwargs["mutate"](client)
+        client.create_point_trigger.assert_called_once_with({"name": "Warm lead", "points": 25})
+
     @patch("newsletter.point_trigger_views.MauticClient")
     def test_create_trigger_rejects_invalid_input_before_provider_create(self, client_cls):
         self._authenticate(self.staff)
@@ -240,6 +271,35 @@ class NewsletterAdminPointTriggerAPITests(TestCase):
         response = self.client.delete(self.detail_url)
         self.assertEqual(response.status_code, 204)
         client.delete_point_trigger.assert_called_once_with("4")
+
+    @patch("newsletter.point_trigger_views.run_interactive_mutation")
+    @patch("newsletter.point_trigger_views.MauticClient")
+    def test_patch_trigger_uses_identity_operation(self, client_cls, identity_helper):
+        client = client_cls.return_value
+        client.list_point_trigger_event_types.return_value = {}
+        identity_helper.return_value = ({"id": 4, "name": "Warm lead", "points": 30}, None)
+        self._authenticate(self.staff)
+
+        response = self.client.patch(self.detail_url, {"points": 30}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], POINT_TRIGGER_UPDATE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "point_trigger")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "4")
+
+    @patch("newsletter.point_trigger_views.run_interactive_mutation")
+    def test_delete_trigger_uses_identity_operation(self, identity_helper):
+        identity_helper.return_value = ({}, None)
+        self._authenticate(self.staff)
+
+        response = self.client.delete(self.detail_url)
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], POINT_TRIGGER_DELETE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "point_trigger")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "4")
 
     @patch("newsletter.point_trigger_views.MauticClient")
     def test_trigger_provider_404_returns_404(self, client_cls):
@@ -331,6 +391,35 @@ class NewsletterAdminPointTriggerAPITests(TestCase):
                 },
             },
         )
+
+    @patch("newsletter.point_trigger_views.run_interactive_mutation")
+    @patch("newsletter.point_trigger_views.MauticClient")
+    def test_create_event_uses_identity_operation(self, client_cls, identity_helper):
+        client = client_cls.return_value
+        client.get_point_trigger.return_value = {"id": 4, "events": []}
+        client.list_point_trigger_event_types.return_value = {"lead.changelists": "Modify contact's segments"}
+        identity_helper.return_value = (
+            {
+                "id": 10,
+                "name": "Add to segment",
+                "type": "lead.changelists",
+                "trigger": {"@id": "/api/v2/triggers/4"},
+            },
+            None,
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            self.events_url,
+            {"name": "Add to segment", "type": "lead.changelists"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], POINT_TRIGGER_EVENT_CREATE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "point_trigger_event")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "4")
 
     @patch("newsletter.point_trigger_views.MauticClient")
     def test_create_event_rejects_invalid_or_unknown_type(self, client_cls):
@@ -460,6 +549,31 @@ class NewsletterAdminPointTriggerAPITests(TestCase):
         self.assertIn("type cannot be changed", response.data["detail"])
         client.update_point_trigger_event.assert_not_called()
 
+    @patch("newsletter.point_trigger_views.run_interactive_mutation")
+    @patch("newsletter.point_trigger_views.MauticClient")
+    def test_patch_event_uses_identity_operation(self, client_cls, identity_helper):
+        client = client_cls.return_value
+        client.get_point_trigger_event.return_value = {
+            "id": 10,
+            "name": "Add to segment",
+            "type": "lead.changelists",
+            "trigger": {"@id": "/api/v2/triggers/4"},
+        }
+        client.list_point_trigger_event_types.return_value = {"lead.changelists": "Modify contact's segments"}
+        identity_helper.return_value = (
+            {"id": 10, "name": "Updated event", "type": "lead.changelists", "trigger": {"@id": "/api/v2/triggers/4"}},
+            None,
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.patch(self.event_detail_url, {"name": "Updated event"}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], POINT_TRIGGER_EVENT_UPDATE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "point_trigger_event")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "4:10")
+
     @patch("newsletter.point_trigger_views.MauticClient")
     def test_event_delete_uses_persistent_direct_delete_after_membership_check(self, client_cls):
         client = client_cls.return_value
@@ -476,6 +590,26 @@ class NewsletterAdminPointTriggerAPITests(TestCase):
 
         self.assertEqual(response.status_code, 204)
         client.delete_point_trigger_event.assert_called_once_with("10")
+
+    @patch("newsletter.point_trigger_views.run_interactive_mutation")
+    @patch("newsletter.point_trigger_views.MauticClient")
+    def test_delete_event_uses_identity_operation(self, client_cls, identity_helper):
+        client = client_cls.return_value
+        client.get_point_trigger_event.return_value = {
+            "id": 10,
+            "type": "lead.changelists",
+            "trigger": {"@id": "/api/v2/triggers/4"},
+        }
+        identity_helper.return_value = (None, None)
+        self._authenticate(self.staff)
+
+        response = self.client.delete(self.event_detail_url)
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], POINT_TRIGGER_EVENT_DELETE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "point_trigger_event")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "4:10")
 
     @patch("newsletter.point_trigger_views.MauticClient")
     def test_trigger_provider_failure_returns_502(self, client_cls):

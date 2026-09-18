@@ -1,11 +1,18 @@
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
 from newsletter.mautic import PermanentMauticError, TemporaryMauticError
+from newsletter.mautic.operations import (
+    COMPANY_CONTACT_ADD,
+    COMPANY_CONTACT_REMOVE,
+    COMPANY_CREATE,
+    COMPANY_DELETE,
+    COMPANY_UPDATE,
+)
 from newsletter.models import MauticContactMapping
 
 
@@ -74,6 +81,7 @@ def company_payload(company_id=1, name="Acme Inc", email="hello@acme.test"):
     }
 
 
+@override_settings(ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False)
 class NewsletterAdminCompaniesAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -230,6 +238,29 @@ class NewsletterAdminCompaniesAPITests(TestCase):
         self.assertEqual(User.objects.filter(username="company-created").count(), 0)
         self.assertEqual(MauticContactMapping.objects.count(), 0)
 
+    @patch("newsletter.company_views.run_interactive_mutation")
+    @patch("newsletter.field_services.MauticClient")
+    def test_create_company_uses_identity_operation(self, field_cls, identity_helper):
+        self._field_client(field_cls)
+        identity_helper.return_value = (company_payload(), None)
+
+        self._authenticate(self.staff)
+        response = self.client.post(
+            self.list_url,
+            {"companyname": "Acme Inc"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], COMPANY_CREATE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "company")
+        self.assertNotIn("resource_id", identity_helper.call_args.kwargs)
+
+        mautic_client = MagicMock()
+        identity_helper.call_args.kwargs["mutate"](mautic_client)
+        mautic_client.create_company.assert_called_once_with({"companyname": "Acme Inc"})
+
     @patch("newsletter.field_services.MauticClient")
     @patch("newsletter.company_services.MauticClient")
     def test_create_company_requires_name(self, company_cls, field_cls):
@@ -283,6 +314,30 @@ class NewsletterAdminCompaniesAPITests(TestCase):
         # Untouched company values are not part of the PATCH payload.
         client.update_company.assert_called_once_with("1", {"companyname": "Acme Group"})
 
+    @patch("newsletter.company_views.run_interactive_mutation")
+    @patch("newsletter.field_services.MauticClient")
+    def test_update_company_uses_identity_operation(self, field_cls, identity_helper):
+        self._field_client(field_cls)
+        identity_helper.return_value = (company_payload(name="Acme Group"), None)
+
+        self._authenticate(self.staff)
+        response = self.client.patch(
+            self.detail_url,
+            {"companyname": "Acme Group"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], COMPANY_UPDATE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "company")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "1")
+
+        mautic_client = MagicMock()
+        mautic_client.get_company.return_value = company_payload(name="Acme Group")
+        identity_helper.call_args.kwargs["mutate"](mautic_client)
+        mautic_client.update_company.assert_called_once_with("1", {"companyname": "Acme Group"})
+
     # ---------------------------------------------------------------- delete
 
     @patch("newsletter.company_services.MauticClient")
@@ -296,6 +351,23 @@ class NewsletterAdminCompaniesAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["deleted"])
         client.delete_company.assert_called_once_with("1")
+
+    @patch("newsletter.company_views.run_interactive_mutation")
+    def test_delete_company_uses_identity_operation(self, identity_helper):
+        identity_helper.return_value = ({"deleted": True, "id": "1"}, None)
+
+        self._authenticate(self.staff)
+        response = self.client.delete(self.detail_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], COMPANY_DELETE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "company")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "1")
+
+        mautic_client = MagicMock()
+        identity_helper.call_args.kwargs["mutate"](mautic_client)
+        mautic_client.delete_company.assert_called_once_with("1")
 
     @patch("newsletter.company_services.MauticClient")
     def test_delete_company_surfaces_provider_rejection(self, client_cls):
@@ -361,6 +433,26 @@ class NewsletterAdminCompaniesAPITests(TestCase):
         # The relationship lives in Mautic only.
         self.assertEqual(MauticContactMapping.objects.count(), 0)
 
+    @patch("newsletter.company_views.run_interactive_mutation")
+    def test_add_contact_to_company_uses_identity_operation(self, identity_helper):
+        identity_helper.return_value = (
+            {"company_id": "1", "contact_id": "7", "associated": True},
+            None,
+        )
+
+        self._authenticate(self.staff)
+        response = self.client.post(self.contacts_url, {"contact_id": "7"}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], COMPANY_CONTACT_ADD)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "company_contact")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "1:7")
+
+        mautic_client = MagicMock()
+        identity_helper.call_args.kwargs["mutate"](mautic_client)
+        mautic_client.add_contact_to_company.assert_called_once_with("1", "7")
+
     @patch("newsletter.company_services.MauticClient")
     def test_add_contact_requires_contact_id(self, client_cls):
         client_cls.return_value = MagicMock()
@@ -382,3 +474,23 @@ class NewsletterAdminCompaniesAPITests(TestCase):
         self.assertFalse(response.data["associated"])
         client.remove_contact_from_company.assert_called_once_with("1", "7")
         self.assertEqual(MauticContactMapping.objects.count(), 0)
+
+    @patch("newsletter.company_views.run_interactive_mutation")
+    def test_remove_contact_from_company_uses_identity_operation(self, identity_helper):
+        identity_helper.return_value = (
+            {"company_id": "1", "contact_id": "7", "associated": False},
+            None,
+        )
+
+        self._authenticate(self.staff)
+        response = self.client.delete(self.contact_detail_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], COMPANY_CONTACT_REMOVE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "company_contact")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "1:7")
+
+        mautic_client = MagicMock()
+        identity_helper.call_args.kwargs["mutate"](mautic_client)
+        mautic_client.remove_contact_from_company.assert_called_once_with("1", "7")

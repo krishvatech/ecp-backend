@@ -154,6 +154,108 @@ class MauticClientTests(SimpleTestCase):
             ("DELETE", "http://mautic.local/api/ecp/campaign-builder/campaigns/7/events/26"),
         )
 
+    def test_asserted_company_mutations_use_exact_bridge_operations(self):
+        cases = [
+            (
+                lambda client: client.create_company({"companyname": "QA Co"}),
+                {"company": {"id": 31}},
+                "company.create",
+                ("POST", "http://mautic.local/api/ecp/bridge/companies/new"),
+            ),
+            (
+                lambda client: client.update_company(31, {"companyname": "QA Co 2"}),
+                {"company": {"id": 31}},
+                "company.update",
+                ("PATCH", "http://mautic.local/api/ecp/bridge/companies/31/edit"),
+            ),
+            (
+                lambda client: client.delete_company(31),
+                {"company": {}},
+                "company.delete",
+                ("DELETE", "http://mautic.local/api/ecp/bridge/companies/31/delete"),
+            ),
+            (
+                lambda client: client.add_contact_to_company(31, 12),
+                {"success": True},
+                "company.contact.add",
+                ("POST", "http://mautic.local/api/ecp/bridge/companies/31/contact/12/add"),
+            ),
+            (
+                lambda client: client.remove_contact_from_company(31, 12),
+                {"success": True},
+                "company.contact.remove",
+                ("POST", "http://mautic.local/api/ecp/bridge/companies/31/contact/12/remove"),
+            ),
+        ]
+
+        for call, payload, operation, expected_request in cases:
+            with self.subTest(operation=operation):
+                client, session, operations = self.make_asserted_mautic_client(
+                    response(200, payload)
+                )
+
+                call(client)
+
+                self.assertEqual(operations, [operation])
+                self.assertEqual(session.request.call_args.args[:2], expected_request)
+
+    def test_asserted_point_mutations_use_exact_bridge_operations(self):
+        cases = [
+            (
+                lambda client: client.create_point_action({"name": "Visit", "type": "url.hit", "delta": 1}),
+                {"point": {"id": 41}},
+                "point.action.create",
+                ("POST", "http://mautic.local/api/ecp/bridge/points/new"),
+            ),
+            (
+                lambda client: client.update_point_action(41, {"delta": 2}),
+                {"point": {"id": 41}},
+                "point.action.update",
+                ("PATCH", "http://mautic.local/api/ecp/bridge/points/41/edit"),
+            ),
+            (
+                lambda client: client.delete_point_action(41),
+                {"point": {}},
+                "point.action.delete",
+                ("DELETE", "http://mautic.local/api/ecp/bridge/points/41/delete"),
+            ),
+            (
+                lambda client: client.create_point_group({"name": "Engagement"}),
+                {"pointGroup": {"id": 42}},
+                "point.group.create",
+                ("POST", "http://mautic.local/api/ecp/bridge/points/groups/new"),
+            ),
+            (
+                lambda client: client.adjust_contact_points(12, "plus", 5),
+                {"success": True},
+                "point.contact.adjust",
+                ("POST", "http://mautic.local/api/ecp/bridge/contacts/12/points/plus/5"),
+            ),
+            (
+                lambda client: client.create_point_trigger({"name": "Hot", "points": 20}),
+                {"trigger": {"id": 43}},
+                "point.trigger.create",
+                ("POST", "http://mautic.local/api/ecp/bridge/points/triggers/new"),
+            ),
+            (
+                lambda client: client.update_point_trigger_event(44, {"name": "Send"}),
+                {"id": 44},
+                "point.trigger.event.update",
+                ("PATCH", "http://mautic.local/api/ecp/bridge/points/triggers/events/44"),
+            ),
+        ]
+
+        for call, payload, operation, expected_request in cases:
+            with self.subTest(operation=operation):
+                client, session, operations = self.make_asserted_mautic_client(
+                    response(200, payload)
+                )
+
+                call(client)
+
+                self.assertEqual(operations, [operation])
+                self.assertEqual(session.request.call_args.args[:2], expected_request)
+
     def test_asserted_audience_mutations_use_exact_bridge_operations(self):
         cases = [
             (

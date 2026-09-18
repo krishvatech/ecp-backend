@@ -7,7 +7,7 @@ not touch, for both objects.
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -98,6 +98,7 @@ class ContactDynamicFieldValueTests(TestCase):
         self.assertEqual(response.status_code, 400)
 
 
+@override_settings(ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False)
 class CompanyDynamicFieldValueTests(TestCase):
     def setUp(self):
         self.client = APIClient()

@@ -1,16 +1,23 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
 from newsletter.mautic import PermanentMauticError, TemporaryMauticError
+from newsletter.mautic.operations import (
+    POINT_CONTACT_GROUP_ADJUST,
+    POINT_GROUP_CREATE,
+    POINT_GROUP_DELETE,
+    POINT_GROUP_UPDATE,
+)
 
 
 User = get_user_model()
 
 
+@override_settings(ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False)
 class NewsletterAdminPointGroupsAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -143,6 +150,22 @@ class NewsletterAdminPointGroupsAPITests(TestCase):
             }
         )
 
+    @patch("newsletter.point_group_views.run_interactive_mutation")
+    def test_create_uses_identity_operation(self, identity_helper):
+        identity_helper.return_value = ({"id": 7, "name": "Engagement"}, None)
+        self._authenticate(self.staff)
+
+        response = self.client.post(self.list_url, {"name": "Engagement"}, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], POINT_GROUP_CREATE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "point_group")
+
+        client = MagicMock()
+        identity_helper.call_args.kwargs["mutate"](client)
+        client.create_point_group.assert_called_once_with({"name": "Engagement"})
+
     @patch("newsletter.point_group_views.MauticClient")
     def test_create_rejects_invalid_payload(self, client_cls):
         self._authenticate(self.staff)
@@ -221,6 +244,36 @@ class NewsletterAdminPointGroupsAPITests(TestCase):
                 "isPublished": True,
             },
         )
+
+    @patch("newsletter.point_group_views.run_interactive_mutation")
+    def test_patch_uses_identity_operation(self, identity_helper):
+        identity_helper.return_value = ({"id": 5, "name": "Engagement Updated"}, None)
+        self._authenticate(self.staff)
+
+        response = self.client.patch(self.detail_url, {"name": "Engagement Updated"}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], POINT_GROUP_UPDATE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "point_group")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "5")
+
+    @patch("newsletter.point_group_views.run_interactive_mutation")
+    @patch("newsletter.point_group_views.MauticClient")
+    def test_delete_uses_identity_operation_after_guard(self, client_cls, identity_helper):
+        client_cls.return_value.get_point_group.return_value = {"id": 5, "name": "Engagement"}
+        client_cls.return_value.list_point_actions.return_value = {"total": 0, "points": []}
+        client_cls.return_value.list_point_triggers.return_value = {"total": 0, "triggers": []}
+        identity_helper.return_value = ({}, None)
+        self._authenticate(self.staff)
+
+        response = self.client.delete(self.detail_url)
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], POINT_GROUP_DELETE)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "point_group")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "5")
 
     @patch("newsletter.point_group_views.MauticClient")
     def test_delete_allows_only_when_no_point_actions_or_triggers_exist(self, client_cls):
@@ -361,6 +414,36 @@ class NewsletterAdminPointGroupsAPITests(TestCase):
             event_name="Sales engagement",
             action_name="ECP Newsletter",
         )
+
+    @patch("newsletter.point_group_views.run_interactive_mutation")
+    @patch("newsletter.point_group_views.MauticClient")
+    def test_contact_group_adjustment_uses_identity_operation(self, client_cls, identity_helper):
+        client = client_cls.return_value
+        client.list_contact_point_groups.return_value = {
+            "total": 1,
+            "groupScores": [{"score": 10, "group": {"id": 5, "name": "Engagement"}}],
+        }
+        client.get_contact_point_group.return_value = {
+            "score": 15,
+            "group": {"id": 5, "name": "Engagement", "description": ""},
+        }
+        identity_helper.return_value = (
+            {"score": 15, "group": {"id": 5, "name": "Engagement", "description": ""}},
+            None,
+        )
+        self._authenticate(self.staff)
+
+        response = self.client.post(
+            self.contact_detail_url,
+            {"operation": "add", "amount": 5, "reason": "Sales engagement"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(identity_helper.call_args.args[0].user, self.staff)
+        self.assertEqual(identity_helper.call_args.kwargs["action"], POINT_CONTACT_GROUP_ADJUST)
+        self.assertEqual(identity_helper.call_args.kwargs["resource"], "contact_point_group")
+        self.assertEqual(identity_helper.call_args.kwargs["resource_id"], "12:5")
 
     @patch("newsletter.point_group_views.MauticClient")
     def test_contact_group_adjustment_supports_new_score_and_default_reason(self, client_cls):

@@ -12,6 +12,15 @@ from rest_framework.views import APIView
 from moderation.permissions import IsStaffOrSuperuser
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic.operations import (
+    POINT_TRIGGER_CREATE,
+    POINT_TRIGGER_DELETE,
+    POINT_TRIGGER_EVENT_CREATE,
+    POINT_TRIGGER_EVENT_DELETE,
+    POINT_TRIGGER_EVENT_UPDATE,
+    POINT_TRIGGER_UPDATE,
+)
+from .mautic_identity_execution import run_interactive_mutation
 
 
 _TRIGGER_FIELDS = {
@@ -446,7 +455,17 @@ class NewsletterAdminPointTriggerListCreateView(APIView):
         try:
             if payload.get("group"):
                 _validate_point_group(client, payload["group"])
-            trigger = client.create_point_trigger(payload)
+            trigger, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_TRIGGER_CREATE,
+                resource="point_trigger",
+                mutate=lambda identity_client: identity_client.create_point_trigger(
+                    payload,
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
             type_labels = client.list_point_trigger_event_types()
         except ValueError as exc:
             return Response(
@@ -493,7 +512,19 @@ class NewsletterAdminPointTriggerDetailView(APIView):
         try:
             if payload.get("group"):
                 _validate_point_group(client, payload["group"])
-            trigger = client.update_point_trigger(trigger_id, payload)
+            trigger, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_TRIGGER_UPDATE,
+                resource="point_trigger",
+                resource_id=trigger_id,
+                mutate=lambda identity_client: identity_client.update_point_trigger(
+                    trigger_id,
+                    payload,
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
             type_labels = client.list_point_trigger_event_types()
         except ValueError as exc:
             return Response(
@@ -510,7 +541,16 @@ class NewsletterAdminPointTriggerDetailView(APIView):
 
     def delete(self, request, trigger_id):
         try:
-            MauticClient().delete_point_trigger(trigger_id)
+            _, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_TRIGGER_DELETE,
+                resource="point_trigger",
+                resource_id=trigger_id,
+                mutate=lambda client: client.delete_point_trigger(trigger_id),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -555,7 +595,21 @@ class NewsletterAdminPointTriggerEventListCreateView(APIView):
         try:
             client.get_point_trigger(trigger_id)
             type_labels = _validate_event_type(client, payload["type"])
-            event = client.create_point_trigger_event(trigger_id, payload)
+            event, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_TRIGGER_EVENT_CREATE,
+                resource="point_trigger_event",
+                resource_id=str(trigger_id),
+                mutate=lambda identity_client: (
+                    identity_client.create_point_trigger_event(
+                        trigger_id,
+                        payload,
+                    )
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
@@ -634,7 +688,21 @@ class NewsletterAdminPointTriggerEventDetailView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-            event = client.update_point_trigger_event(event_id, payload)
+            event, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_TRIGGER_EVENT_UPDATE,
+                resource="point_trigger_event",
+                resource_id=f"{trigger_id}:{event_id}",
+                mutate=lambda identity_client: (
+                    identity_client.update_point_trigger_event(
+                        event_id,
+                        payload,
+                    )
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -651,7 +719,18 @@ class NewsletterAdminPointTriggerEventDetailView(APIView):
                 trigger_id=trigger_id,
                 event_id=event_id,
             )
-            client.delete_point_trigger_event(event_id)
+            _, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_TRIGGER_EVENT_DELETE,
+                resource="point_trigger_event",
+                resource_id=f"{trigger_id}:{event_id}",
+                mutate=lambda identity_client: (
+                    identity_client.delete_point_trigger_event(event_id)
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 

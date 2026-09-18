@@ -26,6 +26,11 @@ CONTACT_CREATE = "contact.create"
 CONTACT_UPDATE = "contact.update"
 CONTACT_TAG_ADD = "contact.tag.add"
 CONTACT_TAG_REMOVE = "contact.tag.remove"
+COMPANY_CREATE = "company.create"
+COMPANY_UPDATE = "company.update"
+COMPANY_DELETE = "company.delete"
+COMPANY_CONTACT_ADD = "company.contact.add"
+COMPANY_CONTACT_REMOVE = "company.contact.remove"
 TAG_CREATE = "tag.create"
 TAG_UPDATE = "tag.update"
 TAG_DELETE = "tag.delete"
@@ -37,6 +42,20 @@ TEMPLATE_UPDATE = "template.update"
 TEMPLATE_DELETE = "template.delete"
 TEMPLATE_DUPLICATE = "template.duplicate"
 NEWSLETTER_TEST_SEND = "newsletter.test_send"
+POINT_ACTION_CREATE = "point.action.create"
+POINT_ACTION_UPDATE = "point.action.update"
+POINT_ACTION_DELETE = "point.action.delete"
+POINT_GROUP_CREATE = "point.group.create"
+POINT_GROUP_UPDATE = "point.group.update"
+POINT_GROUP_DELETE = "point.group.delete"
+POINT_CONTACT_ADJUST = "point.contact.adjust"
+POINT_CONTACT_GROUP_ADJUST = "point.contact_group.adjust"
+POINT_TRIGGER_CREATE = "point.trigger.create"
+POINT_TRIGGER_UPDATE = "point.trigger.update"
+POINT_TRIGGER_DELETE = "point.trigger.delete"
+POINT_TRIGGER_EVENT_CREATE = "point.trigger.event.create"
+POINT_TRIGGER_EVENT_UPDATE = "point.trigger.event.update"
+POINT_TRIGGER_EVENT_DELETE = "point.trigger.event.delete"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
@@ -55,6 +74,11 @@ ASSERTABLE_OPERATIONS = frozenset(
         CONTACT_UPDATE,
         CONTACT_TAG_ADD,
         CONTACT_TAG_REMOVE,
+        COMPANY_CREATE,
+        COMPANY_UPDATE,
+        COMPANY_DELETE,
+        COMPANY_CONTACT_ADD,
+        COMPANY_CONTACT_REMOVE,
         TAG_CREATE,
         TAG_UPDATE,
         TAG_DELETE,
@@ -66,5 +90,19 @@ ASSERTABLE_OPERATIONS = frozenset(
         TEMPLATE_DELETE,
         TEMPLATE_DUPLICATE,
         NEWSLETTER_TEST_SEND,
+        POINT_ACTION_CREATE,
+        POINT_ACTION_UPDATE,
+        POINT_ACTION_DELETE,
+        POINT_GROUP_CREATE,
+        POINT_GROUP_UPDATE,
+        POINT_GROUP_DELETE,
+        POINT_CONTACT_ADJUST,
+        POINT_CONTACT_GROUP_ADJUST,
+        POINT_TRIGGER_CREATE,
+        POINT_TRIGGER_UPDATE,
+        POINT_TRIGGER_DELETE,
+        POINT_TRIGGER_EVENT_CREATE,
+        POINT_TRIGGER_EVENT_UPDATE,
+        POINT_TRIGGER_EVENT_DELETE,
     }
 )

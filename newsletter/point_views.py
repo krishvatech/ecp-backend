@@ -12,6 +12,13 @@ from rest_framework.views import APIView
 from moderation.permissions import IsStaffOrSuperuser
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic.operations import (
+    POINT_ACTION_CREATE,
+    POINT_ACTION_DELETE,
+    POINT_ACTION_UPDATE,
+    POINT_CONTACT_ADJUST,
+)
+from .mautic_identity_execution import run_interactive_mutation
 
 
 _PROPERTY_ALIAS_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -328,7 +335,17 @@ class NewsletterAdminPointActionListCreateView(APIView):
             if payload.get("group"):
                 _validate_point_group(client, payload["group"])
             type_labels = _validate_point_type(client, payload["type"])
-            point = client.create_point_action(payload)
+            point, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_ACTION_CREATE,
+                resource="point_action",
+                mutate=lambda identity_client: identity_client.create_point_action(
+                    payload,
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
@@ -397,7 +414,19 @@ class NewsletterAdminPointActionDetailView(APIView):
                 if existing_type:
                     payload["type"] = existing_type
 
-            point = client.update_point_action(point_id, payload)
+            point, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_ACTION_UPDATE,
+                resource="point_action",
+                resource_id=point_id,
+                mutate=lambda identity_client: identity_client.update_point_action(
+                    point_id,
+                    payload,
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _point_provider_error_response(exc)
 
@@ -408,7 +437,16 @@ class NewsletterAdminPointActionDetailView(APIView):
 
     def delete(self, request, point_id):
         try:
-            MauticClient().delete_point_action(point_id)
+            _, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_ACTION_DELETE,
+                resource="point_action",
+                resource_id=point_id,
+                mutate=lambda client: client.delete_point_action(point_id),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _point_provider_error_response(exc)
 
@@ -474,13 +512,22 @@ class NewsletterAdminContactPointsView(APIView):
             before = client.get_contact(mautic_contact_id)
             before_points = int(before.get("points") or 0)
 
-            client.adjust_contact_points(
-                mautic_contact_id,
-                operator,
-                amount,
-                event_name=event_name,
-                action_name="ECP Newsletter",
+            _, identity_response = run_interactive_mutation(
+                request,
+                action=POINT_CONTACT_ADJUST,
+                resource="contact_points",
+                resource_id=mautic_contact_id,
+                mutate=lambda identity_client: identity_client.adjust_contact_points(
+                    mautic_contact_id,
+                    operator,
+                    amount,
+                    event_name=event_name,
+                    action_name="ECP Newsletter",
+                ),
+                client_factory=MauticClient,
             )
+            if identity_response is not None:
+                return identity_response
 
             after = client.get_contact(mautic_contact_id)
             after_points = int(after.get("points") or 0)
