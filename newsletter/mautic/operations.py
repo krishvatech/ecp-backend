@@ -36,6 +36,7 @@ TEMPLATE_CREATE = "template.create"
 TEMPLATE_UPDATE = "template.update"
 TEMPLATE_DELETE = "template.delete"
 TEMPLATE_DUPLICATE = "template.duplicate"
+NEWSLETTER_TEST_SEND = "newsletter.test_send"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
@@ -64,5 +65,6 @@ ASSERTABLE_OPERATIONS = frozenset(
         TEMPLATE_UPDATE,
         TEMPLATE_DELETE,
         TEMPLATE_DUPLICATE,
+        NEWSLETTER_TEST_SEND,
     }
 )

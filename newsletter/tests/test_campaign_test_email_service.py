@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -10,6 +10,7 @@ from newsletter.campaign_services import (
     send_campaign_test_email,
 )
 from newsletter.mautic import PermanentMauticError, TemporaryMauticError
+from newsletter.mautic.exceptions import MauticBridgeRejectedError
 from newsletter.models import NewsletterCampaign, NewsletterCategory
 
 
@@ -82,6 +83,49 @@ class CampaignTestEmailServiceTests(TestCase):
         self.assertEqual(self.campaign.mautic_email_id, "44")
         self.assertEqual(result["recipient_email"], "test@example.com")
         self.assertFalse(result["temporary_contact"])
+
+    @patch("newsletter.campaign_services.MauticClient")
+    def test_injected_identity_client_is_used_for_test_send(self, client_cls):
+        setup_client = client_cls.return_value
+        setup_client.create_email.return_value = {"id": 907}
+        setup_client.find_contact_by_email.return_value = {"id": 57}
+        send_client = Mock()
+        send_client.send_email_to_contact.return_value = {"success": True}
+
+        result = send_campaign_test_email(
+            self.campaign,
+            "identity@example.com",
+            actor=self.actor,
+            client=send_client,
+        )
+
+        client_cls.assert_called_once_with()
+        setup_client.create_email.assert_called_once()
+        send_client.send_email_to_contact.assert_called_once_with("907", "57")
+        setup_client.delete_email.assert_called_once_with("907")
+        self.assertEqual(result["recipient_email"], "identity@example.com")
+
+    @patch("newsletter.campaign_services.MauticClient")
+    def test_permission_denied_bubbles_after_cleanup(self, client_cls):
+        setup_client = client_cls.return_value
+        setup_client.create_email.return_value = {"id": 908}
+        setup_client.find_contact_by_email.return_value = None
+        setup_client.create_contact.return_value = {"id": 58}
+        send_client = Mock()
+        send_client.send_email_to_contact.side_effect = MauticBridgeRejectedError(
+            "Mautic API request failed (HTTP 403)"
+        )
+
+        with self.assertRaises(MauticBridgeRejectedError):
+            send_campaign_test_email(
+                self.campaign,
+                "denied@example.com",
+                actor=self.actor,
+                client=send_client,
+            )
+
+        setup_client.delete_email.assert_called_once_with("908")
+        setup_client.delete_contact.assert_called_once_with("58")
 
     @patch("newsletter.campaign_services.MauticClient")
     def test_missing_contact_is_created_sent_and_cleaned_up(

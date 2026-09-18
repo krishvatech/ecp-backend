@@ -42,6 +42,7 @@ from .operations import (
     TEMPLATE_DELETE,
     TEMPLATE_DUPLICATE,
     TEMPLATE_UPDATE,
+    NEWSLETTER_TEST_SEND,
 )
 
 
@@ -2343,10 +2344,17 @@ class MauticClient:
                 "Mautic email ID and contact ID are required"
             )
 
-        response = self._request(
-            "POST",
-            f"emails/{email_id}/contact/{contact_id}/send",
-        )
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                f"ecp/bridge/emails/{email_id}/contact/{contact_id}/send",
+                operation=NEWSLETTER_TEST_SEND,
+            )
+        else:
+            response = self._request(
+                "POST",
+                f"emails/{email_id}/contact/{contact_id}/send",
+            )
         data = self._json_object(response, "Mautic single-contact email send")
         if not data.get("success"):
             raise TemporaryMauticError(

@@ -459,6 +459,7 @@ class MauticIdentityAuditLog(models.Model):
         TEMPLATE_UPDATE = "template.update", "Template update"
         TEMPLATE_DELETE = "template.delete", "Template delete"
         TEMPLATE_DUPLICATE = "template.duplicate", "Template duplicate"
+        NEWSLETTER_TEST_SEND = "newsletter.test_send", "Newsletter test send"
         CONNECTION_CREATE = "connection.create", "Mautic user connection created"
         CONNECTION_ACTIVATE = "connection.activate", "Mautic user connection activated"
         CONNECTION_DEACTIVATE = "connection.deactivate", "Mautic user connection deactivated"

@@ -13,6 +13,7 @@ from .campaign_send_events import (
     dispatch_campaign_send_event_safely,
 )
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic.exceptions import MauticBridgeRejectedError
 from .mautic.payloads import build_campaign_email_payload, build_test_email_payload
 from .models import (
     NewsletterCampaign,
@@ -284,7 +285,7 @@ def sync_campaign_draft_to_mautic(campaign, *, actor=None, action="synchronized"
     return synced_campaign
 
 
-def send_campaign_test_email(campaign, recipient_email, *, actor=None):
+def send_campaign_test_email(campaign, recipient_email, *, actor=None, client=None):
     recipient = str(recipient_email or "").strip().lower()
     if not recipient:
         raise CampaignMauticValidationError("Test recipient email is required.")
@@ -315,23 +316,26 @@ def send_campaign_test_email(campaign, recipient_email, *, actor=None):
             )
         validate_campaign_for_mautic_sync(campaign)
 
-    client = None
+    provider_client = None
+    send_client = client
     temporary_contact = False
     contact_id = ""
     temporary_email_id = ""
 
     try:
-        client = MauticClient()
-        temporary_email = client.create_email(build_test_email_payload(campaign))
+        provider_client = MauticClient()
+        if send_client is None:
+            send_client = provider_client
+        temporary_email = provider_client.create_email(build_test_email_payload(campaign))
         temporary_email_id = str(temporary_email.get("id") or "").strip()
         if not temporary_email_id:
             raise TemporaryMauticError(
                 "Mautic test email creation returned an invalid email"
             )
 
-        contact = client.find_contact_by_email(recipient)
+        contact = provider_client.find_contact_by_email(recipient)
         if contact is None:
-            contact = client.create_contact({"email": recipient})
+            contact = provider_client.create_contact({"email": recipient})
             temporary_contact = True
 
         contact_id = str(contact.get("id") or "").strip()
@@ -340,30 +344,32 @@ def send_campaign_test_email(campaign, recipient_email, *, actor=None):
                 "Mautic test recipient returned an invalid contact"
             )
 
-        client.send_email_to_contact(temporary_email_id, contact_id)
+        send_client.send_email_to_contact(temporary_email_id, contact_id)
     except TemporaryMauticError as exc:
         _record_mautic_sync_error(campaign, exc)
         raise CampaignMauticUnavailable(
             "Mautic newsletter test email is temporarily unavailable."
         ) from exc
+    except MauticBridgeRejectedError:
+        raise
     except PermanentMauticError as exc:
         _record_mautic_sync_error(campaign, exc)
         raise CampaignMauticTestEmailFailed(
             "Mautic rejected the newsletter test email."
         ) from exc
     finally:
-        if client is not None and temporary_email_id:
+        if provider_client is not None and temporary_email_id:
             try:
-                client.delete_email(temporary_email_id)
+                provider_client.delete_email(temporary_email_id)
             except (TemporaryMauticError, PermanentMauticError):
                 logger.warning(
                     "Could not delete temporary Mautic newsletter test email id=%s",
                     temporary_email_id,
                     exc_info=True,
                 )
-        if client is not None and temporary_contact and contact_id:
+        if provider_client is not None and temporary_contact and contact_id:
             try:
-                client.delete_contact(contact_id)
+                provider_client.delete_contact(contact_id)
             except (TemporaryMauticError, PermanentMauticError):
                 logger.warning(
                     "Could not delete temporary Mautic newsletter test contact id=%s",

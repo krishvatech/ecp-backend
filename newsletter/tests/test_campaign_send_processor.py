@@ -97,6 +97,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         self.assertIs(publish_payload["isPublished"], True)
         self.assertEqual(publish_payload["lists"], [31])
         client.send_email_to_segments.assert_called_once_with("77", [31])
+        client_cls.assert_called_once_with()
 
     @patch("newsletter.campaign_send_processor.MauticClient")
     @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")

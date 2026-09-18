@@ -24,11 +24,11 @@ def response(status_code=200, payload=None):
 
 @override_settings(**MAUTIC_SETTINGS)
 class MauticEmailClientTests(SimpleTestCase):
-    def make_client(self, result=None):
+    def make_client(self, result=None, **client_kwargs):
         session = Mock()
         if result is not None:
             session.request.return_value = result
-        return MauticClient(session=session), session
+        return MauticClient(session=session, **client_kwargs), session
 
     def test_get_email_uses_expected_route(self):
         client, session = self.make_client(
@@ -132,6 +132,33 @@ class MauticEmailClientTests(SimpleTestCase):
             ("POST", "http://mautic.local/api/emails/42/contact/51/send"),
         )
         self.assertNotIn("data", session.request.call_args.kwargs)
+
+    def test_send_email_to_contact_uses_asserted_user_bridge(self):
+        assertion_provider = Mock(return_value="signed-test-send")
+        client, session = self.make_client(
+            response(200, {"success": True}),
+            assertion_provider=assertion_provider,
+            correlation_id="corr-test-send",
+        )
+
+        result = client.send_email_to_contact(42, 51)
+
+        self.assertTrue(result["success"])
+        assertion_provider.assert_called_once_with("newsletter.test_send")
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            (
+                "POST",
+                "http://mautic.local/api/ecp/bridge/emails/42/contact/51/send",
+            ),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["headers"],
+            {
+                "X-ECP-Identity-Assertion": "signed-test-send",
+                "X-ECP-Correlation-Id": "corr-test-send",
+            },
+        )
 
     def test_send_email_to_contact_rejects_missing_ids(self):
         client, session = self.make_client()

@@ -73,6 +73,7 @@ from .mautic.operations import (
     CONTACT_TAG_ADD,
     CONTACT_TAG_REMOVE,
     CONTACT_UPDATE,
+    NEWSLETTER_TEST_SEND,
     SEGMENT_CONTACT_ADD,
     SEGMENT_CONTACT_REMOVE,
     SEGMENT_CREATE,
@@ -799,12 +800,23 @@ class NewsletterAdminCampaignTestEmailView(APIView):
     def post(self, request, uuid):
         serializer = NewsletterCampaignTestEmailSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        campaign = _get_campaign_or_404(uuid)
 
-        result = send_campaign_test_email(
-            _get_campaign_or_404(uuid),
-            serializer.validated_data["email"],
-            actor=request.user,
+        result, error_response = run_interactive_mutation(
+            request,
+            action=NEWSLETTER_TEST_SEND,
+            resource="newsletter_campaign",
+            resource_id=str(campaign.uuid),
+            mutate=lambda client: send_campaign_test_email(
+                campaign,
+                serializer.validated_data["email"],
+                actor=request.user,
+                client=client,
+            ),
         )
+        if error_response is not None:
+            return error_response
+
         return Response(
             {
                 "success": True,

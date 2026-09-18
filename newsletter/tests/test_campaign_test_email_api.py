@@ -1,7 +1,7 @@
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -9,12 +9,19 @@ from newsletter.campaign_services import (
     CampaignMauticUnavailable,
     CampaignMauticValidationError,
 )
-from newsletter.models import NewsletterCampaign
+from newsletter.mautic.exceptions import MauticBridgeRejectedError
+from newsletter.models import MauticIdentityAuditLog, NewsletterCampaign
 
 
 User = get_user_model()
 
 
+@override_settings(
+    MAUTIC_BASE_URL="http://mautic.local",
+    MAUTIC_USERNAME="api-user",
+    MAUTIC_PASSWORD="secret",
+    ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False,
+)
 class NewsletterAdminCampaignTestEmailAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -83,7 +90,12 @@ class NewsletterAdminCampaignTestEmailAPITests(TestCase):
             self.campaign,
             "test@example.com",
             actor=self.staff,
+            client=ANY,
         )
+        audit = MauticIdentityAuditLog.objects.get()
+        self.assertEqual(audit.action, "newsletter.test_send")
+        self.assertEqual(audit.auth_mode, "service_account")
+        self.assertEqual(audit.assertion_jti, "")
         self.assertNotIn("contact_id", response.data)
         self.assertNotIn("temporary_contact", response.data)
 
@@ -107,6 +119,7 @@ class NewsletterAdminCampaignTestEmailAPITests(TestCase):
             self.campaign,
             "admin-test@example.com",
             actor=self.superuser,
+            client=ANY,
         )
 
     @patch("newsletter.admin_views.send_campaign_test_email")
@@ -149,6 +162,29 @@ class NewsletterAdminCampaignTestEmailAPITests(TestCase):
         )
 
         self.assertEqual(response.status_code, 503)
+
+    @patch("newsletter.admin_views.send_campaign_test_email")
+    def test_provider_permission_denied_is_audited_and_returned_as_403(
+        self,
+        send_mock,
+    ):
+        send_mock.side_effect = MauticBridgeRejectedError(
+            "Mautic API request failed (HTTP 403)"
+        )
+        self.client.force_authenticate(user=self.staff)
+
+        response = self.client.post(
+            self.url,
+            {"email": "denied@example.com"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], "mautic_permission_denied")
+        audit = MauticIdentityAuditLog.objects.get()
+        self.assertEqual(audit.action, "newsletter.test_send")
+        self.assertEqual(audit.status, MauticIdentityAuditLog.Status.DENIED)
+        self.assertEqual(audit.error_code, "mautic_permission_denied")
 
     @patch("newsletter.admin_views.send_campaign_test_email")
     def test_missing_campaign_returns_404_without_send(self, send_mock):
