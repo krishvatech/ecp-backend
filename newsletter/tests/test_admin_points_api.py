@@ -12,6 +12,7 @@ from newsletter.mautic.operations import (
     POINT_ACTION_UPDATE,
     POINT_CONTACT_ADJUST,
 )
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -26,7 +27,9 @@ class NewsletterAdminPointsAPITests(TestCase):
             email="points-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.normal_user = User.objects.create_user(
             username="points-normal",
             email="points-normal@example.test",

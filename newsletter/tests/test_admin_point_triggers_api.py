@@ -14,6 +14,7 @@ from newsletter.mautic.operations import (
     POINT_TRIGGER_EVENT_UPDATE,
     POINT_TRIGGER_UPDATE,
 )
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -28,7 +29,9 @@ class NewsletterAdminPointTriggerAPITests(TestCase):
             email="trigger-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.normal_user = User.objects.create_user(
             username="trigger-normal",
             email="trigger-normal@example.test",

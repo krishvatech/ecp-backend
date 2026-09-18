@@ -6,6 +6,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from newsletter.mautic import PermanentMauticError, TemporaryMauticError
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -19,7 +20,9 @@ class NewsletterAdminMauticCampaignsAPITests(TestCase):
             email="native-campaign-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.normal_user = User.objects.create_user(
             username="native-campaign-normal",
             email="native-campaign-normal@example.test",
@@ -669,7 +672,9 @@ class NewsletterAdminMauticCampaignMultiEventTests(TestCase):
             email="multi-event-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.detail_url = reverse(
             "newsletter-admin-mautic-campaign-detail",
@@ -1263,7 +1268,9 @@ class NewsletterAdminMauticCampaignChoicesAPITests(TestCase):
             email="campaign-choices-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.normal_user = User.objects.create_user(
             username="campaign-choices-normal",
             email="campaign-choices-normal@example.test",
@@ -1521,7 +1528,9 @@ class NewsletterAdminMauticCampaignRemoteSchemaTests(TestCase):
             email="remote-schema-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.detail_url = reverse(
             "newsletter-admin-mautic-campaign-detail",
@@ -1634,7 +1643,9 @@ class NewsletterAdminMauticCampaignChoicePagingTests(TestCase):
             email="choice-paging-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.url = reverse("newsletter-admin-mautic-campaign-choices")
 
@@ -1777,7 +1788,9 @@ class NewsletterAdminMauticCampaignEventDeleteTests(TestCase):
             email="event-delete-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.normal_user = User.objects.create_user(
             username="event-delete-normal",
             email="event-delete-normal@example.test",
@@ -1943,7 +1956,9 @@ class NewsletterAdminMauticCampaignSoftDeletedEventTests(TestCase):
             email="soft-delete-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.builder_url = reverse(
             "newsletter-admin-mautic-campaign-builder",
@@ -2059,7 +2074,9 @@ class NewsletterAdminMauticCampaignSaveValidationTests(TestCase):
             email="save-validation-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.detail_url = reverse(
             "newsletter-admin-mautic-campaign-detail",
@@ -2381,7 +2398,9 @@ class NewsletterAdminMauticCampaignConfigurableFieldTests(TestCase):
             email="configurable-field-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.detail_url = reverse(
             "newsletter-admin-mautic-campaign-detail",
@@ -2528,7 +2547,9 @@ class NewsletterAdminMauticCampaignPublishedStateTests(TestCase):
             email="published-state-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.detail_url = reverse(
             "newsletter-admin-mautic-campaign-detail",
@@ -2684,7 +2705,9 @@ class NewsletterAdminMauticCampaignEntityChoiceTests(TestCase):
             email="entity-choice-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.detail_url = reverse(
             "newsletter-admin-mautic-campaign-detail",

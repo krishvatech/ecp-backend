@@ -7,6 +7,7 @@ from rest_framework.test import APIClient
 
 from newsletter.mautic import TemporaryMauticError
 from newsletter.mautic_analytics_services import _count_new_contacts
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -20,7 +21,9 @@ class NewsletterAdminMauticAnalyticsAPITests(TestCase):
             email="mautic-analytics-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.normal_user = User.objects.create_user(
             username="mautic-analytics-normal",
             email="mautic-analytics-normal@example.test",

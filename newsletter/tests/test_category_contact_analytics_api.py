@@ -12,6 +12,7 @@ from newsletter.models import (
     NewsletterSubscription,
     NewsletterSyncEvent,
 )
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -30,7 +31,9 @@ class NewsletterCategoryContactAnalyticsAPITests(TestCase):
             email="timeline-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.category = NewsletterCategory.objects.get(slug="imaa-events")
         self.url = reverse(
             "newsletter-admin-category-contact-analytics",

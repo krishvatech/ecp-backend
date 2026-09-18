@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser
+from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import PermanentMauticError, TemporaryMauticError
 from .mautic_analytics_services import (
@@ -32,7 +32,7 @@ def _date_range_or_response(request):
 
 
 class NewsletterAdminAnalyticsOverviewView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         date_range = _date_range_or_response(request)
@@ -46,7 +46,7 @@ class NewsletterAdminAnalyticsOverviewView(APIView):
 
 
 class NewsletterAdminAnalyticsCampaignsView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -57,7 +57,7 @@ class NewsletterAdminAnalyticsCampaignsView(APIView):
 
 
 class NewsletterAdminAnalyticsEmailsView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -68,7 +68,7 @@ class NewsletterAdminAnalyticsEmailsView(APIView):
 
 
 class NewsletterAdminAnalyticsContactsView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         date_range = _date_range_or_response(request)
@@ -82,7 +82,7 @@ class NewsletterAdminAnalyticsContactsView(APIView):
 
 
 class NewsletterAdminAnalyticsSegmentsView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:

@@ -13,6 +13,7 @@ from newsletter.models import (
     NewsletterCampaignSendEvent,
     NewsletterCategory,
 )
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -31,7 +32,9 @@ class NewsletterAdminCampaignScheduleAPITests(TestCase):
             email="schedule-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.category = NewsletterCategory.objects.create(
             name="Schedule Audience",
             slug="schedule-audience",

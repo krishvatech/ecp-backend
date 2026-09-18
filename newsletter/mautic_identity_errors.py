@@ -14,6 +14,11 @@ from rest_framework import status
 from rest_framework.response import Response
 
 from .mautic.exceptions import (
+    MarketingAccessAlreadyActiveError,
+    MarketingAccessNotEligibleError,
+    MarketingIdentityConflictError,
+    MarketingProvisioningFailedError,
+    MarketingSelfManagementError,
     MauticActorRequiredError,
     MauticBridgeRejectedError,
     MauticIdentityAssertionError,
@@ -27,6 +32,40 @@ from .mautic.exceptions import (
 
 # Checked most-specific first; subclasses must precede their base.
 _IDENTITY_ERROR_MAP = (
+    (
+        MarketingAccessNotEligibleError,
+        status.HTTP_400_BAD_REQUEST,
+        "target_not_marketing_eligible",
+        "Only active ECP superusers can be given Marketing access.",
+    ),
+    (
+        MarketingSelfManagementError,
+        status.HTTP_403_FORBIDDEN,
+        "marketing_self_management_not_allowed",
+        "You cannot change your own Marketing access. Ask another ECP "
+        "superuser to make this change.",
+    ),
+    (
+        MarketingAccessAlreadyActiveError,
+        status.HTTP_409_CONFLICT,
+        "marketing_access_already_active",
+        "This user already has active Marketing access.",
+    ),
+    (
+        MarketingIdentityConflictError,
+        status.HTTP_409_CONFLICT,
+        "marketing_identity_conflict",
+        "A Mautic user already exists for this person. An administrator must "
+        "link the correct Mautic user explicitly before Marketing access can "
+        "be granted.",
+    ),
+    (
+        MarketingProvisioningFailedError,
+        status.HTTP_502_BAD_GATEWAY,
+        "marketing_provisioning_failed",
+        "The Mautic user for this person could not be provisioned. No Marketing "
+        "access was granted.",
+    ),
     (
         MauticUserConnectionMissingError,
         status.HTTP_409_CONFLICT,

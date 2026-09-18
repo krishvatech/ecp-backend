@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser
+from .marketing_permissions import HasMarketingHubAccess
 
 from . import tag_services as tag_service_module
 from .mautic import PermanentMauticError, TemporaryMauticError
@@ -27,7 +27,7 @@ def _tag_error(exc):
 
 
 class NewsletterAdminTagDirectoryView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -81,7 +81,7 @@ class NewsletterAdminTagDirectoryView(APIView):
 
 
 class NewsletterAdminTagDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, tag_id):
         try:

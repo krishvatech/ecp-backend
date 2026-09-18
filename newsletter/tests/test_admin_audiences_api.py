@@ -4,6 +4,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from newsletter.models import NewsletterAudience
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -22,12 +23,15 @@ class NewsletterAdminAudienceAPITests(TestCase):
             email="audience-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.superuser = User.objects.create_superuser(
             username="audience-superuser",
             email="audience-superuser@example.test",
             password="test-password",
         )
+        grant_marketing_access(self.superuser)
         self.list_url = reverse("newsletter-admin-audience-list")
 
     def _authenticate(self, user):

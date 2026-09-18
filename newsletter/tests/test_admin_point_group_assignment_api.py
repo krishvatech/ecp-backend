@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -18,7 +19,9 @@ class NewsletterAdminPointGroupAssignmentAPITests(TestCase):
             email="point-group-assignment-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.point_list_url = reverse(
             "newsletter-admin-point-action-list"
         )

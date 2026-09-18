@@ -6,6 +6,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from newsletter.mautic import PermanentMauticError, TemporaryMauticError
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -19,7 +20,9 @@ class NewsletterAdminContactStagesAPITests(TestCase):
             email="contact-stage-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.normal_user = User.objects.create_user(
             username="contact-stage-normal",
             email="contact-stage-normal@example.test",

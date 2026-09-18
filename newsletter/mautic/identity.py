@@ -89,18 +89,24 @@ def _is_authenticated(user) -> bool:
 
 
 def actor_has_marketing_hub_access(user) -> bool:
-    """Mirror of the Marketing Hub API rule (``IsStaffOrSuperuser``)."""
+    """Who may hold Marketing access at all.
+
+    Deliberately narrower than the old ``is_staff or is_superuser`` rule: only
+    an active ECP **superuser** is eligible. Staff are not, and cannot be
+    mapped. This is eligibility only; holding access additionally requires an
+    active mapping, which ``get_active_mautic_user_connection`` enforces.
+    """
     return bool(
         _is_authenticated(user)
         and getattr(user, "is_active", False)
-        and (getattr(user, "is_staff", False) or getattr(user, "is_superuser", False))
+        and getattr(user, "is_superuser", False)
     )
 
 
 def require_marketing_hub_actor(user):
     if not actor_has_marketing_hub_access(user):
         raise MauticActorRequiredError(
-            "An active Marketing Hub staff user is required for interactive Mautic operations"
+            "An active ECP superuser is required for interactive Mautic operations"
         )
     return user
 

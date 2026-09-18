@@ -86,16 +86,32 @@ IDENTITY_SETTINGS = {
 
 
 class _IdentityFixtures:
+    """Actors for the Marketing identity rules.
+
+    ``staff``/``other_staff`` are the *authorized* Marketing actors, so they are
+    active ECP superusers: Marketing eligibility is superuser-only, and a
+    staff-only account can no longer hold a mapping or reach the Marketing Hub.
+    ``staff_only`` and ``normal_user`` are the unauthorized actors.
+    """
+
     def setUp(self):
         self.staff = User.objects.create_user(
             username="identity-staff",
             email="identity-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
         self.other_staff = User.objects.create_user(
             username="identity-staff-2",
             email="identity-staff-2@example.test",
+            password="test-password",
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.staff_only = User.objects.create_user(
+            username="identity-staff-only",
+            email="identity-staff-only@example.test",
             password="test-password",
             is_staff=True,
         )
@@ -275,7 +291,13 @@ class MauticActorResolutionTests(_IdentityFixtures, TestCase):
         self._active_connection(user=self.normal_user)
         self.staff.is_active = False
 
-        for actor in (None, Mock(is_authenticated=False), self.normal_user, self.staff):
+        for actor in (
+            None,
+            Mock(is_authenticated=False),
+            self.normal_user,
+            self.staff_only,
+            self.staff,
+        ):
             with self.subTest(actor=actor), self.assertRaises(MauticActorRequiredError):
                 get_active_mautic_user_connection(actor)
 
@@ -286,6 +308,7 @@ class MauticActorResolutionTests(_IdentityFixtures, TestCase):
             email="shared@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
 
         with self.assertRaises(MauticUserConnectionMissingError):
@@ -537,6 +560,8 @@ class MauticIdentityAssertionTests(_IdentityFixtures, TestCase):
 @override_settings(**MAUTIC_SETTINGS)
 class NewsletterAdminMauticIdentityStatusAPITests(_IdentityFixtures, TestCase):
     EXPECTED_KEYS = {
+        "eligible",
+        "has_marketing_access",
         "connected",
         "status",
         "mautic_user_id",
@@ -556,13 +581,22 @@ class NewsletterAdminMauticIdentityStatusAPITests(_IdentityFixtures, TestCase):
     def test_route_is_in_marketing_hub_settings_namespace(self):
         self.assertEqual(self.url, "/api/newsletter/admin/settings/mautic-identity/status/")
 
-    def test_requires_marketing_hub_staff(self):
+    def test_requires_authentication_and_reports_ineligibility(self):
         response = self.client.get(self.url)
         self.assertIn(response.status_code, (401, 403))
 
-        self.client.force_authenticate(user=self.normal_user)
-        response = self.client.get(self.url)
-        self.assertEqual(response.status_code, 403)
+        # Any authenticated user may read their OWN status: the frontend gates
+        # Marketing Hub on it, so an ineligible caller needs an answer rather
+        # than a 403. It exposes nobody else's identity.
+        for actor in (self.normal_user, self.staff_only):
+            with self.subTest(actor=actor.username):
+                self.client.force_authenticate(user=actor)
+                response = self.client.get(self.url)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse(response.data["eligible"])
+                self.assertFalse(response.data["has_marketing_access"])
+                self.assertFalse(response.data["connected"])
 
     def test_not_connected(self):
         self.client.force_authenticate(user=self.staff)
@@ -571,6 +605,9 @@ class NewsletterAdminMauticIdentityStatusAPITests(_IdentityFixtures, TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(set(response.data), self.EXPECTED_KEYS)
+        # Eligible (active superuser) but without a mapping there is no access.
+        self.assertTrue(response.data["eligible"])
+        self.assertFalse(response.data["has_marketing_access"])
         self.assertFalse(response.data["connected"])
         self.assertEqual(response.data["status"], "not_connected")
         self.assertIsNone(response.data["mautic_user_id"])

@@ -4,13 +4,13 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser
+from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic_dashboard_services import get_dashboard_data
 
 
 class NewsletterAdminDashboardView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:

@@ -10,7 +10,9 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser, IsSuperuser
+from rest_framework.permissions import IsAuthenticated
+
+from moderation.permissions import IsSuperuser
 
 from .mautic.exceptions import MauticIdentityError
 from .mautic_identity_audit import correlation_id_for_request, record_identity_audit
@@ -48,9 +50,14 @@ def _page_params(request, default_size=25):
 
 
 class NewsletterAdminMauticIdentityStatusView(APIView):
-    """Connection state for the authenticated user."""
+    """Connection state for the authenticated user.
 
-    permission_classes = [IsStaffOrSuperuser]
+    Readable by any authenticated user: a caller who is not eligible gets a
+    status saying so, which is what the frontend gates Marketing Hub on. It
+    exposes no other user's identity and no credentials.
+    """
+
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         return Response(

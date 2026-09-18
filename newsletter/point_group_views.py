@@ -8,7 +8,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser
+from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.operations import (
@@ -216,7 +216,7 @@ def _score_for_group(data: dict[str, Any], group_id: int | str) -> int:
 class NewsletterAdminPointGroupListCreateView(APIView):
     """List and create provider-backed Mautic Point Groups."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 100
 
@@ -291,7 +291,7 @@ class NewsletterAdminPointGroupListCreateView(APIView):
 class NewsletterAdminPointGroupDetailView(APIView):
     """Read, update, or safely delete one provider-backed Mautic Point Group."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, group_id):
         try:
@@ -372,7 +372,7 @@ class NewsletterAdminPointGroupDetailView(APIView):
 class NewsletterAdminPointGroupDeleteCheckView(APIView):
     """Return the conservative Mautic 7.1.3 Point Group delete guard."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, group_id):
         client = MauticClient()
@@ -388,7 +388,7 @@ class NewsletterAdminPointGroupDeleteCheckView(APIView):
 class NewsletterAdminContactPointGroupsView(APIView):
     """List provider-backed Point Group scores for one Mautic Contact."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, mautic_contact_id):
         try:
@@ -410,7 +410,7 @@ class NewsletterAdminContactPointGroupsView(APIView):
 class NewsletterAdminContactPointGroupDetailView(APIView):
     """Read or manually adjust one Mautic Contact Point Group score."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, mautic_contact_id, group_id):
         try:

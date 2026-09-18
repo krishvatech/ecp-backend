@@ -12,6 +12,7 @@ from newsletter.models import (
     NewsletterCategory,
     NewsletterSubscription,
 )
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -25,7 +26,9 @@ class NewsletterAdminContactsAPITests(TestCase):
             email="contacts-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.normal_user = User.objects.create_user(
             username="contacts-normal",
             email="contacts-normal@example.test",

@@ -7,6 +7,7 @@ from rest_framework.test import APIClient
 
 from newsletter.mautic import PermanentMauticError, TemporaryMauticError
 from newsletter.models import NewsletterCategory
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -85,7 +86,9 @@ class NewsletterAdminMauticSegmentFilterMetadataTests(TestCase):
             email="segment-meta-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.normal_user = User.objects.create_user(
             username="segment-meta-normal",
             email="segment-meta-normal@example.test",
@@ -153,7 +156,9 @@ class NewsletterAdminMauticSegmentFilterWriteTests(TestCase):
             email="segment-filter-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.list_url = reverse("newsletter-admin-mautic-segment-list")
         self.detail_url = reverse(
@@ -386,7 +391,9 @@ class NewsletterAdminMauticSegmentFilterHydrationTests(TestCase):
             email="segment-hydration-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.detail_url = reverse(
             "newsletter-admin-mautic-segment-detail",
@@ -492,7 +499,9 @@ class NewsletterAdminMauticSegmentProtectionTests(TestCase):
             email="segment-protect-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         # A Subscription List that owns a Mautic segment.
         self.category = NewsletterCategory.objects.create(
@@ -552,7 +561,9 @@ class NewsletterAdminMauticSegmentDeleteTests(TestCase):
             email="segment-delete-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.normal_user = User.objects.create_user(
             username="segment-delete-normal",
             email="segment-delete-normal@example.test",
@@ -701,7 +712,9 @@ class NewsletterAdminMauticSegmentFilterChoicesTests(TestCase):
             email="segment-choices-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.normal_user = User.objects.create_user(
             username="segment-choices-normal",
             email="segment-choices-normal@example.test",

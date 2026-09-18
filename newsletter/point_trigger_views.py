@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser
+from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.operations import (
@@ -368,7 +368,7 @@ def _get_trigger_event(
 class NewsletterAdminPointTriggerEventTypesView(APIView):
     """Return Point Trigger Event types exposed by the connected Mautic instance."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -390,7 +390,7 @@ class NewsletterAdminPointTriggerEventTypesView(APIView):
 class NewsletterAdminPointTriggerListCreateView(APIView):
     """List and create provider-backed Mautic Point Triggers."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 100
 
@@ -484,7 +484,7 @@ class NewsletterAdminPointTriggerListCreateView(APIView):
 class NewsletterAdminPointTriggerDetailView(APIView):
     """Read, update, or delete one provider-backed Mautic Point Trigger."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, trigger_id):
         client = MauticClient()
@@ -560,7 +560,7 @@ class NewsletterAdminPointTriggerDetailView(APIView):
 class NewsletterAdminPointTriggerEventListCreateView(APIView):
     """List or create events belonging to one Mautic Point Trigger."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, trigger_id):
         client = MauticClient()
@@ -627,7 +627,7 @@ class NewsletterAdminPointTriggerEventListCreateView(APIView):
 class NewsletterAdminPointTriggerEventDetailView(APIView):
     """Read, update, or persistently delete one Mautic Point Trigger Event."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, trigger_id, event_id):
         client = MauticClient()

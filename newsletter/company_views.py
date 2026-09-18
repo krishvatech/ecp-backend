@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser
+from .marketing_permissions import HasMarketingHubAccess
 
 from . import company_services
 from .company_services import (
@@ -52,7 +52,7 @@ def _company_error(exc):
 
 
 class NewsletterAdminCompanyListCreateView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         page, page_size = _paging(request)
@@ -92,7 +92,7 @@ class NewsletterAdminCompanyListCreateView(APIView):
 
 
 class NewsletterAdminCompanyDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, company_id):
         try:
@@ -151,7 +151,7 @@ class NewsletterAdminCompanyDetailView(APIView):
 
 
 class NewsletterAdminCompanyContactsView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, company_id):
         page, page_size = _paging(request)
@@ -195,7 +195,7 @@ class NewsletterAdminCompanyContactsView(APIView):
 
 
 class NewsletterAdminCompanyContactDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def delete(self, request, company_id, contact_id):
         try:

@@ -13,6 +13,7 @@ from newsletter.models import (
     NewsletterCategory,
 )
 from newsletter.tasks import process_newsletter_campaign_send_event
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -37,12 +38,15 @@ class NewsletterAdminCampaignSendAPITests(TestCase):
             email="campaign-send-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.superuser = User.objects.create_superuser(
             username="campaign-send-super",
             email="campaign-send-super@example.test",
             password="test-password",
         )
+        grant_marketing_access(self.superuser)
         self.category = NewsletterCategory.objects.create(
             name="Campaign Send Audience",
             slug="campaign-send-audience",

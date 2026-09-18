@@ -48,6 +48,34 @@ class MauticUserVerificationUnavailableError(MauticIdentityError):
     """Canonical Mautic user verification cannot currently be completed."""
 
 
+class MarketingAccessNotEligibleError(MauticIdentityError):
+    """The target ECP user may not hold Marketing access (not an active superuser)."""
+
+
+class MarketingAccessAlreadyActiveError(MauticIdentityError):
+    """The target ECP user already holds active Marketing access."""
+
+
+class MarketingSelfManagementError(MauticIdentityError):
+    """A superuser tried to grant or remove their own Marketing access.
+
+    Marketing access is granted by one superuser to another, so that the change
+    always has a second person's name against it in the audit trail.
+    """
+
+
+class MarketingIdentityConflictError(MauticIdentityError):
+    """A provider identity exists that ECP must not claim automatically.
+
+    Raised instead of silently linking a Mautic user found by email: linking is
+    permanent, so it stays an explicit administrator decision.
+    """
+
+
+class MarketingProvisioningFailedError(MauticIdentityError):
+    """A Mautic human could not be provisioned for the target ECP user."""
+
+
 class MauticBridgeRejectedError(PermanentMauticError):
     """The Mautic identity bridge refused an asserted-user operation.
 

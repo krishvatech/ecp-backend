@@ -220,6 +220,22 @@ ECP_MAUTIC_PER_USER_EXECUTION_ENABLED = os.getenv(
     "ECP_MAUTIC_PER_USER_EXECUTION_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
+# Marketing Access provisioning. Only ECP superusers may hold Marketing access,
+# so a provisioned Mautic human gets the role named here, resolved provider-side
+# by name at provisioning time. The numeric id is never hard-coded in code; set
+# ECP_MAUTIC_MARKETING_ROLE_ID only to pin an exact role when two roles share a
+# name. Provisioning fails closed when the configured role cannot be resolved.
+ECP_MAUTIC_MARKETING_ROLE_NAME = os.getenv(
+    "ECP_MAUTIC_MARKETING_ROLE_NAME", "Administrator"
+).strip()
+ECP_MAUTIC_MARKETING_ROLE_ID = os.getenv("ECP_MAUTIC_MARKETING_ROLE_ID", "").strip()
+
+# Prefix for provisioned Mautic usernames. Usernames are derived from the
+# immutable ECP user id, never from the mutable email address.
+ECP_MAUTIC_MARKETING_USERNAME_PREFIX = os.getenv(
+    "ECP_MAUTIC_MARKETING_USERNAME_PREFIX", "ecp"
+).strip()
+
 # false = send paid-invoice email immediately on the mark-paid request (after commit);
 # true = dispatch via Celery worker.
 INVOICE_EMAIL_ASYNC = os.getenv("INVOICE_EMAIL_ASYNC", "false").lower() in ("1", "true", "yes", "on")

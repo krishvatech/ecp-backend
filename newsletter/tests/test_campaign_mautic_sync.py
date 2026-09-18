@@ -14,6 +14,7 @@ from newsletter.campaign_services import (
 )
 from newsletter.mautic import PermanentMauticError, TemporaryMauticError
 from newsletter.models import NewsletterCampaign, NewsletterCategory
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -205,12 +206,15 @@ class CampaignMauticSyncAPITests(TestCase):
             email="campaign-sync-api-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.superuser = User.objects.create_superuser(
             username="campaign-sync-api-super",
             email="campaign-sync-api-super@example.test",
             password="test-password",
         )
+        grant_marketing_access(self.superuser)
         self.category = NewsletterCategory.objects.create(
             name="Campaign Sync API Segment",
             slug="campaign-sync-api-segment",

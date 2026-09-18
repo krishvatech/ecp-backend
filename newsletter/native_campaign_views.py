@@ -8,7 +8,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser
+from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.exceptions import MauticBridgeRejectedError, MauticIdentityError
@@ -1184,7 +1184,7 @@ def _provider_error_response(exc):
 class NewsletterAdminMauticCampaignListCreateView(APIView):
     """Staff-only native Mautic Campaign list and create API."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 100
 
@@ -1309,7 +1309,7 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
 class NewsletterAdminMauticCampaignCapabilitiesView(APIView):
     """Staff-only native Mautic Campaign Builder capability discovery API."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -1357,7 +1357,7 @@ class NewsletterAdminMauticCampaignChoicesView(APIView):
     event's own provider form. Django only routes and normalizes.
     """
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 50
     max_page_size = 200
 
@@ -1468,7 +1468,7 @@ class NewsletterAdminMauticCampaignChoicesView(APIView):
 class NewsletterAdminMauticCampaignDetailView(APIView):
     """Staff-only native Mautic Campaign detail, update and delete API."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, campaign_id):
         try:
@@ -1612,7 +1612,7 @@ class NewsletterAdminMauticCampaignEventView(APIView):
     own campaign event deletion. Django validates and normalizes only.
     """
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def delete(self, request, campaign_id, event_id):
         correlation_id = correlation_id_for_request(request)
@@ -1701,7 +1701,7 @@ class NewsletterAdminMauticCampaignEventView(APIView):
 class NewsletterAdminMauticCampaignBuilderView(APIView):
     """Staff-only native Mautic Campaign builder data API."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, campaign_id):
         try:

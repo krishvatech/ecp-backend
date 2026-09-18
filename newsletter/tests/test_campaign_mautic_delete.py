@@ -13,6 +13,7 @@ from newsletter.campaign_services import (
 )
 from newsletter.mautic import PermanentMauticError, TemporaryMauticError
 from newsletter.models import NewsletterCampaign
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -135,7 +136,9 @@ class CampaignMauticDeleteAPITests(TestCase):
             email="campaign-delete-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
 
     def _delete_url(self, campaign):
         return reverse("newsletter-admin-campaign-detail", args=[campaign.uuid])

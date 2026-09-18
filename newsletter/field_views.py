@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser
+from .marketing_permissions import HasMarketingHubAccess
 
 from . import field_services as field_service_module
 from .field_services import (
@@ -38,7 +38,7 @@ def _as_bool(value) -> bool:
 
 
 class NewsletterAdminFieldListCreateView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, field_object):
         try:
@@ -78,7 +78,7 @@ class NewsletterAdminFieldListCreateView(APIView):
 
 
 class NewsletterAdminFieldDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, field_object, field_id):
         try:
@@ -145,7 +145,7 @@ class NewsletterAdminFieldDetailView(APIView):
 class NewsletterAdminFieldTypesView(APIView):
     """Publish the Mautic-owned field type registry used by the ECP field builder."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -159,7 +159,7 @@ class NewsletterAdminFieldTypesView(APIView):
 class NewsletterAdminFieldChoicesView(APIView):
     """Serve Mautic's bundled country/region/timezone/locale option lists."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, field_type):
         try:

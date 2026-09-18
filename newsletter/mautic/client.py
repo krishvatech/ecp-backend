@@ -232,6 +232,147 @@ class MauticClient:
             raise TemporaryMauticError("Mautic user lookup returned an invalid response")
         return user
 
+    @staticmethod
+    def _items(collection) -> list[dict[str, Any]]:
+        """Mautic returns a keyed object for collections, a list when empty."""
+        if isinstance(collection, dict):
+            return [item for item in collection.values() if isinstance(item, dict)]
+        if isinstance(collection, list):
+            return [item for item in collection if isinstance(item, dict)]
+        return []
+
+    def find_users_by_email(self, email: str) -> list[dict[str, Any]]:
+        """Provider-side discovery only.
+
+        Email is used to *detect* an existing Mautic human so provisioning can
+        refuse to guess; it never becomes the stored mapping key. Mautic's
+        search is not an exact match, so results are filtered here.
+        """
+        normalized = str(email or "").strip().lower()
+        if not normalized:
+            raise PermanentMauticError("Mautic user email is required")
+        response = self._request(
+            "GET",
+            "users",
+            params={"search": normalized, "limit": 50},
+        )
+        data = self._json_object(response, "Mautic user search")
+        return [
+            user
+            for user in self._items(data.get("users"))
+            if str(user.get("email") or "").strip().lower() == normalized
+        ]
+
+    def find_user_by_username(self, username: str) -> dict[str, Any] | None:
+        normalized = str(username or "").strip().lower()
+        if not normalized:
+            raise PermanentMauticError("Mautic username is required")
+        response = self._request(
+            "GET",
+            "users",
+            params={"search": normalized, "limit": 50},
+        )
+        data = self._json_object(response, "Mautic user search")
+        for user in self._items(data.get("users")):
+            if str(user.get("username") or "").strip().lower() == normalized:
+                return user
+        return None
+
+    def get_role_by_name(self, role_name: str) -> dict[str, Any] | None:
+        normalized = str(role_name or "").strip()
+        if not normalized:
+            raise PermanentMauticError("Mautic role name is required")
+        response = self._request(
+            "GET",
+            "roles",
+            params={"search": normalized, "limit": 100},
+        )
+        data = self._json_object(response, "Mautic role lookup")
+        for role in self._items(data.get("roles")):
+            if str(role.get("name") or "").strip().casefold() == normalized.casefold():
+                return role
+        return None
+
+    def get_role(self, role_id) -> dict[str, Any]:
+        normalized = str(role_id or "").strip()
+        if not normalized or not normalized.isdigit() or int(normalized) < 1:
+            raise PermanentMauticError("Mautic role ID is required")
+        response = self._request("GET", f"roles/{normalized}")
+        data = self._json_object(response, "Mautic role lookup")
+        role = data.get("role")
+        if not isinstance(role, dict) or not role.get("id"):
+            raise TemporaryMauticError("Mautic role lookup returned an invalid response")
+        return role
+
+    def set_user_published(self, user_id, published: bool) -> dict[str, Any]:
+        """Enable or disable a Mautic human.
+
+        Used to disable a provisioned user that ECP could not finish mapping, so
+        no unmapped privileged Mautic account is left enabled.
+        """
+        normalized = str(user_id or "").strip()
+        if not normalized or not normalized.isdigit() or int(normalized) < 1:
+            raise PermanentMauticError("Mautic user ID is required")
+        response = self._request(
+            "PATCH",
+            f"users/{normalized}/edit",
+            json={"isPublished": 1 if published else 0},
+        )
+        data = self._json_object(response, "Mautic user update")
+        user = data.get("user")
+        if not isinstance(user, dict) or not user.get("id"):
+            raise TemporaryMauticError("Mautic user update returned an invalid response")
+        return user
+
+    def create_user(
+        self,
+        *,
+        username: str,
+        email: str,
+        first_name: str,
+        last_name: str,
+        role_id: int,
+        password: str,
+    ) -> dict[str, Any]:
+        """Create a Mautic human via the native user API.
+
+        This is a SYSTEM/administrative provisioning call: it runs on the
+        service account because the identity being created cannot yet assert
+        itself. ``password`` is a generated provider-side credential that is
+        never returned, displayed, stored or logged by ECP.
+        """
+        if not str(username or "").strip():
+            raise PermanentMauticError("Mautic username is required")
+        if not str(email or "").strip():
+            raise PermanentMauticError("Mautic user email is required")
+        try:
+            normalized_role = int(role_id)
+        except (TypeError, ValueError):
+            raise PermanentMauticError("Mautic role ID is required") from None
+        if normalized_role < 1:
+            raise PermanentMauticError("Mautic role ID is required")
+        if not password:
+            raise PermanentMauticError("A generated Mautic password is required")
+
+        response = self._request(
+            "POST",
+            "users/new",
+            json={
+                "username": str(username).strip(),
+                "email": str(email).strip(),
+                "firstName": str(first_name or "").strip(),
+                "lastName": str(last_name or "").strip(),
+                "role": normalized_role,
+                "isPublished": 1,
+                "plainPassword": {"password": password, "confirm": password},
+            },
+        )
+        data = self._json_object(response, "Mautic user creation")
+        user = data.get("user")
+        if not isinstance(user, dict) or not user.get("id"):
+            raise TemporaryMauticError("Mautic user creation returned an invalid response")
+        return user
+
     def get_contact_activity(self, contact_id, **params) -> dict[str, Any]:
         normalized = str(contact_id or "").strip()
         if not normalized:

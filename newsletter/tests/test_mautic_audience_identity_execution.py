@@ -32,7 +32,7 @@ from newsletter.mautic.operations import (
     TAG_UPDATE,
 )
 from newsletter.mautic_identity_execution import run_interactive_mutation
-from newsletter.models import MauticIdentityAuditLog
+from newsletter.models import MauticIdentityAuditLog, MauticUserConnection
 
 
 User = get_user_model()
@@ -41,11 +41,21 @@ User = get_user_model()
 class AudienceIdentityEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        # An authorized Marketing actor is an active ECP superuser WITH an
+        # active Mautic mapping; both halves are required to reach these
+        # endpoints at all.
         self.staff = User.objects.create_user(
             username="audience-identity-staff",
             email="audience-identity-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
+        )
+        MauticUserConnection.objects.create(
+            user=self.staff,
+            mautic_user_id=17,
+            status=MauticUserConnection.Status.ACTIVE,
+            is_active=True,
         )
         self.client.force_authenticate(user=self.staff)
 

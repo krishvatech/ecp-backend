@@ -15,6 +15,7 @@ from newsletter.tests.test_admin_companies_api import (
     COMPANY_FIELD_METADATA,
     company_payload,
 )
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -35,6 +36,7 @@ CONTACT_PAYLOAD = {
 }
 
 
+@override_settings(ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False)
 class ContactDynamicFieldValueTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -43,17 +45,23 @@ class ContactDynamicFieldValueTests(TestCase):
             email="dyn-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.list_url = reverse("newsletter-admin-contact-list")
         self.detail_url = reverse("newsletter-admin-contact-detail", args=["2"])
 
     @patch("newsletter.contact_services.MauticClient")
-    def test_contact_update_sends_only_the_supplied_custom_field(self, client_cls):
+    @patch("newsletter.admin_views.MauticClient")
+    def test_contact_update_sends_only_the_supplied_custom_field(
+        self, view_client_cls, client_cls
+    ):
         client = MagicMock()
         client.get_contact.return_value = CONTACT_PAYLOAD
         client.update_contact.return_value = CONTACT_PAYLOAD
         client_cls.return_value = client
+        view_client_cls.return_value = client
 
         response = self.client.patch(
             self.detail_url,
@@ -68,11 +76,13 @@ class ContactDynamicFieldValueTests(TestCase):
         self.assertNotIn("legacy_code", payload)
 
     @patch("newsletter.contact_services.MauticClient")
-    def test_contact_create_forwards_custom_fields(self, client_cls):
+    @patch("newsletter.admin_views.MauticClient")
+    def test_contact_create_forwards_custom_fields(self, view_client_cls, client_cls):
         client = MagicMock()
         client.create_contact.return_value = {"id": 2}
         client.get_contact.return_value = CONTACT_PAYLOAD
         client_cls.return_value = client
+        view_client_cls.return_value = client
 
         response = self.client.post(
             self.list_url,
@@ -86,8 +96,10 @@ class ContactDynamicFieldValueTests(TestCase):
         self.assertEqual(payload["persona"], "buyer")
 
     @patch("newsletter.contact_services.MauticClient")
-    def test_contact_custom_fields_must_be_an_object(self, client_cls):
+    @patch("newsletter.admin_views.MauticClient")
+    def test_contact_custom_fields_must_be_an_object(self, view_client_cls, client_cls):
         client_cls.return_value = MagicMock()
+        view_client_cls.return_value = MagicMock()
 
         response = self.client.patch(
             self.detail_url,
@@ -107,7 +119,9 @@ class CompanyDynamicFieldValueTests(TestCase):
             email="dyn-company-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.client.force_authenticate(user=self.staff)
         self.detail_url = reverse("newsletter-admin-company-detail", args=["1"])
 

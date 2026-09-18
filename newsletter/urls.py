@@ -97,6 +97,12 @@ from .mautic_identity_views import (
     NewsletterAdminMauticIdentityAuditView,
     NewsletterAdminMauticIdentityStatusView,
 )
+from .marketing_access_views import (
+    NewsletterAdminMarketingAccessGrantView,
+    NewsletterAdminMarketingAccessListView,
+    NewsletterAdminMarketingAccessRevokeView,
+    NewsletterMarketingAccessMeView,
+)
 from .mautic_dashboard_views import NewsletterAdminDashboardView
 from .company_views import (
     NewsletterAdminCompanyContactDetailView,
@@ -246,6 +252,26 @@ urlpatterns = [
         "newsletter/admin/settings/mautic-diagnostics/",
         NewsletterAdminMauticDiagnosticsView.as_view(),
         name="newsletter-admin-mautic-diagnostics",
+    ),
+    path(
+        "newsletter/admin/marketing-access/",
+        NewsletterAdminMarketingAccessListView.as_view(),
+        name="newsletter-admin-marketing-access-list",
+    ),
+    path(
+        "newsletter/admin/marketing-access/<int:ecp_user_id>/add/",
+        NewsletterAdminMarketingAccessGrantView.as_view(),
+        name="newsletter-admin-marketing-access-add",
+    ),
+    path(
+        "newsletter/admin/marketing-access/<int:ecp_user_id>/remove/",
+        NewsletterAdminMarketingAccessRevokeView.as_view(),
+        name="newsletter-admin-marketing-access-remove",
+    ),
+    path(
+        "newsletter/marketing-access/me/",
+        NewsletterMarketingAccessMeView.as_view(),
+        name="newsletter-marketing-access-me",
     ),
     path(
         "newsletter/admin/settings/mautic-identity/status/",

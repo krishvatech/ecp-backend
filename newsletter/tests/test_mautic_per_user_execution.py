@@ -573,8 +573,10 @@ class InteractiveCampaignApiTests(_IdentityFixtures, TestCase):
         self.assertEqual(response[CORRELATION_HEADER], "trace-123")
 
     def test_identity_failure_response_also_carries_the_correlation_id(self):
-        # Fail closed with no mapping, so the caller can still correlate the
-        # refusal with the Mautic-side logs.
+        # The actor holds Marketing access, so the request reaches the view; the
+        # identity layer then fails closed and the refusal is still correlatable
+        # with the Mautic-side logs.
+        self._active_connection(mautic_user_id=17)
         with patch("newsletter.native_campaign_views.get_mautic_client") as factory:
             factory.side_effect = MauticUserConnectionMissingError("not connected")
 

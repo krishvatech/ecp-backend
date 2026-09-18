@@ -103,9 +103,9 @@ class MauticConnectionManagementApiTests(_IdentityFixtures, TestCase):
             with self.subTest(url=url, user="non-staff"):
                 self.assertEqual(getattr(self.client, method)(url).status_code, 403)
 
-        self.client.force_authenticate(user=self.staff)
+        self.client.force_authenticate(user=self.staff_only)
         for url, method in urls:
-            with self.subTest(url=url, user="staff"):
+            with self.subTest(url=url, user="staff-only"):
                 self.assertEqual(getattr(self.client, method)(url).status_code, 403)
 
         self.client.force_authenticate(user=self.superuser)
@@ -385,15 +385,16 @@ class CampaignAuditTrailTests(_IdentityFixtures, TestCase):
         self.assertEqual(entry.error_code, "mautic_permission_denied")
         self.assertEqual(entry.detail, "MauticBridgeRejectedError")
 
-    def test_unmapped_user_is_audited_and_reported_clearly(self):
-        response = self.client.post(self.create_url, self.payload, format="json")
+    def test_unmapped_user_is_refused_before_any_provider_work(self):
+        # Marketing Hub access needs an ACTIVE mapping, so an unmapped
+        # superuser never reaches the view: nothing is sent to Mautic and no
+        # operation is attempted on anybody's behalf.
+        with patch("newsletter.native_campaign_views.get_mautic_client") as factory:
+            response = self.client.post(self.create_url, self.payload, format="json")
 
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.data["code"], "mautic_user_not_connected")
-        entry = MauticIdentityAuditLog.objects.get()
-        self.assertEqual(entry.status, MauticIdentityAuditLog.Status.DENIED)
-        self.assertEqual(entry.error_code, "mautic_user_not_connected")
-        self.assertIsNone(entry.mautic_user_id)
+        self.assertEqual(response.status_code, 403)
+        factory.assert_not_called()
+        self.assertFalse(MauticIdentityAuditLog.objects.exists())
 
     def test_audit_records_hold_no_assertion_material(self):
         self._active_connection(mautic_user_id=17)
@@ -414,6 +415,9 @@ class CampaignAuditTrailTests(_IdentityFixtures, TestCase):
 
     @override_settings(**PER_USER_OFF)
     def test_service_account_path_is_still_audited(self):
+        # Marketing Hub access is required regardless of the flag; with the flag
+        # off the mapped user still executes as the service account.
+        self._active_connection(mautic_user_id=17)
         factory = self._patched_factory()
         factory.return_value.execution_identity = Mock(
             mautic_user_id=None,
@@ -647,8 +651,8 @@ class ConnectionServiceTests(_IdentityFixtures, TestCase):
             mautic_user_id=17,
             status=MauticUserConnection.Status.DISABLED,
         )
-        self.staff.is_staff = False
-        self.staff.save(update_fields=["is_staff"])
+        self.staff.is_superuser = False
+        self.staff.save(update_fields=["is_superuser"])
         connection.refresh_from_db()
 
         with patch(

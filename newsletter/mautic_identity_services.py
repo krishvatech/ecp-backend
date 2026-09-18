@@ -332,7 +332,13 @@ def get_mautic_identity_connection_status(user) -> dict:
     )
     connected = bool(connection and connection.is_usable)
     auth_mode, blocked_code = _interactive_auth_mode_for(user)
+    # Eligibility (active ECP superuser) and access (eligible + active mapping)
+    # are reported from the same helper the Marketing Hub permission uses, so
+    # this status can never disagree with what the endpoints actually allow.
+    eligible = actor_has_marketing_hub_access(user)
     return {
+        "eligible": eligible,
+        "has_marketing_access": bool(eligible and connected),
         "connected": connected,
         "status": connection.status if connection else "not_connected",
         "mautic_user_id": connection.mautic_user_id if connected else None,

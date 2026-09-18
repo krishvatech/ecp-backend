@@ -11,7 +11,7 @@ import logging
 import math
 import re
 
-from moderation.permissions import IsStaffOrSuperuser
+from .marketing_permissions import HasMarketingHubAccess
 
 from .admin_serializers import (
     NewsletterAudienceAdminSerializer,
@@ -668,7 +668,7 @@ def _ensure_category_segment(category):
 
 
 class NewsletterAdminAudienceListCreateView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         audiences = NewsletterAudience.objects.filter(is_active=True).order_by(
@@ -687,7 +687,7 @@ class NewsletterAdminAudienceListCreateView(APIView):
 
 
 class NewsletterAdminAudienceDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, uuid):
         serializer = NewsletterAudienceAdminSerializer(_get_audience_or_404(uuid))
@@ -715,7 +715,7 @@ class NewsletterAdminAudienceDetailView(APIView):
 
 
 class NewsletterAdminCampaignListCreateView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         serializer = NewsletterCampaignSerializer(list_campaigns(), many=True)
@@ -730,7 +730,7 @@ class NewsletterAdminCampaignListCreateView(APIView):
 
 
 class NewsletterAdminCampaignDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, uuid):
         serializer = NewsletterCampaignSerializer(_get_campaign_or_404(uuid))
@@ -765,7 +765,7 @@ class NewsletterAdminCampaignDetailView(APIView):
 
 
 class NewsletterAdminCampaignPreviewView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, uuid):
         campaign = _get_campaign_or_404(uuid)
@@ -785,7 +785,7 @@ class NewsletterAdminCampaignPreviewView(APIView):
 
 
 class NewsletterAdminCampaignAnalyticsView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, uuid):
         return Response(
@@ -795,7 +795,7 @@ class NewsletterAdminCampaignAnalyticsView(APIView):
 
 
 class NewsletterAdminCampaignTestEmailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, uuid):
         serializer = NewsletterCampaignTestEmailSerializer(data=request.data)
@@ -827,7 +827,7 @@ class NewsletterAdminCampaignTestEmailView(APIView):
 
 
 class NewsletterAdminCampaignSyncView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, uuid):
         campaign = sync_campaign_draft_to_mautic(
@@ -839,7 +839,7 @@ class NewsletterAdminCampaignSyncView(APIView):
 
 
 class NewsletterAdminCampaignSendView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, uuid):
         event = request_campaign_send(
@@ -856,7 +856,7 @@ class NewsletterAdminCampaignSendView(APIView):
 
 
 class NewsletterAdminCampaignScheduleView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, uuid):
         serializer = NewsletterCampaignScheduleSerializer(data=request.data)
@@ -875,7 +875,7 @@ class NewsletterAdminCampaignScheduleView(APIView):
 
 
 class NewsletterAdminCampaignCancelView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, uuid):
         try:
@@ -893,7 +893,7 @@ class NewsletterAdminCampaignCancelView(APIView):
 class NewsletterAdminContactListView(APIView):
     """List the full Mautic contact directory with ECP enrichment."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 100
 
@@ -951,7 +951,7 @@ class NewsletterAdminContactListView(APIView):
 class NewsletterAdminContactBulkStageView(APIView):
     """Move or clear a selected batch of Mautic contacts."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request):
         allowed_fields = {"action", "contact_ids", "stage_id"}
@@ -994,7 +994,7 @@ class NewsletterAdminContactBulkStageView(APIView):
 class NewsletterAdminContactDetailView(APIView):
     """Return one Mautic contact with ECP mapping and consent state."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, mautic_contact_id):
         try:
@@ -1037,7 +1037,7 @@ class NewsletterAdminContactDetailView(APIView):
 
 
 class NewsletterAdminContactFieldMetadataView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -1049,7 +1049,7 @@ class NewsletterAdminContactFieldMetadataView(APIView):
 
 
 class NewsletterAdminTagListView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -1066,7 +1066,7 @@ class NewsletterAdminTagListView(APIView):
 
 
 class NewsletterAdminContactTagsView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, mautic_contact_id):
         try:
@@ -1094,7 +1094,7 @@ class NewsletterAdminContactTagsView(APIView):
 
 
 class NewsletterAdminContactTagDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def delete(self, request, mautic_contact_id, tag):
         try:
@@ -1122,7 +1122,7 @@ class NewsletterAdminContactTagDetailView(APIView):
 
 
 class NewsletterAdminContactNotesView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 100
 
@@ -1169,7 +1169,7 @@ class NewsletterAdminContactNotesView(APIView):
 
 
 class NewsletterAdminContactDncView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, mautic_contact_id):
         try:
@@ -1183,7 +1183,7 @@ class NewsletterAdminContactDncView(APIView):
 
 
 class NewsletterAdminContactDncDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def delete(self, request, mautic_contact_id, channel):
         try:
@@ -1195,7 +1195,7 @@ class NewsletterAdminContactDncDetailView(APIView):
 
 
 class NewsletterAdminContactCompaniesView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, mautic_contact_id):
         try:
@@ -1229,7 +1229,7 @@ def _contact_stage_provider_error_response(exc):
 class NewsletterAdminContactStageView(APIView):
     """Move or clear one contact's Mautic lifecycle stage."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, mautic_contact_id):
         unsupported = sorted(set(request.data.keys()) - {"stage_id"})
@@ -1289,7 +1289,7 @@ class NewsletterAdminContactStageView(APIView):
 class NewsletterAdminContactActivityView(APIView):
     """Return paginated real Mautic activity for one contact."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 100
 
@@ -1325,7 +1325,7 @@ class NewsletterAdminContactActivityView(APIView):
 class NewsletterAdminContactEngagementView(APIView):
     """Return a date-ranged cumulative engagement series from Mautic activity."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, mautic_contact_id):
         try:
@@ -1441,7 +1441,7 @@ def _stage_provider_error_response(exc):
 class NewsletterAdminStageAnalyticsView(APIView):
     """Return current Mautic contact distribution by lifecycle stage."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -1455,7 +1455,7 @@ class NewsletterAdminStageAnalyticsView(APIView):
 class NewsletterAdminStageListCreateView(APIView):
     """List and create Mautic lifecycle stages."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 100
 
@@ -1527,7 +1527,7 @@ class NewsletterAdminStageListCreateView(APIView):
 class NewsletterAdminStageDetailView(APIView):
     """Read, update, or delete one Mautic lifecycle stage."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, stage_id):
         try:
@@ -1563,7 +1563,7 @@ class NewsletterAdminStageDetailView(APIView):
 
 
 class NewsletterAdminCategoryListView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         include_mautic = str(
@@ -1629,7 +1629,7 @@ class NewsletterAdminCategoryContactsView(APIView):
     mapping and durable sync-event records.
     """
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 100
 
@@ -1750,7 +1750,7 @@ class NewsletterAdminCategoryContactsView(APIView):
 class NewsletterAdminCategoryContactAnalyticsView(APIView):
     """Return an ECP-owned Added / Removed / Total contact timeline."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, slug):
         try:
@@ -1783,7 +1783,7 @@ class NewsletterAdminCategoryContactAnalyticsView(APIView):
 
 
 class NewsletterAdminCategoryDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def patch(self, request, slug):
         try:
@@ -1834,7 +1834,7 @@ class NewsletterAdminCategoryDetailView(APIView):
 
 
 class NewsletterAdminCategoryLinkMauticSegmentView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, slug):
         """Link a Mautic segment to a newsletter category."""
@@ -1878,7 +1878,7 @@ class NewsletterAdminCategoryLinkMauticSegmentView(APIView):
 
 
 class NewsletterAdminMauticSegmentListView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -1947,7 +1947,7 @@ class NewsletterAdminMauticSegmentFilterChoicesView(APIView):
     being sent to a browser in full. No catalog is stored in ECP.
     """
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 200
 
@@ -2004,7 +2004,7 @@ class NewsletterAdminMauticSegmentFilterMetadataView(APIView):
     runtime. ECP keeps no catalog of its own.
     """
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         search = str(request.query_params.get("search", "") or "").strip()
@@ -2028,7 +2028,7 @@ class NewsletterAdminMauticSegmentFilterMetadataView(APIView):
 
 
 class NewsletterAdminMauticSegmentDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, segment_id):
         try:
@@ -2122,7 +2122,7 @@ class NewsletterAdminMauticSegmentDetailView(APIView):
 
 
 class NewsletterAdminMauticSegmentContactsView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 100
 
@@ -2224,7 +2224,7 @@ class NewsletterAdminMauticSegmentContactsView(APIView):
 
 
 class NewsletterAdminMauticSegmentContactDetailView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def delete(self, request, segment_id, contact_id):
         try:
@@ -2263,7 +2263,7 @@ class NewsletterAdminMauticSegmentContactDetailView(APIView):
 
 
 class NewsletterAdminCategorySyncMauticView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, slug):
         try:

@@ -11,6 +11,7 @@ from newsletter.campaign_services import (
 )
 from newsletter.mautic.exceptions import MauticBridgeRejectedError
 from newsletter.models import MauticIdentityAuditLog, NewsletterCampaign
+from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
@@ -35,12 +36,15 @@ class NewsletterAdminCampaignTestEmailAPITests(TestCase):
             email="newsletter-test-api-staff@example.test",
             password="test-password",
             is_staff=True,
+            is_superuser=True,
         )
+        grant_marketing_access(self.staff)
         self.superuser = User.objects.create_superuser(
             username="newsletter-test-api-superuser",
             email="newsletter-test-api-superuser@example.test",
             password="test-password",
         )
+        grant_marketing_access(self.superuser)
         self.campaign = NewsletterCampaign.objects.create(name="Test Email API")
         self.url = reverse(
             "newsletter-admin-campaign-test-email",

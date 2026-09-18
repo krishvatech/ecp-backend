@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser
+from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.operations import (
@@ -247,7 +247,7 @@ def _validate_point_group(client: MauticClient, group_id: str) -> None:
 class NewsletterAdminPointActionTypesView(APIView):
     """Return Point Action types exposed by the connected Mautic instance."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -269,7 +269,7 @@ class NewsletterAdminPointActionTypesView(APIView):
 class NewsletterAdminPointActionListCreateView(APIView):
     """List and create provider-backed Mautic Point Actions."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 100
 
@@ -363,7 +363,7 @@ class NewsletterAdminPointActionListCreateView(APIView):
 class NewsletterAdminPointActionDetailView(APIView):
     """Read, update, or delete one provider-backed Mautic Point Action."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, point_id):
         client = MauticClient()
@@ -456,7 +456,7 @@ class NewsletterAdminPointActionDetailView(APIView):
 class NewsletterAdminContactPointsView(APIView):
     """Apply an audited manual plus/minus Point adjustment to one Contact."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, mautic_contact_id):
         allowed_fields = {"operation", "amount", "reason"}

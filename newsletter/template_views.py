@@ -10,7 +10,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from moderation.permissions import IsStaffOrSuperuser
+from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.operations import (
@@ -252,7 +252,7 @@ def _provider_error_response(exc):
 class NewsletterAdminTemplateListCreateView(APIView):
     """List and create reusable provider-backed Mautic email Templates."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
     default_page_size = 25
     max_page_size = 100
 
@@ -336,7 +336,7 @@ class NewsletterAdminTemplateListCreateView(APIView):
 class NewsletterAdminTemplateDetailView(APIView):
     """Read, update, or delete one reusable Mautic email Template."""
 
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, template_id):
         try:
@@ -396,7 +396,7 @@ class NewsletterAdminTemplateDetailView(APIView):
 
 
 class NewsletterAdminTemplateDuplicateView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, template_id):
         name = str(request.data.get("name") or "").strip()
@@ -427,7 +427,7 @@ class NewsletterAdminTemplateDuplicateView(APIView):
 
 
 class NewsletterAdminTemplatePreviewView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, template_id):
         try:
@@ -449,7 +449,7 @@ class NewsletterAdminTemplatePreviewView(APIView):
 
 
 class NewsletterAdminTemplateTestSendView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, template_id):
         return Response(
@@ -466,7 +466,7 @@ class NewsletterAdminTemplateTestSendView(APIView):
 
 
 class NewsletterAdminTemplateTokensView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -492,7 +492,7 @@ class NewsletterAdminTemplateTokensView(APIView):
 
 
 class NewsletterAdminTemplateCategoriesView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -520,7 +520,7 @@ class NewsletterAdminTemplateCategoriesView(APIView):
 
 
 class NewsletterAdminTemplateThemesView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
         try:
@@ -548,7 +548,7 @@ class NewsletterAdminTemplateThemesView(APIView):
 
 
 class NewsletterAdminTemplateUsageView(APIView):
-    permission_classes = [IsStaffOrSuperuser]
+    permission_classes = [HasMarketingHubAccess]
 
     def get(self, request, template_id):
         try:
