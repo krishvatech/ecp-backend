@@ -16,6 +16,7 @@ from typing import Any
 from django.utils import timezone
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic.operations import STAGE_CONTACT_ADD, STAGE_CONTACT_REMOVE
 from .models import MauticContactMapping, NewsletterCategory, NewsletterSubscription
 
 
@@ -216,6 +217,8 @@ def _contact_stage(contact: dict[str, Any]) -> dict[str, Any] | None:
 def move_admin_contact_to_stage(
     mautic_contact_id,
     stage_id,
+    *,
+    client: MauticClient | None = None,
 ) -> dict[str, Any]:
     """Move one Mautic contact to one Mautic lifecycle stage."""
     contact_id = str(mautic_contact_id or "").strip()
@@ -225,16 +228,18 @@ def move_admin_contact_to_stage(
     if not target_stage_id:
         raise ValueError("stage_id is required.")
 
-    client = MauticClient()
-    contact = client.get_contact(contact_id)
-    client.get_stage(target_stage_id)
+    reader = MauticClient()
+    contact = reader.get_contact(contact_id)
+    reader.get_stage(target_stage_id)
 
     current_stage = _contact_stage(contact)
     if current_stage is not None and current_stage["id"] == target_stage_id:
         return current_stage
 
-    client.add_contact_to_stage(target_stage_id, contact_id)
-    updated_contact = client.get_contact(contact_id)
+    # Only the mutation runs as the mapped human; the surrounding reads and the
+    # confirmation read stay on the service account.
+    (client or reader).add_contact_to_stage(target_stage_id, contact_id)
+    updated_contact = reader.get_contact(contact_id)
     updated_stage = _contact_stage(updated_contact)
     if updated_stage is None or updated_stage["id"] != target_stage_id:
         raise TemporaryMauticError(
@@ -243,20 +248,24 @@ def move_admin_contact_to_stage(
     return updated_stage
 
 
-def clear_admin_contact_stage(mautic_contact_id) -> None:
+def clear_admin_contact_stage(
+    mautic_contact_id,
+    *,
+    client: MauticClient | None = None,
+) -> None:
     """Remove one contact from its current Mautic lifecycle stage."""
     contact_id = str(mautic_contact_id or "").strip()
     if not contact_id:
         raise ValueError("Mautic contact ID is required.")
 
-    client = MauticClient()
-    contact = client.get_contact(contact_id)
+    reader = MauticClient()
+    contact = reader.get_contact(contact_id)
     current_stage = _contact_stage(contact)
     if current_stage is None:
         return
 
-    client.remove_contact_from_stage(current_stage["id"], contact_id)
-    updated_contact = client.get_contact(contact_id)
+    (client or reader).remove_contact_from_stage(current_stage["id"], contact_id)
+    updated_contact = reader.get_contact(contact_id)
     if _contact_stage(updated_contact) is not None:
         raise TemporaryMauticError(
             "Mautic did not confirm removal of the contact stage."
@@ -518,12 +527,17 @@ def list_admin_contact_notes(mautic_contact_id, *, page: int = 1, page_size: int
     }
 
 
-def create_admin_contact_note(mautic_contact_id, payload: dict[str, Any]) -> dict[str, Any]:
+def create_admin_contact_note(
+    mautic_contact_id,
+    payload: dict[str, Any],
+    *,
+    client: MauticClient | None = None,
+) -> dict[str, Any]:
     text = str(payload.get("text") or payload.get("note") or "").strip()
     if not text:
         raise ValueError("text is required.")
     note_type = str(payload.get("type") or "general").strip()
-    note = MauticClient().create_note(
+    note = (client or MauticClient()).create_note(
         {
             "lead": str(mautic_contact_id),
             "text": text,
@@ -540,16 +554,32 @@ def create_admin_contact_note(mautic_contact_id, payload: dict[str, Any]) -> dic
     }
 
 
-def add_admin_contact_dnc(mautic_contact_id, payload: dict[str, Any]) -> dict[str, Any]:
+def add_admin_contact_dnc(
+    mautic_contact_id,
+    payload: dict[str, Any],
+    *,
+    client: MauticClient | None = None,
+) -> dict[str, Any]:
     channel = str(payload.get("channel") or "email").strip()
     reason = payload.get("reason", 3)
     comments = str(payload.get("comments") or "").strip()
-    MauticClient().add_contact_dnc(mautic_contact_id, channel, reason=reason, comments=comments)
+    (client or MauticClient()).add_contact_dnc(
+        mautic_contact_id,
+        channel,
+        reason=reason,
+        comments=comments,
+    )
+    # The refreshed contact is a read, so it stays on the service account.
     return get_admin_contact(mautic_contact_id)
 
 
-def remove_admin_contact_dnc(mautic_contact_id, channel: str = "email") -> dict[str, Any]:
-    MauticClient().remove_contact_dnc(mautic_contact_id, channel)
+def remove_admin_contact_dnc(
+    mautic_contact_id,
+    channel: str = "email",
+    *,
+    client: MauticClient | None = None,
+) -> dict[str, Any]:
+    (client or MauticClient()).remove_contact_dnc(mautic_contact_id, channel)
     return get_admin_contact(mautic_contact_id)
 
 
@@ -941,13 +971,33 @@ def _stage_reference(stage) -> dict[str, Any] | None:
     }
 
 
+class BulkStageIdentityAbort(Exception):
+    """An identity/permission failure that must fail the whole bulk request.
+
+    A provider error for one contact is a per-contact result, but "your Mautic
+    user may not do this" is true for every contact, so it is surfaced as the
+    request-level response instead of being reported 100 times.
+    """
+
+    def __init__(self, response):
+        super().__init__("Bulk stage update was refused by the identity layer")
+        self.response = response
+
+
 def bulk_update_admin_contact_stage(
     contact_ids,
     *,
     stage_id=None,
     clear: bool = False,
+    run_mutation=None,
 ) -> dict[str, Any]:
-    """Move or clear up to 100 Mautic contacts with per-contact results."""
+    """Move or clear up to 100 Mautic contacts with per-contact results.
+
+    ``run_mutation`` runs one provider mutation under the acting identity. It is
+    called once per contact, so every contact gets its own freshly minted,
+    single-use assertion and its own audit row: an assertion is never reused
+    across contacts, which is exactly what replay protection forbids.
+    """
     normalized_ids = _normalize_bulk_contact_ids(contact_ids)
 
     target_stage_id = ""
@@ -961,6 +1011,14 @@ def bulk_update_admin_contact_stage(
 
     client = MauticClient()
     target_stage = client.get_stage(target_stage_id) if not clear else None
+
+    def _mutate(action, resource_id, fn):
+        if run_mutation is None:
+            return fn(client)
+        result, identity_response = run_mutation(action, resource_id, fn)
+        if identity_response is not None:
+            raise BulkStageIdentityAbort(identity_response)
+        return result
 
     results = []
     changed = 0
@@ -983,7 +1041,13 @@ def bulk_update_admin_contact_stage(
                     )
                     continue
 
-                client.remove_contact_from_stage(current_stage["id"], contact_id)
+                _mutate(
+                    STAGE_CONTACT_REMOVE,
+                    f"{current_stage['id']}:{contact_id}",
+                    lambda identity_client, stage=current_stage["id"], cid=contact_id: (
+                        identity_client.remove_contact_from_stage(stage, cid)
+                    ),
+                )
                 updated_contact = client.get_contact(contact_id)
                 updated_stage = _contact_stage(updated_contact)
                 if updated_stage is not None:
@@ -1012,7 +1076,14 @@ def bulk_update_admin_contact_stage(
                 )
                 continue
 
-            client.add_contact_to_stage(target_stage_id, contact_id)
+            _mutate(
+                STAGE_CONTACT_ADD,
+                f"{target_stage_id}:{contact_id}",
+                lambda identity_client, cid=contact_id: identity_client.add_contact_to_stage(
+                    target_stage_id,
+                    cid,
+                ),
+            )
             updated_contact = client.get_contact(contact_id)
             updated_stage = _contact_stage(updated_contact)
             if updated_stage is None or updated_stage["id"] != target_stage_id:

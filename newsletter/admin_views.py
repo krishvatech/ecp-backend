@@ -27,6 +27,7 @@ from .category_analytics import (
     resolve_contact_timeline_range,
 )
 from .contact_services import (
+    BulkStageIdentityAbort,
     bulk_update_admin_contact_stage,
     clear_admin_contact_stage,
     add_admin_contact_dnc,
@@ -70,6 +71,9 @@ from .models import (
 )
 from .mautic.operations import (
     CONTACT_CREATE,
+    CONTACT_DNC_ADD,
+    CONTACT_DNC_REMOVE,
+    CONTACT_NOTE_CREATE,
     CONTACT_TAG_ADD,
     CONTACT_TAG_REMOVE,
     CONTACT_UPDATE,
@@ -79,6 +83,11 @@ from .mautic.operations import (
     SEGMENT_CREATE,
     SEGMENT_DELETE,
     SEGMENT_UPDATE,
+    STAGE_CONTACT_ADD,
+    STAGE_CONTACT_REMOVE,
+    STAGE_CREATE,
+    STAGE_DELETE,
+    STAGE_UPDATE,
 )
 from .mautic_identity_execution import run_interactive_mutation
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
@@ -974,12 +983,29 @@ class NewsletterAdminContactBulkStageView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        def run_mutation(mutation_action, resource_id, mutate):
+            # One fresh, single-use assertion and one audit row per contact:
+            # reusing an assertion across contacts would be a replay.
+            return run_interactive_mutation(
+                request,
+                action=mutation_action,
+                resource="contact_stage",
+                resource_id=resource_id,
+                mutate=mutate,
+                client_factory=MauticClient,
+            )
+
         try:
             data = bulk_update_admin_contact_stage(
                 request.data.get("contact_ids"),
                 stage_id=request.data.get("stage_id"),
                 clear=action == "clear",
+                run_mutation=run_mutation,
             )
+        except BulkStageIdentityAbort as exc:
+            # "Your Mautic user may not do this" applies to every contact, so it
+            # is returned once as the request result rather than per contact.
+            return exc.response
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
@@ -1155,7 +1181,20 @@ class NewsletterAdminContactNotesView(APIView):
 
     def post(self, request, mautic_contact_id):
         try:
-            data = create_admin_contact_note(mautic_contact_id, request.data)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=CONTACT_NOTE_CREATE,
+                resource="contact_note",
+                resource_id=mautic_contact_id,
+                mutate=lambda client: create_admin_contact_note(
+                    mautic_contact_id,
+                    request.data,
+                    client=client,
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except PermanentMauticError as exc:
@@ -1173,7 +1212,20 @@ class NewsletterAdminContactDncView(APIView):
 
     def post(self, request, mautic_contact_id):
         try:
-            data = add_admin_contact_dnc(mautic_contact_id, request.data)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=CONTACT_DNC_ADD,
+                resource="contact_dnc",
+                resource_id=mautic_contact_id,
+                mutate=lambda client: add_admin_contact_dnc(
+                    mautic_contact_id,
+                    request.data,
+                    client=client,
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
@@ -1187,7 +1239,20 @@ class NewsletterAdminContactDncDetailView(APIView):
 
     def delete(self, request, mautic_contact_id, channel):
         try:
-            data = remove_admin_contact_dnc(mautic_contact_id, channel)
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=CONTACT_DNC_REMOVE,
+                resource="contact_dnc",
+                resource_id=f"{mautic_contact_id}:{channel}",
+                mutate=lambda client: remove_admin_contact_dnc(
+                    mautic_contact_id,
+                    channel,
+                    client=client,
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _contact_stage_provider_error_response(exc)
 
@@ -1252,10 +1317,20 @@ class NewsletterAdminContactStageView(APIView):
             )
 
         try:
-            current_stage = move_admin_contact_to_stage(
-                mautic_contact_id,
-                stage_id,
+            current_stage, identity_response = run_interactive_mutation(
+                request,
+                action=STAGE_CONTACT_ADD,
+                resource="contact_stage",
+                resource_id=f"{stage_id}:{mautic_contact_id}",
+                mutate=lambda client: move_admin_contact_to_stage(
+                    mautic_contact_id,
+                    stage_id,
+                    client=client,
+                ),
+                client_factory=MauticClient,
             )
+            if identity_response is not None:
+                return identity_response
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
@@ -1274,7 +1349,19 @@ class NewsletterAdminContactStageView(APIView):
 
     def delete(self, request, mautic_contact_id):
         try:
-            clear_admin_contact_stage(mautic_contact_id)
+            _, identity_response = run_interactive_mutation(
+                request,
+                action=STAGE_CONTACT_REMOVE,
+                resource="contact_stage",
+                resource_id=mautic_contact_id,
+                mutate=lambda client: clear_admin_contact_stage(
+                    mautic_contact_id,
+                    client=client,
+                ),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
@@ -1514,7 +1601,15 @@ class NewsletterAdminStageListCreateView(APIView):
             )
 
         try:
-            stage = MauticClient().create_stage(payload)
+            stage, identity_response = run_interactive_mutation(
+                request,
+                action=STAGE_CREATE,
+                resource="stage",
+                mutate=lambda client: client.create_stage(payload),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -1547,7 +1642,16 @@ class NewsletterAdminStageDetailView(APIView):
             )
 
         try:
-            stage = MauticClient().update_stage(stage_id, payload)
+            stage, identity_response = run_interactive_mutation(
+                request,
+                action=STAGE_UPDATE,
+                resource="stage",
+                resource_id=stage_id,
+                mutate=lambda client: client.update_stage(stage_id, payload),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _stage_provider_error_response(exc)
 
@@ -1555,7 +1659,16 @@ class NewsletterAdminStageDetailView(APIView):
 
     def delete(self, request, stage_id):
         try:
-            MauticClient().delete_stage(stage_id)
+            _, identity_response = run_interactive_mutation(
+                request,
+                action=STAGE_DELETE,
+                resource="stage",
+                resource_id=stage_id,
+                mutate=lambda client: client.delete_stage(stage_id),
+                client_factory=MauticClient,
+            )
+            if identity_response is not None:
+                return identity_response
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _stage_provider_error_response(exc)
 

@@ -23,30 +23,21 @@ from .operations import (
     CAMPAIGN_DELETE,
     CAMPAIGN_EVENT_DELETE,
     CAMPAIGN_UPDATE,
-    CONTACT_CREATE,
     COMPANY_CONTACT_ADD,
     COMPANY_CONTACT_REMOVE,
     COMPANY_CREATE,
     COMPANY_DELETE,
     COMPANY_UPDATE,
+    CONTACT_CREATE,
+    CONTACT_DNC_ADD,
+    CONTACT_DNC_REMOVE,
+    CONTACT_NOTE_CREATE,
     CONTACT_TAG_ADD,
     CONTACT_TAG_REMOVE,
     CONTACT_UPDATE,
     FIELD_CREATE,
     FIELD_DELETE,
     FIELD_UPDATE,
-    SEGMENT_CONTACT_ADD,
-    SEGMENT_CONTACT_REMOVE,
-    SEGMENT_CREATE,
-    SEGMENT_DELETE,
-    SEGMENT_UPDATE,
-    TAG_CREATE,
-    TAG_DELETE,
-    TAG_UPDATE,
-    TEMPLATE_CREATE,
-    TEMPLATE_DELETE,
-    TEMPLATE_DUPLICATE,
-    TEMPLATE_UPDATE,
     NEWSLETTER_TEST_SEND,
     POINT_ACTION_CREATE,
     POINT_ACTION_DELETE,
@@ -62,6 +53,23 @@ from .operations import (
     POINT_TRIGGER_EVENT_DELETE,
     POINT_TRIGGER_EVENT_UPDATE,
     POINT_TRIGGER_UPDATE,
+    SEGMENT_CONTACT_ADD,
+    SEGMENT_CONTACT_REMOVE,
+    SEGMENT_CREATE,
+    SEGMENT_DELETE,
+    SEGMENT_UPDATE,
+    STAGE_CONTACT_ADD,
+    STAGE_CONTACT_REMOVE,
+    STAGE_CREATE,
+    STAGE_DELETE,
+    STAGE_UPDATE,
+    TAG_CREATE,
+    TAG_DELETE,
+    TAG_UPDATE,
+    TEMPLATE_CREATE,
+    TEMPLATE_DELETE,
+    TEMPLATE_DUPLICATE,
+    TEMPLATE_UPDATE,
 )
 
 
@@ -723,7 +731,15 @@ class MauticClient:
         return data
 
     def create_note(self, payload: dict[str, Any]) -> dict[str, Any]:
-        response = self._request("POST", "notes/new", data=payload)
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/notes/new",
+                operation=CONTACT_NOTE_CREATE,
+                data=payload,
+            )
+        else:
+            response = self._request("POST", "notes/new", data=payload)
         data = self._json_object(response, "Mautic note creation")
         note = data.get("note")
         if not isinstance(note, dict) or not note.get("id"):
@@ -742,11 +758,20 @@ class MauticClient:
         channel = str(channel or "email").strip()
         if not contact_id or not channel:
             raise PermanentMauticError("Mautic contact ID and DNC channel are required")
-        response = self._request(
-            "POST",
-            f"contacts/{contact_id}/dnc/{channel}/add",
-            data={"reason": reason, "comments": comments},
-        )
+        body = {"reason": reason, "comments": comments}
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                f"ecp/bridge/contacts/{contact_id}/dnc/{channel}/add",
+                operation=CONTACT_DNC_ADD,
+                data=body,
+            )
+        else:
+            response = self._request(
+                "POST",
+                f"contacts/{contact_id}/dnc/{channel}/add",
+                data=body,
+            )
         data = self._json_object(response, "Mautic contact DNC add")
         contact = data.get("contact")
         if not isinstance(contact, dict):
@@ -762,7 +787,14 @@ class MauticClient:
         channel = str(channel or "email").strip()
         if not contact_id or not channel:
             raise PermanentMauticError("Mautic contact ID and DNC channel are required")
-        response = self._request("POST", f"contacts/{contact_id}/dnc/{channel}/remove")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                f"ecp/bridge/contacts/{contact_id}/dnc/{channel}/remove",
+                operation=CONTACT_DNC_REMOVE,
+            )
+        else:
+            response = self._request("POST", f"contacts/{contact_id}/dnc/{channel}/remove")
         data = self._json_object(response, "Mautic contact DNC remove")
         contact = data.get("contact")
         if not isinstance(contact, dict):
@@ -2303,6 +2335,14 @@ class MauticClient:
         return self._stage_from_response(response, "Mautic stage lookup")
 
     def create_stage(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/stages/new",
+                operation=STAGE_CREATE,
+                data=payload,
+            )
+            return self._stage_from_response(response, "Mautic stage creation")
         response = self._request("POST", "stages/new", data=payload)
         return self._stage_from_response(response, "Mautic stage creation")
 
@@ -2315,6 +2355,14 @@ class MauticClient:
         if not stage_id:
             raise PermanentMauticError("Mautic stage ID is required")
 
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/stages/{stage_id}/edit",
+                operation=STAGE_UPDATE,
+                data=payload,
+            )
+            return self._stage_from_response(response, "Mautic stage update")
         response = self._request(
             "PATCH",
             f"stages/{stage_id}/edit",
@@ -2327,7 +2375,14 @@ class MauticClient:
         if not stage_id:
             raise PermanentMauticError("Mautic stage ID is required")
 
-        response = self._request("DELETE", f"stages/{stage_id}/delete")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/stages/{stage_id}/delete",
+                operation=STAGE_DELETE,
+            )
+        else:
+            response = self._request("DELETE", f"stages/{stage_id}/delete")
         return self._stage_from_response(
             response,
             "Mautic stage deletion",
@@ -2345,6 +2400,13 @@ class MauticClient:
             raise PermanentMauticError(
                 "Mautic stage ID and contact ID are required"
             )
+        if self._uses_asserted_user():
+            self._bridge_request(
+                "POST",
+                f"ecp/bridge/stages/{stage_id}/contact/{contact_id}/add",
+                operation=STAGE_CONTACT_ADD,
+            )
+            return
         self._request(
             "POST",
             f"stages/{stage_id}/contact/{contact_id}/add",
@@ -2361,6 +2423,13 @@ class MauticClient:
             raise PermanentMauticError(
                 "Mautic stage ID and contact ID are required"
             )
+        if self._uses_asserted_user():
+            self._bridge_request(
+                "POST",
+                f"ecp/bridge/stages/{stage_id}/contact/{contact_id}/remove",
+                operation=STAGE_CONTACT_REMOVE,
+            )
+            return
         self._request(
             "POST",
             f"stages/{stage_id}/contact/{contact_id}/remove",

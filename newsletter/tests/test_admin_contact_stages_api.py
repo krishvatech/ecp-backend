@@ -1,20 +1,32 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
 from newsletter.mautic import PermanentMauticError, TemporaryMauticError
+from newsletter import contact_services
 from newsletter.tests.marketing_actors import grant_marketing_access
 
 
 User = get_user_model()
 
 
+@override_settings(ECP_MAUTIC_PER_USER_EXECUTION_ENABLED=False)
 class NewsletterAdminContactStagesAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        # The stage mutation builds its client from the view's binding
+        # (client_factory), while the surrounding reads use the service
+        # binding. Point both at the same stub so a test can never reach the
+        # real Mautic instance, and so the assertions see every call.
+        view_patcher = patch("newsletter.admin_views.MauticClient")
+        view_client_cls = view_patcher.start()
+        self.addCleanup(view_patcher.stop)
+        view_client_cls.side_effect = lambda *args, **kwargs: (
+            contact_services.MauticClient()
+        )
         self.staff = User.objects.create_user(
             username="contact-stage-staff",
             email="contact-stage-staff@example.test",

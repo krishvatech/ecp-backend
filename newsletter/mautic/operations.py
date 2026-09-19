@@ -56,6 +56,14 @@ POINT_TRIGGER_DELETE = "point.trigger.delete"
 POINT_TRIGGER_EVENT_CREATE = "point.trigger.event.create"
 POINT_TRIGGER_EVENT_UPDATE = "point.trigger.event.update"
 POINT_TRIGGER_EVENT_DELETE = "point.trigger.event.delete"
+CONTACT_NOTE_CREATE = "contact.note.create"
+CONTACT_DNC_ADD = "contact.dnc.add"
+CONTACT_DNC_REMOVE = "contact.dnc.remove"
+STAGE_CREATE = "stage.create"
+STAGE_UPDATE = "stage.update"
+STAGE_DELETE = "stage.delete"
+STAGE_CONTACT_ADD = "stage.contact.add"
+STAGE_CONTACT_REMOVE = "stage.contact.remove"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
@@ -104,5 +112,13 @@ ASSERTABLE_OPERATIONS = frozenset(
         POINT_TRIGGER_EVENT_CREATE,
         POINT_TRIGGER_EVENT_UPDATE,
         POINT_TRIGGER_EVENT_DELETE,
+        CONTACT_NOTE_CREATE,
+        CONTACT_DNC_ADD,
+        CONTACT_DNC_REMOVE,
+        STAGE_CREATE,
+        STAGE_UPDATE,
+        STAGE_DELETE,
+        STAGE_CONTACT_ADD,
+        STAGE_CONTACT_REMOVE,
     }
 )

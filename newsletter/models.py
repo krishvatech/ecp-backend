@@ -491,6 +491,14 @@ class MauticIdentityAuditLog(models.Model):
             "point.trigger.event.delete",
             "Point trigger event delete",
         )
+        CONTACT_NOTE_CREATE = "contact.note.create", "Contact note create"
+        CONTACT_DNC_ADD = "contact.dnc.add", "Contact DNC add"
+        CONTACT_DNC_REMOVE = "contact.dnc.remove", "Contact DNC remove"
+        STAGE_CREATE = "stage.create", "Stage create"
+        STAGE_UPDATE = "stage.update", "Stage update"
+        STAGE_DELETE = "stage.delete", "Stage delete"
+        STAGE_CONTACT_ADD = "stage.contact.add", "Stage contact add"
+        STAGE_CONTACT_REMOVE = "stage.contact.remove", "Stage contact remove"
         CONNECTION_CREATE = "connection.create", "Mautic user connection created"
         CONNECTION_ACTIVATE = "connection.activate", "Mautic user connection activated"
         CONNECTION_DEACTIVATE = "connection.deactivate", "Mautic user connection deactivated"
