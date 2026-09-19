@@ -103,6 +103,7 @@ from .marketing_access_views import (
     NewsletterAdminMarketingAccessRevokeView,
     NewsletterMarketingAccessMeView,
 )
+from .marketing_audit_views import NewsletterAdminMarketingAuditView
 from .mautic_dashboard_views import NewsletterAdminDashboardView
 from .company_views import (
     NewsletterAdminCompanyContactDetailView,
@@ -267,6 +268,11 @@ urlpatterns = [
         "newsletter/admin/marketing-access/<int:ecp_user_id>/remove/",
         NewsletterAdminMarketingAccessRevokeView.as_view(),
         name="newsletter-admin-marketing-access-remove",
+    ),
+    path(
+        "newsletter/admin/marketing-audit/",
+        NewsletterAdminMarketingAuditView.as_view(),
+        name="newsletter-admin-marketing-audit",
     ),
     path(
         "newsletter/marketing-access/me/",
