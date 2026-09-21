@@ -198,6 +198,39 @@ class AcceptTrackApplicationTestCase(TestCase):
 
         self.assertEqual(response.status_code, 400)
 
+    @patch('events.tasks.send_application_acceptance_email_task.delay')
+    def test_accept_sends_email_by_default(self, mock_delay):
+        """Acceptance keeps the existing behavior when send_email is omitted."""
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            f'/events/{self.event.id}/applications/{self.application.id}/track-applications/{self.track_app.id}/accept/',
+            {'accepted_tier_id': self.free_tier.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_delay.assert_called_once_with(self.track_app.id)
+
+    @patch('events.tasks.send_application_acceptance_email_task.delay')
+    def test_accept_can_skip_email(self, mock_delay):
+        """Acceptance succeeds without queueing email when send_email is false."""
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            f'/events/{self.event.id}/applications/{self.application.id}/track-applications/{self.track_app.id}/accept/',
+            {
+                'accepted_tier_id': self.free_tier.id,
+                'send_email': False,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.track_app.refresh_from_db()
+        self.assertEqual(self.track_app.status, 'accepted')
+        mock_delay.assert_not_called()
+
 
 class DeclineTrackApplicationTestCase(TestCase):
     """Test declining track applications."""

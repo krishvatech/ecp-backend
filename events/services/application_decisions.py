@@ -25,7 +25,8 @@ def accept_track_application(
     track_application,
     reviewer_user,
     accepted_tier=None,
-    notes=None
+    notes=None,
+    send_email=True
 ):
     """
     Accept a track application with tier selection and attendee management.
@@ -35,6 +36,7 @@ def accept_track_application(
         reviewer_user: User performing the acceptance
         accepted_tier: TrackPricingTier to assign
         notes: Optional notes about the decision
+        send_email: Whether to send acceptance notification email
 
     Returns:
         track_application: Updated instance
@@ -163,15 +165,16 @@ def accept_track_application(
 
                 transaction.on_commit(trigger_forms)
 
-        # Queue acceptance email asynchronously (non-blocking, respects opt_out flag)
-        try:
-            from events.tasks import send_application_acceptance_email_task
-            send_application_acceptance_email_task.delay(track_application.id)
-        except Exception as e:
-            # Log but don't fail the acceptance
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Failed to queue acceptance email task: {e}")
+        # Queue acceptance email asynchronously if enabled (non-blocking; task respects opt_out flag)
+        if send_email:
+            try:
+                from events.tasks import send_application_acceptance_email_task
+                send_application_acceptance_email_task.delay(track_application.id)
+            except Exception as e:
+                # Log but don't fail the acceptance
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Failed to queue acceptance email task: {e}")
 
         return track_application
 

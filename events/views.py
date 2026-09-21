@@ -5626,6 +5626,7 @@ class EventViewSet(viewsets.ModelViewSet):
         Request body:
         {
           "accepted_tier_id": 5,  // Optional: tier to assign (uses requested or default if omitted)
+          "send_email": true,      // Optional: whether to send acceptance notification (default true)
           "notes": "Optional notes"
         }
         """
@@ -5659,6 +5660,7 @@ class EventViewSet(viewsets.ModelViewSet):
             except TrackPricingTier.DoesNotExist:
                 return Response({'detail': 'Tier not found for this track.'}, status=400)
 
+        send_email = request.data.get('send_email', True)
         notes = request.data.get('notes', '')
 
         try:
@@ -5666,7 +5668,8 @@ class EventViewSet(viewsets.ModelViewSet):
                 track_app,
                 request.user,
                 accepted_tier=accepted_tier,
-                notes=notes
+                notes=notes,
+                send_email=send_email
             )
             return Response({
                 'success': True,
