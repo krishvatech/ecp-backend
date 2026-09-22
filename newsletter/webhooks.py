@@ -14,14 +14,24 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .dnc_services import (
+    CONTACTABLE_VERB,
+    EMAIL_CHANNEL,
+    classify_dnc_reason,
+    clear_email_suppression,
+    record_email_suppression,
+)
 from .models import (
     MauticContactMapping,
+    MauticEmailSuppression,
     NewsletterCampaign,
     NewsletterCampaignTrackingEvent,
 )
 
 
 logger = logging.getLogger(__name__)
+
+CHANNEL_SUBSCRIPTION_EVENT = "mautic.lead_channel_subscription_changed"
 
 
 EVENT_TYPE_MAP = {
@@ -65,9 +75,30 @@ def _is_false_value(value) -> bool:
     return False
 
 
+def _dnc_status_verb(event: dict) -> str:
+    """Return Mautic's new DNC status verb for a channel-subscription event.
+
+    Mautic 7.1.3 reports the transition as ``old_status``/``new_status`` verbs
+    (ChannelSubscriptionChange::getDncReasonVerb): contactable, unsubscribed,
+    bounced or manual. Earlier ECP payload shapes are still accepted.
+    """
+    for key in ("new_status", "newStatus"):
+        verb = _lower_str(event.get(key))
+        if verb:
+            return verb
+    return ""
+
+
+def _is_email_channel_event(event: dict) -> bool:
+    return _lower_str(event.get("channel")) in {"", EMAIL_CHANNEL}
+
+
 def _is_unsubscribe_event(event: dict) -> bool:
-    if _lower_str(event.get("channel")) not in {"", "email"}:
+    if not _is_email_channel_event(event):
         return False
+
+    if _dnc_status_verb(event) == "unsubscribed":
+        return True
 
     if _is_false_value(event.get("subscribed")):
         return True
@@ -84,8 +115,11 @@ def _is_unsubscribe_event(event: dict) -> bool:
 
 
 def _is_bounce_subscription_change(event: dict) -> bool:
-    if _lower_str(event.get("channel")) not in {"", "email"}:
+    if not _is_email_channel_event(event):
         return False
+
+    if _dnc_status_verb(event) == "bounced":
+        return True
 
     bounce_values = {
         "bounce",
@@ -277,6 +311,76 @@ def _create_tracking_event(provider_event_type: str, event: dict) -> str:
     return "created"
 
 
+def _suppression_reason_for_event(event: dict) -> str:
+    """Classify an email channel-subscription event into an ECP reason.
+
+    Returns "" when the event does not represent a suppression this handler
+    should act on, including a transition back to contactable.
+    """
+    verb = _dnc_status_verb(event)
+    if verb:
+        if verb == CONTACTABLE_VERB:
+            return ""
+        return classify_dnc_reason(verb)
+
+    # Older/synthetic payload shapes carry the reason on one of these keys.
+    if _is_bounce_subscription_change(event):
+        return MauticEmailSuppression.Reason.BOUNCED
+    if _is_unsubscribe_event(event):
+        return MauticEmailSuppression.Reason.UNSUBSCRIBED
+    return ""
+
+
+def _sync_email_suppression(event: dict) -> str:
+    """Mirror one Mautic email DNC change onto ECP consent.
+
+    Runs independently of campaign matching: Mautic's channel-subscription
+    payload carries no email/broadcast reference, so consent must not depend on
+    recognising a campaign. Scope is global email, because that is the only
+    scope Mautic gives — the member's per-category NewsletterSubscription rows
+    are deliberately left untouched and are re-applied if the block clears.
+
+    Idempotent by construction: the write is a state upsert keyed by user, so a
+    redelivered event converges on the same single row.
+    """
+    if not _is_email_channel_event(event):
+        return "ignored"
+
+    contact_id = _contact_id_from_event(event)
+    if not contact_id:
+        return "ignored"
+
+    mapping = (
+        MauticContactMapping.objects.select_related("user")
+        .filter(mautic_contact_id=contact_id)
+        .first()
+    )
+    if mapping is None or mapping.user is None:
+        # A Mautic contact with no ECP member is normal (imports, leads).
+        logger.info(
+            "Mautic email DNC change for unmapped contact_id=%s ignored",
+            contact_id,
+        )
+        return "unmapped"
+
+    reason = _suppression_reason_for_event(event)
+
+    if not reason:
+        if _dnc_status_verb(event) == CONTACTABLE_VERB:
+            cleared = clear_email_suppression(mapping.user)
+            return "unsuppressed" if cleared else "ignored"
+        return "ignored"
+
+    record_email_suppression(
+        mapping.user,
+        reason,
+        mautic_contact_id=contact_id,
+        comments=_safe_str(event.get("comments")),
+        occurred_at=_occurred_at_from_event(event),
+    )
+    return "suppressed"
+
+
 class MauticNewsletterWebhookView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -309,11 +413,29 @@ class MauticNewsletterWebhookView(APIView):
         created = 0
         ignored = 0
         duplicate = 0
+        consent_synced = 0
 
         for provider_event_type, event, ignored_count in _iter_event_items(payload):
             if event is None:
                 ignored += ignored_count
                 continue
+
+            # Consent runs before, and independently of, campaign matching:
+            # Mautic's DNC payload references no email, and a manual block has
+            # no tracking event type, yet both must reach ECP consent.
+            if provider_event_type == CHANNEL_SUBSCRIPTION_EVENT:
+                try:
+                    if _sync_email_suppression(event) in {
+                        "suppressed",
+                        "unsuppressed",
+                    }:
+                        consent_synced += 1
+                except Exception:
+                    # A consent failure must not reject the whole delivery and
+                    # make Mautic retry events that were already recorded.
+                    logger.exception(
+                        "Could not synchronize Mautic email suppression"
+                    )
 
             result = _create_tracking_event(provider_event_type, event)
             if result == "created":
@@ -329,6 +451,7 @@ class MauticNewsletterWebhookView(APIView):
                 "created": created,
                 "ignored": ignored,
                 "duplicate": duplicate,
+                "consent_synced": consent_synced,
             },
             status=status.HTTP_200_OK,
         )

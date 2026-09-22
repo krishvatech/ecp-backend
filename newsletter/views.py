@@ -9,6 +9,7 @@ from .serializers import (
 )
 from .services import (
     InvalidNewsletterCategories,
+    get_email_suppression_state,
     list_user_preferences,
     update_user_preferences,
 )
@@ -18,7 +19,10 @@ class NewsletterPreferencesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        data = {"preferences": list_user_preferences(request.user)}
+        data = {
+            "preferences": list_user_preferences(request.user),
+            "email_suppression": get_email_suppression_state(request.user),
+        }
         serializer = NewsletterPreferencesResponseSerializer(data)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -43,8 +47,14 @@ class NewsletterPreferencesView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Re-read suppression after the update: an explicit opt-in may have
+        # cleared a voluntary Mautic block, and if it did not, the response
+        # must say so rather than implying delivery has resumed.
         response_serializer = NewsletterPreferencesResponseSerializer(
-            {"preferences": preferences}
+            {
+                "preferences": preferences,
+                "email_suppression": get_email_suppression_state(request.user),
+            }
         )
         return Response(
             response_serializer.data,

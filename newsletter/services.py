@@ -7,6 +7,12 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from .dnc_services import (
+    SuppressionReconciliation,
+    is_suppressed,
+    reconcile_email_suppression_for_resubscribe,
+    suppression_state,
+)
 from .models import NewsletterCategory, NewsletterSubscription
 from .sync_events import create_newsletter_sync_event
 
@@ -21,10 +27,18 @@ class InvalidNewsletterCategories(ValueError):
 
 
 def list_user_preferences(user) -> list[dict]:
-    """Return every active category plus the current user's state.
+    """Return every active category plus the current user's effective state.
 
     A missing NewsletterSubscription row means the user has never explicitly
     chosen that newsletter and is represented as subscribed=False.
+
+    ``subscribed`` is the *effective* state: the member's own choice AND the
+    absence of a Mautic email suppression. Mautic blocks email globally per
+    contact, so while a block stands nothing is delivered regardless of the
+    per-category choice, and reporting the raw choice would tell the member
+    they are receiving mail that Mautic is discarding. ``locally_subscribed``
+    keeps the underlying choice visible so it can be restored untouched once
+    the block clears.
     """
     categories = list(
         NewsletterCategory.objects.filter(is_active=True).order_by("name")
@@ -36,21 +50,28 @@ def list_user_preferences(user) -> list[dict]:
             category_id__in=[category.pk for category in categories],
         )
     }
+    suppressed = is_suppressed(user)
 
     result = []
     for category in categories:
         subscription = subscriptions.get(category.pk)
+        locally_subscribed = bool(subscription and subscription.is_subscribed)
         result.append(
             {
                 "slug": category.slug,
                 "name": category.name,
                 "description": category.description,
-                "subscribed": bool(
-                    subscription and subscription.is_subscribed
-                ),
+                "subscribed": locally_subscribed and not suppressed,
+                "locally_subscribed": locally_subscribed,
+                "suppressed": suppressed and locally_subscribed,
             }
         )
     return result
+
+
+def get_email_suppression_state(user) -> dict:
+    """Return the member-facing Mautic email suppression summary."""
+    return suppression_state(user)
 
 
 def _dispatch_newsletter_sync_event_safely(event_id: int) -> None:
@@ -69,6 +90,40 @@ def _dispatch_newsletter_sync_event_safely(event_id: int) -> None:
             "Could not dispatch newsletter preference sync event_id=%s; "
             "durable event remains pending",
             event_id,
+        )
+
+
+def _reconcile_suppression_for_opt_in(
+    user,
+    items,
+) -> SuppressionReconciliation | None:
+    """Reconcile Mautic suppression when a request contains an explicit opt-in.
+
+    Runs on the *request*, not on the resulting state change: a member whose
+    stored choice is already subscribed but whose delivery is suppressed sees
+    the toggle as off, and turning it on must still attempt the reversal even
+    though no local row changes.
+
+    Never raises. A Mautic failure leaves the suppression in place, which is
+    reported honestly by the response rather than being hidden behind a
+    successful save.
+    """
+    if not any(bool(item.get("subscribed")) for item in items):
+        return None
+    if not is_suppressed(user):
+        return None
+
+    try:
+        return reconcile_email_suppression_for_resubscribe(user)
+    except Exception:
+        logger.exception(
+            "Unexpected failure reconciling Mautic email suppression "
+            "for user_id=%s; suppression retained",
+            getattr(user, "pk", None),
+        )
+        return SuppressionReconciliation(
+            SuppressionReconciliation.UNKNOWN,
+            detail="Mautic suppression could not be checked.",
         )
 
 
@@ -111,6 +166,10 @@ def update_user_preferences(
     missing = sorted(set(slugs) - set(categories))
     if missing:
         raise InvalidNewsletterCategories(missing)
+
+    # Only after the request is known to be valid: an explicit opt-in is the
+    # member's consent to lift their own earlier Mautic opt-out.
+    _reconcile_suppression_for_opt_in(user, items)
 
     now = timezone.now()
     with transaction.atomic():

@@ -140,6 +140,58 @@ class NewsletterSubscription(models.Model):
         return f"{self.user_id}:{self.category.slug} ({state})"
 
 
+class MauticEmailSuppression(models.Model):
+    """Mirror of Mautic's *global* email-channel Do Not Contact state for one user.
+
+    Mautic suppresses email per contact and channel, never per segment, so a
+    suppression cannot be expressed as a per-category NewsletterSubscription
+    without destroying the member's individual list choices. This row is kept
+    beside those choices instead: NewsletterSubscription stays the record of
+    what the member asked for, and this row records whether Mautic will
+    currently deliver any of it. Effective state is the conjunction of the two.
+
+    ``reason`` mirrors Mautic's DoNotContact reason constants (see
+    newsletter.dnc_services). Only a voluntary ``unsubscribed`` is reversible
+    by an ECP re-subscribe; bounce, manual and unrecognised reasons protect
+    deliverability and are never cleared automatically.
+    """
+
+    class Reason(models.TextChoices):
+        UNSUBSCRIBED = "unsubscribed", "Unsubscribed"
+        BOUNCED = "bounced", "Bounced"
+        MANUAL = "manual", "Manual"
+        UNKNOWN = "unknown", "Unknown"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="mautic_email_suppression",
+    )
+    reason = models.CharField(
+        max_length=16,
+        choices=Reason.choices,
+        default=Reason.UNKNOWN,
+        db_index=True,
+    )
+    mautic_contact_id = models.CharField(max_length=64, blank=True, default="")
+    # Mautic's own free-text note. Truncated; never used for classification.
+    comments = models.CharField(max_length=255, blank=True, default="")
+    suppressed_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["user_id"]
+
+    @property
+    def is_reversible(self) -> bool:
+        """True only for a voluntary opt-out an ECP re-subscribe may clear."""
+        return self.reason == self.Reason.UNSUBSCRIBED
+
+    def __str__(self):
+        return f"user:{self.user_id} email suppressed [{self.reason}]"
+
+
 class NewsletterCampaign(models.Model):
     """Admin-authored newsletter broadcast draft owned by ECP."""
 
