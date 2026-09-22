@@ -355,11 +355,31 @@ class WordPressUserSyncView(APIView):
 
             logger.info(f"Successfully synced user {user.id}, created={created}")
 
-            # Get Cognito tokens for the user (auto-authenticate)
+            # Get Cognito tokens for the user (auto-authenticate). Secure-session
+            # mode must never downgrade to SimpleJWT: the browser's HttpOnly
+            # secure session is backed specifically by a Cognito refresh token.
             cognito_tokens = get_cognito_tokens_admin(user.username)
+            secure_tokens_complete = bool(
+                cognito_tokens.get("id_token") and cognito_tokens.get("refresh_token")
+            )
+
+            if getattr(settings, "SECURE_AUTH_SESSION_ENABLED", False) and not secure_tokens_complete:
+                logger.error(
+                    "Cognito token issuance failed for WordPress login while secure auth is enabled: user=%s",
+                    user.username,
+                )
+                return Response(
+                    {
+                        "detail": "Authentication service is temporarily unavailable. Please try again.",
+                        "error": "Authentication service is temporarily unavailable. Please try again.",
+                        "code": "cognito_session_unavailable",
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
 
             if not cognito_tokens.get("access_token"):
-                # Fallback to SimpleJWT if Cognito fails
+                # Legacy compatibility only. This path remains unchanged while
+                # SECURE_AUTH_SESSION_ENABLED=False.
                 logger.warning(f"Failed to get Cognito tokens for {user.username}, using SimpleJWT")
                 refresh = RefreshToken.for_user(user)
                 cognito_tokens = {

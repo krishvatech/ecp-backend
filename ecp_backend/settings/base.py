@@ -773,6 +773,28 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": True,
 }
 
+# --- Secure Cognito session (Phase 1 foundation; disabled by default) ---
+# Server-side Cognito refresh sessions behind an opaque HttpOnly cookie
+# (users/secure_session.py). While disabled, /api/auth/secure-session/* return
+# 404 and nothing else in the authentication stack reads these settings.
+SECURE_AUTH_SESSION_ENABLED = env_bool("SECURE_AUTH_SESSION_ENABLED", False)
+# Fernet key(s), comma-separated; the first encrypts, all decrypt (rotation).
+# Required only when enabled. There is intentionally no fallback key.
+SECURE_AUTH_TOKEN_ENCRYPTION_KEY = os.getenv("SECURE_AUTH_TOKEN_ENCRYPTION_KEY", "")
+# Must never exceed the Cognito app client's refresh-token validity (30 days).
+SECURE_AUTH_SESSION_TTL_DAYS = int(os.getenv("SECURE_AUTH_SESSION_TTL_DAYS", "30"))
+# The cookie carries only a random opaque handle. Always Path=/ with no Domain.
+SECURE_AUTH_COOKIE_NAME = os.getenv("SECURE_AUTH_COOKIE_NAME", "__Host-ecp_secure_session")
+SECURE_AUTH_COOKIE_SECURE = env_bool("SECURE_AUTH_COOKIE_SECURE", True)
+SECURE_AUTH_COOKIE_SAMESITE = os.getenv("SECURE_AUTH_COOKIE_SAMESITE", "Strict")
+# Exact Origin values allowed to call the secure-session endpoints.
+SECURE_AUTH_ALLOWED_ORIGINS = [
+    o.strip().rstrip("/")
+    for o in os.getenv("SECURE_AUTH_ALLOWED_ORIGINS", "https://connect.imaa-institute.org").split(",")
+    if o.strip()
+]
+SECURE_AUTH_SESSION_THROTTLE_RATE = os.getenv("SECURE_AUTH_SESSION_THROTTLE_RATE", "30/min")
+
 # ============================================================================
 # PERFORMANCE OPTIMIZATION SETTINGS
 # ============================================================================
@@ -1105,21 +1127,9 @@ if SENTRY_DSN:
     from sentry_sdk.integrations.logging import LoggingIntegration
     from sentry_sdk.integrations.redis import RedisIntegration
 
-    def before_send(event, hint):
-        request = event.get("request") or {}
-        headers = request.get("headers") or {}
-
-        # Never send auth/session secrets to Sentry.
-        for key in list(headers.keys()):
-            if key.lower() in {
-                "authorization",
-                "cookie",
-                "x-csrftoken",
-                "x-csrf-token",
-            }:
-                headers[key] = "[Filtered]"
-
-        return event
+    # Header filtering (Authorization/Cookie/CSRF -> "[Filtered]") plus credential
+    # redaction in bodies, frames, breadcrumbs and messages.
+    from ecp_backend.sentry_scrubbing import before_send, before_send_transaction
 
     sentry_sdk.init(
         dsn=SENTRY_DSN,
@@ -1139,6 +1149,7 @@ if SENTRY_DSN:
         send_default_pii=os.getenv("SENTRY_SEND_DEFAULT_PII", "false").lower() == "true",
         traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.05")),
         before_send=before_send,
+        before_send_transaction=before_send_transaction,
     )
 
 

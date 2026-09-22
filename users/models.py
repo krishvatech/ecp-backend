@@ -1514,3 +1514,30 @@ class UserEmailAlias(models.Model):
         status = "verified" if self.verified else "unverified"
         active = "active" if self.is_active else "removed"
         return f"{self.email} ({status}, {active}) - {self.user.email}"
+
+
+class CognitoSecureSession(models.Model):
+    """
+    Server-side Cognito refresh session behind an opaque HttpOnly cookie.
+
+    The browser holds only a random handle; this row stores its SHA-256 hash and
+    the Fernet-encrypted Cognito refresh token (see users/secure_session.py).
+    Revoked rows are kept for audit with the encrypted token wiped.
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="cognito_secure_sessions")
+    handle_hash = models.CharField(max_length=64, unique=True)
+    encrypted_refresh_token = models.TextField(blank=True, default="")
+    cognito_sub = models.CharField(max_length=128, db_index=True)
+    # Needed only to compute SECRET_HASH if the app client ever gets a secret.
+    cognito_username = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(db_index=True)
+    revoked_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "revoked_at"])]
+
+    def __str__(self):
+        state = "revoked" if self.revoked_at else "active"
+        return f"CognitoSecureSession {self.pk} user_id={self.user_id} ({state})"

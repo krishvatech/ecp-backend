@@ -11,3 +11,8 @@ class UsersConfig(AppConfig):
         from django.db.models.signals import post_save
         from .models import ProfileView
         post_save.connect(signals.create_profile_view_notification, sender=ProfileView)
+
+        # Secure Cognito session config check (no-op while the feature is disabled).
+        from django.core.checks import register
+        from .secure_session import check_secure_session_configuration
+        register(check_secure_session_configuration)

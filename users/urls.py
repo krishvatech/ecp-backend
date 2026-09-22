@@ -56,6 +56,7 @@ from .views import (
 from .views import LinkedInProfileImportPreviewView, LinkedInProfileImportConfirmView
 from .wordpress_webhook import WordPressWebhookView, WordPressUserSyncView, WordPressProfileSyncAuthenticatedView
 from .account_login_status import AccountLoginStatusView
+from .secure_session_views import SecureSessionEstablishView, SecureSessionRefreshView, SecureSessionLogoutView
 
 # ---- NEW: Router for logged-in user's Education & Experience ----
 router = DefaultRouter()
@@ -124,6 +125,11 @@ urlpatterns = [
     path("session/login/", SessionLoginView.as_view(), name="session_login"),
     path("session/logout/", SessionLogoutView.as_view(), name="session_logout"),
     path("session/me/", SessionMeView.as_view(), name="session_me"),
+
+    # Secure Cognito session (disabled unless SECURE_AUTH_SESSION_ENABLED=True)
+    path("secure-session/establish/", SecureSessionEstablishView.as_view(), name="secure_session_establish"),
+    path("secure-session/refresh/", SecureSessionRefreshView.as_view(), name="secure_session_refresh"),
+    path("secure-session/logout/", SecureSessionLogoutView.as_view(), name="secure_session_logout"),
     path("users/me/", AuthUsersMeView.as_view(), name="auth-users-me"),
     path("admin/users/<int:user_id>/profile/", AdminUserProfileView.as_view(), name="admin-user-profile"),
     path("admin/users/<int:user_id>/avatar/", AdminUserAvatarView.as_view(), name="admin-user-avatar"),
