@@ -1042,6 +1042,81 @@ def _is_event_host(user, event) -> bool:
     return event.participants.filter(role="host").filter(host_match).exists()
 
 
+def event_join_denial_reason(user, event):
+    """
+    Why this caller is not entitled to joining details for *this* event.
+
+    Applies the rules the live room already enforces, so joining details
+    cannot be obtained by someone who would be refused at the door:
+
+      - a guest principal may only act on the event its token was issued for
+        (same check as ``rtk_join``'s guest branch);
+      - hosts and managers always qualify, registration or not;
+      - everybody else needs a registration for this event that is neither
+        banned nor cancelled/deregistered (same checks as ``live_rejoin``).
+
+    Returns ``None`` when access is allowed, else a short reason code. This is
+    the shared truth behind both the HTTP gate below and the serializer-side
+    boolean, so neither can drift from the other.
+    """
+    if not user or not getattr(user, "is_authenticated", False):
+        return "not_authenticated"
+
+    if getattr(user, "is_guest", False):
+        guest = getattr(user, "guest", None)
+        if not guest or guest.event_id != event.id:
+            return "guest_event_mismatch"
+        return None
+
+    if _is_event_manager(user, event) or _is_event_host(user, event):
+        return None
+
+    registration = (
+        EventRegistration.objects
+        .filter(event=event, user=user)
+        .only("id", "status", "is_banned")
+        .first()
+    )
+    if registration and registration.is_banned:
+        return "banned"
+    if not registration or registration.status in ["cancelled", "deregistered"]:
+        return "not_registered"
+    return None
+
+
+def has_event_join_access(user, event) -> bool:
+    """Boolean form of :func:`event_join_denial_reason`, for serializers."""
+    if not event:
+        return False
+    return event_join_denial_reason(user, event) is None
+
+
+def _deny_event_join_access(user, event):
+    """
+    HTTP gate for joining details.
+
+    Returns a ``Response`` to send back, or ``None`` when access is allowed.
+    """
+    reason = event_join_denial_reason(user, event)
+    if reason is None:
+        return None
+
+    if reason == "guest_event_mismatch":
+        return Response(
+            {"detail": "Guest token does not match this event."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if reason == "banned":
+        return Response(
+            {"error": "banned", "detail": "You are banned from this event."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return Response(
+        {"error": "not_registered", "detail": "You are not registered for this event."},
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
 def _absolute_media_url(request, value) -> str:
     if not value:
         return ""
@@ -3848,14 +3923,25 @@ class EventViewSet(viewsets.ModelViewSet):
                     return Response(EventApplicationSerializer(app).data)
                 return Response({'status': 'none'})
 
-            # Unauthenticated users: check by email (passed as query param)
+            # Unauthenticated users: check by email (passed as query param).
+            #
+            # The email is supplied by the caller and is not proof of identity,
+            # so the response carries the status only. Returning the stored
+            # application here would hand anyone who types an address the
+            # applicant's phone, comments, LinkedIn URL and nominee details.
+            # Owners and admins read the full application through the
+            # authenticated management endpoints.
             email = request.query_params.get('email', '').strip().lower()
             if email:
                 app = EventApplication.get_latest_active_application(event=event, email=email)
                 if app:
                     # Fetch fresh with prefetch for latest track applications
                     app = EventApplication.objects.prefetch_related('track_applications').get(pk=app.pk)
-                    return Response(EventApplicationSerializer(app).data)
+                    data = EventApplicationSerializer(app).data
+                    return Response({
+                        'status': data.get('status'),
+                        'application_status': data.get('application_status'),
+                    })
                 return Response({'status': 'none'})
 
             return Response({'status': 'none'})
@@ -6396,7 +6482,7 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(
         detail=True,
         methods=["get"],
-        permission_classes=[AllowAny],
+        permission_classes=[IsAuthenticated],
         url_path="streaming-link",
     )
     def streaming_link(self, request, pk=None):
@@ -6404,9 +6490,25 @@ class EventViewSet(viewsets.ModelViewSet):
         Get streaming configuration for the event.
         Returns external platform details if use_external_streaming=True, otherwise native RTK info.
         Passwords/sensitive details only shown to event managers/hosts.
+
+        Joining details are for people entitled to join this event (guest
+        principals bound to it included); the host link is limited to whoever
+        actually runs the event, and the password to managers, matching the
+        event serializers.
         """
         event = self.get_object()
+
+        # Being signed in is not a relationship with this event: apply the same
+        # access rules as the live room before handing out joining details.
+        denied = _deny_event_join_access(request.user, event)
+        if denied is not None:
+            return denied
+
         is_manager = _is_event_manager(request.user, event)
+        # A host link admits the holder as host of the meeting, so it follows
+        # the same rule as the live room: creator, superuser, or somebody
+        # explicitly assigned the host role for this event.
+        is_host = is_manager or _is_event_host(request.user, event)
 
         if event.use_external_streaming:
             response = {
@@ -6416,8 +6518,13 @@ class EventViewSet(viewsets.ModelViewSet):
                 "join_url": event.external_streaming_url,
                 "meeting_id": event.external_streaming_meeting_id or None,
                 "instructions": event.external_streaming_other_details or None,
-                "host_link": event.external_streaming_host_link or None,
             }
+
+            # Only hosts/managers see the host link
+            if is_host:
+                response["host_link"] = event.external_streaming_host_link or None
+            else:
+                response["host_link"] = None
 
             # Only managers see password
             if is_manager:

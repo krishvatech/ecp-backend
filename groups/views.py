@@ -622,12 +622,26 @@ class GroupViewSet(viewsets.ModelViewSet):
             )
         return qs
 
+    # Use: Restrict anonymous callers to public groups only.
+    # Ordering: Not applicable (filter only).
+    def _restrict_anonymous(self, qs):
+        """
+        Reading groups is open to anonymous callers, but a private group is not
+        public data: its name, description and membership must stay behind a
+        login. Authenticated users keep the access they had before.
+        """
+        user = getattr(self.request, "user", None)
+        if user is not None and getattr(user, "is_authenticated", False):
+            return qs
+        return qs.filter(visibility=Group.VISIBILITY_PUBLIC)
+
     # Use: Base queryset for groups list (optionally filtered by creator or search).
     # Ordering: Newest first.
     def get_queryset(self):
         qs = Group.objects.all().annotate(
             member_count=Count("memberships")
         ).order_by("-created_at")
+        qs = self._restrict_anonymous(qs)
         qs = self._optimize_group_queryset(qs)
         created_by = self.request.query_params.get("created_by")
         search = self.request.query_params.get("search")
@@ -645,6 +659,7 @@ class GroupViewSet(viewsets.ModelViewSet):
     # Ordering: No explicit order_by here.
     def get_queryset_all(self):
         qs = Group.objects.all().annotate(member_count=Count("memberships"))
+        qs = self._restrict_anonymous(qs)
         qs = self._optimize_group_queryset(qs)
         created_by = self.request.query_params.get("created_by")
         search = self.request.query_params.get("search")
@@ -2326,6 +2341,9 @@ class GroupViewSet(viewsets.ModelViewSet):
             Q(parent=parent) |
             Q(parent_links__parent_group=parent, parent_links__status=GroupParentAssociation.STATUS_APPROVED)
         ).distinct()
+
+        # Anonymous callers must not see private sub-groups either.
+        qs = self._restrict_anonymous(qs)
 
         qs = qs.annotate(member_count=Count("memberships")).select_related('community', 'created_by').order_by('-created_at')
 

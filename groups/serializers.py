@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from users.serializers import UserMiniSerializer
 from users.models import Experience
 from .models import Group, GroupMembership, PromotionRequest, GroupNotification, WordPressForumSource, WordPressGroupSource
-from .permissions import group_permissions
+from .permissions import can_manage_group, group_permissions
 
 User = get_user_model()
 
@@ -211,19 +211,50 @@ class GroupSerializer(serializers.ModelSerializer):
 
         return attrs
 
-    def get_created_by(self, obj):
-        u = getattr(obj, "created_by", None)
+    def _may_see_contact_details(self, obj) -> bool:
+        """
+        Email addresses of the owner/creator are contact details, not public
+        group data. Only viewers who already manage this group (platform staff,
+        owner/creator, group admin) keep them; everybody else, including
+        anonymous callers, gets identity fields only.
+        """
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        uid = getattr(user, "id", None)
+        if not uid or not getattr(user, "is_authenticated", False):
+            return False
+
+        if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
+            return True
+        if obj.created_by_id == uid or getattr(obj, "owner_id", None) == uid:
+            return True
+
+        # Reuse the membership annotation added by
+        # ``GroupViewSet._optimize_group_queryset`` so list responses keep
+        # taking one query; fall back to the shared helper without it.
+        if hasattr(obj, "_current_membership_role"):
+            return bool(
+                getattr(obj, "_current_membership_status", None) == GroupMembership.STATUS_ACTIVE
+                and obj._current_membership_role == GroupMembership.ROLE_ADMIN
+            )
+        return can_manage_group(user, obj)
+
+    def _user_card(self, u, obj):
         if not u:
             return None
-        name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", None)
-        return {"id": u.pk, "email": getattr(u, "email", None), "name": name}
+        # Never fall back to the email address for the display name: that would
+        # reintroduce the leak through ``name`` for users without a full name.
+        name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or ""
+        card = {"id": u.pk, "name": name}
+        if self._may_see_contact_details(obj):
+            card["email"] = getattr(u, "email", None)
+        return card
+
+    def get_created_by(self, obj):
+        return self._user_card(getattr(obj, "created_by", None), obj)
 
     def get_owner(self, obj):
-        u = getattr(obj, "owner", None)
-        if not u:
-            return None
-        name = getattr(u, "get_full_name", lambda: "")() or getattr(u, "username", "") or getattr(u, "email", None)
-        return {"id": u.pk, "email": getattr(u, "email", None), "name": name}
+        return self._user_card(getattr(obj, "owner", None), obj)
 
     def create(self, validated_data):
         # ensure created_by comes from request
