@@ -17,6 +17,28 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _visible_registrations(event):
+    """
+    Confirmed attendees of ``event`` who may appear in the public directory.
+
+    ``UserProfile.directory_hidden`` is the member's opt-out from being listed.
+    This endpoint is anonymous, so the opt-out is honoured here as well: a user
+    who hid themselves must appear in neither the directory nor its search.
+    Registrations whose user has no profile row are still listed, matching the
+    previous behaviour for those accounts.
+    """
+    return (
+        EventRegistration.objects
+        .filter(
+            event=event,
+            status='registered',
+            attendee_status='confirmed',
+        )
+        .exclude(user__profile__directory_hidden=True)
+        .select_related('user', 'user__profile')
+    )
+
+
 class ParticipantDirectoryViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Public API for fetching participant directory for in-person events.
@@ -67,11 +89,7 @@ class ParticipantDirectoryViewSet(viewsets.ReadOnlyModelViewSet):
             )
 
         # Get registrations for confirmed attendees only
-        registrations = EventRegistration.objects.filter(
-            event=event,
-            status='registered',
-            attendee_status='confirmed'
-        ).select_related('user', 'user__profile').prefetch_related('badge_labels')
+        registrations = _visible_registrations(event).prefetch_related('badge_labels')
 
         # Apply search filter
         search_query = request.query_params.get('search', '').strip()
@@ -140,11 +158,7 @@ class ParticipantDirectoryViewSet(viewsets.ReadOnlyModelViewSet):
         if not search_query or len(search_query) < 2:
             return Response({'results': []})
 
-        registrations = EventRegistration.objects.filter(
-            event=event,
-            status='registered',
-            attendee_status='confirmed'
-        ).select_related('user', 'user__profile').filter(
+        registrations = _visible_registrations(event).filter(
             Q(user__first_name__icontains=search_query) |
             Q(user__last_name__icontains=search_query) |
             Q(user__profile__company__icontains=search_query) |

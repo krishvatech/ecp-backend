@@ -708,6 +708,114 @@ class SessionsInputField(serializers.ListField):
         return result
 
 
+def viewer_manages_event(context, event) -> bool:
+    """
+    True when the request in ``context`` belongs to someone who manages
+    ``event`` (creator, platform staff, superuser, community owner).
+
+    Used to gate participant contact details. With no request in the context,
+    or an anonymous/guest request, this is False and the contact details are
+    withheld — the safe default for a serializer reachable without a login.
+    """
+    request = context.get("request") if context else None
+    user = getattr(request, "user", None)
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(user, "is_guest", False):
+        return False
+    if not event:
+        return False
+
+    from events.views import _is_event_manager
+
+    return bool(_is_event_manager(user, event))
+
+
+def viewer_may_join_event(context, event) -> bool:
+    """
+    True when the request in ``context`` would be allowed joining details for
+    ``event`` by ``/streaming-link/``.
+
+    Delegates to the same helper that endpoint uses, so a serializer cannot
+    hand out joining material the endpoint itself would refuse. Anonymous
+    requests short-circuit to False without touching the database.
+    """
+    request = context.get("request") if context else None
+    user = getattr(request, "user", None)
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if not event:
+        return False
+
+    from events.views import has_event_join_access
+
+    return has_event_join_access(user, event)
+
+
+def viewer_may_see_event_recording(context, event) -> bool:
+    """
+    The event-level replay rule, in one place.
+
+    Mirrors what ``EventSerializer.get_recording_url`` has always applied:
+    a host always sees the recording, a participant only once the organizer
+    has made the replay visible, and nobody else does.
+    """
+    request = context.get("request") if context else None
+    user = getattr(request, "user", None)
+    if (
+        not request
+        or not user
+        or not getattr(user, "is_authenticated", False)
+        or getattr(user, "is_guest", False)
+        or not event
+    ):
+        return False
+
+    from events.views import _is_event_host
+
+    if _is_event_host(user, event):
+        return True
+
+    is_participant = EventRegistration.objects.filter(
+        event=event,
+        user=user,
+        status__in=["registered", "cancellation_requested"],
+    ).exists()
+    return bool(is_participant and event.replay_visible_to_participants)
+
+
+def strip_join_information(data, context, event):
+    """
+    Remove external-streaming joining material unless the viewer is entitled to
+    join ``event``.
+
+    ``/streaming-link/`` refuses the join URL and meeting id to anyone without
+    a relationship to the event; serializers must not be a way around that.
+    """
+    if viewer_may_join_event(context, event):
+        return data
+    data.pop("external_streaming_url", None)
+    data.pop("external_streaming_meeting_id", None)
+    return data
+
+
+def strip_streaming_credentials(data, context, event):
+    """
+    Remove the external-streaming credentials from ``data`` unless the viewer
+    manages ``event``.
+
+    The password and the host link let whoever holds them run the meeting, so
+    they follow the same manager rule as the event detail endpoint. The join
+    URL and the meeting id are left in place: an attendee needs those, and
+    ``/streaming-link/`` already serves them to non-managers.
+    """
+    if viewer_manages_event(context, event):
+        return data
+    data.pop("external_streaming_password", None)
+    data.pop("external_streaming_host_link", None)
+    return data
+
+
 class EventParticipantSerializer(serializers.ModelSerializer):
     """Read-only serializer for EventParticipant with computed fields supporting staff, guest, and virtual types."""
 
@@ -755,7 +863,16 @@ class EventParticipantSerializer(serializers.ModelSerializer):
         return obj.get_name()
 
     def get_email(self, obj):
-        """Get email based on participant type."""
+        """
+        Speaker/host/moderator email, for event managers only.
+
+        This serializer is reached anonymously through the public event detail
+        endpoint, so the address is returned to managers and hidden (None) from
+        everybody else. The key itself stays in the payload so the admin event
+        forms keep their existing shape.
+        """
+        if not viewer_manages_event(self.context, getattr(obj, "event", None)):
+            return None
         return obj.get_email()
 
     def get_job_title(self, obj):
@@ -852,6 +969,10 @@ class SessionParticipantSerializer(serializers.ModelSerializer):
         return obj.get_name()
 
     def get_email(self, obj):
+        """Session speaker email, for event managers only (see EventParticipantSerializer)."""
+        event = getattr(getattr(obj, "session", None), "event", None)
+        if not viewer_manages_event(self.context, event):
+            return None
         return obj.get_email()
 
     def get_bio_text(self, obj):
@@ -985,6 +1106,26 @@ class EventSessionSerializer(serializers.ModelSerializer):
         read_only_fields = ['is_live', 'live_started_at', 'live_ended_at', 'rtk_meeting_id',
                             'computed_duration_minutes', 'effective_duration_minutes', 'day_label',
                             'session_breaks']
+
+    def to_representation(self, instance):
+        """
+        Sessions are nested inside public event payloads, so the two sensitive
+        per-session fields follow the same rules as their event-level
+        counterparts instead of riding along unprotected:
+
+        - ``rtk_meeting_id`` is join material, gated like the event's room id;
+        - ``recording_url`` is a replay URL, gated by the event replay rule.
+        """
+        data = super().to_representation(instance)
+        event = getattr(instance, "event", None)
+
+        if not viewer_may_join_event(self.context, event):
+            data.pop("rtk_meeting_id", None)
+
+        if not viewer_may_see_event_recording(self.context, event):
+            data.pop("recording_url", None)
+
+        return data
 
     def validate(self, data):
         """Validate session times against event times."""
@@ -1417,34 +1558,13 @@ class EventSerializer(serializers.ModelSerializer):
         Access control for recording_url:
         - Host can always see the URL
         - Participants can only see if replay_visible_to_participants = True
+
+        The rule itself lives in ``viewer_may_see_event_recording`` so the
+        per-session recordings apply exactly the same test.
         """
-        from events.views import _is_event_host
-        from events.models import EventRegistration
-
-        request = self.context.get('request')
-        if (
-            not request
-            or not request.user.is_authenticated
-            or getattr(request.user, "is_guest", False)
-        ):
+        if not viewer_may_see_event_recording(self.context, obj):
             return None
-
-        # Host can always see
-        if _is_event_host(request.user, obj):
-            return obj.recording_url
-
-        # Participants can only see if visible
-        is_participant = EventRegistration.objects.filter(
-            event=obj,
-            user=request.user,
-            status__in=["registered", "cancellation_requested"]
-        ).exists()
-
-        if is_participant and obj.replay_visible_to_participants:
-            return obj.recording_url
-
-        # Otherwise, hide the URL
-        return None
+        return obj.recording_url
 
     def get_questions(self, obj):
         """Return Q&A only when explicitly requested via include=questions."""
@@ -2730,6 +2850,21 @@ class EventSerializer(serializers.ModelSerializer):
             # The public landing page uses replay_ready to advertise replay
             # signup. The playable URL is released only after access exists.
             data["replay_video_url"] = None
+            # Room identifiers are join material for people with access, not
+            # public data. Joining goes through /rtk/join/, which issues a token.
+            data.pop("rtk_meeting_id", None)
+            data.pop("rtk_recording_id", None)
+
+        if not is_manager:
+            # Streaming credentials belong to whoever runs the event. Attendees
+            # get the join URL; the password is served by /streaming-link/,
+            # which applies its own manager check.
+            data.pop("external_streaming_password", None)
+            data.pop("external_streaming_host_link", None)
+
+        # The join URL and meeting id are what /streaming-link/ hands out, so
+        # they follow that endpoint's access rule here too.
+        strip_join_information(data, self.context, instance)
 
         return data
 
@@ -3053,13 +3188,20 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "featured_participants", "featured_participants_total",
             "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
             "is_multi_day", "series",
+            # Streaming join details only. The password and the host link are
+            # credentials and are never part of an anonymous response; the
+            # meeting id is fetched from /streaming-link/ by people who joined.
             "use_external_streaming", "external_streaming_platform", "external_streaming_url",
-            "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
-            "external_streaming_host_link",
+            "external_streaming_other_details",
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
             "is_registered_for_event", "user_status", "replay_signup_enabled", "replay_ready", "can_signup_for_replay", "has_replay_access",
         ]
         read_only_fields = fields
+
+    def to_representation(self, instance):
+        # Public landing payload: the join URL is only for people entitled to
+        # join, the same rule /streaming-link/ applies.
+        return strip_join_information(super().to_representation(instance), self.context, instance)
 
     def get_cpd_cpe_credits(self, obj):
         minutes = obj.cpd_cpe_minutes
@@ -3258,6 +3400,10 @@ class MyEventCardSerializer(serializers.ModelSerializer):
             "is_featured", "my_registration",
         )
 
+    def to_representation(self, instance):
+        data = strip_streaming_credentials(super().to_representation(instance), self.context, instance)
+        return strip_join_information(data, self.context, instance)
+
 
 class EventLiteSerializer(serializers.ModelSerializer):
     # Session-related fields for multi-day events
@@ -3302,6 +3448,10 @@ class EventLiteSerializer(serializers.ModelSerializer):
             "external_streaming_host_link",
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
         )
+
+    def to_representation(self, instance):
+        data = strip_streaming_credentials(super().to_representation(instance), self.context, instance)
+        return strip_join_information(data, self.context, instance)
 
 
 class EventListSerializer(serializers.ModelSerializer):
@@ -3426,15 +3576,23 @@ class EventListSerializer(serializers.ModelSerializer):
             "is_multi_day", "sessions", "series",
             "cpd_cpe_minutes", "cpd_cpe_minutes_per_credit", "show_cpd_cpe", "cpd_cpe_credits",
             "cancellation_message", "recommended_event", "created_by_id",
+            # The event list is served to anonymous callers, so it carries no
+            # streaming credentials (password / host link) and no meeting
+            # identifier. Managers read those from the event detail endpoint or
+            # /streaming-link/.
             "use_external_streaming", "external_streaming_platform", "external_streaming_url",
-            "external_streaming_meeting_id", "external_streaming_password", "external_streaming_other_details",
-            "external_streaming_host_link",
+            "external_streaming_other_details",
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
             "attending_count", "registrations_count", "is_pinned", "pin_priority", "is_featured",
             "public_registered_count", "public_guest_count", "total_registered", "confirmed_registered_count",
             "user_status", "payment_pending", "is_confirmed_registered", "assigned_tier", "origins", "platforms",
             "show_participants_before_event", "show_participants_after_event", "show_registered_participant_count",
         )
+
+    def to_representation(self, instance):
+        # Anonymous callers browse this list, so the join URL is released only
+        # to viewers /streaming-link/ would also serve.
+        return strip_join_information(super().to_representation(instance), self.context, instance)
 
 
 class EventLandingSerializer(serializers.ModelSerializer):

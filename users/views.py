@@ -28,6 +28,7 @@ from users.cache_utils import (
     user_me_cache_key,
 )
 from users.email_utils import send_platform_email
+from users.public_profile_privacy import redact_public_profile
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
@@ -858,8 +859,9 @@ class UserViewSet(
         }
 
         data = PublicProfileSerializer(payload, context={"request": request}).data
+        data = redact_public_profile(data, viewer_is_privileged=(is_staff or is_self))
         return Response(data)
-    
+
     @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="filters")
     def filters(self, request):
         """
