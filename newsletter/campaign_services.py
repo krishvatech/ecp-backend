@@ -163,7 +163,14 @@ def _record_mautic_sync_error(campaign, error):
     campaign.save(update_fields=["last_error", "updated_at"])
 
 
-def sync_campaign_to_mautic(campaign, *, actor=None):
+def sync_campaign_to_mautic(campaign, *, actor=None, client=None):
+    """Synchronize one draft broadcast into its Mautic list email.
+
+    ``client`` is the interactive execution client. When per-user execution is
+    enabled the caller passes an asserted-user client so Mautic records the
+    acting human on createdBy/modifiedBy; otherwise the service account is used,
+    which is also what the background worker path always does.
+    """
     if not getattr(settings, "MAUTIC_SYNC_ENABLED", False):
         raise CampaignMauticUnavailable(
             "Mautic newsletter synchronization is disabled."
@@ -173,7 +180,7 @@ def sync_campaign_to_mautic(campaign, *, actor=None):
     payload = build_campaign_email_payload(campaign, publish=False)
 
     try:
-        client = MauticClient()
+        client = client or MauticClient()
         existing_email_id = str(campaign.mautic_email_id or "").strip()
 
         if existing_email_id:
@@ -251,7 +258,7 @@ def sync_campaign_for_worker_delivery(campaign, *, actor=None):
     return campaign
 
 
-def sync_campaign_draft_to_mautic(campaign, *, actor=None, action="synchronized"):
+def sync_campaign_draft_to_mautic(campaign, *, actor=None, action="synchronized", client=None):
     """Synchronize an admin draft while serializing against Send Now."""
     pending_error = None
     synced_campaign = None
@@ -273,6 +280,7 @@ def sync_campaign_draft_to_mautic(campaign, *, actor=None, action="synchronized"
             synced_campaign = sync_campaign_to_mautic(
                 campaign,
                 actor=actor,
+                client=client,
             )
         except (CampaignMauticUnavailable, CampaignMauticSyncFailed) as exc:
             # sync_campaign_to_mautic records last_error before translating
@@ -427,7 +435,7 @@ def update_campaign(campaign, validated_data, *, user):
     return campaign
 
 
-def delete_draft_campaign(campaign):
+def delete_draft_campaign(campaign, *, client=None):
     pending_error = None
     pending_cause = None
 
@@ -447,7 +455,7 @@ def delete_draft_campaign(campaign):
             )
 
         try:
-            MauticClient().delete_email(mautic_email_id)
+            (client or MauticClient()).delete_email(mautic_email_id)
         except TemporaryMauticError as exc:
             _record_mautic_sync_error(campaign, exc)
             pending_error = CampaignMauticUnavailable(
