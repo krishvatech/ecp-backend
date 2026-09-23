@@ -25,6 +25,7 @@ DOMAIN_DEFINITIONS = {
     "contacts": ("Contacts", ("contact.",)),
     "companies": ("Companies", ("company.",)),
     "templates": ("Templates", ("template.",)),
+    "broadcasts": ("Email Broadcasts", ("email.",)),
     "stages": ("Stages", ("stage.",)),
     "points": ("Points", ("point.",)),
     "tags": ("Tags", ("tag.",)),

@@ -19,6 +19,9 @@ from .exceptions import (
     TemporaryMauticError,
 )
 from .operations import (
+    EMAIL_CREATE,
+    EMAIL_DELETE,
+    EMAIL_UPDATE,
     CAMPAIGN_CREATE,
     CAMPAIGN_DELETE,
     CAMPAIGN_EVENT_DELETE,
@@ -1869,11 +1872,19 @@ class MauticClient:
         return data
 
     def create_email(self, payload: dict[str, Any]) -> dict[str, Any]:
-        response = self._request(
-            "POST",
-            "emails/new",
-            data=self._email_form_data(payload),
-        )
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/emails/new",
+                operation=EMAIL_CREATE,
+                data=self._email_form_data(payload),
+            )
+        else:
+            response = self._request(
+                "POST",
+                "emails/new",
+                data=self._email_form_data(payload),
+            )
         return self._email_from_response(response, "Mautic email creation")
 
     def update_email(
@@ -1885,11 +1896,19 @@ class MauticClient:
         if not email_id:
             raise PermanentMauticError("Mautic email ID is required")
 
-        response = self._request(
-            "PATCH",
-            f"emails/{email_id}/edit",
-            data=self._email_form_data(payload),
-        )
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH",
+                f"ecp/bridge/emails/{email_id}/edit",
+                operation=EMAIL_UPDATE,
+                data=self._email_form_data(payload),
+            )
+        else:
+            response = self._request(
+                "PATCH",
+                f"emails/{email_id}/edit",
+                data=self._email_form_data(payload),
+            )
         return self._email_from_response(response, "Mautic email update")
 
     def delete_email(self, email_id: int | str) -> dict[str, Any]:
@@ -1897,7 +1916,14 @@ class MauticClient:
         if not email_id:
             raise PermanentMauticError("Mautic email ID is required")
 
-        response = self._request("DELETE", f"emails/{email_id}/delete")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                f"ecp/bridge/emails/{email_id}/delete",
+                operation=EMAIL_DELETE,
+            )
+        else:
+            response = self._request("DELETE", f"emails/{email_id}/delete")
         return self._email_from_response(
             response,
             "Mautic email deletion",

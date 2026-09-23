@@ -41,6 +41,12 @@ TEMPLATE_CREATE = "template.create"
 TEMPLATE_UPDATE = "template.update"
 TEMPLATE_DELETE = "template.delete"
 TEMPLATE_DUPLICATE = "template.duplicate"
+# Segment/broadcast emails (emailType="list"). Deliberately distinct from
+# template.* so an assertion minted for a reusable template can never mutate a
+# broadcast, or the reverse.
+EMAIL_CREATE = "email.create"
+EMAIL_UPDATE = "email.update"
+EMAIL_DELETE = "email.delete"
 NEWSLETTER_TEST_SEND = "newsletter.test_send"
 POINT_ACTION_CREATE = "point.action.create"
 POINT_ACTION_UPDATE = "point.action.update"
@@ -97,6 +103,9 @@ ASSERTABLE_OPERATIONS = frozenset(
         TEMPLATE_UPDATE,
         TEMPLATE_DELETE,
         TEMPLATE_DUPLICATE,
+        EMAIL_CREATE,
+        EMAIL_UPDATE,
+        EMAIL_DELETE,
         NEWSLETTER_TEST_SEND,
         POINT_ACTION_CREATE,
         POINT_ACTION_UPDATE,

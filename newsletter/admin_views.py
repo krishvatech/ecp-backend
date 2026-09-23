@@ -77,6 +77,9 @@ from .mautic.operations import (
     CONTACT_TAG_ADD,
     CONTACT_TAG_REMOVE,
     CONTACT_UPDATE,
+    EMAIL_CREATE,
+    EMAIL_DELETE,
+    EMAIL_UPDATE,
     NEWSLETTER_TEST_SEND,
     SEGMENT_CONTACT_ADD,
     SEGMENT_CONTACT_REMOVE,
@@ -89,7 +92,10 @@ from .mautic.operations import (
     STAGE_DELETE,
     STAGE_UPDATE,
 )
-from .mautic_identity_execution import run_interactive_mutation
+from .mautic_identity_execution import (
+    asserted_client_or_none,
+    run_interactive_mutation,
+)
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic_reference_choices import (
     REFERENCE_CHOICE_SOURCES,
@@ -766,10 +772,36 @@ class NewsletterAdminCampaignDetailView(APIView):
 
     def delete(self, request, uuid):
         campaign = _get_campaign_or_404(uuid)
+
+        # A draft that was never synchronized has nothing to delete in Mautic,
+        # so it must not mint an assertion or write a Mautic identity audit row
+        # for an operation that never reaches Mautic.
+        if not str(campaign.mautic_email_id or "").strip():
+            try:
+                delete_draft_campaign(campaign)
+            except CampaignNotEditable as exc:
+                return Response(
+                    {"detail": exc.detail},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
         try:
-            delete_draft_campaign(campaign)
+            _, error_response = run_interactive_mutation(
+                request,
+                action=EMAIL_DELETE,
+                resource="newsletter_campaign",
+                resource_id=str(campaign.uuid),
+                mutate=lambda client: delete_draft_campaign(
+                    campaign,
+                    client=asserted_client_or_none(client),
+                ),
+            )
         except CampaignNotEditable as exc:
             return Response({"detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+
+        if error_response is not None:
+            return error_response
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -839,11 +871,31 @@ class NewsletterAdminCampaignSyncView(APIView):
     permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, uuid):
-        campaign = sync_campaign_draft_to_mautic(
-            _get_campaign_or_404(uuid),
-            actor=request.user,
+        campaign = _get_campaign_or_404(uuid)
+        # A broadcast that has no Mautic email yet is created; one that already
+        # has an ID is edited. The assertion is bound to whichever it is, so a
+        # create assertion can never be replayed against an edit route.
+        action = (
+            EMAIL_UPDATE
+            if str(campaign.mautic_email_id or "").strip()
+            else EMAIL_CREATE
         )
-        serializer = NewsletterCampaignSerializer(campaign)
+
+        synced, error_response = run_interactive_mutation(
+            request,
+            action=action,
+            resource="newsletter_campaign",
+            resource_id=str(campaign.uuid),
+            mutate=lambda client: sync_campaign_draft_to_mautic(
+                campaign,
+                actor=request.user,
+                client=asserted_client_or_none(client),
+            ),
+        )
+        if error_response is not None:
+            return error_response
+
+        serializer = NewsletterCampaignSerializer(synced)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 

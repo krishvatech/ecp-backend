@@ -25,6 +25,17 @@ def interactive_mautic_client(request, correlation_id, *, client_factory=MauticC
     )
 
 
+def asserted_client_or_none(client):
+    """Return the client only when it carries a human identity.
+
+    In SERVICE_ACCOUNT mode the interactive factory still hands back a perfectly
+    usable client, but injecting it would move where the service layer gets its
+    client from. Returning None instead lets the service build its own, so the
+    flag-off path stays exactly what it was before asserted execution existed.
+    """
+    return client if getattr(client, "_uses_asserted_user", lambda: False)() else None
+
+
 def asserted_user_id(client):
     identity = getattr(client, "execution_identity", None)
     try:
