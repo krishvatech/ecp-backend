@@ -321,7 +321,7 @@ class LinkedInProfileAiStructuringTests(TestCase):
         mock_post.assert_called_once()
         args, kwargs = mock_post.call_args
         self.assertEqual(args[0], OPENAI_CHAT_COMPLETIONS_URL)
-        self.assertEqual(kwargs["timeout"], 20)
+        self.assertEqual(kwargs["timeout"], (10, 90))
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-openai-key")
 
         payload = kwargs["json"]
@@ -330,8 +330,23 @@ class LinkedInProfileAiStructuringTests(TestCase):
         self.assertFalse(
             payload["response_format"]["json_schema"]["schema"]["additionalProperties"]
         )
+        self.assertEqual(payload["max_tokens"], 4000)
+        self.assertEqual(payload["temperature"], 0)
         self.assertIn("all explicit historical experience", payload["messages"][0]["content"])
         self.assertIn("<profile_text>", payload["messages"][1]["content"])
+
+    @override_settings(
+        OPENAI_API_KEY="test-openai-key",
+        LINKEDIN_PROFILE_IMPORT_AI_CONNECT_TIMEOUT=5,
+        LINKEDIN_PROFILE_IMPORT_AI_READ_TIMEOUT=75,
+    )
+    @patch("users.linkedin_profile_import.requests.post")
+    def test_uses_configured_ai_timeouts(self, mock_post):
+        mock_post.return_value = mock_openai_response()
+
+        structure_profile_text("Profile text")
+
+        self.assertEqual(mock_post.call_args.kwargs["timeout"], (5, 75))
 
     @override_settings(
         OPENAI_API_KEY="test-openai-key",

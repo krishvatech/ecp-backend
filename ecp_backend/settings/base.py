@@ -112,6 +112,16 @@ WAGTAILADMIN_BASE_URL = os.getenv("WAGTAILADMIN_BASE_URL", "http://localhost:800
 # OpenAI API Configuration (for Q&A grouping and other AI features)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
+# LinkedIn profile import AI request timeouts (seconds).
+# A full LinkedIn PDF export needs far longer than a short chat completion,
+# so the read timeout is kept well above the connection timeout.
+LINKEDIN_PROFILE_IMPORT_AI_CONNECT_TIMEOUT = int(
+    os.getenv("LINKEDIN_PROFILE_IMPORT_AI_CONNECT_TIMEOUT", "10")
+)
+LINKEDIN_PROFILE_IMPORT_AI_READ_TIMEOUT = int(
+    os.getenv("LINKEDIN_PROFILE_IMPORT_AI_READ_TIMEOUT", "90")
+)
+
 # Wagtail AI Configuration
 WAGTAIL_AI = {
     "PROVIDERS": {

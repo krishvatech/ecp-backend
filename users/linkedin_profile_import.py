@@ -10,7 +10,9 @@ Discovery-stage safety guarantees:
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from datetime import date
 from typing import BinaryIO
 
@@ -20,8 +22,12 @@ from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
 
+logger = logging.getLogger(__name__)
+
 OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_PROFILE_IMPORT_MODEL = "gpt-4o-mini"
+DEFAULT_PROFILE_IMPORT_CONNECT_TIMEOUT = 10
+DEFAULT_PROFILE_IMPORT_READ_TIMEOUT = 90
 MAX_PROFILE_TEXT_CHARS = 60_000
 MAX_EXPERIENCES = 100
 MAX_EDUCATIONS = 50
@@ -310,19 +316,62 @@ def structure_profile_text(profile_text: str) -> dict:
         "Authorization": f"Bearer {api_key}",
     }
 
+    connect_timeout = getattr(
+        settings,
+        "LINKEDIN_PROFILE_IMPORT_AI_CONNECT_TIMEOUT",
+        DEFAULT_PROFILE_IMPORT_CONNECT_TIMEOUT,
+    )
+    read_timeout = getattr(
+        settings,
+        "LINKEDIN_PROFILE_IMPORT_AI_READ_TIMEOUT",
+        DEFAULT_PROFILE_IMPORT_READ_TIMEOUT,
+    )
+
+    # Metadata only: never log the prompt, the profile text, the API key,
+    # the request headers, or the provider response body.
+    started_at = time.monotonic()
+
     try:
         response = requests.post(
             OPENAI_CHAT_COMPLETIONS_URL,
             headers=headers,
             json=payload,
-            timeout=20,
+            timeout=(connect_timeout, read_timeout),
         )
     except requests.Timeout as exc:
+        logger.warning(
+            "LinkedIn profile import AI request timed out after %.2fs "
+            "(model=%s, chars=%s).",
+            time.monotonic() - started_at,
+            model,
+            len(profile_text),
+        )
         raise ProfileAiServiceError("AI service timed out. Please try again.") from exc
     except requests.RequestException as exc:
+        logger.warning(
+            "LinkedIn profile import AI request failed after %.2fs "
+            "(model=%s, chars=%s, error=%s).",
+            time.monotonic() - started_at,
+            model,
+            len(profile_text),
+            type(exc).__name__,
+        )
         raise ProfileAiServiceError("Failed to connect to AI service.") from exc
 
+    logger.info(
+        "LinkedIn profile import AI request completed in %.2fs "
+        "(model=%s, chars=%s, status=%s).",
+        time.monotonic() - started_at,
+        model,
+        len(profile_text),
+        response.status_code,
+    )
+
     if response.status_code != 200:
+        logger.warning(
+            "LinkedIn profile import received HTTP %s from AI service.",
+            response.status_code,
+        )
         raise ProfileAiServiceError(
             f"AI service returned error {response.status_code}."
         )
