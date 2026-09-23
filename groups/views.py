@@ -222,7 +222,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         }
         auth_only = {
             # membership + management
-            "mine", "members", "add_members", "remove_member",
+            "mine", "members", "add_members", "invite_users", "remove_member",
             "approve_member_requests", "reject_member_requests", "request_add_members",
             "set_role", "change_role",
             # promotion flow
@@ -1232,6 +1232,245 @@ class GroupViewSet(viewsets.ModelViewSet):
                             "invited_by_id": getattr(request.user, "id", None)}
                 )
         return Response(GroupMemberOutSerializer(memberships, many=True).data, status=status.HTTP_200_OK)
+
+    # Use (Endpoint): POST /api/groups/{id}/invite_users/
+    # - Owner/admin invites existing users (and whole groups) with an optional message.
+    # Ordering: Not applicable (mutation).
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="invite_users")
+    def invite_users(self, request, pk=None):
+        """
+        Invite existing users and/or the members of other groups to this group.
+
+        This only *invites*: no membership is created here. Each recipient gets an
+        in-app notification carrying a signed invite link, plus — when asked for —
+        the inviter's personal message as a direct message. They join when they
+        open that link, which lands on the existing invite-emails/accept flow.
+        """
+        group = self.get_object()
+        if not self._can_manage(request, group):
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        user_ids = request.data.get("user_ids") or []
+        group_ids = request.data.get("group_ids") or []
+        if not isinstance(user_ids, list) or not isinstance(group_ids, list):
+            return Response(
+                {"detail": "user_ids and group_ids must be lists of IDs"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        invite_message = str(request.data.get("invite_message") or "").strip()
+        raw_send_message = request.data.get("send_message", False)
+        send_message = (
+            raw_send_message is True
+            or str(raw_send_message).strip().lower() in {"1", "true", "yes", "on"}
+        ) and bool(invite_message)
+
+        def _display_name(user):
+            if not user:
+                return "System"
+            full_name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
+            return full_name or getattr(user, "username", "") or getattr(user, "email", "") or "User"
+
+        sender_name = _display_name(request.user)
+
+        invited_users = {}
+        invite_sources = {}
+
+        def _set_user_source(target_user, source_type, source_name, source_id=None):
+            if not target_user:
+                return
+            invited_users[target_user.id] = target_user
+            entry = invite_sources.get(target_user.id)
+            if source_type == "group":
+                if entry and entry.get("type") == "group":
+                    names = entry.setdefault("names", [])
+                    if source_name and source_name not in names:
+                        names.append(source_name)
+                else:
+                    invite_sources[target_user.id] = {
+                        "type": "group",
+                        "id": source_id,
+                        "names": [source_name] if source_name else [],
+                    }
+                return
+            if not entry:
+                invite_sources[target_user.id] = {
+                    "type": source_type,
+                    "id": source_id,
+                    "name": source_name,
+                }
+
+        User = get_user_model()
+
+        # 1. Individually selected users
+        clean_user_ids = []
+        for uid in user_ids:
+            try:
+                clean_user_ids.append(int(uid))
+            except Exception:
+                continue
+        if clean_user_ids:
+            for u in User.objects.filter(id__in=clean_user_ids):
+                _set_user_source(u, "user", sender_name, request.user.id)
+
+        # 2. Members of the selected source groups
+        clean_group_ids = []
+        for gid in group_ids:
+            try:
+                gid = int(gid)
+            except Exception:
+                continue
+            if gid != group.id:
+                clean_group_ids.append(gid)
+        if clean_group_ids:
+            memberships = GroupMembership.objects.filter(
+                group_id__in=clean_group_ids,
+                status=GroupMembership.STATUS_ACTIVE,
+            ).select_related("user", "group")
+            for m in memberships:
+                _set_user_source(m.user, "group", getattr(m.group, "name", "Group"), m.group_id)
+
+        # 3. Never invite the actor themselves
+        invited_users.pop(request.user.id, None)
+        invite_sources.pop(request.user.id, None)
+
+        # 4. Skip anyone who is already an active member — nothing to invite them to
+        already_member_ids = set(
+            GroupMembership.objects.filter(
+                group=group,
+                user_id__in=list(invited_users.keys()),
+                status=GroupMembership.STATUS_ACTIVE,
+            ).values_list("user_id", flat=True)
+        )
+        for uid in already_member_ids:
+            invited_users.pop(uid, None)
+            invite_sources.pop(uid, None)
+
+        if not invited_users:
+            return Response({
+                "ok": True,
+                "invited_count": 0,
+                "skipped_existing": len(already_member_ids),
+                "messaged_count": 0,
+                "message": (
+                    "Everyone selected is already a member of this group."
+                    if already_member_ids else "No users to invite."
+                ),
+            })
+
+        # 5. Notifications + optional direct messages — no membership is created here
+        try:
+            from friends.models import Notification
+        except ImportError:
+            Notification = None
+
+        try:
+            from messaging.models import Conversation, Message
+        except ImportError:
+            Conversation = Message = None
+
+        from django.conf import settings
+
+        group_slug = group.slug or str(group.id)
+        default_description = f"You have been invited to the group {group.name}."
+        frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
+
+        def _invite_url_for(recipient):
+            """
+            Signed, per-recipient link accepted by invite-emails/accept, which
+            checks the token's email against the logged-in user's own email.
+            """
+            email = (getattr(recipient, "email", "") or "").strip().lower()
+            if not email:
+                return None
+            token = signing.dumps(
+                {
+                    "kind": "group",
+                    "group_id": group.id,
+                    "email": email,
+                    "invited_by": request.user.id,
+                },
+                salt="group-email-invite",
+            )
+            return f"{frontend_url}/community/groups/{group_slug}?invite_token={token}"
+
+        notifications_to_create = []
+        direct_messages_to_create = []
+
+        for recipient in invited_users.values():
+            source = invite_sources.get(recipient.id) or {
+                "type": "user",
+                "id": request.user.id,
+                "name": sender_name,
+            }
+            source_names = [x for x in (source.get("names") or []) if x]
+            if source.get("type") == "group":
+                invite_source_name = (
+                    source_names[0]
+                    if len(source_names) <= 1
+                    else f"{source_names[0]} +{len(source_names) - 1} more groups"
+                )
+            else:
+                invite_source_name = source.get("name") or sender_name
+
+            invite_url = _invite_url_for(recipient)
+
+            if Notification:
+                notifications_to_create.append(
+                    Notification(
+                        recipient=recipient,
+                        actor=request.user,
+                        kind="system",
+                        title=f"Invitation: {group.name}",
+                        description=invite_message or default_description,
+                        data={
+                            "type": "group_invite",
+                            "group_id": group.id,
+                            "group_name": group.name,
+                            "group_slug": group_slug,
+                            "invite_source_type": source.get("type") or "user",
+                            "invite_source_id": source.get("id"),
+                            "invite_source_name": invite_source_name,
+                            "invite_url": invite_url,
+                        },
+                        is_read=False,
+                    )
+                )
+
+            if send_message and Conversation and Message:
+                user_pair = sorted([request.user.id, recipient.id])
+                conversation, _ = Conversation.objects.get_or_create(
+                    user1_id=user_pair[0],
+                    user2_id=user_pair[1],
+                    defaults={"created_by": request.user},
+                )
+                body = invite_message
+                if invite_url:
+                    body = f"{body}\n\nAccept your invitation: {invite_url}"
+                direct_messages_to_create.append(
+                    Message(
+                        conversation=conversation,
+                        sender=request.user,
+                        body=body,
+                    )
+                )
+
+        if notifications_to_create:
+            Notification.objects.bulk_create(notifications_to_create)
+        if direct_messages_to_create:
+            Message.objects.bulk_create(direct_messages_to_create)
+
+        return Response({
+            "ok": True,
+            "invited_count": len(invited_users),
+            "skipped_existing": len(already_member_ids),
+            "messaged_count": len(direct_messages_to_create),
+            "message": (
+                f"Sent invitations to {len(invited_users)} users."
+                + (f" Skipped {len(already_member_ids)} existing members." if already_member_ids else "")
+                + (f" Also sent {len(direct_messages_to_create)} messages." if direct_messages_to_create else "")
+            ),
+        })
 
     # Use (Endpoint): POST /api/groups/{id}/moderator/request-add-members
     # - Create PENDING invites (or convert to PENDING if not ACTIVE). Moderator/admin/owner only.
