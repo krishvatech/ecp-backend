@@ -48,6 +48,11 @@ from .contact_services import (
     update_admin_contact,
 )
 from .campaign_services import (
+    cancel_native_schedule,
+    is_mautic_scheduled,
+    reschedule_campaign_natively,
+    resolve_schedule_owner_for_request,
+    schedule_campaign_natively,
     CampaignMauticDeleteFailed,
     CampaignMauticSyncFailed,
     CampaignMauticUnavailable,
@@ -781,16 +786,60 @@ class NewsletterAdminCampaignScheduleView(APIView):
     def post(self, request, uuid):
         serializer = NewsletterCampaignScheduleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        scheduled_at = serializer.validated_data["scheduled_at"]
+        campaign = _get_campaign_or_404(uuid)
+
+        owner = resolve_schedule_owner_for_request(campaign)
+        if owner != NewsletterCampaign.ScheduleOwner.MAUTIC:
+            # ECP-owned: purely local, so no assertion is minted and Mautic is
+            # never contacted just because someone scheduled.
+            try:
+                campaign = schedule_campaign(
+                    campaign,
+                    scheduled_at=scheduled_at,
+                    user=request.user,
+                )
+            except CampaignScheduleNotAllowed as exc:
+                return Response(
+                    {"detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST
+                )
+            return Response(
+                NewsletterCampaignSerializer(campaign).data,
+                status=status.HTTP_200_OK,
+            )
+
+        # Native: bind the assertion to the operation that will actually run.
+        rescheduling = campaign.status == NewsletterCampaign.Status.SCHEDULED
+        action = (
+            EMAIL_UPDATE
+            if str(campaign.mautic_email_id or "").strip()
+            else EMAIL_CREATE
+        )
+        service = (
+            reschedule_campaign_natively if rescheduling else schedule_campaign_natively
+        )
+
         try:
-            campaign = schedule_campaign(
-                _get_campaign_or_404(uuid),
-                scheduled_at=serializer.validated_data["scheduled_at"],
-                user=request.user,
+            scheduled, error_response = run_interactive_mutation(
+                request,
+                action=action,
+                resource="newsletter_campaign",
+                resource_id=str(campaign.uuid),
+                mutate=lambda client: service(
+                    campaign,
+                    scheduled_at=scheduled_at,
+                    user=request.user,
+                    client=asserted_client_or_none(client),
+                ),
+                audit_and_reraise=BROADCAST_PROVIDER_ERRORS,
             )
         except CampaignScheduleNotAllowed as exc:
             return Response({"detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
 
-        response = NewsletterCampaignSerializer(campaign)
+        if error_response is not None:
+            return error_response
+
+        response = NewsletterCampaignSerializer(scheduled)
         return Response(response.data, status=status.HTTP_200_OK)
 
 
@@ -798,15 +847,42 @@ class NewsletterAdminCampaignCancelView(APIView):
     permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, uuid):
+        campaign = _get_campaign_or_404(uuid)
+
+        if not is_mautic_scheduled(campaign):
+            try:
+                campaign = cancel_scheduled_campaign(campaign, user=request.user)
+            except CampaignScheduleNotAllowed as exc:
+                return Response(
+                    {"detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST
+                )
+            return Response(
+                NewsletterCampaignSerializer(campaign).data,
+                status=status.HTTP_200_OK,
+            )
+
+        # Native: disarm the provider first; the ECP row only becomes cancelled
+        # once Mautic has agreed it will not deliver.
         try:
-            campaign = cancel_scheduled_campaign(
-                _get_campaign_or_404(uuid),
-                user=request.user,
+            cancelled, error_response = run_interactive_mutation(
+                request,
+                action=EMAIL_UPDATE,
+                resource="newsletter_campaign",
+                resource_id=str(campaign.uuid),
+                mutate=lambda client: cancel_native_schedule(
+                    campaign,
+                    user=request.user,
+                    client=asserted_client_or_none(client),
+                ),
+                audit_and_reraise=BROADCAST_PROVIDER_ERRORS,
             )
         except CampaignScheduleNotAllowed as exc:
             return Response({"detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
 
-        response = NewsletterCampaignSerializer(campaign)
+        if error_response is not None:
+            return error_response
+
+        response = NewsletterCampaignSerializer(cancelled)
         return Response(response.data, status=status.HTTP_200_OK)
 
 

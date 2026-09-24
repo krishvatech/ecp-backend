@@ -74,6 +74,7 @@ class NewsletterCampaignSerializer(serializers.ModelSerializer):
             "audiences",
             "audience_slugs",
             "scheduled_at",
+            "schedule_owner",
             "send_started_at",
             "sent_at",
             "mautic_email_id",
@@ -86,6 +87,8 @@ class NewsletterCampaignSerializer(serializers.ModelSerializer):
             "uuid",
             "status",
             "scheduled_at",
+            # Diagnostic only: clients never choose the scheduler.
+            "schedule_owner",
             "send_started_at",
             "sent_at",
             "mautic_email_id",

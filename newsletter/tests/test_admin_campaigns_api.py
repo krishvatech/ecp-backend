@@ -262,6 +262,9 @@ class NewsletterAdminCampaignAPITests(TestCase):
                 "status",
                 "audiences",
                 "scheduled_at",
+                # Read-only diagnostic added with native scheduling: says which
+                # scheduler delivers this broadcast.
+                "schedule_owner",
                 "send_started_at",
                 "sent_at",
                 "mautic_email_id",

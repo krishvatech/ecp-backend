@@ -14,7 +14,12 @@ from .campaign_send_events import (
 )
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.exceptions import MauticBridgeRejectedError
-from .mautic.payloads import build_campaign_email_payload, build_test_email_payload
+from .mautic.payloads import (
+    build_campaign_email_payload,
+    build_cancelled_schedule_email_payload,
+    build_scheduled_campaign_email_payload,
+    build_test_email_payload,
+)
 from .category_segment_services import repair_campaign_audience_segments
 from .models import (
     NewsletterCampaign,
@@ -517,6 +522,343 @@ def delete_draft_campaign(campaign, *, client=None):
         raise pending_error from pending_cause
 
 
+def native_scheduling_enabled() -> bool:
+    """Feature flag for NEW native schedules only."""
+    return bool(
+        getattr(settings, "MAUTIC_NATIVE_BROADCAST_SCHEDULING_ENABLED", False)
+    )
+
+
+def effective_schedule_owner(campaign) -> str:
+    """Owner of an existing schedule, defaulting a blank scheduled row to ECP.
+
+    Reading blank as ECP is the safe direction: a row the backfill missed keeps
+    being delivered by the ECP dispatcher instead of being silently owned by
+    nobody.
+    """
+    owner = str(getattr(campaign, "schedule_owner", "") or "").strip()
+    if owner:
+        return owner
+    if campaign.status == NewsletterCampaign.Status.SCHEDULED:
+        return NewsletterCampaign.ScheduleOwner.ECP
+    return ""
+
+
+def is_mautic_scheduled(campaign) -> bool:
+    return (
+        campaign.status == NewsletterCampaign.Status.SCHEDULED
+        and effective_schedule_owner(campaign)
+        == NewsletterCampaign.ScheduleOwner.MAUTIC
+    )
+
+
+def resolve_schedule_owner_for_request(campaign) -> str:
+    """Which scheduler should own this Schedule/Reschedule request.
+
+    An already-scheduled broadcast keeps its owner whatever the flag now says,
+    so turning the flag on cannot hijack ECP schedules and turning it off
+    cannot strand Mautic ones. Only a fresh schedule consults the flag.
+    """
+    existing = effective_schedule_owner(campaign)
+    if existing:
+        return existing
+    return (
+        NewsletterCampaign.ScheduleOwner.MAUTIC
+        if native_scheduling_enabled()
+        else NewsletterCampaign.ScheduleOwner.ECP
+    )
+
+
+def _validate_schedule_request(campaign, scheduled_at, *, rescheduling=False):
+    """Local-only checks. Runs before any provider contact."""
+    now = timezone.now()
+    if scheduled_at is None:
+        raise CampaignScheduleNotAllowed("Scheduled time is required.")
+    if scheduled_at <= now:
+        raise CampaignScheduleNotAllowed(
+            "Scheduled time must be strictly in the future."
+        )
+
+    existing_event = NewsletterCampaignSendEvent.objects.filter(
+        campaign_id=campaign.pk
+    ).first()
+
+    if campaign.status == NewsletterCampaign.Status.DRAFT:
+        if existing_event is not None:
+            raise CampaignScheduleNotAllowed(
+                "Newsletter campaign cannot be scheduled after send has been requested."
+            )
+    elif campaign.status == NewsletterCampaign.Status.SCHEDULED:
+        if existing_event is not None:
+            raise CampaignScheduleNotAllowed(
+                "Scheduled newsletter campaign cannot be rescheduled after send has been requested."
+            )
+    else:
+        raise CampaignScheduleNotAllowed(
+            "Newsletter campaign cannot be scheduled in its current status."
+        )
+
+    validate_campaign_delivery_readiness(campaign)
+
+
+def _native_schedule_mutation(campaign, payload, *, client):
+    """Run one provider Email mutation for a scheduling change.
+
+    Chooses create vs update from whether a native Email already exists, which
+    is the same decision the caller used to bind the assertion operation, so a
+    create assertion is never spent on an update or the reverse.
+    """
+    if not getattr(settings, "MAUTIC_SYNC_ENABLED", False):
+        raise CampaignMauticUnavailable(
+            "Mautic newsletter synchronization is disabled."
+        )
+
+    service_client = MauticClient()
+    _repair_audience_segments(campaign, service_client)
+    # Re-read after repair so the payload carries the live segment ids.
+    payload = payload()
+
+    provider = client or service_client
+    existing_email_id = str(campaign.mautic_email_id or "").strip()
+
+    try:
+        if existing_email_id:
+            provider.update_email(existing_email_id, payload)
+            return existing_email_id, False
+        email = provider.create_email(payload)
+        return str(email["id"]), True
+    except TemporaryMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticUnavailable(
+            "Mautic newsletter scheduling is temporarily unavailable."
+        ) from exc
+    except PermanentMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticSyncFailed(
+            "Mautic rejected the newsletter campaign schedule."
+        ) from exc
+
+
+def _compensate_native_schedule(campaign, payload_builder, *, client, note):
+    """Best-effort undo after the provider succeeded but ECP could not persist.
+
+    Never raises: the caller is already failing, and the original failure must
+    stay the reported one. Not a retry loop — one attempt, then a loud log.
+    """
+    email_id = str(campaign.mautic_email_id or "").strip()
+    if not email_id:
+        return
+    try:
+        (client or MauticClient()).update_email(email_id, payload_builder())
+    except Exception:
+        logger.exception(
+            "Could not compensate Mautic schedule for campaign uuid=%s (%s); "
+            "provider and ECP schedule state may disagree",
+            campaign.uuid,
+            note,
+        )
+
+
+def schedule_campaign_natively(campaign, *, scheduled_at, user, client=None):
+    """Arm a future native Mautic broadcast and mark the ECP row scheduled."""
+    with transaction.atomic():
+        campaign = (
+            NewsletterCampaign.objects.select_for_update()
+            .prefetch_related("audiences")
+            .get(pk=campaign.pk)
+        )
+        _validate_schedule_request(campaign, scheduled_at)
+
+    previous_email_id = str(campaign.mautic_email_id or "").strip()
+    previous_scheduled_at = campaign.scheduled_at
+
+    email_id, created = _native_schedule_mutation(
+        campaign,
+        lambda: build_scheduled_campaign_email_payload(
+            campaign,
+            scheduled_at=scheduled_at,
+        ),
+        client=client,
+    )
+
+    try:
+        with transaction.atomic():
+            locked = NewsletterCampaign.objects.select_for_update().get(pk=campaign.pk)
+            locked.mautic_email_id = email_id
+            locked.status = NewsletterCampaign.Status.SCHEDULED
+            locked.scheduled_at = scheduled_at
+            locked.schedule_owner = NewsletterCampaign.ScheduleOwner.MAUTIC
+            locked.last_synced_to_mautic_at = timezone.now()
+            locked.last_error = ""
+            locked.updated_by = user
+            locked.save(
+                update_fields=[
+                    "mautic_email_id",
+                    "status",
+                    "scheduled_at",
+                    "schedule_owner",
+                    "last_synced_to_mautic_at",
+                    "last_error",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
+    except Exception:
+        # Mautic is now armed but ECP does not know: disarm it rather than
+        # leave a broadcast that nothing on this side is tracking.
+        campaign.mautic_email_id = email_id
+        _compensate_native_schedule(
+            campaign,
+            lambda: build_cancelled_schedule_email_payload(campaign),
+            client=client,
+            note="schedule rollback",
+        )
+        if created:
+            logger.warning(
+                "Mautic email id=%s was created for campaign uuid=%s but the "
+                "local schedule could not be saved; the email was disarmed",
+                email_id,
+                campaign.uuid,
+            )
+        raise
+
+    campaign.refresh_from_db()
+    del previous_email_id, previous_scheduled_at
+    return campaign
+
+
+def reschedule_campaign_natively(campaign, *, scheduled_at, user, client=None):
+    """Move an existing native schedule; the Mautic Email id never changes."""
+    with transaction.atomic():
+        campaign = (
+            NewsletterCampaign.objects.select_for_update()
+            .prefetch_related("audiences")
+            .get(pk=campaign.pk)
+        )
+        _validate_schedule_request(campaign, scheduled_at, rescheduling=True)
+
+        if not str(campaign.mautic_email_id or "").strip():
+            # Fail closed: never quietly create a second Email for a schedule
+            # that is supposed to already exist in Mautic.
+            raise CampaignMauticSyncFailed(
+                "This scheduled broadcast has no linked Mautic email."
+            )
+
+    previous_scheduled_at = campaign.scheduled_at
+
+    _native_schedule_mutation(
+        campaign,
+        lambda: build_scheduled_campaign_email_payload(
+            campaign,
+            scheduled_at=scheduled_at,
+        ),
+        client=client,
+    )
+
+    try:
+        with transaction.atomic():
+            locked = NewsletterCampaign.objects.select_for_update().get(pk=campaign.pk)
+            locked.scheduled_at = scheduled_at
+            locked.schedule_owner = NewsletterCampaign.ScheduleOwner.MAUTIC
+            locked.status = NewsletterCampaign.Status.SCHEDULED
+            locked.last_synced_to_mautic_at = timezone.now()
+            locked.last_error = ""
+            locked.updated_by = user
+            locked.save(
+                update_fields=[
+                    "scheduled_at",
+                    "schedule_owner",
+                    "status",
+                    "last_synced_to_mautic_at",
+                    "last_error",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
+    except Exception:
+        _compensate_native_schedule(
+            campaign,
+            lambda: build_scheduled_campaign_email_payload(
+                campaign,
+                scheduled_at=previous_scheduled_at,
+            ),
+            client=client,
+            note="reschedule rollback",
+        )
+        raise
+
+    campaign.refresh_from_db()
+    return campaign
+
+
+def cancel_native_schedule(campaign, *, user, client=None):
+    """Disarm a native schedule, then mark the ECP row cancelled."""
+    with transaction.atomic():
+        campaign = (
+            NewsletterCampaign.objects.select_for_update()
+            .prefetch_related("audiences")
+            .get(pk=campaign.pk)
+        )
+        if campaign.status != NewsletterCampaign.Status.SCHEDULED:
+            raise CampaignScheduleNotAllowed(
+                "Only scheduled newsletter campaigns can be cancelled."
+            )
+
+        event = NewsletterCampaignSendEvent.objects.filter(
+            campaign_id=campaign.pk
+        ).first()
+        if event is not None and event.provider_send_started_at is not None:
+            raise CampaignScheduleNotAllowed(
+                "Newsletter campaign cannot be cancelled after provider delivery has started."
+            )
+
+        if not str(campaign.mautic_email_id or "").strip():
+            raise CampaignMauticSyncFailed(
+                "This scheduled broadcast has no linked Mautic email."
+            )
+
+    previous_scheduled_at = campaign.scheduled_at
+
+    # Disarm the provider first. If this fails the ECP row deliberately stays
+    # SCHEDULED/mautic, because Mautic would still deliver it.
+    _native_schedule_mutation(
+        campaign,
+        lambda: build_cancelled_schedule_email_payload(campaign),
+        client=client,
+    )
+
+    try:
+        with transaction.atomic():
+            locked = NewsletterCampaign.objects.select_for_update().get(pk=campaign.pk)
+            locked.status = NewsletterCampaign.Status.CANCELLED
+            locked.schedule_owner = ""
+            locked.last_error = ""
+            locked.updated_by = user
+            locked.save(
+                update_fields=[
+                    "status",
+                    "schedule_owner",
+                    "last_error",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
+    except Exception:
+        _compensate_native_schedule(
+            campaign,
+            lambda: build_scheduled_campaign_email_payload(
+                campaign,
+                scheduled_at=previous_scheduled_at,
+            ),
+            client=client,
+            note="cancel rollback",
+        )
+        raise
+
+    campaign.refresh_from_db()
+    return campaign
+
+
 @transaction.atomic
 def schedule_campaign(campaign, *, scheduled_at, user):
     now = timezone.now()
@@ -554,12 +896,16 @@ def schedule_campaign(campaign, *, scheduled_at, user):
     validate_campaign_delivery_readiness(campaign)
     campaign.status = NewsletterCampaign.Status.SCHEDULED
     campaign.scheduled_at = scheduled_at
+    # Stamped explicitly so the ECP dispatcher keeps selecting it even after
+    # native scheduling is switched on globally.
+    campaign.schedule_owner = NewsletterCampaign.ScheduleOwner.ECP
     campaign.updated_by = user
     campaign.last_error = ""
     campaign.save(
         update_fields=[
             "status",
             "scheduled_at",
+            "schedule_owner",
             "updated_by",
             "last_error",
             "updated_at",
@@ -615,11 +961,13 @@ def cancel_scheduled_campaign(campaign, *, user):
         )
 
     campaign.status = NewsletterCampaign.Status.CANCELLED
+    campaign.schedule_owner = ""
     campaign.updated_by = user
     campaign.last_error = ""
     campaign.save(
         update_fields=[
             "status",
+            "schedule_owner",
             "updated_by",
             "last_error",
             "updated_at",

@@ -226,6 +226,14 @@ ECP_MAUTIC_IDENTITY_TTL_SECONDS = os.getenv("ECP_MAUTIC_IDENTITY_TTL_SECONDS", "
 # the shared service account exactly as before. When true, ONLY manual campaign
 # create/update from the Marketing Hub execute as the mapped Mautic user, via
 # the signed-assertion bridge; background work stays on the service account.
+# Native Mautic scheduling for NEW Email Broadcast schedules. Off by default.
+# This only decides the owner of a *newly* scheduled draft; ownership of an
+# already-scheduled broadcast lives on the row (NewsletterCampaign.schedule_owner)
+# so flipping this flag can never move an existing schedule between schedulers.
+MAUTIC_NATIVE_BROADCAST_SCHEDULING_ENABLED = os.getenv(
+    "MAUTIC_NATIVE_BROADCAST_SCHEDULING_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+
 ECP_MAUTIC_PER_USER_EXECUTION_ENABLED = os.getenv(
     "ECP_MAUTIC_PER_USER_EXECUTION_ENABLED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}

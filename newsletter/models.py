@@ -203,6 +203,19 @@ class NewsletterCampaign(models.Model):
         FAILED = "failed", "Failed"
         CANCELLED = "cancelled", "Cancelled"
 
+    class ScheduleOwner(models.TextChoices):
+        """Which system is responsible for delivering a scheduled broadcast.
+
+        Durable on the row rather than derived from a feature flag: flipping
+        the flag must never move an already-scheduled broadcast between
+        schedulers, in either direction. A blank value on a SCHEDULED row is
+        treated as ECP everywhere, so an incomplete backfill can only ever fail
+        towards "ECP still sends it", never towards nobody sending it.
+        """
+
+        ECP = "ecp", "ECP scheduler"
+        MAUTIC = "mautic", "Native Mautic"
+
     uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     name = models.CharField(max_length=180)
     subject = models.CharField(max_length=190, blank=True, default="")
@@ -223,6 +236,17 @@ class NewsletterCampaign(models.Model):
         related_name="campaigns",
     )
     scheduled_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    schedule_owner = models.CharField(
+        max_length=16,
+        choices=ScheduleOwner.choices,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=(
+            "Which scheduler delivers this broadcast. Blank means no active "
+            "schedule; a blank value on a scheduled row is treated as ECP."
+        ),
+    )
     send_started_at = models.DateTimeField(null=True, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     mautic_email_id = models.CharField(max_length=64, blank=True, default="")

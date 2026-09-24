@@ -59,6 +59,13 @@ def due_campaign_send_event_ids(batch_size: int = 100) -> list[int]:
     return list(
         NewsletterCampaignSendEvent.objects.filter(due)
         .exclude(campaign__status=NewsletterCampaign.Status.CANCELLED)
+        # A natively scheduled broadcast is Mautic's to deliver. If a stray
+        # pre-provider event exists for one, recovering it would race the
+        # provider, so it is never dispatched while that schedule stands.
+        .exclude(
+            campaign__status=NewsletterCampaign.Status.SCHEDULED,
+            campaign__schedule_owner=NewsletterCampaign.ScheduleOwner.MAUTIC,
+        )
         .order_by("created_at")
         .values_list("pk", flat=True)[: max(1, int(batch_size))]
     )
@@ -106,7 +113,16 @@ def dispatch_due_campaign_send_events(batch_size: int = 100) -> dict:
 
 
 def due_scheduled_campaign_ids(batch_size: int = 100) -> list[int]:
-    """Return due scheduled campaigns in stable FIFO order."""
+    """Return due ECP-owned scheduled campaigns in stable FIFO order.
+
+    Natively scheduled broadcasts are excluded: Mautic delivers those itself,
+    so dispatching them here would send the same broadcast twice. The exclusion
+    reads the durable owner on the row, never the feature flag, so it holds
+    even after the flag is turned off again.
+
+    A blank owner on a scheduled row is legacy and stays included, which keeps
+    an incomplete backfill failing towards "ECP still delivers it".
+    """
     now = timezone.now()
     return list(
         NewsletterCampaign.objects.filter(
@@ -114,6 +130,7 @@ def due_scheduled_campaign_ids(batch_size: int = 100) -> list[int]:
             scheduled_at__isnull=False,
             scheduled_at__lte=now,
         )
+        .exclude(schedule_owner=NewsletterCampaign.ScheduleOwner.MAUTIC)
         .order_by("scheduled_at", "created_at", "pk")
         .values_list("pk", flat=True)[: max(1, int(batch_size))]
     )
@@ -146,6 +163,7 @@ def dispatch_due_scheduled_campaigns(batch_size: int = 100) -> dict:
                     scheduled_at__isnull=False,
                     scheduled_at__lte=timezone.now(),
                 )
+                .exclude(schedule_owner=NewsletterCampaign.ScheduleOwner.MAUTIC)
                 .first()
             )
             if campaign is None:
