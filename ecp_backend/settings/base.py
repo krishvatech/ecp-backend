@@ -389,6 +389,7 @@ INSTALLED_APPS = [
     "invoicing",
     "crm_integrations.apps.CRMIntegrationsConfig",
     "newsletter.apps.NewsletterConfig",
+    "blogs.apps.BlogsConfig",
 
     "drf_spectacular",
     "drf_spectacular_sidecar",
