@@ -255,7 +255,9 @@ class BroadcastSyncClientInjectionTests(BroadcastFixtureMixin, TestCase):
         with patch("newsletter.campaign_services.MauticClient") as fallback:
             sync_campaign_to_mautic(campaign, client=client)
 
-        fallback.assert_not_called()
+        # The service client still exists for segment work; what matters is
+        # that the *email* mutation went through the injected asserted client.
+        fallback.return_value.create_email.assert_not_called()
         client.create_email.assert_called_once()
         client.update_email.assert_not_called()
         campaign.refresh_from_db()
@@ -268,7 +270,10 @@ class BroadcastSyncClientInjectionTests(BroadcastFixtureMixin, TestCase):
         with patch("newsletter.campaign_services.MauticClient") as fallback:
             sync_campaign_to_mautic(campaign, client=client)
 
-        fallback.assert_not_called()
+        # The service client still exists for segment work; what matters is
+        # that the *email* mutation went through the injected asserted client.
+        fallback.return_value.update_email.assert_not_called()
+        fallback.return_value.create_email.assert_not_called()
         client.update_email.assert_called_once()
         client.create_email.assert_not_called()
         campaign.refresh_from_db()
@@ -602,3 +607,197 @@ class BroadcastAuditDomainTests(SimpleTestCase):
         self.assertEqual(domain_for_action("newsletter.test_send"), "Delivery")
         self.assertEqual(domain_for_action("segment.create"), "Segments")
         self.assertEqual(domain_for_action("unknown.thing"), "Other")
+
+
+# ----------------------------------------------------------------------------
+# Provider-failure auditing
+# ----------------------------------------------------------------------------
+
+
+@override_settings(**PER_USER_ON)
+class BroadcastProviderFailureAuditTests(BroadcastFixtureMixin, TestCase):
+    """A provider refusal must still record who attempted the operation.
+
+    Production hit a Mautic HTTP 400 on email.create and left no audit row at
+    all, because the service layer translates provider errors into its own
+    exception classes which run_interactive_mutation did not recognise.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_superuser(
+            username="broadcast-provider-fail",
+            email="broadcast-provider-fail@example.test",
+            password="pw",
+        )
+        MauticUserConnection.objects.create(
+            user=self.user,
+            mautic_user_id=6,
+            status=MauticUserConnection.Status.ACTIVE,
+            is_active=True,
+            connected_at=timezone.now(),
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def sync_url(self, campaign):
+        return reverse(
+            "newsletter-admin-campaign-sync", kwargs={"uuid": campaign.uuid}
+        )
+
+    def detail_url(self, campaign):
+        return reverse(
+            "newsletter-admin-campaign-detail", kwargs={"uuid": campaign.uuid}
+        )
+
+    def assert_single_failed_row(self, action):
+        entries = MauticIdentityAuditLog.objects.all()
+        self.assertEqual(entries.count(), 1, "exactly one audit row per action")
+        entry = entries.get()
+        self.assertEqual(entry.action, action)
+        self.assertIn(
+            entry.status,
+            {
+                MauticIdentityAuditLog.Status.FAILED,
+                MauticIdentityAuditLog.Status.DENIED,
+            },
+        )
+        self.assertEqual(entry.ecp_user_id, self.user.pk)
+        self.assertEqual(entry.mautic_user_id, 6)
+        self.assertEqual(entry.auth_mode, "asserted_user")
+        self.assertTrue(entry.correlation_id)
+        # Only a class name and a stable code are stored, never provider text.
+        self.assertNotIn(" ", entry.detail)
+        self.assertLessEqual(len(entry.detail), 255)
+        return entry
+
+    # A — email.create provider failure
+    def test_create_provider_failure_is_audited_and_error_propagates(self):
+        from newsletter.campaign_services import CampaignMauticSyncFailed
+
+        campaign = self.build_campaign()
+
+        with patch(
+            "newsletter.admin_views.sync_campaign_draft_to_mautic",
+            side_effect=CampaignMauticSyncFailed("Mautic rejected the sync."),
+        ):
+            resp = self.client.post(self.sync_url(campaign))
+
+        # The original API status code is untouched by auditing.
+        self.assertEqual(resp.status_code, 502)
+        self.assert_single_failed_row(MauticIdentityAuditLog.Action.EMAIL_CREATE)
+
+    # B — email.update provider failure
+    def test_update_provider_failure_is_audited(self):
+        from newsletter.campaign_services import CampaignMauticUnavailable
+
+        campaign = self.build_campaign(mautic_email_id="77")
+
+        with patch(
+            "newsletter.admin_views.sync_campaign_draft_to_mautic",
+            side_effect=CampaignMauticUnavailable("Mautic is unavailable."),
+        ):
+            resp = self.client.post(self.sync_url(campaign))
+
+        self.assertEqual(resp.status_code, 503)
+        self.assert_single_failed_row(MauticIdentityAuditLog.Action.EMAIL_UPDATE)
+
+    # C — email.delete provider failure
+    def test_delete_provider_failure_is_audited(self):
+        from newsletter.campaign_services import CampaignMauticDeleteFailed
+
+        campaign = self.build_campaign(mautic_email_id="77")
+
+        with patch(
+            "newsletter.admin_views.delete_draft_campaign",
+            side_effect=CampaignMauticDeleteFailed("Mautic rejected the delete."),
+        ):
+            resp = self.client.delete(self.detail_url(campaign))
+
+        self.assertEqual(resp.status_code, 502)
+        self.assert_single_failed_row(MauticIdentityAuditLog.Action.EMAIL_DELETE)
+        # The local draft survives a provider-side delete failure.
+        self.assertTrue(
+            NewsletterCampaign.objects.filter(pk=campaign.pk).exists()
+        )
+
+    # G — identity rejection must not double-log
+    def test_bridge_rejection_still_logs_exactly_one_row(self):
+        campaign = self.build_campaign()
+
+        with patch(
+            "newsletter.admin_views.sync_campaign_draft_to_mautic",
+            side_effect=MauticBridgeRejectedError("Access denied. (HTTP 403)"),
+        ):
+            resp = self.client.post(self.sync_url(campaign))
+
+        self.assertGreaterEqual(resp.status_code, 400)
+        self.assert_single_failed_row(MauticIdentityAuditLog.Action.EMAIL_CREATE)
+
+    # Local business rules are not provider failures and must stay unaudited.
+    def test_local_rule_rejection_is_not_audited_as_an_identity_failure(self):
+        from newsletter.campaign_services import CampaignNotEditable
+
+        campaign = self.build_campaign(mautic_email_id="77")
+
+        with patch(
+            "newsletter.admin_views.delete_draft_campaign",
+            side_effect=CampaignNotEditable("Only draft broadcasts can be deleted."),
+        ):
+            resp = self.client.delete(self.detail_url(campaign))
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(MauticIdentityAuditLog.objects.exists())
+
+    # D/E/F — success still writes exactly one succeeded row
+    def test_successful_sync_writes_one_succeeded_row(self):
+        campaign = self.build_campaign()
+
+        with patch(
+            "newsletter.admin_views.sync_campaign_draft_to_mautic",
+            side_effect=lambda c, **kwargs: c,
+        ):
+            resp = self.client.post(self.sync_url(campaign))
+
+        self.assertEqual(resp.status_code, 200)
+        entry = MauticIdentityAuditLog.objects.get()
+        self.assertEqual(entry.action, MauticIdentityAuditLog.Action.EMAIL_CREATE)
+        self.assertEqual(entry.status, MauticIdentityAuditLog.Status.SUCCEEDED)
+
+
+@override_settings(**{**PER_USER_ON, "ECP_MAUTIC_PER_USER_EXECUTION_ENABLED": False})
+class BroadcastProviderFailureFlagOffTests(BroadcastFixtureMixin, TestCase):
+    """With per-user execution off, no asserted-user row may be invented."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_superuser(
+            username="broadcast-flag-off",
+            email="broadcast-flag-off@example.test",
+            password="pw",
+        )
+        MauticUserConnection.objects.create(
+            user=self.user,
+            mautic_user_id=6,
+            status=MauticUserConnection.Status.ACTIVE,
+            is_active=True,
+            connected_at=timezone.now(),
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_provider_failure_is_not_recorded_as_asserted_user(self):
+        from newsletter.campaign_services import CampaignMauticSyncFailed
+
+        campaign = self.build_campaign()
+        url = reverse(
+            "newsletter-admin-campaign-sync", kwargs={"uuid": campaign.uuid}
+        )
+
+        with patch(
+            "newsletter.admin_views.sync_campaign_draft_to_mautic",
+            side_effect=CampaignMauticSyncFailed("Mautic rejected the sync."),
+        ):
+            resp = self.client.post(url)
+
+        self.assertEqual(resp.status_code, 502)
+        for entry in MauticIdentityAuditLog.objects.all():
+            self.assertNotEqual(entry.auth_mode, "asserted_user")

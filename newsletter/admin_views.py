@@ -48,6 +48,9 @@ from .contact_services import (
     update_admin_contact,
 )
 from .campaign_services import (
+    CampaignMauticDeleteFailed,
+    CampaignMauticSyncFailed,
+    CampaignMauticUnavailable,
     CampaignNotEditable,
     CampaignScheduleNotAllowed,
     cancel_scheduled_campaign,
@@ -102,8 +105,30 @@ from .mautic_reference_choices import (
     reference_choice_page,
 )
 from .sync_events import create_newsletter_sync_event
+from .category_segment_services import (
+    compensate_created_segment as _compensate_created_segment,
+    ensure_category_segment as _ensure_category_segment,
+    find_segment_by_exact_alias as _find_segment_by_exact_alias,
+    is_missing_segment_error as _is_missing_segment_error,
+    mapped_category_for_segment as _mapped_category_for_segment,
+    queue_category_reconciliation as _queue_category_reconciliation,
+    segment_filters as _segment_filters,
+    segment_is_static as _segment_is_static,
+    segment_payload_for_category as _segment_payload_for_category,
+    segments_from_response as _segments_from_response,
+)
 
 logger = logging.getLogger(__name__)
+
+
+#: Provider-side failures raised by the broadcast service layer. Local business
+#: rules (CampaignNotEditable, CampaignSendNotAllowed) are deliberately absent:
+#: they are not provider failures and must not become identity audit rows.
+BROADCAST_PROVIDER_ERRORS = (
+    CampaignMauticUnavailable,
+    CampaignMauticSyncFailed,
+    CampaignMauticDeleteFailed,
+)
 
 
 def _get_campaign_or_404(uuid):
@@ -122,52 +147,6 @@ def _get_audience_or_404(uuid):
 
 def _mautic_enabled():
     return bool(getattr(settings, "MAUTIC_SYNC_ENABLED", False))
-
-
-def _normalize_segment_filter_row(row):
-    """Present a filter row the way Mautic evaluates it.
-
-    ContactSegmentFilterCrate reads `properties.filter` and only falls back to the
-    legacy top-level `filter`. A PATCH can leave a stale legacy value behind, so
-    resolving it the same way keeps the editor showing what actually runs.
-    """
-    if not isinstance(row, dict):
-        return row
-
-    properties = row.get("properties")
-    properties = dict(properties) if isinstance(properties, dict) else {}
-    if "filter" not in properties and "filter" in row:
-        properties["filter"] = row.get("filter")
-
-    normalized = {
-        "glue": row.get("glue") or "and",
-        "field": row.get("field"),
-        "object": row.get("object") or "lead",
-        "type": row.get("type"),
-        "operator": row.get("operator"),
-        "properties": properties,
-    }
-    for extra in ("display", "merged_property", "null_value", "decisionPath"):
-        if extra in row and extra not in ("display",):
-            normalized[extra] = row.get(extra)
-    return normalized
-
-
-def _segment_filters(segment):
-    filters = segment.get("filters")
-    if filters in (None, "", [], {}):
-        return []
-    if isinstance(filters, dict):
-        rows = [item for item in filters.values() if item]
-    elif isinstance(filters, list):
-        rows = filters
-    else:
-        return []
-    return [_normalize_segment_filter_row(row) for row in rows]
-
-
-def _segment_is_static(segment):
-    return not bool(_segment_filters(segment))
 
 
 def _normalize_provider_bool(value):
@@ -194,43 +173,6 @@ def _parse_provider_bool(value, *, field_name):
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{field_name} must be a boolean.")
-
-
-def _segment_payload_for_category(category, *, include_alias=False):
-    payload = {
-        "name": category.name,
-        "description": category.description,
-        "isPublished": bool(category.is_active),
-        "isPreferenceCenter": False,
-        "filters": [],
-    }
-    if include_alias:
-        payload["alias"] = category.slug
-    return payload
-
-
-def _segments_from_response(data):
-    segments = data.get("lists") or data.get("segments") or {}
-    if isinstance(segments, dict):
-        return [segment for segment in segments.values() if isinstance(segment, dict)]
-    if isinstance(segments, list):
-        return [segment for segment in segments if isinstance(segment, dict)]
-    return []
-
-
-def _find_segment_by_exact_alias(client, alias):
-    data = client.list_segments(search=f"alias:{alias}", limit=20)
-    for segment in _segments_from_response(data):
-        if str(segment.get("alias") or "").strip() == alias:
-            return segment
-    return None
-
-
-def _mapped_category_for_segment(segment_id, *, exclude_category=None):
-    qs = NewsletterCategory.objects.filter(mautic_segment_id=str(segment_id))
-    if exclude_category is not None:
-        qs = qs.exclude(pk=exclude_category.pk)
-    return qs.first()
 
 
 def _reserved_subscription_list_for_alias(alias):
@@ -590,96 +532,11 @@ def _segment_membership_protection_response(segment):
     return None
 
 
-def _queue_category_reconciliation(category):
-    event_ids = []
-    subscriptions = NewsletterSubscription.objects.filter(category=category).select_related(
-        "category"
-    )
-    for subscription in subscriptions.iterator():
-        event = create_newsletter_sync_event(subscription)
-        event_ids.append(event.pk)
-
-    def dispatch_events():
-        from .tasks import process_newsletter_sync_event
-
-        for event_id in event_ids:
-            try:
-                process_newsletter_sync_event.delay(event_id)
-            except Exception:
-                logger.exception(
-                    "Could not dispatch newsletter reconciliation event_id=%s",
-                    event_id,
-                )
-
-    if event_ids:
-        transaction.on_commit(dispatch_events)
-    return len(event_ids)
-
-
 def _provider_error_response(exc):
     return Response(
         {"detail": str(exc) or "Mautic segment operation failed."},
         status=status.HTTP_502_BAD_GATEWAY,
     )
-
-
-def _compensate_created_segment(client, segment_id):
-    try:
-        client.update_segment(segment_id, {"isPublished": False})
-    except Exception:
-        logger.exception(
-            "Could not compensate newly-created Mautic segment_id=%s",
-            segment_id,
-        )
-
-
-def _is_missing_segment_error(exc):
-    return "HTTP 404" in str(exc)
-
-
-def _ensure_category_segment(category):
-    client = MauticClient()
-    segment_id = str(category.mautic_segment_id or "").strip()
-    if segment_id:
-        try:
-            segment = client.get_segment(segment_id)
-        except PermanentMauticError as exc:
-            if not _is_missing_segment_error(exc):
-                raise
-            segment = None
-        if segment is not None:
-            if not _segment_is_static(segment):
-                raise PermanentMauticError("Mapped Mautic segment is dynamic.")
-            client.update_segment(segment_id, _segment_payload_for_category(category))
-            return segment_id, False
-
-    existing = _find_segment_by_exact_alias(client, category.slug)
-    if existing is not None:
-        if not _segment_is_static(existing):
-            raise PermanentMauticError(
-                "A dynamic Mautic segment already uses this newsletter slug."
-            )
-        segment_id = str(existing["id"])
-        mapped = _mapped_category_for_segment(segment_id, exclude_category=category)
-        if mapped is not None:
-            raise PermanentMauticError(
-                "Mautic segment is already mapped to another newsletter category."
-            )
-        client.update_segment(segment_id, _segment_payload_for_category(category))
-        category.mautic_segment_id = segment_id
-        category.save(update_fields=["mautic_segment_id", "updated_at"])
-        return segment_id, True
-
-    segment = client.create_segment(
-        _segment_payload_for_category(category, include_alias=True)
-    )
-    category.mautic_segment_id = str(segment["id"])
-    try:
-        category.save(update_fields=["mautic_segment_id", "updated_at"])
-    except Exception:
-        _compensate_created_segment(client, category.mautic_segment_id)
-        raise
-    return category.mautic_segment_id, True
 
 
 class NewsletterAdminAudienceListCreateView(APIView):
@@ -796,6 +653,7 @@ class NewsletterAdminCampaignDetailView(APIView):
                     campaign,
                     client=asserted_client_or_none(client),
                 ),
+                audit_and_reraise=BROADCAST_PROVIDER_ERRORS,
             )
         except CampaignNotEditable as exc:
             return Response({"detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
@@ -891,6 +749,7 @@ class NewsletterAdminCampaignSyncView(APIView):
                 actor=request.user,
                 client=asserted_client_or_none(client),
             ),
+            audit_and_reraise=BROADCAST_PROVIDER_ERRORS,
         )
         if error_response is not None:
             return error_response
@@ -1776,7 +1635,7 @@ class NewsletterAdminCategoryListView(APIView):
                     mautic_segment_id='',
                 )
                 if _mautic_enabled():
-                    _ensure_category_segment(category)
+                    _ensure_category_segment(category, client=MauticClient())
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -2445,7 +2304,10 @@ class NewsletterAdminCategorySyncMauticView(APIView):
         try:
             with transaction.atomic():
                 previous_segment_id = str(category.mautic_segment_id or "").strip()
-                segment_id, mapping_changed = _ensure_category_segment(category)
+                segment_id, mapping_changed = _ensure_category_segment(
+                    category,
+                    client=MauticClient(),
+                )
                 mapped = _mapped_category_for_segment(segment_id, exclude_category=category)
                 if mapped is not None:
                     raise PermanentMauticError(

@@ -71,7 +71,17 @@ def run_interactive_mutation(
     resource_id: Any = "",
     mutate: Callable[[MauticClient], Any],
     client_factory=MauticClient,
+    audit_and_reraise: tuple = (),
 ):
+    """Run one interactive Mautic mutation and audit who did it.
+
+    ``audit_and_reraise`` names provider/service exception classes that should
+    also produce a failed audit row before propagating unchanged. It defaults to
+    an empty tuple, which never matches, so every existing caller keeps its
+    current behaviour and unrelated application errors are not reclassified as
+    identity failures. Callers opt in explicitly for the provider errors their
+    own service layer raises.
+    """
     correlation_id = correlation_id_for_request(request)
     try:
         client = interactive_mautic_client(
@@ -105,6 +115,23 @@ def run_interactive_mutation(
             assertion_jti=assertion_jti(client),
         )
         return None, with_correlation(identity_error_response(exc), correlation_id)
+    except audit_and_reraise as exc:
+        # The provider refused the operation. Record who attempted it, then let
+        # the original exception through so the view's status code and body are
+        # untouched. Listed after the identity branch above, so an identity or
+        # bridge failure can never be audited twice.
+        record_identity_failure(
+            action=action,
+            exc=exc,
+            actor=request.user,
+            mautic_user_id=asserted_user_id(client),
+            resource=resource,
+            resource_id=resource_id,
+            auth_mode=auth_mode_label(client),
+            correlation_id=correlation_id,
+            assertion_jti=assertion_jti(client),
+        )
+        raise
 
     record_identity_audit(
         action=action,

@@ -15,6 +15,7 @@ from .campaign_send_events import (
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.exceptions import MauticBridgeRejectedError
 from .mautic.payloads import build_campaign_email_payload, build_test_email_payload
+from .category_segment_services import repair_campaign_audience_segments
 from .models import (
     NewsletterCampaign,
     NewsletterCampaignSendEvent,
@@ -163,6 +164,27 @@ def _record_mautic_sync_error(campaign, error):
     campaign.save(update_fields=["last_error", "updated_at"])
 
 
+def _repair_audience_segments(campaign, service_client):
+    """Heal definitively-missing audience segment mappings before a sync.
+
+    ``service_client`` is always a service-account client, never the caller's
+    asserted-user client: recreating a Mautic segment is system work and must
+    not be attributed to the human saving the broadcast.
+    """
+    try:
+        return repair_campaign_audience_segments(campaign, client=service_client)
+    except TemporaryMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticUnavailable(
+            "Mautic newsletter synchronization is temporarily unavailable."
+        ) from exc
+    except PermanentMauticError as exc:
+        _record_mautic_sync_error(campaign, exc)
+        raise CampaignMauticSyncFailed(
+            "Mautic rejected the newsletter subscription list synchronization."
+        ) from exc
+
+
 def sync_campaign_to_mautic(campaign, *, actor=None, client=None):
     """Synchronize one draft broadcast into its Mautic list email.
 
@@ -176,11 +198,23 @@ def sync_campaign_to_mautic(campaign, *, actor=None, client=None):
             "Mautic newsletter synchronization is disabled."
         )
 
+    # Local validation first, so an incomplete draft never reaches the provider.
     validate_campaign_for_mautic_sync(campaign)
+
+    # Segment work is infrastructure and always runs on the service account.
+    # When no asserted client was injected this is also the client that performs
+    # the email mutation, so a plain save still builds exactly one client.
+    service_client = MauticClient()
+
+    # A Subscription List whose Mautic segment has been deleted would otherwise
+    # make Mautic reject the whole email. Repairing here, before the payload is
+    # built, is what makes the payload carry the live segment id.
+    _repair_audience_segments(campaign, service_client)
+
     payload = build_campaign_email_payload(campaign, publish=False)
 
     try:
-        client = client or MauticClient()
+        client = client or service_client
         existing_email_id = str(campaign.mautic_email_id or "").strip()
 
         if existing_email_id:
@@ -221,10 +255,16 @@ def sync_campaign_for_worker_delivery(campaign, *, actor=None):
         )
 
     validate_campaign_for_worker_delivery(campaign)
+
+    # The worker path has no asserted identity at all, so one service-account
+    # client serves both the segment repair and the email mutation.
+    service_client = MauticClient()
+    _repair_audience_segments(campaign, service_client)
+
     payload = build_campaign_email_payload(campaign, publish=False)
 
     try:
-        client = MauticClient()
+        client = service_client
         existing_email_id = str(campaign.mautic_email_id or "").strip()
 
         if existing_email_id:
