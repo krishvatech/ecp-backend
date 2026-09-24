@@ -24,6 +24,7 @@ from django.utils.text import slugify
 from activity_feed.models import FeedItem
 from engagements.models import Comment
 from users.wordpress_api import WordPressAPIClient
+from users.kyc_name_match import repair_mojibake
 from users.models import UserProfile
 from .models import Group, GroupMembership, WordPressGroupSource
 
@@ -38,7 +39,7 @@ def _text(value: Any) -> str:
         value = value.get("rendered") or value.get("raw") or value.get("plaintext") or ""
     value = html.unescape(strip_tags(str(value)))
     value = re.sub(r"\s+", " ", value).strip()
-    return value
+    return repair_mojibake(value)
 
 
 def _int(value: Any, default: int = 0) -> int:

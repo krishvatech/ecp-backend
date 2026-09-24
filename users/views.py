@@ -380,7 +380,7 @@ class UserViewSet(
         """
         Determine the base queryset for the user directory.
 
-        Staff and superusers can view all users.  Nonâ€‘staff users may only
+        Staff and superusers can view all users.  Non‑staff users may only
         see themselves and other users who share an community with
         them (either as members or as owners).  This method returns a
         queryset filtered accordingly.
@@ -1858,7 +1858,7 @@ class ChangePasswordView(generics.GenericAPIView):
 
         user.set_password(new_password)
         user.save()
-        # âœ… Password changed alert email (non-blocking)
+        # ✅ Password changed alert email (non-blocking)
         try:
             from users.email_utils import send_template_email
             frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
@@ -1931,7 +1931,7 @@ class ResetPasswordView(generics.GenericAPIView):
         user = serializer.validated_data["user"]
         user.set_password(serializer.validated_data["new_password"])
         user.save()
-        # âœ… Password changed alert email (non-blocking)
+        # ✅ Password changed alert email (non-blocking)
         try:
             from users.email_utils import send_template_email
             frontend_app_url = os.getenv("FRONTEND_APP_URL", "http://localhost:5173")
@@ -2359,7 +2359,7 @@ class LinkedInCallback(APIView):
         # ---- Fetch profile via OIDC or classic REST ----
         try:
             if "openid" in settings.LINKEDIN_SCOPES or "profile" in settings.LINKEDIN_SCOPES:
-                # âœ… OIDC userinfo: id, name, picture, email
+                # ✅ OIDC userinfo: id, name, picture, email
                 resp = requests.get(OIDC_USERINFO, headers=headers, timeout=15)
                 if resp.status_code != 200:
                     return Response(
@@ -3928,12 +3928,12 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
         requested_name = " ".join([p for p in [name_req.new_first_name, name_req.new_middle_name, name_req.new_last_name] if p]).strip()
         id_name = (getattr(name_req, "doc_full_name", "") or "").strip()
 
-        # âœ… In-app notification to the user after admin decision
+        # ✅ In-app notification to the user after admin decision
         if new_status == "approved":
             create_notification_once(
                 recipient=name_req.user,
                 kind="event",
-                title="Name change approved âœ…",
+                title="Name change approved ✅",
                 description="Admin approved your name change request. Your profile name is updated.",
                 state="approved",
                 unique={"type": "name_change", "name_change_request_id": name_req.id, "decision": "approved"},
@@ -3943,7 +3943,7 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
             create_notification_once(
                 recipient=name_req.user,
                 kind="event",
-                title="Name change rejected âŒ",
+                title="Name change rejected ❌",
                 description=admin_note or "Admin rejected your name change request. Please submit a new request with correct documents.",
                 state="rejected",
                 unique={"type": "name_change", "name_change_request_id": name_req.id, "decision": "rejected"},
@@ -4246,100 +4246,8 @@ class MeCertificationDocumentViewSet(ProfileDocumentSoftDeleteViewSetMixin, view
 import re
 import unicodedata
 
-_STOP_TOKENS = {
-    "mr", "mrs", "ms", "dr", "prof",
-    "jr", "sr", "ii", "iii", "iv",
-}
+from .kyc_name_match import best_linkedin_match  # noqa: E402
 
-def _name_tokens(name: str) -> list[str]:
-    if not name:
-        return []
-    name = name.replace(",", " ")
-    name = unicodedata.normalize("NFKD", name)
-    name = "".join(ch for ch in name if not unicodedata.combining(ch))
-    name = name.lower()
-    name = re.sub(r"[^a-z\s]", " ", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    toks = [t for t in name.split(" ") if t and t not in _STOP_TOKENS]
-    return toks
-
-def _token_matches(pt: str, id_tokens: list[str]) -> bool:
-    """Match token with exact / initial / prefix rules."""
-    if not pt:
-        return False
-
-    # exact
-    if pt in id_tokens:
-        return True
-
-    # initial: "r" matches "rahul"
-    if len(pt) == 1:
-        return any(t.startswith(pt) for t in id_tokens)
-
-    # allow prefix match for short-form vs full-form (alex vs alexander)
-    # keep it conservative: only if token length >= 3
-    if len(pt) >= 3:
-        return any(t.startswith(pt) or pt.startswith(t) for t in id_tokens if len(t) >= 3)
-
-    return False
-
-def linkedin_style_name_match(profile_display_name: str, id_full_name: str) -> tuple[bool, dict]:
-    """
-    LinkedIn-like: require PROFILE FIRST token + PROFILE LAST token to match ID tokens.
-    Order doesn't matter. Middle names can be extra/missing.
-    """
-    p = _name_tokens(profile_display_name)
-    d = _name_tokens(id_full_name)
-
-    debug = {
-        "profile_tokens": p,
-        "id_tokens": d,
-        "matched_profile_tokens": [],
-        "missing_profile_tokens": [],
-        "reason": "",
-    }
-
-    if len(p) < 2 or len(d) < 2:
-        debug["reason"] = "insufficient_tokens"
-        return False, debug
-
-    p_first = p[0]
-    p_last = p[-1]
-
-    first_ok = _token_matches(p_first, d)
-    last_ok = _token_matches(p_last, d)
-
-    for tok in p:
-        if _token_matches(tok, d):
-            debug["matched_profile_tokens"].append(tok)
-        else:
-            debug["missing_profile_tokens"].append(tok)
-
-    if first_ok and last_ok:
-        debug["reason"] = "pass"
-        return True, debug
-
-    # If you want STRICT LinkedIn-like behavior: mismatch => fail
-    debug["reason"] = "name_mismatch"
-    return False, debug
-
-
-def best_linkedin_match(profile_candidates: list[str], id_candidates: list[str]) -> tuple[bool, dict]:
-    """
-    Try multiple variants (normal + swapped), return best pass or best debug.
-    """
-    best_debug = None
-    for p in profile_candidates:
-        for i in id_candidates:
-            ok, dbg = linkedin_style_name_match(p, i)
-            dbg["profile_candidate"] = p
-            dbg["id_candidate"] = i
-            if ok:
-                return True, dbg
-            # keep last debug (or you can keep the one with most matched tokens)
-            if not best_debug or len(dbg.get("matched_profile_tokens", [])) > len(best_debug.get("matched_profile_tokens", [])):
-                best_debug = dbg
-    return False, best_debug or {"reason": "no_candidates"}
 
 
 class DiditWebhookView(APIView):
@@ -4491,7 +4399,7 @@ class DiditWebhookView(APIView):
             reason_code = profile.kyc_decline_reason or ""
             reason_label = "Verification could not be confirmed"
             if reason_code == UserProfile.KYC_DECLINE_REASON_NAME_MISMATCH:
-                reason_label = "Name mismatch (your profile name didnâ€™t match your ID name)"
+                reason_label = "Name mismatch (your profile name didn’t match your ID name)"
 
             profile_name = (profile.full_name or f"{user.first_name} {user.last_name}").strip()
 
@@ -4587,14 +4495,14 @@ class DiditWebhookView(APIView):
                 profile.legal_name_locked = False
                 profile.legal_name_verified_at = None
             profile.save()
-            # âœ… In-app notification for KYC fail/review (only when status changes)
+            # ✅ In-app notification for KYC fail/review (only when status changes)
             if prev_status != profile.kyc_status:
                 if profile.kyc_status == UserProfile.KYC_STATUS_DECLINED:
                     create_notification_once(
                         recipient=profile.user,
                         kind="event",  # keep existing kind so frontend shows without changes
-                        title="Identity verification failed âŒ",
-                        description="We couldnâ€™t confirm your identity. Please try again from Settings â†’ Verification.",
+                        title="Identity verification failed ❌",
+                        description="We couldn’t confirm your identity. Please try again from Settings → Verification.",
                         state="declined",
                         unique={"type": "kyc", "kyc_session_id": session_id, "result": "declined"},
                         data={"reason": profile.kyc_decline_reason or ""},
@@ -4603,8 +4511,8 @@ class DiditWebhookView(APIView):
                     create_notification_once(
                         recipient=profile.user,
                         kind="event",
-                        title="Identity verification under review â³",
-                        description="Your verification is under review. Weâ€™ll notify you once a decision is made.",
+                        title="Identity verification under review ⏳",
+                        description="Your verification is under review. We’ll notify you once a decision is made.",
                         state="review",
                         unique={"type": "kyc", "kyc_session_id": session_id, "result": "review"},
                     )
@@ -4658,8 +4566,13 @@ class DiditWebhookView(APIView):
             profile.legal_name_locked = True
             profile.legal_name_verified_at = django_timezone.now()
         else:
-            # LinkedIn-style: no badge if mismatch
-            profile.kyc_status = UserProfile.KYC_STATUS_DECLINED  # or REVIEW if you prefer manual admin review
+            # LinkedIn-style: no badge if mismatch. Non-Latin scripts (Chinese,
+            # Japanese, Korean, ...) or garbled names can't be compared reliably
+            # against a romanized passport, so those go to admin review instead.
+            if debug.get("needs_review"):
+                profile.kyc_status = UserProfile.KYC_STATUS_REVIEW
+            else:
+                profile.kyc_status = UserProfile.KYC_STATUS_DECLINED
             profile.kyc_decline_reason = UserProfile.KYC_DECLINE_REASON_NAME_MISMATCH
             profile.legal_name_locked = False
             profile.legal_name_verified_at = None
@@ -4671,12 +4584,22 @@ class DiditWebhookView(APIView):
         if prev_status != profile.kyc_status and profile.kyc_status in [
             UserProfile.KYC_STATUS_APPROVED,
             UserProfile.KYC_STATUS_DECLINED,
+            UserProfile.KYC_STATUS_REVIEW,
         ]:
-            if profile.kyc_status == UserProfile.KYC_STATUS_APPROVED:
+            if profile.kyc_status == UserProfile.KYC_STATUS_REVIEW:
                 create_notification_once(
                     recipient=profile.user,
                     kind="event",
-                    title="Your profile is verified âœ…",
+                    title="Identity verification under review ⏳",
+                    description="Your verification is under review. We’ll notify you once a decision is made.",
+                    state="review",
+                    unique={"type": "kyc", "kyc_session_id": session_id, "result": "review"},
+                )
+            elif profile.kyc_status == UserProfile.KYC_STATUS_APPROVED:
+                create_notification_once(
+                    recipient=profile.user,
+                    kind="event",
+                    title="Your profile is verified ✅",
                     description="Identity verification completed successfully. Your verified badge is now active.",
                     state="approved",
                     unique={"type": "kyc", "kyc_session_id": session_id, "result": "approved"},
@@ -4686,8 +4609,8 @@ class DiditWebhookView(APIView):
                 create_notification_once(
                     recipient=profile.user,
                     kind="event",
-                    title="Identity verification failed âŒ",
-                    description="Your profile name didnâ€™t match your ID. Please update your name and retry verification.",
+                    title="Identity verification failed ❌",
+                    description="Your profile name didn’t match your ID. Please update your name and retry verification.",
                     state="declined",
                     unique={"type": "kyc", "kyc_session_id": session_id, "result": "declined"},
                     data={"reason": profile.kyc_decline_reason or ""},
@@ -4725,8 +4648,8 @@ class DiditWebhookView(APIView):
                 create_notification_once(
                     recipient=ncr.user,
                     kind="event",
-                    title="Name change verification failed âŒ",
-                    description="We couldnâ€™t verify your documents for the name change request. Please retry with correct documents.",
+                    title="Name change verification failed ❌",
+                    description="We couldn’t verify your documents for the name change request. Please retry with correct documents.",
                     state="failed",
                     unique={"type": "name_change", "name_change_request_id": ncr.id, "result": "failed"},
                 )
@@ -4789,7 +4712,7 @@ class DiditWebhookView(APIView):
             ncr.auto_approved = bool(ok)
 
             if ok:
-                # âœ… AUTO-APPROVE: apply same logic as Admin decide()
+                # ✅ AUTO-APPROVE: apply same logic as Admin decide()
                 user = ncr.user
                 profile = user.profile
 
@@ -4813,7 +4736,7 @@ class DiditWebhookView(APIView):
                 ncr.admin_note = "Auto-approved (Didit Approved + name match passed)."
                 template_key = "approved"
             else:
-                # âŒ mismatch => admin review
+                # ❌ mismatch => admin review
                 ncr.admin_note = "Didit Approved but name mismatch. Manual admin review required."
                 template_key = "manual_review"
 
@@ -4846,12 +4769,12 @@ class DiditWebhookView(APIView):
         #             requested_name=requested_name,
         #             id_name=(id_full or "").strip(),
         #         )
-        # âœ… In-app notifications (user + admin) on Didit Approved
+        # ✅ In-app notifications (user + admin) on Didit Approved
         if template_key == "approved":
             create_notification_once(
                 recipient=ncr.user,
                 kind="event",
-                title="Your name has been updated âœ…",
+                title="Your name has been updated ✅",
                 description="Your name change request is approved and your profile name is updated.",
                 state="approved",
                 unique={"type": "name_change", "name_change_request_id": ncr.id, "result": "approved"},
@@ -4863,8 +4786,8 @@ class DiditWebhookView(APIView):
             create_notification_once(
                 recipient=ncr.user,
                 kind="event",
-                title="Your name change is under review â³",
-                description="Your documents were verified, but the name didnâ€™t match. Admin review is required.",
+                title="Your name change is under review ⏳",
+                description="Your documents were verified, but the name didn’t match. Admin review is required.",
                 state="review",
                 unique={"type": "name_change", "name_change_request_id": ncr.id, "result": "review"},
                 data={"requested_name": requested_name, "id_name": (id_full or "").strip()},
@@ -5045,7 +4968,7 @@ class GeoCitySearchView(APIView):
 
         qs = qs.order_by("-population", "name")[:limit]
 
-        # âœ… Fetch once (avoid N+1) â€” map country_code -> country_name
+        # ✅ Fetch once (avoid N+1) — map country_code -> country_name
         cities = list(qs)
         country_codes = {c.country_code for c in cities if c.country_code}
         country_map = dict(
@@ -5059,17 +4982,17 @@ class GeoCitySearchView(APIView):
                 "geoname_id": c.geoname_id,
                 "name": c.name,
                 "country_code": c.country_code,
-                "country_name": country_name,  # âœ… extra helpful field
+                "country_name": country_name,  # ✅ extra helpful field
                 "timezone": getattr(c, 'timezone', None),
                 "admin1_code": c.admin1_code,
                 "population": c.population,
                 "lat": c.latitude,
                 "lng": c.longitude,
-                "label": f"{c.name}, {country_name}",  # âœ… Delhi, India
+                "label": f"{c.name}, {country_name}",  # ✅ Delhi, India
                 "is_other": False,
             })
 
-        # âœ… If no results for a typed query, add "Other / Not listed"
+        # ✅ If no results for a typed query, add "Other / Not listed"
         if q and not results:
             fallback_country_name = None
             if country:

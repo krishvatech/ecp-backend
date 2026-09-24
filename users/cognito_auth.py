@@ -14,6 +14,7 @@ from django.db import IntegrityError
 from django.utils.crypto import get_random_string
 from django.utils import timezone
 
+from .kyc_name_match import repair_mojibake
 from .models import CognitoIdentity
 
 import jwt
@@ -131,7 +132,7 @@ def _extract_email_from_provider_username(provider_username: str) -> str:
 
 
 def _clean_claim(value) -> str:
-    return str(value or "").strip()
+    return repair_mojibake(str(value or "").strip())
 
 
 def _split_full_name(full_name: str) -> tuple[str, str]:

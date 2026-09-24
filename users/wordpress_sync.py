@@ -11,6 +11,7 @@ from typing import Dict, Optional, Any, Tuple
 from django.contrib.auth.models import User
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from .kyc_name_match import repair_mojibake
 from .models import UserProfile
 from .wordpress_api import get_wordpress_client
 from .email_utils import create_cognito_user, generate_temporary_password
@@ -234,7 +235,7 @@ class WordPressProfileSyncService:
             wp_email = override_email or wp_user_data.get("email")
             # WordPress API returns 'slug' not 'username'
             wp_username = wp_user_data.get("username") or wp_user_data.get("slug", "")
-            wp_name = wp_user_data.get("name", "")
+            wp_name = repair_mojibake(wp_user_data.get("name", "") or "")
 
             if not wp_user_id:
                 logger.error(f"Invalid WordPress user data: missing user ID")
@@ -291,7 +292,7 @@ class WordPressProfileSyncService:
     ) -> User:
         """Create a new Django user from WordPress data."""
         wp_email = override_email or wp_user_data.get("email")
-        wp_name = wp_user_data.get("name", "")
+        wp_name = repair_mojibake(wp_user_data.get("name", "") or "")
         # WordPress API returns 'slug' not 'username'
         wp_username = wp_user_data.get("username") or wp_user_data.get("slug", "")
 
@@ -353,7 +354,7 @@ class WordPressProfileSyncService:
         """Update user and profile with WordPress data."""
         wp_user_id = wp_user_data.get("id")
         wp_email = override_email or wp_user_data.get("email")
-        wp_name = wp_user_data.get("name", "")
+        wp_name = repair_mojibake(wp_user_data.get("name", "") or "")
         wp_description = wp_user_data.get("description", "")
         wp_avatar_url = wp_user_data.get("avatar_urls", {}).get("96") if wp_user_data.get("avatar_urls") else ""
 
