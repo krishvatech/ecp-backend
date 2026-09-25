@@ -8,6 +8,7 @@ from users.models import (
     Experience,
     ProfileCertification,
     UserEmailAlias,
+    UserProfile,
 )
 from users.linkedin_profile_import_service import import_linkedin_profile_data
 
@@ -111,13 +112,16 @@ class LinkedInProfileImportEmailValidationTests(APITestCase):
             password="Password123!",
             email="owner@example.com",
         )
+        profile, _ = UserProfile.objects.get_or_create(user=self.user)
+        profile.full_name = "Test User"
+        profile.save(update_fields=["full_name"])
         self.client.force_authenticate(self.user)
         self.url = "/api/auth/linkedin-profile/import-confirm/"
 
-    def profile_data(self, email):
+    def profile_data(self, email, full_name="Test User"):
         return {
             "email": email,
-            "full_name": "Test User",
+            "full_name": full_name,
             "headline": "Software Engineer",
             "bio": "Test",
             "location": "Surat",
@@ -131,7 +135,7 @@ class LinkedInProfileImportEmailValidationTests(APITestCase):
             "certifications": [],
         }
 
-    def test_rejects_linkedin_profile_with_different_email(self):
+    def test_requires_confirmation_when_email_differs_but_name_matches(self):
         response = self.client.post(
             self.url,
             {"profile_data": self.profile_data("another-user@example.com")},
@@ -139,7 +143,130 @@ class LinkedInProfileImportEmailValidationTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("does not match", response.data["message"])
+        self.assertIn("confirm that this is your LinkedIn profile", response.data["message"])
+
+    def test_allows_confirmed_override_when_email_differs_and_name_matches(self):
+        response = self.client.post(
+            self.url,
+            {
+                "profile_data": self.profile_data("another-user@example.com"),
+                "ownership_confirmed": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_allows_common_first_name_prefix_for_fuzzy_match(self):
+        self.user.profile.full_name = "Christopher Kummer"
+        self.user.profile.save(update_fields=["full_name"])
+
+        response = self.client.post(
+            self.url,
+            {
+                "profile_data": self.profile_data(
+                    "another-user@example.com",
+                    full_name="Chris Kummer",
+                ),
+                "ownership_confirmed": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_name_match_ignores_linkedin_credentials(self):
+        response = self.client.post(
+            self.url,
+            {
+                "profile_data": self.profile_data(
+                    "another-user@example.com",
+                    full_name="Test User, PhD",
+                ),
+                "ownership_confirmed": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_blocks_override_when_email_and_name_both_differ(self):
+        response = self.client.post(
+            self.url,
+            {
+                "profile_data": self.profile_data(
+                    "another-user@example.com",
+                    full_name="Different Person",
+                ),
+                "ownership_confirmed": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("appears to belong to another person", response.data["message"])
+
+    def test_confirmed_override_can_add_linkedin_email_to_profile(self):
+        response = self.client.post(
+            self.url,
+            {
+                "profile_data": self.profile_data("linkedin-contact@example.com"),
+                "ownership_confirmed": True,
+                "add_linkedin_email": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.data["data"]["email_added"])
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "owner@example.com")
+        self.user.profile.refresh_from_db()
+        emails = self.user.profile.links["contact"]["emails"]
+        self.assertEqual(
+            emails,
+            [
+                {
+                    "email": "linkedin-contact@example.com",
+                    "type": "professional",
+                    "visibility": "contacts",
+                }
+            ],
+        )
+
+    def test_add_linkedin_email_does_not_duplicate_existing_profile_email(self):
+        self.user.profile.links = {
+            "contact": {
+                "emails": [
+                    {
+                        "email": "linkedin-contact@example.com",
+                        "type": "personal",
+                        "visibility": "private",
+                    }
+                ]
+            }
+        }
+        self.user.profile.save(update_fields=["links"])
+
+        response = self.client.post(
+            self.url,
+            {
+                "profile_data": self.profile_data("linkedin-contact@example.com"),
+                "ownership_confirmed": True,
+                "add_linkedin_email": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(response.data["data"]["email_added"])
+
+        self.user.profile.refresh_from_db()
+        emails = self.user.profile.links["contact"]["emails"]
+        self.assertEqual(len(emails), 1)
+        self.assertEqual(emails[0]["type"], "personal")
+        self.assertEqual(emails[0]["visibility"], "private")
 
     def test_allows_matching_linkedin_email(self):
         response = self.client.post(
@@ -178,7 +305,7 @@ class LinkedInProfileImportEmailValidationTests(APITestCase):
 
         self.assertEqual(response.status_code, 200, response.content)
 
-    def test_rejects_unverified_email_alias(self):
+    def test_unverified_email_alias_still_requires_confirmation(self):
         UserEmailAlias.objects.create(
             user=self.user,
             email="unverified@example.com",
@@ -193,4 +320,4 @@ class LinkedInProfileImportEmailValidationTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("does not match", response.data["message"])
+        self.assertIn("confirm that this is your LinkedIn profile", response.data["message"])

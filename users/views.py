@@ -84,7 +84,10 @@ from .linkedin_profile_import import (
     extract_profile_pdf_text,
     structure_profile_text,
 )
-from .linkedin_profile_import_service import import_linkedin_profile_data
+from .linkedin_profile_import_service import (
+    assess_linkedin_import_identity,
+    import_linkedin_profile_data,
+)
 from .serializers import (
     UserSerializer,
     EmailTokenObtainPairSerializer,
@@ -6090,10 +6093,15 @@ class LinkedInProfileImportConfirmView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        ownership_confirmed = request.data.get("ownership_confirmed") is True
+        add_linkedin_email = request.data.get("add_linkedin_email") is True
+
         try:
             result = import_linkedin_profile_data(
                 user=request.user,
                 profile_data=profile_data,
+                ownership_confirmed=ownership_confirmed,
+                add_linkedin_email=add_linkedin_email,
             )
         except ValidationError as exc:
             return Response(
@@ -6142,12 +6150,17 @@ class LinkedInProfileImportPreviewView(APIView):
         try:
             extracted_text = extract_profile_pdf_text(uploaded_file.file)
             profile_data = structure_profile_text(extracted_text)
+            identity_check = assess_linkedin_import_identity(
+                request.user,
+                profile_data,
+            )
 
             return Response(
                 {
                     "success": True,
                     "message": "LinkedIn profile preview generated successfully.",
                     "data": profile_data,
+                    "identity_check": identity_check,
                 }
             )
 

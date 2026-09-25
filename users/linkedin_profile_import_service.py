@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import re
+import unicodedata
+from difflib import SequenceMatcher
+
 import phonenumbers
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -128,44 +132,192 @@ def account_email_addresses(user) -> set[str]:
     return emails
 
 
-def validate_linkedin_import_email(user, profile_data):
-    """
-    Prevent importing another person's LinkedIn PDF into the current account.
-    """
-    imported_email = (
-        profile_data.get("email") or ""
-    ).strip().lower()
+_IGNORED_NAME_TOKENS = {
+    "mr", "mrs", "ms", "miss", "mx", "dr", "prof", "professor",
+    "phd", "ph", "d", "mba", "msc", "bsc", "ma", "ba", "md", "jd",
+    "cfa", "ca", "esq",
+}
 
-    # Some LinkedIn PDFs may not contain email.
-    # Keep import compatible with those PDFs.
-    if not imported_email:
-        return
 
+def _normalized_name_tokens(value) -> list[str]:
+    """Normalize a person's name for conservative fuzzy comparison."""
+    raw = unicodedata.normalize("NFKD", str(value or ""))
+    ascii_value = "".join(char for char in raw if not unicodedata.combining(char))
+    tokens = re.findall(r"[a-z0-9]+", ascii_value.lower())
+    return [token for token in tokens if token not in _IGNORED_NAME_TOKENS]
+
+
+def _account_display_name(user) -> str:
+    profile = getattr(user, "profile", None)
+    candidates = [
+        getattr(profile, "full_name", "") if profile else "",
+        user.get_full_name() if hasattr(user, "get_full_name") else "",
+    ]
+
+    for candidate in candidates:
+        candidate = (candidate or "").strip()
+        if candidate:
+            return candidate
+
+    return ""
+
+
+def _person_names_match(account_name: str, imported_name: str) -> bool:
+    """Return True for strong name matches while avoiding surname-only matches.
+
+    Credentials/honorifics are ignored (for example ``Christopher Kummer, PhD``
+    vs ``Christopher Kummer``).  For non-exact matches, the surname must match
+    and the first names must be exact, a meaningful prefix (Chris/Christopher),
+    or very similar.
+    """
+    account_tokens = _normalized_name_tokens(account_name)
+    imported_tokens = _normalized_name_tokens(imported_name)
+
+    if not account_tokens or not imported_tokens:
+        return False
+
+    if account_tokens == imported_tokens:
+        return True
+
+    if account_tokens[-1] != imported_tokens[-1]:
+        return False
+
+    account_first = account_tokens[0]
+    imported_first = imported_tokens[0]
+    if account_first == imported_first:
+        return True
+
+    shorter, longer = sorted((account_first, imported_first), key=len)
+    if len(shorter) >= 4 and longer.startswith(shorter):
+        return True
+
+    return SequenceMatcher(None, account_first, imported_first).ratio() >= 0.82
+
+
+def assess_linkedin_import_identity(user, profile_data: dict) -> dict:
+    """Describe whether the uploaded LinkedIn identity matches the account.
+
+    This is intentionally advisory for preview and is re-evaluated during
+    confirmation.  It never changes Cognito or login credentials.
+    """
+    imported_email = (profile_data.get("email") or "").strip().lower()
+    primary_email = (getattr(user, "email", "") or "").strip().lower()
+    imported_name = (profile_data.get("full_name") or "").strip()
+    account_name = _account_display_name(user)
     known_emails = account_email_addresses(user)
 
-    # The account has no email address on record, so there is nothing to
-    # compare the PDF against.  Blocking here would lock such accounts out of
-    # the importer entirely.
-    if not known_emails:
-        return
+    result = {
+        "status": "matched",
+        "email_match": None,
+        "name_match": None,
+        "requires_confirmation": False,
+        "can_add_email": False,
+        "account_email": primary_email,
+        "linkedin_email": imported_email,
+        "account_name": account_name,
+        "linkedin_name": imported_name,
+    }
 
-    if imported_email not in known_emails:
+    # Preserve the existing behavior for PDFs without an email, or accounts
+    # that have no comparable email address.
+    if not imported_email or not known_emails:
+        return result
+
+    if imported_email in known_emails:
+        result["email_match"] = True
+        return result
+
+    name_match = _person_names_match(account_name, imported_name)
+    result.update({
+        "status": "review" if name_match else "blocked",
+        "email_match": False,
+        "name_match": name_match,
+        "requires_confirmation": bool(name_match),
+        "can_add_email": bool(name_match),
+    })
+    return result
+
+
+def validate_linkedin_import_identity(
+    user,
+    profile_data: dict,
+    *,
+    ownership_confirmed: bool = False,
+) -> dict:
+    """Enforce identity checks before writing imported profile data."""
+    assessment = assess_linkedin_import_identity(user, profile_data)
+
+    if assessment["status"] == "blocked":
         raise ValidationError(
-            "The LinkedIn profile email does not match your account email."
+            "This LinkedIn profile appears to belong to another person. "
+            "Please upload your own LinkedIn profile."
         )
+
+    if assessment["status"] == "review" and not ownership_confirmed:
+        raise ValidationError(
+            "The LinkedIn profile email differs from your account email. "
+            "Please confirm that this is your LinkedIn profile to continue."
+        )
+
+    return assessment
+
+
+def validate_linkedin_import_email(user, profile_data):
+    """Backward-compatible strict validation used by older callers/tests."""
+    return validate_linkedin_import_identity(
+        user,
+        profile_data,
+        ownership_confirmed=False,
+    )
+
+
+def _add_secondary_profile_email(profile, email: str) -> bool:
+    """Add an email using the same structure as Profile -> Edit E-Mail."""
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+
+    links = dict(profile.links) if isinstance(profile.links, dict) else {}
+    contact = links.get("contact", {})
+    contact = dict(contact) if isinstance(contact, dict) else {}
+    emails = contact.get("emails", [])
+    emails = list(emails) if isinstance(emails, list) else []
+
+    for item in emails:
+        if not isinstance(item, dict):
+            continue
+        if (item.get("email") or "").strip().lower() == email:
+            return False
+
+    emails.append({
+        "email": email,
+        "type": "professional",
+        "visibility": "contacts",
+    })
+    contact["emails"] = emails
+    links["contact"] = contact
+    profile.links = links
+    return True
 
 
 @transaction.atomic
-def import_linkedin_profile_data(*, user, profile_data: dict) -> dict:
+def import_linkedin_profile_data(
+    *,
+    user,
+    profile_data: dict,
+    ownership_confirmed: bool = False,
+    add_linkedin_email: bool = False,
+) -> dict:
     """
     Import validated LinkedIn profile preview data.
 
     This is intentionally separate from the preview endpoint.
     It only writes data after an explicit confirmation request.
     """
-    validate_linkedin_import_email(
+    identity = validate_linkedin_import_identity(
         user=user,
         profile_data=profile_data,
+        ownership_confirmed=ownership_confirmed,
     )
 
     imported = {
@@ -174,6 +326,7 @@ def import_linkedin_profile_data(*, user, profile_data: dict) -> dict:
         "educations_created": 0,
         "certifications_created": 0,
         "skills_updated": False,
+        "email_added": False,
     }
 
     profile = getattr(user, "profile", None)
@@ -200,7 +353,17 @@ def import_linkedin_profile_data(*, user, profile_data: dict) -> dict:
     # Import LinkedIn social profile URL.
     # Keep existing links data and only update LinkedIn entry.
     linkedin_url = (profile_data.get("linkedin_url") or "").strip()
-    links = profile.links if isinstance(profile.links, dict) else {}
+    links = dict(profile.links) if isinstance(profile.links, dict) else {}
+
+    if (
+        add_linkedin_email
+        and identity["status"] == "review"
+        and identity["linkedin_email"]
+        and _add_secondary_profile_email(profile, identity["linkedin_email"])
+    ):
+        links = dict(profile.links) if isinstance(profile.links, dict) else {}
+        changed = True
+        imported["email_added"] = True
 
     if linkedin_url:
         if links.get("linkedin") != linkedin_url:
