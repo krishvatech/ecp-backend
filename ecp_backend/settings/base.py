@@ -729,6 +729,7 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Django + DRF endpoints for auth, users, community, events, etc.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,  # we’ll expose schema via a separate route
+    # Development/test default; prod.py overrides this with platform_admin-only access.
     "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
     # Add JWT “Authorize” button in Swagger
     "COMPONENT_SPLIT_REQUEST": True,

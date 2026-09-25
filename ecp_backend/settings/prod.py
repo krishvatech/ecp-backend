@@ -10,6 +10,16 @@ from .base import *  # noqa
 
 DEBUG = False
 
+# Keep OpenAPI available in production, but only to the canonical
+# platform_admin role. Local/dev settings continue to inherit AllowAny from
+# base.py so developers can use Swagger/ReDoc without a production login.
+SPECTACULAR_SETTINGS = {
+    **SPECTACULAR_SETTINGS,
+    "SERVE_PERMISSIONS": [
+        "users.permissions.IsPlatformAdminForOpenAPIDocs",
+    ],
+}
+
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 SECURE_SSL_REDIRECT = True
