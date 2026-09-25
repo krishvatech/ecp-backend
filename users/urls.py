@@ -8,7 +8,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from .cognito_bootstrap import CognitoBootstrapView
-from .views import WagtailSessionFromCognitoView, WagtailLogoutView, SaleorDashboardAuthorizeView, SaleorDashboardSsoView, MagicLinkAuthView
+from .views import WagtailSessionFromCognitoView, OpenAPIDocsSessionView, WagtailLogoutView, SaleorDashboardAuthorizeView, SaleorDashboardSsoView, MagicLinkAuthView
 from .views import (
     RegisterView,
     CheckEmailExistsView,
@@ -96,6 +96,7 @@ urlpatterns = [
     path("logout/", LogoutView.as_view(), name="logout"),
     path("magic-link/", MagicLinkAuthView.as_view(), name="magic-link"),
     path("wagtail/session/", WagtailSessionFromCognitoView.as_view(), name="wagtail-session"),
+    path("openapi/session/", OpenAPIDocsSessionView.as_view(), name="openapi-session"),
     path("wagtail/logout/", WagtailLogoutView.as_view(), name="wagtail-logout"),
     path("saleor/dashboard/", SaleorDashboardAuthorizeView.as_view(), name="saleor-dashboard"),
     path("saleor/sso/", SaleorDashboardSsoView.as_view(), name="saleor-sso"),

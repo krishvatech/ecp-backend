@@ -5186,6 +5186,39 @@ class WagtailSessionFromCognitoView(APIView):
 
         return Response({"detail": "cms_session_created"}, status=status.HTTP_200_OK)
 
+class OpenAPIDocsSessionView(APIView):
+    """Create the Django browser session required by private OpenAPI docs.
+
+    The request itself is authenticated with the existing ECP/Cognito token.
+    Only the project's canonical platform_admin rule may exchange that token
+    for a Django session. Unlike the Wagtail bridge, this endpoint does not
+    grant ``is_staff`` or any CMS permission.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from users.cognito_auth import is_platform_admin
+
+        if not is_platform_admin(request):
+            return Response(
+                {"detail": "Forbidden: Only platform_admin can access API documentation."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        django_login(
+            request,
+            request.user,
+            backend="django.contrib.auth.backends.ModelBackend",
+        )
+        request.session.cycle_key()
+
+        return Response(
+            {"detail": "openapi_session_created"},
+            status=status.HTTP_200_OK,
+        )
+
+
 class WagtailLogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
