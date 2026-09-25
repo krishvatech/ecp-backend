@@ -1041,6 +1041,17 @@ EB_WP_API_USER = os.getenv("EB_WP_API_USER", "")
 EB_WP_API_PASSWORD = os.getenv("EB_WP_API_PASSWORD", "")
 EB_WP_AUTH_TYPE = os.getenv("EB_WP_AUTH_TYPE", "basic")
 
+# ============================================================================
+# WORDPRESS IMAA BLOG IMPORT (imaa-institute.org — public posts, read-only)
+# Used only by `manage.py import_wordpress_blogs`. Separate from every other
+# WordPress setting so the Blog importer can never repoint Users/Events/Groups.
+# No credentials: the importer reads the public REST API only.
+# ============================================================================
+WP_IMAA_BLOG_BASE_URL = os.getenv("WP_IMAA_BLOG_BASE_URL", "")  # e.g. https://imaa-institute.org
+WP_IMAA_BLOG_CATEGORY_ID = int(os.getenv("WP_IMAA_BLOG_CATEGORY_ID", "58"))
+WP_IMAA_BLOG_CATEGORY_SLUG = os.getenv("WP_IMAA_BLOG_CATEGORY_SLUG", "blog")
+WP_IMAA_BLOG_TIMEOUT = float(os.getenv("WP_IMAA_BLOG_TIMEOUT", "20"))
+
 # Moodle REST API — direct access for course content (sections, modules, completion)
 MOODLE_URL = os.getenv("MOODLE_URL", "")              # e.g. https://imaa-institute.org/moodle
 MOODLE_TOKEN = os.getenv("MOODLE_TOKEN", "")          # Moodle web service token
