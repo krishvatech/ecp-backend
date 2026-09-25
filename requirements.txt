@@ -25,6 +25,11 @@ google-cloud-storage==2.17.0
 # Env / Testing
 python-dotenv==1.0.1
 requests>=2.32,<3
+
+# HTML parsing (bs4, already installed via wagtail) + allowlist sanitiser (nh3)
+# for the WordPress Blog importer.
+beautifulsoup4>=4.12,<5
+nh3>=0.3,<0.4
 pytest==8.3.2
 pytest-django==4.8.0
 factory-boy==3.3.0
