@@ -5,6 +5,8 @@ Two surfaces, kept apart on purpose:
 
 * ``BlogPostViewSet`` (``/api/blogs/``): read-only, any authenticated user,
   published posts only. Drafts return 404 exactly like missing slugs.
+  ``<slug>/?content_mode=chunked`` + ``<slug>/content/?chunk=N`` let the
+  reader lazy-load a long article in chunks (see blogs.content_chunks).
 * ``BlogPostAdminViewSet`` and the category/tag viewsets
   (``/api/blogs/admin/...``): Django superusers only. Every superuser can
   manage every post, regardless of ``created_by``.
@@ -16,9 +18,11 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.filters import SearchFilter
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from .content_chunks import content_chunks
 from .models import BlogCategory, BlogImportRun, BlogPost, BlogTag
 from .permissions import IsSuperuser
 from .serializers import (
@@ -36,6 +40,22 @@ _TERM_FILTER_PARAMS = [
     OpenApiParameter("category", str, description="Category slug or id"),
     OpenApiParameter("tag", str, description="Tag slug or id"),
 ]
+
+
+class BlogPagination(PageNumberPagination):
+    """Blog post lists: the site default size, but clients may ask for a
+    different page size (the card grids use 9), capped."""
+
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 50
+
+
+# Reader order: newest published first, id as a deterministic tie-break.
+READER_ORDERING = ("-published_at", "-id")
+CONTENT_MODE_CHUNKED = "chunked"
+
+_PAGE_PARAMS = [OpenApiParameter("page_size", int, description="Posts per page (max 50, default 20)")]
 
 
 def _filter_by_term(queryset, relation, value):
@@ -63,11 +83,12 @@ class BlogPostQuerysetMixin:
         return _filter_by_term(queryset, "tags", params.get("tag"))
 
 
-@extend_schema_view(list=extend_schema(parameters=_TERM_FILTER_PARAMS))
+@extend_schema_view(list=extend_schema(parameters=_TERM_FILTER_PARAMS + _PAGE_PARAMS))
 class BlogPostViewSet(BlogPostQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     """Published blogs for Explore Blogs. Newest published first."""
 
     permission_classes = [IsAuthenticated]
+    pagination_class = BlogPagination
     lookup_field = "slug"
     lookup_value_regex = r"[-a-zA-Z0-9_]+"
 
@@ -75,16 +96,61 @@ class BlogPostViewSet(BlogPostQuerysetMixin, viewsets.ReadOnlyModelViewSet):
         queryset = self.base_queryset().filter(status=BlogPost.STATUS_PUBLISHED)
         if self.action == "list":
             queryset = self.apply_term_filters(queryset)
-        return queryset.order_by("-published_at", "-id")
+        return queryset.order_by(*READER_ORDERING)
 
     def get_serializer_class(self):
-        return BlogDetailSerializer if self.action == "retrieve" else BlogListSerializer
+        return BlogListSerializer if self.action == "list" else BlogDetailSerializer
+
+    @extend_schema(
+        parameters=[OpenApiParameter(
+            "content_mode", str, enum=[CONTENT_MODE_CHUNKED],
+            description="`chunked`: content_html holds only the first chunk; "
+                        "fetch the rest from content/?chunk=N.",
+        )],
+    )
+    def retrieve(self, request, *args, **kwargs):
+        post = self.get_object()  # published only: drafts and unknown slugs are 404
+        data = self.get_serializer(post).data
+        if request.query_params.get("content_mode") == CONTENT_MODE_CHUNKED:
+            chunks = content_chunks(post.content_html)
+            data["content_html"] = chunks[0]
+            data["content_chunk"] = 1
+            data["content_chunks"] = len(chunks)
+            data["content_has_more"] = len(chunks) > 1
+        return Response(data)
+
+    @extend_schema(
+        parameters=[OpenApiParameter("chunk", int, required=True, description="1-based chunk number")],
+        responses={
+            200: OpenApiResponse(description="{chunk, content_html, has_more, chunks}"),
+            400: OpenApiResponse(description="chunk is missing or not a positive integer."),
+            404: OpenApiResponse(description="Unknown/unpublished slug or chunk out of range."),
+        },
+    )
+    @action(detail=True, methods=["get"])
+    def content(self, request, slug=None):
+        """One chunk of a published article's HTML (lazy loading)."""
+        post = self.get_object()  # published only
+        raw = request.query_params.get("chunk", "")
+        if not raw.isdigit() or int(raw) < 1:
+            raise ValidationError({"chunk": "Must be a positive integer."})
+        number = int(raw)
+        chunks = content_chunks(post.content_html)
+        if number > len(chunks):
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({
+            "chunk": number,
+            "content_html": chunks[number - 1],
+            "has_more": number < len(chunks),
+            "chunks": len(chunks),
+        })
 
 
 @extend_schema_view(
     list=extend_schema(
         parameters=_TERM_FILTER_PARAMS
         + [OpenApiParameter("status", str, enum=["draft", "published"])]
+        + _PAGE_PARAMS
     )
 )
 class BlogPostAdminViewSet(
@@ -98,6 +164,7 @@ class BlogPostAdminViewSet(
     """Superuser management of all blogs (drafts included). No DELETE."""
 
     permission_classes = [IsAuthenticated, IsSuperuser]
+    pagination_class = BlogPagination
     serializer_class = BlogAdminSerializer
     http_method_names = ["get", "post", "patch", "head", "options"]
     lookup_value_regex = r"\d+"

@@ -187,3 +187,36 @@ class PublicBlogApiTests(BlogAPITestCase):
         for i in range(1, 6):
             add_post(i)
         self.assertEqual(self._count_list_queries(), baseline)
+
+
+class BlogPageSizeTests(BlogAPITestCase):
+    def setUp(self):
+        super().setUp()
+        for i in range(12):
+            make_published_post(title=f"Card {i}")
+        make_post(title="Hidden draft")
+
+    def test_reader_list_accepts_page_size_nine(self):
+        self.client.force_authenticate(make_user("reader"))
+        first = self.client.get(LIST_URL, {"page_size": 9})
+        self.assertEqual((first.data["count"], len(first.data["results"])), (12, 9))
+        second = self.client.get(LIST_URL, {"page_size": 9, "page": 2})
+        self.assertEqual(len(second.data["results"]), 3)
+        self.assertIsNone(second.data["next"])
+        seen = [p["id"] for p in first.data["results"] + second.data["results"]]
+        self.assertEqual(len(seen), len(set(seen)), "no duplicates across pages")
+        self.assertEqual(self.client.get(LIST_URL, {"page_size": 9, "page": 3}).status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_list_accepts_page_size_nine(self):
+        from .factories import make_superuser
+
+        self.client.force_authenticate(make_superuser())
+        response = self.client.get(reverse("blogs:admin-post-list"), {"page_size": 9})
+        self.assertEqual((response.data["count"], len(response.data["results"])), (13, 9))
+
+    def test_page_size_is_capped(self):
+        self.client.force_authenticate(make_user("reader"))
+        for i in range(50):
+            make_published_post(title=f"Extra {i}")
+        self.assertEqual(len(self.client.get(LIST_URL, {"page_size": 500}).data["results"]), 50)
+        self.assertEqual(len(self.client.get(LIST_URL).data["results"]), 20, "default unchanged")
