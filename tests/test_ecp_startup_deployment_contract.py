@@ -72,6 +72,35 @@ def test_user_data_stops_inherited_unit_before_replacing_and_restarts_it() -> No
     assert "EXEC_STATUS=" in user_data
 
 
+def test_user_data_disables_legacy_certbot_before_backend_startup() -> None:
+    user_data = USER_DATA_FILE.read_text()
+
+    certbot_index = user_data.index("systemctl disable --now certbot.timer")
+    startup_restart_index = user_data.index(
+        "systemctl restart ecp-startup.service"
+    )
+
+    assert certbot_index < startup_restart_index
+    assert "systemctl stop certbot.service" in user_data
+    assert "Disabling legacy Certbot renewal" in user_data
+
+    # Keep this first phase non-destructive. Package and historical
+    # Let's Encrypt state removal belongs to the clean-AMI migration.
+    assert "apt remove certbot" not in user_data
+    assert "apt purge certbot" not in user_data
+    assert "rm -rf /etc/letsencrypt" not in user_data
+
+
+def test_runtime_verification_requires_legacy_certbot_to_be_inactive() -> None:
+    runtime_verify = RUNTIME_VERIFY_FILE.read_text()
+
+    assert "systemctl is-enabled certbot.timer" in runtime_verify
+    assert "systemctl is-active certbot.timer" in runtime_verify
+    assert "systemctl is-active certbot.service" in runtime_verify
+    assert "LEGACY_CERTBOT_DISABLED" in runtime_verify
+    assert "legacy certbot.timer is still enabled or active" in runtime_verify
+
+
 def test_rendered_user_data_is_valid_and_below_ec2_limit(tmp_path: Path) -> None:
     template = USER_DATA_FILE.read_text()
     rendered = (

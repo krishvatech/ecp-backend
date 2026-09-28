@@ -7,6 +7,19 @@ echo "[ecp-user-data] Started: $(date)"
 
 install -d -m 0755 /usr/local/bin /etc/systemd/system
 
+# Public TLS for api.colligatus.com terminates at the ALB using Amazon ACM.
+# The golden AMI still contains the legacy Let's Encrypt / Certbot timer.
+# Disable it on every newly launched ASG instance so it cannot renew local
+# certificates or reload Nginx unnecessarily. Keep this non-destructive:
+# package/file removal belongs to a future clean-AMI migration.
+if systemctl list-unit-files certbot.timer --no-legend 2>/dev/null | grep -q '^certbot\.timer'; then
+  echo "[ecp-user-data] Disabling legacy Certbot renewal"
+  systemctl disable --now certbot.timer 2>/dev/null || true
+  systemctl stop certbot.service 2>/dev/null || true
+else
+  echo "[ecp-user-data] Certbot timer not installed; nothing to disable"
+fi
+
 # Stop the unit inherited from the AMI BEFORE replacing its files. The baked
 # unit can still be active (or mid auto-restart), in which case systemd keeps
 # executing the OLD script even after the new one is written to disk -- that is
