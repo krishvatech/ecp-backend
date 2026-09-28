@@ -3,6 +3,11 @@ Import planning: NormalizedWordPressBlog -> ImportPlan (CREATE/UPDATE/SKIP/ERROR
 
 Read-only against the ECP database. Dry-run and commit use the same plans.
 
+Change detection compares WordPress source with WordPress source: the
+content is compared through `wp_content_hash` (hash of the normalized
+WordPress HTML) because the stored `content_html` is later rewritten with
+ECP media URLs and ECP Blog links.
+
 Ownership policy (Batch 3): imported records are source-controlled by
 WordPress until the migration is finalised. A re-import updates the
 WordPress-owned fields in `WORDPRESS_OWNED_FIELDS` plus categories/tags.
@@ -13,6 +18,7 @@ Matching is by `wp_post_id` only. Manual ECP posts (wp_post_id NULL) are never
 matched, even with the same title or slug; a slug clash gets a deterministic
 `-wp<ID>` suffix instead of touching the manual post.
 """
+import hashlib
 import re
 from urllib.parse import unquote
 
@@ -25,6 +31,7 @@ from .normalizer import collapse
 from .types import (
     ACTION_CREATE,
     ACTION_ERROR,
+    ACTION_RESTRICTED,
     ACTION_SKIP,
     ACTION_UPDATE,
     W_AUTHOR_MAPPING_AMBIGUOUS,
@@ -149,7 +156,10 @@ def plan_import(post, context=None):
         plan.reasons.append("content is empty after normalization; needs manual review")
         return plan
     if any(w.code == W_MEMBERS_ONLY for w in plan.warnings):
-        plan.reasons.append("members-only post: the public API only exposes a teaser; needs a manual decision")
+        # Expected source limitation, not a failure: never import the teaser
+        # and never overwrite an existing import with it.
+        plan.action = ACTION_RESTRICTED
+        plan.reasons.append("members-only post: the public API only exposes a teaser; not imported")
         return plan
     if post.published_at is None:
         plan.reasons.append("no usable WordPress publication date")
@@ -201,6 +211,7 @@ def plan_import(post, context=None):
         "wp_author_id": post.wp_author_id,
         "wp_modified_at": post.modified_at,
         "imported_from_wordpress": True,
+        "wp_content_hash": content_hash(post.content_html),
     }
 
     if existing is None:
@@ -210,6 +221,8 @@ def plan_import(post, context=None):
         return plan
 
     for field, new in plan.values.items():
+        if field == "content_html" and existing.wp_content_hash:
+            continue  # compared through wp_content_hash (stored HTML has ECP URLs)
         old = getattr(existing, field)
         if old != new:
             plan.field_changes[field] = {"old": _short(old), "new": _short(new)}
@@ -226,6 +239,11 @@ def plan_import(post, context=None):
         plan.action = ACTION_SKIP
         plan.reasons.append("imported record already matches WordPress")
     return plan
+
+
+def content_hash(html):
+    """Stable hash of normalized WordPress content (never of ECP-rewritten HTML)."""
+    return hashlib.sha256((html or "").encode("utf-8")).hexdigest()
 
 
 def _short(value):

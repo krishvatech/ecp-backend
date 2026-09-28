@@ -26,4 +26,5 @@ app.autodiscover_tasks([
     'courses',
     'content',
     'newsletter',
+    'blogs',
 ])

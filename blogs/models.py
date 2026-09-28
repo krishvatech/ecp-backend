@@ -160,6 +160,12 @@ class BlogPost(models.Model):
     wp_author_id = models.PositiveBigIntegerField(null=True, blank=True)
     wp_modified_at = models.DateTimeField(null=True, blank=True)
     imported_from_wordpress = models.BooleanField(default=False)
+    # Hash of the normalized WordPress content (before ECP media/link
+    # rewriting), so re-imports compare source with source.
+    wp_content_hash = models.CharField(max_length=64, blank=True, default="")
+    # WordPress media ID whose image the importer attached. Lets a re-import
+    # tell an imported featured image from one an ECP admin replaced/removed.
+    wp_featured_media_id = models.PositiveBigIntegerField(null=True, blank=True)
 
     # Audit
     created_by = models.ForeignKey(
@@ -241,3 +247,102 @@ class BlogPost(models.Model):
         if user is not None:
             self.updated_by = user
         self.save(update_fields=["status", "updated_by", "updated_at"])
+
+
+class BlogImportRun(models.Model):
+    """Durable record of one WordPress Blog import (progress, counts, report)."""
+
+    STATUS_QUEUED = "queued"
+    STATUS_RUNNING = "running"
+    STATUS_SUCCEEDED = "succeeded"
+    STATUS_PARTIAL = "partial"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_QUEUED, "Queued"),
+        (STATUS_RUNNING, "Running"),
+        (STATUS_SUCCEEDED, "Succeeded"),
+        (STATUS_PARTIAL, "Completed with warnings"),
+        (STATUS_FAILED, "Failed"),
+    ]
+    ACTIVE_STATUSES = (STATUS_QUEUED, STATUS_RUNNING)
+    TERMINAL_STATUSES = (STATUS_SUCCEEDED, STATUS_PARTIAL, STATUS_FAILED)
+
+    SOURCE_WORDPRESS = "wordpress"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source = models.CharField(max_length=40, default=SOURCE_WORDPRESS)
+    source_url = models.URLField(max_length=500, blank=True, default="")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_QUEUED, db_index=True)
+    current_step = models.CharField(max_length=40, default="queued")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="blog_import_runs"
+    )
+    celery_task_id = models.CharField(max_length=255, blank=True, default="")
+
+    total_discovered = models.PositiveIntegerField(default=0)
+    total_importable = models.PositiveIntegerField(default=0)
+    processed_count = models.PositiveIntegerField(default=0)
+    created_count = models.PositiveIntegerField(default=0)
+    updated_count = models.PositiveIntegerField(default=0)
+    skipped_count = models.PositiveIntegerField(default=0)
+    restricted_count = models.PositiveIntegerField(default=0)
+    failed_count = models.PositiveIntegerField(default=0)
+
+    media_found_count = models.PositiveIntegerField(default=0)
+    media_processed_count = models.PositiveIntegerField(default=0)
+    media_migrated_count = models.PositiveIntegerField(default=0)
+    media_reused_count = models.PositiveIntegerField(default=0)
+    media_skipped_count = models.PositiveIntegerField(default=0)
+    media_failed_count = models.PositiveIntegerField(default=0)
+    links_rewritten_count = models.PositiveIntegerField(default=0)
+
+    report_json = models.JSONField(default=dict, blank=True)
+    error_message = models.CharField(max_length=500, blank=True, default="")
+
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)  # doubles as the heartbeat
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            # At most one queued/running import per source: the lock.
+            models.UniqueConstraint(
+                fields=["source"],
+                condition=models.Q(status__in=["queued", "running"]),
+                name="uniq_active_blog_import_run",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.source} import {self.id} ({self.status})"
+
+    @property
+    def is_active(self):
+        return self.status in self.ACTIVE_STATUSES
+
+
+class BlogMediaAsset(models.Model):
+    """Ledger of WordPress media migrated into ECP storage (one row per source URL).
+
+    Makes media migration idempotent: a source URL already migrated is reused
+    without downloading or uploading again.
+    """
+
+    source_url = models.TextField()
+    source_url_hash = models.CharField(max_length=64, unique=True)
+    storage_name = models.CharField(max_length=500)
+    sha256 = models.CharField(max_length=64)
+    image_format = models.CharField(max_length=10)
+    width = models.PositiveIntegerField()
+    height = models.PositiveIntegerField()
+    size_bytes = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.storage_name

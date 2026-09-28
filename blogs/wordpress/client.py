@@ -170,7 +170,8 @@ class WordPressBlogClient:
         return payload
 
     # --------------------------------------------------------------- posts --
-    def list_posts(self, category_id, *, status="publish", page=1, per_page=MAX_PER_PAGE, embed=True, fields=None):
+    def list_posts(self, category_id, *, status="publish", page=1, per_page=MAX_PER_PAGE, embed=True, fields=None,
+                   include=None):
         params = {
             "categories": int(category_id),
             "status": status,
@@ -183,6 +184,8 @@ class WordPressBlogClient:
             params["_embed"] = 1
         if fields:
             params["_fields"] = ",".join(fields)
+        if include:
+            params["include"] = ",".join(str(int(i)) for i in include)
         payload, headers = self._get("/posts", params)
         if not isinstance(payload, list):
             raise WordPressBlogAPIError(

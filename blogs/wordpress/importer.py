@@ -5,8 +5,13 @@ Runs the WordPress Blog import pipeline.
     report = importer.run()                      # dry run of the whole category
     report = importer.run(post_ids=[157765])     # dry run of one post
 
-Writes happen only when `commit=True` AND explicit post IDs are given (Batch 3
-sample imports). Each committed post is applied in its own transaction.
+Writes happen only when `commit=True` AND explicit post IDs are given (sample
+imports), or when the caller is the controlled bulk workflow (`allow_bulk=True`,
+used only by blogs.wordpress.sync / the Celery task). Each committed post is
+applied in its own transaction.
+
+The same steps (collect -> parse -> plan_and_apply) power the management
+command, the Celery task and the admin-triggered import.
 """
 import logging
 import time
@@ -20,7 +25,7 @@ from .client import EMBED_PER_PAGE, WordPressBlogAPIError
 from .parser import WordPressPostParseError, parse_wordpress_post
 from .planner import PlanningContext, plan_import
 from .report import build_report
-from .types import ACTION_CREATE, ACTION_ERROR, ACTION_UPDATE, ImportPlan
+from .types import ACTION_CREATE, ACTION_ERROR, ACTION_RESTRICTED, ACTION_UPDATE, ImportPlan
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +41,10 @@ class WritesDisabledError(RuntimeError):
 
 
 class WordPressBlogImporter:
-    def __init__(self, client, *, commit=False, category_id=None, expected_category_slug=None):
+    def __init__(self, client, *, commit=False, category_id=None, expected_category_slug=None, allow_bulk=False):
         self.client = client
         self.commit = commit
+        self.allow_bulk = allow_bulk
         self.category_id = int(category_id or getattr(settings, "WP_IMAA_BLOG_CATEGORY_ID", 58))
         self.expected_category_slug = (
             expected_category_slug if expected_category_slug is not None
@@ -46,17 +52,48 @@ class WordPressBlogImporter:
         )
 
     # ------------------------------------------------------------------ run --
-    def run(self, *, post_ids=None, limit=None, allow_category_mismatch=False):
+    def run(self, *, post_ids=None, limit=None, allow_category_mismatch=False, on_entry=None):
         started = time.monotonic()
         post_ids = [int(i) for i in dict.fromkeys(post_ids or [])]
-        if self.commit and not post_ids:
-            raise ImportAborted("Bulk commit is disabled in Batch 3: pass explicit --post-id values.")
-        if self.commit and len(post_ids) > MAX_COMMIT_POSTS:
-            raise ImportAborted(f"At most {MAX_COMMIT_POSTS} posts can be committed per run in Batch 3.")
-
-        category = self._validate_category(allow_category_mismatch)
+        self.check_commit_scope(post_ids)
+        category = self.validate_category(allow_category_mismatch)
         logger.info("WordPress Blog import started (commit=%s, posts=%s)", self.commit, post_ids or "all")
 
+        raw_posts, fetch_errors, known_slugs = self.collect(post_ids=post_ids, limit=limit)
+        context = PlanningContext()
+        entries = list(fetch_errors)
+        for raw in raw_posts:
+            entry = self.parse(raw, known_slugs)
+            if entry.get("post") is not None and entry["error"] is None:
+                entry = self.plan_and_apply(entry["post"], context)
+            entries.append(entry)
+            if on_entry:
+                on_entry(entry)
+
+        report = build_report(
+            entries,
+            source=self.client.base_url,
+            category=category,
+            stats=self.client.stats,
+            mode="commit" if self.commit else "dry-run",
+            selected_post_ids=post_ids,
+            duration=time.monotonic() - started,
+        )
+        logger.info("WordPress Blog import finished: %s", dict(report["plan"]))
+        return report
+
+    # ------------------------------------------------------- reusable steps --
+    def check_commit_scope(self, post_ids):
+        if self.commit and not post_ids and not self.allow_bulk:
+            raise ImportAborted("Bulk commit is disabled here: pass explicit --post-id values.")
+        if self.commit and not self.allow_bulk and len(post_ids) > MAX_COMMIT_POSTS:
+            raise ImportAborted(f"At most {MAX_COMMIT_POSTS} posts can be committed per sample run.")
+
+    def validate_category(self, allow_mismatch=False):
+        return self._validate_category(allow_mismatch)
+
+    def collect(self, *, post_ids=None, limit=None):
+        """Fetch raw posts. Returns (raw_posts, fetch_error_entries, known_blog_slugs)."""
         # Cheap listing first (ids + slugs): REST total, known Blog slugs for
         # link classification, and the post order for content paging.
         listing = [
@@ -71,26 +108,22 @@ class WordPressBlogImporter:
             if limit:
                 ids = ids[: int(limit)]
             raw_posts, fetch_errors = self._fetch_all(ids)
+        return raw_posts, fetch_errors, known_slugs
 
-        context = PlanningContext()
-        entries = list(fetch_errors)
-        for raw in raw_posts:
-            entries.append(self._process(raw, context, known_slugs))
-
-        report = build_report(
-            entries,
-            source=self.client.base_url,
-            category=category,
-            stats=self.client.stats,
-            mode="commit" if self.commit else "dry-run",
-            selected_post_ids=post_ids,
-            duration=time.monotonic() - started,
-        )
-        logger.info(
-            "WordPress Blog import finished: %s",
-            {k: v for k, v in report["plan"].items()},
-        )
-        return report
+    def parse(self, raw, known_slugs):
+        """Raw payload -> {'post': NormalizedWordPressBlog} or an error entry."""
+        raw_id = raw.get("id") if isinstance(raw, dict) else None
+        try:
+            post = parse_wordpress_post(
+                raw, site_url=self.client.base_url, client=self.client, known_blog_slugs=known_slugs
+            )
+        except WordPressPostParseError as exc:
+            logger.warning("WordPress post %s could not be parsed: %s", raw_id, exc)
+            return self._error_entry(raw_id, f"parse error: {exc}")
+        except Exception as exc:  # isolate one bad post
+            logger.exception("Unexpected error parsing WordPress post %s", raw_id)
+            return self._error_entry(raw_id, f"unexpected parse error: {exc.__class__.__name__}")
+        return {"plan": None, "post": post, "applied": None, "error": None}
 
     # -------------------------------------------------------------- helpers --
     def _validate_category(self, allow_mismatch):
@@ -139,18 +172,31 @@ class WordPressBlogImporter:
         return posts, errors
 
     def _fetch_selected(self, post_ids):
+        """Selected posts through the same collection endpoint as bulk imports.
+
+        WordPress renders some fields by request context (an auto-generated
+        excerpt is 55 words on the single-post endpoint but shorter on the
+        list endpoint), so every import path must read the same context or
+        re-imports would flip-flop between CREATE/UPDATE for no source change.
+        """
         posts, errors = [], []
-        for post_id in post_ids:
+        for index in range(0, len(post_ids), EMBED_PER_PAGE):
+            chunk = post_ids[index : index + EMBED_PER_PAGE]
             try:
-                post = self.client.get_post(post_id, embed=True)
+                page = self.client.list_posts(
+                    self.category_id, page=1, per_page=EMBED_PER_PAGE, embed=True, include=chunk
+                )
             except WordPressBlogAPIError as exc:
-                errors.append(self._error_entry(post_id, str(exc)))
+                errors.extend(self._error_entry(post_id, str(exc)) for post_id in chunk)
                 continue
-            categories = post.get("categories") or []
-            if self.category_id not in categories:
-                errors.append(self._error_entry(post_id, f"post is not in WordPress category {self.category_id}"))
-                continue
-            posts.append(post)
+            by_id = {p.get("id"): p for p in page.posts if isinstance(p, dict)}
+            for post_id in chunk:
+                if post_id in by_id:
+                    posts.append(by_id[post_id])
+                else:
+                    errors.append(self._error_entry(
+                        post_id, f"post is not in WordPress category {self.category_id} or is not published"
+                    ))
         return posts, errors
 
     @staticmethod
@@ -158,19 +204,8 @@ class WordPressBlogImporter:
         plan = ImportPlan(wp_post_id=post_id or 0, action=ACTION_ERROR, reasons=[message])
         return {"plan": plan, "post": post, "applied": None, "error": message}
 
-    def _process(self, raw, context, known_slugs):
-        raw_id = raw.get("id") if isinstance(raw, dict) else None
-        try:
-            post = parse_wordpress_post(
-                raw, site_url=self.client.base_url, client=self.client, known_blog_slugs=known_slugs
-            )
-        except WordPressPostParseError as exc:
-            logger.warning("WordPress post %s could not be parsed: %s", raw_id, exc)
-            return self._error_entry(raw_id, f"parse error: {exc}")
-        except Exception as exc:  # isolate one bad post
-            logger.exception("Unexpected error parsing WordPress post %s", raw_id)
-            return self._error_entry(raw_id, f"unexpected parse error: {exc.__class__.__name__}")
-
+    def plan_and_apply(self, post, context):
+        """Plan one parsed post and, when committing, apply it atomically."""
         try:
             plan = plan_import(post, context)
         except Exception as exc:
@@ -182,17 +217,18 @@ class WordPressBlogImporter:
         entry = {"plan": plan, "post": post, "applied": None, "error": None}
         if plan.action == ACTION_ERROR:
             logger.warning("WordPress post %s cannot be imported: %s", post.wp_post_id, "; ".join(plan.reasons))
+        elif plan.action == ACTION_RESTRICTED:
+            logger.info("WordPress post %s is members-only; not imported", post.wp_post_id)
         if self.commit and plan.action in (ACTION_CREATE, ACTION_UPDATE):
             try:
                 blog = apply_plan(plan, commit=True)
                 entry["applied"] = {"blog_post_id": blog.pk, "action": plan.action}
             except Exception as exc:
                 logger.error("WordPress post %s import failed and was rolled back: %s", post.wp_post_id, exc)
-                entry["error"] = f"import failed and was rolled back: {exc}"
+                entry["error"] = f"import failed and was rolled back: {exc.__class__.__name__}"
                 entry["plan"].action = ACTION_ERROR
-                entry["plan"].reasons.append(str(exc))
+                entry["plan"].reasons.append(f"import failed and was rolled back: {exc.__class__.__name__}")
         return entry
-
 
 def _get_or_create_term(model, term):
     existing = model.objects.filter(slug__iexact=term["slug"]).first() or model.objects.filter(

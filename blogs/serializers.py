@@ -12,7 +12,7 @@ from rest_framework import serializers
 
 from users.serializers import UserMiniSerializer
 
-from .models import RESERVED_SLUGS, BlogCategory, BlogPost, BlogTag
+from .models import RESERVED_SLUGS, BlogCategory, BlogImportRun, BlogPost, BlogTag
 
 User = get_user_model()
 
@@ -217,3 +217,53 @@ class BlogAdminSerializer(serializers.ModelSerializer):
 
 class BlogPublishSerializer(serializers.Serializer):
     """Empty body for publish/unpublish actions (keeps the schema explicit)."""
+
+
+class BlogImportRunSerializer(serializers.ModelSerializer):
+    """Admin-facing import status. Counters plus a bounded summary; never
+    article HTML, stack traces or secrets."""
+
+    requested_by = BlogAuthorSerializer(read_only=True)
+    progress = serializers.SerializerMethodField()
+    summary = serializers.SerializerMethodField()
+    is_active = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = BlogImportRun
+        fields = (
+            "id", "status", "is_active", "current_step", "celery_task_id", "requested_by",
+            "total_discovered", "total_importable", "processed_count",
+            "created_count", "updated_count", "skipped_count", "restricted_count", "failed_count",
+            "media_found_count", "media_processed_count", "media_migrated_count", "media_reused_count",
+            "media_skipped_count", "media_failed_count", "links_rewritten_count",
+            "progress", "summary", "error_message",
+            "started_at", "finished_at", "created_at", "updated_at",
+        )
+        read_only_fields = fields
+
+    def get_progress(self, run) -> dict:
+        return {
+            "processed": run.processed_count,
+            "total": run.total_importable,
+            "media_processed": run.media_processed_count,
+            "media_total": run.media_found_count,
+        }
+
+    def get_summary(self, run) -> dict:
+        report = run.report_json or {}
+        return {
+            "restricted_post_ids": report.get("restricted_post_ids", []),
+            "errors": report.get("errors", [])[:20],
+            "media_failures": [
+                {k: f.get(k) for k in ("wp_post_id", "kind", "code", "message")}
+                for f in report.get("media_failures", [])[:20]
+            ],
+            "media": report.get("media", {}),
+            "links": report.get("links", {}),
+            "warnings": report.get("warnings", {}),
+            "duration_seconds": report.get("duration_seconds"),
+        }
+
+
+class BlogImportStartSerializer(serializers.Serializer):
+    """Empty request body: the import behaviour is fixed (public posts, media, links)."""

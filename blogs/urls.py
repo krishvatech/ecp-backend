@@ -12,6 +12,7 @@ from .views import (
     BlogPostAdminViewSet,
     BlogPostViewSet,
     BlogTagAdminViewSet,
+    BlogWordPressImportViewSet,
 )
 
 app_name = "blogs"
@@ -19,6 +20,7 @@ app_name = "blogs"
 admin_router = SimpleRouter()
 admin_router.register(r"categories", BlogCategoryAdminViewSet, basename="admin-category")
 admin_router.register(r"tags", BlogTagAdminViewSet, basename="admin-tag")
+admin_router.register(r"wordpress-import", BlogWordPressImportViewSet, basename="admin-wordpress-import")
 admin_router.register(r"", BlogPostAdminViewSet, basename="admin-post")
 
 public_router = SimpleRouter()

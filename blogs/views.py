@@ -11,20 +11,22 @@ Two surfaces, kept apart on purpose:
 """
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
-from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
-from rest_framework import mixins, viewsets
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema, extend_schema_view
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.filters import SearchFilter
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import BlogCategory, BlogPost, BlogTag
+from .models import BlogCategory, BlogImportRun, BlogPost, BlogTag
 from .permissions import IsSuperuser
 from .serializers import (
     BlogAdminSerializer,
     BlogCategorySerializer,
     BlogDetailSerializer,
+    BlogImportRunSerializer,
+    BlogImportStartSerializer,
     BlogListSerializer,
     BlogPublishSerializer,
     BlogTagSerializer,
@@ -163,3 +165,65 @@ class BlogCategoryAdminViewSet(BlogTermAdminViewSet):
 class BlogTagAdminViewSet(BlogTermAdminViewSet):
     queryset = BlogTag.objects.order_by("name", "id")
     serializer_class = BlogTagSerializer
+
+
+def _enqueue_wordpress_import(run):
+    from .tasks import run_wordpress_blog_import
+
+    return run_wordpress_blog_import.delay(str(run.pk)).id
+
+
+class BlogWordPressImportViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """Superuser-only WordPress Blog import: start (async), status, history."""
+
+    permission_classes = [IsAuthenticated, IsSuperuser]
+    serializer_class = BlogImportRunSerializer
+    lookup_value_regex = r"[0-9a-fA-F-]{36}"
+    pagination_class = None
+    enqueue = staticmethod(_enqueue_wordpress_import)
+
+    def get_queryset(self):
+        queryset = BlogImportRun.objects.select_related("requested_by__profile").order_by("-created_at")
+        if self.action == "list":
+            try:
+                limit = max(1, min(int(self.request.query_params.get("limit", 10)), 50))
+            except ValueError:
+                limit = 10
+            return queryset[:limit]
+        return queryset
+
+    @extend_schema(
+        request=BlogImportStartSerializer,
+        responses={
+            202: BlogImportRunSerializer,
+            409: OpenApiResponse(description="An import is already running; body contains `active_run`."),
+            503: OpenApiResponse(description="Import not configured or could not be queued."),
+        },
+    )
+    def create(self, request, *args, **kwargs):
+        from .wordpress.sync import ImportAlreadyRunning, ImportNotConfigured, start_wordpress_import
+
+        try:
+            run = start_wordpress_import(request.user, enqueue=self.enqueue)
+        except ImportAlreadyRunning as exc:
+            return Response(
+                {
+                    "detail": "An import is already running.",
+                    "active_run": BlogImportRunSerializer(exc.run, context={"request": request}).data if exc.run else None,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        except ImportNotConfigured as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        run.refresh_from_db()
+        data = BlogImportRunSerializer(run, context={"request": request}).data
+        data["message"] = "WordPress Blog import queued."
+        return Response(data, status=status.HTTP_202_ACCEPTED)
+
+    @extend_schema(responses={200: BlogImportRunSerializer, 404: OpenApiResponse(description="No imports yet.")})
+    @action(detail=False, methods=["get"])
+    def latest(self, request):
+        run = self.get_queryset().first()
+        if run is None:
+            return Response({"detail": "No WordPress imports yet."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(self.get_serializer(run).data)

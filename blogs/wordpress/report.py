@@ -4,6 +4,7 @@ from collections import Counter
 from .types import (
     ACTION_CREATE,
     ACTION_ERROR,
+    ACTION_RESTRICTED,
     ACTION_SKIP,
     ACTION_UPDATE,
     FORMATS,
@@ -18,7 +19,8 @@ IMAGE_CLASSES = ("wordpress_media", "internal_site_media", "external_media", "da
 
 def build_report(entries, *, source, category, stats, mode, selected_post_ids, duration):
     formats = Counter({f: 0 for f in FORMATS})
-    actions = Counter({a: 0 for a in (ACTION_CREATE, ACTION_UPDATE, ACTION_SKIP, ACTION_ERROR)})
+    actions = Counter({a: 0 for a in (ACTION_CREATE, ACTION_UPDATE, ACTION_SKIP, ACTION_RESTRICTED, ACTION_ERROR)})
+    restricted_ids = []
     warnings = Counter()
     images = Counter({c: 0 for c in IMAGE_CLASSES})
     links = Counter({c: 0 for c in LINK_CLASSES})
@@ -38,16 +40,18 @@ def build_report(entries, *, source, category, stats, mode, selected_post_ids, d
         warnings.update(set(codes))
         if plan.action == ACTION_ERROR:
             errors.append({"wp_post_id": plan.wp_post_id, "reasons": plan.reasons})
+        elif plan.action == ACTION_RESTRICTED:
+            restricted_ids.append(plan.wp_post_id)
         if post is None:
             continue
         formats[post.source_format] += 1
-        if plan.action != ACTION_ERROR:
+        if plan.action not in (ACTION_ERROR, ACTION_RESTRICTED):
             samples[post.source_format].append(post.wp_post_id)
         if post.wp_author_id:
             author_ids.add(post.wp_author_id)
             if plan.author_user_id:
                 mapped_ids.add(post.wp_author_id)
-        if plan.action != ACTION_ERROR and not plan.author_user_id:
+        if plan.action not in (ACTION_ERROR, ACTION_RESTRICTED) and not plan.author_user_id:
             legacy_fallback_posts += 1
         if post.featured_media:
             featured["found"] += 1
@@ -117,8 +121,10 @@ def build_report(entries, *, source, category, stats, mode, selected_post_ids, d
             "create": actions[ACTION_CREATE],
             "update": actions[ACTION_UPDATE],
             "skip": actions[ACTION_SKIP],
+            "restricted": actions[ACTION_RESTRICTED],
             "error": actions[ACTION_ERROR],
         },
+        "restricted_post_ids": sorted(restricted_ids),
         "authors": {
             "unique_wp_authors": len(author_ids),
             "mapped": len(mapped_ids),
@@ -169,7 +175,9 @@ def render_text(report):
     verb = "Would " if report["mode"] == "dry-run" else ""
     plan = report["plan"]
     section("IMPORT PLAN", [(f"{verb}create", plan["create"]), (f"{verb}update", plan["update"]),
-                            (f"{verb}skip", plan["skip"]), ("Errors", plan["error"])])
+                            (f"{verb}skip", plan["skip"]),
+                            ("Restricted (members-only, not imported)", f"{plan['restricted']} {report['restricted_post_ids']}"),
+                            ("Errors", plan["error"])])
     authors = report["authors"]
     section("AUTHORS", [("Unique WP authors", authors["unique_wp_authors"]), ("Mapped to ECP users", authors["mapped"]),
                         ("Unmapped", f"{authors['unmapped']} {authors['unmapped_ids']}"),

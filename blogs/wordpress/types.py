@@ -45,6 +45,8 @@ ACTION_CREATE = "CREATE"
 ACTION_UPDATE = "UPDATE"
 ACTION_SKIP = "SKIP"
 ACTION_ERROR = "ERROR"
+# Expected source limitation (members-only teaser): never imported, not a failure.
+ACTION_RESTRICTED = "RESTRICTED"
 
 
 @dataclass

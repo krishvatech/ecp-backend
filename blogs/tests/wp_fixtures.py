@@ -163,6 +163,9 @@ class FakeWordPress:
             per_page = int(params.get("per_page", 10))
             page = int(params.get("page", 1))
             chosen = [p for p in self.posts if int(params.get("categories", 0)) in p["categories"]]
+            if params.get("include"):
+                wanted_ids = {int(i) for i in str(params["include"]).split(",")}
+                chosen = [p for p in chosen if p["id"] in wanted_ids]
             total_pages = max(1, -(-len(chosen) // per_page))
             if page > total_pages:
                 return FakeResponse(400, {"code": "rest_post_invalid_page_number", "message": "Invalid page."})

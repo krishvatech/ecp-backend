@@ -153,7 +153,8 @@ class PlannerTests(TestCase):
         teaser = ('<p>Opening paragraph.</p><div class="woocommerce"><div class="woocommerce-info wc-memberships-restriction-message">'
                   'To access this post, you must purchase <a href="https://imaa.test/product/membership/">Membership</a>.</div></div>')
         plan = plan_import(normalized(content=teaser))
-        self.assertEqual(plan.action, "ERROR")
+        self.assertEqual(plan.action, "RESTRICTED", "expected source limitation, not an error")
+        self.assertEqual(plan.values, {}, "nothing is ever written for a teaser")
         self.assertIn("members_only_teaser", codes(plan))
         self.assertIn("members-only", plan.reasons[0])
 
@@ -216,7 +217,7 @@ class DryRunTests(ImporterHarness, TestCase):
         with tempfile.NamedTemporaryFile(suffix=".json") as handle:
             output = self.run_command("--dry-run", "--report-json", handle.name)
             report = json.load(open(handle.name))
-        self.assertEqual(report["plan"], {"create": 4, "update": 0, "skip": 0, "error": 1})
+        self.assertEqual(report["plan"], {"create": 4, "update": 0, "skip": 0, "restricted": 0, "error": 1})
         self.assertEqual(report["formats"], {"gutenberg": 1, "elementor": 1, "classic": 2, "mixed": 1, "unknown": 0})
         self.assertEqual(report["fetch"]["api_total"], 5)
         self.assertEqual(report["fetch"]["content_pages_fetched"], 1)
@@ -256,13 +257,20 @@ class DryRunTests(ImporterHarness, TestCase):
         self.fake.get = page_fails
         report = WordPressBlogImporter(WordPressBlogClient(SITE, session=self.fake, retries=0)).run()
         self.assertEqual(report["fetch"]["single_post_fallbacks"], 5)
-        self.assertEqual(report["plan"], {"create": 3, "update": 0, "skip": 0, "error": 2})
+        self.assertEqual(report["plan"], {"create": 3, "update": 0, "skip": 0, "restricted": 0, "error": 2})
         self.assertIn("fetch failed", " ".join(e["reasons"][0] for e in report["errors"]))
 
     def test_limit_restricts_what_is_fetched(self):
         report = WordPressBlogImporter(WordPressBlogClient(SITE, session=self.fake)).run(limit=2)
         self.assertEqual(report["fetch"]["posts_processed"], 2)
         self.assertEqual(report["fetch"]["api_total"], 5)
+
+    def test_selected_posts_use_the_same_list_context_as_bulk(self):
+        WordPressBlogImporter(WordPressBlogClient(SITE, session=self.fake)).run(post_ids=[203, 201])
+        single_post_calls = [path for path, _ in self.fake.calls if path.startswith("/posts/")]
+        self.assertEqual(single_post_calls, [], "never the single-post endpoint (different excerpt rendering)")
+        include_calls = [params["include"] for path, params in self.fake.calls if path == "/posts" and "include" in params]
+        self.assertEqual(include_calls, ["203,201"])
 
     def test_single_post_dry_run(self):
         output = self.run_command("--post-id", "203")
