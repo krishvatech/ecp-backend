@@ -268,6 +268,28 @@ class AdminBlogApiTests(BlogAPITestCase):
         detail = self.client.get(reverse("blogs:post-detail", kwargs={"slug": post.slug}))
         self.assertEqual(detail.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_manual_publish_or_unpublish_takes_status_ownership_from_wordpress(self):
+        imported = make_post(slug="imported", wp_post_id=42, imported_from_wordpress=True, wp_status="draft",
+                             wp_status_managed=True)
+        response = self.client.post(publish_url(imported.id))
+        self.assertEqual((response.data["status"], response.data["wp_status_managed"]), ("published", False))
+        BlogPost.objects.filter(pk=imported.pk).update(wp_status_managed=True)
+        response = self.client.post(unpublish_url(imported.id))
+        self.assertEqual((response.data["status"], response.data["wp_status_managed"]), ("draft", False))
+
+        manual = make_post(slug="manual")
+        self.client.post(publish_url(manual.id))
+        manual.refresh_from_db()
+        self.assertEqual((manual.wp_post_id, manual.wp_status_managed), (None, False))
+
+    def test_wordpress_status_fields_are_read_only(self):
+        post = make_post(wp_post_id=43, wp_status="publish", wp_status_managed=True)
+        self.client.patch(admin_detail_url(post.id), {"wp_status": "draft", "wp_status_managed": False,
+                                                       "wp_membership_restricted": True}, format="json")
+        post.refresh_from_db()
+        self.assertEqual((post.wp_status, post.wp_status_managed, post.wp_membership_restricted),
+                         ("publish", True, False))
+
     def test_unknown_post_returns_404(self):
         self.assertEqual(
             self.client.post(publish_url(999999)).status_code, status.HTTP_404_NOT_FOUND

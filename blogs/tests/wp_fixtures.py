@@ -10,6 +10,15 @@ import requests
 
 SITE = "https://imaa.test"
 CATEGORY = {"id": 58, "name": "Blog", "slug": "blog", "count": 2, "taxonomy": "category"}
+# Fictional Application Password credentials accepted by FakeWordPress.
+WP_USER = "blog-reader"
+WP_APP_PASSWORD = "abcd EFGH ijkl MNOP qrst UVWX"
+AUTH = (WP_USER, WP_APP_PASSWORD)
+# What WooCommerce Memberships serves anonymous visitors instead of the article.
+MEMBERS_TEASER_HTML = (
+    '<p>Opening paragraph.</p><div class="wc-memberships-restriction-message wc-memberships-message">'
+    "<p>This content is only available to members.</p></div>"
+)
 
 GUTENBERG_HTML = """
 <!-- wp:paragraph --><p>Hello world.</p><!-- /wp:paragraph -->
@@ -75,13 +84,22 @@ def make_post(
     date_gmt="2024-03-01T10:00:00",
     modified_gmt="2024-03-05T12:30:00",
     embed=True,
+    members_only=False,
+    generated_slug=None,
 ):
+    """`members_only`: WooCommerce Memberships restricts the post (anonymous
+    requests get MEMBERS_TEASER_HTML, authenticated ones the article).
+    "unflagged" does the same without the membership-content post class."""
     tag_terms = [{"id": t[0], "name": t[1], "slug": t[2], "taxonomy": "post_tag"} for t in tags]
     post = {
         "id": post_id,
         "status": status,
         "slug": slug,
-        "link": f"{SITE}/blog/{slug}/",
+        "link": f"{SITE}/blog/{slug}/" if status == "publish" else f"{SITE}/?p={post_id}",
+        "generated_slug": generated_slug if generated_slug is not None else slug,
+        "class_list": [f"post-{post_id}", "post", f"status-{status}", "category-blog"]
+        + (["membership-content"] if members_only is True else []),
+        "_members_only": members_only,
         "date": date_gmt,
         "date_gmt": date_gmt,
         "modified": modified_gmt,
@@ -135,21 +153,64 @@ class FakeResponse:
         return copy.deepcopy(self._payload)
 
 
-class FakeWordPress:
-    """A fake requests.Session serving a tiny WordPress REST API."""
+EDIT_ONLY_FIELDS = ("generated_slug",)
+PUBLIC_STATUSES = {"publish"}
 
-    def __init__(self, posts=(), category=None, terms=None, media=None):
+
+class FakeWordPress:
+    """A fake requests.Session serving a tiny WordPress REST API.
+
+    Models what the Blog importer relies on: anonymous requests see only
+    published posts (members-only ones as a teaser); Application Password
+    requests (`auth=AUTH`) may list any status and use context=edit; bad
+    credentials get 401, `forbid_auth=True` makes WordPress answer 403."""
+
+    def __init__(self, posts=(), category=None, terms=None, media=None, credentials=AUTH, forbid_auth=False,
+                 edit_rendered=None):
         self.posts = list(posts)
         self.category = category or CATEGORY
         self.terms = terms or {"categories": {}, "tags": {}}
         self.media = media or {}
+        self.credentials = credentials
+        self.forbid_auth = forbid_auth
+        # post id -> content.rendered returned in context=edit only (WordPress
+        # renders the wrong Elementor document there for some posts).
+        self.edit_rendered = edit_rendered or {}
         self.calls = []
+        self.call_auth = []  # auth tuple (or None) per call, parallel to `calls`
         self.overrides = {}  # path -> FakeResponse or Exception
 
-    def get(self, url, params=None, timeout=None, headers=None):
+    def _visible(self, post, authenticated, context):
+        """A post as WordPress would return it for this viewer/context."""
+        post = copy.deepcopy(post)
+        post.setdefault("class_list", [])
+        members_only = post.pop("_members_only", False)
+        if context != "edit":
+            for field in EDIT_ONLY_FIELDS:
+                post.pop(field, None)
+        elif post["id"] in self.edit_rendered:
+            post["content"] = {"rendered": self.edit_rendered[post["id"]], "raw": ""}
+        if members_only:
+            if members_only is True:
+                post["class_list"] = post["class_list"] + ["access-granted" if authenticated else "access-restricted"]
+            if not authenticated:
+                post["content"] = {"rendered": MEMBERS_TEASER_HTML}
+                post["excerpt"] = {"rendered": "<p>Opening paragraph.</p>"}
+        return post
+
+    def get(self, url, params=None, timeout=None, headers=None, auth=None):
         path = urlsplit(url).path.replace("/wp-json/wp/v2", "")
         params = dict(params or {})
         self.calls.append((path, params))
+        self.call_auth.append(auth)
+        if auth is not None and tuple(auth) != tuple(self.credentials or ()):
+            return FakeResponse(401, {"code": "incorrect_password", "message": "The provided password is an invalid application password."})
+        if auth is not None and self.forbid_auth:
+            return FakeResponse(403, {"code": "rest_forbidden", "message": "Sorry, you are not allowed to do that."})
+        authenticated = auth is not None
+        context = params.get("context", "view")
+        if context == "edit" and not authenticated:
+            return FakeResponse(401, {"code": "rest_forbidden_context", "message": "Sorry, you are not allowed to edit posts in this post type."})
         if path in self.overrides:
             override = self.overrides[path]
             if isinstance(override, Exception):
@@ -162,14 +223,18 @@ class FakeWordPress:
         if path == "/posts":
             per_page = int(params.get("per_page", 10))
             page = int(params.get("page", 1))
-            chosen = [p for p in self.posts if int(params.get("categories", 0)) in p["categories"]]
+            statuses = set(str(params.get("status", "publish")).split(","))
+            if not authenticated and statuses - PUBLIC_STATUSES:
+                return FakeResponse(400, {"code": "rest_invalid_param", "message": "Invalid parameter(s): status"})
+            chosen = [p for p in self.posts if int(params.get("categories", 0)) in p["categories"]
+                      and p.get("status", "publish") in statuses]
             if params.get("include"):
                 wanted_ids = {int(i) for i in str(params["include"]).split(",")}
                 chosen = [p for p in chosen if p["id"] in wanted_ids]
             total_pages = max(1, -(-len(chosen) // per_page))
             if page > total_pages:
                 return FakeResponse(400, {"code": "rest_post_invalid_page_number", "message": "Invalid page."})
-            items = chosen[(page - 1) * per_page : page * per_page]
+            items = [self._visible(p, authenticated, context) for p in chosen[(page - 1) * per_page : page * per_page]]
             if "_embed" not in params:
                 items = [{k: v for k, v in p.items() if k != "_embedded"} for p in items]
             if params.get("_fields"):
@@ -179,7 +244,8 @@ class FakeWordPress:
         if path.startswith("/posts/"):
             post_id = int(path.rsplit("/", 1)[1])
             for post in self.posts:
-                if post["id"] == post_id:
+                if post["id"] == post_id and (authenticated or post.get("status", "publish") in PUBLIC_STATUSES):
+                    post = self._visible(post, authenticated, context)
                     return FakeResponse(200, post if "_embed" in params else {k: v for k, v in post.items() if k != "_embedded"})
             return FakeResponse(404, {"code": "rest_post_invalid_id", "message": "Invalid post ID."})
         if path in ("/categories", "/tags"):

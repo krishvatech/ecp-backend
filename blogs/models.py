@@ -166,6 +166,14 @@ class BlogPost(models.Model):
     # WordPress media ID whose image the importer attached. Lets a re-import
     # tell an imported featured image from one an ECP admin replaced/removed.
     wp_featured_media_id = models.PositiveBigIntegerField(null=True, blank=True)
+    # WordPress source state (not the ECP status): publish/draft/pending/future/private.
+    wp_status = models.CharField(max_length=20, blank=True, default="")
+    # True while the WordPress status still drives the ECP status; a manual
+    # Publish/Unpublish in ECP sets it to False (ECP owns the status from then on).
+    wp_status_managed = models.BooleanField(default=False)
+    # WooCommerce Memberships restricts this post on WordPress. Imported as a
+    # Draft until ECP has an equivalent members-only visibility.
+    wp_membership_restricted = models.BooleanField(default=False)
 
     # Audit
     created_by = models.ForeignKey(
@@ -230,7 +238,9 @@ class BlogPost(models.Model):
         super().save(*args, **kwargs)
 
     def publish(self, user=None):
-        """Publish the post, keeping any historical ``published_at``."""
+        """Publish the post, keeping any historical ``published_at``.
+
+        A manual publish takes status ownership from the WordPress import."""
         errors = self.publishability_errors()
         if errors:
             raise ValidationError(errors)
@@ -239,14 +249,18 @@ class BlogPost(models.Model):
             self.published_at = timezone.now()
         if user is not None:
             self.updated_by = user
-        self.save(update_fields=["status", "published_at", "updated_by", "updated_at"])
+        self.wp_status_managed = False
+        self.save(update_fields=["status", "published_at", "updated_by", "wp_status_managed", "updated_at"])
 
     def unpublish(self, user=None):
-        """Return the post to draft; ``published_at`` is kept for republishing."""
+        """Return the post to draft; ``published_at`` is kept for republishing.
+
+        A manual unpublish takes status ownership from the WordPress import."""
         self.status = self.STATUS_DRAFT
         if user is not None:
             self.updated_by = user
-        self.save(update_fields=["status", "updated_by", "updated_at"])
+        self.wp_status_managed = False
+        self.save(update_fields=["status", "updated_by", "wp_status_managed", "updated_at"])
 
 
 class BlogImportRun(models.Model):

@@ -5,8 +5,11 @@ Post-sync rewriting of imported Blog HTML (structural, never string replace):
     (srcset/sizes dropped once the image is migrated, so nothing points back
     to WordPress);
   * links to other imported WordPress Blog posts -> /blogs/<ecp-slug> (the
-    Batch 2 reader route). Restricted/unimported targets keep their WordPress
-    URL. Every other link is left alone.
+    Batch 2 reader route), but only while the target is Published in ECP (a
+    Draft would be a 404 for readers). Draft/members-only/unimported targets
+    keep their WordPress URL, and an earlier /blogs/ link whose target is no
+    longer Published is restored to its WordPress URL. Every other link is
+    left alone.
 
 The result always goes back through the importer's nh3 sanitiser.
 Featured images follow the ownership policy in `sync_featured_image`.
@@ -68,35 +71,65 @@ def rewrite_inline_media(html, store, *, base_url, hosts, on_image=None):
     return sanitize_html(str(soup)), stats, failures
 
 
-def blog_slug_mapping(posts, *, base_url, known_blog_slugs=()):
-    """Map WordPress Blog slug -> ECP slug for imported posts (from wp_source_url)."""
-    mapping = {}
-    for wp_source_url, ecp_slug in posts:
-        link = classify_link(wp_source_url, base_url, known_blog_slugs)
-        if link.classification == "blog" and link.blog_slug:
-            mapping[link.blog_slug] = ecp_slug
-    return mapping
+def blog_link_targets(rows, *, base_url, known_blog_slugs=(), wp_slugs=None):
+    """Split imported Blogs into link targets.
+
+    `rows`: (wp_post_id, wp_source_url, ecp_slug, ecp_status) per imported post.
+    `wp_slugs`: wp_post_id -> WordPress slug from this run (preferred; a draft's
+    wp_source_url is a ?p= link without slug).
+
+    Returns (published, unpublished): WordPress slug -> ECP slug, for targets
+    readers can open in ECP and for targets they cannot (Draft)."""
+    published, unpublished = {}, {}
+    for wp_post_id, wp_source_url, ecp_slug, ecp_status in rows:
+        wp_slug = (wp_slugs or {}).get(wp_post_id)
+        if not wp_slug:
+            link = classify_link(wp_source_url, base_url, known_blog_slugs)
+            wp_slug = link.blog_slug if link.classification == "blog" else ""
+        if wp_slug:
+            (published if ecp_status == "published" else unpublished)[wp_slug] = ecp_slug
+    return published, unpublished
 
 
-def rewrite_blog_links(html, mapping, *, base_url, restricted_slugs=(), known_blog_slugs=()):
-    """Return (html, stats Counter). Only confidently identified Blog links change."""
+def _with_fragment(href, fragment):
+    return href + (f"#{fragment}" if fragment else "")
+
+
+def rewrite_blog_links(html, published, *, base_url, unpublished=None, restricted_slugs=(), known_blog_slugs=()):
+    """Return (html, stats Counter). Only confidently identified Blog links change.
+
+    `published`/`unpublished`: WordPress slug -> ECP slug (see blog_link_targets).
+    `restricted_slugs`: WordPress slugs of members-only posts with no ECP copy."""
     stats = Counter()
     soup = BeautifulSoup(html or "", "html.parser")
     changed = False
-    restricted = set(restricted_slugs)
+    unpublished = unpublished or {}
+    hidden = set(unpublished) | set(restricted_slugs)
+    restore = {ecp_slug: wp_slug for wp_slug, ecp_slug in unpublished.items()}
     for anchor in soup.find_all("a", href=True):
-        link = classify_link(anchor["href"], base_url, known_blog_slugs)
+        href = anchor["href"]
+        parts = urlsplit(href)
+        if not parts.netloc and parts.path.startswith(BLOG_READER_PATH):
+            # An ECP Blog link written by an earlier run.
+            ecp_slug = parts.path[len(BLOG_READER_PATH):].strip("/")
+            if ecp_slug in restore:
+                anchor["href"] = _with_fragment(f"{base_url.rstrip('/')}/blog/{restore[ecp_slug]}/", parts.fragment)
+                stats["restored"] += 1
+                changed = True
+            else:
+                stats["ecp_blog_link"] += 1
+            continue
+        link = classify_link(href, base_url, known_blog_slugs)
         stats[f"class_{link.classification}"] += 1
         if link.classification != "blog":
             continue
         stats["blog_found"] += 1
-        if link.blog_slug in mapping:
-            fragment = urlsplit(anchor["href"]).fragment
-            anchor["href"] = f"{BLOG_READER_PATH}{mapping[link.blog_slug]}" + (f"#{fragment}" if fragment else "")
+        if link.blog_slug in published:
+            anchor["href"] = _with_fragment(f"{BLOG_READER_PATH}{published[link.blog_slug]}", parts.fragment)
             stats["rewritten"] += 1
             changed = True
-        elif link.blog_slug in restricted:
-            stats["restricted_target"] += 1
+        elif link.blog_slug in hidden:
+            stats["unpublished_target"] += 1  # Draft / members-only: keep the WordPress URL
         else:
             stats["unresolved"] += 1
     if not changed:

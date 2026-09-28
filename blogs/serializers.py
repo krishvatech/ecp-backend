@@ -175,6 +175,9 @@ class BlogAdminSerializer(serializers.ModelSerializer):
             "wp_author_id",
             "wp_modified_at",
             "imported_from_wordpress",
+            "wp_status",
+            "wp_status_managed",
+            "wp_membership_restricted",
             "created_by",
             "updated_by",
             "created_at",
@@ -189,6 +192,9 @@ class BlogAdminSerializer(serializers.ModelSerializer):
             "wp_author_id",
             "wp_modified_at",
             "imported_from_wordpress",
+            "wp_status",
+            "wp_status_managed",
+            "wp_membership_restricted",
             "created_at",
             "updated_at",
         )
@@ -250,9 +256,16 @@ class BlogImportRunSerializer(serializers.ModelSerializer):
         }
 
     def get_summary(self, run) -> dict:
+        """`restricted_post_ids`: members-only WordPress posts (imported as
+        Draft, or not imported when only a teaser was available; see
+        `restricted`)."""
         report = run.report_json or {}
         return {
             "restricted_post_ids": report.get("restricted_post_ids", []),
+            "restricted": report.get("restricted", {}),
+            "source_status_counts": report.get("source_status_counts", {}),
+            "ecp_status_counts": report.get("ecp_status_counts", {}),
+            "status_changes": report.get("status_changes", {}),
             "errors": report.get("errors", [])[:20],
             "media_failures": [
                 {k: f.get(k) for k in ("wp_post_id", "kind", "code", "message")}
@@ -266,4 +279,5 @@ class BlogImportRunSerializer(serializers.ModelSerializer):
 
 
 class BlogImportStartSerializer(serializers.Serializer):
-    """Empty request body: the import behaviour is fixed (public posts, media, links)."""
+    """Empty request body: the import behaviour is fixed (authenticated
+    all-status sync, media, links)."""

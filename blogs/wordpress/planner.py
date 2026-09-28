@@ -11,8 +11,16 @@ ECP media URLs and ECP Blog links.
 Ownership policy (Batch 3): imported records are source-controlled by
 WordPress until the migration is finalised. A re-import updates the
 WordPress-owned fields in `WORDPRESS_OWNED_FIELDS` plus categories/tags.
-ECP-owned fields are never touched on update: status (an admin may have
-unpublished the post), canonical_url, featured_image, created_by/updated_by.
+ECP-owned fields are never touched on update: canonical_url, featured_image,
+created_by/updated_by.
+
+Status (Batch 4.1): only a public published WordPress post maps to ECP
+Published; draft/pending/future/private and members-only posts map to Draft
+(`target_ecp_status`). WordPress drives the ECP status while
+`wp_status_managed` is True (set on every new import). A manual
+Publish/Unpublish in ECP clears it, and from then on the ECP status is never
+changed by an import. Rows imported before status tracking (empty
+`wp_status`) adopt management only when their status already matches.
 
 Matching is by `wp_post_id` only. Manual ECP posts (wp_post_id NULL) are never
 matched, even with the same title or slug; a slug clash gets a deterministic
@@ -34,6 +42,7 @@ from .types import (
     ACTION_RESTRICTED,
     ACTION_SKIP,
     ACTION_UPDATE,
+    SUPPORTED_WP_STATUSES,
     W_AUTHOR_MAPPING_AMBIGUOUS,
     W_AUTHOR_MAPPING_NAME_MISMATCH,
     W_AUTHOR_MAPPING_UNVERIFIED,
@@ -49,7 +58,9 @@ from .types import (
 WORDPRESS_OWNED_FIELDS = (
     "wp_post_id", "title", "slug", "excerpt", "content_html", "author_id", "legacy_author_name", "published_at",
     "seo_title", "seo_description", "wp_source_url", "wp_author_id", "wp_modified_at", "imported_from_wordpress",
+    "wp_content_hash", "wp_status", "wp_membership_restricted",
 )
+TRASHED_SUFFIX = "__trashed"  # WordPress appends this to the slug of trashed (and restored) posts
 _ECP_SLUG = re.compile(r"^[-a-zA-Z0-9_]+$")
 
 
@@ -99,9 +110,27 @@ class PlanningContext:
         return slug_match or model.objects.filter(name__iexact=term.name).first()
 
 
+def target_ecp_status(wp_status, membership_restricted):
+    """ECP status implied by the WordPress source. Only a published post that
+    anyone can read on WordPress is Published; everything else is a Draft
+    (members-only content stays hidden until ECP has member visibility)."""
+    if wp_status == "publish" and not membership_restricted:
+        return BlogPost.STATUS_PUBLISHED
+    return BlogPost.STATUS_DRAFT
+
+
+def source_slug(post):
+    """WordPress slug; drafts may have none (or a leftover `__trashed` one), in
+    which case WordPress' generated slug is used."""
+    raw = post.slug or ""
+    if raw.endswith(TRASHED_SUFFIX):
+        raw = raw[: -len(TRASHED_SUFFIX)]
+    return raw or post.generated_slug or ""
+
+
 def _ecp_slug(post):
     """WordPress slug if ECP-routable, else a deterministic normalised form."""
-    raw = post.slug or ""
+    raw = source_slug(post)
     if raw and _ECP_SLUG.match(raw) and len(raw) <= 240:
         return raw, None
     fixed = slugify(unquote(raw)) or slugify(post.title) or f"post-{post.wp_post_id}"
@@ -146,22 +175,26 @@ def plan_import(post, context=None):
         warnings=list(post.all_warnings()),
     )
 
-    if post.status != "publish":
-        plan.reasons.append(f"status is '{post.status}', only 'publish' is imported")
+    if post.status not in SUPPORTED_WP_STATUSES:
+        plan.reasons.append(f"WordPress status '{post.status}' is not imported")
         return plan
     if not post.title:
         plan.reasons.append("title is empty after normalization")
         return plan
-    if any(w.code == W_CONTENT_EMPTY for w in plan.warnings) or not post.content_html.strip():
-        plan.reasons.append("content is empty after normalization; needs manual review")
-        return plan
     if any(w.code == W_MEMBERS_ONLY for w in plan.warnings):
-        # Expected source limitation, not a failure: never import the teaser
-        # and never overwrite an existing import with it.
+        # Only the members-only teaser is available (public source): never
+        # import the teaser and never overwrite an existing import with it.
         plan.action = ACTION_RESTRICTED
-        plan.reasons.append("members-only post: the public API only exposes a teaser; not imported")
+        plan.reasons.append("members-only post: only a teaser is available; not imported")
         return plan
-    if post.published_at is None:
+    target_status = target_ecp_status(post.status, post.membership_restricted)
+    publishable = target_status == BlogPost.STATUS_PUBLISHED
+    if any(w.code == W_CONTENT_EMPTY for w in plan.warnings) or not post.content_html.strip():
+        if publishable:
+            plan.reasons.append("content is empty after normalization; needs manual review")
+            return plan
+        plan.reasons.append("content is empty; imported as a Draft for review")
+    if post.published_at is None and publishable:
         plan.reasons.append("no usable WordPress publication date")
         return plan
 
@@ -204,7 +237,8 @@ def plan_import(post, context=None):
         "content_html": post.content_html,
         "author_id": plan.author_user_id,
         "legacy_author_name": post.wp_author_name[:255],
-        "published_at": post.published_at,
+        # A draft without a WordPress date keeps any date ECP already has.
+        "published_at": post.published_at or (existing.published_at if existing else None),
         "seo_title": post.seo_title[:255],
         "seo_description": post.seo_description,
         "wp_source_url": post.source_url[:500],
@@ -212,13 +246,24 @@ def plan_import(post, context=None):
         "wp_modified_at": post.modified_at,
         "imported_from_wordpress": True,
         "wp_content_hash": content_hash(post.content_html),
+        "wp_status": post.status,
+        "wp_membership_restricted": post.membership_restricted,
     }
 
     if existing is None:
         plan.action = ACTION_CREATE
+        plan.ecp_status, plan.status_managed = target_status, True
         plan.reasons.append("wp_post_id not in ECP")
         plan.field_changes = {f: {"old": None, "new": _short(v)} for f, v in plan.values.items()}
+        plan.field_changes["status"] = {"old": None, "new": target_status}
         return plan
+
+    plan.ecp_status, plan.status_managed = _status_decision(existing, target_status)
+    if plan.ecp_status != existing.status:
+        plan.field_changes["status"] = {"old": existing.status, "new": plan.ecp_status}
+        plan.reasons.append(f"WordPress status '{post.status}' -> ECP {plan.ecp_status}")
+    if plan.status_managed != existing.wp_status_managed:
+        plan.field_changes["wp_status_managed"] = {"old": existing.wp_status_managed, "new": plan.status_managed}
 
     for field, new in plan.values.items():
         if field == "content_html" and existing.wp_content_hash:
@@ -239,6 +284,17 @@ def plan_import(post, context=None):
         plan.action = ACTION_SKIP
         plan.reasons.append("imported record already matches WordPress")
     return plan
+
+
+def _status_decision(existing, target_status):
+    """(ECP status, wp_status_managed) for an existing imported post."""
+    if existing.wp_status_managed:
+        return target_status, True
+    if not existing.wp_status:
+        # Imported before WordPress status tracking: adopt management only if
+        # nothing diverged (otherwise an ECP admin changed the status).
+        return existing.status, existing.status == target_status
+    return existing.status, False  # ECP admin owns the status
 
 
 def content_hash(html):

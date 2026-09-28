@@ -45,8 +45,17 @@ ACTION_CREATE = "CREATE"
 ACTION_UPDATE = "UPDATE"
 ACTION_SKIP = "SKIP"
 ACTION_ERROR = "ERROR"
-# Expected source limitation (members-only teaser): never imported, not a failure.
+# Expected source limitation: only a members-only teaser was available (public
+# source). Never imported, not a failure.
 ACTION_RESTRICTED = "RESTRICTED"
+
+# WordPress editorial statuses the importer reads. Anything else (trash,
+# auto-draft, inherit, unknown) is never imported.
+SUPPORTED_WP_STATUSES = ("publish", "draft", "pending", "future", "private")
+
+# How membership restriction was determined.
+RESTRICTION_CLASS_LIST = "class_list"  # WooCommerce Memberships "membership-content" post class
+RESTRICTION_PUBLIC_TEASER = "public_teaser"  # public REST returned the members-only teaser
 
 
 @dataclass
@@ -136,6 +145,9 @@ class NormalizedWordPressBlog:
     source_canonical_url: str
     source_url: str
     warnings: list = field(default_factory=list)
+    generated_slug: str = ""  # WordPress' proposed slug for drafts without one (edit context)
+    membership_restricted: bool = False
+    restriction_source: str = ""  # RESTRICTION_* when restricted
 
     @property
     def content_html(self) -> str:
@@ -161,6 +173,8 @@ class ImportPlan:
     author_user_id: Optional[int] = None
     categories: list = field(default_factory=list)  # [{"name","slug","existing_id"}]
     tags: list = field(default_factory=list)
+    ecp_status: str = ""  # ECP status after applying (draft/published)
+    status_managed: Optional[bool] = None  # wp_status_managed after applying
 
     def summary(self) -> dict[str, Any]:
         data = asdict(self)

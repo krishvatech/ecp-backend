@@ -1,14 +1,19 @@
 """
-Import published IMAA WordPress Blog posts into the ECP Blog.
+Import IMAA WordPress Blog posts into the ECP Blog.
 
 Safe by default: without --commit nothing is written.
 
-    python manage.py import_wordpress_blogs                          # dry run, whole category
+    python manage.py import_wordpress_blogs                          # dry run, whole category (public posts)
     python manage.py import_wordpress_blogs --dry-run --report-json /tmp/blog-import.json
     python manage.py import_wordpress_blogs --post-id 157765          # dry run, one post
     python manage.py import_wordpress_blogs --post-id 157765 --commit # import that post
+    python manage.py import_wordpress_blogs --all-statuses --dry-run  # authenticated: drafts, members-only, ...
+    python manage.py import_wordpress_blogs --all-statuses --post-id 4285 --commit
 
-Bulk commit is disabled in Batch 3: --commit requires explicit --post-id values.
+--all-statuses reads every supported WordPress status with the Blog
+Application Password (WP_IMAA_BLOG_API_USER / WP_IMAA_BLOG_APP_PASSWORD).
+Bulk commit stays disabled here: --commit requires explicit --post-id values
+(the full sync runs from My Blogs -> Import from WordPress).
 """
 import json
 
@@ -42,6 +47,9 @@ class Command(BaseCommand):
         parser.add_argument("--show-posts", action="store_true", help="Print one line per post in the report.")
         parser.add_argument("--allow-category-mismatch", action="store_true",
                             help="Proceed even if the configured category slug is not the expected Blog slug.")
+        parser.add_argument("--all-statuses", action="store_true",
+                            help="Authenticated mode: read publish/draft/pending/future/private posts and full "
+                                 "members-only content (needs WP_IMAA_BLOG_API_USER / WP_IMAA_BLOG_APP_PASSWORD).")
 
     def handle(self, *args, **options):
         commit = options["commit"]
@@ -52,8 +60,9 @@ class Command(BaseCommand):
             raise CommandError("--limit only applies to dry runs.")
 
         try:
-            client = WordPressBlogClient.from_settings()
-            importer = WordPressBlogImporter(client, commit=commit)
+            editorial = options["all_statuses"]
+            client = WordPressBlogClient.from_settings(authenticated=editorial)
+            importer = WordPressBlogImporter(client, commit=commit, editorial=editorial)
             if commit:
                 report = importer.run(post_ids=post_ids, allow_category_mismatch=options["allow_category_mismatch"])
             else:

@@ -21,11 +21,16 @@ from users.models import UserProfile
 
 from .factories import make_post as make_blog
 from .wp_fixtures import (
+    AUTH,
     CLASSIC_HTML,
     ELEMENTOR_HTML,
     GUTENBERG_HTML,
+    JSON_LD_HTML,
     MIXED_HTML,
     SITE,
+    UNSAFE_HTML,
+    WP_APP_PASSWORD,
+    WP_USER,
     FakeWordPress,
     make_post,
 )
@@ -110,6 +115,7 @@ class PlannerTests(TestCase):
         self.assertEqual(plan.values["published_at"], datetime(2024, 3, 1, 10, tzinfo=timezone.utc))
         self.assertNotIn("canonical_url", plan.values, "old WordPress canonical is not copied into ECP")
         self.assertNotIn("status", plan.values)
+        self.assertEqual((plan.ecp_status, plan.status_managed), ("published", True))
 
     def test_changed_source_is_update_and_unchanged_is_skip(self):
         post = normalized(post_id=1)
@@ -160,7 +166,8 @@ class PlannerTests(TestCase):
 
     def test_invalid_content_and_status_are_errors(self):
         self.assertEqual(plan_import(normalized(content="<script>x()</script>")).action, "ERROR")
-        self.assertEqual(plan_import(normalized(status="draft")).action, "ERROR")
+        for status in ("trash", "auto-draft", "inherit", "mystery"):
+            self.assertEqual(plan_import(normalized(status=status)).action, "ERROR", status)
         self.assertEqual(plan_import(normalized(title="<b> </b>")).action, "ERROR")
 
 
@@ -178,7 +185,8 @@ class ImporterHarness:
         ])
         self.client_patch = mock.patch(
             "blogs.management.commands.import_wordpress_blogs.WordPressBlogClient.from_settings",
-            side_effect=lambda: WordPressBlogClient(SITE, session=self.fake, retries=0),
+            side_effect=lambda authenticated=False: WordPressBlogClient(
+                SITE, session=self.fake, retries=0, auth=AUTH if authenticated else None),
         )
         self.client_patch.start()
         self.addCleanup(self.client_patch.stop)
@@ -246,17 +254,18 @@ class DryRunTests(ImporterHarness, TestCase):
     def test_failing_content_page_falls_back_to_single_posts(self):
         original = self.fake.get
 
-        def page_fails(url, params=None, timeout=None, headers=None):
+        def page_fails(url, params=None, timeout=None, headers=None, auth=None):
             params = dict(params or {})
-            if url.endswith("/posts") and "_embed" in params:
-                raise requests.Timeout("page too slow")
-            if url.endswith("/posts/202"):
-                raise requests.Timeout("this post is stuck")
-            return original(url, params, timeout, headers)
+            include = str(params.get("include", ""))
+            if url.endswith("/posts") and "_embed" in params and ("," in include or include == "202"):
+                raise requests.Timeout("page too slow" if "," in include else "this post is stuck")
+            return original(url, params, timeout, headers, auth)
 
         self.fake.get = page_fails
         report = WordPressBlogImporter(WordPressBlogClient(SITE, session=self.fake, retries=0)).run()
         self.assertEqual(report["fetch"]["single_post_fallbacks"], 5)
+        self.assertFalse([path for path, _ in self.fake.calls if path.startswith("/posts/")],
+                         "fallback stays on the collection endpoint")
         self.assertEqual(report["plan"], {"create": 3, "update": 0, "skip": 0, "restricted": 0, "error": 2})
         self.assertIn("fetch failed", " ".join(e["reasons"][0] for e in report["errors"]))
 
@@ -382,3 +391,117 @@ class CommittedImportTests(ImporterHarness, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["title"], "M&A Outlook")
         self.assertNotIn("wp_post_id", response.data)
+
+
+class PlannerStatusTests(TestCase):
+    def test_target_status_mapping(self):
+        from blogs.wordpress.planner import target_ecp_status
+
+        cases = {("publish", False): "published", ("publish", True): "draft", ("draft", False): "draft",
+                 ("pending", False): "draft", ("future", False): "draft", ("private", False): "draft"}
+        for (wp_status, restricted), expected in cases.items():
+            self.assertEqual(target_ecp_status(wp_status, restricted), expected, (wp_status, restricted))
+
+    def test_drafts_are_created_as_ecp_drafts(self):
+        for status in ("draft", "pending", "future", "private"):
+            plan = plan_import(normalized(post_id=10, status=status))
+            self.assertEqual((plan.action, plan.ecp_status, plan.values["wp_status"]), ("CREATE", "draft", status))
+
+    def test_members_only_full_article_is_planned_as_draft(self):
+        post = parse_wordpress_post(make_post(11, content="<p>Full article.</p>"), site_url=SITE,
+                                    editorial={"restricted": True, "restriction_source": "class_list"})
+        plan = plan_import(post)
+        self.assertEqual((plan.action, plan.ecp_status), ("CREATE", "draft"))
+        self.assertTrue(plan.values["wp_membership_restricted"])
+
+    def test_draft_may_lack_content_or_date_but_publish_may_not(self):
+        self.assertEqual(plan_import(normalized(status="draft", content="")).action, "CREATE")
+        self.assertEqual(plan_import(normalized(status="draft", date_gmt=None)).action, "CREATE")
+        self.assertEqual(plan_import(normalized(content="")).action, "ERROR")
+        self.assertEqual(plan_import(normalized(date_gmt=None)).action, "ERROR")
+
+    def test_draft_slug_falls_back_to_generated_slug(self):
+        for slug in ("", "__trashed"):
+            post = parse_wordpress_post(make_post(12, status="draft", slug=slug, generated_slug="proposed-slug"),
+                                        site_url=SITE)
+            self.assertEqual(plan_import(post).slug, "proposed-slug", slug)
+        self.assertEqual(plan_import(normalized(slug="old-name__trashed", status="draft")).slug, "old-name")
+
+    def test_status_managed_is_not_part_of_the_source_hash(self):
+        post = normalized(post_id=13)
+        blog = apply_plan(plan_import(post), commit=True)
+        BlogPost.objects.filter(pk=blog.pk).update(wp_status_managed=False)
+        plan = plan_import(post)
+        self.assertEqual(plan.action, "SKIP", "ownership is ECP state, not a source change")
+        self.assertFalse(plan.status_managed)
+
+
+@override_settings(WP_IMAA_BLOG_BASE_URL=SITE, WP_IMAA_BLOG_CATEGORY_ID=58,
+                   WP_IMAA_BLOG_API_USER=WP_USER, WP_IMAA_BLOG_APP_PASSWORD=WP_APP_PASSWORD)
+class AllStatusCommandTests(ImporterHarness, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.fake.posts = [p for p in self.fake.posts if p["id"] != 205] + [
+            make_post(206, slug="members-deals", content="<p>Full members article.</p>", members_only=True),
+            make_post(207, slug="", generated_slug="idea-draft", status="draft", content=CLASSIC_HTML),
+            make_post(208, slug="soon", status="future", content=GUTENBERG_HTML),
+        ]
+
+    def test_all_statuses_dry_run_reports_the_editorial_source_without_writes(self):
+        with tempfile.NamedTemporaryFile(suffix=".json") as handle, CaptureQueriesContext(connection) as ctx:
+            output = self.run_command("--all-statuses", "--dry-run", "--report-json", handle.name)
+            report = json.load(open(handle.name))
+        writes = [q["sql"] for q in ctx.captured_queries if q["sql"].lstrip().upper().startswith(WRITE_SQL)]
+        self.assertEqual(writes, [])
+        self.assertEqual(report["source_status_counts"], {"publish": 5, "draft": 1, "pending": 0, "future": 1, "private": 0})
+        self.assertEqual(report["plan"], {"create": 7, "update": 0, "skip": 0, "restricted": 0, "error": 0})
+        self.assertEqual(report["target_status"], {"published": 4, "draft": 3})
+        self.assertEqual(report["restricted"]["imported_as_draft"], 1)
+        self.assertEqual(report["restricted_post_ids"], [206])
+        for text in ("WORDPRESS SOURCE STATUS", "draft: 1", "Total: 7", "Members-only imported as Draft: 1"):
+            self.assertIn(text, output)
+        self.assertNotIn(WP_APP_PASSWORD, output + json.dumps(report))
+        edit_statuses = [params["status"] for path, params in self.fake.calls if params.get("context") == "edit"]
+        self.assertEqual(edit_statuses, ["publish", "draft", "pending", "future", "private"])
+
+    def test_bare_command_stays_public_only(self):
+        report_output = self.run_command("--dry-run")
+        self.assertIn("Would create: 4", report_output)
+        self.assertIn("Restricted, teaser only (not imported): 1 [206]", report_output)
+        self.assertEqual(set(self.fake.call_auth), {None}, "no credentials without --all-statuses")
+        self.assertFalse([p for _, p in self.fake.calls if p.get("context") == "edit" or p.get("status") != "publish"
+                          and "status" in p])
+
+    def test_all_statuses_sample_commit_creates_drafts(self):
+        self.run_command("--all-statuses", "--post-id", "207", "--post-id", "206", "--commit")
+        self.assertEqual(dict(BlogPost.objects.values_list("wp_post_id", "status")), {206: "draft", 207: "draft"})
+        self.assertEqual(BlogPost.objects.get(wp_post_id=207).slug, "idea-draft")
+        with self.assertRaisesMessage(CommandError, "Bulk commit is disabled"):
+            self.run_command("--all-statuses", "--commit")
+
+    @override_settings(WP_IMAA_BLOG_APP_PASSWORD="")
+    def test_all_statuses_without_credentials_is_refused(self):
+        self.client_patch.stop()  # use the real settings-based factory
+        try:
+            with self.assertRaisesMessage(CommandError, "Authenticated WordPress Blog import is not configured."):
+                self.run_command("--all-statuses", "--dry-run")
+        finally:
+            self.client_patch.start()
+        self.assertFalse(self.fake.calls)
+
+
+class EditorialNormalizationRegressionTests(TestCase):
+    """Draft and members-only content goes through the exact same normalizer."""
+
+    def test_same_output_and_sanitising_for_every_format(self):
+        for name, html in (("gutenberg", GUTENBERG_HTML), ("elementor", ELEMENTOR_HTML), ("classic", CLASSIC_HTML),
+                           ("mixed", MIXED_HTML), ("faq", JSON_LD_HTML), ("unsafe", UNSAFE_HTML)):
+            public = parse_wordpress_post(make_post(1, content=html), site_url=SITE)
+            for status, restricted in (("draft", False), ("publish", True)):
+                with self.subTest(name=name, status=status, restricted=restricted):
+                    post = parse_wordpress_post(make_post(1, content=html, status=status), site_url=SITE,
+                                                editorial={"restricted": restricted})
+                    self.assertEqual(post.content_html, public.content_html)
+                    self.assertEqual(post.source_format, public.source_format)
+                    for dangerous in ("<script", "onerror", "onclick", "javascript:", "<iframe", "<form"):
+                        self.assertNotIn(dangerous, post.content_html)

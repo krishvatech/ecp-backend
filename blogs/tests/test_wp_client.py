@@ -1,8 +1,14 @@
+from unittest import mock
+
 import requests
 from django.test import SimpleTestCase
 
+from django.test import override_settings
+
 from blogs.wordpress.client import (
+    SUPPORTED_STATUSES,
     WordPressBlogAPIError,
+    WordPressBlogAuthError,
     WordPressBlogClient,
     WordPressBlogConfigError,
 )
@@ -13,8 +19,11 @@ from .wp_fixtures import (
     ELEMENTOR_HTML,
     GUTENBERG_HTML,
     INVALID_JSON,
+    AUTH,
     MIXED_HTML,
     SITE,
+    WP_APP_PASSWORD,
+    WP_USER,
     FakeResponse,
     FakeWordPress,
     make_post,
@@ -67,7 +76,7 @@ class WordPressBlogClientTests(SimpleTestCase):
         counter = iter(range(1, 1000))
         fake.overrides["/posts"] = None
 
-        def endless(url, params=None, timeout=None, headers=None):
+        def endless(url, params=None, timeout=None, headers=None, auth=None):
             return FakeResponse(200, [{"id": next(counter)}], {"X-WP-Total": "999", "X-WP-TotalPages": "999"})
 
         fake.get = endless
@@ -76,7 +85,7 @@ class WordPressBlogClientTests(SimpleTestCase):
         self.assertEqual(ctx.exception.code, "pagination_limit")
 
     def test_repeated_page_content_stops_iteration(self):
-        def same_page(url, params=None, timeout=None, headers=None):
+        def same_page(url, params=None, timeout=None, headers=None, auth=None):
             return FakeResponse(200, [{"id": 1}], {"X-WP-TotalPages": "50"})
 
         fake = FakeWordPress()
@@ -96,13 +105,13 @@ class WordPressBlogClientTests(SimpleTestCase):
         failures = [requests.Timeout("slow"), FakeResponse(503, {"code": "busy", "message": "Busy"})]
         original = fake.get
 
-        def flaky(url, params=None, timeout=None, headers=None):
+        def flaky(url, params=None, timeout=None, headers=None, auth=None):
             if failures:
                 failure = failures.pop(0)
                 if isinstance(failure, Exception):
                     raise failure
                 return failure
-            return original(url, params, timeout, headers)
+            return original(url, params, timeout, headers, auth)
 
         fake.get = flaky
         delays = []
@@ -198,8 +207,89 @@ class WordPressBlogClientTests(SimpleTestCase):
         fake.get = capture
         client_for(fake).get_category(58)
         self.assertNotIn("Authorization", seen["headers"])
-        self.assertEqual(seen["kwargs"], {})
+        self.assertEqual(seen["kwargs"], {"auth": None}, "an anonymous client never sends credentials")
         self.assertEqual(seen["timeout"], 5.0)
+
+
+class AuthenticatedClientTests(SimpleTestCase):
+    def test_basic_auth_is_sent_and_public_requests_opt_out(self):
+        fake = FakeWordPress(posts=[make_post(1)])
+        client = client_for(fake, auth=AUTH)
+        client.get_category(58)
+        client.list_posts(58, include=[1], public=True)
+        self.assertEqual(fake.call_auth, [AUTH, None])
+        self.assertTrue(client.authenticated)
+        self.assertNotIn(WP_APP_PASSWORD, repr(client))
+
+    @override_settings(WP_IMAA_BLOG_BASE_URL=SITE, WP_IMAA_BLOG_API_USER=WP_USER, WP_IMAA_BLOG_APP_PASSWORD=WP_APP_PASSWORD)
+    def test_from_settings_authenticated(self):
+        self.assertEqual(WordPressBlogClient.from_settings(authenticated=True)._auth, AUTH)
+        self.assertFalse(WordPressBlogClient.from_settings().authenticated, "anonymous unless asked")
+
+    def test_missing_username_or_password_is_a_safe_config_error(self):
+        for user, password, missing in ((WP_USER, "", "WP_IMAA_BLOG_APP_PASSWORD"), ("", WP_APP_PASSWORD, "WP_IMAA_BLOG_API_USER")):
+            with self.subTest(missing=missing), override_settings(
+                    WP_IMAA_BLOG_BASE_URL=SITE, WP_IMAA_BLOG_API_USER=user, WP_IMAA_BLOG_APP_PASSWORD=password):
+                with self.assertRaises(WordPressBlogConfigError) as ctx:
+                    WordPressBlogClient.from_settings(authenticated=True)
+                message = str(ctx.exception)
+                self.assertIn("Authenticated WordPress Blog import is not configured.", message)
+                self.assertIn(missing, message)
+                self.assertNotIn(WP_APP_PASSWORD, message)
+
+    def test_credentials_require_https(self):
+        with self.assertRaises(WordPressBlogConfigError):
+            WordPressBlogClient("http://imaa.test", session=FakeWordPress(), auth=AUTH)
+
+    def test_401_and_403_are_safe_auth_errors_and_not_retried(self):
+        for fake, status, code in ((FakeWordPress(credentials=("x", "y")), 401, "auth_failed"),
+                                   (FakeWordPress(forbid_auth=True), 403, "auth_forbidden")):
+            with self.subTest(status=status):
+                client = client_for(fake, auth=AUTH, retries=3, sleep=lambda s: None)
+                with self.assertRaises(WordPressBlogAuthError) as ctx:
+                    client.editorial_manifest(58)
+                self.assertEqual((ctx.exception.status, ctx.exception.code), (status, code))
+                self.assertEqual(len(fake.calls), 1, "auth failures are not retried")
+                for secret in (WP_APP_PASSWORD, WP_USER, "invalid application password"):
+                    self.assertNotIn(secret, str(ctx.exception))
+
+    def test_manifest_uses_edit_context_explicit_statuses_and_paginates_each(self):
+        posts = [make_post(i, slug=f"p{i}", status=status) for i, status in enumerate(
+            ["publish"] * 3 + ["draft"] * 3 + ["pending"] * 3 + ["future"] * 3 + ["private"] * 3 + ["trash", "auto-draft"], start=1)]
+        fake = FakeWordPress(posts=posts)
+        client = client_for(fake, auth=AUTH)
+        with mock.patch("blogs.wordpress.client.MAX_PER_PAGE", 2):  # force several pages per status
+            manifest = client.editorial_manifest(58, per_page=2)
+        self.assertEqual([p["id"] for p in manifest], list(range(1, 16)), "trash/auto-draft never listed")
+        self.assertEqual(client.stats.status_counts, {status: 3 for status in SUPPORTED_STATUSES})
+        self.assertTrue(all(params["context"] == "edit" for _, params in fake.calls))
+        self.assertEqual(sorted({params["status"] for _, params in fake.calls}), sorted(SUPPORTED_STATUSES))
+        pages = {(params["status"], params["page"]) for _, params in fake.calls}
+        for status in SUPPORTED_STATUSES:
+            self.assertIn((status, 1), pages)
+            self.assertIn((status, 2), pages, f"{status} is paginated")
+        self.assertTrue(all("_embed" not in params and params["_fields"] for _, params in fake.calls))
+
+    def test_manifest_dedupes_and_drops_unsupported_statuses(self):
+        fake = FakeWordPress()
+        fake.overrides["/posts"] = FakeResponse(200, [
+            {"id": 1, "status": "publish"}, {"id": 1, "status": "publish"}, {"id": 2, "status": "trash"},
+            {"id": 3, "status": "inherit"}, {"id": "bad", "status": "draft"},
+        ], {"X-WP-TotalPages": "1"})
+        manifest = client_for(fake, auth=AUTH).editorial_manifest(58)
+        self.assertEqual([p["id"] for p in manifest], [1])
+
+    def test_manifest_requires_credentials(self):
+        with self.assertRaises(WordPressBlogConfigError):
+            client_for(FakeWordPress()).editorial_manifest(58)
+
+    def test_manifest_timeout_is_retried_then_raised(self):
+        fake = FakeWordPress()
+        fake.overrides["/posts"] = requests.Timeout("slow")
+        delays = []
+        with self.assertRaises(WordPressBlogAPIError) as ctx:
+            client_for(fake, auth=AUTH, retries=2, backoff=1, sleep=delays.append).editorial_manifest(58)
+        self.assertEqual((ctx.exception.code, len(fake.calls), delays), ("timeout", 3, [1.0, 2.0]))
 
 
 class FormatDetectionTests(SimpleTestCase):

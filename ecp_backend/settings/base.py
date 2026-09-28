@@ -1042,15 +1042,19 @@ EB_WP_API_PASSWORD = os.getenv("EB_WP_API_PASSWORD", "")
 EB_WP_AUTH_TYPE = os.getenv("EB_WP_AUTH_TYPE", "basic")
 
 # ============================================================================
-# WORDPRESS IMAA BLOG IMPORT (imaa-institute.org — public posts, read-only)
-# Used only by `manage.py import_wordpress_blogs`. Separate from every other
-# WordPress setting so the Blog importer can never repoint Users/Events/Groups.
-# No credentials: the importer reads the public REST API only.
+# WORDPRESS IMAA BLOG IMPORT (imaa-institute.org, read-only)
+# Used only by the Blog importer (management command + Celery admin import).
+# Separate from every other WordPress setting so the Blog importer can never
+# repoint Users/Events/Groups.
+# API_USER / APP_PASSWORD: a WordPress Application Password used only to READ
+# editorial posts (drafts, members-only content). Backend-only secret.
 # ============================================================================
 WP_IMAA_BLOG_BASE_URL = os.getenv("WP_IMAA_BLOG_BASE_URL", "")  # e.g. https://imaa-institute.org
 WP_IMAA_BLOG_CATEGORY_ID = int(os.getenv("WP_IMAA_BLOG_CATEGORY_ID", "58"))
 WP_IMAA_BLOG_CATEGORY_SLUG = os.getenv("WP_IMAA_BLOG_CATEGORY_SLUG", "blog")
 WP_IMAA_BLOG_TIMEOUT = float(os.getenv("WP_IMAA_BLOG_TIMEOUT", "20"))
+WP_IMAA_BLOG_API_USER = os.getenv("WP_IMAA_BLOG_API_USER", "")
+WP_IMAA_BLOG_APP_PASSWORD = os.getenv("WP_IMAA_BLOG_APP_PASSWORD", "")
 
 # Moodle REST API — direct access for course content (sections, modules, completion)
 MOODLE_URL = os.getenv("MOODLE_URL", "")              # e.g. https://imaa-institute.org/moodle

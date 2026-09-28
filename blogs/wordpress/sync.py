@@ -10,8 +10,16 @@ Phases (persisted in BlogImportRun.current_step):
     fetching -> planning -> syncing_blogs -> migrating_media
     -> rewriting_links -> finalizing -> completed
 
+Source: authenticated WordPress (Application Password), every supported
+editorial status (see WordPressBlogImporter editorial mode). There is no
+silent fallback to the public-only import: without credentials the run is
+refused.
+
 Policy: additive/update only. Nothing is ever deleted or unpublished because it
-disappeared from WordPress. Members-only teasers are counted as `restricted`.
+disappeared from WordPress. ECP status follows the WordPress status only while
+`wp_status_managed` (see planner). `restricted_count` counts members-only
+WordPress posts: imported as Drafts, or not imported when only a teaser was
+available (report_json["restricted"] has the breakdown).
 """
 import logging
 import time
@@ -23,12 +31,13 @@ from django.utils import timezone
 
 from blogs.models import BlogImportRun, BlogPost
 
-from .client import WordPressBlogClient
+from .client import AUTH_NOT_CONFIGURED, WordPressBlogClient, authenticated_import_configured
 from .importer import WordPressBlogImporter
 from .media import MediaStore, SafeMediaFetcher, allowed_media_hosts
 from .planner import PlanningContext
 from .report import build_report
-from .rewrite import blog_slug_mapping, rewrite_blog_links, rewrite_inline_media, sync_featured_image
+from .planner import source_slug
+from .rewrite import blog_link_targets, rewrite_blog_links, rewrite_inline_media, sync_featured_image
 from .types import (
     ACTION_CREATE,
     ACTION_ERROR,
@@ -78,6 +87,9 @@ def start_wordpress_import(user, *, enqueue):
     base_url = (getattr(settings, "WP_IMAA_BLOG_BASE_URL", "") or "").strip()
     if not base_url:
         raise ImportNotConfigured("WordPress Blog import is not configured (WP_IMAA_BLOG_BASE_URL).")
+    if not authenticated_import_configured():
+        # Never silently fall back to the public-only import (drafts would be missed).
+        raise ImportNotConfigured(AUTH_NOT_CONFIGURED)
     expire_stale_runs()
     try:
         with transaction.atomic():
@@ -142,14 +154,14 @@ def execute_import_run(run, *, client=None, media_store=None, storage=None, post
     `post_ids` limits the run to selected WordPress posts (operations/sample
     verification only; the admin API and Celery task always run everything)."""
     started = time.monotonic()
-    client = client or WordPressBlogClient.from_settings()
+    client = client or WordPressBlogClient.from_settings(authenticated=True)
     hosts = allowed_media_hosts(client.base_url)
     store = media_store or MediaStore(SafeMediaFetcher(hosts), storage=storage)
     progress = Progress(run)
     progress.set(force=True, status=BlogImportRun.STATUS_RUNNING, current_step="fetching",
                  started_at=run.started_at or timezone.now(), error_message="")
 
-    importer = WordPressBlogImporter(client, commit=True, allow_bulk=True)
+    importer = WordPressBlogImporter(client, commit=True, allow_bulk=True, editorial=True)
     category = importer.validate_category()
     raw_posts, fetch_errors, known_slugs = importer.collect(post_ids=post_ids)
 
@@ -162,8 +174,9 @@ def execute_import_run(run, *, client=None, media_store=None, storage=None, post
             entries.append(entry)
         else:
             parsed.append(entry["post"])
-    restricted_posts = [p for p in parsed if any(w.code == W_MEMBERS_ONLY for w in p.all_warnings())]
-    progress.set(force=True, total_importable=len(parsed) - len(restricted_posts),
+    # Teaser-only members-only posts cannot be imported (no full article).
+    teaser_posts = [p for p in parsed if any(w.code == W_MEMBERS_ONLY for w in p.all_warnings())]
+    progress.set(force=True, total_importable=len(parsed) - len(teaser_posts),
                  failed_count=len(entries))
 
     # Phase B: Blog record sync (per-post transactions inside the importer).
@@ -181,6 +194,8 @@ def execute_import_run(run, *, client=None, media_store=None, storage=None, post
         progress.add(counter)
         if action != ACTION_RESTRICTED:
             progress.add("processed_count")
+            if post.membership_restricted:
+                progress.add("restricted_count")  # imported (as Draft), still members-only
         if action in (ACTION_CREATE, ACTION_UPDATE, ACTION_SKIP):
             synced.append(post)
     progress.flush()
@@ -233,16 +248,20 @@ def execute_import_run(run, *, client=None, media_store=None, storage=None, post
 
     # Phase D: Blog-to-Blog links, once every target exists.
     progress.set(force=True, current_step="rewriting_links")
-    imported = BlogPost.objects.filter(wp_post_id__isnull=False).values_list("wp_source_url", "slug")
-    mapping = blog_slug_mapping(imported, base_url=client.base_url, known_blog_slugs=known_slugs)
-    restricted_slugs = {p.slug for p in restricted_posts}
+    # Only Blogs readers can open in ECP (Published) become /blogs/ link targets.
+    rows = BlogPost.objects.filter(wp_post_id__isnull=False).values_list("wp_post_id", "wp_source_url", "slug", "status")
+    published, unpublished = blog_link_targets(
+        rows, base_url=client.base_url, known_blog_slugs=known_slugs,
+        wp_slugs={p.wp_post_id: source_slug(p) for p in parsed},
+    )
+    restricted_slugs = {p.slug for p in teaser_posts}
     link_summary = {}
     for post in synced:
         blog = blogs.get(post.wp_post_id)
         if blog is None:
             continue
         html, stats = rewrite_blog_links(
-            blog.content_html, mapping, base_url=client.base_url,
+            blog.content_html, published, base_url=client.base_url, unpublished=unpublished,
             restricted_slugs=restricted_slugs, known_blog_slugs=known_slugs,
         )
         for key, value in stats.items():
@@ -268,13 +287,25 @@ def execute_import_run(run, *, client=None, media_store=None, storage=None, post
         status=status,
         current_step="completed",
         finished_at=timezone.now(),
-        report_json=compact_report(report, media_summary, media_failures, link_summary),
+        report_json=compact_report(report, media_summary, media_failures, link_summary,
+                                   ecp_status_counts=_ecp_status_counts(synced)),
     )
     return status
 
 
-def compact_report(report, media_summary, media_failures, link_summary):
-    """Admin-facing JSON: counts and IDs only (no article HTML, no stack traces)."""
+def _ecp_status_counts(posts):
+    """Current ECP status of this run's synced Blogs (after every phase)."""
+    rows = BlogPost.objects.filter(wp_post_id__in=[p.wp_post_id for p in posts])
+    return {
+        "published": rows.filter(status=BlogPost.STATUS_PUBLISHED).count(),
+        "draft": rows.filter(status=BlogPost.STATUS_DRAFT).count(),
+        "restricted_draft": rows.filter(status=BlogPost.STATUS_DRAFT, wp_membership_restricted=True).count(),
+    }
+
+
+def compact_report(report, media_summary, media_failures, link_summary, ecp_status_counts=None):
+    """Admin-facing JSON: counts and IDs only (no article HTML, no stack traces,
+    no credentials)."""
     def ids(action):
         return [p["wp_post_id"] for p in report["posts"] if p["action"] == action][:MAX_REPORT_ITEMS]
 
@@ -288,6 +319,13 @@ def compact_report(report, media_summary, media_failures, link_summary):
         "updated_post_ids": ids(ACTION_UPDATE),
         "skipped_post_ids": ids(ACTION_SKIP),
         "restricted_post_ids": report["restricted_post_ids"][:MAX_REPORT_ITEMS],
+        "source_status_counts": report["source_status_counts"],
+        "target_status": report["target_status"],
+        "restricted": {**report["restricted"],
+                       "teaser_only_post_ids": report["restricted"]["teaser_only_post_ids"][:MAX_REPORT_ITEMS]},
+        "status_changes": report["status_changes"],
+        "ecp_owned_status": report["ecp_owned_status"],
+        "ecp_status_counts": ecp_status_counts or {},
         "errors": [
             {"wp_post_id": e["wp_post_id"], "message": "; ".join(e["reasons"])[:300]}
             for e in report["errors"][:MAX_REPORT_ITEMS]

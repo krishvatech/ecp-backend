@@ -8,6 +8,7 @@ from .types import (
     ACTION_SKIP,
     ACTION_UPDATE,
     FORMATS,
+    SUPPORTED_WP_STATUSES,
     W_FAQ_SCHEMA_DETECTED,
     W_JSON_LD_REMOVED,
     W_MISSING_FEATURED_IMAGE,
@@ -20,7 +21,12 @@ IMAGE_CLASSES = ("wordpress_media", "internal_site_media", "external_media", "da
 def build_report(entries, *, source, category, stats, mode, selected_post_ids, duration):
     formats = Counter({f: 0 for f in FORMATS})
     actions = Counter({a: 0 for a in (ACTION_CREATE, ACTION_UPDATE, ACTION_SKIP, ACTION_RESTRICTED, ACTION_ERROR)})
-    restricted_ids = []
+    restricted_ids = []  # members-only on WordPress (imported as Draft or teaser-only)
+    teaser_only_ids = []  # only a teaser was available: not imported
+    target_status = Counter(published=0, draft=0)
+    restricted_as_draft = 0
+    status_changes = Counter(published=0, unpublished=0)
+    ecp_owned_status = 0
     warnings = Counter()
     images = Counter({c: 0 for c in IMAGE_CLASSES})
     links = Counter({c: 0 for c in LINK_CLASSES})
@@ -42,6 +48,16 @@ def build_report(entries, *, source, category, stats, mode, selected_post_ids, d
             errors.append({"wp_post_id": plan.wp_post_id, "reasons": plan.reasons})
         elif plan.action == ACTION_RESTRICTED:
             restricted_ids.append(plan.wp_post_id)
+            teaser_only_ids.append(plan.wp_post_id)
+        if plan.action in (ACTION_CREATE, ACTION_UPDATE, ACTION_SKIP) and plan.ecp_status:
+            target_status[plan.ecp_status] += 1
+            if post is not None and post.membership_restricted:
+                restricted_ids.append(plan.wp_post_id)
+                restricted_as_draft += int(plan.ecp_status == "draft")
+            ecp_owned_status += int(plan.status_managed is False)
+            change = plan.field_changes.get("status") if plan.action == ACTION_UPDATE else None
+            if change:
+                status_changes["published" if change["new"] == "published" else "unpublished"] += 1
         if post is None:
             continue
         formats[post.source_format] += 1
@@ -74,6 +90,11 @@ def build_report(entries, *, source, category, stats, mode, selected_post_ids, d
             "source_slug": post.slug,
             "format": post.source_format,
             "action": plan.action,
+            "wp_status": post.status,
+            "ecp_status": plan.ecp_status,
+            "status_managed": plan.status_managed,
+            "membership_restricted": post.membership_restricted or plan.action == ACTION_RESTRICTED,
+            "restriction_source": post.restriction_source,
             "existing_post_id": plan.existing_post_id,
             "applied": entry.get("applied"),
             "published_at": post.published_at.isoformat() if post.published_at else None,
@@ -125,6 +146,19 @@ def build_report(entries, *, source, category, stats, mode, selected_post_ids, d
             "error": actions[ACTION_ERROR],
         },
         "restricted_post_ids": sorted(restricted_ids),
+        "source_status_counts": (
+            {status: stats.status_counts.get(status, 0) for status in SUPPORTED_WP_STATUSES}
+            if stats.status_counts else {}
+        ),
+        "target_status": dict(target_status),
+        "restricted": {
+            "detected": len(restricted_ids),
+            "imported_as_draft": restricted_as_draft,
+            "teaser_only_not_imported": len(teaser_only_ids),
+            "teaser_only_post_ids": sorted(teaser_only_ids),
+        },
+        "status_changes": dict(status_changes),
+        "ecp_owned_status": ecp_owned_status,
         "authors": {
             "unique_wp_authors": len(author_ids),
             "mapped": len(mapped_ids),
@@ -171,13 +205,29 @@ def render_text(report):
         out.extend(["", sub, title, sub])
         out.extend(f"{label}: {value}" for label, value in rows)
 
+    if report.get("source_status_counts"):
+        counts = report["source_status_counts"]
+        section("WORDPRESS SOURCE STATUS", [(status, n) for status, n in counts.items()]
+                + [("Total", sum(counts.values()))])
     section("CONTENT FORMATS", [(f.capitalize(), n) for f, n in report["formats"].items()])
     verb = "Would " if report["mode"] == "dry-run" else ""
     plan = report["plan"]
+    restricted = report["restricted"]
     section("IMPORT PLAN", [(f"{verb}create", plan["create"]), (f"{verb}update", plan["update"]),
                             (f"{verb}skip", plan["skip"]),
-                            ("Restricted (members-only, not imported)", f"{plan['restricted']} {report['restricted_post_ids']}"),
+                            ("Restricted, teaser only (not imported)",
+                             f"{plan['restricted']} {restricted['teaser_only_post_ids']}"),
                             ("Errors", plan["error"])])
+    target = report["target_status"]
+    section("ECP STATUS", [
+        ("Published", target.get("published", 0)),
+        ("Draft", target.get("draft", 0)),
+        ("Members-only detected", f"{restricted['detected']} {report['restricted_post_ids']}"),
+        ("Members-only imported as Draft", restricted["imported_as_draft"]),
+        ("Status changes (published/unpublished)",
+         f"{report['status_changes'].get('published', 0)}/{report['status_changes'].get('unpublished', 0)}"),
+        ("Status owned by ECP admin", report["ecp_owned_status"]),
+    ])
     authors = report["authors"]
     section("AUTHORS", [("Unique WP authors", authors["unique_wp_authors"]), ("Mapped to ECP users", authors["mapped"]),
                         ("Unmapped", f"{authors['unmapped']} {authors['unmapped_ids']}"),

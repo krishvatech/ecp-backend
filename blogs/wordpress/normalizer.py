@@ -120,6 +120,18 @@ def normalize_excerpt(html):
 
 
 # -------------------------------------------------------- classification --
+# WooCommerce Memberships wraps the teaser/purchase notice it serves instead
+# of a restricted article in "wc-memberships-*" elements.
+MEMBERS_ONLY_TEASER_SELECTOR = '[class*="wc-memberships"]'
+
+
+def is_members_only_teaser(html):
+    """True if rendered post HTML is a WooCommerce Memberships teaser."""
+    if "wc-memberships" not in (html or ""):
+        return False
+    return BeautifulSoup(html, "html.parser").select_one(MEMBERS_ONLY_TEASER_SELECTOR) is not None
+
+
 def classify_link(href, site_url, known_blog_slugs=()):
     """Return LinkRef classification for an href (no network, no rewriting)."""
     raw = (href or "").strip()
@@ -370,7 +382,7 @@ def normalize_wordpress_html(html, source_format, *, site_url="", known_blog_slu
 
     # Paywalled posts (WooCommerce Memberships): the public API only returns a
     # teaser plus a purchase notice, never the article.
-    if soup.select_one('[class*="wc-memberships"]'):
+    if soup.select_one(MEMBERS_ONLY_TEASER_SELECTOR):
         warnings.append(ImportWarning(W_MEMBERS_ONLY, "public REST API returns a members-only teaser"))
 
     baseline = BeautifulSoup(str(soup), "html.parser")

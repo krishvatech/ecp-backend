@@ -146,7 +146,10 @@ def _author_name(payload, yoast, client):
     return ""
 
 
-def parse_wordpress_post(payload, *, site_url="", client=None, known_blog_slugs=()):
+def parse_wordpress_post(payload, *, site_url="", client=None, known_blog_slugs=(), editorial=None):
+    """`editorial` carries facts from the authenticated editorial listing:
+    {"restricted": bool, "restriction_source": str, "generated_slug": str}."""
+    editorial = editorial or {}
     if not isinstance(payload, dict):
         raise WordPressPostParseError("post payload is not an object")
     try:
@@ -215,4 +218,7 @@ def parse_wordpress_post(payload, *, site_url="", client=None, known_blog_slugs=
         source_canonical_url=canonical,
         source_url=str(payload.get("link") or ""),
         warnings=warnings,
+        generated_slug=str(editorial.get("generated_slug") or payload.get("generated_slug") or ""),
+        membership_restricted=bool(editorial.get("restricted")),
+        restriction_source=str(editorial.get("restriction_source") or ""),
     )

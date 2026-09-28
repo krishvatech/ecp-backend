@@ -12,7 +12,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from django.utils import timezone
 
 from blogs.models import BlogImportRun
-from blogs.wordpress.client import WordPressBlogAPIError
+from blogs.wordpress.client import WordPressBlogAPIError, WordPressBlogAuthError, WordPressBlogConfigError
 from blogs.wordpress.importer import ImportAborted
 from blogs.wordpress.sync import execute_import_run, mark_failed
 
@@ -42,6 +42,11 @@ def run_wordpress_blog_import(self, run_id):
 
     try:
         return execute_import_run(run)
+    except (WordPressBlogConfigError, WordPressBlogAuthError) as exc:
+        # Configuration/credential problems are not transient: fail now, no retry.
+        # The message is fixed wording from the client (never the credentials).
+        mark_failed(run, str(exc))
+        return BlogImportRun.STATUS_FAILED
     except WordPressBlogAPIError as exc:
         # WordPress itself is unavailable. Everything already written is
         # idempotent, so a retry re-plans safely and skips finished work.

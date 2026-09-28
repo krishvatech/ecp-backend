@@ -12,6 +12,19 @@ applied in its own transaction.
 
 The same steps (collect -> parse -> plan_and_apply) power the management
 command, the Celery task and the admin-triggered import.
+
+Source modes:
+  * public (default): published posts as anonymous visitors see them.
+  * editorial (`editorial=True`, authenticated client): every supported
+    WordPress status. Discovery uses the authenticated context=edit listing
+    (status, membership flag). Article content is always read from the
+    collection endpoint in view context:
+      - public published posts: anonymously, exactly as in public mode, so
+        ECP never publishes more than WordPress shows to anonymous readers;
+      - drafts/pending/future/private and members-only posts: authenticated,
+        which returns the full article.
+    (context=edit `content.rendered` is not used: WordPress renders the wrong
+    Elementor document for some posts in that context.)
 """
 import logging
 import time
@@ -21,11 +34,25 @@ from django.db import transaction
 
 from blogs.models import BlogCategory, BlogPost, BlogTag
 
-from .client import EMBED_PER_PAGE, WordPressBlogAPIError
+from .client import EMBED_PER_PAGE, WordPressBlogAPIError, WordPressBlogAuthError
+from .normalizer import is_members_only_teaser
 from .parser import WordPressPostParseError, parse_wordpress_post
 from .planner import PlanningContext, plan_import
 from .report import build_report
-from .types import ACTION_CREATE, ACTION_ERROR, ACTION_RESTRICTED, ACTION_UPDATE, ImportPlan
+from .types import (
+    ACTION_CREATE,
+    ACTION_ERROR,
+    ACTION_RESTRICTED,
+    ACTION_UPDATE,
+    RESTRICTION_CLASS_LIST,
+    RESTRICTION_PUBLIC_TEASER,
+    SUPPORTED_WP_STATUSES,
+    ImportPlan,
+)
+
+# WooCommerce Memberships adds this post class to restricted content (the
+# class is the same whoever asks; access-granted/-restricted vary per viewer).
+MEMBERSHIP_POST_CLASS = "membership-content"
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +68,13 @@ class WritesDisabledError(RuntimeError):
 
 
 class WordPressBlogImporter:
-    def __init__(self, client, *, commit=False, category_id=None, expected_category_slug=None, allow_bulk=False):
+    def __init__(self, client, *, commit=False, category_id=None, expected_category_slug=None, allow_bulk=False,
+                 editorial=False):
         self.client = client
         self.commit = commit
         self.allow_bulk = allow_bulk
+        self.editorial = editorial
+        self._editorial = {}  # wp_post_id -> editorial facts passed to the parser
         self.category_id = int(category_id or getattr(settings, "WP_IMAA_BLOG_CATEGORY_ID", 58))
         self.expected_category_slug = (
             expected_category_slug if expected_category_slug is not None
@@ -57,7 +87,8 @@ class WordPressBlogImporter:
         post_ids = [int(i) for i in dict.fromkeys(post_ids or [])]
         self.check_commit_scope(post_ids)
         category = self.validate_category(allow_category_mismatch)
-        logger.info("WordPress Blog import started (commit=%s, posts=%s)", self.commit, post_ids or "all")
+        logger.info("WordPress Blog import started (commit=%s, editorial=%s, posts=%s)",
+                    self.commit, self.editorial, post_ids or "all")
 
         raw_posts, fetch_errors, known_slugs = self.collect(post_ids=post_ids, limit=limit)
         context = PlanningContext()
@@ -94,20 +125,66 @@ class WordPressBlogImporter:
 
     def collect(self, *, post_ids=None, limit=None):
         """Fetch raw posts. Returns (raw_posts, fetch_error_entries, known_blog_slugs)."""
+        if self.editorial:
+            return self._collect_editorial(post_ids=post_ids, limit=limit)
         # Cheap listing first (ids + slugs): REST total, known Blog slugs for
-        # link classification, and the post order for content paging.
+        # link classification.
         listing = [
             p for p in self.client.iter_posts(self.category_id, embed=False, fields=["id", "slug"])
             if isinstance(p, dict) and isinstance(p.get("id"), int)
         ]
         known_slugs = {p.get("slug") for p in listing}
         if post_ids:
-            raw_posts, fetch_errors = self._fetch_selected(post_ids)
+            ids = post_ids
         else:
             ids = [p["id"] for p in listing]
             if limit:
                 ids = ids[: int(limit)]
-            raw_posts, fetch_errors = self._fetch_all(ids)
+        raw_posts, fetch_errors = self._fetch_included(ids, public=True)
+        return raw_posts, fetch_errors, known_slugs
+
+    def _collect_editorial(self, *, post_ids=None, limit=None):
+        """Authenticated all-status collection (see module docstring)."""
+        manifest = self.client.editorial_manifest(self.category_id, SUPPORTED_WP_STATUSES)
+        # Link classification only knows published Blog URLs (as in public mode).
+        known_slugs = {p.get("slug") for p in manifest if p.get("status") == "publish"}
+        fetch_errors = []
+        if post_ids:
+            wanted = set(post_ids)
+            selected = [p for p in manifest if p["id"] in wanted]
+            found = {p["id"] for p in selected}
+            fetch_errors = [
+                self._error_entry(post_id, f"post is not in WordPress category {self.category_id} "
+                                           "or its WordPress status is not imported")
+                for post_id in post_ids if post_id not in found
+            ]
+        else:
+            selected = manifest[: int(limit)] if limit else manifest
+
+        self._editorial = {}
+        for item in selected:
+            restricted = MEMBERSHIP_POST_CLASS in (item.get("class_list") or [])
+            self._editorial[item["id"]] = {
+                "status": item["status"],
+                "restricted": restricted,
+                "restriction_source": RESTRICTION_CLASS_LIST if restricted else "",
+                "generated_slug": item.get("generated_slug") or "",
+            }
+        public_ids = [i for i, facts in self._editorial.items() if facts["status"] == "publish" and not facts["restricted"]]
+        public_posts, errors = self._fetch_included(public_ids, public=True)
+        fetch_errors += errors
+        # Fallback detection: WordPress served a members-only teaser to anonymous
+        # readers although the post class did not say so.
+        kept = []
+        for raw in public_posts:
+            if is_members_only_teaser(((raw.get("content") or {}).get("rendered")) or ""):
+                self._editorial[raw["id"]].update(restricted=True, restriction_source=RESTRICTION_PUBLIC_TEASER)
+            else:
+                kept.append(raw)
+        editorial_ids = [i for i, facts in self._editorial.items() if facts["restricted"] or facts["status"] != "publish"]
+        editorial_posts, errors = self._fetch_included(editorial_ids, public=False, status=SUPPORTED_WP_STATUSES)
+        fetch_errors += errors
+        raw_posts = sorted(kept + editorial_posts, key=lambda raw: raw["id"])
         return raw_posts, fetch_errors, known_slugs
 
     def parse(self, raw, known_slugs):
@@ -115,7 +192,8 @@ class WordPressBlogImporter:
         raw_id = raw.get("id") if isinstance(raw, dict) else None
         try:
             post = parse_wordpress_post(
-                raw, site_url=self.client.base_url, client=self.client, known_blog_slugs=known_slugs
+                raw, site_url=self.client.base_url, client=self.client, known_blog_slugs=known_slugs,
+                editorial=self._editorial.get(raw_id),
             )
         except WordPressPostParseError as exc:
             logger.warning("WordPress post %s could not be parsed: %s", raw_id, exc)
@@ -146,57 +224,51 @@ class WordPressBlogImporter:
             logger.warning(message)
         return info
 
-    def _fetch_all(self, ids):
-        """Full posts in pages of EMBED_PER_PAGE. A page that keeps failing is
-        re-fetched post by post, so one slow/broken post cannot sink the run."""
+    def _fetch_included(self, ids, *, public, status="publish"):
+        """Full posts through the collection endpoint (`include=`, EMBED_PER_PAGE
+        per request). Every path uses this same request shape: WordPress renders
+        some fields by endpoint (an auto-generated excerpt is 55 words on the
+        single-post endpoint but shorter on the list endpoint), so mixing
+        endpoints would make re-imports flip between CREATE/UPDATE.
+
+        A chunk that keeps failing is retried post by post (still `include=`),
+        so one slow/broken post cannot sink the run."""
         posts, errors = [], []
+        not_found = (f"post is not in WordPress category {self.category_id} or is not published"
+                     if public else f"post is not in WordPress category {self.category_id} or its status is not imported")
         for index in range(0, len(ids), EMBED_PER_PAGE):
             chunk = ids[index : index + EMBED_PER_PAGE]
-            page_no = index // EMBED_PER_PAGE + 1
             try:
-                page = self.client.list_posts(self.category_id, page=page_no, per_page=EMBED_PER_PAGE, embed=True)
+                page = self.client.list_posts(self.category_id, page=1, per_page=EMBED_PER_PAGE, embed=True,
+                                              include=chunk, status=status, public=public)
                 self.client.stats.content_pages_fetched += 1
                 by_id = {p.get("id"): p for p in page.posts if isinstance(p, dict)}
+            except WordPressBlogAuthError:
+                raise
             except WordPressBlogAPIError as exc:
-                logger.warning("Content page %s failed (%s); fetching its posts one by one", page_no, exc)
-                by_id = {}
+                logger.warning("Content request for %d posts failed (%s); fetching them one by one", len(chunk), exc)
+                by_id = None
             for post_id in chunk:
-                if post_id in by_id:
-                    posts.append(by_id[post_id])
+                if by_id is not None:
+                    if post_id in by_id:
+                        posts.append(by_id[post_id])
+                    else:
+                        errors.append(self._error_entry(post_id, not_found))
                     continue
                 self.client.stats.single_post_fallbacks += 1
                 try:
-                    posts.append(self.client.get_post(post_id, embed=True))
+                    single = self.client.list_posts(self.category_id, page=1, per_page=1, embed=True,
+                                                    include=[post_id], status=status, public=public)
+                except WordPressBlogAuthError:
+                    raise
                 except WordPressBlogAPIError as exc:
                     errors.append(self._error_entry(post_id, f"fetch failed: {exc}"))
-        return posts, errors
-
-    def _fetch_selected(self, post_ids):
-        """Selected posts through the same collection endpoint as bulk imports.
-
-        WordPress renders some fields by request context (an auto-generated
-        excerpt is 55 words on the single-post endpoint but shorter on the
-        list endpoint), so every import path must read the same context or
-        re-imports would flip-flop between CREATE/UPDATE for no source change.
-        """
-        posts, errors = [], []
-        for index in range(0, len(post_ids), EMBED_PER_PAGE):
-            chunk = post_ids[index : index + EMBED_PER_PAGE]
-            try:
-                page = self.client.list_posts(
-                    self.category_id, page=1, per_page=EMBED_PER_PAGE, embed=True, include=chunk
-                )
-            except WordPressBlogAPIError as exc:
-                errors.extend(self._error_entry(post_id, str(exc)) for post_id in chunk)
-                continue
-            by_id = {p.get("id"): p for p in page.posts if isinstance(p, dict)}
-            for post_id in chunk:
-                if post_id in by_id:
-                    posts.append(by_id[post_id])
+                    continue
+                match = [p for p in single.posts if isinstance(p, dict) and p.get("id") == post_id]
+                if match:
+                    posts.append(match[0])
                 else:
-                    errors.append(self._error_entry(
-                        post_id, f"post is not in WordPress category {self.category_id} or is not published"
-                    ))
+                    errors.append(self._error_entry(post_id, not_found))
         return posts, errors
 
     @staticmethod
@@ -218,7 +290,8 @@ class WordPressBlogImporter:
         if plan.action == ACTION_ERROR:
             logger.warning("WordPress post %s cannot be imported: %s", post.wp_post_id, "; ".join(plan.reasons))
         elif plan.action == ACTION_RESTRICTED:
-            logger.info("WordPress post %s is members-only; not imported", post.wp_post_id)
+            logger.info("WordPress post %s is members-only and only a teaser is available; not imported",
+                        post.wp_post_id)
         if self.commit and plan.action in (ACTION_CREATE, ACTION_UPDATE):
             try:
                 blog = apply_plan(plan, commit=True)
@@ -252,11 +325,13 @@ def apply_plan(plan, *, commit):
         if plan.action == ACTION_CREATE:
             if BlogPost.objects.filter(wp_post_id=plan.wp_post_id).exists():
                 raise ValueError(f"wp_post_id {plan.wp_post_id} already exists; re-plan before importing")
-            blog = BlogPost(status=BlogPost.STATUS_PUBLISHED, **plan.values)
+            blog = BlogPost(status=plan.ecp_status, wp_status_managed=plan.status_managed, **plan.values)
         else:
             blog = BlogPost.objects.select_for_update().get(pk=plan.existing_post_id, wp_post_id=plan.wp_post_id)
             for field, value in plan.values.items():
                 setattr(blog, field, value)
+            blog.status = plan.ecp_status
+            blog.wp_status_managed = plan.status_managed
         blog.full_clean(exclude=["featured_image"])
         blog.save()
         blog.categories.set(categories)
