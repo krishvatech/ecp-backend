@@ -77,6 +77,39 @@ def format_mautic_schedule_datetime(value) -> str:
     )
 
 
+def provider_schedule_minute(value):
+    """The UTC minute Mautic actually delivers at for ``value``.
+
+    format_mautic_schedule_datetime() drops seconds, so this is the floor of
+    ``value`` to the minute: the earliest instant the native runtime can send.
+    """
+    from datetime import timezone as datetime_timezone
+
+    from django.utils import timezone as django_timezone
+
+    if value is None:
+        return None
+    if django_timezone.is_naive(value):
+        value = django_timezone.make_aware(value, datetime_timezone.utc)
+    return value.astimezone(datetime_timezone.utc).replace(second=0, microsecond=0)
+
+
+def round_up_to_schedule_minute(value):
+    """Round a requested native send time up to a whole minute.
+
+    Mautic's publishUp has minute precision and the provider format truncates,
+    so an unrounded 10:15:45 would be delivered at 10:15, before the requested
+    instant. Rounding up keeps delivery at or after it; an exact minute is
+    returned unchanged.
+    """
+    from datetime import timedelta
+
+    floor = provider_schedule_minute(value)
+    if floor is None or floor == value:
+        return floor
+    return floor + timedelta(minutes=1)
+
+
 def build_scheduled_campaign_email_payload(campaign, *, scheduled_at):
     """Content + audience + the native fields that arm a future broadcast.
 

@@ -14,6 +14,7 @@ from .mautic.identity import per_user_execution_enabled
 from .mautic.identity_assertion import is_identity_assertion_configured
 from .models import (
     MauticUserConnection,
+    NewsletterCampaign,
     NewsletterCampaignTrackingEvent,
     NewsletterSyncEvent,
 )
@@ -29,8 +30,11 @@ def get_mautic_diagnostics(request=None) -> dict:
     webhook = _webhook_status(request)
     sync = _sync_status()
     background = _background_processing_status()
+    native_broadcasts = _native_broadcast_status()
     identity = _identity_status(request, marketing_bridge)
     warnings = _warnings(config, rest, marketing_bridge, campaign_bridge, webhook, sync)
+    if native_broadcasts["needs_attention"]:
+        warnings.append("Native Mautic broadcasts need attention.")
     warnings.extend(identity["warnings"])
 
     return {
@@ -52,6 +56,7 @@ def get_mautic_diagnostics(request=None) -> dict:
         "webhook": webhook,
         "sync": sync,
         "background_processing": background,
+        "native_broadcasts": native_broadcasts,
         "identity": identity,
         "diagnostics": {
             "status": "Healthy" if not warnings else "Degraded",
@@ -281,12 +286,30 @@ def _current_sync_events_queryset():
 
 def _background_processing_status() -> dict:
     beat_schedule = getattr(settings, "CELERY_BEAT_SCHEDULE", {}) or {}
+    scheduled_tasks = {
+        item.get("task") for item in beat_schedule.values() if isinstance(item, dict)
+    }
     return {
         "configuration": "Enabled" if bool(getattr(settings, "CELERY_BROKER_URL", "")) else "Not Configured",
         "live_worker_status": "Not Verifiable",
-        "newsletter_sync_scheduled": "newsletter.dispatch_due_sync_events" in {
-            item.get("task") for item in beat_schedule.values() if isinstance(item, dict)
-        },
+        "newsletter_sync_scheduled": "newsletter.dispatch_due_sync_events" in scheduled_tasks,
+        "native_broadcast_reconciliation_scheduled": (
+            "newsletter.reconcile_native_scheduled_campaigns" in scheduled_tasks
+        ),
+    }
+
+
+def _native_broadcast_status() -> dict:
+    """ECP-side view of natively scheduled broadcasts. Database reads only."""
+    native = NewsletterCampaign.objects.filter(
+        status=NewsletterCampaign.Status.SCHEDULED,
+        schedule_owner=NewsletterCampaign.ScheduleOwner.MAUTIC,
+    )
+    attention = native.exclude(last_error="").count()
+    return {
+        "scheduled": native.count(),
+        "due": native.filter(scheduled_at__lte=timezone.now()).count(),
+        "needs_attention": attention,
     }
 
 

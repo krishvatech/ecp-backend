@@ -1865,6 +1865,68 @@ class MauticClient:
             )
         return data
 
+    def _email_stats_query(
+        self,
+        email_id: int | str,
+        *,
+        filters: dict[str, Any] | None = None,
+        order: tuple[str, str] | None = None,
+        limit: int = 1,
+    ) -> dict[str, Any]:
+        email_id = str(email_id or "").strip()
+        if not email_id:
+            raise PermanentMauticError("Mautic email ID is required")
+
+        params = {
+            "where[0][col]": "email_id",
+            "where[0][expr]": "eq",
+            "where[0][val]": email_id,
+            "limit": int(limit),
+        }
+        for index, (column, value) in enumerate((filters or {}).items(), start=1):
+            params[f"where[{index}][col]"] = column
+            params[f"where[{index}][expr]"] = "eq"
+            params[f"where[{index}][val]"] = value
+        if order:
+            params["order[0][col]"], params["order[0][dir]"] = order
+
+        response = self._request("GET", "stats/email_stats", params=params)
+        data = self._json_object(response, "Mautic email statistics lookup")
+        if "total" not in data:
+            raise TemporaryMauticError(
+                "Mautic email statistics lookup returned an invalid response"
+            )
+        return data
+
+    def count_email_stats(self, email_id: int | str, **filters) -> int:
+        """Count email_stats rows for one email, optionally filtered by column.
+
+        Reads the provider's ``total`` rather than counting returned rows, so
+        the result stays exact past the stats API's page size.
+        """
+        data = self._email_stats_query(email_id, filters=filters, limit=1)
+        try:
+            return int(data["total"])
+        except (TypeError, ValueError) as exc:
+            raise TemporaryMauticError(
+                "Mautic email statistics lookup returned an invalid total"
+            ) from exc
+
+    def get_latest_email_send(self, email_id: int | str) -> dict[str, Any] | None:
+        """Most recent successful send row for one email, or None."""
+        data = self._email_stats_query(
+            email_id,
+            filters={"is_failed": 0},
+            order=("date_sent", "DESC"),
+            limit=1,
+        )
+        rows = data.get("stats")
+        if isinstance(rows, dict):
+            rows = list(rows.values())
+        if not isinstance(rows, list):
+            return None
+        return next((row for row in rows if isinstance(row, dict)), None)
+
     def list_emails(self, **params) -> dict[str, Any]:
         response = self._request("GET", "emails", params=params or None)
         data = self._json_object(response, "Mautic email list")

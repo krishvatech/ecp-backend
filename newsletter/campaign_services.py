@@ -19,8 +19,13 @@ from .mautic.payloads import (
     build_cancelled_schedule_email_payload,
     build_scheduled_campaign_email_payload,
     build_test_email_payload,
+    round_up_to_schedule_minute,
 )
 from .category_segment_services import repair_campaign_audience_segments
+from .native_broadcast_reconciliation import (
+    CampaignNativeDeliveryStarted,
+    native_delivery_window_started,
+)
 from .models import (
     NewsletterCampaign,
     NewsletterCampaignSendEvent,
@@ -661,6 +666,9 @@ def _compensate_native_schedule(campaign, payload_builder, *, client, note):
 
 def schedule_campaign_natively(campaign, *, scheduled_at, user, client=None):
     """Arm a future native Mautic broadcast and mark the ECP row scheduled."""
+    # ECP and Mautic must agree on the minute, and it must never be earlier
+    # than what was asked for.
+    scheduled_at = round_up_to_schedule_minute(scheduled_at)
     with transaction.atomic():
         campaign = (
             NewsletterCampaign.objects.select_for_update()
@@ -729,12 +737,16 @@ def schedule_campaign_natively(campaign, *, scheduled_at, user, client=None):
 
 def reschedule_campaign_natively(campaign, *, scheduled_at, user, client=None):
     """Move an existing native schedule; the Mautic Email id never changes."""
+    scheduled_at = round_up_to_schedule_minute(scheduled_at)
     with transaction.atomic():
         campaign = (
             NewsletterCampaign.objects.select_for_update()
             .prefetch_related("audiences")
             .get(pk=campaign.pk)
         )
+        if native_delivery_window_started(campaign):
+            # Local-only backstop: never re-arm an Email Mautic may be sending.
+            raise CampaignNativeDeliveryStarted()
         _validate_schedule_request(campaign, scheduled_at, rescheduling=True)
 
         if not str(campaign.mautic_email_id or "").strip():
@@ -803,6 +815,8 @@ def cancel_native_schedule(campaign, *, user, client=None):
             raise CampaignScheduleNotAllowed(
                 "Only scheduled newsletter campaigns can be cancelled."
             )
+        if native_delivery_window_started(campaign):
+            raise CampaignNativeDeliveryStarted()
 
         event = NewsletterCampaignSendEvent.objects.filter(
             campaign_id=campaign.pk

@@ -61,6 +61,18 @@ def dispatch_due_newsletter_scheduled_campaigns(batch_size: int = 100):
     return dispatch_due_scheduled_campaigns(batch_size=batch_size)
 
 
+@shared_task(name="newsletter.reconcile_native_scheduled_campaigns")
+def reconcile_native_newsletter_scheduled_campaigns(batch_size: int = 100):
+    """Mark natively scheduled broadcasts sent once Mautic has finished them.
+
+    Read-only against Mautic and without Celery-level retry: the next beat run
+    is the retry.
+    """
+    from .native_broadcast_reconciliation import reconcile_native_scheduled_campaigns
+
+    return reconcile_native_scheduled_campaigns(batch_size=batch_size)
+
+
 @shared_task(name="newsletter.dispatch_due_sync_events")
 def dispatch_due_newsletter_sync_events(batch_size: int = 100):
     """Dispatch due/stale durable events for recovery processing."""

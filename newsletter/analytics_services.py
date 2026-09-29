@@ -60,7 +60,21 @@ def _mautic_recipient_identity(row):
     return None
 
 
-def _mautic_open_summary(campaign):
+def _stats_total(payload, fallback):
+    try:
+        return int(payload.get("total"))
+    except (AttributeError, TypeError, ValueError):
+        return fallback
+
+
+def _mautic_stats_summary(campaign, *, include_send_summary):
+    """Read provider email stats once and derive what they objectively prove.
+
+    Opens come from ``is_read``/``date_read``. A send summary is derived only
+    when asked for (no ECP send event exists): every email_stats row is a
+    recorded send attempt and ``is_failed`` marks the failures. Neither is a
+    mailbox delivery confirmation.
+    """
     metadata = {
         "sources": ["ecp"],
         "mautic_email_id": campaign.mautic_email_id or None,
@@ -70,44 +84,71 @@ def _mautic_open_summary(campaign):
 
     email_id = str(campaign.mautic_email_id or "").strip()
     if not email_id:
-        return None, metadata
+        return None, None, metadata
 
     metadata["sources"].append("mautic")
 
     try:
-        payload = MauticClient().get_email_stats(email_id)
+        client = MauticClient()
+        payload = client.get_email_stats(email_id)
+        rows = _rows_from_mautic_stats(payload)
+        total = _stats_total(payload, len(rows))
+        # The stats API returns one page (100 rows by default) but an exact
+        # total; past one page, counts come from filtered totals instead.
+        truncated = total > len(rows)
+
+        opened_count = 0
+        unique_open_identities = set()
+        for row in rows:
+            opened = (
+                _truthy(row.get("is_read"))
+                or _truthy(row.get("isRead"))
+                or bool(row.get("date_read"))
+                or bool(row.get("dateRead"))
+                or bool(row.get("last_opened"))
+                or bool(row.get("lastOpened"))
+            )
+            if not opened:
+                continue
+
+            opened_count += 1
+            identity = _mautic_recipient_identity(row)
+            if identity:
+                unique_open_identities.add(identity)
+        unique_open_count = len(unique_open_identities)
+
+        if truncated:
+            # One email_stats row per contact for a list email, so the read
+            # rows are also the unique opens.
+            opened_count = unique_open_count = client.count_email_stats(
+                email_id, is_read=1
+            )
+
+        send_summary = None
+        if include_send_summary:
+            if truncated:
+                failed_count = client.count_email_stats(email_id, is_failed=1)
+            else:
+                failed_count = sum(
+                    1
+                    for row in rows
+                    if _truthy(row.get("is_failed")) or _truthy(row.get("isFailed"))
+                )
+            send_summary = {
+                "sent_count": max(total - failed_count, 0),
+                "failed_count": failed_count,
+            }
     except MauticError as exc:
         metadata["warnings"].append(str(exc))
-        return None, metadata
-
-    rows = _rows_from_mautic_stats(payload)
-    opened_count = 0
-    unique_open_identities = set()
-
-    for row in rows:
-        opened = (
-            _truthy(row.get("is_read"))
-            or _truthy(row.get("isRead"))
-            or bool(row.get("date_read"))
-            or bool(row.get("dateRead"))
-            or bool(row.get("last_opened"))
-            or bool(row.get("lastOpened"))
-        )
-        if not opened:
-            continue
-
-        opened_count += 1
-        identity = _mautic_recipient_identity(row)
-        if identity:
-            unique_open_identities.add(identity)
+        return None, None, metadata
 
     metadata["mautic_available"] = True
-    metadata["mautic_stats_count"] = len(rows)
+    metadata["mautic_stats_count"] = total
     metadata["mautic_refreshed_at"] = timezone.now()
     return {
         "opened_count": opened_count,
-        "unique_open_count": len(unique_open_identities),
-    }, metadata
+        "unique_open_count": unique_open_count,
+    }, send_summary, metadata
 
 
 def get_campaign_analytics(campaign):
@@ -115,8 +156,24 @@ def get_campaign_analytics(campaign):
         send_event = campaign.send_event
     except ObjectDoesNotExist:
         send_event = None
-    sent_count = send_event.provider_sent_count if send_event else 0
-    failed_count = send_event.provider_failed_count if send_event else 0
+    # An ECP send event (Send Now / ECP-owned schedule) stays the source of
+    # truth for sends; natively scheduled broadcasts have none, so Mautic's own
+    # stats are used for them instead.
+    mautic_open_summary, mautic_send_summary, metadata = _mautic_stats_summary(
+        campaign,
+        include_send_summary=send_event is None,
+    )
+    if send_event is not None:
+        sent_count = send_event.provider_sent_count
+        failed_count = send_event.provider_failed_count
+        metadata["send_summary_source"] = "ecp"
+    elif mautic_send_summary is not None:
+        sent_count = mautic_send_summary["sent_count"]
+        failed_count = mautic_send_summary["failed_count"]
+        metadata["send_summary_source"] = "mautic"
+    else:
+        sent_count = failed_count = 0
+        metadata["send_summary_source"] = ""
     delivered_denominator = sent_count + failed_count
 
     tracking_events = list(
@@ -155,7 +212,6 @@ def get_campaign_analytics(campaign):
     ]
     unique_open_count = len(opened_identities)
 
-    mautic_open_summary, metadata = _mautic_open_summary(campaign)
     if mautic_open_summary is not None:
         opened_count = mautic_open_summary["opened_count"]
         unique_open_count = mautic_open_summary["unique_open_count"]

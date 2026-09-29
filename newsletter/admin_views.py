@@ -69,6 +69,7 @@ from .campaign_services import (
     sync_campaign_draft_to_mautic,
     update_campaign,
 )
+from .native_broadcast_reconciliation import guard_native_schedule_change
 from .models import (
     MauticContactMapping,
     NewsletterAudience,
@@ -809,7 +810,20 @@ class NewsletterAdminCampaignScheduleView(APIView):
             )
 
         # Native: bind the assertion to the operation that will actually run.
+        if campaign.status not in (
+            NewsletterCampaign.Status.DRAFT,
+            NewsletterCampaign.Status.SCHEDULED,
+        ):
+            # Refused before any Mautic client or assertion exists.
+            return Response(
+                {"detail": "Newsletter campaign cannot be scheduled in its current status."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         rescheduling = campaign.status == NewsletterCampaign.Status.SCHEDULED
+        if rescheduling:
+            # Raises 409 once Mautic may already be delivering; no assertion
+            # is minted and nothing is audited as a mutation.
+            guard_native_schedule_change(campaign)
         action = (
             EMAIL_UPDATE
             if str(campaign.mautic_email_id or "").strip()
@@ -863,6 +877,7 @@ class NewsletterAdminCampaignCancelView(APIView):
 
         # Native: disarm the provider first; the ECP row only becomes cancelled
         # once Mautic has agreed it will not deliver.
+        guard_native_schedule_change(campaign)
         try:
             cancelled, error_response = run_interactive_mutation(
                 request,

@@ -37,7 +37,10 @@ from newsletter.campaign_services import (
     schedule_campaign_natively,
 )
 from newsletter.mautic.exceptions import PermanentMauticError, TemporaryMauticError
-from newsletter.mautic.payloads import format_mautic_schedule_datetime
+from newsletter.mautic.payloads import (
+    format_mautic_schedule_datetime,
+    round_up_to_schedule_minute,
+)
 from newsletter.models import (
     MauticIdentityAuditLog,
     MauticUserConnection,
@@ -283,7 +286,11 @@ class NativeScheduleServiceTests(SchedulingBase):
         self.assertEqual(payload["emailType"], "list")
         self.assertEqual(payload["lists"], [501])
         self.assertTrue(payload["isPublished"], "an armed broadcast must be published")
-        self.assertEqual(payload["publishUp"], format_mautic_schedule_datetime(when))
+        # Seconds round up so Mautic never delivers before the requested time.
+        self.assertEqual(
+            payload["publishUp"],
+            format_mautic_schedule_datetime(round_up_to_schedule_minute(when)),
+        )
         # Content is synchronized together with the schedule.
         self.assertEqual(payload["subject"], "Subject")
         self.assertEqual(payload["fromAddress"], "news@example.test")
@@ -291,7 +298,7 @@ class NativeScheduleServiceTests(SchedulingBase):
         self.assertEqual(result.status, NewsletterCampaign.Status.SCHEDULED)
         self.assertEqual(result.schedule_owner, OWNER.MAUTIC)
         self.assertEqual(result.mautic_email_id, "77")
-        self.assertEqual(result.scheduled_at, when)
+        self.assertEqual(result.scheduled_at, round_up_to_schedule_minute(when))
 
     def test_schedule_with_existing_email_updates_the_same_one(self):
         campaign = self.build_campaign(mautic_email_id="77")
@@ -312,7 +319,10 @@ class NativeScheduleServiceTests(SchedulingBase):
         self.run_schedule(campaign, when, provider)
 
         payload = provider.create_email.call_args.args[0]
-        self.assertEqual(payload["publishUp"], format_mautic_schedule_datetime(when))
+        self.assertEqual(
+            payload["publishUp"],
+            format_mautic_schedule_datetime(round_up_to_schedule_minute(when)),
+        )
 
     def test_reschedule_keeps_the_email_and_the_owner(self):
         original = self.future(24)
@@ -332,7 +342,7 @@ class NativeScheduleServiceTests(SchedulingBase):
         provider.update_email.assert_called_once()
         provider.create_email.assert_not_called()
         self.assertEqual(result.mautic_email_id, "77")
-        self.assertEqual(result.scheduled_at, moved)
+        self.assertEqual(result.scheduled_at, round_up_to_schedule_minute(moved))
         self.assertEqual(result.schedule_owner, OWNER.MAUTIC)
         self.assertEqual(result.status, NewsletterCampaign.Status.SCHEDULED)
 

@@ -870,6 +870,13 @@ if MAUTIC_SYNC_ENABLED:
             "schedule": timedelta(minutes=1),
             "args": (100,),
         },
+        # Drains schedule_owner=mautic rows whatever the native-scheduling flag
+        # says, so turning that flag off never strands an armed broadcast.
+        "reconcile-native-newsletter-scheduled-campaigns": {
+            "task": "newsletter.reconcile_native_scheduled_campaigns",
+            "schedule": timedelta(minutes=1),
+            "args": (100,),
+        },
     })
 
 # OPTIMIZATION: Reduced frequency for 100+ concurrent user scalability
