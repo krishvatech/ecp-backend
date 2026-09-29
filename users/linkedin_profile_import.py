@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from datetime import date
 from typing import BinaryIO
@@ -33,6 +34,11 @@ MAX_EXPERIENCES = 100
 MAX_EDUCATIONS = 50
 MAX_SKILLS = 200
 MAX_CERTIFICATIONS = 100
+
+LINKEDIN_PROFILE_URL_RE = re.compile(
+    r"(?:https?://)?(?:www\.)?linkedin\.com/in/[^\s<>()\"']+",
+    re.IGNORECASE,
+)
 
 
 class LinkedInProfileImportError(ValueError):
@@ -412,7 +418,28 @@ def structure_profile_text(profile_text: str) -> dict:
             "AI returned profile data that was not valid JSON."
         ) from exc
 
-    return validate_structured_profile_data(parsed)
+    normalized = validate_structured_profile_data(parsed)
+    linkedin_url = extract_linkedin_profile_url(profile_text)
+    if linkedin_url:
+        normalized["linkedin_url"] = linkedin_url
+
+    return normalized
+
+
+def extract_linkedin_profile_url(profile_text: str) -> str | None:
+    """Extract a LinkedIn public profile URL directly from PDF text."""
+
+    if not isinstance(profile_text, str):
+        return None
+
+    match = LINKEDIN_PROFILE_URL_RE.search(profile_text)
+    if not match:
+        return None
+
+    url = match.group(0).rstrip(".,;:)]}")
+    if not url.lower().startswith(("http://", "https://")):
+        url = f"https://{url}"
+    return url
 
 
 def validate_structured_profile_data(data: object) -> dict:

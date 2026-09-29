@@ -11,6 +11,7 @@ from users.models import (
     UserProfile,
 )
 from users.linkedin_profile_import_service import import_linkedin_profile_data
+from users.linkedin_profile_import import extract_linkedin_profile_url
 
 
 class LinkedInProfileImportConfirmTests(TestCase):
@@ -73,6 +74,30 @@ class LinkedInProfileImportConfirmTests(TestCase):
         self.assertEqual(Education.objects.filter(user=self.user).count(), 1)
         self.assertEqual(ProfileCertification.objects.filter(user=self.user).count(), 1)
 
+    def test_import_overwrites_existing_linkedin_profile_url(self):
+        profile, _ = UserProfile.objects.get_or_create(user=self.user)
+        profile.links = {
+            "linkedin": "https://www.linkedin.com/in/old-profile",
+            "x": "https://x.com/example",
+        }
+        profile.save(update_fields=["links"])
+
+        payload = self.payload()
+        payload["linkedin_url"] = "https://www.linkedin.com/in/cbkummer"
+
+        result = import_linkedin_profile_data(
+            user=self.user,
+            profile_data=payload,
+        )
+
+        profile.refresh_from_db()
+        self.assertTrue(result["profile_updated"])
+        self.assertEqual(
+            profile.links["linkedin"],
+            "https://www.linkedin.com/in/cbkummer",
+        )
+        self.assertEqual(profile.links["x"], "https://x.com/example")
+
     def test_import_stores_skills_on_profile(self):
         payload = self.payload()
         payload["skills"] = ["Python", "Django"]
@@ -103,6 +128,24 @@ class LinkedInProfileImportConfirmTests(TestCase):
         import_linkedin_profile_data(user=self.user, profile_data=self.payload())
 
         self.assertEqual(Experience.objects.filter(user=self.user).count(), 1)
+
+
+class LinkedInProfileImportUrlExtractionTests(TestCase):
+    def test_extracts_linkedin_profile_url_from_pdf_text(self):
+        text = "Contact\nwww.linkedin.com/in/cbkummer\nwww.imaa.org"
+
+        self.assertEqual(
+            extract_linkedin_profile_url(text),
+            "https://www.linkedin.com/in/cbkummer",
+        )
+
+    def test_strips_trailing_punctuation_from_linkedin_profile_url(self):
+        text = "LinkedIn: https://www.linkedin.com/in/cbkummer,"
+
+        self.assertEqual(
+            extract_linkedin_profile_url(text),
+            "https://www.linkedin.com/in/cbkummer",
+        )
 
 
 class LinkedInProfileImportEmailValidationTests(APITestCase):
