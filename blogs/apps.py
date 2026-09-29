@@ -7,3 +7,6 @@ class BlogsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "blogs"
     verbose_name = "Blogs"
+
+    def ready(self):
+        from . import signals  # noqa: F401  (cache invalidation receivers)

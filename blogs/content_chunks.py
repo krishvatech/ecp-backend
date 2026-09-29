@@ -9,11 +9,12 @@ starts, so:
   * boundaries depend only on the content, so they are deterministic.
 
 Boundaries are cached per content hash; nothing is stored in the database.
+If the cache is unavailable they are simply recomputed.
 """
 import hashlib
 
 from bs4 import BeautifulSoup, Tag
-from django.core.cache import cache
+from blogs.cache import safe_get, safe_set
 
 # Aim for chunks of roughly this many characters of HTML. A chunk closes at the
 # first top-level element boundary after reaching the target, so a single
@@ -68,9 +69,9 @@ def content_chunks(html, target=CHUNK_TARGET_CHARS):
     html = html or ""
     digest = hashlib.sha256(html.encode("utf-8")).hexdigest()
     key = f"blogs:chunks:{target}:{digest}"
-    boundaries = cache.get(key)
+    boundaries = safe_get(key)
     if boundaries is None:
         boundaries = chunk_boundaries(html, target)
-        cache.set(key, boundaries, CACHE_SECONDS)
+        safe_set(key, boundaries, CACHE_SECONDS)
     edges = [0, *boundaries, len(html)]
     return [html[a:b] for a, b in zip(edges, edges[1:])]

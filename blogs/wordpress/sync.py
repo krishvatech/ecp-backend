@@ -29,6 +29,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from blogs import cache as blog_cache
 from blogs.models import BlogImportRun, BlogPost
 
 from .client import AUTH_NOT_CONFIGURED, WordPressBlogClient, authenticated_import_configured
@@ -153,6 +154,15 @@ def execute_import_run(run, *, client=None, media_store=None, storage=None, post
 
     `post_ids` limits the run to selected WordPress posts (operations/sample
     verification only; the admin API and Celery task always run everything)."""
+    try:
+        return _execute_import_run(run, client=client, media_store=media_store, storage=storage, post_ids=post_ids)
+    finally:
+        # Media and link phases write with .update() (no signals), and a failed
+        # run may still have changed posts: always drop cached reader responses.
+        blog_cache.invalidate()
+
+
+def _execute_import_run(run, *, client, media_store, storage, post_ids):
     started = time.monotonic()
     client = client or WordPressBlogClient.from_settings(authenticated=True)
     hosts = allowed_media_hosts(client.base_url)

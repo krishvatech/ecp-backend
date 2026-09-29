@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.db import connection
+from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
@@ -171,6 +172,7 @@ class PublicBlogApiTests(BlogAPITestCase):
             self.client.get(LIST_URL)
         return len(ctx.captured_queries)
 
+    @override_settings(BLOGS_RESPONSE_CACHE_ENABLED=False)  # measure the ORM, not the response cache
     def test_list_query_count_does_not_grow_with_posts(self):
         category = BlogCategory.objects.create(name="Counted")
         tag = BlogTag.objects.create(name="Counted")

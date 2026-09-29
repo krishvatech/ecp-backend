@@ -7,6 +7,7 @@ Two surfaces, kept apart on purpose:
   published posts only. Drafts return 404 exactly like missing slugs.
   ``<slug>/?content_mode=chunked`` + ``<slug>/content/?chunk=N`` let the
   reader lazy-load a long article in chunks (see blogs.content_chunks).
+  Reader responses are served from the Redis cache in blogs.cache.
 * ``BlogPostAdminViewSet`` and the category/tag viewsets
   (``/api/blogs/admin/...``): Django superusers only. Every superuser can
   manage every post, regardless of ``created_by``.
@@ -22,6 +23,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from . import cache as blog_cache
 from .content_chunks import content_chunks
 from .models import BlogCategory, BlogImportRun, BlogPost, BlogTag
 from .permissions import IsSuperuser
@@ -56,6 +58,12 @@ READER_ORDERING = ("-published_at", "-id")
 CONTENT_MODE_CHUNKED = "chunked"
 
 _PAGE_PARAMS = [OpenApiParameter("page_size", int, description="Posts per page (max 50, default 20)")]
+
+
+def _with_cache_header(response, hit):
+    """`X-Blog-Cache: HIT|MISS` makes the response cache observable in production."""
+    response["X-Blog-Cache"] = "HIT" if hit else "MISS"
+    return response
 
 
 def _filter_by_term(queryset, relation, value):
@@ -101,6 +109,22 @@ class BlogPostViewSet(BlogPostQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     def get_serializer_class(self):
         return BlogListSerializer if self.action == "list" else BlogDetailSerializer
 
+    def list(self, request, *args, **kwargs):
+        data, hit = blog_cache.cached_response_data(
+            lambda version: blog_cache.list_key(request, version),
+            lambda: super(BlogPostViewSet, self).list(request, *args, **kwargs).data,
+        )
+        return _with_cache_header(Response(data), hit)
+
+    def _published_detail_data(self):
+        """Serialized published post for this slug (cached). 404 for drafts
+        and unknown slugs; those are never cached."""
+        slug = self.kwargs[self.lookup_field]
+        return blog_cache.cached_response_data(
+            lambda version: blog_cache.detail_key(self.request, version, slug),
+            lambda: self.get_serializer(self.get_object()).data,
+        )
+
     @extend_schema(
         parameters=[OpenApiParameter(
             "content_mode", str, enum=[CONTENT_MODE_CHUNKED],
@@ -109,15 +133,15 @@ class BlogPostViewSet(BlogPostQuerysetMixin, viewsets.ReadOnlyModelViewSet):
         )],
     )
     def retrieve(self, request, *args, **kwargs):
-        post = self.get_object()  # published only: drafts and unknown slugs are 404
-        data = self.get_serializer(post).data
+        cached, hit = self._published_detail_data()  # published only: drafts and unknown slugs are 404
+        data = dict(cached)  # never mutate the cached payload
         if request.query_params.get("content_mode") == CONTENT_MODE_CHUNKED:
-            chunks = content_chunks(post.content_html)
+            chunks = content_chunks(data["content_html"])
             data["content_html"] = chunks[0]
             data["content_chunk"] = 1
             data["content_chunks"] = len(chunks)
             data["content_has_more"] = len(chunks) > 1
-        return Response(data)
+        return _with_cache_header(Response(data), hit)
 
     @extend_schema(
         parameters=[OpenApiParameter("chunk", int, required=True, description="1-based chunk number")],
@@ -130,20 +154,20 @@ class BlogPostViewSet(BlogPostQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["get"])
     def content(self, request, slug=None):
         """One chunk of a published article's HTML (lazy loading)."""
-        post = self.get_object()  # published only
+        cached, hit = self._published_detail_data()  # published only
         raw = request.query_params.get("chunk", "")
         if not raw.isdigit() or int(raw) < 1:
             raise ValidationError({"chunk": "Must be a positive integer."})
         number = int(raw)
-        chunks = content_chunks(post.content_html)
+        chunks = content_chunks(cached["content_html"])
         if number > len(chunks):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response({
+        return _with_cache_header(Response({
             "chunk": number,
             "content_html": chunks[number - 1],
             "has_more": number < len(chunks),
             "chunks": len(chunks),
-        })
+        }), hit)
 
 
 @extend_schema_view(
