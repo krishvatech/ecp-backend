@@ -9,6 +9,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import marketing_cache
 from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
@@ -231,7 +232,7 @@ def _point_provider_error_response(exc):
 
 
 def _validate_point_type(client: MauticClient, point_type: str) -> dict[str, str]:
-    type_labels = client.list_point_action_types()
+    type_labels = marketing_cache.point_action_types(client)
     if point_type not in type_labels:
         raise ValueError(
             f"Unsupported Mautic Point Action type: {point_type}."
@@ -251,7 +252,7 @@ class NewsletterAdminPointActionTypesView(APIView):
 
     def get(self, request):
         try:
-            type_labels = MauticClient().list_point_action_types()
+            type_labels = marketing_cache.point_action_types(MauticClient())
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _point_provider_error_response(exc)
 
@@ -297,7 +298,7 @@ class NewsletterAdminPointActionListCreateView(APIView):
         client = MauticClient()
         try:
             data = client.list_point_actions(**params)
-            type_labels = client.list_point_action_types()
+            type_labels = marketing_cache.point_action_types(client)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _point_provider_error_response(exc)
 
@@ -369,7 +370,7 @@ class NewsletterAdminPointActionDetailView(APIView):
         client = MauticClient()
         try:
             point = client.get_point_action(point_id)
-            type_labels = client.list_point_action_types()
+            type_labels = marketing_cache.point_action_types(client)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _point_provider_error_response(exc)
 
@@ -389,7 +390,7 @@ class NewsletterAdminPointActionDetailView(APIView):
 
         client = MauticClient()
         try:
-            type_labels = client.list_point_action_types()
+            type_labels = marketing_cache.point_action_types(client)
             if payload.get("group"):
                 _validate_point_group(client, payload["group"])
 

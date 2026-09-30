@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import marketing_cache
 from .mautic import MauticClient
 
 
@@ -382,7 +383,7 @@ def list_admin_field_choices(field_type: str) -> dict[str, Any]:
             + ", ".join(REFERENCE_CHOICE_TYPES)
         )
 
-    data = MauticClient().get_field_type_choices(normalized)
+    data = marketing_cache.field_type_choices(MauticClient(), normalized)
     choices = []
     for entry in data.get("choices", []):
         if not isinstance(entry, dict):
@@ -400,7 +401,7 @@ def list_admin_field_choices(field_type: str) -> dict[str, Any]:
 
 def list_admin_field_types() -> dict[str, Any]:
     """Publish the Mautic-owned field-type registry for the ECP field builder."""
-    data = MauticClient().get_field_type_capabilities()
+    data = marketing_cache.field_type_capabilities(MauticClient())
     types = []
     for entry in data.get("types", []):
         if not isinstance(entry, dict):

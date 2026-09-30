@@ -9,6 +9,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import marketing_cache
 from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
@@ -333,7 +334,7 @@ def _validate_event_type(
     client: MauticClient,
     event_type: str,
 ) -> dict[str, str]:
-    type_labels = client.list_point_trigger_event_types()
+    type_labels = marketing_cache.point_trigger_event_types(client)
     if event_type not in type_labels:
         raise ValueError(
             f"Unsupported Mautic Point Trigger Event type: {event_type}."
@@ -372,7 +373,7 @@ class NewsletterAdminPointTriggerEventTypesView(APIView):
 
     def get(self, request):
         try:
-            type_labels = MauticClient().list_point_trigger_event_types()
+            type_labels = marketing_cache.point_trigger_event_types(MauticClient())
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -418,7 +419,7 @@ class NewsletterAdminPointTriggerListCreateView(APIView):
         client = MauticClient()
         try:
             data = client.list_point_triggers(**params)
-            type_labels = client.list_point_trigger_event_types()
+            type_labels = marketing_cache.point_trigger_event_types(client)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -466,7 +467,7 @@ class NewsletterAdminPointTriggerListCreateView(APIView):
             )
             if identity_response is not None:
                 return identity_response
-            type_labels = client.list_point_trigger_event_types()
+            type_labels = marketing_cache.point_trigger_event_types(client)
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
@@ -490,7 +491,7 @@ class NewsletterAdminPointTriggerDetailView(APIView):
         client = MauticClient()
         try:
             trigger = client.get_point_trigger(trigger_id)
-            type_labels = client.list_point_trigger_event_types()
+            type_labels = marketing_cache.point_trigger_event_types(client)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -525,7 +526,7 @@ class NewsletterAdminPointTriggerDetailView(APIView):
             )
             if identity_response is not None:
                 return identity_response
-            type_labels = client.list_point_trigger_event_types()
+            type_labels = marketing_cache.point_trigger_event_types(client)
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
@@ -566,7 +567,7 @@ class NewsletterAdminPointTriggerEventListCreateView(APIView):
         client = MauticClient()
         try:
             trigger = client.get_point_trigger(trigger_id)
-            type_labels = client.list_point_trigger_event_types()
+            type_labels = marketing_cache.point_trigger_event_types(client)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -637,7 +638,7 @@ class NewsletterAdminPointTriggerEventDetailView(APIView):
                 trigger_id=trigger_id,
                 event_id=event_id,
             )
-            type_labels = client.list_point_trigger_event_types()
+            type_labels = marketing_cache.point_trigger_event_types(client)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -662,7 +663,7 @@ class NewsletterAdminPointTriggerEventDetailView(APIView):
                 trigger_id=trigger_id,
                 event_id=event_id,
             )
-            type_labels = client.list_point_trigger_event_types()
+            type_labels = marketing_cache.point_trigger_event_types(client)
 
             if "type" in payload:
                 event_type = payload["type"]

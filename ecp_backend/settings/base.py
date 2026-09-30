@@ -224,6 +224,16 @@ MARKETING_ANALYTICS_CACHE_SECONDS = int(
 MARKETING_DASHBOARD_CACHE_SECONDS = int(
     os.getenv("MARKETING_DASHBOARD_CACHE_SECONDS", "120")
 )
+# Builder/form metadata users can edit in Mautic (fields, categories, segment
+# filter metadata, campaign builder sources).
+MARKETING_METADATA_CACHE_SECONDS = int(
+    os.getenv("MARKETING_METADATA_CACHE_SECONDS", "900")
+)
+# Registries that only change with Mautic upgrades/plugins (field types,
+# country/region/timezone/locale catalogs, themes, point types).
+MARKETING_REFERENCE_CACHE_SECONDS = int(
+    os.getenv("MARKETING_REFERENCE_CACHE_SECONDS", "3600")
+)
 
 # ECP -> Mautic signed identity assertions (Phase 1 foundation, not yet used by
 # any live Mautic call). The private key must come from the environment/secret

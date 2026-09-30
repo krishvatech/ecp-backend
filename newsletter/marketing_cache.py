@@ -7,6 +7,9 @@ writes):
   * analytics overview/campaigns/emails/contacts/segments responses
   * stage analytics and the dashboard responses
   * per-email stats summaries, shared by the overview and emails pages
+  * Mautic reference data behind the builders and forms (see the
+    ``Reference reads`` section): whole provider payloads, so every endpoint,
+    search and page that uses one shares a single entry
 Keys look like ``marketing:v<version>:<name>:<hash of query params>``.
 
 Invalidation is by version: any write to a Marketing Hub admin endpoint bumps
@@ -38,6 +41,8 @@ VERSION_KEY = "marketing:version"
 CACHE_HEADER = "X-Marketing-Cache"
 DEFAULT_ANALYTICS_TTL_SECONDS = 5 * 60
 DEFAULT_DASHBOARD_TTL_SECONDS = 2 * 60
+DEFAULT_METADATA_TTL_SECONDS = 15 * 60
+DEFAULT_REFERENCE_TTL_SECONDS = 60 * 60
 FAILURE_COOLDOWN_SECONDS = 30
 REFRESH_PARAM = "refresh"
 
@@ -55,6 +60,14 @@ def analytics_ttl():
 
 def dashboard_ttl():
     return int(getattr(settings, "MARKETING_DASHBOARD_CACHE_SECONDS", DEFAULT_DASHBOARD_TTL_SECONDS))
+
+
+def metadata_ttl():
+    return int(getattr(settings, "MARKETING_METADATA_CACHE_SECONDS", DEFAULT_METADATA_TTL_SECONDS))
+
+
+def reference_ttl():
+    return int(getattr(settings, "MARKETING_REFERENCE_CACHE_SECONDS", DEFAULT_REFERENCE_TTL_SECONDS))
 
 
 def _available():
@@ -188,3 +201,106 @@ def cached_response(request, name, build, *, ttl, cacheable=None):
     response = Response(data, status=status.HTTP_200_OK)
     response[CACHE_HEADER] = cache_status
     return response
+
+
+# Reference reads ------------------------------------------------------------
+#
+# Mautic data that builders and forms load on every open but that rarely
+# changes. Each takes the caller's client so tests and identity wiring stay
+# with the view. Writes made through ECP invalidate like everything else;
+# changes made directly in Mautic are bounded by the TTL.
+
+
+def field_type_choices(client, field_type):
+    """A whole country/region/timezone/locale catalog (the region one is
+    ~268 KB); callers search and page it locally."""
+    return cached_value(
+        "field-type-choices",
+        [field_type],
+        lambda: client.get_field_type_choices(field_type),
+        ttl=reference_ttl(),
+    )
+
+
+def field_type_capabilities(client):
+    return cached_value(
+        "field-type-capabilities",
+        [],
+        client.get_field_type_capabilities,
+        ttl=reference_ttl(),
+    )
+
+
+def themes(client):
+    return cached_value("themes", [], client.list_themes, ttl=reference_ttl())
+
+
+def point_action_types(client):
+    return cached_value(
+        "point-action-types",
+        [],
+        client.list_point_action_types,
+        ttl=reference_ttl(),
+    )
+
+
+def point_trigger_event_types(client):
+    return cached_value(
+        "point-trigger-event-types",
+        [],
+        client.list_point_trigger_event_types,
+        ttl=reference_ttl(),
+    )
+
+
+def contact_fields(client):
+    return cached_value(
+        "contact-fields",
+        [],
+        client.list_contact_fields,
+        ttl=metadata_ttl(),
+    )
+
+
+def fields(client, field_object, *, limit):
+    return cached_value(
+        "fields",
+        [field_object, limit],
+        lambda: client.list_fields(field_object, start=0, limit=limit),
+        ttl=metadata_ttl(),
+    )
+
+
+def categories(client, *, limit):
+    return cached_value(
+        "categories",
+        [limit],
+        lambda: client.list_categories(start=0, limit=limit),
+        ttl=metadata_ttl(),
+    )
+
+
+def segment_filter_metadata(client, search=""):
+    # Searches are typed and rarely repeat, so only the full catalog is cached.
+    if search:
+        return client.get_segment_filter_metadata(search)
+    return cached_value(
+        "segment-filter-metadata",
+        [],
+        client.get_segment_filter_metadata,
+        ttl=metadata_ttl(),
+    )
+
+
+def campaign_builder_sources(client, *, limit):
+    """Builder capabilities plus the segment and form pickers, as one entry."""
+    return cached_value(
+        "campaign-builder-sources",
+        [limit],
+        lambda: {
+            "capabilities": client.get_campaign_builder_capabilities(),
+            "segments": client.list_segments(limit=limit),
+            "forms": client.list_forms(limit=limit),
+        },
+        ttl=metadata_ttl(),
+    )

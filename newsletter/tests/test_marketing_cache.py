@@ -262,3 +262,121 @@ class MarketingCacheInvalidationMiddlewareTests(TestCase):
         self.assertFalse(self._run("post", "/api/newsletter/admin/contacts/", 403))
         self.assertFalse(self._run("post", "/api/newsletter/preferences/", 200))
         self.assertFalse(self._run("post", "/api/blogs/", 201))
+
+
+COUNTRY_CHOICES = {"choices": [{"value": "IN", "label": "India"}, {"value": "US", "label": "United States"}]}
+
+
+class MarketingReferenceCacheTests(MarketingCacheTestCase):
+    @patch("newsletter.native_campaign_views.MauticClient")
+    @patch("newsletter.field_services.MauticClient")
+    @patch("newsletter.admin_views.MauticClient")
+    def test_reference_catalog_is_shared_across_endpoints_and_searches(
+        self, admin_client_cls, field_client_cls, campaign_client_cls
+    ):
+        for client_cls in (admin_client_cls, field_client_cls, campaign_client_cls):
+            client_cls.return_value.get_field_type_choices.return_value = COUNTRY_CHOICES
+
+        segment_page = self.client.get(
+            reverse("newsletter-admin-mautic-segment-filter-choices"), {"source": "country"}
+        )
+        searched = self.client.get(
+            reverse("newsletter-admin-mautic-segment-filter-choices"),
+            {"source": "country", "search": "ind"},
+        )
+        field_choices = self.client.get(
+            reverse("newsletter-admin-field-choices", kwargs={"field_type": "country"})
+        )
+        campaign_choices = self.client.get(
+            reverse("newsletter-admin-mautic-campaign-choices"), {"source": "country"}
+        )
+
+        for response in (segment_page, searched, field_choices, campaign_choices):
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(field_choices.data["count"], 2)
+        self.assertEqual(admin_client_cls.return_value.get_field_type_choices.call_count, 1)
+        field_client_cls.return_value.get_field_type_choices.assert_not_called()
+        campaign_client_cls.return_value.get_field_type_choices.assert_not_called()
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_filter_metadata_caches_only_the_full_catalog(self, client_cls):
+        client = client_cls.return_value
+        client.get_segment_filter_metadata.return_value = {"fields": [{"alias": "email"}], "total": 1}
+        url = reverse("newsletter-admin-mautic-segment-filter-metadata")
+
+        self.client.get(url)
+        self.client.get(url)
+        self.client.get(url, {"search": "ema"})
+        self.client.get(url, {"search": "ema"})
+
+        self.assertEqual(client.get_segment_filter_metadata.call_count, 3)
+
+    @patch("newsletter.template_views.MauticClient")
+    def test_template_lookups_are_cached(self, client_cls):
+        client = client_cls.return_value
+        client.list_fields.return_value = {"fields": []}
+        client.list_categories.return_value = {"categories": []}
+        client.list_themes.return_value = {"themes": {}}
+
+        for _ in range(2):
+            for name in (
+                "newsletter-admin-template-tokens",
+                "newsletter-admin-template-categories",
+                "newsletter-admin-template-themes",
+            ):
+                self.assertEqual(self.client.get(reverse(name)).status_code, 200)
+
+        self.assertEqual(client.list_fields.call_count, 2)  # contact + company, once
+        self.assertEqual(client.list_categories.call_count, 1)
+        self.assertEqual(client.list_themes.call_count, 1)
+
+    @patch("newsletter.native_campaign_views.MauticClient")
+    def test_campaign_builder_sources_are_cached(self, client_cls):
+        client = client_cls.return_value
+        client.get_campaign_builder_capabilities.return_value = {"actions": []}
+        client.list_segments.return_value = {"lists": []}
+        client.list_forms.return_value = {"forms": []}
+        url = reverse("newsletter-admin-mautic-campaign-capabilities")
+
+        self.client.get(url)
+        second = self.client.get(url)
+
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(client.get_campaign_builder_capabilities.call_count, 1)
+        self.assertEqual(client.list_forms.call_count, 1)
+
+    @patch("newsletter.point_views.MauticClient")
+    def test_point_action_types_are_cached(self, client_cls):
+        client = client_cls.return_value
+        client.list_point_action_types.return_value = {"email.open": "Opens an email"}
+        url = reverse("newsletter-admin-point-action-types")
+
+        self.client.get(url)
+        second = self.client.get(url)
+
+        self.assertEqual(second.data["types"][0]["value"], "email.open")
+        self.assertEqual(client.list_point_action_types.call_count, 1)
+
+    @patch("newsletter.contact_services.MauticClient")
+    def test_marketing_write_invalidates_metadata(self, client_cls):
+        client = client_cls.return_value
+        client.list_contact_fields.return_value = {"fields": [{"alias": "email", "label": "Email"}]}
+        url = reverse("newsletter-admin-contact-field-metadata")
+
+        self.client.get(url)
+        marketing_cache.invalidate()  # what the middleware does after a write
+        self.client.get(url)
+
+        self.assertEqual(client.list_contact_fields.call_count, 2)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_provider_error_is_not_cached(self, client_cls):
+        client = client_cls.return_value
+        client.get_field_type_choices.side_effect = [TemporaryMauticError("down"), COUNTRY_CHOICES]
+        url = reverse("newsletter-admin-mautic-segment-filter-choices")
+
+        failed = self.client.get(url, {"source": "country"})
+        recovered = self.client.get(url, {"source": "country"})
+
+        self.assertGreaterEqual(failed.status_code, 500)
+        self.assertEqual(recovered.status_code, 200)

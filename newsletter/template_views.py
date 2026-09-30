@@ -10,6 +10,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import marketing_cache
 from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
@@ -471,8 +472,8 @@ class NewsletterAdminTemplateTokensView(APIView):
     def get(self, request):
         try:
             client = MauticClient()
-            contact_fields = client.list_fields("contact", start=0, limit=500)
-            company_fields = client.list_fields("company", start=0, limit=500)
+            contact_fields = marketing_cache.fields(client, "contact", limit=500)
+            company_fields = marketing_cache.fields(client, "company", limit=500)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -496,7 +497,7 @@ class NewsletterAdminTemplateCategoriesView(APIView):
 
     def get(self, request):
         try:
-            data = MauticClient().list_categories(start=0, limit=500)
+            data = marketing_cache.categories(MauticClient(), limit=500)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -524,7 +525,7 @@ class NewsletterAdminTemplateThemesView(APIView):
 
     def get(self, request):
         try:
-            data = MauticClient().list_themes()
+            data = marketing_cache.themes(MauticClient())
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 

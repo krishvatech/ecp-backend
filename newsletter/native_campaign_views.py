@@ -8,6 +8,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import marketing_cache
 from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
@@ -1313,10 +1314,10 @@ class NewsletterAdminMauticCampaignCapabilitiesView(APIView):
 
     def get(self, request):
         try:
-            client = MauticClient()
-            capabilities = client.get_campaign_builder_capabilities()
-            segments = client.list_segments(limit=200)
-            forms = client.list_forms(limit=200)
+            sources = marketing_cache.campaign_builder_sources(MauticClient(), limit=200)
+            capabilities = sources["capabilities"]
+            segments = sources["segments"]
+            forms = sources["forms"]
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -1410,7 +1411,7 @@ class NewsletterAdminMauticCampaignChoicesView(APIView):
 
     def _reference_choices(self, source, *, search, values, start, limit):
         try:
-            data = MauticClient().get_field_type_choices(source)
+            data = marketing_cache.field_type_choices(MauticClient(), source)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 

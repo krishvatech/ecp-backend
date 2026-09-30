@@ -15,6 +15,7 @@ from typing import Any
 
 from django.utils import timezone
 
+from . import marketing_cache
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.operations import STAGE_CONTACT_ADD, STAGE_CONTACT_REMOVE
 from .models import MauticContactMapping, NewsletterCategory, NewsletterSubscription
@@ -448,7 +449,7 @@ def _normalize_field(field: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_admin_contact_field_metadata() -> dict[str, Any]:
-    data = MauticClient().list_contact_fields()
+    data = marketing_cache.contact_fields(MauticClient())
     field_source = data.get("fields") if isinstance(data.get("fields"), (dict, list)) else data
     fields = [_normalize_field(field) for field in _dict_values({"fields": field_source}, "fields")]
     fields = [field for field in fields if field["alias"]]

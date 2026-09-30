@@ -2100,7 +2100,7 @@ class NewsletterAdminMauticSegmentFilterChoicesView(APIView):
         limit = max(1, min(limit, self.max_page_size))
 
         try:
-            data = MauticClient().get_field_type_choices(source)
+            data = marketing_cache.field_type_choices(MauticClient(), source)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -2129,7 +2129,7 @@ class NewsletterAdminMauticSegmentFilterMetadataView(APIView):
         search = str(request.query_params.get("search", "") or "").strip()
 
         try:
-            metadata = MauticClient().get_segment_filter_metadata(search)
+            metadata = marketing_cache.segment_filter_metadata(MauticClient(), search)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
