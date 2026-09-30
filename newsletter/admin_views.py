@@ -909,6 +909,7 @@ class NewsletterAdminContactListView(APIView):
     default_page_size = 25
     max_page_size = 100
 
+    @marketing_cache.cached_get("contacts", marketing_cache.contact_list_ttl)
     def get(self, request):
         try:
             page = max(1, int(request.query_params.get("page", 1)))
@@ -1080,6 +1081,7 @@ class NewsletterAdminContactFieldMetadataView(APIView):
 class NewsletterAdminTagListView(APIView):
     permission_classes = [HasMarketingHubAccess]
 
+    @marketing_cache.cached_get("contact-tags", marketing_cache.list_ttl)
     def get(self, request):
         try:
             data = list_admin_tags(
@@ -1552,6 +1554,7 @@ class NewsletterAdminStageListCreateView(APIView):
     default_page_size = 25
     max_page_size = 100
 
+    @marketing_cache.cached_get("stages", marketing_cache.list_ttl)
     def get(self, request):
         try:
             page = max(1, int(request.query_params.get("page", 1)))
@@ -1999,6 +2002,7 @@ class NewsletterAdminCategoryLinkMauticSegmentView(APIView):
 class NewsletterAdminMauticSegmentListView(APIView):
     permission_classes = [HasMarketingHubAccess]
 
+    @marketing_cache.cached_get("segments", marketing_cache.list_ttl)
     def get(self, request):
         try:
             segments = _segments_from_response(MauticClient().list_segments(limit=200))

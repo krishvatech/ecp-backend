@@ -234,6 +234,16 @@ MARKETING_METADATA_CACHE_SECONDS = int(
 MARKETING_REFERENCE_CACHE_SECONDS = int(
     os.getenv("MARKETING_REFERENCE_CACHE_SECONDS", "3600")
 )
+# Marketing Hub list pages (segments, tags, stages, companies, points,
+# templates, campaigns). Kept short: these are also edited directly in Mautic.
+MARKETING_LIST_CACHE_SECONDS = int(
+    os.getenv("MARKETING_LIST_CACHE_SECONDS", "60")
+)
+# Contacts also show ECP newsletter consent, which members change outside the
+# Marketing Hub, so their list is cached for less time.
+MARKETING_CONTACT_LIST_CACHE_SECONDS = int(
+    os.getenv("MARKETING_CONTACT_LIST_CACHE_SECONDS", "30")
+)
 
 # ECP -> Mautic signed identity assertions (Phase 1 foundation, not yet used by
 # any live Mautic call). The private key must come from the environment/secret

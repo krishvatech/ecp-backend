@@ -10,6 +10,8 @@ writes):
   * Mautic reference data behind the builders and forms (see the
     ``Reference reads`` section): whole provider payloads, so every endpoint,
     search and page that uses one shares a single entry
+  * list pages (contacts, segments, tags, stages, companies, points,
+    templates, campaigns) via ``cached_get``, for a short TTL
 Keys look like ``marketing:v<version>:<name>:<hash of query params>``.
 
 Invalidation is by version: any write to a Marketing Hub admin endpoint bumps
@@ -26,6 +28,7 @@ the caller falls back to Mautic. After a failure the cache is skipped for a
 short cooldown so a Redis outage does not add a socket timeout to every
 request.
 """
+import functools
 import hashlib
 import logging
 import time
@@ -43,6 +46,8 @@ DEFAULT_ANALYTICS_TTL_SECONDS = 5 * 60
 DEFAULT_DASHBOARD_TTL_SECONDS = 2 * 60
 DEFAULT_METADATA_TTL_SECONDS = 15 * 60
 DEFAULT_REFERENCE_TTL_SECONDS = 60 * 60
+DEFAULT_LIST_TTL_SECONDS = 60
+DEFAULT_CONTACT_LIST_TTL_SECONDS = 30
 FAILURE_COOLDOWN_SECONDS = 30
 REFRESH_PARAM = "refresh"
 
@@ -68,6 +73,14 @@ def metadata_ttl():
 
 def reference_ttl():
     return int(getattr(settings, "MARKETING_REFERENCE_CACHE_SECONDS", DEFAULT_REFERENCE_TTL_SECONDS))
+
+
+def list_ttl():
+    return int(getattr(settings, "MARKETING_LIST_CACHE_SECONDS", DEFAULT_LIST_TTL_SECONDS))
+
+
+def contact_list_ttl():
+    return int(getattr(settings, "MARKETING_CONTACT_LIST_CACHE_SECONDS", DEFAULT_CONTACT_LIST_TTL_SECONDS))
 
 
 def _available():
@@ -178,29 +191,63 @@ def cached_value(name, parts, build, *, ttl):
     return value
 
 
+def _request_key(request, name, *parts):
+    """The key for a request (after honouring ``?refresh=1``), or None when the
+    cache is off or unavailable."""
+    if not enabled():
+        return None
+    if wants_refresh(request):
+        invalidate()
+    version = current_version()
+    if version is None:
+        return None
+    return _key(version, name, *parts, *_param_parts(request))
+
+
+def _hit(data):
+    response = Response(data, status=status.HTTP_200_OK)
+    response[CACHE_HEADER] = "HIT"
+    return response
+
+
 def cached_response(request, name, build, *, ttl, cacheable=None):
     """A 200 Response for `build()`'s data, served from Redis when possible.
 
     `cacheable(data)` may veto storing a successful but partial result.
     Provider errors raised by `build()` propagate to the view unchanged."""
-    cache_status = "MISS"
-    if not enabled():
-        data = build()
-    else:
-        if wants_refresh(request):
-            invalidate()
-        version = current_version()
-        key = _key(version, name, *_param_parts(request)) if version is not None else None
-        data = _safe_get(key, _MISSING) if key else _MISSING
-        if data is not _MISSING:
-            cache_status = "HIT"
-        else:
-            data = build()
-            if key and (cacheable is None or cacheable(data)):
-                _safe_set(key, data, ttl)
+    key = _request_key(request, name)
+    data = _safe_get(key, _MISSING) if key else _MISSING
+    if data is not _MISSING:
+        return _hit(data)
+    data = build()
+    if key and (cacheable is None or cacheable(data)):
+        _safe_set(key, data, ttl)
     response = Response(data, status=status.HTTP_200_OK)
-    response[CACHE_HEADER] = cache_status
+    response[CACHE_HEADER] = "MISS"
     return response
+
+
+def cached_get(name, ttl):
+    """Decorate an APIView ``get`` so its 200 responses are cached.
+
+    For views that build their Response inline. Runs after DRF's permission
+    checks, keys on the URL kwargs plus query params, and never stores an
+    error response. `ttl` is a function so settings are read per request."""
+    def decorator(get):
+        @functools.wraps(get)
+        def wrapper(view, request, *args, **kwargs):
+            key = _request_key(request, name, *args, *(f"{k}={v}" for k, v in sorted(kwargs.items())))
+            data = _safe_get(key, _MISSING) if key else _MISSING
+            if data is not _MISSING:
+                return _hit(data)
+            response = get(view, request, *args, **kwargs)
+            if response.status_code == status.HTTP_200_OK:
+                if key:
+                    _safe_set(key, response.data, ttl())
+                response[CACHE_HEADER] = "MISS"
+            return response
+        return wrapper
+    return decorator
 
 
 # Reference reads ------------------------------------------------------------

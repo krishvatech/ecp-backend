@@ -274,6 +274,7 @@ class NewsletterAdminPointActionListCreateView(APIView):
     default_page_size = 25
     max_page_size = 100
 
+    @marketing_cache.cached_get("point-actions", marketing_cache.list_ttl)
     def get(self, request):
         try:
             page = max(1, int(request.query_params.get("page", 1)))

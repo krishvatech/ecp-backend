@@ -6,6 +6,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import marketing_cache
 from .marketing_permissions import HasMarketingHubAccess
 
 from . import tag_services as tag_service_module
@@ -29,6 +30,7 @@ def _tag_error(exc):
 class NewsletterAdminTagDirectoryView(APIView):
     permission_classes = [HasMarketingHubAccess]
 
+    @marketing_cache.cached_get("tag-directory", marketing_cache.list_ttl)
     def get(self, request):
         try:
             page = max(1, int(request.query_params.get("page", 1)))

@@ -380,3 +380,79 @@ class MarketingReferenceCacheTests(MarketingCacheTestCase):
 
         self.assertGreaterEqual(failed.status_code, 500)
         self.assertEqual(recovered.status_code, 200)
+
+
+class MarketingListCacheTests(MarketingCacheTestCase):
+    def setUp(self):
+        super().setUp()
+        self.stages_url = reverse("newsletter-admin-stage-list")
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_list_pages_are_cached_per_query(self, client_cls):
+        client = client_cls.return_value
+        client.list_stages.return_value = {"total": 1, "stages": [{"id": 1, "name": "Lead"}]}
+
+        first = self.client.get(self.stages_url, {"page": 1})
+        repeat = self.client.get(self.stages_url, {"page": 1})
+        searched = self.client.get(self.stages_url, {"page": 1, "search": "lead"})
+
+        self.assertEqual(first["X-Marketing-Cache"], "MISS")
+        self.assertEqual(repeat["X-Marketing-Cache"], "HIT")
+        self.assertEqual(repeat.data, first.data)
+        self.assertEqual(searched["X-Marketing-Cache"], "MISS")
+        self.assertEqual(client.list_stages.call_count, 2)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_cached_list_still_requires_marketing_access(self, client_cls):
+        client_cls.return_value.list_stages.return_value = {"total": 0, "stages": []}
+        self.client.get(self.stages_url)
+        outsider = User.objects.create_user(
+            username="marketing-list-outsider", password="test-password", is_staff=True
+        )
+
+        denied = APIClient()
+        denied.force_authenticate(user=outsider)
+        response = denied.get(self.stages_url)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertNotIn("X-Marketing-Cache", response)
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_list_error_is_not_cached(self, client_cls):
+        client = client_cls.return_value
+        client.list_stages.side_effect = [TemporaryMauticError("down"), {"total": 0, "stages": []}]
+
+        failed = self.client.get(self.stages_url)
+        recovered = self.client.get(self.stages_url)
+
+        self.assertGreaterEqual(failed.status_code, 500)
+        self.assertNotIn("X-Marketing-Cache", failed)
+        self.assertEqual(recovered["X-Marketing-Cache"], "MISS")
+
+    @patch("newsletter.admin_views.MauticClient")
+    def test_refresh_and_writes_rebuild_lists(self, client_cls):
+        client = client_cls.return_value
+        client.list_stages.return_value = {"total": 0, "stages": []}
+        self.client.get(self.stages_url)
+
+        refreshed = self.client.get(self.stages_url, {"refresh": "1"})
+        self.client.post(self.stages_url, {}, format="json")  # invalid, never reaches Mautic
+        after_write = self.client.get(self.stages_url)
+
+        self.assertEqual(refreshed["X-Marketing-Cache"], "MISS")
+        self.assertEqual(after_write["X-Marketing-Cache"], "MISS")
+        client.create_stage.assert_not_called()
+        self.assertEqual(client.list_stages.call_count, 3)
+
+    @patch("newsletter.contact_services.MauticClient")
+    def test_contact_list_uses_the_shorter_ttl(self, client_cls):
+        client_cls.return_value.list_contacts.return_value = {"total": 0, "contacts": []}
+        url = reverse("newsletter-admin-contact-list")
+
+        with patch.object(marketing_cache, "_safe_set", wraps=marketing_cache._safe_set) as safe_set:
+            with override_settings(MARKETING_CONTACT_LIST_CACHE_SECONDS=17):
+                self.client.get(url)
+                second = self.client.get(url)
+
+        self.assertEqual(second["X-Marketing-Cache"], "HIT")
+        self.assertEqual(safe_set.call_args.args[2], 17)

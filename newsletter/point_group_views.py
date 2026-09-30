@@ -8,6 +8,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import marketing_cache
 from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
@@ -220,6 +221,7 @@ class NewsletterAdminPointGroupListCreateView(APIView):
     default_page_size = 25
     max_page_size = 100
 
+    @marketing_cache.cached_get("point-groups", marketing_cache.list_ttl)
     def get(self, request):
         try:
             page = max(1, int(request.query_params.get("page", 1)))

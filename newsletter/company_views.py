@@ -6,6 +6,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import marketing_cache
 from .marketing_permissions import HasMarketingHubAccess
 
 from . import company_services
@@ -54,6 +55,7 @@ def _company_error(exc):
 class NewsletterAdminCompanyListCreateView(APIView):
     permission_classes = [HasMarketingHubAccess]
 
+    @marketing_cache.cached_get("companies", marketing_cache.list_ttl)
     def get(self, request):
         page, page_size = _paging(request)
         try:
