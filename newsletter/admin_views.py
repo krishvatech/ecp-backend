@@ -11,6 +11,7 @@ import logging
 import math
 import re
 
+from . import marketing_cache
 from .marketing_permissions import HasMarketingHubAccess
 
 from .admin_serializers import (
@@ -1534,11 +1535,14 @@ class NewsletterAdminStageAnalyticsView(APIView):
 
     def get(self, request):
         try:
-            data = get_admin_stage_analytics()
+            return marketing_cache.cached_response(
+                request,
+                "stage-analytics",
+                get_admin_stage_analytics,
+                ttl=marketing_cache.analytics_ttl(),
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
-
-        return Response(data, status=status.HTTP_200_OK)
 
 
 class NewsletterAdminStageListCreateView(APIView):

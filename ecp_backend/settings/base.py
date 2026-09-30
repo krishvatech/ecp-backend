@@ -213,6 +213,18 @@ MAUTIC_SYNC_PROCESSING_TIMEOUT_SECONDS = int(
     os.getenv("MAUTIC_SYNC_PROCESSING_TIMEOUT_SECONDS", "600")
 )
 
+# Redis response cache for the Mautic-backed Marketing Hub analytics and
+# dashboard (see newsletter.marketing_cache). The enable flag is a kill switch.
+MARKETING_RESPONSE_CACHE_ENABLED = os.getenv(
+    "MARKETING_RESPONSE_CACHE_ENABLED", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
+MARKETING_ANALYTICS_CACHE_SECONDS = int(
+    os.getenv("MARKETING_ANALYTICS_CACHE_SECONDS", "300")
+)
+MARKETING_DASHBOARD_CACHE_SECONDS = int(
+    os.getenv("MARKETING_DASHBOARD_CACHE_SECONDS", "120")
+)
+
 # ECP -> Mautic signed identity assertions (Phase 1 foundation, not yet used by
 # any live Mautic call). The private key must come from the environment/secret
 # store only. TTL is validated (10-120s) when an assertion is issued.
@@ -430,6 +442,8 @@ MIDDLEWARE = [
     # Prevents unnecessary Site.find_for_request() DB queries during API errors
     "common.middleware.SafeWagtailRedirectMiddleware",
     "users.middleware.WagtailPlatformAdminOnlyMiddleware",
+    # Invalidates the Marketing Hub read cache after Marketing writes
+    "newsletter.middleware.MarketingCacheInvalidationMiddleware",
 ]
 
 ROOT_URLCONF = "ecp_backend.urls"

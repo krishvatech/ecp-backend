@@ -6,6 +6,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import marketing_cache
 from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import PermanentMauticError, TemporaryMauticError
@@ -39,10 +40,14 @@ class NewsletterAdminAnalyticsOverviewView(APIView):
         if isinstance(date_range, Response):
             return date_range
         try:
-            data = get_overview_analytics(date_range)
+            return marketing_cache.cached_response(
+                request,
+                "analytics-overview",
+                lambda: get_overview_analytics(date_range),
+                ttl=marketing_cache.analytics_ttl(),
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error(exc)
-        return Response(data, status=status.HTTP_200_OK)
 
 
 class NewsletterAdminAnalyticsCampaignsView(APIView):
@@ -50,10 +55,14 @@ class NewsletterAdminAnalyticsCampaignsView(APIView):
 
     def get(self, request):
         try:
-            data = list_campaign_analytics(request.query_params)
+            return marketing_cache.cached_response(
+                request,
+                "analytics-campaigns",
+                lambda: list_campaign_analytics(request.query_params),
+                ttl=marketing_cache.analytics_ttl(),
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error(exc)
-        return Response(data, status=status.HTTP_200_OK)
 
 
 class NewsletterAdminAnalyticsEmailsView(APIView):
@@ -61,10 +70,14 @@ class NewsletterAdminAnalyticsEmailsView(APIView):
 
     def get(self, request):
         try:
-            data = list_email_analytics(request.query_params)
+            return marketing_cache.cached_response(
+                request,
+                "analytics-emails",
+                lambda: list_email_analytics(request.query_params),
+                ttl=marketing_cache.analytics_ttl(),
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error(exc)
-        return Response(data, status=status.HTTP_200_OK)
 
 
 class NewsletterAdminAnalyticsContactsView(APIView):
@@ -75,10 +88,14 @@ class NewsletterAdminAnalyticsContactsView(APIView):
         if isinstance(date_range, Response):
             return date_range
         try:
-            data = get_contact_analytics(date_range)
+            return marketing_cache.cached_response(
+                request,
+                "analytics-contacts",
+                lambda: get_contact_analytics(date_range),
+                ttl=marketing_cache.analytics_ttl(),
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error(exc)
-        return Response(data, status=status.HTTP_200_OK)
 
 
 class NewsletterAdminAnalyticsSegmentsView(APIView):
@@ -86,7 +103,11 @@ class NewsletterAdminAnalyticsSegmentsView(APIView):
 
     def get(self, request):
         try:
-            data = list_segment_analytics(request.query_params)
+            return marketing_cache.cached_response(
+                request,
+                "analytics-segments",
+                lambda: list_segment_analytics(request.query_params),
+                ttl=marketing_cache.analytics_ttl(),
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error(exc)
-        return Response(data, status=status.HTTP_200_OK)

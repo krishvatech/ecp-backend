@@ -11,6 +11,7 @@ import math
 from datetime import date, datetime
 from typing import Any
 
+from . import marketing_cache
 from .contact_services import get_admin_stage_analytics
 from .mautic import MauticClient
 
@@ -275,7 +276,17 @@ def _normalize_email(client: MauticClient, email: dict[str, Any]) -> dict[str, A
 def _email_stats_summary(client: MauticClient, email_id) -> dict[str, Any]:
     if not email_id:
         return {}
-    data = client.get_email_stats(email_id)
+    # One Mautic call per email: cached so the overview and emails pages, and
+    # their pages/searches, share each summary.
+    return marketing_cache.cached_value(
+        "email-stats",
+        [email_id],
+        lambda: _summarize_email_stats(client.get_email_stats(email_id)),
+        ttl=marketing_cache.analytics_ttl(),
+    )
+
+
+def _summarize_email_stats(data: dict[str, Any]) -> dict[str, Any]:
     rows = _items(data.get("data") or data.get("stats"))
     summary = {"opened": 0, "clicked": 0, "bounced": 0, "unsubscribed": 0, "lastActivity": None}
     for row in rows:
