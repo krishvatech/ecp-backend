@@ -10,6 +10,7 @@ from rest_framework.views import APIView
 import logging
 import math
 import re
+from uuid import UUID
 
 from . import marketing_cache
 from .marketing_permissions import HasMarketingHubAccess
@@ -711,6 +712,90 @@ class NewsletterAdminCampaignAnalyticsView(APIView):
         return Response(
             get_campaign_analytics(_get_campaign_or_404(uuid)),
             status=status.HTTP_200_OK,
+        )
+
+
+ANALYTICS_SUMMARY_MAX_UUIDS = 200
+
+
+def _analytics_summary(analytics):
+    """The list-sized slice of get_campaign_analytics, with its semantics
+    unchanged so the Broadcast list and editor can never disagree."""
+    metadata = analytics.get("metadata") or {}
+    return {
+        "send_summary": analytics["send_summary"],
+        "engagement": analytics["engagement"],
+        "rates": analytics["rates"],
+        "metadata": {
+            "mautic_email_id": metadata.get("mautic_email_id"),
+            "mautic_available": metadata.get("mautic_available"),
+            "send_summary_source": metadata.get("send_summary_source", ""),
+        },
+    }
+
+
+def _summary_is_complete(data):
+    # Never cache a result where Mautic could not be read: its opens and sends
+    # would be understated until the cache expired.
+    for entry in data["results"].values():
+        if "error" in entry:
+            return False
+        metadata = entry["metadata"]
+        if metadata["mautic_email_id"] and not metadata["mautic_available"]:
+            return False
+    return True
+
+
+class NewsletterAdminCampaignAnalyticsSummaryView(APIView):
+    """Analytics for several Broadcasts in one request, for the Broadcast list.
+
+    Read-only. Each Broadcast goes through the same get_campaign_analytics as
+    the per-Broadcast endpoint; the response is cached like other Marketing
+    analytics and honours ``?refresh=1``.
+    """
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request):
+        raw = ",".join(request.query_params.getlist("uuids"))
+        requested = list(dict.fromkeys(part.strip() for part in raw.split(",") if part.strip()))
+        if len(requested) > ANALYTICS_SUMMARY_MAX_UUIDS:
+            return Response(
+                {"detail": f"At most {ANALYTICS_SUMMARY_MAX_UUIDS} broadcasts per request."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        uuids = []
+        for value in requested:
+            try:
+                uuids.append(str(UUID(value)))
+            except ValueError:
+                return Response(
+                    {"detail": "uuids must be Broadcast UUIDs."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        def build():
+            results = {}
+            for campaign in NewsletterCampaign.objects.filter(uuid__in=uuids):
+                try:
+                    results[str(campaign.uuid)] = _analytics_summary(
+                        get_campaign_analytics(campaign)
+                    )
+                except Exception:  # one Broadcast must not hide the others
+                    logger.warning(
+                        "Broadcast analytics summary failed for campaign id=%s",
+                        campaign.pk,
+                        exc_info=True,
+                    )
+                    results[str(campaign.uuid)] = {"error": "unavailable"}
+            return {"results": results}
+
+        return marketing_cache.cached_response(
+            request,
+            "broadcast-analytics-summary",
+            build,
+            ttl=marketing_cache.analytics_ttl(),
+            cacheable=_summary_is_complete,
         )
 
 
