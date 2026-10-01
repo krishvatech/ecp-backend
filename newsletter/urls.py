@@ -6,6 +6,7 @@ from .admin_views import (
     NewsletterAdminCampaignAnalyticsView,
     NewsletterAdminCampaignCancelView,
     NewsletterAdminCampaignDetailView,
+    NewsletterAdminCampaignDuplicateView,
     NewsletterAdminCampaignListCreateView,
     NewsletterAdminCampaignPreviewView,
     NewsletterAdminCampaignScheduleView,
@@ -160,6 +161,11 @@ urlpatterns = [
         "newsletter/admin/campaigns/<uuid:uuid>/preview/",
         NewsletterAdminCampaignPreviewView.as_view(),
         name="newsletter-admin-campaign-preview",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/duplicate/",
+        NewsletterAdminCampaignDuplicateView.as_view(),
+        name="newsletter-admin-campaign-duplicate",
     ),
     path(
         "newsletter/admin/campaigns/<uuid:uuid>/analytics/",

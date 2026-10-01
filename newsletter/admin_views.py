@@ -62,6 +62,7 @@ from .campaign_services import (
     cancel_scheduled_campaign,
     create_campaign,
     delete_draft_campaign,
+    duplicate_campaign,
     get_campaign,
     list_campaigns,
     request_campaign_send,
@@ -606,6 +607,19 @@ class NewsletterAdminCampaignListCreateView(APIView):
         campaign = create_campaign(serializer.validated_data, user=request.user)
         response = NewsletterCampaignSerializer(campaign)
         return Response(response.data, status=status.HTTP_201_CREATED)
+
+
+class NewsletterAdminCampaignDuplicateView(APIView):
+    """Copy a Broadcast into a new Draft. ECP-only: Mautic is not contacted."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def post(self, request, uuid):
+        duplicate = duplicate_campaign(_get_campaign_or_404(uuid), user=request.user)
+        return Response(
+            NewsletterCampaignSerializer(duplicate).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class NewsletterAdminCampaignDetailView(APIView):

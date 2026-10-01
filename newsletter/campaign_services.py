@@ -495,6 +495,41 @@ def create_campaign(validated_data, *, user):
     return campaign
 
 
+#: Authored content a Broadcast duplicate carries over. Everything else on the
+#: model (status, schedule and its owner, send times, Mautic email ID, sync
+#: time, last error) belongs to the source's delivery and is never copied.
+DUPLICATE_CONTENT_FIELDS = (
+    "subject",
+    "preview_text",
+    "from_name",
+    "from_email",
+    "html_content",
+    "plain_text",
+)
+DUPLICATE_NAME_SUFFIX = " Copy"
+
+
+@transaction.atomic
+def duplicate_campaign(source, *, user):
+    """Create a new Draft Broadcast from any Broadcast's content.
+
+    ECP-only, like create_campaign: Mautic is not contacted, and the copy gets
+    its own Mautic email on its first Save/Sync. Only active Subscription Lists
+    are carried over, as create_campaign accepts only active ones.
+    """
+    max_length = NewsletterCampaign._meta.get_field("name").max_length
+    base_name = source.name[: max_length - len(DUPLICATE_NAME_SUFFIX)].rstrip()
+    duplicate = NewsletterCampaign.objects.create(
+        name=f"{base_name}{DUPLICATE_NAME_SUFFIX}",
+        **{field: getattr(source, field) for field in DUPLICATE_CONTENT_FIELDS},
+        status=NewsletterCampaign.Status.DRAFT,
+        created_by=user,
+        updated_by=user,
+    )
+    duplicate.audiences.set(source.audiences.filter(is_active=True))
+    return duplicate
+
+
 def _ensure_campaign_can_change(campaign, *, action):
     if campaign.status != NewsletterCampaign.Status.DRAFT:
         raise CampaignNotEditable(
