@@ -471,6 +471,37 @@ class MauticClient:
             )
         return contact
 
+    def create_disposable_contact(self, email: str) -> tuple[dict[str, Any], bool]:
+        """Create a throwaway contact and report whether this call inserted it.
+
+        Mautic's ``contacts/new`` is an upsert: when a contact with the same
+        email already exists it updates and returns that contact with HTTP 200;
+        only a contact this request inserted comes back with HTTP 201. Racing
+        creates each insert their own row (201, distinct IDs) or fail with 422.
+        So ``created`` is True only for 201 — the one answer that proves this
+        exact contact is safe to delete afterwards.
+        """
+        normalized = str(email or "").strip()
+        if not normalized:
+            raise PermanentMauticError("Email is required to create a Mautic contact")
+
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "POST",
+                "ecp/bridge/contacts/new",
+                operation=CONTACT_CREATE,
+                data={"email": normalized},
+            )
+        else:
+            response = self._request("POST", "contacts/new", data={"email": normalized})
+        data = self._json_object(response, "Mautic contact creation")
+        contact = data.get("contact")
+        if not isinstance(contact, dict) or not contact.get("id"):
+            raise TemporaryMauticError(
+                "Mautic contact creation returned an invalid response"
+            )
+        return contact, response.status_code == 201
+
     def update_contact(
         self,
         contact_id: int | str,

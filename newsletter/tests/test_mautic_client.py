@@ -771,6 +771,60 @@ class MauticClientTests(SimpleTestCase):
             ("POST", "http://mautic.local/api/contacts/new"),
         )
 
+    def test_disposable_contact_is_created_only_on_http_201(self):
+        client, session = self.make_mautic_client(
+            response(201, {"contact": {"id": 61, "email": "new@example.com"}})
+        )
+
+        contact, created = client.create_disposable_contact(" new@example.com ")
+
+        self.assertEqual(contact["id"], 61)
+        self.assertIs(created, True)
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/contacts/new"),
+        )
+        self.assertEqual(
+            session.request.call_args.kwargs["data"],
+            {"email": "new@example.com"},
+        )
+
+    def test_disposable_contact_matched_to_existing_record_is_not_owned(self):
+        # Mautic's contacts/new is an upsert: an existing email is updated and
+        # returned with HTTP 200 instead of being inserted.
+        client, _ = self.make_mautic_client(
+            response(200, {"contact": {"id": 44, "email": "known@example.com"}})
+        )
+
+        contact, created = client.create_disposable_contact("known@example.com")
+
+        self.assertEqual(contact["id"], 44)
+        self.assertIs(created, False)
+
+    def test_disposable_contact_uses_the_bridge_for_an_asserted_client(self):
+        client, session, operations = self.make_asserted_mautic_client(
+            response(201, {"contact": {"id": 62}})
+        )
+
+        _, created = client.create_disposable_contact("new@example.com")
+
+        self.assertIs(created, True)
+        self.assertEqual(operations, ["contact.create"])
+        self.assertEqual(
+            session.request.call_args.args[:2],
+            ("POST", "http://mautic.local/api/ecp/bridge/contacts/new"),
+        )
+
+    def test_disposable_contact_requires_email_and_a_valid_response(self):
+        client, session = self.make_mautic_client(response(201, {"contact": {}}))
+
+        with self.assertRaisesRegex(PermanentMauticError, "Email is required"):
+            client.create_disposable_contact("  ")
+        session.request.assert_not_called()
+
+        with self.assertRaisesRegex(TemporaryMauticError, "invalid response"):
+            client.create_disposable_contact("new@example.com")
+
     def test_update_contact_calls_edit_endpoint(self):
         client, session = self.make_mautic_client(
             response(200, {"contact": {"id": 51, "firstname": "Updated"}})

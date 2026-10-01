@@ -374,35 +374,19 @@ def send_campaign_test_email(campaign, recipient_email, *, actor=None, client=No
             )
         validate_campaign_for_mautic_sync(campaign)
 
-    provider_client = None
     send_client = client
-    temporary_contact = False
-    contact_id = ""
-    temporary_email_id = ""
 
     try:
         provider_client = MauticClient()
         if send_client is None:
             send_client = provider_client
-        temporary_email = provider_client.create_email(build_test_email_payload(campaign))
-        temporary_email_id = str(temporary_email.get("id") or "").strip()
-        if not temporary_email_id:
-            raise TemporaryMauticError(
-                "Mautic test email creation returned an invalid email"
-            )
-
-        contact = provider_client.find_contact_by_email(recipient)
-        if contact is None:
-            contact = provider_client.create_contact({"email": recipient})
-            temporary_contact = True
-
-        contact_id = str(contact.get("id") or "").strip()
-        if not contact_id:
-            raise TemporaryMauticError(
-                "Mautic test recipient returned an invalid contact"
-            )
-
-        send_client.send_email_to_contact(temporary_email_id, contact_id)
+        delivery = deliver_temporary_test_email(
+            build_test_email_payload(campaign),
+            recipient,
+            provider_client=provider_client,
+            send_client=send_client,
+            label="newsletter",
+        )
     except TemporaryMauticError as exc:
         _record_mautic_sync_error(campaign, exc)
         raise CampaignMauticUnavailable(
@@ -415,28 +399,84 @@ def send_campaign_test_email(campaign, recipient_email, *, actor=None, client=No
         raise CampaignMauticTestEmailFailed(
             "Mautic rejected the newsletter test email."
         ) from exc
+
+    return {
+        "recipient_email": recipient,
+        **delivery,
+    }
+
+
+def deliver_temporary_test_email(payload, recipient, *, provider_client, send_client, label):
+    """Send one throwaway Mautic email to one address, then remove it.
+
+    ``payload`` describes a temporary email that exists only for this send, so
+    the real broadcast or template never gets email_stats rows or a bumped sent
+    count. The temporary email and, when the address was new to Mautic, the
+    contact created for it are made and removed with ``provider_client``; only
+    the send itself goes through ``send_client``, which carries the asserted
+    user when per-user execution is on. A contact is deleted only when Mautic
+    confirmed that this call inserted it (HTTP 201); a pre-existing contact, or
+    one Mautic matched to an existing record, is always kept. Cleanup failures
+    are logged and never mask the send result. Provider errors propagate
+    unchanged for the caller to translate.
+    """
+    temporary_contact = False
+    contact_id = ""
+    temporary_email_id = ""
+
+    try:
+        temporary_email = provider_client.create_email(payload)
+        temporary_email_id = str(temporary_email.get("id") or "").strip()
+        if not temporary_email_id:
+            raise TemporaryMauticError(
+                "Mautic test email creation returned an invalid email"
+            )
+
+        contact = provider_client.find_contact_by_email(recipient)
+        if contact is None:
+            contact, temporary_contact = provider_client.create_disposable_contact(
+                recipient
+            )
+            if not temporary_contact:
+                # Another process created this address after our lookup, or the
+                # lookup missed it: either way it is not ours to delete.
+                logger.warning(
+                    "Mautic matched the %s test recipient to existing contact id=%s; "
+                    "it will be kept",
+                    label,
+                    contact.get("id"),
+                )
+
+        contact_id = str(contact.get("id") or "").strip()
+        if not contact_id:
+            raise TemporaryMauticError(
+                "Mautic test recipient returned an invalid contact"
+            )
+
+        send_client.send_email_to_contact(temporary_email_id, contact_id)
     finally:
-        if provider_client is not None and temporary_email_id:
+        if temporary_email_id:
             try:
                 provider_client.delete_email(temporary_email_id)
             except (TemporaryMauticError, PermanentMauticError):
                 logger.warning(
-                    "Could not delete temporary Mautic newsletter test email id=%s",
+                    "Could not delete temporary Mautic %s test email id=%s",
+                    label,
                     temporary_email_id,
                     exc_info=True,
                 )
-        if provider_client is not None and temporary_contact and contact_id:
+        if temporary_contact and contact_id:
             try:
                 provider_client.delete_contact(contact_id)
             except (TemporaryMauticError, PermanentMauticError):
                 logger.warning(
-                    "Could not delete temporary Mautic newsletter test contact id=%s",
+                    "Could not delete temporary Mautic %s test contact id=%s",
+                    label,
                     contact_id,
                     exc_info=True,
                 )
 
     return {
-        "recipient_email": recipient,
         "contact_id": contact_id,
         "temporary_contact": temporary_contact,
     }

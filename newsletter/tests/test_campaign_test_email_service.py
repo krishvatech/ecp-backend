@@ -75,7 +75,7 @@ class CampaignTestEmailServiceTests(TestCase):
         self.assertEqual(payload["emailType"], "template")
         self.assertNotIn("lists", payload)
         client.find_contact_by_email.assert_called_once_with("test@example.com")
-        client.create_contact.assert_not_called()
+        client.create_disposable_contact.assert_not_called()
         client.send_email_to_contact.assert_called_once_with("901", "51")
         client.delete_email.assert_called_once_with("901")
         client.delete_contact.assert_not_called()
@@ -110,7 +110,7 @@ class CampaignTestEmailServiceTests(TestCase):
         setup_client = client_cls.return_value
         setup_client.create_email.return_value = {"id": 908}
         setup_client.find_contact_by_email.return_value = None
-        setup_client.create_contact.return_value = {"id": 58}
+        setup_client.create_disposable_contact.return_value = ({"id": 58}, True)
         send_client = Mock()
         send_client.send_email_to_contact.side_effect = MauticBridgeRejectedError(
             "Mautic API request failed (HTTP 403)"
@@ -135,7 +135,7 @@ class CampaignTestEmailServiceTests(TestCase):
         client = client_cls.return_value
         client.create_email.return_value = {"id": 902}
         client.find_contact_by_email.return_value = None
-        client.create_contact.return_value = {"id": 52}
+        client.create_disposable_contact.return_value = ({"id": 52}, True)
         client.send_email_to_contact.return_value = {"success": True}
 
         result = send_campaign_test_email(
@@ -144,13 +144,78 @@ class CampaignTestEmailServiceTests(TestCase):
             actor=self.actor,
         )
 
-        client.create_contact.assert_called_once_with(
-            {"email": "new-test@example.com"}
-        )
+        client.create_disposable_contact.assert_called_once_with("new-test@example.com")
         client.send_email_to_contact.assert_called_once_with("902", "52")
         client.delete_email.assert_called_once_with("902")
         client.delete_contact.assert_called_once_with("52")
         self.assertTrue(result["temporary_contact"])
+
+    @patch("newsletter.campaign_services.MauticClient")
+    def test_contact_matched_to_an_existing_record_is_kept(self, client_cls):
+        # The lookup found nothing, but Mautic's create matched an existing
+        # contact (HTTP 200, e.g. created concurrently): not ours to delete.
+        client = client_cls.return_value
+        client.create_email.return_value = {"id": 910}
+        client.find_contact_by_email.return_value = None
+        client.create_disposable_contact.return_value = ({"id": 60}, False)
+        client.send_email_to_contact.return_value = {"success": True}
+
+        with self.assertLogs("newsletter.campaign_services", level="WARNING") as logs:
+            result = send_campaign_test_email(
+                self.campaign,
+                "raced@example.com",
+                actor=self.actor,
+            )
+
+        client.send_email_to_contact.assert_called_once_with("910", "60")
+        client.delete_email.assert_called_once_with("910")
+        client.delete_contact.assert_not_called()
+        self.assertFalse(result["temporary_contact"])
+        self.assertIn("existing contact id=60", "\n".join(logs.output))
+        # Only the Mautic ID is logged, never the address.
+        self.assertNotIn("raced@example.com", "\n".join(logs.output))
+
+    @patch("newsletter.campaign_services.MauticClient")
+    def test_matched_contact_is_kept_when_the_send_fails(self, client_cls):
+        client = client_cls.return_value
+        client.create_email.return_value = {"id": 911}
+        client.find_contact_by_email.return_value = None
+        client.create_disposable_contact.return_value = ({"id": 61}, False)
+        client.send_email_to_contact.side_effect = TemporaryMauticError("send failed")
+
+        with self.assertLogs("newsletter.campaign_services", level="WARNING"):
+            with self.assertRaises(CampaignMauticUnavailable):
+                send_campaign_test_email(
+                    self.campaign,
+                    "raced-failure@example.com",
+                    actor=self.actor,
+                )
+
+        client.delete_email.assert_called_once_with("911")
+        client.delete_contact.assert_not_called()
+
+    @patch("newsletter.campaign_services.MauticClient")
+    def test_cleanup_failure_does_not_replace_the_send_error(self, client_cls):
+        client = client_cls.return_value
+        client.create_email.return_value = {"id": 912}
+        client.find_contact_by_email.return_value = None
+        client.create_disposable_contact.return_value = ({"id": 62}, True)
+        client.send_email_to_contact.side_effect = PermanentMauticError(
+            "provider rejected send"
+        )
+        client.delete_email.side_effect = TemporaryMauticError("cleanup down")
+        client.delete_contact.side_effect = TemporaryMauticError("cleanup down")
+
+        with self.assertLogs("newsletter.campaign_services", level="WARNING"):
+            with self.assertRaises(CampaignMauticTestEmailFailed):
+                send_campaign_test_email(
+                    self.campaign,
+                    "cleanup-and-send-failure@example.com",
+                    actor=self.actor,
+                )
+
+        self.campaign.refresh_from_db()
+        self.assertIn("provider rejected send", self.campaign.last_error)
 
     @patch("newsletter.campaign_services.MauticClient")
     def test_temporary_send_failure_records_error_and_cleans_up(
@@ -160,7 +225,7 @@ class CampaignTestEmailServiceTests(TestCase):
         client = client_cls.return_value
         client.create_email.return_value = {"id": 903}
         client.find_contact_by_email.return_value = None
-        client.create_contact.return_value = {"id": 53}
+        client.create_disposable_contact.return_value = ({"id": 53}, True)
         client.send_email_to_contact.side_effect = TemporaryMauticError(
             "provider temporarily unavailable"
         )
@@ -185,7 +250,7 @@ class CampaignTestEmailServiceTests(TestCase):
         client = client_cls.return_value
         client.create_email.return_value = {"id": 904}
         client.find_contact_by_email.return_value = None
-        client.create_contact.return_value = {"id": 54}
+        client.create_disposable_contact.return_value = ({"id": 54}, True)
         client.send_email_to_contact.side_effect = PermanentMauticError(
             "provider rejected send"
         )
@@ -210,7 +275,7 @@ class CampaignTestEmailServiceTests(TestCase):
         client = client_cls.return_value
         client.create_email.return_value = {"id": 905}
         client.find_contact_by_email.return_value = None
-        client.create_contact.return_value = {"id": 55}
+        client.create_disposable_contact.return_value = ({"id": 55}, True)
         client.send_email_to_contact.return_value = {"success": True}
         client.delete_contact.side_effect = TemporaryMauticError(
             "cleanup unavailable"

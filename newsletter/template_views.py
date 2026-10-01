@@ -11,10 +11,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import marketing_cache
+from .campaign_services import deliver_temporary_test_email
 from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.operations import (
+    NEWSLETTER_TEST_SEND,
     TEMPLATE_CREATE,
     TEMPLATE_DELETE,
     TEMPLATE_DUPLICATE,
@@ -450,20 +452,96 @@ class NewsletterAdminTemplatePreviewView(APIView):
         )
 
 
+def _template_test_email_payload(template: dict[str, Any]) -> dict[str, Any]:
+    """A published throwaway copy of a template for exactly one test send.
+
+    Mautic bumps the sent count and writes email_stats rows for whatever email
+    it sends, so sending the template itself would change the Sent/Read counts
+    shown in the Templates list.
+    """
+    name = template["name"] or f"Template {template['id']}"
+    payload: dict[str, Any] = {
+        "name": f"{name} - Test"[:190],
+        "subject": template["subject"],
+        "customHtml": template["customHtml"],
+        "emailType": "template",
+        "isPublished": True,
+    }
+    for field in ("preheaderText", "fromName", "fromAddress", "plainText", "template"):
+        if template[field]:
+            payload[field] = template[field]
+    return payload
+
+
+def _parse_test_recipient(value) -> str:
+    recipient = str(value or "").strip().lower()
+    if not recipient:
+        raise ValueError("Test recipient email is required.")
+    try:
+        validate_email(recipient)
+    except DjangoValidationError as exc:
+        raise ValueError("Test recipient email must be valid.") from exc
+    return recipient
+
+
+def send_template_test_email(template_id, recipient, *, provider_client, send_client):
+    template = _normalize_template(provider_client.get_email_template(template_id))
+    if not template["subject"]:
+        raise ValueError("Add a subject to this Template before sending a test.")
+    if not (template["customHtml"].strip() or template["plainText"].strip()):
+        raise ValueError(
+            "Add HTML or plain-text content to this Template before sending a test."
+        )
+
+    delivery = deliver_temporary_test_email(
+        _template_test_email_payload(template),
+        recipient,
+        provider_client=provider_client,
+        send_client=send_client,
+        label="template",
+    )
+    return {"recipient_email": recipient, **delivery}
+
+
 class NewsletterAdminTemplateTestSendView(APIView):
+    """Send one Template to one address through a temporary Mautic copy."""
+
     permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, template_id):
+        try:
+            recipient = _parse_test_recipient(request.data.get("email"))
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result, error_response = run_interactive_mutation(
+                request,
+                action=NEWSLETTER_TEST_SEND,
+                resource="template",
+                resource_id=template_id,
+                mutate=lambda client: send_template_test_email(
+                    template_id,
+                    recipient,
+                    provider_client=MauticClient(),
+                    send_client=client,
+                ),
+                client_factory=MauticClient,
+                audit_and_reraise=(TemporaryMauticError, PermanentMauticError),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+        if error_response is not None:
+            return error_response
+
         return Response(
             {
-                "available": False,
-                "detail": (
-                    "Mautic REST exposes contact/segment sends, but no verified "
-                    "template test-send endpoint for an arbitrary email address."
-                ),
-                "bridgeRequired": True,
+                "success": True,
+                "recipient_email": result["recipient_email"],
             },
-            status=status.HTTP_501_NOT_IMPLEMENTED,
+            status=status.HTTP_200_OK,
         )
 
 
