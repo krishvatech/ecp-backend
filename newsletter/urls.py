@@ -80,6 +80,7 @@ from .native_campaign_views import (
     NewsletterAdminMauticCampaignCapabilitiesView,
     NewsletterAdminMauticCampaignChoicesView,
     NewsletterAdminMauticCampaignDetailView,
+    NewsletterAdminMauticCampaignDuplicateView,
     NewsletterAdminMauticCampaignEventView,
     NewsletterAdminMauticCampaignListCreateView,
 )
@@ -235,6 +236,11 @@ urlpatterns = [
         "newsletter/admin/mautic-campaigns/<str:campaign_id>/builder/",
         NewsletterAdminMauticCampaignBuilderView.as_view(),
         name="newsletter-admin-mautic-campaign-builder",
+    ),
+    path(
+        "newsletter/admin/mautic-campaigns/<str:campaign_id>/duplicate/",
+        NewsletterAdminMauticCampaignDuplicateView.as_view(),
+        name="newsletter-admin-mautic-campaign-duplicate",
     ),
     path(
         "newsletter/admin/analytics/overview/",

@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import marketing_cache
+from . import mautic_campaign_duplicate as duplicate_service
 from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
@@ -1302,6 +1303,142 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
         return _with_correlation(
             Response(
                 _normalize_campaign(campaign),
+                status=status.HTTP_201_CREATED,
+            ),
+            correlation_id,
+        )
+
+
+class NewsletterAdminMauticCampaignDuplicateView(APIView):
+    """Copy a native Mautic campaign into an independent, unpublished draft.
+
+    The source is only read. The copy is built from the source's active event
+    graph (see mautic_campaign_duplicate), created in one call as the acting
+    user, then read back and compared with the source; a copy that does not
+    match is deleted again rather than left behind looking valid.
+    """
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def post(self, request, campaign_id):
+        correlation_id = correlation_id_for_request(request)
+        action = MauticIdentityAuditLog.Action.CAMPAIGN_CREATE
+        reader = MauticClient()
+        try:
+            source = reader.get_campaign(campaign_id)
+            states = reader.get_campaign_event_states(campaign_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        try:
+            client = _interactive_campaign_client(request, correlation_id)
+            capabilities = {
+                (str(row.get("eventType") or "").strip(), _event_key(row)): row
+                for row in _event_capability_rows(client.get_campaign_builder_capabilities())
+            }
+        except MauticIdentityError as exc:
+            record_identity_failure(
+                action=action,
+                exc=exc,
+                actor=request.user,
+                resource="campaign",
+                correlation_id=correlation_id,
+            )
+            return _with_correlation(identity_error_response(exc), correlation_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        try:
+            events = duplicate_service.active_events(source, states.get("activeEventIds"))
+            blockers = duplicate_service.duplicate_blockers(source, events, capabilities)
+            if blockers:
+                raise duplicate_service.DuplicateBlocked(blockers)
+            payload, temp_ids = duplicate_service.build_duplicate_payload(source, events)
+        except duplicate_service.DuplicateBlocked as exc:
+            return Response(
+                {
+                    "detail": "This campaign cannot be duplicated safely.",
+                    "reasons": exc.reasons,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            created = client.create_campaign(payload)
+        except (MauticBridgeRejectedError, MauticIdentityError) as exc:
+            record_identity_failure(
+                action=action,
+                exc=exc,
+                actor=request.user,
+                mautic_user_id=_asserted_user_id(client),
+                resource="campaign",
+                auth_mode=_auth_mode_label(client),
+                correlation_id=correlation_id,
+                assertion_jti=_assertion_jti(client),
+            )
+            return _with_correlation(identity_error_response(exc), correlation_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+
+        new_id = str(created.get("id"))
+        try:
+            real_ids = duplicate_service.created_event_ids(payload, created)
+            source_to_new = {old: real_ids.get(temp, "") for old, temp in temp_ids.items()}
+            copy = reader.get_campaign(new_id)
+            copy_events = duplicate_service.active_events(
+                copy, reader.get_campaign_event_states(new_id).get("activeEventIds")
+            )
+            problems = duplicate_service.verify_duplicate(source, events, copy, copy_events, source_to_new)
+        except (TemporaryMauticError, PermanentMauticError, duplicate_service.DuplicateBlocked) as exc:
+            problems = [f"the copy could not be read back: {exc}"]
+
+        if problems:
+            # Never leave a copy behind that looks complete but is not.
+            try:
+                client.delete_campaign(new_id)
+                detail = "The campaign could not be duplicated faithfully, so the incomplete copy was removed."
+            except Exception:  # noqa: BLE001 - reported to the user below
+                detail = (
+                    f"The campaign could not be duplicated faithfully, and the incomplete copy "
+                    f"(Mautic campaign #{new_id}) could not be removed. Delete it in Mautic."
+                )
+            record_identity_audit(
+                action=action,
+                status=MauticIdentityAuditLog.Status.FAILED,
+                actor=request.user,
+                mautic_user_id=_asserted_user_id(client),
+                resource="campaign",
+                resource_id=new_id,
+                auth_mode=_auth_mode_label(client),
+                correlation_id=correlation_id,
+                assertion_jti=_assertion_jti(client),
+                detail=f"duplicate of campaign {campaign_id} failed verification",
+            )
+            return _with_correlation(
+                Response({"detail": detail, "reasons": problems[:20]}, status=status.HTTP_502_BAD_GATEWAY),
+                correlation_id,
+            )
+
+        record_identity_audit(
+            action=action,
+            status=MauticIdentityAuditLog.Status.SUCCEEDED,
+            actor=request.user,
+            mautic_user_id=_asserted_user_id(client),
+            resource="campaign",
+            resource_id=new_id,
+            auth_mode=_auth_mode_label(client),
+            correlation_id=correlation_id,
+            assertion_jti=_assertion_jti(client),
+            detail=f"duplicate of campaign {campaign_id}",
+        )
+        return _with_correlation(
+            Response(
+                {
+                    "id": new_id,
+                    "name": copy.get("name"),
+                    "isPublished": False,
+                    "sourceId": str(source.get("id")),
+                },
                 status=status.HTTP_201_CREATED,
             ),
             correlation_id,
