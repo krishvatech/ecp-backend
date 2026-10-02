@@ -1410,6 +1410,28 @@ class NewsletterAdminMauticCampaignChoicesAPITests(TestCase):
         self.assertEqual(response.data["results"], [{"value": "AP", "label": "Apple"}])
 
     @patch("newsletter.native_campaign_views.MauticClient")
+    def test_entity_rows_keep_their_entity_id(self, client_cls):
+        # A tag picker stores the tag name; the tag's ID is what proves that a
+        # saved "4" is an old ID and not a tag named "4".
+        client_cls.return_value.get_campaign_builder_event_field_choices.return_value = {
+            "total": 1,
+            "hasMore": False,
+            "choices": [{"label": "VIP", "value": "VIP", "data": {"id": 4}, "attr": []}],
+        }
+        self._authenticate(self.staff)
+
+        response = self.client.get(
+            f"{self.url}?source=event_field&eventType=action&key=lead.changetags"
+            "&field=add_tags&values=4"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data["results"],
+            [{"value": "VIP", "label": "VIP", "entityId": "4"}],
+        )
+
+    @patch("newsletter.native_campaign_views.MauticClient")
     def test_event_field_source_requires_scope(self, client_cls):
         self._authenticate(self.staff)
 

@@ -19,7 +19,12 @@ REFERENCE_CHOICE_SOURCES = {"country", "region", "timezone", "locale"}
 
 
 def normalize_choice_rows(rows: Any) -> list[dict[str, Any]]:
-    """Provider rows as {value, label} pairs, keeping any grouping it sent."""
+    """Provider rows as {value, label} pairs, keeping any grouping it sent.
+
+    A row backed by a provider entity also keeps that entity's ID: on fields
+    whose stored value is not the ID (Mautic tag pickers store tag names), it is
+    what lets a client prove that a saved value is an old ID rather than a name.
+    """
     normalized = []
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
@@ -33,6 +38,10 @@ def normalize_choice_rows(rows: Any) -> list[dict[str, Any]]:
         }
         if row.get("group"):
             choice["group"] = str(row["group"])
+        data = row.get("data")
+        entity_id = data.get("id") if isinstance(data, dict) else None
+        if entity_id is not None and not isinstance(entity_id, bool) and str(entity_id) != "":
+            choice["entityId"] = str(entity_id)
         normalized.append(choice)
     return normalized
 
