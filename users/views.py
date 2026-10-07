@@ -2042,9 +2042,20 @@ class ForgotCognitoPasswordView(generics.GenericAPIView):
             if count > 1:
                 logger.warning(f"[AUTH] Multiple Cognito users matched email={email}; using first username={username}")
             if username:
-                pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
+                # Use the app-client-aware ForgotPassword API (not AdminResetUserPassword) so
+                # Cognito passes callerContext.clientId to the Custom Email Sender for branding.
+                client_id = getattr(settings, "COGNITO_APP_CLIENT_ID", "") or getattr(settings, "COGNITO_CLIENT_ID", "") or ""
+                if not client_id:
+                    raise RuntimeError("Cognito is not configured (missing COGNITO_APP_CLIENT_ID/COGNITO_CLIENT_ID).")
                 client = _cognito_client()
-                resp = client.admin_reset_user_password(UserPoolId=pool_id, Username=username) or {}
+                payload = {
+                    "ClientId": client_id,
+                    "Username": username,
+                }
+                secret_hash = _cognito_secret_hash(username)
+                if secret_hash:
+                    payload["SecretHash"] = secret_hash
+                resp = client.forgot_password(**payload) or {}
                 # Cognito does not always return delivery details here; include if present.
                 code_details = resp.get("CodeDeliveryDetails") or {}
                 medium = code_details.get("DeliveryMedium")
