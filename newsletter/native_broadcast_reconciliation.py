@@ -18,8 +18,17 @@ runtime, see EmailBundle\\EventListener\\BroadcastSubscriber):
 
 So "unpublished, same publishUp, sentCount > 0" is the provider's own terminal
 state. A due broadcast that reached nobody is never unpublished by Mautic: it
-stays armed, and any contact that later joins the segment would still receive
-it. That state is reported, never guessed into SENT.
+stays armed. That state is reported, never guessed into SENT.
+
+Who an armed broadcast can still reach: with continueSending off,
+EmailModel::getPendingLeads() passes publishUp as the segment cutoff, so only
+contacts already in the segment at the scheduled minute are eligible - a
+contact who joins later is never sent it. A member who was in the segment then
+but ineligible (do-not-contact, no email address) and becomes eligible while
+the email stays published could still be sent it on a later cron run.
+
+The API exposes no pending-recipient count, so "no eligible recipients" and
+"Mautic cron has not run" look identical from ECP; neither is ever inferred.
 """
 
 from __future__ import annotations

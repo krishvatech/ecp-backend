@@ -9,6 +9,11 @@ class TemporaryMauticError(MauticError):
     """Retryable transport, rate-limit, or provider failure."""
 
 
+class MauticRequestNotSentError(TemporaryMauticError):
+    """The connection to Mautic was never established, so the request was
+    never received. Unlike a read timeout, this proves Mautic did nothing."""
+
+
 class PermanentMauticError(MauticError):
     """Non-retryable configuration, validation, or provider failure."""
 

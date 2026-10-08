@@ -243,7 +243,7 @@ class NewsletterCampaignSendProcessorTests(TestCase):
 
     @patch("newsletter.campaign_send_processor.MauticClient")
     @patch("newsletter.campaign_send_processor.sync_campaign_for_worker_delivery")
-    def test_transport_failure_after_provider_boundary_is_terminal(
+    def test_transport_failure_after_provider_boundary_is_uncertain_not_retried(
         self,
         sync,
         client_cls,
@@ -261,13 +261,16 @@ class NewsletterCampaignSendProcessorTests(TestCase):
         second = process_campaign_send_event(self.event.pk)
 
         self.refresh()
+        # Mautic may have delivered: the outcome is uncertain, not FAILED.
         self.assertEqual(
             self.event.status,
-            NewsletterCampaignSendEvent.Status.FAILED,
+            NewsletterCampaignSendEvent.Status.PROCESSING,
         )
         self.assertIsNotNone(self.event.provider_send_started_at)
         self.assertEqual(self.event.attempt_count, 1)
-        self.assertEqual(self.campaign.status, NewsletterCampaign.Status.FAILED)
+        self.assertEqual(self.campaign.status, NewsletterCampaign.Status.SENDING)
+        self.assertIn("did not confirm", self.campaign.last_error)
+        self.assertEqual(first["outcome"], "uncertain")
         self.assertFalse(first["retry_safe"])
         self.assertFalse(second["processed"])
         self.assertEqual(client.send_email_to_segments.call_count, 1)
@@ -618,9 +621,10 @@ class NewsletterCampaignSendProcessorTests(TestCase):
 
         event.refresh_from_db()
         scheduled.refresh_from_db()
-        self.assertEqual(event.status, NewsletterCampaignSendEvent.Status.FAILED)
+        # A lost response leaves the outcome uncertain and is never retried.
+        self.assertEqual(event.status, NewsletterCampaignSendEvent.Status.PROCESSING)
         self.assertIsNotNone(event.provider_send_started_at)
-        self.assertEqual(scheduled.status, NewsletterCampaign.Status.FAILED)
+        self.assertEqual(scheduled.status, NewsletterCampaign.Status.SENDING)
         self.assertFalse(result["retry_safe"])
 
     @patch("newsletter.campaign_send_processor.MauticClient")

@@ -1783,6 +1783,26 @@ class NewsletterAdminStageDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+def _run_category_segment_mutation(request, *, action, resource_id, mutate):
+    """Run a Subscription List's Mautic segment write as the acting user.
+
+    ``mutate(client)`` receives the interactive client and owns its database
+    transaction, so a provider or identity failure still rolls the local change
+    back, while the audit row is written after that transaction has ended.
+    Only these admin endpoints are attributed to a person: segment repair while
+    a broadcast is saved, and queued reconciliation, stay on the service account.
+    """
+    return run_interactive_mutation(
+        request,
+        action=action,
+        resource="newsletter_category",
+        resource_id=resource_id,
+        mutate=mutate,
+        client_factory=MauticClient,
+        audit_and_reraise=(TemporaryMauticError, PermanentMauticError),
+    )
+
+
 class NewsletterAdminCategoryListView(APIView):
     permission_classes = [HasMarketingHubAccess]
 
@@ -1822,17 +1842,31 @@ class NewsletterAdminCategoryListView(APIView):
             slug = f"{base_slug}-{counter}"
             counter += 1
 
-        try:
+        def create_category(client):
             with transaction.atomic():
-                category = NewsletterCategory.objects.create(
+                created = NewsletterCategory.objects.create(
                     name=name,
                     slug=slug,
                     description=serializer.validated_data.get('description', ''),
                     is_active=True,
                     mautic_segment_id='',
                 )
-                if _mautic_enabled():
-                    _ensure_category_segment(category, client=MauticClient())
+                if client is not None:
+                    _ensure_category_segment(created, client=client)
+            return created
+
+        try:
+            if _mautic_enabled():
+                category, identity_response = _run_category_segment_mutation(
+                    request,
+                    action=SEGMENT_CREATE,
+                    resource_id=slug,
+                    mutate=create_category,
+                )
+                if identity_response is not None:
+                    return identity_response
+            else:
+                category = create_category(None)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -2017,18 +2051,32 @@ class NewsletterAdminCategoryDetailView(APIView):
         )
         serializer.is_valid(raise_exception=True)
 
-        try:
+        # mautic_segment_id is read-only here, so whether Mautic is touched is
+        # known before saving.
+        segment_id = str(category.mautic_segment_id or "").strip()
+
+        def save_category(client):
             with transaction.atomic():
-                category = serializer.save()
-                if _mautic_enabled() and str(category.mautic_segment_id or "").strip():
-                    client = MauticClient()
-                    segment = client.get_segment(category.mautic_segment_id)
+                saved = serializer.save()
+                if client is not None:
+                    segment = client.get_segment(segment_id)
                     if not _segment_is_static(segment):
                         raise PermanentMauticError("Mapped Mautic segment is dynamic.")
-                    client.update_segment(
-                        category.mautic_segment_id,
-                        _segment_payload_for_category(category),
-                    )
+                    client.update_segment(segment_id, _segment_payload_for_category(saved))
+            return saved
+
+        try:
+            if _mautic_enabled() and segment_id:
+                category, identity_response = _run_category_segment_mutation(
+                    request,
+                    action=SEGMENT_UPDATE,
+                    resource_id=category.slug,
+                    mutate=save_category,
+                )
+                if identity_response is not None:
+                    return identity_response
+            else:
+                category = save_category(None)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
@@ -2040,15 +2088,27 @@ class NewsletterAdminCategoryDetailView(APIView):
         except NewsletterCategory.DoesNotExist:
             raise Http404
 
-        try:
+        segment_id = str(category.mautic_segment_id or "").strip()
+
+        def archive_category(client):
             with transaction.atomic():
                 category.is_active = False
                 category.save(update_fields=["is_active", "updated_at"])
-                if _mautic_enabled() and str(category.mautic_segment_id or "").strip():
-                    MauticClient().update_segment(
-                        category.mautic_segment_id,
-                        {"isPublished": False},
-                    )
+                if client is not None:
+                    client.update_segment(segment_id, {"isPublished": False})
+
+        try:
+            if _mautic_enabled() and segment_id:
+                _, identity_response = _run_category_segment_mutation(
+                    request,
+                    action=SEGMENT_UPDATE,
+                    resource_id=category.slug,
+                    mutate=archive_category,
+                )
+                if identity_response is not None:
+                    return identity_response
+            else:
+                archive_category(None)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -2499,21 +2559,34 @@ class NewsletterAdminCategorySyncMauticView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        try:
+        previous_segment_id = str(category.mautic_segment_id or "").strip()
+
+        def sync_category(client):
             with transaction.atomic():
-                previous_segment_id = str(category.mautic_segment_id or "").strip()
                 segment_id, mapping_changed = _ensure_category_segment(
                     category,
-                    client=MauticClient(),
+                    client=client,
                 )
                 mapped = _mapped_category_for_segment(segment_id, exclude_category=category)
                 if mapped is not None:
                     raise PermanentMauticError(
                         "Mautic segment is already mapped to another newsletter category."
                     )
-                queued = _queue_category_reconciliation(category) if mapping_changed or previous_segment_id != segment_id else 0
+                # Reconciliation itself runs later in Celery on the service
+                # account; only the segment write above is the admin's action.
+                return _queue_category_reconciliation(category) if mapping_changed or previous_segment_id != segment_id else 0
+
+        try:
+            queued, identity_response = _run_category_segment_mutation(
+                request,
+                action=SEGMENT_UPDATE if previous_segment_id else SEGMENT_CREATE,
+                resource_id=category.slug,
+                mutate=sync_category,
+            )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
 
         data = NewsletterAdminCategorySerializer(category).data
         data["reconciliation_queued"] = queued

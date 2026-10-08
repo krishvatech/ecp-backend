@@ -8,7 +8,8 @@ suite is hermetic; tests that exercise per-user execution opt in with
 
 The Marketing Hub response cache is off for the same reason: it lives in the
 shared Redis, so a response cached by one test would be served to the next.
-Its own tests turn it on against a local-memory cache.
+Its own tests turn it on against a local-memory cache. Background-processing
+health (task heartbeats, Redis and worker probes) is off for the same reason.
 """
 
 import pytest
@@ -22,5 +23,6 @@ def dormant_mautic_identity_by_default():
         ECP_MAUTIC_IDENTITY_PRIVATE_KEY="",
         ECP_MAUTIC_IDENTITY_KEY_ID="",
         MARKETING_RESPONSE_CACHE_ENABLED=False,
+        NEWSLETTER_BACKGROUND_HEALTH_ENABLED=False,
     ):
         yield
