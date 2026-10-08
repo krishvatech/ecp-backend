@@ -22,6 +22,7 @@ from .campaign_services import (
     sync_campaign_for_worker_delivery,
 )
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic.exceptions import MauticRequestNotSentError
 from .mautic.payloads import build_campaign_email_payload
 from .models import NewsletterCampaign, NewsletterCampaignSendEvent
 
@@ -232,6 +233,37 @@ def _record_terminal_send_failure(event_id: int, campaign_id: int, error: str) -
         )
 
 
+UNCERTAIN_SEND_MESSAGE = (
+    "Mautic did not confirm this broadcast send. Delivery may have completed "
+    "or may still be in progress, so it will not be retried automatically. "
+    "Check the email's send statistics in Mautic before taking any action."
+)
+
+
+def _record_uncertain_send(event_id: int, campaign_id: int, error: str) -> None:
+    """Record a send whose outcome is unknown without claiming it failed.
+
+    The request reached Mautic (or may have), and Mautic sends synchronously
+    inside that request, so a lost response says nothing about delivery. The
+    campaign stays SENDING and the event stays PROCESSING with its provider
+    boundary set: neither recovery nor a repeated Send Now can claim it again,
+    so it is never resent.
+    """
+    now = timezone.now()
+    message = f"{UNCERTAIN_SEND_MESSAGE} ({str(error or 'no response')[:200]})"[:500]
+
+    with transaction.atomic():
+        NewsletterCampaignSendEvent.objects.filter(
+            pk=event_id,
+            status=NewsletterCampaignSendEvent.Status.PROCESSING,
+            provider_send_started_at__isnull=False,
+        ).update(last_error=message, updated_at=now)
+        NewsletterCampaign.objects.filter(
+            pk=campaign_id,
+            status=NewsletterCampaign.Status.SENDING,
+        ).update(last_error=message, updated_at=now)
+
+
 def _provider_sent_count(result: dict) -> int:
     try:
         return max(0, int(result.get("sentCount") or 0))
@@ -273,6 +305,16 @@ def _record_send_success(event_id: int, campaign_id: int, result: dict) -> None:
             last_error="",
             updated_at=now,
         )
+
+
+def _uncertain_result(event_id: int) -> dict:
+    return {
+        "event_id": event_id,
+        "status": NewsletterCampaignSendEvent.Status.PROCESSING,
+        "processed": True,
+        "retry_safe": False,
+        "outcome": "uncertain",
+    }
 
 
 def process_campaign_send_event(event_id: int) -> dict:
@@ -397,7 +439,8 @@ def process_campaign_send_event(event_id: int) -> dict:
 
     try:
         result = client.send_email_to_segments(email_id, segment_ids)
-    except (TemporaryMauticError, PermanentMauticError) as exc:
+    except (MauticRequestNotSentError, PermanentMauticError) as exc:
+        # Definitive: the request never reached Mautic, or Mautic rejected it.
         _record_terminal_send_failure(
             event.pk,
             sending_campaign.pk,
@@ -409,22 +452,27 @@ def process_campaign_send_event(event_id: int) -> dict:
             "processed": True,
             "retry_safe": False,
         }
+    except TemporaryMauticError as exc:
+        # A timeout, dropped connection or 5xx after Mautic may have started
+        # sending: the outcome is unknown, never "failed".
+        logger.warning(
+            "Newsletter campaign broadcast outcome uncertain event_id=%s: %s",
+            event.pk,
+            exc,
+        )
+        _record_uncertain_send(event.pk, sending_campaign.pk, str(exc))
+        return _uncertain_result(event.pk)
     except Exception:
         logger.exception(
             "Unexpected newsletter campaign broadcast failure event_id=%s",
             event.pk,
         )
-        _record_terminal_send_failure(
+        _record_uncertain_send(
             event.pk,
             sending_campaign.pk,
             "Unexpected newsletter campaign broadcast failure",
         )
-        return {
-            "event_id": event.pk,
-            "status": NewsletterCampaignSendEvent.Status.FAILED,
-            "processed": True,
-            "retry_safe": False,
-        }
+        return _uncertain_result(event.pk)
 
     _record_send_success(event.pk, sending_campaign.pk, result)
     return {

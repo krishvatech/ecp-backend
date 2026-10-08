@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -31,10 +32,15 @@ def get_mautic_diagnostics(request=None) -> dict:
     sync = _sync_status()
     background = _background_processing_status()
     native_broadcasts = _native_broadcast_status()
+    broadcast_sends = _broadcast_send_status()
     identity = _identity_status(request, marketing_bridge)
     warnings = _warnings(config, rest, marketing_bridge, campaign_bridge, webhook, sync)
     if native_broadcasts["needs_attention"]:
         warnings.append("Native Mautic broadcasts need attention.")
+    if broadcast_sends["needs_review"]:
+        warnings.append(
+            "Broadcast sends have no confirmed outcome; check them in Mautic."
+        )
     warnings.extend(identity["warnings"])
 
     return {
@@ -57,6 +63,7 @@ def get_mautic_diagnostics(request=None) -> dict:
         "sync": sync,
         "background_processing": background,
         "native_broadcasts": native_broadcasts,
+        "broadcast_sends": broadcast_sends,
         "identity": identity,
         "diagnostics": {
             "status": "Healthy" if not warnings else "Degraded",
@@ -296,6 +303,23 @@ def _background_processing_status() -> dict:
         "native_broadcast_reconciliation_scheduled": (
             "newsletter.reconcile_native_scheduled_campaigns" in scheduled_tasks
         ),
+    }
+
+
+def _broadcast_send_status() -> dict:
+    """ECP-owned sends still SENDING past the processing timeout.
+
+    Covers a lost Mautic response and a worker that died after the provider
+    boundary. Neither is ever retried, so an operator has to confirm the
+    outcome in Mautic. Database reads only.
+    """
+    timeout = max(1, int(getattr(settings, "MAUTIC_SYNC_PROCESSING_TIMEOUT_SECONDS", 600)))
+    sending = NewsletterCampaign.objects.filter(status=NewsletterCampaign.Status.SENDING)
+    return {
+        "sending": sending.count(),
+        "needs_review": sending.filter(
+            send_started_at__lte=timezone.now() - timedelta(seconds=timeout)
+        ).count(),
     }
 
 

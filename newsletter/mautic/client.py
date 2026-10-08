@@ -12,9 +12,11 @@ from typing import Any
 import requests
 from django.conf import settings
 from requests.auth import HTTPBasicAuth
+from urllib3.exceptions import NewConnectionError
 
 from .exceptions import (
     MauticBridgeRejectedError,
+    MauticRequestNotSentError,
     PermanentMauticError,
     TemporaryMauticError,
 )
@@ -81,6 +83,24 @@ _TEMPORARY_STATUS_CODES = {408, 425, 429}
 # Headers consumed only by the ECP bridge endpoints in the Mautic plugin.
 ECP_IDENTITY_ASSERTION_HEADER = "X-ECP-Identity-Assertion"
 ECP_CORRELATION_HEADER = "X-ECP-Correlation-Id"
+
+
+def _request_reached_mautic(exc: Exception) -> bool:
+    """False only when the connection itself was never made.
+
+    A connect timeout, a refused connection or a DNS failure means Mautic never
+    received the request. Anything else — a read timeout, or a connection that
+    dropped mid-response — may have been processed, so it must be treated as
+    possibly delivered.
+    """
+    if isinstance(exc, requests.ConnectTimeout):
+        return False
+    if isinstance(exc, requests.ConnectionError) and not isinstance(exc, requests.Timeout):
+        reason = exc.args[0] if exc.args else None
+        reason = getattr(reason, "reason", reason)
+        if isinstance(reason, NewConnectionError):
+            return False
+    return True
 
 
 class MauticClient:
@@ -166,6 +186,8 @@ class MauticClient:
                 **kwargs,
             )
         except (requests.Timeout, requests.ConnectionError) as exc:
+            if not _request_reached_mautic(exc):
+                raise MauticRequestNotSentError("Mautic API request failed") from exc
             raise TemporaryMauticError("Mautic API request failed") from exc
         except requests.RequestException as exc:
             raise TemporaryMauticError("Mautic API transport failed") from exc
