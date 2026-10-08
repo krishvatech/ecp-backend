@@ -92,6 +92,7 @@ from .mautic_analytics_views import (
     NewsletterAdminAnalyticsSegmentsView,
 )
 from .mautic_diagnostics_views import NewsletterAdminMauticDiagnosticsView
+from .broadcast_delivery_inspection import NewsletterAdminCampaignDeliveryInspectionView
 from .mautic_identity_views import (
     NewsletterAdminMauticConnectionActivateView,
     NewsletterAdminMauticConnectionDeactivateView,
@@ -178,6 +179,11 @@ urlpatterns = [
         "newsletter/admin/campaigns/<uuid:uuid>/analytics/",
         NewsletterAdminCampaignAnalyticsView.as_view(),
         name="newsletter-admin-campaign-analytics",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/delivery-inspection/",
+        NewsletterAdminCampaignDeliveryInspectionView.as_view(),
+        name="newsletter-admin-campaign-delivery-inspection",
     ),
     path(
         "newsletter/admin/campaigns/<uuid:uuid>/test-email/",
