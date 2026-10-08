@@ -1,0 +1,47 @@
+{
+  "format_version": 1,
+  "slug": "imprint",
+  "title": "Imprint",
+  "seo_title": "Imprint - IMAA – Institute for Mergers, Acquisitions, and Alliances",
+  "search_description": "",
+  "migration_status": "migrated",
+  "body_html": [
+    "<h2>Switzerland</h2>",
+    "<p>Information according to §3 Paragraph 1 Letter s UWG („Informationspflicht laut Art. 3 Abs. 1 lit. s Gesetz gegen den unlauteren Wettbewerb“)</p>",
+    "<p>Institute for Mergers, Acquisitions and Alliances (IMAA) GmbH<br>Hagenholzstrasse 81a<br>8050 Zurich<br>Switzerland</p>",
+    "<p>Phone number: <a href=\"tel:+41435051799\" rel=\"noopener noreferrer\">+41 43 505 17 99</a></p>",
+    "<p>Email: <a href=\"mailto:info@imaa-institute.org\" rel=\"noopener noreferrer\">info@imaa-institute.org</a></p>",
+    "<p>UID: CHE-303.828.557</p>",
+    "<h2>Austria</h2>",
+    "<p>Information according to §14 UGB, §5 ECG, and §25 Media Law („Informationspflicht laut §5 E-Commerce Gesetz, §14 Unternehmensgesetzbuch, §63 Gewerbeordnung und Offenlegungspflicht laut §25 Mediengesetz“)<br><br>Institute for Mergers, Acquisitions and Alliances (IMAA) Europe GmbH</p>",
+    "<p>Hermann-Pacher-Weg 6/3/4, 1180 Vienna, Austria</p>",
+    "<p>Phone: <a href=\"tel:+4314351444\" rel=\"noopener noreferrer\">+43 1 43 51 444</a></p>",
+    "<p>Email: <a href=\"mailto:info@imaa-institute.org\" rel=\"noopener noreferrer\">info@imaa-institute.org</a></p>",
+    "<p>Business purpose: Research &amp; Education</p>",
+    "<p>VAT Number: ATU72415237<br>Company registration number: FN473057y</p>",
+    "<p>Company registration: Vienna&nbsp;Commercial Court<br>Registered offices: 1090 Vienna<br>www.ris.bka.gv.at</p>",
+    "<h2>Singapore</h2>",
+    "<p>The Issuer and Operator of this Website and Responsible for the Content is:</p>",
+    "<p>Institute for Mergers, Acquisitions and Alliances (IMAA) (Singapore) Pte. Ltd.<br>10 Anson Rd, #26-04A, International Plaza,<br>Singapore, 079903</p>",
+    "<p>Company Registration Number / Unique Entity Number (UEN): 201804288R</p>",
+    "<p>Phone: <a href=\"tel:+6531292799\" rel=\"noopener noreferrer\">+65 3129 2799</a></p>",
+    "<p>Email: <a href=\"mailto:info@imaa-institute.org\" rel=\"noopener noreferrer\">info@imaa-institute.org</a></p>"
+  ],
+  "content_sha256": "d46b4dc61b19cc101013ea457be73f947da94cd3412ec772f956d59ec472ce8a",
+  "source": {
+    "url": "https://imaa-institute.org/imprint/",
+    "wordpress_page_id": 50171,
+    "wordpress_title": "Imprint",
+    "wordpress_modified_gmt": "2026-10-01T01:29:06",
+    "retrieved_at": "2026-10-08",
+    "retrieved_via": "https://imaa-institute.org/wp-json/wp/v2/pages?slug=imprint"
+  },
+  "migration_notes": [
+    "Formatting only: inline style wrappers (span style=...), WordPress classes, empty spacer paragraphs and line breaks at the very start or end of a paragraph were removed; wording is unchanged.",
+    "Source: the page's heading and text widgets (Switzerland, Austria, Singapore). The breadcrumb and divider widgets (WordPress page layout) are not migrated.",
+    "A paragraph containing only '.' at the top of the WordPress page (an editing artefact) is not migrated.",
+    "SEO: seo_title is the WordPress (Yoast) title verbatim, including the Institute's site name; the WordPress page has no meta description, so search_description is empty.",
+    "FOR REVIEW (wording not changed): 'The Issuer and Operator of this Website and Responsible for the Content is:' (Singapore section) refers to imaa-institute.org. Confirm the operator details for IMAA Connect."
+  ],
+  "media": []
+}

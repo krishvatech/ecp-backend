@@ -108,6 +108,11 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100 MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100 MB
 WAGTAIL_SITE_NAME = "Events & Community - IMAA Connect - CMS"
 WAGTAILADMIN_BASE_URL = os.getenv("WAGTAILADMIN_BASE_URL", "http://localhost:8000")
+# Public website (cms.public_pages): the Wagtail Site whose page tree the public website
+# resolves paths in. Leave empty when exactly one Site (or exactly one default Site) exists;
+# otherwise set it to that Site's hostname as entered in Wagtail > Settings > Sites. The
+# request's Host header is never used for this. Ambiguous setups return HTTP 503.
+CMS_PUBLIC_SITE_HOSTNAME = os.getenv("CMS_PUBLIC_SITE_HOSTNAME", "").strip()
 
 # OpenAI API Configuration (for Q&A grouping and other AI features)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -741,6 +746,10 @@ REST_FRAMEWORK = {
         # burst limits are enforced in messaging/views.py and interactions/views.py.
         "live_chat_message": os.getenv("DRF_THROTTLE_LIVE_CHAT_MESSAGE", "12/min"),
         "live_qna_question": os.getenv("DRF_THROTTLE_LIVE_QNA_QUESTION", "6/min"),
+
+        # Public website CMS pages (cms.public_pages). Fetched server-side by the Next.js
+        # frontend, so one server IP makes all the requests: the anon default would throttle it.
+        "cms_public": os.getenv("DRF_THROTTLE_CMS_PUBLIC", "300/min"),
     },
     
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",

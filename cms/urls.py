@@ -8,9 +8,13 @@ from .api import (
     EmailTemplateSendTestView,
     ProfileLayoutView,
 )
+from .public_pages import CmsPublicPageByPathView
 
 urlpatterns = [
     path("pages/<slug:slug>/", CmsPageBySlugView.as_view(), name="cms_page_by_slug"),
+    # Public website: resolve a complete relative path within the configured Wagtail Site,
+    # e.g. GET /api/cms/public/pages/by-path/?path=/privacy-policy/
+    path("public/pages/by-path/", CmsPublicPageByPathView.as_view(), name="cms_public_page_by_path"),
     path("profile-layout/", ProfileLayoutView.as_view(), name="profile_layout"),
     path("email-templates/", EmailTemplateListView.as_view(), name="cms_email_template_list"),
     path("email-templates/<slug:template_key>/", EmailTemplateDetailView.as_view(), name="cms_email_template_detail"),
