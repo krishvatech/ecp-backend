@@ -9,10 +9,12 @@ It lives in its own module because both the Subscription List admin endpoints
 and broadcast synchronization need it, and business logic must not be reached
 by importing a views module.
 
-Execution identity: this is *infrastructure* synchronization and always runs on
-the service account, never as the human who happened to trigger it. A segment
-recreated while saving a broadcast is a system repair; only the broadcast email
-mutation itself is attributed to the acting user.
+Execution identity: the caller chooses the client. The Subscription List admin
+endpoints (create, edit, archive, sync) pass the acting user's interactive
+client, so those segment writes are attributed to that person. A segment
+recreated while saving a broadcast is a system repair and stays on the service
+account; only the broadcast email mutation itself is attributed to the acting
+user. Queued reconciliation always runs on the service account.
 """
 
 from __future__ import annotations
