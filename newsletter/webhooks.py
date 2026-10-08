@@ -266,13 +266,38 @@ def _event_type_for_provider_event(provider_event_type: str, event: dict) -> str
     return event_type
 
 
+def _attributable_campaign(email_id: str):
+    """Return the one broadcast a Mautic email id belongs to, or None.
+
+    Only a positive integer id can identify a Mautic email. Anything else —
+    in particular the empty id of a contact-level DNC event, which carries no
+    email reference — must not be compared against ``mautic_email_id``: every
+    unsynced draft has that field blank and would match. An ambiguous match is
+    refused too, never resolved by picking one row.
+    """
+    if not (email_id.isascii() and email_id.isdigit()) or int(email_id) < 1:
+        return None
+    matches = list(
+        NewsletterCampaign.objects.filter(mautic_email_id=str(int(email_id)))[:2]
+    )
+    if len(matches) != 1:
+        if matches:
+            logger.warning(
+                "Mautic webhook email_id=%s matches several broadcasts; not tracked",
+                email_id,
+            )
+        return None
+    return matches[0]
+
+
 def _create_tracking_event(provider_event_type: str, event: dict) -> str:
     event_type = _event_type_for_provider_event(provider_event_type, event)
     if not event_type:
         return "ignored"
 
-    email_id = _email_id_from_event(event)
-    campaign = NewsletterCampaign.objects.filter(mautic_email_id=email_id).first()
+    # Consent for contact-level DNC events is handled separately and does not
+    # depend on this: tracking needs a broadcast, suppression does not.
+    campaign = _attributable_campaign(_email_id_from_event(event))
     if campaign is None:
         return "ignored"
 
