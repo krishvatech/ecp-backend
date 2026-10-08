@@ -213,6 +213,12 @@ MAUTIC_SYNC_PROCESSING_TIMEOUT_SECONDS = int(
     os.getenv("MAUTIC_SYNC_PROCESSING_TIMEOUT_SECONDS", "600")
 )
 
+# Background-processing health for Marketing Hub diagnostics: heartbeat writes
+# from the periodic newsletter tasks plus live Redis/worker probes. A kill
+# switch only; the test suite turns it off so it never touches shared Redis.
+NEWSLETTER_BACKGROUND_HEALTH_ENABLED = os.getenv(
+    "NEWSLETTER_BACKGROUND_HEALTH_ENABLED", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
 # Redis response cache for the Mautic-backed Marketing Hub analytics and
 # dashboard (see newsletter.marketing_cache). The enable flag is a kill switch.
 MARKETING_RESPONSE_CACHE_ENABLED = os.getenv(

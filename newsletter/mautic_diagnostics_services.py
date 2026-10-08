@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 from datetime import timedelta
 from urllib.parse import urlparse
 
@@ -19,7 +21,40 @@ from .models import (
     NewsletterCampaignTrackingEvent,
     NewsletterSyncEvent,
 )
+from .task_heartbeats import (
+    DEGRADED,
+    DISABLED,
+    HEALTHY,
+    NOT_VERIFIED,
+    STALE,
+    background_health_enabled,
+    periodic_task_health,
+    task_stale_after_seconds,
+)
 from .webhooks import EVENT_TYPE_MAP
+
+logger = logging.getLogger(__name__)
+
+#: Bounded so a diagnostics request never waits long on the broker.
+BROKER_PROBE_TIMEOUT_SECONDS = 1.0
+
+#: Celery worker ping budget. ``control.ping(timeout=...)`` only bounds the wait
+#: for replies; the broker connection it opens is retried by kombu and, with the
+#: Redis transport's default socket_connect_timeout=None, a single connect to an
+#: unreachable host blocks for the kernel's SYN retries (over two minutes). So
+#: the probe uses its own connection with a 1 s connect timeout and no retries,
+#: waits 1 s for replies, and runs under a hard wall-clock deadline that also
+#: covers what socket options cannot bound (DNS resolution, publish retries).
+WORKER_PROBE_CONNECT_TIMEOUT_SECONDS = 1.0
+WORKER_PROBE_REPLY_TIMEOUT_SECONDS = 1.0
+#: Longer than the reply wait so slow-but-healthy pings still read (2 s > 1 s).
+WORKER_PROBE_SOCKET_TIMEOUT_SECONDS = 2.0
+#: Hard limit on how long a diagnostics request waits for the worker probe:
+#: connect (1 s) + reply wait (1 s) + 1 s margin for scheduling and teardown.
+WORKER_PROBE_DEADLINE_SECONDS = 3.0
+#: One probe at a time: a probe that outlives its deadline keeps this lock until
+#: it finishes, so repeated requests cannot pile up blocked threads.
+_worker_probe_lock = threading.Lock()
 
 
 def get_mautic_diagnostics(request=None) -> dict:
@@ -30,9 +65,20 @@ def get_mautic_diagnostics(request=None) -> dict:
     campaign_bridge = _campaign_builder_bridge_status(config)
     webhook = _webhook_status(request)
     sync = _sync_status()
-    background = _background_processing_status()
+    redis_probe = _redis_status()
+    worker = _worker_status(broker=redis_probe)
+    scheduled_processing = periodic_task_health(now=checked_at)
+    background = _background_processing_status(worker)
     native_broadcasts = _native_broadcast_status()
     broadcast_sends = _broadcast_send_status()
+    health = _health_summary(
+        redis_probe,
+        worker,
+        scheduled_processing,
+        broadcast_sends,
+        native_broadcasts,
+        now=checked_at,
+    )
     identity = _identity_status(request, marketing_bridge)
     warnings = _warnings(config, rest, marketing_bridge, campaign_bridge, webhook, sync)
     if native_broadcasts["needs_attention"]:
@@ -41,6 +87,7 @@ def get_mautic_diagnostics(request=None) -> dict:
         warnings.append(
             "Broadcast sends have no confirmed outcome; check them in Mautic."
         )
+    warnings.extend(health["warnings"])
     warnings.extend(identity["warnings"])
 
     return {
@@ -64,6 +111,7 @@ def get_mautic_diagnostics(request=None) -> dict:
         "background_processing": background,
         "native_broadcasts": native_broadcasts,
         "broadcast_sends": broadcast_sends,
+        "health": health["components"],
         "identity": identity,
         "diagnostics": {
             "status": "Healthy" if not warnings else "Degraded",
@@ -291,14 +339,131 @@ def _current_sync_events_queryset():
     return NewsletterSyncEvent.objects.filter(id=Subquery(latest_for_target.values("id")[:1]))
 
 
-def _background_processing_status() -> dict:
+def _redis_status() -> dict:
+    """Can this process reach the Celery broker (Redis)? Never returns the URL.
+
+    Pings CELERY_BROKER_URL itself, not the Django cache, so it says nothing
+    about the cache and the cache says nothing about the broker.
+    """
+    url = str(getattr(settings, "CELERY_BROKER_URL", "") or "")
+    if not url:
+        return {"status": DISABLED, "reason": "not_configured"}
+    if not background_health_enabled():
+        return {"status": NOT_VERIFIED, "reason": "probes_disabled"}
+    if urlparse(url).scheme not in {"redis", "rediss"}:
+        return {"status": NOT_VERIFIED, "reason": "non_redis_broker"}
+    try:
+        import redis
+
+        client = redis.Redis.from_url(
+            url,
+            socket_connect_timeout=BROKER_PROBE_TIMEOUT_SECONDS,
+            socket_timeout=BROKER_PROBE_TIMEOUT_SECONDS,
+        )
+        try:
+            client.ping()
+        finally:
+            client.close()
+    except Exception as exc:
+        logger.warning("Redis broker probe failed: %s", type(exc).__name__)
+        return {"status": DEGRADED, "reason": "unreachable"}
+    return {"status": HEALTHY, "reason": ""}
+
+
+def _ping_workers() -> list:
+    """Broadcast one Celery ``ping`` over a dedicated, non-retrying connection.
+
+    The pooled connection ``control.ping`` would otherwise use carries the
+    worker settings (broker_connection_timeout, unlimited retries); this one is
+    separate, so normal workers and producers are unaffected. ``ping`` is a
+    control broadcast: it runs no task and touches no task queue.
+    """
+    from ecp_backend.celery import app
+
+    options = dict(app.conf.broker_transport_options or {})
+    options.update(
+        max_retries=0,
+        socket_connect_timeout=WORKER_PROBE_CONNECT_TIMEOUT_SECONDS,
+        socket_timeout=WORKER_PROBE_SOCKET_TIMEOUT_SECONDS,
+        retry_on_timeout=False,
+    )
+    connection = app.connection_for_write(
+        url=str(settings.CELERY_BROKER_URL),
+        connect_timeout=WORKER_PROBE_CONNECT_TIMEOUT_SECONDS,
+        transport_options=options,
+    )
+    try:
+        connection.ensure_connection(max_retries=0)
+        return app.control.ping(
+            timeout=WORKER_PROBE_REPLY_TIMEOUT_SECONDS, connection=connection
+        ) or []
+    finally:
+        connection.release()
+
+
+def _worker_status(broker=None) -> dict:
+    """Do any Celery workers answer a broadcast ping right now?
+
+    Proves a worker is consuming from the broker; says nothing about Beat.
+    Only the number of replies is reported, never worker host names. The ping
+    is skipped when the broker probe already showed the broker unreachable, and
+    otherwise never holds the request longer than WORKER_PROBE_DEADLINE_SECONDS.
+    """
+    if not str(getattr(settings, "CELERY_BROKER_URL", "") or ""):
+        return {"status": DISABLED, "reason": "not_configured", "responding": None}
+    if not background_health_enabled():
+        return {"status": NOT_VERIFIED, "reason": "probes_disabled", "responding": None}
+    if broker is not None and broker.get("status") == DEGRADED:
+        # Worker liveness cannot be observed through a broker this process
+        # cannot reach; do not spend another connection proving it again.
+        return {"status": NOT_VERIFIED, "reason": "broker_unreachable", "responding": None}
+    if not _worker_probe_lock.acquire(blocking=False):
+        return {"status": NOT_VERIFIED, "reason": "probe_in_progress", "responding": None}
+
+    outcome = {}
+
+    def probe():
+        try:
+            outcome["replies"] = _ping_workers()
+        except Exception as exc:
+            outcome["error"] = type(exc).__name__
+        finally:
+            _worker_probe_lock.release()
+
+    thread = threading.Thread(target=probe, name="newsletter-worker-probe", daemon=True)
+    thread.start()
+    thread.join(WORKER_PROBE_DEADLINE_SECONDS)
+    if thread.is_alive():
+        logger.warning(
+            "Celery worker ping exceeded %.1fs; reported as not verified",
+            WORKER_PROBE_DEADLINE_SECONDS,
+        )
+        return {"status": NOT_VERIFIED, "reason": "probe_timeout", "responding": None}
+    if "error" in outcome:
+        logger.warning("Celery worker ping failed: %s", outcome["error"])
+        return {"status": NOT_VERIFIED, "reason": "ping_failed", "responding": None}
+    replies = outcome.get("replies") or []
+    if not replies:
+        return {"status": DEGRADED, "reason": "no_worker_replied", "responding": 0}
+    return {"status": HEALTHY, "reason": "", "responding": len(replies)}
+
+
+def _worker_label(worker) -> str:
+    if worker["status"] == HEALTHY:
+        return f"Healthy ({worker['responding']} responding)"
+    if worker["status"] == DEGRADED:
+        return "No worker responded"
+    return "Not Verifiable"
+
+
+def _background_processing_status(worker=None) -> dict:
     beat_schedule = getattr(settings, "CELERY_BEAT_SCHEDULE", {}) or {}
     scheduled_tasks = {
         item.get("task") for item in beat_schedule.values() if isinstance(item, dict)
     }
     return {
         "configuration": "Enabled" if bool(getattr(settings, "CELERY_BROKER_URL", "")) else "Not Configured",
-        "live_worker_status": "Not Verifiable",
+        "live_worker_status": _worker_label(worker) if worker else "Not Verifiable",
         "newsletter_sync_scheduled": "newsletter.dispatch_due_sync_events" in scheduled_tasks,
         "native_broadcast_reconciliation_scheduled": (
             "newsletter.reconcile_native_scheduled_campaigns" in scheduled_tasks
@@ -321,6 +486,83 @@ def _broadcast_send_status() -> dict:
             send_started_at__lte=timezone.now() - timedelta(seconds=timeout)
         ).count(),
     }
+
+
+def _overdue_ecp_schedules(now) -> int:
+    """ECP-owned schedules past due by longer than the dispatch task's stale
+    window, i.e. later than the scheduler could still legitimately pick them up."""
+    window = task_stale_after_seconds("newsletter.dispatch_due_scheduled_campaigns")
+    if window is None:
+        return 0
+    return (
+        NewsletterCampaign.objects.filter(
+            status=NewsletterCampaign.Status.SCHEDULED,
+            scheduled_at__lte=now - timedelta(seconds=window),
+        )
+        .exclude(schedule_owner=NewsletterCampaign.ScheduleOwner.MAUTIC)
+        .count()
+    )
+
+
+def _health_summary(redis_probe, worker, scheduled_processing, broadcast_sends, native, *, now) -> dict:
+    """One status per signal, each meaning exactly what its evidence proves."""
+    sync_enabled = bool(getattr(settings, "MAUTIC_SYNC_ENABLED", False))
+    warnings = []
+
+    if redis_probe["status"] == DEGRADED:
+        warnings.append("Redis broker is unreachable from the web process.")
+    if worker["status"] == DEGRADED:
+        warnings.append("No Celery worker answered a ping; background tasks are not being processed.")
+    elif worker.get("reason") in {"probe_timeout", "ping_failed"}:
+        warnings.append("The Celery worker check did not complete; worker status is not verified.")
+
+    processing_status = scheduled_processing["status"]
+    if processing_status == STALE:
+        warnings.append("Scheduled newsletter tasks have not run recently; check Celery Beat and workers.")
+    elif processing_status == DEGRADED:
+        warnings.append("The latest run of a scheduled newsletter task failed.")
+    elif processing_status == NOT_VERIFIED and scheduled_processing["reason"] == "no_run_recorded":
+        warnings.append(
+            "No scheduled newsletter task run has been recorded; Celery Beat or a worker may not be running."
+        )
+
+    overdue = _overdue_ecp_schedules(now) if sync_enabled else 0
+    if overdue:
+        warnings.append("ECP-scheduled broadcasts are overdue and have not been dispatched.")
+
+    def level(problem, *, enabled=True):
+        if not enabled:
+            return DISABLED
+        return DEGRADED if problem else HEALTHY
+
+    components = {
+        "redis": redis_probe,
+        "celery_worker": worker,
+        "celery_beat": {
+            "status": NOT_VERIFIED,
+            "reason": "no_independent_signal",
+            "detail": (
+                "Celery Beat keeps no state ECP can read. scheduled_processing shows "
+                "whether Beat-scheduled tasks are reaching a worker."
+            ),
+        },
+        "scheduled_processing": scheduled_processing,
+        "ecp_scheduled_broadcasts": {
+            "status": level(overdue, enabled=sync_enabled),
+            "overdue": overdue,
+        },
+        "send_now_outcomes": {
+            "status": level(broadcast_sends["needs_review"]),
+            "sending": broadcast_sends["sending"],
+            "needs_review": broadcast_sends["needs_review"],
+        },
+        "native_reconciliation": {
+            "status": level(native["needs_attention"], enabled=sync_enabled),
+            "due": native["due"],
+            "needs_attention": native["needs_attention"],
+        },
+    }
+    return {"components": components, "warnings": warnings}
 
 
 def _native_broadcast_status() -> dict:
