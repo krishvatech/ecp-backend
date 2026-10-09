@@ -24,6 +24,9 @@ SEGMENT_CONTACT_ADD = "segment.contact.add"
 SEGMENT_CONTACT_REMOVE = "segment.contact.remove"
 CONTACT_CREATE = "contact.create"
 CONTACT_UPDATE = "contact.update"
+# Queues a native Mautic CSV import; the bridge records the asserted user as
+# the import creator, and Mautic later processes every row as that user.
+CONTACT_IMPORT_CREATE = "contact.import.create"
 CONTACT_TAG_ADD = "contact.tag.add"
 CONTACT_TAG_REMOVE = "contact.tag.remove"
 COMPANY_CREATE = "company.create"
@@ -86,6 +89,7 @@ ASSERTABLE_OPERATIONS = frozenset(
         SEGMENT_CONTACT_REMOVE,
         CONTACT_CREATE,
         CONTACT_UPDATE,
+        CONTACT_IMPORT_CREATE,
         CONTACT_TAG_ADD,
         CONTACT_TAG_REMOVE,
         COMPANY_CREATE,

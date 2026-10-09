@@ -21,4 +21,4 @@ Best regards,
 The {{ app_name }} Team
 
 ---
-If you have any questions, please contact us at support@example.com.
+If you have any questions, please contact us at {{ support_email }}.

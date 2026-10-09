@@ -92,6 +92,15 @@ from .mautic_analytics_views import (
     NewsletterAdminAnalyticsSegmentsView,
 )
 from .mautic_diagnostics_views import NewsletterAdminMauticDiagnosticsView
+from .contact_import_views import (
+    NewsletterAdminContactImportDetailView,
+    NewsletterAdminContactImportErrorsView,
+    NewsletterAdminContactImportFieldsView,
+    NewsletterAdminContactImportListView,
+    NewsletterAdminContactImportPreviewView,
+    NewsletterAdminContactImportStartView,
+    NewsletterAdminContactImportValidateView,
+)
 from .broadcast_delivery_inspection import NewsletterAdminCampaignDeliveryInspectionView
 from .mautic_identity_views import (
     NewsletterAdminMauticConnectionActivateView,
@@ -397,6 +406,43 @@ urlpatterns = [
         "newsletter/admin/contacts/field-metadata/",
         NewsletterAdminContactFieldMetadataView.as_view(),
         name="newsletter-admin-contact-field-metadata",
+    ),
+    # CSV imports. Declared before contacts/<mautic_contact_id>/ so "imports"
+    # is never read as a contact ID.
+    path(
+        "newsletter/admin/contacts/imports/",
+        NewsletterAdminContactImportListView.as_view(),
+        name="newsletter-admin-contact-import-list",
+    ),
+    path(
+        "newsletter/admin/contacts/imports/fields/",
+        NewsletterAdminContactImportFieldsView.as_view(),
+        name="newsletter-admin-contact-import-fields",
+    ),
+    path(
+        "newsletter/admin/contacts/imports/preview/",
+        NewsletterAdminContactImportPreviewView.as_view(),
+        name="newsletter-admin-contact-import-preview",
+    ),
+    path(
+        "newsletter/admin/contacts/imports/validate/",
+        NewsletterAdminContactImportValidateView.as_view(),
+        name="newsletter-admin-contact-import-validate",
+    ),
+    path(
+        "newsletter/admin/contacts/imports/start/",
+        NewsletterAdminContactImportStartView.as_view(),
+        name="newsletter-admin-contact-import-start",
+    ),
+    path(
+        "newsletter/admin/contacts/imports/<int:import_id>/",
+        NewsletterAdminContactImportDetailView.as_view(),
+        name="newsletter-admin-contact-import-detail",
+    ),
+    path(
+        "newsletter/admin/contacts/imports/<int:import_id>/errors/",
+        NewsletterAdminContactImportErrorsView.as_view(),
+        name="newsletter-admin-contact-import-errors",
     ),
     path(
         "newsletter/admin/tags/",

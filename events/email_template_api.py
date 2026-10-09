@@ -11,7 +11,7 @@ from cms.api import (
 )
 from cms.email_template_registry import get_template_metadata
 from cms.models import EmailTemplate
-from users.email_utils import format_event_time_for_email, send_platform_email
+from users.email_utils import format_event_time_for_email, get_support_email, send_platform_email
 
 from .models import EventEmailTemplate
 
@@ -79,7 +79,7 @@ def build_event_email_sample_context(event, template_key, user=None):
         "event_url": event_frontend_url(event),
         "event_location": event_location_text(event),
         "event_format": getattr(event, "format", "") or "",
-        "support_email": getattr(settings, "SUPPORT_EMAIL", getattr(settings, "DEFAULT_FROM_EMAIL", "")),
+        "support_email": get_support_email(),
         "login_url": f"{frontend_base}/login" if frontend_base else "/login",
         "profile_url": f"{frontend_base}/profile/{getattr(user, 'username', 'alex')}" if frontend_base else "/profile/alex",
         "invite_url": f"{event_frontend_url(event)}invite/sample/",

@@ -6,7 +6,7 @@ from django.conf import settings
 from django.core.cache import cache
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from users.email_utils import send_template_email
+from users.email_utils import get_support_email, send_template_email
 from .models import Question
 from events.models import Event
 
@@ -50,7 +50,7 @@ def send_post_event_answer_email_task(question_id, answering_user_id, recipient_
             "answer_text": question.answer_text,
             "answering_user_name": answering_user_name,
             "event_url": event_url,
-            "support_email": getattr(settings, "SUPPORT_EMAIL", getattr(settings, "DEFAULT_FROM_EMAIL", "")),
+            "support_email": get_support_email(),
         }
         send_template_email(
             template_key="post_event_qna_answer",

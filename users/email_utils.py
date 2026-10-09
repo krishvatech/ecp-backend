@@ -30,12 +30,11 @@ def get_reply_to_list():
 def get_support_email():
     """
     Return the support email address to display in templates.
-    Fallback: DEFAULT_REPLY_TO_EMAIL -> DEFAULT_FROM_EMAIL
+    Fallback: DEFAULT_REPLY_TO_EMAIL only (never the no-reply DEFAULT_FROM_EMAIL).
     """
-    return getattr(
-        settings,
-        "SUPPORT_EMAIL",
-        getattr(settings, "DEFAULT_REPLY_TO_EMAIL", "") or settings.DEFAULT_FROM_EMAIL,
+    return (
+        getattr(settings, "SUPPORT_EMAIL", "")
+        or getattr(settings, "DEFAULT_REPLY_TO_EMAIL", "")
     )
 
 
@@ -1199,6 +1198,7 @@ def send_guest_otp_email(to_email, guest_name, otp_code, event_title):
         "otp_code": otp_code,
         "event_title": event_title,
         "expiry_minutes": 10,
+        "support_email": get_support_email(),
     }
 
     return send_template_email(
@@ -1242,6 +1242,7 @@ def send_guest_followup_email(to_email, guest_name, event_title, signup_url):
             "Personalized networking dashboard",
             "Event recommendations tailored to your interests",
         ],
+        "support_email": get_support_email(),
     }
 
     return send_template_email(
