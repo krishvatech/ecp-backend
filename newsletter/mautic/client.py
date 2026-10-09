@@ -7,6 +7,7 @@ Those responsibilities are added in later newsletter integration phases.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import requests
@@ -36,6 +37,7 @@ from .operations import (
     CONTACT_CREATE,
     CONTACT_DNC_ADD,
     CONTACT_DNC_REMOVE,
+    CONTACT_IMPORT_CREATE,
     CONTACT_NOTE_CREATE,
     CONTACT_TAG_ADD,
     CONTACT_TAG_REMOVE,
@@ -559,6 +561,106 @@ class MauticClient:
         if not contact_id:
             raise PermanentMauticError("Mautic contact ID is required")
         self._request("DELETE", f"contacts/{contact_id}/delete")
+
+    def create_contact_import(
+        self,
+        *,
+        file_name: str,
+        content: bytes,
+        config: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """Queue a native Mautic contact import through the ECP bridge.
+
+        Asserted-user only: Mautic records the human as the import's creator
+        and ``mautic:import`` later processes every row with that user's own
+        permissions, so there is no service-account path. Returns
+        ``(import, duplicate)``; ``duplicate`` is True when the bridge already
+        held an import for the same idempotency key and queued nothing new.
+        """
+        if not self._uses_asserted_user():
+            raise PermanentMauticError(
+                "Contact imports require per-user Mautic execution"
+            )
+        response = self._bridge_request(
+            "POST",
+            "ecp/bridge/contacts/imports/new",
+            operation=CONTACT_IMPORT_CREATE,
+            data={"config": json.dumps(config)},
+            files={"file": (file_name, content, "text/csv")},
+        )
+        data = self._json_object(response, "Mautic contact import creation")
+        contact_import = data.get("import")
+        if not isinstance(contact_import, dict) or not contact_import.get("id"):
+            raise TemporaryMauticError(
+                "Mautic contact import creation returned an invalid response"
+            )
+        return contact_import, bool(data.get("duplicate"))
+
+    def list_contact_imports(
+        self,
+        *,
+        created_by: int | None = None,
+        limit: int = 25,
+        start: int = 0,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit, "start": start}
+        if created_by:
+            params["created_by"] = int(created_by)
+        response = self._request("GET", "ecp/contacts/imports", params=params)
+        data = self._json_object(response, "Mautic contact import list")
+        if not isinstance(data.get("imports"), list):
+            raise TemporaryMauticError("Mautic contact import list returned an invalid response")
+        return data
+
+    def get_contact_import(self, import_id: int | str) -> dict[str, Any]:
+        import_id = str(import_id or "").strip()
+        if not import_id.isdigit():
+            raise PermanentMauticError("Mautic import ID is required")
+        response = self._request("GET", f"ecp/contacts/imports/{import_id}")
+        data = self._json_object(response, "Mautic contact import")
+        contact_import = data.get("import")
+        if not isinstance(contact_import, dict) or not contact_import.get("id"):
+            raise TemporaryMauticError("Mautic contact import returned an invalid response")
+        return contact_import
+
+    def list_contact_import_errors(
+        self,
+        import_id: int | str,
+        *,
+        limit: int = 25,
+        start: int = 0,
+    ) -> dict[str, Any]:
+        import_id = str(import_id or "").strip()
+        if not import_id.isdigit():
+            raise PermanentMauticError("Mautic import ID is required")
+        response = self._request(
+            "GET",
+            f"ecp/contacts/imports/{import_id}/errors",
+            params={"limit": limit, "start": start},
+        )
+        data = self._json_object(response, "Mautic contact import errors")
+        if not isinstance(data.get("errors"), list):
+            raise TemporaryMauticError("Mautic contact import errors returned an invalid response")
+        return data
+
+    def lookup_contact_emails(self, emails: list[str]) -> dict[str, dict[str, Any]]:
+        """Which emails already belong to a Mautic contact (read-only bridge).
+
+        Returns ``{email: {"contact_ids": [...], "dnc_email": bool,
+        "dnc_reason": str | None}}`` keyed by lower-cased email.
+        """
+        response = self._request(
+            "POST",
+            "ecp/contacts/email-lookup",
+            json={"emails": list(emails)},
+        )
+        data = self._json_object(response, "Mautic contact email lookup")
+        matches = data.get("matches")
+        if isinstance(matches, list) and not matches:
+            matches = {}
+        if not isinstance(matches, dict):
+            raise TemporaryMauticError("Mautic contact email lookup returned an invalid response")
+        return matches
 
     def list_contact_fields(self, **params) -> dict[str, Any]:
         response = self._request(
