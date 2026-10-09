@@ -500,6 +500,7 @@ def get_confirmed_registered_count_for_event(event):
     confirmed_origin_registration_ids = set(
         EventAttendeeOrigin.objects.filter(
             registration__event=event,
+            registration__status="registered",
             status="active",
             origin_status="confirmed",
         ).values_list("registration_id", flat=True)
@@ -917,7 +918,9 @@ class FeaturedParticipantSerializer(serializers.Serializer):
 
 
 class EventParticipantListItemSerializer(serializers.Serializer):
-    registration_id = serializers.IntegerField()
+    participant_key = serializers.CharField(required=False, allow_blank=True)
+    source = serializers.CharField(default="registration")
+    registration_id = serializers.IntegerField(allow_null=True)
     user_id = serializers.IntegerField(allow_null=True)
     display_name = serializers.CharField()
     email = serializers.CharField(allow_null=True, allow_blank=True)
@@ -1392,6 +1395,7 @@ class EventSerializer(serializers.ModelSerializer):
     registrations_count = serializers.IntegerField(read_only=True)
     public_registered_count = serializers.SerializerMethodField(read_only=True)
     public_guest_count = serializers.SerializerMethodField(read_only=True)
+    public_participant_count = serializers.SerializerMethodField(read_only=True)
     total_registered = serializers.SerializerMethodField(read_only=True)
     application_tracks = serializers.SerializerMethodField(read_only=True)
     confirmed_registered_count = serializers.SerializerMethodField(read_only=True)
@@ -1658,6 +1662,7 @@ class EventSerializer(serializers.ModelSerializer):
             "registrations_count",
             "public_registered_count",
             "public_guest_count",
+            "public_participant_count",
             "total_registered",
             "application_tracks",
             "confirmed_registered_count",
@@ -1771,6 +1776,7 @@ class EventSerializer(serializers.ModelSerializer):
             "registrations_count",
             "public_registered_count",
             "public_guest_count",
+            "public_participant_count",
             "total_registered",
             "live_started_at",
             "live_ended_at",
@@ -2724,6 +2730,10 @@ class EventSerializer(serializers.ModelSerializer):
         setattr(obj, "_cached_public_guest_count", value)
         return value
 
+    def get_public_participant_count(self, obj):
+        from events.services.participant_roster import public_participant_count
+        return public_participant_count(obj)
+
     def get_total_registered(self, obj):
         registered_users = self.get_public_registered_count(obj)
         guest_users = self.get_public_guest_count(obj)
@@ -3467,6 +3477,7 @@ class EventListSerializer(serializers.ModelSerializer):
     registrations_count = serializers.IntegerField(read_only=True)
     public_registered_count = serializers.SerializerMethodField(read_only=True)
     public_guest_count = serializers.SerializerMethodField(read_only=True)
+    public_participant_count = serializers.SerializerMethodField(read_only=True)
     total_registered = serializers.SerializerMethodField(read_only=True)
     confirmed_registered_count = serializers.SerializerMethodField(read_only=True)
     user_status = serializers.SerializerMethodField(read_only=True)
@@ -3527,6 +3538,10 @@ class EventListSerializer(serializers.ModelSerializer):
         setattr(obj, "_cached_public_guest_count", value)
         return value
 
+    def get_public_participant_count(self, obj):
+        from events.services.participant_roster import public_participant_count
+        return public_participant_count(obj)
+
     def get_total_registered(self, obj):
         registered_users = self.get_public_registered_count(obj)
         guest_users = self.get_public_guest_count(obj)
@@ -3584,7 +3599,7 @@ class EventListSerializer(serializers.ModelSerializer):
             "external_streaming_other_details",
             "replay_enabled", "replay_video_url", "youtube_summary_url", "linkedin_summary_url", "replay_cta_text",
             "attending_count", "registrations_count", "is_pinned", "pin_priority", "is_featured",
-            "public_registered_count", "public_guest_count", "total_registered", "confirmed_registered_count",
+            "public_registered_count", "public_guest_count", "public_participant_count", "total_registered", "confirmed_registered_count",
             "user_status", "payment_pending", "is_confirmed_registered", "assigned_tier", "origins", "platforms",
             "show_participants_before_event", "show_participants_after_event", "show_registered_participant_count",
         )

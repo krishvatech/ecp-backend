@@ -7948,6 +7948,53 @@ class EventViewSet(viewsets.ModelViewSet):
         )
         return Response({"results": serializer.data, "stats": stats})
 
+    @action(detail=True, methods=["get"], url_path="companion-roster", permission_classes=[IsAuthenticated])
+    def companion_roster(self, request, pk=None):
+        """Owner-only roster: existing registrations plus eligible accepted guest applicants.
+
+        Only real registrations can have badge labels assigned. Guest/application
+        rows are informational, and do not imply an event account or access grant.
+        """
+        event = self.get_object()
+        if not _is_event_owner(request.user, event):
+            return Response({"detail": "Only the event owner can view the Companion roster."}, status=403)
+
+        from events.services.participant_roster import (
+            extra_participant_rows, public_participant_count,
+        )
+        registrations = (
+            EventRegistration.objects.filter(
+                event=event, status__in=["registered", "cancellation_requested"]
+            ).select_related("user").prefetch_related("badge_labels").order_by("-registered_at")
+        )
+        # Minimal owner-only payload: avoid serializing each registration's full
+        # event, payment origins, and profile just for the badge-label table.
+        registered_rows = [
+            {
+                "id": reg.id,
+                "registration_id": reg.id,
+                "user_id": reg.user_id,
+                "user_name": reg.user.get_full_name().strip() or reg.user.username,
+                "user_email": reg.user.email or "",
+                "source": "registration",
+                "status": reg.status,
+                "can_assign_labels": True,
+                "badge_labels": [
+                    {"id": label.id, "name": label.name, "color": label.color}
+                    for label in reg.badge_labels.all() if label.is_active
+                ],
+            }
+            for reg in registrations
+        ]
+        rows = registered_rows
+        rows.extend(extra_participant_rows(event, include_superusers=True))
+        return Response({
+            "results": rows,
+            "count": len(rows),
+            "registered_count": len(registered_rows),
+            "public_participant_count": public_participant_count(event),
+        })
+
     @action(
         detail=True,
         methods=["get"],
@@ -7960,6 +8007,9 @@ class EventViewSet(viewsets.ModelViewSet):
         - Event organizers/owners/admins always see the full list
         - Regular participants see the list only if visibility is enabled for the current event phase
         """
+        from events.services.participant_roster import (
+            public_participant_count, public_directory_extra_rows,
+        )
         event = self.get_object()
         user = request.user
 
@@ -8042,6 +8092,8 @@ class EventViewSet(viewsets.ModelViewSet):
 
             rows.append(
                 {
+                    "participant_key": f"registration:{registration.id}",
+                    "source": "registration",
                     "registration_id": registration.id,
                     "user_id": registration.user_id,
                     "display_name": mini_user.get("full_name") or registration.user.get_full_name().strip() or registration.user.username or registration.user.email or "Unknown User",
@@ -8072,6 +8124,8 @@ class EventViewSet(viewsets.ModelViewSet):
                 vs = participant.virtual_speaker
                 rows.append(
                     {
+                        "participant_key": f"virtual-speaker:{participant.id}",
+                        "source": "virtual_speaker",
                         "registration_id": None,
                         "user_id": None,
                         "display_name": vs.name,
@@ -8091,6 +8145,12 @@ class EventViewSet(viewsets.ModelViewSet):
                     }
                 )
 
+        profile_rows_count = len(rows)
+        # Accepted guest/application-only entries contribute to the card count;
+        # show the same entries in the authenticated popup without leaking emails,
+        # creating user identities, or enabling member-only profile navigation.
+        rows.extend(public_directory_extra_rows(event))
+
         rows.sort(
             key=lambda row: (
                 row.get("display_order") if row.get("display_order") is not None else 9999,
@@ -8100,7 +8160,7 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         )
 
-        public_registered_count = len(rows)
+        public_registered_count = profile_rows_count
 
         # Parse and validate limit and offset parameters
         max_limit = 50
@@ -8130,6 +8190,8 @@ class EventViewSet(viewsets.ModelViewSet):
                 "hidden_roles_count": hidden_roles_count if not is_organizer_view else 0,
                 "total_registered_count": qs.count(),
                 "public_registered_count": public_registered_count,
+                "public_participant_count": public_participant_count(event),
+                "directory_row_count": total_count,
                 "limit": limit,
                 "offset": offset,
                 "next_offset": next_offset,
@@ -8160,6 +8222,9 @@ class EventViewSet(viewsets.ModelViewSet):
         - participants: filtered participant data with badge labels
         - count: total participants
         """
+        from events.services.participant_roster import (
+            public_participant_count, public_directory_extra_rows,
+        )
         event = self.get_object()
         user = request.user
 
@@ -8259,6 +8324,9 @@ class EventViewSet(viewsets.ModelViewSet):
             ]
 
             rows.append({
+                "participant_key": f"registration:{registration.id}",
+                "source": "registration",
+                "is_networking_eligible": True,
                 "registration_id": registration.id,
                 "user_id": registration.user_id,
                 "display_name": display_name,
@@ -8286,6 +8354,9 @@ class EventViewSet(viewsets.ModelViewSet):
                 badge_label = role_label(badge_key)
 
                 rows.append({
+                    "participant_key": f"virtual-speaker:{participant.id}",
+                    "source": "virtual_speaker",
+                    "is_networking_eligible": False,
                     "registration_id": None,
                     "user_id": None,
                     "display_name": vs.name,
@@ -8298,6 +8369,11 @@ class EventViewSet(viewsets.ModelViewSet):
                     "roles": [participant.role] if participant.role else [],
                     "registered_at": None,
                 })
+
+        # Accepted applications with no registration are visible for context,
+        # but are never networking targets (no user_id or registration_id).
+        for row in public_directory_extra_rows(event, companion=True):
+            rows.append(row)
 
         # Apply search filter
         search_query = request.query_params.get('q', '').lower().strip()
@@ -8344,6 +8420,8 @@ class EventViewSet(viewsets.ModelViewSet):
                 "slug": event.slug,
             },
             "count": len(rows),
+            "networking_profile_count": sum(1 for row in rows if row.get("registration_id") and row.get("user_id")),
+            "public_participant_count": public_participant_count(event),
             "filters": filters,
             "participants": rows,
         })

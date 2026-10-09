@@ -1,4 +1,4 @@
-from django.db.models.signals import post_save, pre_delete, pre_save, post_migrate
+from django.db.models.signals import post_save, pre_delete, pre_save, post_migrate, post_delete
 from django.dispatch import receiver
 from django.db import transaction
 from .models import Event, EventParticipant, PostAcceptanceFormTemplate, EventRegistration
@@ -551,3 +551,54 @@ def trigger_forms_on_registration_confirmed(sender, instance, created, **kwargs)
             # Don't fail the registration - continue normally
 
     transaction.on_commit(trigger_forms)
+
+
+# Participation counts now include accepted application records and verified guests.
+# Invalidate the same short-lived event-list caches used for member registrations.
+# on_commit prevents cached totals from changing ahead of a rolled-back decision.
+from .models import EventApplication, EventApplicationTrackApplication, GuestAttendee
+
+
+@receiver(post_save, sender=EventApplicationTrackApplication)
+def invalidate_participant_counts_for_track(sender, instance, created=False, update_fields=None, **kwargs):
+    if not created and update_fields is not None and not set(update_fields).intersection(
+        {"status", "accepted_tier", "application", "track"}
+    ):
+        return
+    from .cache_utils import invalidate_event_list_caches
+    event_id = instance.track.event_id
+    transaction.on_commit(lambda: invalidate_event_list_caches(event_id))
+
+
+@receiver(post_save, sender=GuestAttendee)
+@receiver(post_delete, sender=GuestAttendee)
+def invalidate_participant_counts_for_guest(sender, instance, created=False, update_fields=None, **kwargs):
+    if not created and update_fields is not None and not set(update_fields).intersection(
+        {"email_verified", "is_banned", "converted_user", "email", "event"}
+    ):
+        return
+    from .cache_utils import invalidate_event_list_caches
+    event_id = instance.event_id
+    transaction.on_commit(lambda: invalidate_event_list_caches(event_id))
+
+
+@receiver(post_save, sender=EventRegistration)
+def invalidate_participant_counts_for_registration(sender, instance, created=False, update_fields=None, **kwargs):
+    if not created and update_fields is not None and not set(update_fields).intersection(
+        {"status", "attendee_status", "user", "event"}
+    ):
+        return
+    from .cache_utils import invalidate_event_list_caches
+    event_id = instance.event_id
+    transaction.on_commit(lambda: invalidate_event_list_caches(event_id))
+
+
+@receiver(post_save, sender=EventApplication)
+def invalidate_participant_counts_for_parent_application(sender, instance, created=False, update_fields=None, **kwargs):
+    if not created and update_fields is not None and not set(update_fields).intersection(
+        {"status", "email", "user"}
+    ):
+        return
+    from .cache_utils import invalidate_event_list_caches
+    event_id = instance.event_id
+    transaction.on_commit(lambda: invalidate_event_list_caches(event_id))
