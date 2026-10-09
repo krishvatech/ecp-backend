@@ -133,6 +133,36 @@ class ParticipantRosterCountTests(TestCase):
             self.assertNotIn("guest00@example.com", str(row))
         self.assertFalse(EventRegistration.objects.filter(event=self.event, user__email__icontains="guest").exists())
 
+    def test_public_popup_sorts_identical_registration_and_guest_names(self):
+        # Real events can contain an accepted guest with the same name as a
+        # registered member. The old key compared None to a registration id
+        # and raised TypeError, returning 500 for all popup pages.
+        member = get_user_model().objects.create_user(
+            username="sort-member", email="sort-member@example.test",
+            first_name="Applicant", last_name="Example",
+        )
+        EventRegistration.objects.create(event=self.event, user=member, status="registered")
+        self.application("sort-guest1@example.test")
+        self.application("sort-guest2@example.test")
+
+        client = APIClient()
+        client.force_authenticate(self.owner)
+        first = client.get(f"/events/{self.event.id}/participants/?limit=2&offset=0")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.data["directory_row_count"], 3)
+        self.assertEqual(first.data["public_participant_count"], 3)
+        self.assertEqual(first.data["next_offset"], 2)
+        second = client.get(f"/events/{self.event.id}/participants/?limit=2&offset=2")
+        self.assertEqual(second.status_code, 200)
+        self.assertFalse(second.data["has_next"])
+
+        rows = first.data["participants"] + second.data["participants"]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(len({row["participant_key"] for row in rows}), 3)
+        self.assertEqual([row["display_name"] for row in rows], ["Applicant Example"] * 3)
+        self.assertEqual(rows[0]["source"], "registration")
+        self.assertTrue(all(row["email"] == "" for row in rows[1:]))
+
     def test_popup_respects_existing_event_visibility(self):
         self.application("guest@example.com")
         from django.utils import timezone

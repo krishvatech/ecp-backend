@@ -8156,7 +8156,13 @@ class EventViewSet(viewsets.ModelViewSet):
                 row.get("display_order") if row.get("display_order") is not None else 9999,
                 role_priority(row["primary_role"]),
                 row["display_name"].lower(),
-                row.get("registration_id"),
+                # Registrations sort before application-only/virtual rows with
+                # an identical name; never compare an integer id with None.
+                row.get("registration_id") is None,
+                row.get("registration_id") or 0,
+                # Stable tie-breaker also keeps pagination deterministic for
+                # multiple accepted applicants with the same display name.
+                row.get("participant_key") or "",
             )
         )
 
