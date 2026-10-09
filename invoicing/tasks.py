@@ -10,6 +10,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 from invoicing.models import Invoice, PaymentEvent, LegalEntity, Customer, InvoiceLine
+from users.email_utils import get_support_email
 from decimal import Decimal
 from datetime import datetime, timedelta
 import logging
@@ -394,7 +395,7 @@ def send_invoice_email(invoice_id):
             'invoice': invoice,
             'customer_name': _recipient_name(invoice.customer.user),
             'portal_url': getattr(settings, 'FRONTEND_URL', 'https://example.com'),
-            'support_email': getattr(settings, 'SUPPORT_EMAIL', getattr(settings, 'DEFAULT_FROM_EMAIL', 'support@example.com')),
+            'support_email': get_support_email(),
             'skonto_config': getattr(settings, 'SKONTO_CONFIG', {}),
         }
 
@@ -467,7 +468,7 @@ def send_payment_confirmation_email(invoice_id):
             "customer_name": _recipient_name(user),
             "portal_url": getattr(settings, "FRONTEND_URL", "http://localhost:5173").rstrip("/"),
             "invoice_url": _invoice_download_url(invoice),
-            "support_email": getattr(settings, "SUPPORT_EMAIL", getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@example.com")),
+            "support_email": get_support_email(),
         }
 
         # Render email using CMS template or file fallback

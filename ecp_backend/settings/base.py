@@ -150,7 +150,9 @@ EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
 EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "False") == "True"
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@example.com")
 DEFAULT_REPLY_TO_EMAIL = os.getenv("DEFAULT_REPLY_TO_EMAIL", "").strip()
-SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", DEFAULT_REPLY_TO_EMAIL or DEFAULT_FROM_EMAIL)
+# Never fall back to DEFAULT_FROM_EMAIL: it is a no-reply sender address and
+# must not be shown to users as a contact address.
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "").strip() or DEFAULT_REPLY_TO_EMAIL
 
 # Salesforce CRM integration. CRM synchronization remains inactive until a
 # CRMConnection row is explicitly enabled; these settings alone trigger no
