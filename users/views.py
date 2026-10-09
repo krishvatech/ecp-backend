@@ -27,7 +27,7 @@ from users.cache_utils import (
     user_detail_cache_key,
     user_me_cache_key,
 )
-from users.email_utils import send_platform_email
+from users.email_utils import get_support_email, send_platform_email
 from users.public_profile_privacy import redact_public_profile
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
@@ -1721,7 +1721,7 @@ class RegisterView(APIView):
                 "first_name": (user.first_name or user.username or "there"),
                 "email": user.email,
                 "login_url": f"{frontend_app_url}/signin",
-                "support_email": settings.DEFAULT_FROM_EMAIL,  # or your support email
+                "support_email": get_support_email(),
             }
 
             text_body = render_to_string("emails/welcome.txt", ctx)
@@ -1873,7 +1873,7 @@ class ChangePasswordView(generics.GenericAPIView):
                 "email": user.email,
                 "changed_at": changed_at,
                 "forgot_password_url": f"{frontend_app_url}/forgot-password",
-                "support_email": settings.DEFAULT_FROM_EMAIL,
+                "support_email": get_support_email(),
             }
 
             send_template_email(
@@ -1946,7 +1946,7 @@ class ResetPasswordView(generics.GenericAPIView):
                 "email": user.email,
                 "changed_at": changed_at,
                 "forgot_password_url": f"{frontend_app_url}/forgot-password",
-                "support_email": settings.DEFAULT_FROM_EMAIL,
+                "support_email": get_support_email(),
             }
 
             send_template_email(
@@ -3864,7 +3864,7 @@ class AdminNameChangeRequestViewSet(viewsets.ModelViewSet):
             ctx = {
                 "app_name": "IMAA Connect",
                 "first_name": (user.first_name or user.username or "there"),
-                "support_email": settings.DEFAULT_FROM_EMAIL,
+                "support_email": get_support_email(),
                 "decided_at": now_str,
                 "updated_at": now_str,
                 "new_name": new_name,
@@ -4348,7 +4348,7 @@ class DiditWebhookView(APIView):
             ctx = {
                 "app_name": "IMAA Connect",
                 "first_name": (user.first_name or user.username or "there"),
-                "support_email": settings.DEFAULT_FROM_EMAIL,
+                "support_email": get_support_email(),
                 "updated_at": now_str,
                 "decided_at": now_str,
                 "new_name": new_name,
@@ -4421,7 +4421,7 @@ class DiditWebhookView(APIView):
                 "app_name": "IMAA Connect",  # TODO: change to your brand
                 "first_name": (user.first_name or user.username or "there"),
                 "email": user.email,
-                "support_email": settings.DEFAULT_FROM_EMAIL,
+                "support_email": get_support_email(),
                 "frontend_app_url": frontend_app_url,
                 "verified_at": now_str,
                 "verified_name": (id_name or "").strip(),
