@@ -1198,6 +1198,7 @@ def send_guest_otp_email(to_email, guest_name, otp_code, event_title):
         "otp_code": otp_code,
         "event_title": event_title,
         "expiry_minutes": 10,
+        "support_email": get_support_email(),
     }
 
     return send_template_email(
@@ -1241,6 +1242,7 @@ def send_guest_followup_email(to_email, guest_name, event_title, signup_url):
             "Personalized networking dashboard",
             "Event recommendations tailored to your interests",
         ],
+        "support_email": get_support_email(),
     }
 
     return send_template_email(
