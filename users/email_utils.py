@@ -692,7 +692,7 @@ def send_event_cancelled_email(event):
     ).select_related("user")
 
     success_count = 0
-    support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+    support_email = get_support_email()
 
     for reg in registrations:
         user = reg.user
@@ -739,7 +739,7 @@ def send_group_invite_email(to_email, group, inviter, invite_url):
     """
     app_name = "IMAA Connect"
     inviter_name = inviter.get_full_name() or inviter.username or inviter.email
-    support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+    support_email = get_support_email()
 
     ctx = {
         "app_name": app_name,
@@ -764,7 +764,7 @@ def send_event_invite_email(to_email, event, inviter, invite_url):
     """
     app_name = "IMAA Connect"
     inviter_name = inviter.get_full_name() or inviter.username or inviter.email
-    support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+    support_email = get_support_email()
 
     # Format event times in event's timezone
     time_info = format_event_time_for_email(event)
@@ -806,7 +806,7 @@ def send_replay_noshow_email(user, event):
     frontend_base = getattr(settings, 'FRONTEND_URL', '')
     event_url = f"{frontend_base}/events/{event.slug}/"
     replay_url = f"{frontend_base}/account/recordings"
-    support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+    support_email = get_support_email()
 
     # Format event times in event's timezone
     time_info = format_event_time_for_email(event)
@@ -848,7 +848,7 @@ def send_replay_partial_email(user, event):
     frontend_base = getattr(settings, 'FRONTEND_URL', '')
     event_url = f"{frontend_base}/events/{event.slug}/"
     replay_url = f"{frontend_base}/account/recordings"
-    support_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+    support_email = get_support_email()
 
     # Format event times in event's timezone
     time_info = format_event_time_for_email(event)
