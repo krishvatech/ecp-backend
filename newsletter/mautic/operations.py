@@ -27,6 +27,8 @@ CONTACT_UPDATE = "contact.update"
 # Queues a native Mautic CSV import; the bridge records the asserted user as
 # the import creator, and Mautic later processes every row as that user.
 CONTACT_IMPORT_CREATE = "contact.import.create"
+# Bulk delete through Mautic's native batch delete (at most 100 IDs a call).
+CONTACT_DELETE = "contact.delete"
 CONTACT_TAG_ADD = "contact.tag.add"
 CONTACT_TAG_REMOVE = "contact.tag.remove"
 COMPANY_CREATE = "company.create"
@@ -90,6 +92,7 @@ ASSERTABLE_OPERATIONS = frozenset(
         CONTACT_CREATE,
         CONTACT_UPDATE,
         CONTACT_IMPORT_CREATE,
+        CONTACT_DELETE,
         CONTACT_TAG_ADD,
         CONTACT_TAG_REMOVE,
         COMPANY_CREATE,

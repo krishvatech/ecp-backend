@@ -41,8 +41,13 @@ from . import marketing_cache
 from .contact_services import _dict_values, _normalize_field
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 
-DEFAULT_MAX_BYTES = 10 * 1024 * 1024
-DEFAULT_MAX_ROWS = 20000
+# One upload, one import job, up to 50,000 contacts. Keep these in step with
+# EcpContactImportPolicy::MAX_ROWS / MAX_BYTES in the Mautic bridge, which
+# checks the prepared file again. Override per environment with
+# NEWSLETTER_CONTACT_IMPORT_MAX_BYTES / NEWSLETTER_CONTACT_IMPORT_MAX_ROWS,
+# never above the bridge's limits.
+DEFAULT_MAX_BYTES = 25 * 1024 * 1024
+DEFAULT_MAX_ROWS = 50000
 MAX_COLUMNS = 100
 FIELD_METADATA_LIMIT = 500
 PREVIEW_ROWS = 25
@@ -114,6 +119,15 @@ MAX_TEXTAREA_LENGTH = 65535
 
 TRUE_VALUES = frozenset({"1", "true", "yes", "y", "on", "t"})
 FALSE_VALUES = frozenset({"0", "false", "no", "n", "off", "f"})
+# Do Not Contact only: CRM exports write the flag as the column's own name.
+# Deliberately not part of TRUE_VALUES, so no other boolean field accepts it.
+DNC_TRUE_VALUES = TRUE_VALUES | {"do not contact"}
+# Headers that carry Do Not Contact. Leaving one with values unmapped would
+# import those contacts as emailable, so validation refuses it (fail closed).
+DNC_HEADER_KEYS = frozenset({"donotcontact", "donotemail", "dnc"})
+# Fallback columns fill a field only when its primary column is empty. Email
+# is the matching key and tags have their own syntax, so neither takes one.
+FALLBACK_BLOCKED_TARGETS = frozenset({"email", "tags"})
 
 CONSENT_PATTERN = re.compile(
     r"(opt.?in|opt.?out|consent|subscri|newsletter|promo|marketing|gdpr|permission)",
@@ -154,6 +168,7 @@ HEADER_SYNONYMS = {
     "town": "city",
     "state": "state",
     "province": "state",
+    "region": "state",
     "country": "country",
     "zip": "zipcode",
     "zipcode": "zipcode",
@@ -168,6 +183,9 @@ HEADER_SYNONYMS = {
     "donotcontact": DNC_TARGET,
     "donotemail": DNC_TARGET,
     "dnc": DNC_TARGET,
+    # Only suggested when a field with this alias exists in Mautic.
+    "newsletteroptin": "ecp_newsletter_opt_in",
+    "promotionalmailing": "ecp_promotional_mailing",
 }
 NEVER_SUGGEST = frozenset({"id", "contactid", "legacyid", "mauticid", "leadid", "recordid"})
 
@@ -349,7 +367,10 @@ def parse_csv(filename: str, raw: bytes) -> ParsedCsv:
                 continue
             if len(rows) - empty >= limit:
                 raise ContactImportError(
-                    f"The file has more than {limit:,} contact rows.", code="too_many_rows"
+                    f"The file has more than {limit:,} contact rows. Split it into batches of at "
+                    f"most {limit:,} rows (manage.py split_contact_import_csv) and import each "
+                    "batch separately.",
+                    code="too_many_rows",
                 )
             if len(cells) != len(headers):
                 malformed += 1
@@ -484,6 +505,16 @@ def mapping_targets(client) -> list[dict[str, Any]]:
 
 
 def suggest_mapping(headers: list[str], targets: list[dict[str, Any]]) -> dict[str, str]:
+    return suggest_mapping_with_fallbacks(headers, targets)[0]
+
+
+def suggest_mapping_with_fallbacks(
+    headers: list[str], targets: list[dict[str, Any]]
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Suggested {header: alias}, plus {header: alias} for later columns that
+    match an already-suggested field (e.g. '*Company Name' after
+    'Organization'). Those are offered as fallbacks, used only when the first
+    column is empty; the first column in file order stays the primary."""
     importable = {t["alias"]: t for t in targets if t["importable"]}
     by_key: dict[str, str] = {}
     for alias, target in importable.items():
@@ -491,6 +522,7 @@ def suggest_mapping(headers: list[str], targets: list[dict[str, Any]]) -> dict[s
         by_key.setdefault(_normalize_header_key(target["label"]), alias)
 
     suggestions: dict[str, str] = {}
+    fallbacks: dict[str, str] = {}
     used = set()
     for header in headers:
         key = _normalize_header_key(header)
@@ -503,7 +535,48 @@ def suggest_mapping(headers: list[str], targets: list[dict[str, Any]]) -> dict[s
             used.add(alias)
         else:
             suggestions[header] = ""
-    return suggestions
+            if alias in used and alias not in FALLBACK_BLOCKED_TARGETS:
+                fallbacks[header] = alias
+    return suggestions, fallbacks
+
+
+def _populated_counts(parsed: ParsedCsv) -> list[int]:
+    counts = [0] * len(parsed.headers)
+    for _number, cells in parsed.rows:
+        for index, cell in enumerate(cells[: len(parsed.headers)]):
+            if str(cell).strip():
+                counts[index] += 1
+    return counts
+
+
+def _tag_separator_counts(values) -> dict[str, int]:
+    counts = {separator: 0 for separator in TAG_SEPARATORS}
+    for value in values:
+        for separator in TAG_SEPARATORS:
+            if separator in value:
+                counts[separator] += 1
+    return counts
+
+
+def tag_separator_hint(parsed: ParsedCsv, header: str) -> dict[str, Any]:
+    """Which separator the whole column's values use. Suggests one only when
+    exactly one kind appears; otherwise the administrator decides."""
+    if not header:
+        return {"column": "", "suggested": None, "counts": {}, "values": 0}
+    index = parsed.headers.index(header)
+    values = [
+        cells[index].strip()
+        for _number, cells in parsed.rows
+        if index < len(cells) and cells[index].strip()
+    ]
+    counts = _tag_separator_counts(values)
+    seen = [separator for separator, count in counts.items() if count]
+    return {
+        "column": header,
+        "suggested": seen[0] if len(seen) == 1 else None,
+        "counts": counts,
+        "values": len(values),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +585,8 @@ def suggest_mapping(headers: list[str], targets: list[dict[str, Any]]) -> dict[s
 
 def build_preview(parsed: ParsedCsv, targets: list[dict[str, Any]]) -> dict[str, Any]:
     data_rows = [(number, cells) for number, cells in parsed.rows if cells]
-    suggestions = suggest_mapping(parsed.headers, targets)
+    suggestions, fallback_suggestions = suggest_mapping_with_fallbacks(parsed.headers, targets)
+    tags_header = next((h for h, alias in suggestions.items() if alias == TAGS_TARGET), "")
     email_header = next((h for h, alias in suggestions.items() if alias == EMAIL_TARGET), "")
     email_index = parsed.headers.index(email_header) if email_header else None
 
@@ -573,6 +647,10 @@ def build_preview(parsed: ParsedCsv, targets: list[dict[str, Any]]) -> dict[str,
         "duplicate_email_rows": duplicate_emails,
         "missing_email_rows": missing_emails,
         "suggested_mapping": suggestions,
+        # Offered, never applied silently: the wizard shows each as "used only
+        # when <primary column> is empty".
+        "suggested_fallbacks": fallback_suggestions,
+        "tag_separator_hint": tag_separator_hint(parsed, tags_header),
         "warnings": warnings,
         "limits": {"max_rows": max_rows(), "max_bytes": max_bytes()},
     }
@@ -586,9 +664,15 @@ def build_preview(parsed: ParsedCsv, targets: list[dict[str, Any]]) -> dict[str,
 class ImportOptions:
     existing_mode: str = MODE_SKIP_EXISTING
     tag_separator: str = "|"
+    # Headers mapped to a field another (primary) column already fills.
+    fallback_columns: tuple[str, ...] = ()
 
-    def as_dict(self) -> dict[str, str]:
-        return {"existing_mode": self.existing_mode, "tag_separator": self.tag_separator}
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "existing_mode": self.existing_mode,
+            "tag_separator": self.tag_separator,
+            "fallback_columns": list(self.fallback_columns),
+        }
 
 
 def parse_options(raw) -> ImportOptions:
@@ -601,7 +685,7 @@ def parse_options(raw) -> ImportOptions:
             raise ContactImportError("options must be a JSON object.", code="invalid_options") from None
     if not isinstance(raw, dict):
         raise ContactImportError("options must be a JSON object.", code="invalid_options")
-    unknown = sorted(set(raw) - {"existing_mode", "tag_separator"})
+    unknown = sorted(set(raw) - {"existing_mode", "tag_separator", "fallback_columns"})
     if unknown:
         raise ContactImportError(
             "Unsupported option(s): " + ", ".join(unknown), code="invalid_options"
@@ -616,7 +700,20 @@ def parse_options(raw) -> ImportOptions:
         raise ContactImportError(
             "tag_separator must be one of | , ;", code="invalid_options"
         )
-    return ImportOptions(existing_mode=mode, tag_separator=separator)
+    fallbacks = raw.get("fallback_columns") or []
+    if (
+        not isinstance(fallbacks, list)
+        or len(fallbacks) > MAX_COLUMNS
+        or not all(isinstance(header, str) for header in fallbacks)
+    ):
+        raise ContactImportError(
+            "fallback_columns must be a list of column names.", code="invalid_options"
+        )
+    return ImportOptions(
+        existing_mode=mode,
+        tag_separator=separator,
+        fallback_columns=tuple(dict.fromkeys(fallbacks)),
+    )
 
 
 def parse_mapping(raw) -> dict[str, str]:
@@ -638,7 +735,24 @@ def check_mapping(
     parsed: ParsedCsv, mapping: dict[str, str], targets: list[dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
     """Return {header: target} for mapped columns, or raise with every problem."""
+    return resolve_mapping(parsed, mapping, targets)[0]
+
+
+def resolve_mapping(
+    parsed: ParsedCsv,
+    mapping: dict[str, str],
+    targets: list[dict[str, Any]],
+    fallback_columns=(),
+    populated: list[int] | None = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
+    """Return ({primary header: target}, {alias: [fallback headers]}).
+
+    A field gets exactly one primary column. Further columns for it are allowed
+    only when listed in ``fallback_columns``; they are consulted in file order
+    and only when the primary is empty (Do Not Contact: when any is true).
+    """
     by_alias = {t["alias"]: t for t in targets}
+    fallback_set = set(fallback_columns)
     problems = []
     unknown_headers = sorted(set(mapping) - set(parsed.headers))
     if unknown_headers:
@@ -650,9 +764,22 @@ def check_mapping(
             }
         )
 
+    unknown_fallbacks = sorted(fallback_set - set(parsed.headers))
+    if unknown_fallbacks:
+        problems.append(
+            {
+                "code": "unknown_column",
+                "message": "Fallback columns are not in the file: " + ", ".join(unknown_fallbacks),
+            }
+        )
+
     mapped: dict[str, dict[str, Any]] = {}
+    fallbacks: dict[str, list[str]] = {}
     used: dict[str, str] = {}
-    for header in parsed.headers:
+    ordered = [h for h in parsed.headers if h not in fallback_set] + [
+        h for h in parsed.headers if h in fallback_set
+    ]
+    for header in ordered:
         alias = mapping.get(header, "")
         if not alias:
             continue
@@ -685,17 +812,65 @@ def check_mapping(
                 }
             )
             continue
+        if header in fallback_set:
+            if alias in FALLBACK_BLOCKED_TARGETS:
+                problems.append(
+                    {
+                        "code": "fallback_not_allowed",
+                        "column": header,
+                        "message": f"'{target['label']}' cannot take a fallback column; map '{header}' to another field or skip it.",
+                    }
+                )
+            elif alias not in used:
+                problems.append(
+                    {
+                        "code": "fallback_without_primary",
+                        "column": header,
+                        "message": f"'{header}' is a fallback for '{target['label']}', but no other column is mapped to it.",
+                    }
+                )
+            else:
+                fallbacks.setdefault(alias, []).append(header)
+            continue
         if alias in used:
             problems.append(
                 {
                     "code": "duplicate_target",
                     "column": header,
-                    "message": f"'{header}' and '{used[alias]}' are both mapped to '{target['label']}'.",
+                    "message": f"'{header}' and '{used[alias]}' are both mapped to '{target['label']}'. "
+                    "Mark one as a fallback or skip it.",
                 }
             )
             continue
         used[alias] = header
         mapped[header] = target
+
+    if populated is not None:
+        mapped_headers = set(mapped) | {h for hs in fallbacks.values() for h in hs}
+        for index, header in enumerate(parsed.headers):
+            if _normalize_header_key(header) not in DNC_HEADER_KEYS or not populated[index]:
+                continue
+            chosen = mapping.get(header, "")
+            if chosen and chosen != DNC_TARGET:
+                # Mapping it to any other field would drop the restriction too.
+                problems.append(
+                    {
+                        "code": "dnc_misdirected",
+                        "column": header,
+                        "message": f"'{header}' has {_count(populated[index], 'value', 'values')} and must be "
+                        f"mapped to Do Not Contact (email), not '{by_alias.get(chosen, {}).get('label', chosen)}'.",
+                    }
+                )
+            elif header not in mapped_headers:
+                problems.append(
+                    {
+                        "code": "dnc_unmapped",
+                        "column": header,
+                        "message": f"'{header}' has {_count(populated[index], 'value', 'values')} but is not "
+                        "mapped. Map it to Do Not Contact (email) so those contacts are not imported "
+                        "as emailable.",
+                    }
+                )
 
     if EMAIL_TARGET not in used:
         problems.append(
@@ -706,7 +881,7 @@ def check_mapping(
         raise ContactImportError(
             "The field mapping needs attention.", code="invalid_mapping", errors=problems
         )
-    return mapped
+    return mapped, fallbacks
 
 
 def _reference_lookup(client, field_type: str):
@@ -745,6 +920,7 @@ class ValidationResult:
     parsed: ParsedCsv
     mapped: dict[str, dict[str, Any]]
     options: ImportOptions
+    fallbacks: dict[str, list[str]] = field(default_factory=dict)
     # (source row, {alias: normalized value}, email key) for rows that will be sent.
     rows: list[tuple[int, dict[str, str], str]] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
@@ -776,13 +952,13 @@ class _Normalizer:
         if alias == DNC_TARGET:
             if value == "":
                 return "", ""
-            lowered = value.lower()
-            if lowered in TRUE_VALUES:
+            lowered = " ".join(value.lower().split())
+            if lowered in DNC_TRUE_VALUES:
                 return "1", ""
             if lowered in FALSE_VALUES:
                 # Never sent as "false": that would ask Mautic to remove DNC.
                 return "", ""
-            return "", "Do Not Contact must be true/false, yes/no or 1/0."
+            return "", "Do Not Contact must be true/false, yes/no, 1/0 or 'Do Not Contact'."
         if value == "":
             return "", ""
 
@@ -922,8 +1098,11 @@ def validate_import(
     check_existing: bool = True,
 ) -> ValidationResult:
     targets = targets if targets is not None else mapping_targets(client)
-    mapped = check_mapping(parsed, mapping, targets)
-    result = ValidationResult(parsed=parsed, mapped=mapped, options=options)
+    populated = _populated_counts(parsed)
+    mapped, fallbacks = resolve_mapping(
+        parsed, mapping, targets, options.fallback_columns, populated
+    )
+    result = ValidationResult(parsed=parsed, mapped=mapped, options=options, fallbacks=fallbacks)
     normalizer = _Normalizer(mapped, options, client)
     header_index = {header: index for index, header in enumerate(parsed.headers)}
 
@@ -933,6 +1112,8 @@ def validate_import(
     candidates: list[tuple[int, dict[str, str], str, bool]] = []
     invalid = duplicates = 0
     dnc_rows = 0
+    fallback_rows = fallback_conflict_rows = tag_separator_conflicts = 0
+    other_separators = [sep for sep in TAG_SEPARATORS if sep != options.tag_separator]
     consent_true: dict[str, int] = {
         t["alias"]: 0 for t in mapped.values() if t["consent_like"]
     }
@@ -961,20 +1142,59 @@ def validate_import(
 
         values: dict[str, str] = {}
         row_ok = True
-        row_warned = False
+        before = dict(counters)
+        used_fallback = conflict = False
         for header, target in mapped.items():
-            before = dict(counters)
+            alias = target["alias"]
             raw = _clean_cell(cells[header_index[header]], counters)
-            if counters != before:
-                row_warned = True
+            extra = fallbacks.get(alias, [])
+
+            if alias == DNC_TARGET and extra:
+                # Every Do Not Contact column counts: true in any one adds DNC.
+                positive = False
+                for source in [header, *extra]:
+                    value = raw if source == header else _clean_cell(cells[header_index[source]], counters)
+                    normalized, error = normalizer.normalize(value, target)
+                    if error:
+                        row_ok = False
+                        add_issue(row_number, source, target, "invalid_value", error)
+                    elif normalized == "1":
+                        positive = True
+                if positive:
+                    values[alias] = "1"
+                continue
+
+            source = header
+            if raw == "":
+                for candidate in extra:
+                    value = _clean_cell(cells[header_index[candidate]], counters)
+                    if value != "":
+                        source, raw = candidate, value
+                        used_fallback = True
+                        break
+            elif extra:
+                scratch = {"line_breaks": 0, "null_literals": 0, "formula_like": 0}
+                for candidate in extra:
+                    value = _clean_cell(cells[header_index[candidate]], scratch)
+                    if value and value.casefold() != raw.casefold():
+                        conflict = True
+                        break
+
             normalized, error = normalizer.normalize(raw, target)
             if error:
                 row_ok = False
-                code = "invalid_email" if target["alias"] == EMAIL_TARGET else "invalid_value"
-                add_issue(row_number, header, target, code, error)
+                code = "invalid_email" if alias == EMAIL_TARGET else "invalid_value"
+                add_issue(row_number, source, target, code, error)
                 continue
+            # Only values that are imported can become "a single tag"; a
+            # rejected value is already reported as an issue.
+            if alias == TAGS_TARGET and raw and any(sep in raw for sep in other_separators):
+                tag_separator_conflicts += 1
             if normalized != "":
-                values[target["alias"]] = normalized
+                values[alias] = normalized
+        row_warned = counters != before
+        fallback_rows += used_fallback
+        fallback_conflict_rows += conflict
 
         email = values.get(EMAIL_TARGET, "")
         if row_ok and not email:
@@ -1038,6 +1258,16 @@ def validate_import(
                 consent_true[alias] += 1
         result.rows.append((row_number, values, key))
 
+    mapped_headers = set(mapped) | {h for hs in fallbacks.values() for h in hs}
+    unmapped = [
+        {"column": header, "populated": populated[index]}
+        for index, header in enumerate(parsed.headers)
+        if header not in mapped_headers
+    ]
+    skipped_consent = [
+        item for item in unmapped if item["populated"] and CONSENT_PATTERN.search(item["column"])
+    ]
+
     total = len(parsed.rows) - parsed.empty_rows
     result.summary = {
         "total_rows": total,
@@ -1064,6 +1294,14 @@ def validate_import(
             )
         ],
         "existing_mode": options.existing_mode,
+        "tag_separator": options.tag_separator,
+        "tag_separator_conflicts": tag_separator_conflicts,
+        "fallback_rows": fallback_rows,
+        "fallback_conflict_rows": fallback_conflict_rows,
+        "mapped_columns": len(mapped) + sum(len(h) for h in fallbacks.values()),
+        "unmapped_columns": unmapped,
+        "unmapped_with_data": sum(1 for item in unmapped if item["populated"]),
+        "skipped_consent_columns": skipped_consent,
     }
 
     if counters["line_breaks"]:
@@ -1105,6 +1343,29 @@ def validate_import(
             _count(existing_suppressed, "matching Mautic contact already has", "matching Mautic contacts already have")
             + " email Do Not Contact; it is kept."
         )
+    for item in skipped_consent:
+        result.warnings.append(
+            f"'{item['column']}' has {_count(item['populated'], 'value', 'values')} but is not mapped, "
+            "so those consent or preference values will not be imported."
+        )
+    if tag_separator_conflicts:
+        others = " or ".join(f"'{sep}'" for sep in other_separators)
+        result.warnings.append(
+            _count(tag_separator_conflicts, "Tags value contains", "Tags values contain")
+            + f" {others} but the separator is '{options.tag_separator}', so each such value "
+            "is imported as a single tag. Choose a different separator if they are separate tags."
+        )
+    if fallback_rows:
+        result.warnings.append(
+            _count(fallback_rows, "row uses", "rows use")
+            + " a fallback column because the primary column is empty."
+        )
+    if fallback_conflict_rows:
+        result.warnings.append(
+            _count(fallback_conflict_rows, "row has", "rows have")
+            + " a different value in a fallback column than in its primary column; the primary "
+            "column's value is used."
+        )
     if consent_true:
         result.warnings.append(
             "Consent and preference columns are stored as contact field values only. Importing "
@@ -1129,6 +1390,17 @@ def validation_payload(result: ValidationResult) -> dict[str, Any]:
         "mapping": [
             {"column": header, "field": target["alias"], "label": target["label"], "type": target["type"]}
             for header, target in result.mapped.items()
+        ]
+        + [
+            {
+                "column": fallback,
+                "field": target["alias"],
+                "label": target["label"],
+                "type": target["type"],
+                "fallback_for": header,
+            }
+            for header, target in result.mapped.items()
+            for fallback in result.fallbacks.get(target["alias"], [])
         ],
         "options": result.options.as_dict(),
         "summary": result.summary,

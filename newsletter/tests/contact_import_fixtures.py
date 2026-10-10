@@ -83,3 +83,103 @@ def edge_case_rows() -> list[dict[str, str]]:
         contact_row(13, City="NULL"),                                     # 14 NULL literal
         contact_row(14, Organization="Line\nBreak Org"),                  # 15 embedded newline
     ]
+
+
+# The 68 column headers of the client's contact export (names only). Values
+# produced below are artificial.
+CLIENT_HEADERS = [
+    'ID',
+    'Email',
+    'First Name',
+    'Last Name',
+    'Phone Number',
+    'Date Created',
+    'IP Address',
+    'User Agent',
+    'WhatsApp ID',
+    'WhatsApp Username',
+    'Organization',
+    'Account (previously Organization)',
+    'Account ID',
+    'Job Title',
+    '*Specific Topics of Interest',
+    '*Industry',
+    '*Special Accommodations',
+    '*Dietary Requirements',
+    '*How did you hear about this conference',
+    '*Registration Type',
+    '*Role Description',
+    '*Speaker Interest',
+    '*Phone Number',
+    '*Conference Topics of Interest',
+    '*Integration Project Status',
+    '*Food Allergies',
+    '*Personal Email',
+    '*Professional Experience Level',
+    '*Attendance Preference',
+    '*Professional Background',
+    '*How did you hear about this webinar series?',
+    '*Email 2',
+    "*I'm interested in",
+    '*LinkedIn or bio (with photo link)',
+    '*Proposed topic or session abstract',
+    '*Event Communication Consent',
+    '*Payment Avenue',
+    '*Amount paid',
+    '*Dietary Pref',
+    '*Note',
+    '*Opt-In 2',
+    '*Country',
+    '*Region',
+    '*Do Not Contact',
+    '*Company Name',
+    '*Campaign Name',
+    '*IP',
+    '*Subscribe to Newsletter',
+    '*Subscribe to News and Updates',
+    '*Request a Brochure or Brochure and Demo',
+    '*Lead Type',
+    '*Opt-In for Webinars',
+    '*Opt-In 1',
+    '*City',
+    '*Opt-In Consent Option 1',
+    '*Opt-In Consent Option 2',
+    '*Webinar Opt-In Consent 1',
+    '*Webinar Opt-In Consent 2',
+    '*News Letter Opt-In',
+    '*Promotional Mailing',
+    '*Type',
+    '*Job Title',
+    '*Additional Comments',
+    '*How did you hear about us',
+    '*Program of Interest',
+    '*Score 1',
+    '*Score 2',
+    'Tags',
+]
+
+
+def client_row(index: int, **overrides) -> dict[str, str]:
+    """A client-format row with the commonly populated columns filled."""
+    row = {header: "" for header in CLIENT_HEADERS}
+    row.update(
+        {
+            "ID": f"DEMO-{index:05d}",
+            "Email": f"client-format-{index:05d}@example.test",
+            "First Name": f"TestFirst{index:05d}",
+            "Last Name": f"TestLast{index:05d}",
+            "Date Created": "2025-01-04",
+            "IP Address": "192.0.2.10",
+            "*Country": "India",
+            "*Region": "Gujarat",
+            "*City": "Surat",
+            "*Type": "Demo Member",
+            "Tags": "demo-contact",
+        }
+    )
+    row.update(overrides)
+    return row
+
+
+def client_csv(rows, *, bom=True) -> bytes:
+    return to_csv(rows, CLIENT_HEADERS, bom=bom)
