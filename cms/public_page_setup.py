@@ -23,6 +23,7 @@ from cms.public_pages import PublicSiteConfigurationError, is_archived, resolve_
 MEDIA_COLLECTION_NAME = "Public website pages"
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 
 
 class DryRunWriteGuard:
@@ -155,14 +156,28 @@ def prepare_media_renditions(content, images, progress=None):
             progress(done, len(lines))
 
 
+def editor_line_breaks(html):
+    """Line breaks in Wagtail's storage format. The approved content stores ``<br>`` as the public
+    API renders it, but Wagtail's Draftail converter needs ``<br/>``: a plain ``<br>`` makes the page
+    impossible to open in the editor ("Unmatched tags: expected br, got …"). The public rendering
+    of both forms is identical."""
+    return _BR_RE.sub("<br/>", html)
+
+
+def cms_body(content):
+    """The body of a text-only page in Wagtail's rich-text storage format."""
+    return editor_line_breaks(content.body_html)
+
+
 def render_cms_body(content, images):
     """The body in Wagtail's rich-text storage format: each bundled image becomes an image embed
-    in the line's format (for example ``logo``); every other line is stored as it is."""
+    in the line's format (for example ``logo``); every other line is stored as it is, with
+    editor-compatible line breaks."""
     lines = []
     for line in content.body_lines:
         media_line = parse_media_line(line)
         if media_line is None:
-            lines.append(line)
+            lines.append(editor_line_breaks(line))
             continue
         image = images[media_line.key]
         lines.append(

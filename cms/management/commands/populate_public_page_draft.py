@@ -42,6 +42,7 @@ from cms.models import StandardPage
 from cms.public_page_content import MIGRATED, PublicPageContentError, load_public_page_content
 from cms.public_page_setup import (
     DryRunWriteGuard,
+    cms_body,
     find_media_images,
     import_media_images,
     prepare_media_renditions,
@@ -222,7 +223,7 @@ class Command(BaseCommand):
             found, missing = find_media_images(content)
             inspection.expected_body = None if missing else render_cms_body(content, found)
         else:
-            inspection.expected_body = content.body_html
+            inspection.expected_body = cms_body(content)
         if row_empty and draft_empty:
             inspection.content_state = EMPTY
         elif (
@@ -282,7 +283,7 @@ class Command(BaseCommand):
             revision = None
             if current.content_state == EMPTY:
                 draft = current.draft
-                draft.body = render_cms_body(content, images) if content.has_media else content.body_html
+                draft.body = render_cms_body(content, images) if content.has_media else cms_body(content)
                 for name, value in current.seo_changes.items():
                     setattr(draft, name, value)
                 revision = draft.save_revision(log_action=False)

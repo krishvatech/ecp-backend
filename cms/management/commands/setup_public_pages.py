@@ -47,6 +47,7 @@ from cms.public_page_content import (
 from cms.public_page_setup import (
     MEDIA_COLLECTION_NAME,
     DryRunWriteGuard as _DryRunWriteGuard,
+    cms_body,
     describe_media_plan,
     import_media_images,
     prepare_media_renditions,
@@ -240,7 +241,7 @@ class Command(BaseCommand):
                         f"collection, {total - created} reused from the Wagtail image library"
                     )
                 else:
-                    body = content.body_html if content.has_body else ""
+                    body = cms_body(content) if content.has_body else ""
                 page = StandardPage(
                     title=content.title,
                     slug=plan.slug,
