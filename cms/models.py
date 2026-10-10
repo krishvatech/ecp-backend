@@ -12,6 +12,8 @@ from wagtail.models import Page
 from wagtail.snippets.models import register_snippet
 from wagtail_ai.panels import AITitleFieldPanel, AIDescriptionFieldPanel
 
+from cms.about_blocks import RICH_TEXT_FEATURES, SECTION_BLOCKS, STAT_BLOCKS, validate_safe_url
+
 
 class CmsSoftDeletePageMixin(models.Model):
     """Soft-delete metadata shared by Wagtail CMS page types.
@@ -251,6 +253,15 @@ class AboutPage(CmsSoftDeletePageMixin, Page):
 
     # Sections
     intro_html = RichTextField(blank=True)
+    intro_image = models.ForeignKey(
+        "wagtailimages.Image",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="Shown beside the introduction.",
+    )
+    stats = StreamField(STAT_BLOCKS, blank=True, use_json_field=True, max_num=4)
 
     features_title = models.CharField(max_length=120, blank=True, default="What You Can Do With IMAA Connect")
     features = StreamField(
@@ -261,6 +272,9 @@ class AboutPage(CmsSoftDeletePageMixin, Page):
 
     mission_title = models.CharField(max_length=120, blank=True, default="Our Mission")
     mission_html = RichTextField(blank=True)
+
+    # Ordered, optional sections after the mission (accreditations, programmes, testimonials, ...).
+    sections = StreamField(SECTION_BLOCKS, blank=True, use_json_field=True)
 
     content_panels = Page.content_panels + [
         MultiFieldPanel(
@@ -274,9 +288,11 @@ class AboutPage(CmsSoftDeletePageMixin, Page):
         MultiFieldPanel(
             [
                 FieldPanel("intro_html"),
+                FieldPanel("intro_image"),
             ],
             heading="Intro Section",
         ),
+        FieldPanel("stats", heading="Statistics"),
         MultiFieldPanel(
             [
                 AITitleFieldPanel("features_title"),
@@ -291,10 +307,48 @@ class AboutPage(CmsSoftDeletePageMixin, Page):
             ],
             heading="Mission Section",
         ),
+        FieldPanel("sections", heading="Page sections"),
     ]
 
     parent_page_types = ["cms.HomePage"]
     subpage_types = []
+
+
+@register_snippet
+class Testimonial(models.Model):
+    """A participant testimonial: shown on the About page now, and on /testimonials/ once migrated."""
+
+    name = models.CharField(max_length=160)
+    slug = models.SlugField(max_length=160, unique=True)
+    role = models.CharField(max_length=200, blank=True)
+    company = models.CharField(max_length=200, blank=True)
+    programme = models.CharField(max_length=120, blank=True, help_text="As displayed, e.g. IM&A, M&AP")
+    quote = RichTextField(features=RICH_TEXT_FEATURES)
+    photo = models.ForeignKey(
+        "wagtailimages.Image", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    url = models.CharField(
+        max_length=300, blank=True, validators=[validate_safe_url],
+        help_text="The testimonial's full page (imaa-institute.org until /testimonials/ is migrated).",
+    )
+    wordpress_id = models.PositiveIntegerField(null=True, blank=True, unique=True, editable=False)
+
+    panels = [
+        FieldPanel("name"),
+        FieldPanel("slug"),
+        FieldPanel("role"),
+        FieldPanel("company"),
+        FieldPanel("programme"),
+        FieldPanel("photo"),
+        FieldPanel("quote"),
+        FieldPanel("url"),
+    ]
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
 
 
 class EventsLandingPage(CmsSoftDeletePageMixin, Page):

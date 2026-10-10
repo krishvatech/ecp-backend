@@ -14,6 +14,7 @@ from rest_framework.permissions import IsAuthenticated
 from wagtail.models import Page
 from wagtail.rich_text import RichText
 
+from cms.about_page_api import about_page_extras
 from cms.email_template_registry import get_template_metadata
 from cms.models import EmailTemplate, TEMPLATE_KEY_CHOICES
 from cms.serializers import (
@@ -156,6 +157,9 @@ def build_cms_page_data(request, page, specific):
 
     if hasattr(specific, "mission_html"):
         data["mission_html"] = str(RichText(specific.mission_html or ""))
+
+    # AboutPage intro image, statistics and ordered sections (no-op until the page has them).
+    data.update(about_page_extras(request, specific))
 
     if hasattr(specific, "left_column"):
         data["left_column"] = [
