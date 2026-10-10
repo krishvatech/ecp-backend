@@ -36,6 +36,7 @@ from .operations import (
     COMPANY_UPDATE,
     CONTACT_CREATE,
     CONTACT_DNC_ADD,
+    CONTACT_DELETE,
     CONTACT_DNC_REMOVE,
     CONTACT_IMPORT_CREATE,
     CONTACT_NOTE_CREATE,
@@ -642,6 +643,48 @@ class MauticClient:
         if not isinstance(data.get("errors"), list):
             raise TemporaryMauticError("Mautic contact import errors returned an invalid response")
         return data
+
+    def delete_contacts_batch(self, contact_ids: list[int]) -> dict[str, Any]:
+        """Delete up to 100 contacts with Mautic's native batch delete.
+
+        With an asserted user this goes through the ECP bridge, so Mautic
+        applies that user's own delete permission to every contact. The
+        response is advisory: callers confirm the outcome by looking the IDs
+        up again, which also makes a retried batch harmless.
+        """
+        ids = ",".join(str(int(contact_id)) for contact_id in contact_ids)
+        if not ids:
+            raise PermanentMauticError("At least one Mautic contact ID is required")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "DELETE",
+                "ecp/bridge/contacts/batch/delete",
+                operation=CONTACT_DELETE,
+                params={"ids": ids},
+            )
+        else:
+            response = self._request("DELETE", "contacts/batch/delete", params={"ids": ids})
+        try:
+            data = response.json()
+        except (ValueError, TypeError):
+            data = {}
+        return data if isinstance(data, dict) else {}
+
+    def lookup_contacts_by_id(self, contact_ids: list[int]) -> dict[str, dict[str, Any]]:
+        """Current email, Do Not Contact records and campaign count per contact
+        (read-only bridge). Unknown IDs are absent from the result."""
+        response = self._request(
+            "POST",
+            "ecp/contacts/id-lookup",
+            json={"ids": [int(contact_id) for contact_id in contact_ids]},
+        )
+        data = self._json_object(response, "Mautic contact lookup")
+        contacts = data.get("contacts")
+        if isinstance(contacts, list) and not contacts:
+            contacts = {}
+        if not isinstance(contacts, dict):
+            raise TemporaryMauticError("Mautic contact lookup returned an invalid response")
+        return {str(key): value for key, value in contacts.items() if isinstance(value, dict)}
 
     def lookup_contact_emails(self, emails: list[str]) -> dict[str, dict[str, Any]]:
         """Which emails already belong to a Mautic contact (read-only bridge).

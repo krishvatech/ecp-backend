@@ -92,6 +92,12 @@ from .mautic_analytics_views import (
     NewsletterAdminAnalyticsSegmentsView,
 )
 from .mautic_diagnostics_views import NewsletterAdminMauticDiagnosticsView
+from .contact_delete_views import (
+    NewsletterAdminContactDeleteCancelView,
+    NewsletterAdminContactDeleteDetailView,
+    NewsletterAdminContactDeleteExecuteView,
+    NewsletterAdminContactDeletePrepareView,
+)
 from .contact_import_views import (
     NewsletterAdminContactImportDetailView,
     NewsletterAdminContactImportErrorsView,
@@ -443,6 +449,27 @@ urlpatterns = [
         "newsletter/admin/contacts/imports/<int:import_id>/errors/",
         NewsletterAdminContactImportErrorsView.as_view(),
         name="newsletter-admin-contact-import-errors",
+    ),
+    # Bulk delete: prepare a plan, then confirm it batch by batch.
+    path(
+        "newsletter/admin/contacts/delete/prepare/",
+        NewsletterAdminContactDeletePrepareView.as_view(),
+        name="newsletter-admin-contact-delete-prepare",
+    ),
+    path(
+        "newsletter/admin/contacts/delete/<str:plan_id>/",
+        NewsletterAdminContactDeleteDetailView.as_view(),
+        name="newsletter-admin-contact-delete-detail",
+    ),
+    path(
+        "newsletter/admin/contacts/delete/<str:plan_id>/execute/",
+        NewsletterAdminContactDeleteExecuteView.as_view(),
+        name="newsletter-admin-contact-delete-execute",
+    ),
+    path(
+        "newsletter/admin/contacts/delete/<str:plan_id>/cancel/",
+        NewsletterAdminContactDeleteCancelView.as_view(),
+        name="newsletter-admin-contact-delete-cancel",
     ),
     path(
         "newsletter/admin/tags/",
