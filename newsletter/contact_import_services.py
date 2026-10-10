@@ -41,8 +41,13 @@ from . import marketing_cache
 from .contact_services import _dict_values, _normalize_field
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 
-DEFAULT_MAX_BYTES = 10 * 1024 * 1024
-DEFAULT_MAX_ROWS = 20000
+# One upload, one import job, up to 50,000 contacts. Keep these in step with
+# EcpContactImportPolicy::MAX_ROWS / MAX_BYTES in the Mautic bridge, which
+# checks the prepared file again. Override per environment with
+# NEWSLETTER_CONTACT_IMPORT_MAX_BYTES / NEWSLETTER_CONTACT_IMPORT_MAX_ROWS,
+# never above the bridge's limits.
+DEFAULT_MAX_BYTES = 25 * 1024 * 1024
+DEFAULT_MAX_ROWS = 50000
 MAX_COLUMNS = 100
 FIELD_METADATA_LIMIT = 500
 PREVIEW_ROWS = 25

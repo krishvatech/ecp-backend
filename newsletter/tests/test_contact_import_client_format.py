@@ -591,3 +591,47 @@ class ClientFormatEndpointTests(TestCase):
         # A pre-existing payload (no fallback_columns) is still accepted.
         self.assertEqual(legacy.status_code, 200, legacy.data)
         self.assertEqual(legacy.data["options"]["fallback_columns"], [])
+
+
+@override_settings(**NO_CACHE)
+class CapacityTests(SimpleTestCase):
+    """One CSV of up to 50,000 contacts / 25 MiB, in the client's 68-column format."""
+
+    def _rows(self, count):
+        return [
+            client_row(i, Email=f"cap-{i:05d}@example.test", **{"*Do Not Contact": "Do Not Contact" if i % 50 == 0 else ""})
+            for i in range(1, count + 1)
+        ]
+
+    def test_default_limits(self):
+        self.assertEqual((services.max_rows(), services.max_bytes()), (50000, 25 * 1024 * 1024))
+        self.assertEqual(services.MAX_COLUMNS, 100)
+
+    def test_50000_rows_validate_and_50001_are_refused(self):
+        raw = client_csv(self._rows(50000))
+        self.assertLess(len(raw), services.max_bytes())
+        parsed = parse_csv("client.csv", raw)
+        self.assertEqual(len(parsed.rows), 50000)
+        preview, mapping, options = _suggested(parsed)
+        self.assertEqual(len(preview["sample_rows"]), services.PREVIEW_ROWS)
+        result = validate_import(parsed, mapping, options, client=StubClient())
+        summary = result.summary
+        self.assertEqual((summary["total_rows"], summary["valid_rows"], summary["to_create"], summary["dnc_rows"]), (50000, 50000, 50000, 1000))
+        content, _mapping = build_prepared_csv(result)
+        self.assertLess(len(content), services.max_bytes())
+
+        with self.assertRaises(ContactImportError) as ctx:
+            parse_csv("client.csv", client_csv(self._rows(50001)))
+        self.assertEqual(ctx.exception.code, "too_many_rows")
+        self.assertIn("50,000", str(ctx.exception))
+
+    def test_uploads_over_25_mib_are_refused(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        limit = services.max_bytes()
+        name, raw = services.read_upload(SimpleUploadedFile("ok.csv", b"x" * limit, content_type="text/csv"))
+        self.assertEqual(len(raw), limit)
+        with self.assertRaises(ContactImportError) as ctx:
+            services.read_upload(SimpleUploadedFile("big.csv", b"x" * (limit + 1), content_type="text/csv"))
+        self.assertEqual(ctx.exception.code, "file_too_large")
+        self.assertIn("25 MB", str(ctx.exception))
