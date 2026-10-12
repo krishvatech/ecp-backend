@@ -1,15 +1,22 @@
 """``import_about_page``: importing the approved About content into an existing AboutPage that holds
 the earlier IMAA Connect content, reusing image originals that are already in storage.
 
-Storage is an in-memory storage seeded with the approved originals at ``original_images/<file>``,
-standing in for the S3 objects; every test asserts that nothing is written to it by the command.
+Storage is an in-memory storage seeded with originals at ``original_images/<file>``, standing in
+for the S3 objects; every test asserts that nothing is written to it by the command. The image
+binaries are not part of the repository, so most tests use generated originals (same file names
+and dimensions as the approved files, content mapped through their SHA-256) and run in a clean
+checkout; ``RealOriginalsTests`` uses the approved files when they are present locally. In every
+test the content package's ``images/`` directory is unavailable to the importer.
 """
 
+import copy
 import hashlib
 import re
+import tempfile
 from datetime import datetime, timedelta, timezone as dt_timezone
 from io import StringIO
-from unittest import mock
+from pathlib import Path
+from unittest import mock, skipUnless
 
 from django.core.files.base import ContentFile
 from django.core.files.storage import storages
@@ -23,14 +30,16 @@ from wagtail.images import get_image_model
 from wagtail.models import Page, PageLogEntry, Revision, Site
 from wagtail.utils.file import hash_filelike
 
+from cms import about_page_content as content_module
 from cms.about_page_content import IMAGES_DIR, AboutContentError, load_about_content
+from cms.about_page_testing import APPROVED, REAL_FILES_PRESENT, first_per_file, generated_originals
 from cms.management.commands import import_about_page as command_module
 from cms.management.commands.import_about_page import BackupNotVerified, verify_rds_snapshot
 from cms.models import AboutPage, HomePage, StandardPage, Testimonial
 from cms.public_page_testing import IN_MEMORY_STORAGES
 
 BY_PATH = "/api/cms/public/pages/by-path/"
-CONTENT = load_about_content()
+CONTENT, ORIGINALS = generated_originals()
 TOKEN_RE = re.compile(r"Confirmation token: (about-\d+-[0-9a-f]{16})")
 OLD_INTRO = "<p>IMAA Connect brings M&amp;A professionals together.</p>"
 
@@ -46,14 +55,18 @@ def token_from(output):
 
 
 class ImportAboutPageTestCase(TestCase):
+    content, originals = CONTENT, ORIGINALS
+
     def setUp(self):
+        # The deployed code has no image binaries: the package's images/ directory is empty here.
+        self.enterContext(mock.patch.object(content_module, "IMAGES_DIR", Path(self.enterContext(tempfile.TemporaryDirectory()))))
+        if self.content is not APPROVED:
+            self.enterContext(mock.patch.object(command_module, "load_about_content",
+                                                side_effect=lambda **kwargs: copy.deepcopy(self.content)))
         self.enterContext(override_settings(STORAGES=IN_MEMORY_STORAGES))
         self.storage = storages["default"]
-        first_per_file = {}
-        for m in CONTENT["media"]:  # two references share one file: the first name is the stored one
-            first_per_file.setdefault(m["sha256"], m)
-        for item in first_per_file.values():
-            self.storage.save(f"original_images/{item['file']}", ContentFile((IMAGES_DIR / item["file"]).read_bytes()))
+        for name, data in self.originals.items():
+            self.storage.save(f"original_images/{name}", ContentFile(data))
         # From here on, any write to storage is a failure: the command must only read.
         self.storage_writes_allowed = False
         storage_class = type(self.storage)
@@ -206,7 +219,7 @@ class ApplyTests(ImportAboutPageTestCase):
     def test_existing_images_and_testimonials_are_reused_unchanged(self):
         item = next(m for m in CONTENT["media"] if m["file"] == "2024-07-USA.webp")
         existing = get_image_model()(title="USA (already in the library)", width=1080, height=1080,
-                                     file_size=(IMAGES_DIR / item["file"]).stat().st_size)
+                                     file_size=len(self.originals[item["file"]]))
         existing.file.name = f"original_images/{item['file']}"
         with existing.open_file() as fh:
             existing.file_hash = hash_filelike(fh)
@@ -225,6 +238,54 @@ class ApplyTests(ImportAboutPageTestCase):
         office_images = [o["image"] for o in page.sections[7].value["offices"]]
         self.assertIn(existing.pk, [image.pk for image in office_images if image])
 
+    def test_image_records_take_hash_and_size_from_the_stored_bytes_read_once(self):
+        opened = []
+        original_open = type(self.storage).open
+
+        def counting_open(storage, name, mode="rb"):
+            opened.append(name)
+            return original_open(storage, name, mode)
+
+        token = token_from(self.preview())
+        with mock.patch.object(type(self.storage), "open", counting_open):
+            self.apply(token)
+        self.assertEqual(len(opened), 40, "each original is downloaded once per run, not again under the lock")
+        self.assertEqual(len(set(opened)), 40)
+        for name, data in self.originals.items():
+            image = get_image_model().objects.get(file=f"original_images/{name}")
+            self.assertEqual(image.file_hash, hashlib.sha1(data).hexdigest())
+            self.assertEqual(image.file_size, len(data))
+            item = next(m for m in self.content["media"] if m["file"] == name)
+            self.assertEqual((image.width, image.height), (item["width"], item["height"]))
+            self.assertEqual(image.collection.name, "Public website pages")
+
+    def test_an_existing_image_stored_under_another_key_is_verified_and_reused(self):
+        name = "2024-07-UK.webp"
+        data = self.originals[name]
+        self.storage_writes_allowed = True
+        self.storage.save("original_images/uk-uploaded-in-wagtail.webp", ContentFile(data))
+        self.storage_writes_allowed = False
+        item = next(m for m in self.content["media"] if m["file"] == name)
+        existing = get_image_model()(title="UK", width=item["width"], height=item["height"], file_size=len(data),
+                                     file_hash=hashlib.sha1(data).hexdigest())
+        existing.file.name = "original_images/uk-uploaded-in-wagtail.webp"
+        existing.save()
+        self.assertIn("1 existing Wagtail images reused, 39 image records to create", self.preview())
+        self.apply()
+        page = AboutPage.objects.get(pk=self.about.pk)
+        self.assertIn(existing.pk, [o["image"].pk for o in page.sections[7].value["offices"] if o["image"]])
+
+    def test_the_object_behind_an_existing_record_is_verified_too(self):
+        name = "2024-07-UK.webp"
+        data = self.originals[name]
+        item = next(m for m in self.content["media"] if m["file"] == name)
+        existing = get_image_model()(title="UK", width=item["width"], height=item["height"], file_size=len(data),
+                                     file_hash=hashlib.sha1(data).hexdigest())
+        existing.file.name = "original_images/uk-missing-object.webp"  # no such object in storage
+        existing.save()
+        self.assert_refused(f"Wagtail image #{existing.pk} points at 'original_images/uk-missing-object.webp'",
+                            "--replace-existing-content")
+
 
 class RefusalTests(ImportAboutPageTestCase):
     def test_missing_and_different_storage_objects_block_everything(self):
@@ -242,6 +303,26 @@ class RefusalTests(ImportAboutPageTestCase):
         with mock.patch.object(type(self.storage), "open", tampered):
             self.assert_refused("2024-07-PH.webp: the object at 'original_images/2024-07-PH.webp' differs from the approved file",
                                 "--replace-existing-content")
+
+    def test_wrong_dimensions_and_unreadable_objects_are_refused(self):
+        self.content = copy.deepcopy(self.content)
+        for m in self.content["media"]:
+            if m["file"] == "2024-07-Singapore.webp":
+                m["width"] = 999
+        self.assert_refused("2024-07-Singapore.webp: 'original_images/2024-07-Singapore.webp' is 1080x1080, expected 999x1080",
+                            "--replace-existing-content")
+        self.content = CONTENT
+        with mock.patch.object(type(self.storage), "open", side_effect=OSError("connection reset")):
+            self.assert_refused("cannot read 'original_images/", "--replace-existing-content")
+
+    def test_an_existing_record_with_other_dimensions_is_refused(self):
+        name = "2024-07-PH.webp"
+        item = next(m for m in self.content["media"] if m["file"] == name)
+        existing = get_image_model()(title="PH", width=500, height=500, file_size=1, file_hash="")
+        existing.file.name = f"original_images/{name}"
+        existing.save()
+        self.assert_refused(f"Wagtail image #{existing.pk} records 500x500, expected {item['width']}x{item['height']}",
+                            "--replace-existing-content")
 
     def test_unpublished_changes_locks_and_restrictions_block(self):
         draft = AboutPage.objects.get(pk=self.about.pk)
@@ -380,3 +461,48 @@ class SnapshotVerificationTests(TestCase):
     def test_an_rds_proxy_host_needs_the_instance_identifier(self):
         client = self.rds(self.snapshot(), instances=[])
         self.assertEqual(self.verify(client, db_identifier="ecp-prod")["snapshot"], "pre-about")
+
+
+
+class CleanCheckoutTests(ImportAboutPageTestCase):
+    """The production image: about.json and the real loader, no images/ directory."""
+
+    content = APPROVED
+
+    def test_the_real_loader_needs_no_image_files_and_storage_decides(self):
+        with self.assertRaisesMessage(AboutContentError, "Missing media file images/"):
+            load_about_content()  # the local check used by populate_about_page still requires the files
+        self.assertEqual(load_about_content(verify_files=False)["content_sha256"], APPROVED["content_sha256"])
+        # Storage holds generated files, not the approved ones: every original is refused by its SHA-256.
+        with self.assertRaises(CommandError) as refused:
+            self.preview()
+        self.assertEqual(str(refused.exception).count("SHA-256 mismatch"), 40)
+        self.assertNotIn("Missing media file", str(refused.exception))
+
+
+@skipUnless(REAL_FILES_PRESENT, "the approved image files are not in this checkout")
+class RealOriginalsTests(ImportAboutPageTestCase):
+    """The approved originals in storage (as in S3); the package's images/ directory unavailable."""
+
+    content = APPROVED
+    originals = ({m["file"]: (IMAGES_DIR / m["file"]).read_bytes() for m in first_per_file(APPROVED).values()}
+                 if REAL_FILES_PRESENT else {})
+
+    def test_preview_and_apply_verify_the_40_approved_originals_from_storage(self):
+        output = self.preview()
+        self.assertIn("40 distinct files, all verified in storage by SHA-256: 0 existing Wagtail images reused, "
+                      "40 image records to create for stored originals, 0 problems; 0 uploads", output)
+        self.assertIn("Created 40 image records (no files uploaded) and 10 testimonials", self.apply(token_from(output)))
+        hero = AboutPage.objects.get(pk=self.about.pk).hero_background_image
+        data = self.originals["2024-12-Website-Banner-2025.jpg"]
+        self.assertEqual((hero.file.name, hero.file_hash, hero.file_size, hero.width, hero.height),
+                         ("original_images/2024-12-Website-Banner-2025.jpg", hashlib.sha1(data).hexdigest(), len(data), 1570, 450))
+        self.assertIn("Already imported", run())
+
+
+class PopulateAboutPageStillLocalTests(TestCase):
+    def test_populate_about_page_still_verifies_the_local_files(self):
+        empty = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        with mock.patch.object(content_module, "IMAGES_DIR", empty), override_settings(STORAGES=IN_MEMORY_STORAGES):
+            with self.assertRaisesMessage(CommandError, "Approved content is invalid, nothing was changed: Missing media file images/"):
+                call_command("populate_about_page", stdout=StringIO(), stderr=StringIO())

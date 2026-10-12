@@ -19,10 +19,12 @@ What it does
 * A field that is empty, holds the model's default ("About IMAA Connect", ...) or already holds
   the approved value is handled automatically. Any other content (for example the earlier
   IMAA Connect texts) is only replaced with --replace-existing-content, after review.
-* Images: never uploaded, overwritten or deleted. Each approved file must already be in the
-  configured storage, either behind an existing Wagtail image with the same content or at
-  ``original_images/<file name>``; the stored bytes are downloaded and must match the approved
-  SHA-256 and dimensions. Missing Wagtail image records are created for those stored files.
+* Images: never uploaded, overwritten or deleted, and the image binaries are not needed in the
+  deployed code (only about.json). Each approved original must be in the configured storage at
+  ``original_images/<file name>``; it is downloaded once per run and must match the approved
+  SHA-256 and dimensions, and its SHA-1 and size are taken from those bytes. An existing Wagtail
+  image with that content is reused (the object it points at is verified too); missing image
+  records are created for the stored originals.
 * Testimonials: the 10 approved Testimonial snippets are created when no snippet with the same
   WordPress ID or slug exists; existing snippets are reused and never changed.
 
@@ -62,7 +64,7 @@ from wagtail.models import Page
 from wagtail.utils.file import hash_filelike
 from willow.image import Image as WillowImage
 
-from cms.about_page_content import IMAGES_DIR, AboutContentError, load_about_content
+from cms.about_page_content import AboutContentError, load_about_content
 from cms.about_page_import import (
     ABOUT_SLUG,
     editor_rich_text,
@@ -233,11 +235,12 @@ class Command(BaseCommand):
 
     def _load_content(self):
         try:
-            content = load_about_content()
+            # The image binaries are not deployed: the files are verified in storage instead (_plan_media).
+            content = load_about_content(verify_files=False)
         except AboutContentError as exc:
             raise CommandError(f"Approved content is invalid, nothing was changed: {exc}") from exc
         self.stdout.write(f"  ok: approved content (sha256 {content['content_sha256'][:12]}, "
-                          f"{len(content['media'])} media references verified against their SHA-256)")
+                          f"{len(content['media'])} media references; files are verified in storage below)")
         stored, problems = editor_rich_text(content)
         if problems:
             raise CommandError(f"Approved rich text is not editor-safe, nothing was changed: {'; '.join(problems[:3])}.")
@@ -246,8 +249,7 @@ class Command(BaseCommand):
 
     # -- inspection (read-only) ---------------------------------------------------------------
 
-    def _plan(self, content, stored, replace, verified=frozenset()):
-        """``verified``: (storage name, sha256) pairs already checked in storage during this run."""
+    def _plan(self, content, stored, replace):
         site, root = resolve_site_and_root()
         existing = Page.objects.child_of(root).filter(slug=ABOUT_SLUG).first()
         if existing is None:
@@ -260,13 +262,21 @@ class Command(BaseCommand):
         plan = Plan(site=site, root=root, page=page, current=current, blockers=page_blockers(page, current))
         plan.page_ok = not plan.blockers
 
-        self._plan_media(plan, content, verified)
+        self._plan_media(plan, content)
         self._plan_testimonials(plan, content)
         self._plan_fields(plan, content, stored, replace)
         plan.fingerprint = self._fingerprint(current)
         return plan
 
-    def _plan_media(self, plan, content, verified):
+    def _plan_media(self, plan, content):
+        """Match every approved file to its original in storage and to a Wagtail image, read-only.
+
+        Works from storage alone (the image binaries are not part of the deployed code): the
+        original at ``original_images/<file>`` is downloaded once per run and must match the
+        approved SHA-256 and dimensions; its SHA-1 (Wagtail's ``file_hash``) and size come from
+        those bytes. An existing Wagtail image with that content is reused; if it points at
+        another object, that object is verified too.
+        """
         storage = storages["default"]
         image_model = get_image_model()
         for item in content["media"]:
@@ -276,40 +286,61 @@ class Command(BaseCommand):
                                                                width=item["width"], height=item["height"])
             entry.keys.append(item["key"])
         for entry in plan.media.values():
-            path = IMAGES_DIR / entry.file
-            with open(path, "rb") as fh:
-                entry.sha1 = hash_filelike(fh)
-            entry.size = path.stat().st_size
             name = f"{STORAGE_FOLDER}/{entry.file}"
-            entry.image = (image_model.objects.filter(file_hash=entry.sha1).order_by("pk").first()
-                           or image_model.objects.filter(file=name).order_by("pk").first())
-            entry.storage_name = entry.image.file.name if entry.image is not None else name
-            if (entry.storage_name, entry.sha256) not in verified or entry.image is not None and \
-                    entry.image.file_hash not in ("", entry.sha1):
-                entry.problem = self._check_stored_file(storage, entry)
+            entry.storage_name = name
+            original, entry.problem = self._stored_original(storage, name, entry)
+            if original is not None:
+                entry.sha1, entry.size = original["sha1"], original["size"]
+                entry.image = (image_model.objects.filter(file_hash=entry.sha1).order_by("pk").first()
+                               or image_model.objects.filter(file=name).order_by("pk").first())
+                if entry.image is not None:
+                    entry.storage_name = entry.image.file.name
+                    entry.problem = self._existing_image_problem(storage, entry)
             if entry.problem:
                 plan.blockers.append(entry.problem)
 
+    def _stored_original(self, storage, name, entry):
+        """(facts about the stored object, '') when it is the approved file; (None, reason) otherwise.
+
+        Each object is downloaded at most once per run (the locked re-check reuses the result).
+        """
+        cache = self.__dict__.setdefault("_originals", {})
+        key = (name, entry.sha256, entry.width, entry.height)
+        if key not in cache:
+            cache[key] = self._read_original(storage, name, entry)
+        return cache[key]
+
     @staticmethod
-    def _check_stored_file(storage, entry):
-        """'' when the stored original is the approved file (content, size and dimensions)."""
-        name = entry.storage_name
+    def _read_original(storage, name, entry):
+        label = f"image file {entry.file}"
         try:
             if not storage.exists(name):
-                return f"image file {entry.file}: no object at '{name}' in storage (it is never uploaded by this command)"
+                return None, f"{label}: no object at '{name}' in storage (it is never uploaded by this command)"
             with storage.open(name, "rb") as fh:
                 data = fh.read()
         except Exception as exc:  # network, permissions, ...
-            return f"image file {entry.file}: cannot read '{name}' from storage ({type(exc).__name__}: {exc})"
+            return None, f"{label}: cannot read '{name}' from storage ({type(exc).__name__}: {exc})"
         if hashlib.sha256(data).hexdigest() != entry.sha256:
-            return f"image file {entry.file}: the object at '{name}' differs from the approved file (SHA-256 mismatch)"
-        if len(data) != entry.size:
-            return f"image file {entry.file}: the object at '{name}' has {len(data)} bytes, expected {entry.size}"
-        width, height = WillowImage.open(BytesIO(data)).get_size()
+            return None, f"{label}: the object at '{name}' differs from the approved file (SHA-256 mismatch)"
+        try:
+            width, height = WillowImage.open(BytesIO(data)).get_size()
+        except Exception as exc:
+            return None, f"{label}: the object at '{name}' is not a readable image ({type(exc).__name__})"
         if (width, height) != (entry.width, entry.height):
-            return f"image file {entry.file}: '{name}' is {width}x{height}, expected {entry.width}x{entry.height}"
-        if entry.image is not None and entry.image.file_hash not in ("", entry.sha1):
-            return f"image file {entry.file}: Wagtail image #{entry.image.pk} records a different file hash"
+            return None, f"{label}: '{name}' is {width}x{height}, expected {entry.width}x{entry.height}"
+        return {"sha1": hash_filelike(BytesIO(data)), "size": len(data)}, ""
+
+    def _existing_image_problem(self, storage, entry):
+        image = entry.image
+        label = f"image file {entry.file}: Wagtail image #{image.pk}"
+        if image.file_hash not in ("", entry.sha1):
+            return f"{label} records a different file hash"
+        if (image.width, image.height) != (entry.width, entry.height):
+            return f"{label} records {image.width}x{image.height}, expected {entry.width}x{entry.height}"
+        if image.file.name != f"{STORAGE_FOLDER}/{entry.file}":
+            _original, problem = self._stored_original(storage, image.file.name, entry)
+            if problem:
+                return f"{label} points at '{image.file.name}': {problem.split(': ', 1)[-1]}"
         return ""
 
     def _plan_testimonials(self, plan, content):
@@ -430,9 +461,8 @@ class Command(BaseCommand):
         testimonial_model = apps.get_model("cms", "Testimonial")
         with transaction.atomic():
             Page.objects.select_for_update().get(pk=planned.page.pk)
-            verified = {(m.storage_name, m.sha256) for m in planned.media.values() if not m.problem}
             with connection.execute_wrapper(DryRunWriteGuard()):
-                plan = self._plan(content, stored, replace, verified)
+                plan = self._plan(content, stored, replace)  # storage reads are reused from the first plan
             if plan.blockers:
                 raise CommandError(f"Refused, nothing was changed: {'; '.join(plan.blockers)}.")
             if self._token(plan, content, replace) != token:

@@ -1,18 +1,21 @@
 """About page: approved content package, section blocks, public API serialisation and the local
 ``populate_about_page`` command.
 
+The approved image binaries are not in Git, so these tests use a generated stand-in package
+(cms/about_page_testing.py: same file names and dimensions, its own hashes) and run in a clean
+checkout. ``AboutRealMediaTests`` checks the approved files when they are present locally.
+
 The AboutPage schema change (intro_image, stats, sections, Testimonial) is pending approval, so
 tests that need it are skipped until it is applied (see docs/about-page-schema.md).
 """
 
 import json
-import shutil
 import tempfile
 import uuid
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest import mock, skipIf
+from unittest import mock, skipIf, skipUnless
 
 from django.core.exceptions import ValidationError
 from django.core.files.images import ImageFile
@@ -28,6 +31,8 @@ from cms import about_page_content as content_module
 from cms.about_blocks import SECTION_BLOCKS, STAT_BLOCKS, LinkBlock, tel_href, validate_safe_url
 from cms.about_page_api import _testimonials, about_page_extras, serialise_sections, serialise_stats
 from cms.about_page_content import AboutContentError, compute_content_hash, load_about_content, rich_text_problems
+from cms.about_page_testing import REAL_FILES_PRESENT, generated_image, write_generated_package
+from cms.management.commands import populate_about_page as populate_module
 from cms.api import build_cms_page_data
 from cms.management.commands.populate_about_page import draftail_problem
 from cms.models import AboutPage, HomePage, StandardPage
@@ -53,8 +58,8 @@ def run(*args):
 
 
 class AboutContentTests(SimpleTestCase):
-    def test_the_package_is_complete_and_matches_its_hashes(self):
-        data = load_about_content()
+    def test_the_package_is_complete(self):
+        data = load_about_content(verify_files=False)  # the files themselves: AboutRealMediaTests
         self.assertEqual(data["hero_title"], "Setting and Advancing the Standards of M&A Globally")
         self.assertEqual(data["stats"], [
             {"value": "100+", "label": "Number of countries"},
@@ -90,15 +95,20 @@ class AboutContentTests(SimpleTestCase):
                 with self.assertRaisesMessage(AboutContentError, "content_sha256 does not match"):
                     load_about_content(verify_files=False)
 
-    def test_a_changed_media_file_is_rejected(self):
+    def test_a_changed_or_missing_media_file_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            images = Path(tmp) / "images"
-            shutil.copytree(content_module.IMAGES_DIR, images)
-            first = json.loads(content_module.CONTENT_FILE.read_text())["media"][0]["file"]
-            (images / first).write_bytes(b"not the original")
-            with mock.patch.object(content_module, "IMAGES_DIR", images):
-                with self.assertRaisesMessage(AboutContentError, "does not match its recorded sha256"):
+            content_file, images, content, _originals = write_generated_package(Path(tmp))
+            with mock.patch.object(content_module, "CONTENT_FILE", content_file), \
+                    mock.patch.object(content_module, "IMAGES_DIR", images):
+                self.assertEqual(len(load_about_content()["media"]), 41, "every file matches its hash")
+                first = content["media"][0]["file"]
+                (images / first).write_bytes(b"not the original")
+                with self.assertRaisesMessage(AboutContentError, f"images/{first} does not match its recorded sha256"):
                     load_about_content()
+                (images / first).unlink()
+                with self.assertRaisesMessage(AboutContentError, f"Missing media file images/{first}."):
+                    load_about_content()
+                self.assertEqual(load_about_content(verify_files=False)["content_sha256"], content["content_sha256"])
 
     def test_unsafe_links_and_markup_are_rejected(self):
         data = json.loads(content_module.CONTENT_FILE.read_text())
@@ -155,10 +165,10 @@ class AboutBlockTests(SimpleTestCase):
 class AboutSerialisationTests(TestCase):
     def setUp(self):
         self.request = RequestFactory().get("/api/cms/public/pages/by-path/", HTTP_HOST="cms.example.test")
-        path = content_module.IMAGES_DIR / "2024-07-USA.webp"
+        # A 1080x1080 WebP like the approved 2024-07-USA.webp (rendition sizes depend on it).
+        data = generated_image(1080, 1080, "2024-07-USA.webp")
         self.image = get_image_model()(title="USA")
-        with open(path, "rb") as fh:
-            self.image.file.save(path.name, ImageFile(fh, name=path.name), save=False)
+        self.image.file.save("2024-07-USA.webp", ImageFile(BytesIO(data), name="2024-07-USA.webp"), save=False)
         self.image._set_image_file_metadata()
         self.image.save()
 
@@ -231,6 +241,11 @@ class AboutSerialisationTests(TestCase):
 @override_settings(STORAGES=IN_MEMORY_STORAGES)
 class PopulateAboutPageTests(TestCase):
     def setUp(self):
+        # The local command reads the package's images/ (it imports the files); use the generated package.
+        content_file, images, _content, _originals = write_generated_package(Path(self.enterContext(tempfile.TemporaryDirectory())))
+        self.enterContext(mock.patch.object(content_module, "CONTENT_FILE", content_file))
+        self.enterContext(mock.patch.object(content_module, "IMAGES_DIR", images))
+        self.enterContext(mock.patch.object(populate_module, "IMAGES_DIR", images))
         root = Page.get_first_root_node()
         self.home = HomePage(title="IMAA Connect", slug="imaa-connect", live=True)
         root.add_child(instance=self.home)
@@ -319,3 +334,18 @@ class PopulateAboutPageTests(TestCase):
         before = self.counts()
         self.assertIn("Already populated with the approved content; nothing changed.", run("--apply"))
         self.assertEqual(self.counts(), before)
+
+
+
+# ------------------------------------------------------------------ approved files (optional) --
+
+
+@skipUnless(REAL_FILES_PRESENT, "the approved image files are not in this checkout (they are verified in storage)")
+class AboutRealMediaTests(SimpleTestCase):
+    def test_the_approved_files_match_their_hashes_and_dimensions(self):
+        from PIL import Image as PILImage
+
+        data = load_about_content()  # every file present and matching its SHA-256
+        for item in data["media"]:
+            with self.subTest(file=item["file"]), PILImage.open(content_module.IMAGES_DIR / item["file"]) as image:
+                self.assertEqual(image.size, (item["width"], item["height"]))
