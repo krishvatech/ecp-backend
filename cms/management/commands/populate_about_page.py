@@ -11,6 +11,9 @@ Source: cms/about_page_content/ (about.json + images/), migrated from imaa-insti
 * Requires the AboutPage schema change (``intro_image``, ``stats``, ``sections``) and the
   ``Testimonial`` snippet (docs/about-page-schema.md). Until then the preview shows the plan and
   ``--apply`` is refused.
+* For staging and production use ``import_about_page`` instead: it never uploads files and
+  reuses the originals already in storage (docs/about-page-import-runbook.md). The checks and the
+  stored section format are shared (cms/about_page_import.py).
 * The page must be the AboutPage at /about/ under the IMAA Connect HomePage: live, its latest
   revision published (no unpublished editor changes), not archived, an alias, locked, in a
   workflow or moderation, scheduled or view-restricted.
@@ -31,86 +34,34 @@ Source: cms/about_page_content/ (about.json + images/), migrated from imaa-insti
 Nothing calls this command automatically.
 """
 
-import json
-import re
-import uuid
 from dataclasses import dataclass, field
 
 from django.apps import apps
 from django.core.files.images import ImageFile
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
-from wagtail.admin.rich_text.converters.contentstate import ContentstateConverter
 from wagtail.blocks import StreamValue
 from wagtail.images import get_image_model
 from wagtail.log_actions import log
 from wagtail.models import Page
-from wagtail.rich_text import features as feature_registry
 from wagtail.utils.file import hash_filelike
 
-from cms.about_blocks import RICH_TEXT_FEATURES
 from cms.about_page_content import IMAGES_DIR, AboutContentError, load_about_content
+from cms.about_page_import import (
+    ABOUT_SLUG,
+    editor_rich_text,
+    features_raw,
+    page_blockers,
+    schema_missing,
+    sections_raw,
+    stats_raw,
+)
+from cms.editor_checks import draftail_problem  # noqa: F401  (re-exported for existing imports)
 from cms.local_safety import describe_environment, local_environment_problems
 from cms.models import AboutPage
-from cms.public_page_setup import DryRunWriteGuard, editor_line_breaks, media_collection, resolve_site_and_root, rich_text_is_empty
-from cms.public_pages import is_archived
-
-ABOUT_SLUG = "about"
-SCHEMA_FIELDS = ("intro_image", "stats", "sections")
-_TAGS_RE = re.compile(r"<[^>]+>")
+from cms.public_page_setup import DryRunWriteGuard, media_collection, resolve_site_and_root, rich_text_is_empty
 
 EMPTY, SAME, OTHER = "empty", "same", "other"
-
-
-def schema_missing():
-    """What the populated page needs that the code or the database schema does not have yet.
-
-    Checks the model and, read-only, the database itself: with the model change in place but
-    migration cms.0016 not applied, every AboutPage query would fail on the missing columns.
-    """
-    model_fields = {f.name for f in AboutPage._meta.get_fields()}
-    missing = [name for name in SCHEMA_FIELDS if name not in model_fields]
-    try:
-        testimonial_model = apps.get_model("cms", "Testimonial")
-    except LookupError:
-        testimonial_model = None
-        missing.append("Testimonial snippet")
-    if missing:
-        return missing
-    with connection.cursor() as cursor:
-        tables = set(connection.introspection.table_names(cursor))
-        columns = {c.name for c in connection.introspection.get_table_description(cursor, AboutPage._meta.db_table)}
-    for name in SCHEMA_FIELDS:
-        column = AboutPage._meta.get_field(name).column
-        if column not in columns:
-            missing.append(f"database column {AboutPage._meta.db_table}.{column} (migration cms.0016 not applied)")
-    if testimonial_model._meta.db_table not in tables:
-        missing.append(f"database table {testimonial_model._meta.db_table} (migration cms.0016 not applied)")
-    return missing
-
-
-def _words(html):
-    from html import unescape
-
-    return unescape(_TAGS_RE.sub(" ", html or "")).replace("\xa0", " ").split()
-
-
-_converters = {}
-
-
-def draftail_problem(html, features=None):
-    """None when ``html`` (editor format) loads in Draftail with its text intact."""
-    key = tuple(features) if features else None
-    if key not in _converters:
-        _converters[key] = ContentstateConverter(features or feature_registry.get_default_features())
-    converter = _converters[key]
-    try:
-        saved = converter.to_database_format(converter.from_database_format(html))
-    except Exception as exc:  # the converter raises AssertionError on markup it cannot read
-        return f"the Wagtail editor cannot load it ({type(exc).__name__}: {exc})"
-    if _words(saved) != _words(html):
-        return "the Wagtail editor would change its text"
-    return None
 
 
 def field_default(name):
@@ -204,26 +155,7 @@ class Command(BaseCommand):
 
     def _stored_rich_text(self, content):
         """Every rich-text value in editor format, validated against Draftail before any write."""
-        default_features = None
-        stored, problems = {}, []
-
-        def check(location, html, features):
-            value = editor_line_breaks(html)
-            problem = draftail_problem(value, features)
-            if problem:
-                problems.append(f"{location}: {problem}")
-            stored[location] = value
-
-        check("intro_html", content["intro_html"], default_features)
-        check("mission_html", content["mission_html"], default_features)
-        for i, section in enumerate(content["sections"]):
-            if "text_html" in section:
-                check(f"sections[{i}].text", section["text_html"], RICH_TEXT_FEATURES)
-            for j, item in enumerate(section.get("items", [])):
-                if "body_html" in item:
-                    check(f"sections[{i}].items[{j}].body", item["body_html"], RICH_TEXT_FEATURES)
-                if "quote_html" in item:
-                    check(f"sections[{i}].items[{j}].quote", item["quote_html"], RICH_TEXT_FEATURES)
+        stored, problems = editor_rich_text(content)
         if problems:
             raise CommandError(f"Approved rich text is not editor-safe, nothing was changed: {'; '.join(problems[:3])}.")
         self.stdout.write(f"  ok: {len(stored)} rich-text values load in the Wagtail editor with their text intact")
@@ -251,32 +183,8 @@ class Command(BaseCommand):
             raise CommandError(f"/{ABOUT_SLUG}/ is {type(page).__name__} #{page.pk}, not an AboutPage; nothing was changed.")
         live_revision = page.live_revision
         current = live_revision.as_object() if live_revision is not None else page
-        inspection = Inspection(page=page, current=current)
+        inspection = Inspection(page=page, current=current, blockers=page_blockers(page, current))
         blockers = inspection.blockers
-
-        if not page.live:
-            blockers.append("the page is not live")
-        if page.has_unpublished_changes or page.latest_revision_id != page.live_revision_id:
-            blockers.append("the page has unpublished changes in Wagtail; they are never overwritten")
-        if is_archived(page):
-            blockers.append("the page is archived (deleted in Wagtail)")
-        if page.alias_of_id:
-            blockers.append("the page is an alias of another page")
-        if page.locked:
-            blockers.append("the page is locked in Wagtail")
-        if page.workflow_in_progress:
-            blockers.append("a Wagtail workflow is in progress on the page")
-        latest = page.get_latest_revision()
-        if latest is not None and getattr(latest, "submitted_for_moderation", False):
-            blockers.append("the latest revision is submitted for moderation")
-        if page.go_live_at or page.expire_at or current.go_live_at or current.expire_at:
-            blockers.append("a go-live or expiry date is set")
-        if page.revisions.filter(approved_go_live_at__isnull=False).exists():
-            blockers.append("a revision is scheduled for publishing")
-        if page.get_view_restrictions().exists():
-            blockers.append("a view restriction applies (on the page or an ancestor)")
-        if current.slug != ABOUT_SLUG:
-            blockers.append(f"the live revision has the slug '{current.slug}'")
 
         def text_state(name, approved, empty_values=("",)):
             value = getattr(current, name) or ""
@@ -400,10 +308,7 @@ class Command(BaseCommand):
             if fields["features_title"][0] == EMPTY:
                 page.features_title = content["features_title"]
             if fields["features"][0] == EMPTY:
-                page.features = StreamValue(page.features.stream_block, [
-                    {"type": "feature", "value": {"image": None, "title": f["title"], "desc": f["desc"]}, "id": str(uuid.uuid4())}
-                    for f in content["features"]
-                ], is_lazy=True)
+                page.features = StreamValue(page.features.stream_block, features_raw(content), is_lazy=True)
             if fields["hero_background_image"][0] == EMPTY:
                 page.hero_background_image = images[content["hero_background_image"]]
             if fields["intro_image"][0] == EMPTY:
@@ -412,11 +317,13 @@ class Command(BaseCommand):
                 if not (getattr(page, name) or "").strip():
                     setattr(page, name, content[name])
             if fields["stats"][0] == EMPTY:
-                page.stats = StreamValue(page.stats.stream_block, [
-                    {"type": "stat", "value": stat, "id": str(uuid.uuid4())} for stat in content["stats"]
-                ], is_lazy=True)
+                page.stats = StreamValue(page.stats.stream_block, stats_raw(content), is_lazy=True)
             if fields["sections"][0] == EMPTY:
-                page.sections = StreamValue(page.sections.stream_block, self._sections_raw(content, stored, images, testimonials), is_lazy=True)
+                page.sections = StreamValue(page.sections.stream_block, sections_raw(
+                    content, stored,
+                    image_id=lambda key: images[key].pk if key else None,
+                    testimonial_id=lambda slug: testimonials[slug].pk,
+                ), is_lazy=True)
 
             revision = page.save_revision(log_action=False)
             log(instance=page, action="wagtail.edit", revision=revision, content_changed=True,
@@ -426,56 +333,6 @@ class Command(BaseCommand):
             if not stored_page.live or stored_page.live_revision_id != revision.pk or len(stored_page.sections) == 0:
                 raise CommandError("The page did not end up live with the approved content; rolled back.")
         return revision, created_images, created_testimonials
-
-    @staticmethod
-    def _item(value):
-        return {"type": "item", "value": value, "id": str(uuid.uuid4())}
-
-    def _sections_raw(self, content, stored, images, testimonials):
-        def image_id(key):
-            return images[key].pk if key else None
-
-        def link(value):
-            return {"label": value["label"], "url": value["url"]} if value else {"label": "", "url": ""}
-
-        raw = []
-        for i, s in enumerate(content["sections"]):
-            kind = s["type"]
-            if kind == "accordion":
-                value = {"heading": s["heading"], "image": image_id(s.get("image")), "items": [
-                    self._item({"title": item["title"], "body": stored[f"sections[{i}].items[{j}].body"], "logo": None})
-                    for j, item in enumerate(s["items"])
-                ]}
-            elif kind == "cta_band":
-                names = {m["key"]: m["alt"] for m in content["media"]}
-                value = {"text": stored[f"sections[{i}].text"], "button": link(s.get("button")), "logos": [
-                    self._item({"image": image_id(key), "name": names[key]}) for key in s["logos"]
-                ]}
-            elif kind == "card_group":
-                value = {"heading": s["heading"], "layout": s["layout"], "prompt": s.get("prompt") or "",
-                         "button": link(s.get("button")), "cards": [
-                             self._item({"image": image_id(card.get("image")), "icon": card.get("icon") or "",
-                                         "title": card["title"], "text": card.get("text") or "", "link": link(card.get("link"))})
-                             for card in s["cards"]
-                         ]}
-            elif kind == "testimonials":
-                value = {"heading": s["heading"], "button": link(s.get("button")),
-                         "testimonials": [self._item(testimonials[item["slug"]].pk) for item in s["items"]]}
-            elif kind == "logo_strip":
-                value = {"heading": s["heading"], "button": link(s.get("button")),
-                         "logos": [self._item({"image": image_id(logo["image"]), "name": logo["name"]}) for logo in s["logos"]]}
-            elif kind == "contact_callout":
-                value = {"heading": s["heading"], "text": stored[f"sections[{i}].text"], "email": s["email"],
-                         "button_label": s.get("button_label") or ""}
-            elif kind == "offices":
-                value = {"heading": s["heading"], "email": s["email"], "offices": [
-                    self._item({"city": o["city"], "country": o["country"], "phone": o["phone"], "image": image_id(o.get("image"))})
-                    for o in s["offices"]
-                ]}
-            else:  # load_about_content rejects unknown types; this is a guard for future edits
-                raise CommandError(f"Unknown section type {kind!r}.")
-            raw.append({"type": kind, "value": value, "id": str(uuid.uuid4())})
-        return raw
 
     # -- output ----------------------------------------------------------------------------
 

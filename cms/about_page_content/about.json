@@ -1,0 +1,1036 @@
+{
+  "format_version": 1,
+  "page": {
+    "slug": "about",
+    "type": "AboutPage"
+  },
+  "title": "About Us",
+  "hero_title": "Setting and Advancing the Standards of M&A Globally",
+  "hero_subtitle": "",
+  "hero_background_image": "about/2024-12-website-banner-2025.jpg",
+  "intro_image": "about/2024-07-aboutus-copy-3.webp",
+  "intro_html": "<p>At The Institute for Mergers, Acquisitions and Alliances (IMAA), we empower M&amp;A professionals with cutting-edge executive education, equipping them to excel in the complex and dynamic world of mergers and acquisitions. Since our establishment in 2004, we have been dedicated to providing premier quality continuing education for professionals and organizations across the globe.</p><p>Our programs are designed and delivered by a distinguished faculty comprising over 60 professors from more than 20 countries, who are corporate executives, entrepreneurs, researchers, consultants, and award-winning authors. This unique combination of academics and practitioners ensures that our curriculum blends academic rigor with practical insights, enabling professionals to navigate cross-border transactions, master valuation techniques, and drive post-merger integration with confidence.</p><p>As a globally active institute, we have trained participants from over 70 countries, ranging from students and junior professionals to board-level executives and government officials. Our commitment to excellence is recognized by leading professional bodies worldwide, including the Association of Chartered Certified Accountants (ACCA), the American Institute of CPAs (AICPA), and the Institute of Chartered Accountants in England and Wales (ICAEW), among others. Driven by innovation and excellence, IMAA is not just a learning provider—we are a trusted partner to those shaping the future of M&amp;A. Join us in redefining success in the world’s most competitive deals.</p><ul><li>Global Expertise</li><li>World-Class Faculty</li><li>Comprehensive Programs</li><li>Accredited Excellence</li><li>Customizable Learning</li><li>Vibrant Professional Network</li></ul>",
+  "stats": [
+    {
+      "value": "100+",
+      "label": "Number of countries"
+    },
+    {
+      "value": "4100+",
+      "label": "Number of participants"
+    },
+    {
+      "value": "2000+",
+      "label": "Number of companies"
+    }
+  ],
+  "mission_title": "Our Mission",
+  "mission_html": "<p>The Institute for Mergers, Acquisitions and Alliances has the world’s largest free-of-charge M&amp;A Statistics database. Our faculty are the authors of many leading M&amp;A books. Thats why IMAA is frequently covered in the news world wide.</p>",
+  "features_title": "",
+  "features": [
+    {
+      "title": "Research",
+      "desc": "Design, conduct, and disseminate high-quality, avant-garde, and innovative basic and applied research."
+    },
+    {
+      "title": "Integrator",
+      "desc": "Act as an integrator of different stakeholders in the business community and interdisciplinary science"
+    },
+    {
+      "title": "Resources",
+      "desc": "Collect, maintain and provide specialized resources and information"
+    },
+    {
+      "title": "International Forum",
+      "desc": "Provide an international forum devoted to the dialogue of business, politics, society, and science."
+    },
+    {
+      "title": "Education",
+      "desc": "Create, provide and offer educational opportunities for professionals, students and the interested public."
+    },
+    {
+      "title": "Collaboration",
+      "desc": "Collaborate with academic, government and industry partners"
+    }
+  ],
+  "sections": [
+    {
+      "type": "accordion",
+      "heading": "Accreditation & Recognition",
+      "image": "about/2021-09-au-img-02-accreditation.jpg",
+      "items": [
+        {
+          "title": "Association of Chartered Certified Accountants (ACCA)",
+          "body_html": "<p>The <a href=\"https://www.accaglobal.com/\">Association of Chartered Certified Accountants (ACCA)</a>, established in 1909, has the mission to be a global leader in the profession by providing opportunity and open access to people of ability wherever they are in the world, supporting and promoting the highest ethical, governance and professional standards, and advancing the public interest. They have more than 208,000 fully qualified members and 503,000 students worldwide. ACCA does not only accept our programs and trainings as Continued Education, but has formally signed a cooperation agreement with the Institute for Mergers, Acquisitions and Alliances.</p>"
+        },
+        {
+          "title": "American Institute of CPAs",
+          "body_html": "<p><a href=\"http://www.aicpa.org/\">The American Institute of CPAs (AICPA)</a>, established in 1887, sets standards in a wide area of practices including business, industry, public practice, government, education and consulting. With more than 418’000 members in 143 different countries, the AICPA is the world’s largest member association representing accounting professionals. IMAA programs and M&amp;A courses qualify to count towards the mandatory continued education requirements for AICPA’s charterholders.</p>"
+        },
+        {
+          "title": "Australia CPA",
+          "body_html": "<p><a href=\"https://www.cpaaustralia.com.au/\">CPA Australia</a> is one of the largest accounting organizations in the world with a membership of more than 155’000 members working internationally in 118 counties across the globe. Over 25’000 members have senior leadership positions. The Institute for Mergers, Acquisitions and Alliances certificate programs and M&amp;A trainings are accepted as continued education for CPA Australia Charterholders.</p>"
+        },
+        {
+          "title": "Canadian Securities Institute (CSI)",
+          "body_html": "<p>The <a href=\"https://www.csi.ca/\">Canadian Securities Institute (CSI)</a> has been setting the standard for excellence in lifelong education for financial professionals for more than 45 years. Their designations such as the PFP, CIM, CIWM, and MTI have CE requirements, and the designation holder is responsible to assess the CE value of a non-CSI activity. Hence, our M&amp;A workshops and trainings including certification programs are accepted as to fulfil the continued education requirements for CSI’s designations.</p>"
+        },
+        {
+          "title": "CPA Canada",
+          "body_html": "<p><a href=\"https://www.cpacanada.ca/\">Chartered Professional Accountants Canada (CPA Canada)</a> is a national organization established to support a unified Canadian accounting profession. The organization is devoted to promoting the highest standards, ethics and best business practices. The M&amp;A workshops and trainings including certification programs by IMAA are accepted as to fulfil the continued education requirements for Canada’s CPAs.</p>"
+        },
+        {
+          "title": "CPA Ireland",
+          "body_html": "<p>The <a href=\"https://www.cpaireland.ie/\">Institute of Certified Public Accountants in Ireland</a> (CPA Ireland) consists of more than 5’000 members and students in over 40 countries. The institution is responsible for overseeing the professional activities of charterholders in practice, and ensuring that education and training standards are maintained. IMAA’s M&amp;A certificates and M&amp;A courses can be accepted as structured <a href=\"https://www.cpaireland.ie/CPD/CPD-Guidelines\">continued professional developlment (CPD) </a>for CPAs of Ireland.</p>"
+        },
+        {
+          "title": "CFA Institute",
+          "body_html": "<p>The <a href=\"https://www.cfainstitute.org/\">CFA Institute</a> is a global association of investment professionals which provides the Chartered Financial Analyst (CFA) designation. The CFA Institute requires every CFA holder to participate in continuing education (CE) programs on a yearly basis. Through a rigorous application process, the CFA Institute recognizes only the top educational providers for CFA professionals to complete their CE requirements with. Some of IMAA’s educational offerings are accepted as CE credits with the CFA Institute.</p>"
+        },
+        {
+          "title": "City of Vienna",
+          "body_html": "<p>The branch of the Institute for Mergers, Acquisitions and Alliances (IMAA) in Vienna is recognized and listed as a research institute by the Government of the City of Vienna, Austria. See our profile at the City of Vienna.</p>"
+        },
+        {
+          "title": "Hong Kong Institute of Certified Public Accountants",
+          "body_html": "<p><a href=\"https://www.hkicpa.org.hk/\">Hong Kong Institute of Certified Public Accountants (HKICPA)</a>, established in 1973´, is the only institution authorized by law to register and grant practicing certificates to CPAs in Hong Kong. The organization has more than 39’000 members and more than 18’000 registered students. M&amp;A certificates and trainings offered by the Institute can be accepted as continued education for HKICPA charterholders.</p>"
+        },
+        {
+          "title": "Institute of Certified Public Accountants India",
+          "body_html": "<p>The <a href=\"https://www.icpaindia.org/\">Institute of Certified Public Accountants</a>in India with more than 147’000 members is a body of professionals practicing in the discipline of Accounting, Auditing, Taxation &amp; Business Regulatory Laws, Finance &amp; Management. IMAA’s programs meet the <a href=\"https://docs.wixstatic.com/ugd/1f1dd3_b95c02e5b8cd402ab71986df8eca5461.pdf\">Continuing Professional Development (CPD) </a>requirements.</p>"
+        },
+        {
+          "title": "United Nations",
+          "body_html": "<p>The <a href=\"http://www.un.org/\">United Nations</a> are a intergovernmental organization. The Institute for Mergers, Acquisitions and Alliances is a registered NGO in the field of Academia at the Department of Economic and Social Affairs of the United Nations. We can visit United Nations conferences and meetings open for civil society participation in the area of economic and social development. You will find us listed in the <a href=\"https://esango.un.org/civilsociety/login.do\">integrated Civil Society Organizations (iCSO) System.</a></p>"
+        },
+        {
+          "title": "Institute of Chartered Accountants in England and Wales (ICAEW)",
+          "body_html": "<p>The <a href=\"https://www.icaew.com/\">Institute of Chartered Accountants in England and Wales</a>(ICAEW) consists of over 147’000 members and provides professional development opportunities, resources, and guidance for ICAEW Chartered Accountants. IMAA’s M&amp;A trainings and certificates can be accepted as Continued Education for ICAEW Charterholders.</p>"
+        },
+        {
+          "title": "Institute of Singapore Chartered Accountants (ISCA)",
+          "body_html": "<p>The <a href=\"https://isca.org.sg/\">Institute of Singapore Chartered Accountants</a> (ISCA) is the national accountancy body of Singapore with over 32’000 members. IMAA’s trainings and M&amp;A certificates qualify structured and verifiable <a href=\"https://isca.org.sg/become-a-member/members-obligations/cpe-compliance/about-cpe/\">Continuing Professional Education (CPE)</a>.</p>"
+        },
+        {
+          "title": "National Registry of CPE Sponsors for CPAs",
+          "body_html": "<p>The Institute for Mergers, Acquisitions and Alliances (IMAA) is registered with the National Association of State Boards of Accountancy (NASBA) as a sponsor of continuing professional education on the National Registry of CPE Sponsors. State boards of accountancy have final authority on the acceptance of individual courses for CPE credit. Complaints regarding registered sponsors may be submitted to the National Registry of CPE Sponsors through its website: www.NASBARegistry.org. IMAA’s Registry Sponsor ID: <strong>168268 </strong></p>"
+        },
+        {
+          "title": "Society for Human Resource Management (SHRM)",
+          "body_html": "<p>The Institute for Mergers, Acquisitions and Alliances (IMAA) is recognized bythe Society for Human Resource Management (SHRM) as a continued professional education provider. View our programs at SHRM’s website</p>"
+        },
+        {
+          "title": "Singapore: Institute for Banking & Finance",
+          "body_html": "<p>The Institute for Mergers, Acquisitions and Alliances (IMAA) has been approved as an organization by the Institute for Banking &amp; Finance in Singapore. Some of our programs and formats have been accredited and qualify participants to receive funding for attending and participating in our trainings. View our accredited programs at IBF Singapore</p>"
+        }
+      ]
+    },
+    {
+      "type": "cta_band",
+      "text_html": "<p>IMAA Institute provide premier quality continuing education for professionals and organizations across the globe. We have been granted the ISO certification by TUEV Austria for ISO Norm 9001 Quality Management Systems, ISO Norm 21001 Educational organizations, and ISO Norm 29990 Learning services for non-formal education and training (please see Certificate).</p>",
+      "logos": [
+        "about/2023-08-au-img-logo-02.png",
+        "about/2021-09-au-img-logo-02a.png",
+        "about/2021-09-au-img-logo-03a.png"
+      ],
+      "button": {
+        "label": "Book a Training",
+        "url": "/m-and-a-trainings",
+        "wordpress_url": "/m-and-a-trainings/"
+      }
+    },
+    {
+      "type": "card_group",
+      "layout": "grid",
+      "heading": "Study Formats Available",
+      "cards": [
+        {
+          "title": "Onsite",
+          "text": "The onsite format is held in an intensive 30 hours program. Networking opportunities are provided in all programs to connect with an elite and diverse group of professionals and instructors.",
+          "icon": "onsite"
+        },
+        {
+          "title": "Interactive Online Live",
+          "text": "This 8-week course features a dynamic kick-off session, followed by 4 live sessions enriched with online lectures, case studies, group and individual assignments, and interactive discussions.",
+          "icon": "interactive-online-live"
+        },
+        {
+          "title": "Online",
+          "text": "The online format offers an extensive training but with maximum flexibility for busy professionals. This course is designed for self-study with on-demand video lectures specifically produced for the online format.",
+          "icon": "online"
+        },
+        {
+          "title": "Inhouse",
+          "text": "This format is tailored to your needs, covering the full M&A lifecycle with flexible delivery options and customized content like case studies, simulations, and role-specific training.",
+          "icon": "inhouse"
+        }
+      ],
+      "prompt": "Don´t know which option is right for you?",
+      "button": {
+        "label": "SCHEDULE A CONSULTATION",
+        "url": "https://imaa-institute.org/book-a-demo/",
+        "wordpress_url": "https://imaa-institute.org/book-a-demo/"
+      }
+    },
+    {
+      "type": "card_group",
+      "layout": "carousel",
+      "heading": "Available Programs",
+      "cards": [
+        {
+          "image": "about/2024-07-ima-1.png",
+          "title": "International M&A Expert",
+          "text": "This course dives deep into the entire M&A process- from strategy and valuation to execution and post merger integration (PMI).",
+          "link": {
+            "label": "LEARN MORE",
+            "url": "https://imaa-institute.org/m-and-a-trainings/international-m-and-a/",
+            "wordpress_url": "/m-and-a-trainings/international-m-and-a/"
+          }
+        },
+        {
+          "image": "about/2024-07-cpmi-1.png",
+          "title": "Certified Post Merger Integration Expert",
+          "text": "CPMI prepares you for integration issues post -merger, starting with integration planning, up to governance and project management to implement the integration.",
+          "link": {
+            "label": "LEARN MORE",
+            "url": "https://imaa-institute.org/m-and-a-trainings/post-merger-integration/",
+            "wordpress_url": "/m-and-a-trainings/post-merger-integration/"
+          }
+        },
+        {
+          "image": "about/2024-07-map-1.png",
+          "title": "Mergers & Acquisitions Professional Expert",
+          "text": "The certification dives into the nuts and bolts of the transaction journey—auditing, consulting, deal advisory, and including insights into running a successful M&A practice.",
+          "link": {
+            "label": "LEARN MORE",
+            "url": "https://imaa-institute.org/m-and-a-trainings/m-and-a-professional/",
+            "wordpress_url": "/m-and-a-trainings/m-and-a-professional/"
+          }
+        },
+        {
+          "image": "about/2024-07-lma.png",
+          "title": "Legal Mergers & Acquisition Expert",
+          "text": "This certification covers the legal aspects of M&A, including best practices, legal contracts, tax considerations, and deal structuring in different geographies and jurisdictions .",
+          "link": {
+            "label": "LEARN MORE",
+            "url": "https://imaa-institute.org/m-and-a-trainings/legal-mergers-acquisitions-certification-training/",
+            "wordpress_url": "/m-and-a-trainings/legal-mergers-acquisitions-certification-training/"
+          }
+        },
+        {
+          "image": "about/2024-07-hrma.png",
+          "title": "HR Mergers & Acquisition Expert",
+          "text": "HRM&A covers all aspects of the transaction process relevant to human resources, including strategy, due diligence, Post Merger Integration, and compensation benefits.",
+          "link": {
+            "label": "LEARN MORE",
+            "url": "https://imaa-institute.org/m-and-a-trainings/human-resources-mergers-acquisitions-certification-training/",
+            "wordpress_url": "/m-and-a-trainings/human-resources-mergers-acquisitions-certification-training/"
+          }
+        },
+        {
+          "image": "about/2024-07-scde1.png",
+          "title": "Certified Separation, Carve-Out and Divestment Expert",
+          "text": "This training covers the entire divestment life cycle, from analyzing key business drivers and structuring the Transition Services Agreement to executing and implementing separations.",
+          "link": {
+            "label": "LEARN MORE",
+            "url": "https://imaa-institute.org/m-and-a-trainings/certified-separation-carve-out-and-divestment-expert-scde/",
+            "wordpress_url": "/m-and-a-trainings/certified-separation-carve-out-and-divestment-expert-scde/"
+          }
+        },
+        {
+          "image": "about/2024-07-valuation.png",
+          "title": "Valuation Training with Prof. Aswath Damodaran",
+          "text": "This training will provide you with the fundamentals of each approach to valuation, with limitations and caveats on the use of each, as well as extended examples in application.",
+          "link": {
+            "label": "LEARN MORE",
+            "url": "https://imaa-institute.org/m-and-a-trainings/valuation-damodaran/",
+            "wordpress_url": "/m-and-a-trainings/valuation-damodaran/"
+          }
+        }
+      ],
+      "prompt": "",
+      "button": null
+    },
+    {
+      "type": "testimonials",
+      "heading": "Participant Testimonials",
+      "items": [
+        {
+          "photo": "about/2026-07-edited-photo-2-300x300.webp",
+          "slug": "aniruddha-sulake",
+          "wordpress_id": 157372,
+          "name": "Aniruddha Sulake",
+          "role": "IT Consulting Leader",
+          "company": "",
+          "programme": "CPMI",
+          "quote_html": "<p>I came to the IMAA Post-Merger Integration program with several years of experience advising on M&amp;A and divestiture transactions, looking for a way to formalize that experience through a credible, recognized credential.</p><p>The program helped me consolidate what I&#8217;d learned in practice — particularly around integration planning, cultural change management, and synergy tracking — into clearer, more consistent frameworks I can draw on going forward.</p><p>Earning the certification has been a meaningful addition to my professional profile. It offers an independent, recognized benchmark of expertise in an area that&#8217;s central to whether a deal ultimately delivers value — which adds a helpful layer of credibility alongside hands-on experience.</p><p>I&#8217;d recommend the program to any experienced M&amp;A professional who wants a structured, credible way to formalize their expertise.</p>",
+          "featured_media": 157370,
+          "url": "https://imaa-institute.org/testimonials/aniruddha-sulake/",
+          "wordpress_url": "https://imaa-institute.org/testimonials/aniruddha-sulake/"
+        },
+        {
+          "photo": "about/2026-05-dr.-saeed-ahmed-al-gailani-participant-testimonital-kv-1.webp",
+          "slug": "dr-saeed-ahmed-al-gailani",
+          "wordpress_id": 155844,
+          "name": "Dr. Saeed Ahmed Al-Gailani",
+          "role": "",
+          "company": "",
+          "programme": "IM&A",
+          "quote_html": "<p>I am pleased to share that I have successfully completed the International Mergers &amp; Acquisitions Expert (IM&amp;A) program and received my designation.</p><p>One aspect I particularly valued was the opportunity to earn CPD credits. This program is designed to equip professionals with the practical skills needed to manage the entire M&amp;A deal lifecycle.</p><p>The journey was both enriching and professionally transformative, allowing me to immediately apply many of the concepts and frameworks within my own field.</p><p>I would also like to thank the faculty and the broader IMAA team for their support and expertise throughout the program.</p><p>I am proud to be an IMAA Charterholder and grateful to be part of such a well-regarded global M&amp;A community. IMAA was the perfect choice for me!</p><p><strong>Dr. Saeed Ahmed Al-Gailani</strong></p>",
+          "featured_media": 155864,
+          "url": "https://imaa-institute.org/testimonials/dr-saeed-ahmed-al-gailani/",
+          "wordpress_url": "https://imaa-institute.org/testimonials/dr-saeed-ahmed-al-gailani/"
+        },
+        {
+          "photo": "about/2025-10-mo-shouman-1-300x300.webp",
+          "slug": "mohamed-shouman",
+          "wordpress_id": 147695,
+          "name": "Mohamed Shouman",
+          "role": "General Manager, Group Corporate Banking",
+          "company": "Kuwait Finance House",
+          "programme": "IM&A",
+          "quote_html": "<p>I am proud to be an IM&amp;A charterholder, having successfully completed the professional certification program and received my qualification in March 2021. The IMAA program provided me with a highly valuable and robust set of M&amp;A skills. The comprehensive curriculum covers the entire M&amp;A lifecycle, from strategy and valuation and due diligence right through to the final acquisition process, making this certification essential for anyone looking to excel in an M&amp;A career. I was able to immediately apply this knowledge in the field, specifically by leveraging my skills during the KFH (Kuwait) acquisition of AUB (Bahrain)—one of the largest M&amp;A transactions in the region. The certification training was directly applicable and instrumental to my success on this landmark deal.</p>",
+          "featured_media": 147699,
+          "url": "https://imaa-institute.org/testimonials/mohamed-shouman/",
+          "wordpress_url": "https://imaa-institute.org/testimonials/mohamed-shouman/"
+        },
+        {
+          "photo": "about/2024-09-onzelo-markum-iii-mba.png",
+          "slug": "onzelo-om-markum-iii-mba",
+          "wordpress_id": 124643,
+          "name": "Onzelo Markum III (“OM”), Prosci",
+          "role": "Principal",
+          "company": "The Markum Group, LLC",
+          "programme": "CPMI",
+          "quote_html": "<p>I recently completed the online Certified Post Merger Integration Expert course from the Institute of Mergers, Acquisitions and Alliances, and it has been a transformative experience for me. The course provided a comprehensive overview of the M&amp;A process and equipped me with the skills necessary for successful post-merger integration.</p><p><strong>Three key aspects to a successful post-merger integration include:</strong></p><ol><li><strong>Effective Communication:</strong> Clear, transparent communication is critical to align all stakeholders and ensure smooth transitions. The course provided me with practical strategies and tools for crafting and delivering effective communication plans, helping me understand how to address concerns and foster collaboration among teams.</li><li><strong>Strategic Planning and Execution:</strong> The course emphasized the importance of detailed planning and the need for a structured approach to integration. It helped me develop my ability to create and execute strategic plans by offering frameworks and methodologies that are crucial for integrating processes, systems, and cultures effectively.</li><li><strong>Cultural Integration:</strong> Successfully merging organizational cultures can make or break the integration process. The training offered valuable insights into assessing cultural compatibility and managing change, allowing me to better address and integrate the differing cultures of merging entities.</li></ol><p>Overall, this course was instrumental in helping me identify and enhance these critical skills. I now feel more confident in my ability to manage complex integrations and contribute to the overall success of M&amp;A transactions. I highly recommend this course to anyone looking to excel in post-merger integration.</p>",
+          "featured_media": 124644,
+          "url": "https://imaa-institute.org/testimonials/onzelo-om-markum-iii-mba/",
+          "wordpress_url": "https://imaa-institute.org/testimonials/onzelo-om-markum-iii-mba/"
+        },
+        {
+          "photo": "about/2023-10-michael-reed-black-and-white-300x300.jpg",
+          "slug": "michael-reed",
+          "wordpress_id": 87382,
+          "name": "Michael Reed",
+          "role": "Senior Consultant",
+          "company": "Smith Reed Partners",
+          "programme": "CPMI, IM&A, LM&A, M&AP",
+          "quote_html": "<p>In 2022, I decided to formalize my M&amp;A experience and memorialize my expertise with either an advanced degree or certification. I spent months investigating all the programs on offer and, after a detailed analysis, decided to engage IMAA and pursue one of their certifications. The process of getting the information I need to make the decision, securing my registration, and going through the program was extraordinary. So extraordinary that I pursued and earned three more certifications through IMAA. I am proud to be an IMAA Charterholder and thrilled to hold certifications associated with this great organization. The educational experience was first rate and I have achieved my goal of complimenting my &#8220;street&#8221; wisdom with a formal M&amp;A educational background. IMAA was the perfect choice for me!</p>",
+          "featured_media": 87383,
+          "url": "https://imaa-institute.org/testimonials/michael-reed/",
+          "wordpress_url": "https://imaa-institute.org/testimonials/michael-reed/"
+        },
+        {
+          "photo": "about/2024-01-aline-soghomonian-300x300.png",
+          "slug": "aline-soghomonian",
+          "wordpress_id": 96047,
+          "name": "Aline Soghomonian",
+          "role": "Legal professional",
+          "company": "TAQA Group",
+          "programme": "IM&A, LM&A",
+          "quote_html": "<p>I always had the passion to discover about the M&amp;A world. IMAA fulfilled my wish with the most relevant aspects of the M&amp;A covered in just one course out of the New York City. With great content, lots of interactive work, mostly hands on course and insightful discussions, it was so enjoyable to receive a wealth of knowledge about the subject. Martin, a great mentor who made it fun and engaging for all, and with the examples from his extensive experiences, he made it absolutely unforgettable experience for us, and although there was a lot to learn, it was so light and easy to follow for everyone. I would highly recommend the IMAA course to anyone wanting to get into the industry.</p><p>Special thanks to Nicole for making this course so complete with her daily super support to all of the attendees and the fantastic food she arranged for us throughout each of the days of the training.</p>",
+          "featured_media": 96147,
+          "url": "https://imaa-institute.org/testimonials/aline-soghomonian/",
+          "wordpress_url": "https://imaa-institute.org/testimonials/aline-soghomonian/"
+        },
+        {
+          "photo": "about/2023-10-christian-muntean-black-and-white-300x300.png",
+          "slug": "christian-muntean",
+          "wordpress_id": 87384,
+          "name": "Christian Muntean",
+          "role": "President, Advisor to owners, executives & boards",
+          "company": "Vantage Consulting",
+          "programme": "IM&A, M&AP",
+          "quote_html": "<p>I recently completed my IM&amp;A (in-person) and M&amp;AP (online) certifications. Both experiences were incredibly rewarding. The instructors had the depth of knowledge and personal experience you’d expect. The class was full of high-caliber, whip-smart, and friendly people. I learned from everyone. What I appreciated most about IMAA and the instructors (both in person and online) was often repeated notes of humility and ethics. I’d recommend attending the in-person course if possible but both were valuable.</p>",
+          "featured_media": 87385,
+          "url": "https://imaa-institute.org/testimonials/christian-muntean/",
+          "wordpress_url": "https://imaa-institute.org/testimonials/christian-muntean/"
+        },
+        {
+          "photo": "about/2023-11-ezinne-joshua1-1-300x300.jpg",
+          "slug": "ezinne-q-joshua",
+          "wordpress_id": 90120,
+          "name": "Ezinne Q. Joshua",
+          "role": "Associate Portfolio Manager",
+          "company": "Aquamore Finance",
+          "programme": "IM&A",
+          "quote_html": "<p>As a part of my MBA program, I enrolled in the Entrepreneurial Finance course. The assessment process required a role-play exercise in which my group represented the buy-side while the target group represented the sell-side in the acquisition of a company. This novel and challenging process made me curious about the overall concept of mergers and acquisitions (M&amp;A) and its complete scope. In my research, IMAA was featured many times, and I enrolled in the program. After completing two courses, I can attest that every experience has provided me with new perspectives on how to approach deals and a shift in my understanding of stakeholder engagement/management. The valuation class helped me improve my financial modelling skills, while the IM&amp;A course provided me with knowledge on deal processing, strategy, due diligence and commonly overlooked aspects of a deal that could either make or break the process – before and after a merger. I highly recommend the IM&amp;A course to anyone seeking deeper insights and understanding into the complete end-to-end cycle of mergers and acquisitions. The program has equipped me with the necessary knowledge and skills to manage the intricacies of M&amp;A transactions effectively, and I am confident that it will do the same for anyone who enrols.</p>",
+          "featured_media": 90134,
+          "url": "https://imaa-institute.org/testimonials/ezinne-q-joshua/",
+          "wordpress_url": "https://imaa-institute.org/testimonials/ezinne-q-joshua/"
+        },
+        {
+          "photo": "about/2023-10-chuck-adams-black-and-white-300x300.jpg",
+          "slug": "chuck-adams",
+          "wordpress_id": 87386,
+          "name": "Chuck Adams",
+          "role": "Managing Partner",
+          "company": "Coeptis Consulting Group",
+          "programme": "IM&A, M&AP",
+          "quote_html": "<p>I was looking for a program that helped develop my M&amp;A skills &amp; knowledge to help better serve our clients and was pointed in IMAA’s direction for our needs. We were very impressed by the professionalism and rigor of the M&amp;AP and IM&amp;A paths, and we have already provided better value to our clients through what I learned through the program. Plus, the online, self-paced format was attractive and critical for a working M&amp;A professional like myself; I highly recommend the program and paths provided by the IMAA for those new or looking to sharpen their skills in M&amp;A.</p>",
+          "featured_media": 87387,
+          "url": "https://imaa-institute.org/testimonials/chuck-adams/",
+          "wordpress_url": "https://imaa-institute.org/testimonials/chuck-adams/"
+        },
+        {
+          "photo": "about/2023-10-kenneth-penn-black-and-white-300x300.jpg",
+          "slug": "kenneth-penn-cpa",
+          "wordpress_id": 87399,
+          "name": "Kenneth Penn, CPA",
+          "role": "Managing Partner & CEO",
+          "company": "The Pantera Group, LLC",
+          "programme": "IM&A",
+          "quote_html": "<p>In June 2023, I had the opportunity to participate in the Institute for Mergers, Acquisitions &amp; Alliances’ IM&amp;A Cohort in New York City, which consisted of an incredibly diverse group of professionals from a wide range of backgrounds. The cohort was well-structured and gave me the knowledge, skills, and a better understanding of what I needed to succeed. The instructors/practitioners were knowledgeable, supportive, and relatable, and the cohort was filled with real-world examples and applications. I particularly appreciated the in-person format and networking with my fellow professionals before and after the class day.</p><p>I am more than glad I participated and am more confident when operating in the M&amp;A arena as an advisor and acquirer of businesses.</p>",
+          "featured_media": 87400,
+          "url": "https://imaa-institute.org/testimonials/kenneth-penn-cpa/",
+          "wordpress_url": "https://imaa-institute.org/testimonials/kenneth-penn-cpa/"
+        }
+      ],
+      "button": {
+        "label": "See All Testimonials",
+        "url": "https://imaa-institute.org/testimonials/",
+        "wordpress_url": "https://imaa-institute.org/testimonials/"
+      }
+    },
+    {
+      "type": "contact_callout",
+      "heading": "Media inquiries",
+      "text_html": "<p>For media inquiries, please contact us at <b>info@imaa.org</b></p>",
+      "email": "info@imaa.org",
+      "button_label": "Email us"
+    },
+    {
+      "type": "logo_strip",
+      "heading": "We’re trusted by",
+      "logos": [
+        {
+          "image": "about/2024-06-au-img-logo-04.webp",
+          "name": "Givaudan"
+        },
+        {
+          "image": "about/2024-06-au-img-logo-02.png",
+          "name": "Amazon"
+        },
+        {
+          "image": "about/2024-06-au-img-logo-02a.webp",
+          "name": "Citibank"
+        },
+        {
+          "image": "about/2024-06-au-img-logo-03a.webp",
+          "name": "Credit Suisse"
+        },
+        {
+          "image": "about/2024-06-au-img-logo-05.webp",
+          "name": "KPMG"
+        },
+        {
+          "image": "about/2024-06-au-img-logo-06.webp",
+          "name": "The Coca-Cola Company"
+        },
+        {
+          "image": "about/2024-06-au-img-logo-07.webp",
+          "name": "Continental"
+        },
+        {
+          "image": "about/2024-06-au-img-logo-08.webp",
+          "name": "Hewlett Packard"
+        },
+        {
+          "image": "about/2024-06-au-img-logo-09.webp",
+          "name": "Walt Disney"
+        },
+        {
+          "image": "about/2024-06-au-img-logo-10.webp",
+          "name": "UBS"
+        },
+        {
+          "image": "about/2024-06-au-img-logo-11.webp",
+          "name": "Daimler"
+        },
+        {
+          "image": "about/2024-06-au-img-logo-12.webp",
+          "name": "Deloitte"
+        }
+      ],
+      "button": {
+        "label": "SEE FULL LIST",
+        "url": "/references",
+        "wordpress_url": "/references/"
+      }
+    },
+    {
+      "type": "offices",
+      "heading": "Contact Us",
+      "email": "info@imaa-institute.org",
+      "offices": [
+        {
+          "city": "NEW YORK",
+          "country": "United States of America",
+          "image": "about/2024-07-usa.webp",
+          "phone": "+1 212 249 6600",
+          "phone_href": "tel:+12122496600"
+        },
+        {
+          "city": "ZURICH",
+          "country": "Switzerland",
+          "image": "about/2024-07-switzerland.webp",
+          "phone": "+41 43 505 17 99",
+          "phone_href": "tel:+41435051799"
+        },
+        {
+          "city": "VIENNA",
+          "country": "Austria",
+          "image": "about/2024-07-austria.webp",
+          "phone": "+43 1 43 51 444",
+          "phone_href": "tel:+4314351444"
+        },
+        {
+          "city": "LONDON",
+          "country": "United Kingdom",
+          "image": "about/2024-07-uk.webp",
+          "phone": "+44 771 683 1414",
+          "phone_href": "tel:+447716831414"
+        },
+        {
+          "city": "SINGAPORE",
+          "country": "Singapore",
+          "image": "about/2024-07-singapore.webp",
+          "phone": "+65 3129 2799",
+          "phone_href": "tel:+6531292799"
+        },
+        {
+          "city": "MANILA",
+          "country": "Philippines",
+          "image": "about/2024-07-ph.webp",
+          "phone": "+63 2 3224 2088",
+          "phone_href": "tel:+63232242088"
+        }
+      ]
+    }
+  ],
+  "seo_title": "About Us - M&A Education in Imaa Institute",
+  "search_description": "Learn more About Us. Researching and educational certificate programs, workshops, resources, and expert knowledge in the field of M&A - IMAA Institute.",
+  "media": [
+    {
+      "key": "about/2024-07-aboutus-copy-3.webp",
+      "file": "2024-07-AboutUs-copy-3.webp",
+      "sha256": "2f0f92fbbb8d6c3fd9954a368abf33b1916206ddb23a7881860b80d87f5454c4",
+      "width": 698,
+      "height": 515,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "intro photograph (collage)",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/AboutUs-copy-3.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/AboutUs-copy-3.webp"
+    },
+    {
+      "key": "about/2024-12-website-banner-2025.jpg",
+      "file": "2024-12-Website-Banner-2025.jpg",
+      "sha256": "19a7510c8de0e3450e760120af87f0370e7cffbe482d6ed0ffab4852657e9376",
+      "width": 1570,
+      "height": 450,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "hero banner (headline is part of the image)",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/12/Website-Banner-2025.jpg",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/12/Website-Banner-2025.jpg"
+    },
+    {
+      "key": "about/2021-09-au-img-02-accreditation.jpg",
+      "file": "2021-09-au-img-02-accreditation.jpg",
+      "sha256": "65a336bf98c2e466c7dbb9967198432eccf3bded0f8740a8f078333eb12c9308",
+      "width": 1276,
+      "height": 370,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "accreditation banner",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/au-img-02-accreditation.jpg",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2021/09/au-img-02-accreditation.jpg"
+    },
+    {
+      "key": "about/2023-08-au-img-logo-02.png",
+      "file": "2023-08-au-img-logo-02.png",
+      "sha256": "0b2bd0169759fbae56f68e094d65bb35df4ac652a8fb27f8f7d17493c7790f59",
+      "width": 81,
+      "height": 31,
+      "alt": "Amazon",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "company logo beside the ISO text",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/08/au-img-logo-02.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2023/08/au-img-logo-02.png"
+    },
+    {
+      "key": "about/2021-09-au-img-logo-02a.png",
+      "file": "2021-09-au-img-logo-02a.png",
+      "sha256": "c914204df88a2307fcfbc5b0631f8d094b3c88f610a54400bf9e9b9195a37fc6",
+      "width": 159,
+      "height": 40,
+      "alt": "Citibank",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "company logo beside the ISO text",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/au-img-logo-02a.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2021/09/au-img-logo-02a.png"
+    },
+    {
+      "key": "about/2021-09-au-img-logo-03a.png",
+      "file": "2021-09-au-img-logo-03a.png",
+      "sha256": "8b55b88779c20ea0c6f4b92f4fa67f51355b77726bd733d8b86d259480eb6ba5",
+      "width": 159,
+      "height": 40,
+      "alt": "Credit Suisse",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "company logo beside the ISO text",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/au-img-logo-03a.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2021/09/au-img-logo-03a.png"
+    },
+    {
+      "key": "about/2024-07-ima-1.png",
+      "file": "2024-07-IMA-1.png",
+      "sha256": "4e405ee6ee0aa390372426fa67333f5f4b6a2dc2f3691444931e06e7efdea1e5",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/IMA-1.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/IMA-1.png"
+    },
+    {
+      "key": "about/2024-07-cpmi-1.png",
+      "file": "2024-07-CPMI-1.png",
+      "sha256": "98884127da17c8378eb221ec3d311a788fc1c65a1949964abcec510a7bb1858a",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/CPMI-1.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/CPMI-1.png"
+    },
+    {
+      "key": "about/2024-07-map-1.png",
+      "file": "2024-07-MAP-1.png",
+      "sha256": "2f99c1a36c03fc236884f020a614bc4f8df71d78a2d80e66e408c7ec80c4c9ac",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/MAP-1.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/MAP-1.png"
+    },
+    {
+      "key": "about/2024-07-lma.png",
+      "file": "2024-07-LMA.png",
+      "sha256": "c586237112fff4e5222dc3a52eabd46f08884f5a9e3fa02348aa29555da22c6f",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/LMA.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/LMA.png"
+    },
+    {
+      "key": "about/2024-07-hrma.png",
+      "file": "2024-07-HRMA.png",
+      "sha256": "2fd1d09b82d5ef3c89c3c043c1cfee701fc54d78ff99bdb54f3cb83a6b5021ec",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/HRMA.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/HRMA.png"
+    },
+    {
+      "key": "about/2024-07-scde1.png",
+      "file": "2024-07-SCDE1.png",
+      "sha256": "ee9314d960da04ecd55b2893669fd5d20bea6c822efbae74331be632bc36a7b6",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/SCDE1.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/SCDE1.png"
+    },
+    {
+      "key": "about/2024-07-valuation.png",
+      "file": "2024-07-Valuation.png",
+      "sha256": "18d7a9826d05a2f95a506ccde32af8e67b31a96717207f39ac0a9c752a1bbb43",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Valuation.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Valuation.png"
+    },
+    {
+      "key": "about/2026-07-edited-photo-2-300x300.webp",
+      "file": "2026-07-edited-photo-2.webp",
+      "sha256": "3cc28d1f7cc6a5b8c64a47f301b9207965d9b3568d09198f294c003c94250b8a",
+      "width": 1032,
+      "height": 1032,
+      "alt": "Aniruddha Sulake",
+      "alt_source": "testimonial name",
+      "role": "testimonial photo: Aniruddha Sulake",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/07/edited-photo-2.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2026/07/edited-photo-2-300x300.webp"
+    },
+    {
+      "key": "about/2026-05-dr.-saeed-ahmed-al-gailani-participant-testimonital-kv-1.webp",
+      "file": "2026-05-Dr.-Saeed-Ahmed-Al-Gailani-Participant-Testimonital-KV-1.webp",
+      "sha256": "27396d064461acaf591908ce33c59bfee89ede8a14c89b4cd1dff05a375f36dd",
+      "width": 300,
+      "height": 300,
+      "alt": "Dr. Saeed Ahmed Al-Gailani",
+      "alt_source": "testimonial name",
+      "role": "testimonial photo: Dr. Saeed Ahmed Al-Gailani",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/05/Dr.-Saeed-Ahmed-Al-Gailani-Participant-Testimonital-KV-1.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2026/05/Dr.-Saeed-Ahmed-Al-Gailani-Participant-Testimonital-KV-1.webp"
+    },
+    {
+      "key": "about/2025-10-mo-shouman-1-300x300.webp",
+      "file": "2025-10-Mo-shouman-1.webp",
+      "sha256": "37e194dc516f032de79916164db6d9c0eec377a98e7e2679e63f6d811e7a1f44",
+      "width": 408,
+      "height": 408,
+      "alt": "Mohamed Shouman",
+      "alt_source": "testimonial name",
+      "role": "testimonial photo: Mohamed Shouman",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2025/10/Mo-shouman-1.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2025/10/Mo-shouman-1-300x300.webp"
+    },
+    {
+      "key": "about/2024-09-onzelo-markum-iii-mba.png",
+      "file": "2024-09-Onzelo-Markum-III-MBA.png",
+      "sha256": "818775fa056a84abdd6ce903d1e65a843d8f6576a48667f94568cb0014f3e3ba",
+      "width": 300,
+      "height": 300,
+      "alt": "Onzelo Markum III, MBA",
+      "alt_source": "WordPress alt text",
+      "role": "testimonial photo: Onzelo Markum III (“OM”), Prosci",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/09/Onzelo-Markum-III-MBA.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/09/Onzelo-Markum-III-MBA.png"
+    },
+    {
+      "key": "about/2023-10-michael-reed-black-and-white-300x300.jpg",
+      "file": "2023-10-Michael-Reed-Black-and-White.jpg",
+      "sha256": "94fc4123e00b216178da54f8402e1b4e53b244b71f2b1dfcd98e902446692547",
+      "width": 400,
+      "height": 400,
+      "alt": "Michael Reed",
+      "alt_source": "testimonial name",
+      "role": "testimonial photo: Michael Reed",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Michael-Reed-Black-and-White.jpg",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Michael-Reed-Black-and-White-300x300.jpg"
+    },
+    {
+      "key": "about/2024-01-aline-soghomonian-300x300.png",
+      "file": "2024-01-Aline-Soghomonian-1024x1024.png",
+      "sha256": "08465df3e699e7ebb61917073809266c671afa1b76aaace5d0438ebd4ae5644d",
+      "width": 1024,
+      "height": 1024,
+      "alt": "Aline Soghomonian",
+      "alt_source": "testimonial name",
+      "role": "testimonial photo: Aline Soghomonian",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/01/Aline-Soghomonian-1024x1024.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/01/Aline-Soghomonian-300x300.png"
+    },
+    {
+      "key": "about/2023-10-christian-muntean-black-and-white-300x300.png",
+      "file": "2023-10-Christian-Muntean-black-and-white.png",
+      "sha256": "23d45a97f69fdc1eb9041b097cbf5870109b349bba07e01595fb8fee5f0da3a2",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Christian Muntean",
+      "alt_source": "testimonial name",
+      "role": "testimonial photo: Christian Muntean",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Christian-Muntean-black-and-white.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Christian-Muntean-black-and-white-300x300.png"
+    },
+    {
+      "key": "about/2023-11-ezinne-joshua1-1-300x300.jpg",
+      "file": "2023-11-Ezinne-Joshua1-1-1024x1024.jpg",
+      "sha256": "51539b3f38cd4a1dcbb07d4728d369d3565767a2f71d03f48ca08ed291845ab2",
+      "width": 1024,
+      "height": 1024,
+      "alt": "Ezinne Joshua",
+      "alt_source": "WordPress alt text",
+      "role": "testimonial photo: Ezinne Q. Joshua",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/11/Ezinne-Joshua1-1-1024x1024.jpg",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2023/11/Ezinne-Joshua1-1-300x300.jpg"
+    },
+    {
+      "key": "about/2023-10-chuck-adams-black-and-white-300x300.jpg",
+      "file": "2023-10-Chuck-Adams-black-and-white.jpg",
+      "sha256": "b97cce35d98b8ab3a7fd09e7035c1c6a71f8f1648ecb0e4b06509f2f48beaad8",
+      "width": 800,
+      "height": 800,
+      "alt": "Chuck Adams",
+      "alt_source": "testimonial name",
+      "role": "testimonial photo: Chuck Adams",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Chuck-Adams-black-and-white.jpg",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Chuck-Adams-black-and-white-300x300.jpg"
+    },
+    {
+      "key": "about/2023-10-kenneth-penn-black-and-white-300x300.jpg",
+      "file": "2023-10-Kenneth-Penn-black-and-white-1024x1024.jpg",
+      "sha256": "df1c9a3b282b233debde99d90036c7c619bc3267414cebcd353efa39553edce2",
+      "width": 1024,
+      "height": 1024,
+      "alt": "Kenneth Penn, CPA",
+      "alt_source": "testimonial name",
+      "role": "testimonial photo: Kenneth Penn, CPA",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Kenneth-Penn-black-and-white-1024x1024.jpg",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Kenneth-Penn-black-and-white-300x300.jpg"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-04.webp",
+      "file": "2024-06-au-img-logo-04.webp",
+      "sha256": "ef058ea3ad1b53ba4b24c0c5dbc80b3489bb358350269259cf7535299b20393b",
+      "width": 163,
+      "height": 36,
+      "alt": "Givaudan",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-04.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-04.webp"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-02.png",
+      "file": "2024-06-au-img-logo-02.png",
+      "sha256": "0b2bd0169759fbae56f68e094d65bb35df4ac652a8fb27f8f7d17493c7790f59",
+      "width": 81,
+      "height": 31,
+      "alt": "Amazon",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-02.png",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-02.png"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-02a.webp",
+      "file": "2024-06-au-img-logo-02a.webp",
+      "sha256": "7aa7c42a87b8afd6a7e82e18827cbf6aaca5250f194ee480503987e717255b01",
+      "width": 131,
+      "height": 33,
+      "alt": "Citibank",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-02a.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-02a.webp"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-03a.webp",
+      "file": "2024-06-au-img-logo-03a.webp",
+      "sha256": "7bc94158a3f4aa2f03dddcf7702a90b90eaa51bb86d5e5815e5a5b212aab73d8",
+      "width": 159,
+      "height": 38,
+      "alt": "Credit Suisse",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-03a.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-03a.webp"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-05.webp",
+      "file": "2024-06-au-img-logo-05.webp",
+      "sha256": "924c99a24ef38f21ba242940df9cf79866167ddf9d997ec43d6eed06f01e8aa0",
+      "width": 93,
+      "height": 33,
+      "alt": "KPMG",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-05.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-05.webp"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-06.webp",
+      "file": "2024-06-au-img-logo-06.webp",
+      "sha256": "493e8f168fa2d1a7a348dfe24c87ac7dc3f2dfa5c8f5b02c5bde9efcff286119",
+      "width": 165,
+      "height": 27,
+      "alt": "The Coca-Cola Company",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-06.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-06.webp"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-07.webp",
+      "file": "2024-06-au-img-logo-07.webp",
+      "sha256": "70fcd16b923c665bcc19935c38fda64e1b18794ea63fe475b8f8e9fa03e929e3",
+      "width": 150,
+      "height": 28,
+      "alt": "Continental",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-07.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-07.webp"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-08.webp",
+      "file": "2024-06-au-img-logo-08.webp",
+      "sha256": "28f7c6c8eeaa74658750b62e3867b480a55152335d185a7db9d9e4944ebf8325",
+      "width": 143,
+      "height": 38,
+      "alt": "Hewlett Packard",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-08.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-08.webp"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-09.webp",
+      "file": "2024-06-au-img-logo-09.webp",
+      "sha256": "5cb3f2bc361ed581c553f65ec98dd70540347d7059a350fb6261ebec0103ff72",
+      "width": 137,
+      "height": 34,
+      "alt": "Walt Disney",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-09.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-09.webp"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-10.webp",
+      "file": "2024-06-au-img-logo-10.webp",
+      "sha256": "16fe3188c59bc3f09ca530f9685df1337fc5ef3d5f08f18e10c3d18b384bba38",
+      "width": 99,
+      "height": 38,
+      "alt": "UBS",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-10.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-10.webp"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-11.webp",
+      "file": "2024-06-au-img-logo-11.webp",
+      "sha256": "a358b0bb857ebfaa48da76c9dabd263c908052dc23b95eced4618b7e66fd023b",
+      "width": 141,
+      "height": 19,
+      "alt": "Daimler",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-11.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-11.webp"
+    },
+    {
+      "key": "about/2024-06-au-img-logo-12.webp",
+      "file": "2024-06-au-img-logo-12.webp",
+      "sha256": "0ed0e28596eef61a84c557cc381e1489187cb014742ddf117a81ce49d9a9d789",
+      "width": 153,
+      "height": 30,
+      "alt": "Deloitte",
+      "alt_source": "logo artwork (WordPress has no alt text): FOR REVIEW",
+      "role": "trusted-by logo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-12.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-12.webp"
+    },
+    {
+      "key": "about/2024-07-usa.webp",
+      "file": "2024-07-USA.webp",
+      "sha256": "a769a800e67d73e14a98588230d6ef67628a92ae7eb0a46e2176ecbe13a896e2",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/USA.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/USA.webp"
+    },
+    {
+      "key": "about/2024-07-switzerland.webp",
+      "file": "2024-07-Switzerland.webp",
+      "sha256": "8aa548667c2a6ae9241f297e3c980874b439a3d423c8e6297f97ff85bab5446e",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Switzerland.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Switzerland.webp"
+    },
+    {
+      "key": "about/2024-07-austria.webp",
+      "file": "2024-07-Austria.webp",
+      "sha256": "79ebcbbe56b4cce4a84daf033380d7ec95040a356c00b1afc6b3291aa1546247",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Austria.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Austria.webp"
+    },
+    {
+      "key": "about/2024-07-uk.webp",
+      "file": "2024-07-UK.webp",
+      "sha256": "3dad62a7213ce5b95bd4ea02ca607d390e534c4bf9b8068e64c9d4ca5b70da85",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/UK.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/UK.webp"
+    },
+    {
+      "key": "about/2024-07-singapore.webp",
+      "file": "2024-07-Singapore.webp",
+      "sha256": "68b9859707b667efd3a095a6a586ed64fabcb6e294c879d0d1b036ead1b03007",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Singapore.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Singapore.webp"
+    },
+    {
+      "key": "about/2024-07-ph.webp",
+      "file": "2024-07-PH.webp",
+      "sha256": "d24071bc10da6197e44de2e1bdc63dc71c874d66cbe01a09e67e5bd67b36470b",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "alt_source": "none on WordPress (decorative or to be supplied)",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/PH.webp",
+      "page_url": "https://imaa-institute.org/wp-content/uploads/2024/07/PH.webp"
+    }
+  ],
+  "content_sha256": "fb3948be43f08e2b2ce95ac1413be7927b926a53e7005b2580c3765c13647515",
+  "source": {
+    "url": "https://imaa-institute.org/about-us/",
+    "wordpress_page_id": 905,
+    "wordpress_modified_gmt": "2026-01-28T08:02:53",
+    "retrieved_at": "2026-10-10",
+    "retrieved_via": [
+      "https://imaa-institute.org/about-us/",
+      "https://imaa-institute.org/wp-json/wp/v2/pages/905",
+      "https://imaa-institute.org/wp-json/wp/v2/testimonial?slug=<slug>"
+    ]
+  },
+  "migration_notes": [
+    "Wording, figures, names and URLs are copied from the live WordPress page; nothing was corrected.",
+    "Formatting only: Elementor wrappers, styles, classes, spacer paragraphs and leading/trailing line breaks were removed. Cloudflare-obfuscated e-mail addresses were decoded.",
+    "Statistics are the counters' final values (data-to-value) with their '+' suffix; WordPress shows them without a thousands separator.",
+    "The hero banner (Website-Banner-2025.jpg) contains the headline as part of the image; the page heading is real text in the CMS.",
+    "The three company logos beside the ISO text (Amazon, Citibank, Credit Suisse) are the WordPress images in that band; they are not ISO certification marks.",
+    "Study-format icons are inline SVGs on WordPress; they are frontend design assets (Wagtail images do not accept SVG here), chosen per card by the 'icon' value.",
+    "Testimonial quotes are the full WordPress testimonial texts (REST API); an image embedded in Dr. Saeed Ahmed Al-Gailani's text is not part of the quote.",
+    "Photos larger than 1200px use WordPress's own 1024px rendition; other images are the original uploads.",
+    "FOR REVIEW: the intro says 'over 70 countries' while the statistic says 100+.",
+    "FOR REVIEW (wording not changed): 'Thats why', 'Accountantsin India', 'established in 1973´', 'recognized bythe', 'developlment', 'are a intergovernmental', 'Don´t'.",
+    "FOR REVIEW: accreditation texts refer to links WordPress does not provide (City of Vienna profile, NASBA registry, SHRM programmes, IBF), and the ISO text refers to a 'Certificate' without a link.",
+    "FOR REVIEW: the SCDE programme image links to the HR M&A page on WordPress; its 'Learn more' button links to the SCDE page (used here).",
+    "Links: 'Book a Training' and 'SEE FULL LIST' use the existing Connect pages (/m-and-a-trainings, /references); programme, testimonial and consultation links point at imaa-institute.org until those pages are migrated. Each link keeps its WordPress URL in 'wordpress_url'.",
+    "FOR REVIEW: 'SCHEDULE A CONSULTATION' links to /book-a-demo/, which redirects to /get-expert-guidance/ on WordPress.",
+    "FOR REVIEW: company names for the logos are read from the logo artwork."
+  ]
+}
