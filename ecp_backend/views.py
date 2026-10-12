@@ -1,8 +1,12 @@
 import html
+import mimetypes
 import re
 from urllib.parse import urlsplit
 
+from PIL import Image
 from django.conf import settings
+from django.core.cache import cache
+from django.core.files.storage import default_storage
 from django.shortcuts import redirect
 from django.http import JsonResponse, Http404
 from django.template.response import TemplateResponse
@@ -108,19 +112,68 @@ def _plain_preview_text(value):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _public_image_url(request, image_field):
-    if not image_field:
-        return ""
-    try:
-        url = request.build_absolute_uri(image_field.url)
-    except Exception:
-        return ""
+def _safe_public_url(request, url):
+    url = request.build_absolute_uri(url)
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return ""
     if any(marker in parts.query.lower() for marker in SIGNED_URL_MARKERS):
         return ""
     return url
+
+
+def _public_image_url(request, image_field):
+    if not image_field:
+        return ""
+    try:
+        return _safe_public_url(request, image_field.url)
+    except Exception:
+        return ""
+
+
+def _image_mime_type(url):
+    mime_type, _ = mimetypes.guess_type(urlsplit(url).path)
+    return mime_type if mime_type and mime_type.startswith("image/") else ""
+
+
+# Optional, ops-provisioned social-preview image per group (no DB field). Keyed by
+# the stable group id; bump the version for a new image so crawler caches that
+# hold the old URL are bypassed.
+GROUP_SOCIAL_PREVIEW_KEY = "previews/group/{group_id}/social-v1.jpg"
+GROUP_SOCIAL_PREVIEW_CACHE_TTL = 600
+
+
+def _load_group_social_preview(request, group):
+    name = GROUP_SOCIAL_PREVIEW_KEY.format(group_id=group.pk)
+    try:
+        with default_storage.open(name, "rb") as fh, Image.open(fh) as img:
+            image_format, (width, height) = img.format, img.size
+        url = _safe_public_url(request, default_storage.url(name))
+    except Exception:
+        # Missing object, storage error or unreadable image: use fallbacks.
+        return {}
+    if image_format != "JPEG" or not url:
+        return {}
+    return {"url": url, "type": "image/jpeg", "width": width, "height": height}
+
+
+def _group_social_preview(request, group):
+    """Return the provisioned preview image info (or {}), cached so crawler
+    requests make at most one storage read per group per TTL."""
+    cache_key = f"group-social-preview:{GROUP_SOCIAL_PREVIEW_KEY}:{group.pk}"
+    try:
+        cached = cache.get(cache_key)
+    except Exception:
+        cached = None
+    if cached is not None:
+        return cached
+
+    preview = _load_group_social_preview(request, group)
+    try:
+        cache.set(cache_key, preview, GROUP_SOCIAL_PREVIEW_CACHE_TTL)
+    except Exception:
+        pass
+    return preview
 
 
 @require_safe
@@ -149,9 +202,14 @@ def public_group_meta(request, slug):
     if len(description) > GROUP_PREVIEW_DESCRIPTION_LIMIT:
         description = f"{description[:GROUP_PREVIEW_DESCRIPTION_LIMIT - 3].rstrip()}..."
 
-    image_url = _public_image_url(request, group.cover_image) or _public_image_url(
-        request, group.logo
+    preview = _group_social_preview(request, group)
+    image_url = (
+        preview.get("url")
+        or _public_image_url(request, group.cover_image)
+        or _public_image_url(request, group.logo)
     )
+    # Dimensions only come from the provisioned image, which was actually read.
+    image_type = preview.get("type") or (_image_mime_type(image_url) if image_url else "")
 
     frontend_base = (settings.FRONTEND_URL or "").rstrip("/")
     group_url = (
@@ -164,6 +222,9 @@ def public_group_meta(request, slug):
         "title": title,
         "description": description,
         "image_url": image_url,
+        "image_type": image_type,
+        "image_width": preview.get("width"),
+        "image_height": preview.get("height"),
         "group_url": group_url,
     }
     return TemplateResponse(request, "public_group_meta.html", context)

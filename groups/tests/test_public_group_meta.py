@@ -3,9 +3,15 @@
 Covers the HTML endpoint GET /groups/public/<slug>/ that the
 ecp-event-social-preview Cloudflare Worker serves to social crawlers.
 """
+import os
+import shutil
+import tempfile
 from datetime import timedelta
+from unittest import mock
 
+from PIL import Image
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.core.files.storage import FileSystemStorage
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -49,8 +55,31 @@ SIGNED_STORAGES = {
 }
 
 
-@override_settings(FRONTEND_URL=f"{FRONTEND}/", STORAGES=LOCAL_STORAGES, MEDIA_URL="/media/")
+TEST_MEDIA_ROOT = tempfile.mkdtemp(prefix="group-meta-media-")
+LOCMEM_CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "group-meta-tests",
+    }
+}
+
+
+def tearDownModule():
+    shutil.rmtree(TEST_MEDIA_ROOT, ignore_errors=True)
+
+
+@override_settings(
+    FRONTEND_URL=f"{FRONTEND}/",
+    STORAGES=LOCAL_STORAGES,
+    MEDIA_URL="/media/",
+    MEDIA_ROOT=TEST_MEDIA_ROOT,
+    CACHES=LOCMEM_CACHES,
+)
 class PublicGroupMetaTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        shutil.rmtree(os.path.join(TEST_MEDIA_ROOT, "previews"), ignore_errors=True)
+
     @classmethod
     def setUpTestData(cls):
         cls.owner = User.objects.create_user(
@@ -206,6 +235,141 @@ class PublicGroupMetaTests(TestCase):
         self.assertNotContains(response, "og:image")
         self.assertNotContains(response, "twitter:image")
 
+    # --- provisioned social-preview image (previews/group/<id>/social-v1.jpg) ---
+
+    def _provision(self, group, image_format="JPEG", size=(1600, 898)):
+        folder = os.path.join(TEST_MEDIA_ROOT, "previews", "group", str(group.pk))
+        os.makedirs(folder, exist_ok=True)
+        Image.new("RGB", size, "navy").save(
+            os.path.join(folder, "social-v1.jpg"), format=image_format
+        )
+        return f"https://testserver/media/previews/group/{group.pk}/social-v1.jpg"
+
+    def test_provisioned_preview_preferred_over_cover_with_type_and_size(self):
+        group = self._group(cover_image="group_covers/cover.png", logo="group_logos/logo.png")
+        url = self._provision(group)
+
+        response = self._get(group.slug)
+
+        self.assertContains(response, f'<meta property="og:image" content="{url}" />')
+        self.assertContains(response, f'<meta name="twitter:image" content="{url}" />')
+        self.assertContains(response, '<meta property="og:image:type" content="image/jpeg" />')
+        self.assertContains(response, '<meta property="og:image:width" content="1600" />')
+        self.assertContains(response, '<meta property="og:image:height" content="898" />')
+        self.assertNotContains(response, "group_covers/cover.png")
+
+    def test_missing_provisioned_preview_falls_back_to_cover_without_dimensions(self):
+        group = self._group(cover_image="group_covers/cover.png", logo="group_logos/logo.png")
+
+        response = self._get(group.slug)
+
+        self.assertContains(
+            response,
+            '<meta property="og:image" content="https://testserver/media/group_covers/cover.png" />',
+        )
+        self.assertContains(response, '<meta property="og:image:type" content="image/png" />')
+        self.assertNotContains(response, "og:image:width")
+        self.assertNotContains(response, "og:image:height")
+
+    def test_missing_provisioned_preview_and_cover_falls_back_to_logo(self):
+        group = self._group(logo="group_logos/logo.jpg")
+
+        response = self._get(group.slug)
+
+        self.assertContains(
+            response,
+            '<meta property="og:image" content="https://testserver/media/group_logos/logo.jpg" />',
+        )
+        self.assertContains(response, '<meta property="og:image:type" content="image/jpeg" />')
+        self.assertNotContains(response, "og:image:width")
+
+    def test_provisioned_preview_belongs_only_to_its_group(self):
+        provisioned = self._group()
+        other = self._group(name="Other Forum", slug="other-forum", cover_image="group_covers/other.jpg")
+        self._provision(provisioned)
+
+        response = self._get(other.slug)
+
+        self.assertContains(
+            response,
+            '<meta property="og:image" content="https://testserver/media/group_covers/other.jpg" />',
+        )
+        self.assertNotContains(response, "previews/group/")
+
+    def test_non_jpeg_provisioned_file_is_ignored(self):
+        group = self._group(cover_image="group_covers/cover.jpg")
+        self._provision(group, image_format="PNG")
+
+        response = self._get(group.slug)
+
+        self.assertContains(
+            response,
+            '<meta property="og:image" content="https://testserver/media/group_covers/cover.jpg" />',
+        )
+        self.assertNotContains(response, "previews/group/")
+
+    def test_storage_error_falls_back_to_cover(self):
+        group = self._group(cover_image="group_covers/cover.jpg")
+
+        with mock.patch("ecp_backend.views.default_storage") as storage:
+            storage.open.side_effect = OSError("S3 unavailable")
+            response = self._get(group.slug)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            '<meta property="og:image" content="https://testserver/media/group_covers/cover.jpg" />',
+        )
+
+    def test_storage_lookup_is_cached_including_misses(self):
+        found = self._group()
+        missing = self._group(name="Other Forum", slug="other-forum")
+        self._provision(found)
+
+        from ecp_backend import views
+
+        with mock.patch.object(
+            views, "_load_group_social_preview", wraps=views._load_group_social_preview
+        ) as load:
+            for _ in range(3):
+                self.assertContains(self._get(found.slug), "previews/group/")
+                self.assertNotContains(self._get(missing.slug), "og:image")
+
+        self.assertEqual(load.call_count, 2)
+
+    def test_cache_outage_does_not_break_rendering(self):
+        group = self._group()
+        url = self._provision(group)
+
+        with mock.patch("ecp_backend.views.cache") as broken_cache:
+            broken_cache.get.side_effect = ConnectionError("redis down")
+            broken_cache.set.side_effect = ConnectionError("redis down")
+            response = self._get(group.slug)
+
+        self.assertContains(response, f'<meta property="og:image" content="{url}" />')
+
+    @override_settings(STORAGES=SIGNED_STORAGES)
+    def test_signed_provisioned_preview_url_is_never_published(self):
+        group = self._group(cover_image="group_covers/cover.jpg")
+        self._provision(group)
+
+        response = self._get(group.slug)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "og:image")
+        self.assertNotContains(response, "X-Amz")
+
+    def test_private_group_404_does_not_read_preview_storage(self):
+        group = self._group(visibility=Group.VISIBILITY_PRIVATE, join_policy=Group.JOIN_INVITE)
+        self._provision(group)
+
+        with mock.patch("ecp_backend.views._group_social_preview") as lookup:
+            response = self._get(group.slug)
+
+        self.assertEqual(response.status_code, 404)
+        lookup.assert_not_called()
+        self.assertNotContains(response, "previews/group/", status_code=404)
+
     @override_settings(STORAGES=CDN_STORAGES)
     def test_absolute_storage_urls_are_kept_as_https(self):
         group = self._group(cover_image="group_covers/cover.jpg")
@@ -217,7 +381,9 @@ class PublicGroupMetaTests(TestCase):
             '<meta property="og:image" content="https://media-bucket.example.com/group_covers/cover.jpg" />',
         )
 
-    def test_real_s3_storage_custom_domain_public_and_presigned_rejected(self):
+    # Never let the provisioned-image lookup reach real AWS from a test.
+    @mock.patch("ecp_backend.views._load_group_social_preview", return_value={})
+    def test_real_s3_storage_custom_domain_public_and_presigned_rejected(self, _load):
         group = self._group(cover_image="group_covers/cover.jpg")
         s3_options = {
             "bucket_name": "example-bucket",
