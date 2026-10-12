@@ -15,6 +15,7 @@ from wagtail.models import Page
 from wagtail.rich_text import RichText
 
 from cms.about_page_api import about_page_extras
+from cms.team_page_api import team_page_extras
 from cms.email_template_registry import get_template_metadata
 from cms.models import EmailTemplate, TEMPLATE_KEY_CHOICES
 from cms.serializers import (
@@ -74,7 +75,7 @@ def build_cms_page_data(request, page, specific):
     # AboutPage (New)
     if hasattr(specific, "hero_title"):
         data["hero_title"] = specific.hero_title or ""
-        data["hero_subtitle"] = specific.hero_subtitle or ""
+        data["hero_subtitle"] = getattr(specific, "hero_subtitle", "") or ""  # TeamPage has no subtitle
         data["hero_image_url"] = image_url(request, getattr(specific, "hero_background_image", None))
         if hasattr(specific, "cta_primary_label"):
             data["cta_buttons"] = [
@@ -160,6 +161,8 @@ def build_cms_page_data(request, page, specific):
 
     # AboutPage intro image, statistics and ordered sections (no-op until the page has them).
     data.update(about_page_extras(request, specific))
+    # TeamPage texts, programme filters and public people (no-op for other page types).
+    data.update(team_page_extras(request, specific))
 
     if hasattr(specific, "left_column"):
         data["left_column"] = [

@@ -1,3 +1,6 @@
+from urllib.parse import urlsplit
+
+from django import forms
 from django.db import models
 from django.conf import settings
 from django.utils import timezone
@@ -12,7 +15,7 @@ from wagtail.models import Page
 from wagtail.snippets.models import register_snippet
 from wagtail_ai.panels import AITitleFieldPanel, AIDescriptionFieldPanel
 
-from cms.about_blocks import RICH_TEXT_FEATURES, SECTION_BLOCKS, STAT_BLOCKS, validate_safe_url
+from cms.about_blocks import RICH_TEXT_FEATURES, SECTION_BLOCKS, STAT_BLOCKS, LinkBlock, validate_safe_url
 
 
 class CmsSoftDeletePageMixin(models.Model):
@@ -349,6 +352,121 @@ class Testimonial(models.Model):
 
     def __str__(self):
         return self.name
+
+
+@register_snippet
+class Programme(models.Model):
+    """A training programme used to group people on the Our Team page (IM&A, CPMI, ...)."""
+
+    code = models.CharField(max_length=20, unique=True, help_text="Shown on the filter, e.g. IM&A")
+    slug = models.SlugField(max_length=40, unique=True)
+    sort_order = models.PositiveIntegerField(default=0)
+
+    panels = [FieldPanel("code"), FieldPanel("slug"), FieldPanel("sort_order")]
+
+    class Meta:
+        ordering = ["sort_order", "code"]
+
+    def __str__(self):
+        return self.code
+
+
+@register_snippet
+class TeamMember(models.Model):
+    """A public faculty or staff member of the Institute (not an IMAA Connect user account)."""
+
+    FACULTY, STAFF, ADVISORY = "faculty", "staff", "advisory"
+    MEMBER_TYPES = [(FACULTY, "Faculty"), (STAFF, "Staff"), (ADVISORY, "Advisory board")]
+
+    name = models.CharField(max_length=160)
+    slug = models.SlugField(max_length=160, unique=True)
+    member_type = models.CharField(max_length=20, choices=MEMBER_TYPES, db_index=True)
+    position = models.CharField(max_length=200, blank=True, help_text="Shown on the card, e.g. Faculty or Managing Director")
+    summary = models.TextField(blank=True, max_length=400, help_text="One-line tagline on the card")
+    biography = RichTextField(blank=True, features=RICH_TEXT_FEATURES)
+    photo = models.ForeignKey(
+        "wagtailimages.Image", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    location = models.CharField(max_length=120, blank=True, help_text="City (staff) or country (faculty)")
+    linkedin_url = models.URLField(max_length=300, blank=True)
+    profile_url = models.CharField(
+        max_length=300, blank=True, validators=[validate_safe_url],
+        help_text="Full profile page (imaa-institute.org until profiles are migrated).",
+    )
+    programmes = models.ManyToManyField(Programme, blank=True, related_name="team_members")
+    sort_order = models.PositiveIntegerField(default=0, db_index=True)
+    is_public = models.BooleanField(default=True, help_text="Untick to hide this person from the public page.")
+    wordpress_id = models.PositiveIntegerField(null=True, blank=True, unique=True, editable=False)
+
+    panels = [
+        FieldPanel("name"),
+        FieldPanel("slug"),
+        FieldPanel("member_type"),
+        FieldPanel("position"),
+        FieldPanel("summary"),
+        FieldPanel("photo"),
+        FieldPanel("location"),
+        FieldPanel("programmes", widget=forms.CheckboxSelectMultiple),
+        FieldPanel("biography"),
+        FieldPanel("linkedin_url", help_text="Full https:// address of a LinkedIn profile, e.g. https://www.linkedin.com/in/name/"),
+        FieldPanel("profile_url"),
+        FieldPanel("sort_order", help_text="Lower numbers are shown first within faculty or staff."),
+        FieldPanel(
+            "is_public",
+            help_text="Saving a person updates the public Our Team page immediately (people have no draft step). "
+                      "Untick to hide this person.",
+        ),
+    ]
+
+    class Meta:
+        ordering = ["member_type", "sort_order", "name"]
+
+    def __str__(self):
+        return f"{self.name} ({self.get_member_type_display()})"
+
+    def clean(self):
+        """Application-level link checks (the public API also drops anything unsafe)."""
+        super().clean()
+        url = (self.linkedin_url or "").strip()
+        if url:
+            host = urlsplit(url).hostname or ""
+            if not url.lower().startswith("https://") or not (host == "linkedin.com" or host.endswith(".linkedin.com")):
+                raise ValidationError({"linkedin_url": "Enter an https:// address on linkedin.com."})
+
+
+class TeamPage(CmsSoftDeletePageMixin, Page):
+    """The public Our Team page: page texts here; the people are TeamMember snippets."""
+
+    hero_title = models.CharField(max_length=160, blank=True)
+    hero_intro = models.TextField(blank=True)
+    hero_button = StreamField([("button", LinkBlock())], blank=True, use_json_field=True, max_num=1)
+    faculty_heading = models.CharField(max_length=160, blank=True)
+    faculty_subheading = models.CharField(max_length=160, blank=True)
+    faculty_intro = RichTextField(blank=True, features=RICH_TEXT_FEATURES)
+    faculty_buttons = StreamField([("button", LinkBlock())], blank=True, use_json_field=True, max_num=3)
+    staff_heading = models.CharField(max_length=160, blank=True)
+    staff_subheading = models.CharField(max_length=160, blank=True)
+    staff_intro = RichTextField(blank=True, features=RICH_TEXT_FEATURES)
+    staff_button = StreamField([("button", LinkBlock())], blank=True, use_json_field=True, max_num=1)
+    # Ordered sections after the people (programme carousel, offices, ...), as on the About page.
+    sections = StreamField(SECTION_BLOCKS, blank=True, use_json_field=True)
+
+    content_panels = Page.content_panels + [
+        MultiFieldPanel([FieldPanel("hero_title"), FieldPanel("hero_intro"), FieldPanel("hero_button")], heading="Hero"),
+        MultiFieldPanel(
+            [FieldPanel("faculty_heading"), FieldPanel("faculty_subheading"), FieldPanel("faculty_intro"), FieldPanel("faculty_buttons")],
+            heading="Experts & faculty",
+        ),
+        MultiFieldPanel(
+            [FieldPanel("staff_heading"), FieldPanel("staff_subheading"), FieldPanel("staff_intro"), FieldPanel("staff_button")],
+            heading="Staff",
+        ),
+        FieldPanel("sections", heading="Page sections"),
+    ]
+
+    parent_page_types = ["cms.HomePage"]
+    subpage_types = []
+    max_count = 1
 
 
 class EventsLandingPage(CmsSoftDeletePageMixin, Page):

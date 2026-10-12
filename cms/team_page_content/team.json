@@ -1,0 +1,3630 @@
+{
+  "format_version": 1,
+  "page": {
+    "slug": "our-team",
+    "title": "Our Team",
+    "seo_title": "Our Team of M&A Experts - IMAA",
+    "search_description": "Meet our experts coming from over 20 countries, faculty, staff, and our advisory in the field of M&A practice in Imaa-institute.",
+    "hero_title": "Our Team",
+    "hero_intro": "Meet our experts, faculty, staff and our advisory board to find out who stands behind the Institute.",
+    "hero_button": {
+      "label": "Contact our team",
+      "url": "https://imaa-institute.org/contact-us/",
+      "wordpress_url": "/contact-us/"
+    },
+    "faculty_heading": "Experts & Faculty",
+    "faculty_subheading": "Meet Our Faculty",
+    "faculty_intro_html": "<p>Compounding both academic excellence and internationally renowned business experience, the IMAA faculty have helped propel our institute to the forefront of M&amp;A global education. Our growing faculty of more than 60 professors represent a diverse group of professionals, coming from over 20 countries; they work as corporate executives, entrepreneurs, researchers, consultants and professors. Their expertise makes them subject matter experts, groundbreaking researchers, and award-winning authors. This intersection of practical industry insight, theoretical knowledge, and passion for teaching that our faculty brings to each training strikes at the heart of what IMAA seeks to be.</p>",
+    "faculty_buttons": [
+      {
+        "label": "Schedule A Consultation",
+        "url": "https://imaa-institute.org/contact-us/",
+        "wordpress_url": "/contact-us/"
+      },
+      {
+        "label": "About In-House Trainings",
+        "url": "https://imaa-institute.org/in-house-training/",
+        "wordpress_url": "/in-house-training/"
+      }
+    ],
+    "staff_heading": "Staff of IMAA",
+    "staff_subheading": "Meet the team",
+    "staff_intro_html": "<p>Our international team of highly qualified professionals is here to support you. Please feel free to contact us anytime so we can better understand your needs and help you achieve your professional development goals.</p>",
+    "staff_button": {
+      "label": "Contact our team",
+      "url": "https://imaa-institute.org/contact-us/",
+      "wordpress_url": "/contact-us/"
+    },
+    "sections": [
+      {
+        "type": "card_group",
+        "layout": "carousel",
+        "heading": "Available Programs",
+        "cards": [
+          {
+            "image": "about/2024-07-ima-1.png",
+            "title": "International M&A Expert",
+            "text": "This course dives deep into the entire M&A process- from strategy and valuation to execution and post merger integration (PMI).",
+            "link": {
+              "label": "LEARN MORE",
+              "url": "https://imaa-institute.org/m-and-a-trainings/international-m-and-a/",
+              "wordpress_url": "/m-and-a-trainings/international-m-and-a/"
+            }
+          },
+          {
+            "image": "about/2024-07-cpmi-1.png",
+            "title": "Certified Post Merger Integration Expert",
+            "text": "CPMI prepares you for integration issues post -merger, starting with integration planning, up to governance and project management to implement the integration.",
+            "link": {
+              "label": "LEARN MORE",
+              "url": "https://imaa-institute.org/m-and-a-trainings/post-merger-integration/",
+              "wordpress_url": "/m-and-a-trainings/post-merger-integration/"
+            }
+          },
+          {
+            "image": "about/2024-07-map-1.png",
+            "title": "Mergers & Acquisitions Professional Expert",
+            "text": "The certification dives into the nuts and bolts of the transaction journey—auditing, consulting, deal advisory, and including insights into running a successful M&A practice.",
+            "link": {
+              "label": "LEARN MORE",
+              "url": "https://imaa-institute.org/m-and-a-trainings/m-and-a-professional/",
+              "wordpress_url": "/m-and-a-trainings/m-and-a-professional/"
+            }
+          },
+          {
+            "image": "about/2024-07-lma.png",
+            "title": "Legal Mergers & Acquisition Expert",
+            "text": "This certification covers the legal aspects of M&A, including best practices, legal contracts, tax considerations, and deal structuring in different geographies and jurisdictions .",
+            "link": {
+              "label": "LEARN MORE",
+              "url": "https://imaa-institute.org/m-and-a-trainings/legal-mergers-acquisitions-certification-training/",
+              "wordpress_url": "/m-and-a-trainings/legal-mergers-acquisitions-certification-training/"
+            }
+          },
+          {
+            "image": "about/2024-07-hrma.png",
+            "title": "HR Mergers & Acquisition Expert",
+            "text": "HRM&A covers all aspects of the transaction process relevant to human resources, including strategy, due diligence, Post Merger Integration, and compensation benefits.",
+            "link": {
+              "label": "LEARN MORE",
+              "url": "https://imaa-institute.org/m-and-a-trainings/human-resources-mergers-acquisitions-certification-training/",
+              "wordpress_url": "/m-and-a-trainings/human-resources-mergers-acquisitions-certification-training/"
+            }
+          },
+          {
+            "image": "about/2024-07-scde1.png",
+            "title": "Certified Separation, Carve-Out and Divestment Expert",
+            "text": "This training covers the entire divestment life cycle, from analyzing key business drivers and structuring the Transition Services Agreement to executing and implementing separations.",
+            "link": {
+              "label": "LEARN MORE",
+              "url": "https://imaa-institute.org/m-and-a-trainings/certified-separation-carve-out-and-divestment-expert-scde/",
+              "wordpress_url": "/m-and-a-trainings/certified-separation-carve-out-and-divestment-expert-scde/"
+            }
+          },
+          {
+            "image": "about/2024-07-valuation.png",
+            "title": "Valuation Training with Prof. Aswath Damodaran",
+            "text": "This training will provide you with the fundamentals of each approach to valuation, with limitations and caveats on the use of each, as well as extended examples in application.",
+            "link": {
+              "label": "LEARN MORE",
+              "url": "https://imaa-institute.org/m-and-a-trainings/valuation-damodaran/",
+              "wordpress_url": "/m-and-a-trainings/valuation-damodaran/"
+            }
+          }
+        ],
+        "prompt": "",
+        "button": null
+      },
+      {
+        "type": "offices",
+        "heading": "Contact Us",
+        "email": "info@imaa-institute.org",
+        "offices": [
+          {
+            "city": "NEW YORK",
+            "country": "United States of America",
+            "image": "about/2024-07-usa.webp",
+            "phone": "+1 212 249 6600",
+            "phone_href": "tel:+12122496600"
+          },
+          {
+            "city": "ZURICH",
+            "country": "Switzerland",
+            "image": "about/2024-07-switzerland.webp",
+            "phone": "+41 43 505 17 99",
+            "phone_href": "tel:+41435051799"
+          },
+          {
+            "city": "VIENNA",
+            "country": "Austria",
+            "image": "about/2024-07-austria.webp",
+            "phone": "+43 1 43 51 444",
+            "phone_href": "tel:+4314351444"
+          },
+          {
+            "city": "LONDON",
+            "country": "United Kingdom",
+            "image": "about/2024-07-uk.webp",
+            "phone": "+44 771 683 1414",
+            "phone_href": "tel:+447716831414"
+          },
+          {
+            "city": "SINGAPORE",
+            "country": "Singapore",
+            "image": "about/2024-07-singapore.webp",
+            "phone": "+65 3129 2799",
+            "phone_href": "tel:+6531292799"
+          },
+          {
+            "city": "MANILA",
+            "country": "Philippines",
+            "image": "about/2024-07-ph.webp",
+            "phone": "+63 2 3224 2088",
+            "phone_href": "tel:+63232242088"
+          }
+        ]
+      }
+    ]
+  },
+  "programmes": [
+    {
+      "code": "IM&A",
+      "slug": "ima",
+      "sort_order": 1
+    },
+    {
+      "code": "CPMI",
+      "slug": "cpmi",
+      "sort_order": 2
+    },
+    {
+      "code": "M&AP",
+      "slug": "map",
+      "sort_order": 3
+    },
+    {
+      "code": "LM&A",
+      "slug": "lma",
+      "sort_order": 4
+    },
+    {
+      "code": "HRM&A",
+      "slug": "hrma",
+      "sort_order": 5
+    },
+    {
+      "code": "SCDE",
+      "slug": "scde",
+      "sort_order": 6
+    },
+    {
+      "code": "VALUATION",
+      "slug": "valuation",
+      "sort_order": 7
+    }
+  ],
+  "members": [
+    {
+      "wordpress_id": 2501,
+      "slug": "prof-dr-christopher-kummer",
+      "member_type": "faculty",
+      "name": "Prof. Dr. Christopher Kummer",
+      "position": "Founder and CEO",
+      "summary": "Founder and CEO of IMAA",
+      "biography_html": "<p>Dr. Christopher Kummer is the President of IMAA and a Professor of Finance at IUBH, Lecturer at University HAG St. Gall, and Affiliate Faculty at Institute for Strategy &amp; Competitiveness at Harvard Business School. In his expertise, he combines profound knowledge as an academic, with hands-on knowhow and real-world insights as a practitioner in M&amp;A that he gained at PwC and as an adviser in M&amp;A and integration.</p><!-- hidden container 2501-a743c0f -->",
+      "location": "Vienna",
+      "linkedin_url": "https://www.linkedin.com/in/christopherkummer/",
+      "profile_url": "https://imaa-institute.org/team/prof-dr-christopher-kummer/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 1,
+      "photo": "team/2021-09-Prof.-Dr.-Christopher-Kummer.png",
+      "profile_details": {
+        "courses_taught": [
+          "Essentials of M&A",
+          "Due Diligence",
+          "Finance & Valuation",
+          "Essentials of Post Merger Integration (PMI)"
+        ],
+        "academic_background": [
+          "Ph.D., Business Administration, 2005",
+          "M.B.A., Strategy & Organization, 1999"
+        ]
+      },
+      "wordpress_profile_in_sitemap": false
+    },
+    {
+      "wordpress_id": 2511,
+      "slug": "prof-dr-aswath-damodaran",
+      "member_type": "faculty",
+      "name": "Prof. Dr. Aswath Damodaran",
+      "position": "Faculty",
+      "summary": "Valuation pioneer and finance professor at NYU Stern since 1986.",
+      "biography_html": "<p>Professor Aswath Damodaran is the Kerschner Family Chair Professor of Finance at the Stern School of Business at New York University. Over decades he has created and helped shape the field of valuation. He teaches the corporate finance and valuation courses in the MBA and executive programs. Being at NYU since 1986, he has received the Stern School of Business Excellence in Teaching Award. His research interests lie in valuation, portfolio management and applied corporate finance. He has published papers in the Journal of Financial and Quantitative Analysis, the Journal of Financial Economics and the Review of Financial Studies.</p><!-- hidden container 2511-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/aswathdamodaran/",
+      "profile_url": "https://imaa-institute.org/team/prof-dr-aswath-damodaran/",
+      "programmes": [
+        "VALUATION"
+      ],
+      "sort_order": 2,
+      "photo": "team/2021-09-prof-dr-aswath-damodaran.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Valuation"
+        ],
+        "functional_expertise": [
+          "Corporate Finance"
+        ],
+        "courses_taught": [
+          "Finance & Valuation"
+        ],
+        "academic_background": [
+          "Ph.D., Finance, 1985 | UCLA Anderson School of Management+Q12",
+          "M.B.A., Finance, 1981 | UCLA Anderson School of Management"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 81402,
+      "slug": "david-olsson",
+      "member_type": "faculty",
+      "name": "David Olsson",
+      "position": "Faculty",
+      "summary": "Managing Director of IMAA",
+      "biography_html": "<p>David Olsson has over 15 years of experience in business integration, development and M&amp;A in small and mid-market private, corporate and PE backed enterprises across UK and EMEA and North &amp; South Africa. David has developed and delivered M&amp;A deals, integrated, aligned and grown SME and corporate companies in UK, Russia, Turkey, Dubai, Egypt, Brazil, USA, Germany and Holland.</p>",
+      "location": "London",
+      "linkedin_url": "https://www.linkedin.com/in/david-olsson1969/",
+      "profile_url": "https://imaa-institute.org/team/david-olsson/",
+      "programmes": [
+        "CPMI",
+        "IM&A",
+        "SCDE"
+      ],
+      "sort_order": 3,
+      "photo": "team/2022-03-DAvid-Olsson.jpg",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Post Merger Integration"
+        ],
+        "functional_expertise": [
+          "Management Consulting"
+        ],
+        "courses_taught": [
+          "Essentials of M&A",
+          "Integration Governance & Project Management",
+          "Functional Integration",
+          "Culture Change and Management"
+        ],
+        "academic_background": [
+          "Social Science, Social Psychology, London Metropolitan University"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116480,
+      "slug": "tom-allen",
+      "member_type": "faculty",
+      "name": "Tom Allen",
+      "position": "Faculty",
+      "summary": "",
+      "biography_html": "<p>Tom Allen is a Chartered Accountant (ACA) and a member of the ICAEW. An alumnus of the Big Four firm PwC, he holds undergraduate and master’s degrees in Economics. He is the former CEO and co-founder of Navima, a SaaS M&amp;A platform, and previously served as the Head of M&amp;A and Corporate Development at Midaxo. With extensive experience leading over 40 M&amp;A transactions end-to-end, including buy and sell side and cross-border deals, Tom has authored M&amp;A playbooks for global companies such as Shell, KPMG, EY, Unilever, Philips, and Cognizant, as well as for numerous highly acquisitive PE-backed companies. Additionally, he contributes as a guest lecturer on M&amp;A topics for Warwick Business School&#8217;s EMBA program and is a speaker at global M&amp;A conferences.</p>",
+      "location": "London",
+      "linkedin_url": "https://linkedin.com/in/tomdallen/?originalSubdomain=uk",
+      "profile_url": "https://imaa-institute.org/team/tom-allen/",
+      "programmes": [
+        "IM&A",
+        "SCDE"
+      ],
+      "sort_order": 4,
+      "photo": "team/2024-07-Tom-Allen-BW2.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Due Diligence",
+          "Post Merger Integration",
+          "Joint Ventures",
+          "Separation",
+          "Strategy",
+          "Valuation"
+        ],
+        "functional_expertise": [
+          "Corporate Finance",
+          "Management Consulting"
+        ],
+        "courses_taught": [
+          "Essentials of M&A",
+          "Due Diligence",
+          "Finance & Valuation",
+          "Post Merger Integration"
+        ],
+        "academic_background": [
+          "ICAEW ACA, Accounting and Finance | 2010 – 2013",
+          "University of East Anglia | Master’s degree, Development Economics & International Development | 2007 – 2008"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 159286,
+      "slug": "abderrahman-benouhoud",
+      "member_type": "faculty",
+      "name": "Abderrahman Benouhoud",
+      "position": "Faculty",
+      "summary": "Senior finance executive with more than 20 years of international experience",
+      "biography_html": "<p><strong>Abderrahman Benouhoud </strong>is a senior finance executive with more than 20 years of international experience.</p><p>Throughout his career, Abderrahman has held senior finance leadership positions with multinational listed organizations including Global Blue (Shift 4 – NYSE:FOUR), Virbac (Euronext : VIRP) and Accor (Euronext: AC), covering corporate finance, M&amp;A, investor relations, FP&amp;A, treasury, governance and business transformation.</p><p>He has collaborated on execution of several M&amp;A transactions across Europe, Asia, Latin America and Africa, spanning the full transaction lifecycle from target screening and valuation to due diligence, negotiation and post-merger integration.</p><p>Abderrahman brings a practitioner’s perspective to M&amp;A, with a particular focus on due diligence, valuation, value creation and integration planning. He is also an Adjunct Professor of Finance at EDHEC Business School, where he teaches Corporate Finance and Mergers &amp; Acquisitions.</p><!-- hidden container 159286-a743c0f -->",
+      "location": "Saudi Arabia",
+      "linkedin_url": "https://www.linkedin.com/in/abderrahman-benouhoud/",
+      "profile_url": "https://imaa-institute.org/team/abderrahman-benouhoud/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 5,
+      "photo": "team/2026-10-Abderrahman-Benouhoud.webp",
+      "profile_details": {
+        "functional_expertise": [
+          "Corporate Finance",
+          "FP&A",
+          "Governance",
+          "Finance Transformation"
+        ],
+        "courses_taught": [
+          "Essentials of M&A",
+          "Due Diligence",
+          "Financial & Valuation",
+          "Post Merger Integration"
+        ],
+        "academic_background": [
+          "EDHEC Business School",
+          "HARVARD Business School"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116481,
+      "slug": "ajit-sane",
+      "member_type": "faculty",
+      "name": "Ajit Sane",
+      "position": "Faculty",
+      "summary": "Expert in acquisition integration, co-founder of Spanatix Inc.",
+      "biography_html": "<p>M&amp;A professional with multiple years of experience in leading acquisition integration teams in Corporate Development, Integration Management Office, IT, Sales and Marketing Corporate Functions. Led dozens of Acquisitions/JV’s/Divestitures E2E from Due Diligence, Go to Market Strategy, Integration Planning, Execution, Customer/Partner Migration, and Operational Transition. Managed large IT/Operations transformational initiatives in support of changing business models and processes. Co-founded Spanatix Inc., Sport Social Networking and Gaming startup.</p><!-- hidden container 116481-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/ajit-sane-474b993/",
+      "profile_url": "https://imaa-institute.org/team/ajit-sane/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 6,
+      "photo": "team/2024-07-Ajit-Sane.png",
+      "profile_details": {
+        "functional_expertise": [
+          "IT"
+        ],
+        "courses_taught": [
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "University of San Francisco | Masters, Sports Management | 2007 – 2008"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116484,
+      "slug": "alexis-debernardis",
+      "member_type": "faculty",
+      "name": "Alexis DeBernardis",
+      "position": "Faculty",
+      "summary": "Antitrust expert at Crowell & Moring, specializing in M&A and competitor collaborations.",
+      "biography_html": "<p>Alexis is a member of Crowell &amp; Moring&#8217;s Antitrust Group, where she represents corporate clients in a wide range of antitrust issues, including competitor collaborations, teaming arrangements, M&amp;A, joint ventures, information sharing, interactions with competitors, and issues related to the Hart-Scott-Rodino Antitrust Improvements Act. Her experience covers several industries, in particular, healthcare providers and payers, aerospace and defense, telecommunications, and financial services, and she regularly represents clients before the U.S. antitrust agencies.</p><!-- hidden container 116484-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/alexis-debernardis-07336a26",
+      "profile_url": "https://imaa-institute.org/team/alexis-debernardis/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 7,
+      "photo": "team/2024-07-Alexis-DeBernardis.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Anti-Trust, Intellectual Property & Regulatory Affairs",
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "The George Washington University Law School | J.D. | 2005 – 2008",
+          "University of Florida B.S., Finance | 2001 – 2004"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116200,
+      "slug": "alexis-gilman",
+      "member_type": "faculty",
+      "name": "Alexis Gilman",
+      "position": "Faculty",
+      "summary": "Antitrust expert, partner at Crowell & Moring.",
+      "biography_html": "<p>Alexis J. Gilman is a partner in Crowell &amp; Moring’s Antitrust &amp; Competition Group in Washington, DC. Alexis advises and represents clients on a broad range of civil antitrust matters, including merger reviews and clearances, government investigations, premerger Hart-Scott-Rodino (HSR) notifications, and antitrust litigation, with a particular focus on representing merging parties and third parties in merger investigations by the Federal Trade Commission, Department of Justice, and state attorneys general. Prior to Crowell, Alexis served at the Federal Trade Commission for seven years, including three years as head of the Mergers IV Division, and he also worked as an Associate in the antitrust group at another international law firm.</p>",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/alexisgilman/",
+      "profile_url": "https://imaa-institute.org/team/alexis-gilman/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 8,
+      "photo": "team/2024-07-Alexis-Gilman.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Due Diligence",
+          "Joint Ventures",
+          "Separation",
+          "Strategy"
+        ],
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Anti-Trust, Intellectual Property & Regulatory Affairs"
+        ],
+        "academic_background": [
+          "The George Washington University Law School, J.D., With Honors, 2002",
+          "Williams College, B.A., 1996"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116203,
+      "slug": "alisa-choo",
+      "member_type": "faculty",
+      "name": "Alisa Choo",
+      "position": "Faculty",
+      "summary": "M&A expert and certified coach with 10+ years in organizational change.",
+      "biography_html": "<p>Alisa is an Associate Principal within Mercer’s Asia M&amp;A Transaction Services Team. She has more than a decade of experience in designing and managing organizational change, organizational wellness, leadership development, training and crisis management projects across a wide range of industries in APAC, including financial services, oil &amp; gas, information technology and FMCG. Alisa holds a master’s degree in organizational psychology from City University of New York. She is an ICF Certified Master Performance Coach and a certified Professional Scrum Master™ (PSM I).</p><!-- hidden container 116203-a743c0f -->",
+      "location": "Singapore",
+      "linkedin_url": "https://www.linkedin.com/in/alisachoo-orgpsychology/",
+      "profile_url": "https://imaa-institute.org/team/alisa-choo/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 9,
+      "photo": "team/2024-07-Alisa-Choo.png",
+      "profile_details": {
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Culture Change and Management",
+          "Essentials of Post Merger Integration (PMI)",
+          "Additional HR Issues in M&A"
+        ],
+        "academic_background": [
+          "Baruch College | MSc, Industrial-Organizational Psychology | 2009 – 2010",
+          "UCSI | Master of Science, Child Psychology | 2018 – 2021"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 2523,
+      "slug": "andre-gan",
+      "member_type": "faculty",
+      "name": "Andre Gan",
+      "position": "Faculty",
+      "summary": "Head of Corporate & Competition at Wong & Partners and Baker McKenzie, focusing on M&A and venture capital.",
+      "biography_html": "<p>Andre heads the Corporate, Commercial &amp; Securities and Competition Practice Group of Wong &amp; Partners, and the regional mergers &amp; acquisitions (M&amp;A) practice of Baker McKenzie&#8217;s Asian offices. His practice covers mergers and acquisitions, corporate securities, venture capital and private equity, and competition.</p><p>Andre is recognised in the leading legal directories including Chambers and Legal 500, and has published numerous articles in leading business publications in relation to corporate and competition law. He has also worked in the Singapore and London offices of Baker &amp; McKenzie International.</p><!-- hidden container 2523-a743c0f -->",
+      "location": "Malaysia",
+      "linkedin_url": "https://www.linkedin.com/in/andregan/",
+      "profile_url": "https://imaa-institute.org/team/andre-gan/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 10,
+      "photo": "team/2021-09-Andre-Gan.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Commercial, Contract & Labor Law"
+        ],
+        "academic_background": [
+          "Monash University (LL.B., Honors) (1994)",
+          "Monash University (Bachelor of Economics) (1992)"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 119245,
+      "slug": "anirvan-sen-cpmi",
+      "member_type": "faculty",
+      "name": "Anirvan Sen, CPMI",
+      "position": "Faculty",
+      "summary": "Leadership advisor with expertise in M&A and transformation.",
+      "biography_html": "<p>Anirvan Sen is an experienced leadership and strategy advisor with 25+ years senior management experience across Europe, APAC, South Asia, Middle-East &amp; Africa, and the US with some of the world’s largest companies including General Electric, Stryker, AkzoNobel, Coca Cola, and ManpowerGroup.</p><p>He has a strong track record of leading, mentoring and advising senior business leaders with growth, mergers &amp; acquisitions (M&amp;A) and transformation initiatives. He has been involved in several multi-billion dollar M&amp;A and other transformation projects. In addition, has mentored 500+ transformation and change professionals globally including strategic leadership mentoring, cultural transformation and board driven strategies across a wide range of industry sectors.</p><!-- hidden container 119245-a743c0f -->",
+      "location": "Netherlands",
+      "linkedin_url": "https://www.linkedin.com/in/anirvansen/?originalSubdomain=nl",
+      "profile_url": "https://imaa-institute.org/team/anirvan-sen-cpmi/",
+      "programmes": [
+        "CPMI",
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 11,
+      "photo": "team/2024-08-Anirvan-Sen-CPMI.png",
+      "profile_details": {
+        "courses_taught": [
+          "Integration Management & Synergies",
+          "Essentials of Post Merger Integration (PMI)",
+          "Culture Change and Management"
+        ],
+        "academic_background": [
+          "Netaji Subhas Institute of Technology | Bachelor of Engineering (B.E.), Instrumentation and Control | 1990 – 1994"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116207,
+      "slug": "anthony-balzano",
+      "member_type": "faculty",
+      "name": "Anthony Balzano",
+      "position": "Faculty",
+      "summary": "20+ years in audit, risk, and integration for Fortune 500 companies.",
+      "biography_html": "Anthony Balzano brings more than 20 years of global experience in the areas of internal audit, risk management, Sarbanes-Oxley Compliance, strategic advisory consulting, business integration, transformation and process improvement for Fortune 500 companies including Zoetis, Roche, Siemens, Barr Pharmaceuticals, BioVeris, Schering Plough and the Madison Square Garden Company. Prior to his current role, Mr. Balzano was VP of Global Business Integration at Zoetis where he built the organization’s Integration Department including the approach, methodology and delivery model. Since then, he has successfully integrated 12 companies into Zoetis.",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/anthony-balzano1/",
+      "profile_url": "https://imaa-institute.org/team/anthony-balzano/",
+      "programmes": [
+        "CPMI"
+      ],
+      "sort_order": 12,
+      "photo": "team/2024-07-Anthony-Balzano.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Due Diligence",
+          "Joint Ventures",
+          "Post Merger Integration",
+          "Separation",
+          "Strategy",
+          "Valuation"
+        ],
+        "functional_expertise": [
+          "Corporate Finance",
+          "IT",
+          "Legal",
+          "HR"
+        ],
+        "courses_taught": [
+          "Essentials of Post Merger Integration (PMI)",
+          "Functional Integration",
+          "Integration Governance & Project Management",
+          "Culture Change and Management"
+        ],
+        "academic_background": [
+          "University of Scranton | B.S, Finance, Spanish",
+          "Wharton School of Business – Finance for Professionals | CFE, CRMA, CPMI"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116210,
+      "slug": "ashley-linken-mba-grp",
+      "member_type": "faculty",
+      "name": "Ashley Linken, MBA, GRP",
+      "position": "Faculty",
+      "summary": "Principal at Mercer, expert in global M&A integration and project management.",
+      "biography_html": "<p>Ashley is a Principal based in the New York Metro area at Mercer, a global consulting leader in talent, health, retirement, and investment. She specializes in the integration and project management of global Corporate M&amp;A Transactions.</p><!-- hidden container 116210-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/ashley-linken/",
+      "profile_url": "https://imaa-institute.org/team/ashley-linken-mba-grp/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 13,
+      "photo": "team/2024-07-Ashley-Linken.png",
+      "profile_details": {
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Culture Change and Management",
+          "Due Diligence",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "University at Albany | Master of Business Administration (M.B.A.), Human Resource Information Systems | 2008 – 2010",
+          "University at Albany | Bachelor of Science (BS), Business Administration (Information Technology Management/Management) | 2004 – 2008"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116217,
+      "slug": "candy-dai",
+      "member_type": "faculty",
+      "name": "Candy Dai",
+      "position": "Faculty",
+      "summary": "Mercer’s M&A leader in SE Asia with 15+ years of HR integration expertise",
+      "biography_html": "<p>Candy is the M&amp;A Advisory Services Leader for Southeast Asia at Mercer. She specializes in due diligence and post-deal set up/integration of HR programs<br> Candy has over fifteen years of consulting experience and has advised both Private Equity as well as Corporate clients in the North America and Asia on various types of transactions including acquisitions, divestitures merger. She has worked on over a hundred transactions covering various sectors such as technology, manufacturing, retail, healthcare, media, telecommunication and pharmaceutical industries.</p><!-- hidden container 116217-a743c0f -->",
+      "location": "Singapore",
+      "linkedin_url": "https://www.linkedin.com/in/candy-dai-59549052/",
+      "profile_url": "https://imaa-institute.org/team/candy-dai/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 14,
+      "photo": "team/2024-07-Candy-Dai.png",
+      "profile_details": {
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Culture Change and Management",
+          "Due Diligence",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "University of Toronto | Bachelor of Science (BS), Actuarial Science | 2004 – 2008"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116229,
+      "slug": "caroline-berube",
+      "member_type": "faculty",
+      "name": "Caroline Berube",
+      "position": "Faculty",
+      "summary": "Legal expert with 24+ years’ expertise in M&A and IP law.",
+      "biography_html": "<p>Caroline is a Canadian New York/Singapore attorney who has been based in Asia handling corporate/ commercial law and IP matters in the Asia Pacific region for more than 24 years. She has built up a well-respected level of expertise and is especially well-regarded for her practical advice on M&amp;A and IP in Asian countries.</p><p>As the managing partner of HJM Asia Law &amp; Co LLC since 2007, Caroline leads the HJM teams in China and Singapore advising mid-size companies on their corporate, commercial and intellectual property needs in various industries including manufacturing, energy, trading, technology, biotechnology, e-commerce and real-estate.</p><!-- hidden container 116229-a743c0f -->",
+      "location": "China",
+      "linkedin_url": "https://www.linkedin.com/in/caroline-berube-9aa7b97/",
+      "profile_url": "https://imaa-institute.org/team/caroline-berube/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 15,
+      "photo": "team/2024-07-Caroline-Berube.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Anti-Trust, Intellectual Property & Regulatory Affairs",
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "McGill University | LL.B.and BC.L, Law | 1995 – 1998",
+          "National University of Singapore | Bachelor of Laws – LLB, China law and international lawJul 1998 – May 1999"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116231,
+      "slug": "chirag-shah-mba-cpa-ca",
+      "member_type": "faculty",
+      "name": "Chirag Shah, MBA, CPA CA",
+      "position": "Faculty",
+      "summary": "PwC UAE advisor specializing in M&A tax and international transactions.",
+      "biography_html": "<p>Chirag Shah is currently seconded to PwC UAE from PwC London &#8211; to be part of the Private Equity and M&amp;A tax team at PwC Dubai, providing services in relation to M&amp;A transactions and international tax to a variety of clients &#8211; advising on all aspects of a deal from initial due diligence and structuring, tax modelling and SPA implications, through to post deal integration. He has managed a wide range of global, domestic and crossborder transactions (both buy-side and sell-side) including acquisitions, divestments, reorganisations, refinancing and management buy-outs and has extensive experience involving a wide range of analytical, organisational, technical, problem-solving, presentational and communication skills.</p><!-- hidden container 116231-a743c0f -->",
+      "location": "United Arab Emirates",
+      "linkedin_url": "https://www.linkedin.com/in/chirag-shah-67255629/",
+      "profile_url": "https://imaa-institute.org/team/chirag-shah-mba-cpa-ca/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 16,
+      "photo": "team/2024-07-Chirag-Shah.png",
+      "profile_details": {
+        "courses_taught": [
+          "Essentials of M&A",
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "University of Bristol | Master of Science (MSc), Economics and Finance | 2006 – 2007"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 57930,
+      "slug": "chris-mellen",
+      "member_type": "faculty",
+      "name": "Chris Mellen",
+      "position": "Faculty",
+      "summary": "Senior Managing Director at VRC; expert in business valuation and M&A.",
+      "biography_html": "<p>Chris Mellen is a Senior Managing Director with Valuation Research Corporation (VRC), leading its Boston office. Previously, he was president of Delphi Valuation Advisors, Inc., which he founded in 2000 and sold to VRC in 2015. His experience includes involvement in over 3,500 business and intangible asset valuations since 1989. He has served on several valuation committees, led over 100 seminars, published over 40 articles, and provided expert testimony in court. Chris is author of the third edition of a 480-page text book, Valuation for M&amp;A: Building and Measuring Private Company Value, published by Wiley in 2018.</p>",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/chris-mellen-522181/",
+      "profile_url": "https://imaa-institute.org/team/chris-mellen/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 17,
+      "photo": "team/2022-03-ChrisMellen-1.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Strategy",
+          "Valuation"
+        ],
+        "functional_expertise": [
+          "Management Consulting",
+          "Pre-M&A and M&A Business Valuation, Purchase Price Allocation"
+        ],
+        "courses_taught": [
+          "Finance & Valuation"
+        ],
+        "academic_background": [
+          "Babson F.W. Olin Graduate School of Business | MBA, Finance | 1987 – 1990",
+          "McGill University | BA, Industrial Relations, Economics | 1981 – 1985"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 119246,
+      "slug": "christopher-young",
+      "member_type": "faculty",
+      "name": "Christopher Young",
+      "position": "Faculty",
+      "summary": "",
+      "biography_html": "",
+      "location": "",
+      "linkedin_url": "",
+      "profile_url": "https://imaa-institute.org/team/christopher-young/",
+      "programmes": [],
+      "sort_order": 18,
+      "photo": "team/2024-08-christopher-young.png",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116240,
+      "slug": "clemens-leitner-ll-m",
+      "member_type": "faculty",
+      "name": "Clemens Leitner, LL.M",
+      "position": "Faculty",
+      "summary": "Foreign Qualified Lawyer in Singapore specializing in M&A and finance law.",
+      "biography_html": "<p>Clemens Leitner studied law at the University of Graz and completed his Master´s degree in International Banking and Finance at the University College London (UCL). Subsequently, he worked during several years for various international law firms in Vienna. He joined Luther in May 2017 as a &#8220;Registered Foreign Lawyer&#8221;.</p><p>In 2020, Clemens passed the “Foreign Practitioner Examination” which generally entitles him to practice Singapore law in the Permitted Areas of Law, such as Banking &amp; Finance, Corporate &amp; Mergers &amp; Acquisitions and Securities Law. He is now registered in Singapore as “Foreign Qualified Lawyer”.</p><!-- hidden container 116240-a743c0f -->",
+      "location": "Singapore",
+      "linkedin_url": "https://www.linkedin.com/in/clemens-leitner-a84640133/",
+      "profile_url": "https://imaa-institute.org/team/clemens-leitner-ll-m/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 19,
+      "photo": "team/2024-07-Clemens-Leitner.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "UCLMaster of Laws (LL.M.), International Banking and Finance | 2010 – 2011",
+          "University of Graz | Law Diploma (Magister Iuris) | 2005 – 2009"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 2532,
+      "slug": "darryl-kinneally",
+      "member_type": "faculty",
+      "name": "Darryl Kinneally",
+      "position": "Faculty",
+      "summary": "EY ASEAN Tax Leader, expert in M&A and international tax.",
+      "biography_html": "<p>Darryl is EY Asean Private Equity Tax Leader and Partner, International Tax and Transaction Services at Ernst &amp; Young Solutions LLP in Singapore. He has extensive experience in international tax and the tax aspects of M&amp;A and infrastructure funding.</p><p>Darryl handles tax structuring and due diligence relating to M&amp;As for businesses locally and internationally. His clients include listed Singapore companies and multinationals from sectors such as precision engineering, travel, private equity funds, and food and beverage.</p><p>He is a Chartered Tax Adviser of The Tax Institute, Australia, and member of Chartered Accountants Australia and New Zealand. Darryl holds a Bachelor of Commerce from University of Queensland, Australia.</p><!-- hidden container 2532-a743c0f -->",
+      "location": "Singapore",
+      "linkedin_url": "https://www.linkedin.com/in/darryl-kinneally-56822412/",
+      "profile_url": "https://imaa-institute.org/team/darryl-kinneally/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 20,
+      "photo": "team/2021-09-Darryl-Kinneally.png",
+      "profile_details": {
+        "courses_taught": [
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "The University of Queensland | Commerce, Business Finance | 1982 – 1985"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116488,
+      "slug": "dave-cummings",
+      "member_type": "faculty",
+      "name": "Dave Cummings",
+      "position": "Faculty",
+      "summary": "Co-founder of Agile Equity, specializing in M&A and corporate finance.",
+      "biography_html": "<p>David Cummings has been a co-founding Managing Partner of Agile Equity since 1998. Mr. Cummings is responsible for the strategic development and continued expansion of the firm’s investment banking business, including sourcing and executing both domestic and International transactions in IT services, software and healthcare industries.<br> Mr. Cummings has over eighteen years of corporate finance experience through a diverse background in mergers and acquisitions, equity and debt financing activities. Mr. Cummings has successfully completed over one-hundred M&amp;A transaction with several billion dollars of enterprise value for both privately held and large multinational public companies. In addition, he has authored numerous corporate finance articles for various professional journals, magazines and periodicals.</p><!-- hidden container 116488-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/agileequitycom/",
+      "profile_url": "https://imaa-institute.org/team/dave-cummings/",
+      "programmes": [
+        "M&AP"
+      ],
+      "sort_order": 21,
+      "photo": "team/2024-07-Dave-Cummings1.png",
+      "profile_details": {
+        "courses_taught": [
+          "Running a Successful M&A Practice"
+        ],
+        "academic_background": [
+          "Post graduate work at New York University, Stern School of Business",
+          "Bachelors of Sciences Degree in Business Administration and Management"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 2536,
+      "slug": "dhruv-mehra",
+      "member_type": "faculty",
+      "name": "Dhruv Mehra",
+      "position": "Faculty",
+      "summary": "Mercer Partner with 20+ years in global M&A human capital consulting.",
+      "biography_html": "<p>Dhruv Mehra is a Partner in Mercer US &amp; Canada M&amp;A Advisory Services business, based in San Francisco. Prior to his current role, he led the M&amp;A Advisory services business for Mercer for the Asia Middle-east Africa region. He has over 20 years of human capital consulting experience and has worked on a broad range of assignments including cross-border M&amp;A due diligence, do-by-close and post-close support for mergers, joint-ventures, spin-offs, carve-outs and reorganizations.</p><!-- hidden container 2536-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/mehradhruv/",
+      "profile_url": "https://imaa-institute.org/team/dhruv-mehra/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 22,
+      "photo": "team/2021-09-Dhruv-Mehra.png",
+      "profile_details": {
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Culture Change and Management",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "NYU Stern School of Business | MBA, Global Business | 2007 – 2010",
+          "Ohio Wesleyan University | Bachelor of Liberal Arts, Math, Finance | 1998 – 2002"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 57737,
+      "slug": "don-h-noble",
+      "member_type": "faculty",
+      "name": "Donald H. Noble",
+      "position": "Faculty",
+      "summary": "Expert in growth hacking for start-ups, integrating finance and tech.",
+      "biography_html": "<p>Donald H Noble has a proven track record in finance and technology at high growth and start-up companies. He has extensive experience in<br> growth hacking in companies by integrating all components of finance accounting and technology into the strategic and tactical plans of the company.</p><!-- hidden container 57737-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/donaldnoble/",
+      "profile_url": "https://imaa-institute.org/team/don-h-noble/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 23,
+      "photo": "team/2022-03-Don-Noble.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Corporate Finance"
+        ],
+        "courses_taught": [
+          "Essentials of M&A",
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "Doctor of Science Candidate, Business Administration and Management – Saint Leo University",
+          "Master of Science, Finance – Boston College Carroll School of Management"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 81414,
+      "slug": "dr-alexander-herzfeldt",
+      "member_type": "faculty",
+      "name": "Dr. Alexander Herzfeldt",
+      "position": "Faculty",
+      "summary": "Strategy and software expert with 10+ years in LifeSciences.",
+      "biography_html": "<p>People and results-oriented professional combining both strategy consulting experience (strategy development, M&amp;A, reorganization) and software consulting experience (custom software development, digital service development, digital transformation) with a proven sales record. Offering 10 years of industry experience mainly in the LifeSciences and Software industries and being delivery responsible for multiple consulting and software development projects at any point in time. A leader who empowers, motivates and trains others to achieve exceptional results. Consistently surpassing clients’ expectations by building on strong team skills, analytical skills, an ownership mindset, and unique intercultural skills.</p><!-- hidden container 81414-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/alexander-herzfeldt-91969510/",
+      "profile_url": "https://imaa-institute.org/team/dr-alexander-herzfeldt/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 24,
+      "photo": "team/2023-06-Alexander-Herzfeldt.png",
+      "profile_details": {
+        "functional_expertise": [
+          "IT"
+        ],
+        "courses_taught": [
+          "Essentials of M&A",
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "Technical University of Munich | Doctor of Philosophy (Ph.D.), Management Information Systems | 2010 – 2013",
+          "Technical University of Munich | M.Sc. with honors, Finance and Information Management | 2005 – 2010"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 83735,
+      "slug": "dr-hermann-ali-hinderer",
+      "member_type": "faculty",
+      "name": "Dr. Hermann Ali Hinderer",
+      "position": "Faculty",
+      "summary": "M&A partner with deep cross-border experience in various industries.",
+      "biography_html": "<p>Dr. Hermann Ali Hinderer is a Partner at Heuking Kühn Lüer Wojtek with extensive experience with regards to all legal aspects of an M&amp;A transaction. He has been admitted as a lawyer since 2004 in Germany and 2009 in California, USA. Hermann has advised corporate investors and private equity funds on numerous domestic and cross-border transactions (buy-side and sell-side) accross a broad range of industries, including but not limited to automotive, IT, health-care and mechanical engineering. A special mention is to be made about his extremely broad and in-depth knowledge and his ability to quickly identify pitfalls in a transaction.</p>",
+      "location": "Germany",
+      "linkedin_url": "https://www.linkedin.com/in/hahinderer/?originalSubdomain=de",
+      "profile_url": "https://imaa-institute.org/team/dr-hermann-ali-hinderer/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 25,
+      "photo": "team/2023-08-Hermann-Ali-Hinderer.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Private Equity Transactions",
+          "Pre-deal analysis",
+          "Due Diligence",
+          "Venture Capital Investments",
+          "Joint Ventures"
+        ],
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Commercial, Contract & Labor Law",
+          "Anti-Trust, Intellectual Property & Regulatory Affairs"
+        ],
+        "academic_background": [
+          "University of San Diego School of Law | Master of Laws (LLM) 2005 – 2006",
+          "Humboldt-Universität zu Berlin Law, | 2001 – 2004"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 119248,
+      "slug": "dr-stefan-gurmann-m-b-l-hsg",
+      "member_type": "faculty",
+      "name": "Dr. Stefan Gurmann, M.B.L.-HSG",
+      "position": "Faculty",
+      "summary": "Corporate lawyer and professor specializing in M&A and international disputes.",
+      "biography_html": "<p>FH-Hon.-Prof. Dr. Stefan Gurmann, M.B.L.-HSG is an attorney-at-law in Vienna. The focus of his work is in the areas of Corporate and Commercial Law, Mergers &amp; Acquisitions, Insolvency Law, Litigation with a focus on commercial and international disputes as well as in the specialization of rendering legal advice for international businesses and clients.</p><p>Stefan Gurmann has been an University Assistant at the Institute for Criminal Law, Criminal Procedures and Criminology at the Karl-Franzens University Graz and teaches Corporate and Insolvency Law as Honorary Professor at the CAMPUS 02 University of Applied Sciences in Graz. He is the author of numerous publications in his fields of competence.</p><!-- hidden container 119248-a743c0f -->",
+      "location": "Austria",
+      "linkedin_url": "https://www.linkedin.com/in/stefan-gurmann/?originalSubdomain=at",
+      "profile_url": "https://imaa-institute.org/team/dr-stefan-gurmann-m-b-l-hsg/",
+      "programmes": [
+        "LM&A"
+      ],
+      "sort_order": 26,
+      "photo": "team/2024-08-Dr.-Stefan-Gurmann.png",
+      "profile_details": {
+        "courses_taught": [
+          "Commercial, Contract & Labor Law"
+        ],
+        "academic_background": [
+          "University of St.Gallen | MBL-HSG, Master of European and International Business Law | 2014 – 2015",
+          "Harvard Law School | 2015"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116492,
+      "slug": "ellen-federman",
+      "member_type": "faculty",
+      "name": "Ellen Federman",
+      "position": "Faculty",
+      "summary": "Specialist in business strategy and HR for corporate transactions.",
+      "biography_html": "<p>Ellen Federman focuses on business and HR strategy and complex project management within the context of corporate transactions. Her recent client engagements include: developing and delivering innovative global post-merger cultural integration program for a German-headquartered biopharmaceutical company involving 1,000 workshops in dozens of languages, conducting strategy development, organizational effectiveness and process redesign studies across a wide range of industries and functions, and providing organization design support for the largest oil and gas merger in Canadian history, with particular focus on achievement of synergy targets</p><!-- hidden container 116492-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/ellenfedermanconklin/",
+      "profile_url": "https://imaa-institute.org/team/ellen-federman/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 27,
+      "photo": "team/2024-07-Ellen-Federman.png",
+      "profile_details": {
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Culture Change and Management",
+          "Due Diligence",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "Juris Doctor, Cardozo School of Law",
+          "MBA, The Tuck School of Business at Dartmouth"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116496,
+      "slug": "gabe-langerak",
+      "member_type": "faculty",
+      "name": "Gabe Langerak",
+      "position": "Faculty",
+      "summary": "HR advisor focusing on M&A compensation and benefits.",
+      "biography_html": "<p>Gabe Langerak partners with organizations going through transactions from an HR perspective and coordinates support, marketing and intellectual capital development in Europe. Throughout the stages of an M&amp;A, Gabe assists multinational companies on all aspects of their compensation and benefit arrangements, managing projects on the HR impacts of the transaction, cross border and multi-country benefit and compensation reviews, benefit audits and pension due diligence c:ind purchase price adjustments.</p><!-- hidden container 116496-a743c0f -->",
+      "location": "Netherlands",
+      "linkedin_url": "https://www.linkedin.com/in/gabelangerak/",
+      "profile_url": "https://imaa-institute.org/team/gabe-langerak/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 28,
+      "photo": "team/2024-07-Gabe-Langerak.png",
+      "profile_details": {
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Culture Change and Management",
+          "Due Diligence",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "MSc, Actuarial Science, University of Amsterdam"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 124352,
+      "slug": "gregg-clark",
+      "member_type": "faculty",
+      "name": "Gregg Clark",
+      "position": "Faculty",
+      "summary": "Founder and CEO of Serenity Strategy, specializing in M&A and digital strategy.",
+      "biography_html": "<p>Gregg Clark is an author, advisor, executive coach, consultant, public speaker, and the Founder and CEO of Serenity Strategy, a zero-infrastructure digital and M&amp;A advisory firm. He started his professional career as a management consultant and then as the member of a turn-around team of a Wasserstein-Perella / Blackstone LBO. He returned to consulting in 1993 and went on to build and run consulting practices, two in excess of 1,000 people, and serve clients on a wide array of topics in a variety industries. Gregg&#8217;s specialties became strategy (specifically, digital strategy) and Mergers &amp; Acquisition. His main industry specialties are CPG, Retail, Technology and Manufacturing. He spent about 20 years of his career with both EY and Accenture.</p>",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/greggaclark/",
+      "profile_url": "https://imaa-institute.org/team/gregg-clark/",
+      "programmes": [
+        "IM&A",
+        "SCDE"
+      ],
+      "sort_order": 29,
+      "photo": "team/2024-09-Gregg-Clark.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Strategy",
+          "Valuation"
+        ],
+        "functional_expertise": [
+          "Corporate Finance",
+          "Management Consulting"
+        ],
+        "courses_taught": [
+          "FDD, Valuation"
+        ],
+        "academic_background": [
+          "Purdue University, BS Electrical Engineering/Industrial Management",
+          "Krannert Business School"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116256,
+      "slug": "guilia-vignolo",
+      "member_type": "faculty",
+      "name": "Guilia Vignolo",
+      "position": "Faculty",
+      "summary": "International lawyer specializing in M&A, contracts, and arbitration.",
+      "biography_html": "<p>Giulia Vignola is an international lawyer and attorney, qualified to practice both in France and Italy. Giulia works as a legal advisor in international contracts and negotiations for M&amp;As, corporate and commercial contracts and agreements. As an expert in international law and international relations, and through a large network built in several years of work experience in numerous countries (France, UK, Hungary, USA, China, Japan, Russia), she has assisted clients in their management of multi-disciplinary efforts to advance large-scale internalization projects including joint ventures. She also acts as a trial attorney for specific legal disputes in front of first- and second degree courts of law and courts of arbitration.</p><!-- hidden container 116256-a743c0f -->",
+      "location": "Italy",
+      "linkedin_url": "https://www.linkedin.com/in/giulia-vignolo-25450511/",
+      "profile_url": "https://imaa-institute.org/team/guilia-vignolo/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 30,
+      "photo": "team/2024-07-Guilia-Vignolo.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "Paris-Pantheon-Assas University | Master en Droit International, International Law | 2005 – 2007",
+          "Luiss Guido Carli University | Laurea (Bachelor’s degree), International and Italian Law | 2001 – 2005"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116258,
+      "slug": "hanna-heinz",
+      "member_type": "faculty",
+      "name": "Hanna Heinz",
+      "position": "Faculty",
+      "summary": "Mercer M&A advisor with expertise in HR due diligence, carve-outs, and integration.",
+      "biography_html": "<p>Hanna is part of Mercer’s M&amp;A advisory practice and advises clients in all aspects of HR M&amp;A from Due Diligence over PMO and Carve Outs until Integrations.<br> Before joining Mercer in 2022, Hanna gained over 4 years of relevant consulting and HR experience, including in a manufacturing company with focus on C&amp;B.</p>",
+      "location": "Germany",
+      "linkedin_url": "https://www.linkedin.com/in/hanna-heinz-4a597ab8/",
+      "profile_url": "https://imaa-institute.org/team/hanna-heinz/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 31,
+      "photo": "team/2024-07-Hanna-Heinz.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Due Diligence",
+          "Post Merger Integration",
+          "Separation",
+          "Strategy"
+        ],
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Culture Change and Management",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "IU International University of Applied Sciences | Master of Arts – MA, General Management | 2018 – Jun 2024"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116260,
+      "slug": "haze-zhang",
+      "member_type": "faculty",
+      "name": "Haze Zhang",
+      "position": "Faculty",
+      "summary": "Mercer’s M&A leader in Greater China and SEA, specializing in HR diligence and integration.",
+      "biography_html": "<p>Haze Zhang is a Senior Principal and Mercer’s M&amp;A Advisory Services Leader for Greater China and SEA. She specializes in undertaking operational and HR diligence and leading post deal integration engagements for private equity and corporate clients. Haze is also proficient in identifying and quantifying synergy benefits and related implementation costs.</p><!-- hidden container 116260-a743c0f -->",
+      "location": "Singapore",
+      "linkedin_url": "https://www.linkedin.com/in/hazezhang/",
+      "profile_url": "https://imaa-institute.org/team/haze-zhang/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 32,
+      "photo": "team/2024-07-Haze-Zhang.png",
+      "profile_details": {
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Culture Change and Management",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "The University of Hong Kong | Master, Organization and Human Resource Management | 2011 – 2013"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116263,
+      "slug": "helen-curtis",
+      "member_type": "faculty",
+      "name": "Helen Curtis",
+      "position": "Faculty",
+      "summary": "Dual-qualified lawyer with expertise in M&A, restructuring, and corporate transactions.",
+      "biography_html": "<p>Dual-qualified in the USA and UK, Helen has vast knowledge and experience in business acquisitions and disposals, investment rounds, MBOs, restructuring and other corporate work. She acts for start-ups and SME companies, partnerships, entrepreneurs, investors and shareholders. For the first eight years of her career, Helen worked at international firm Shearman &amp; Sterling. Prior to Devonshires, Helen was a Partner at Gannons Solicitors.</p><!-- hidden container 116263-a743c0f -->",
+      "location": "London",
+      "linkedin_url": "https://www.linkedin.com/in/helen-curtis-91b77b/",
+      "profile_url": "https://imaa-institute.org/team/helen-curtis/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 33,
+      "photo": "team/2024-07-Helen-Curtis.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "London College of Law – 1995 – LPC (commendation)",
+          "Manchester University 1991 – 1994 – LLB (hons) 2.1"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116267,
+      "slug": "jad-barakat",
+      "member_type": "faculty",
+      "name": "Jad Barakat",
+      "position": "Faculty",
+      "summary": "M&A expert in due diligence, IFRS, financial analysis, and business strategy.",
+      "biography_html": "<p>Jad Barakat has extensive experience in due diligence and has managed a wide range of cross-border as well as domestic transactions. He has expert knowledge in I FRS, financial analysis, transaction processing and business strategy.</p><!-- hidden container 116267-a743c0f -->",
+      "location": "United Arab Emirates",
+      "linkedin_url": "https://www.linkedin.com/in/jad-barakat-42bb957/",
+      "profile_url": "https://imaa-institute.org/team/jad-barakat/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 34,
+      "photo": "team/2024-07-Jad-Barakat.png",
+      "profile_details": {
+        "courses_taught": [
+          "Due Diligence",
+          "Essentials of M&A"
+        ],
+        "academic_background": [
+          "EMLYON Business School | MsC, Finance | 2003 – 2006",
+          "USJ Maîtrise, Economics | 1999 – 2003"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 145271,
+      "slug": "jalal-nadeem",
+      "member_type": "faculty",
+      "name": "Jalal Nadeem",
+      "position": "Faculty",
+      "summary": "Director in M&A Advisory at PwC LLP in New York",
+      "biography_html": "<p>Jalal Nadeem is a Director in M&amp;A Advisory at PwC LLP in New York, where he leads complex cross-border transactions with a specialized focus on deal pricing mechanisms and M&amp;A Sale and Purchase Agreements (SPAs). He has advised on +500 M&amp;A transactions exceeding +$100 billion in combined value, and is widely recognized for his legal-financial expertise in working capital adjustments, transaction risk allocation, and value-preserving contract design. Jalal regularly trains lawyers and investment professionals on complex deal frameworks and his SPA-focused strategies have increasingly enhanced both professional practice and public discourse in the M&amp;A advisory field, across legal, financial, and academic settings. Previously, at Deloitte Canada he helped establish the firm’s SPA Advisory practice.</p>",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/jalal-nadeem-cfa-llm/overlay/contact-info/",
+      "profile_url": "https://imaa-institute.org/team/jalal-nadeem/",
+      "programmes": [],
+      "sort_order": 35,
+      "photo": "team/2025-08-Jalal-Nadeem.webp",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Due Diligence",
+          "Post Merger Integration",
+          "Separation",
+          "Valuation"
+        ],
+        "functional_expertise": [
+          "Corporate Finance",
+          "Investment Banking",
+          "M&A Contracts and Deal pricing"
+        ],
+        "academic_background": [
+          "CFA Charterholder, CFA Institute, US",
+          "Master of Laws, University of Toronto, Canada"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116269,
+      "slug": "jennifer-will",
+      "member_type": "faculty",
+      "name": "Jennifer Will",
+      "position": "Faculty",
+      "summary": "Organizational psychologist with over 10 years of HR M&A consulting experience.",
+      "biography_html": "<p>Jennifer is an organizational psychologist and has about 10 years of consulting experience. She primarily works in HR M&amp;A projects. Apart from that she has broad experience in the area of talent selection and development as well as organizational diagnostics. Prior to her career at Mercer, Jennifer worked for PwC and a boutique HR consultancy.</p>",
+      "location": "Germany",
+      "linkedin_url": "https://www.linkedin.com/in/jenniferwill/",
+      "profile_url": "https://imaa-institute.org/team/jennifer-will/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 36,
+      "photo": "team/2024-07-Jennifer-Will-1.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Due Diligence",
+          "Joint Ventures",
+          "Post Merger Integration",
+          "Separation",
+          "\\Strategy"
+        ],
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Culture Change and Management",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "University of Münster Master of Science (M.Sc.), Psychologie in Personal und Wirtschaft | 2011 – 2013",
+          "University of Münster Bachelor of Science (B.Sc.), Psychologie | 2008 – 2012"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116272,
+      "slug": "jeremiah-gurusamy",
+      "member_type": "faculty",
+      "name": "Jeremiah Gurusamy",
+      "position": "Faculty",
+      "summary": "Partner at Ramesh Dipendra Jeremiah Law with focus on banking, finance, and corporate law.",
+      "biography_html": "<p>Jeremiah is a Partner at Ramesh Dipendra Jeremiah Law who heads the Banking &amp; Finance and Employment practice groups of the firm. His focus area also includes Corporate and Commercial work. Jeremiah comes with a wealth of experience having worked in the corporate sector since 1997 prior to entering active legal practice.</p><!-- hidden container 116272-a743c0f -->",
+      "location": "Malaysia",
+      "linkedin_url": "https://www.linkedin.com/in/jeremiah-gurusamy-67047636/",
+      "profile_url": "https://imaa-institute.org/team/jeremiah-gurusamy/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 37,
+      "photo": "team/2024-07-Jeremiah-Gurusamy-bnw.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Commercial, Contract & Labor Law"
+        ],
+        "academic_background": [
+          "Bachelor of Law LL.B (Hons) University of London",
+          "Masters of Law (LL.M) University of Malaya."
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116275,
+      "slug": "kelvin-teo",
+      "member_type": "faculty",
+      "name": "Kelvin Teo",
+      "position": "Faculty",
+      "summary": "Kelvin has 15+ years in asset management, equity research, and investment banking.",
+      "biography_html": "<p>Kelvin has 15 years of experience, predominantly across global asset management, buy-side equity research and investment banking platforms. He also has experience in a climate technology startup leading the Series B fundraising round with global and corporate VC investors. His journey within financial services has taken him across highly matrixed MNC banks and Chinese asset management platforms as an investment banker within the former and a DM Equities Portfolio Manager/Analyst for the latter.</p>",
+      "location": "Singapore",
+      "linkedin_url": "https://www.linkedin.com/in/kelvin-teo-6122822",
+      "profile_url": "https://imaa-institute.org/team/kelvin-teo/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 38,
+      "photo": "team/2024-07-Kelvin-Teo.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Due Diligence",
+          "Valuation",
+          "Strategy"
+        ],
+        "functional_expertise": [
+          "Corporate Finance",
+          "Investment Banking"
+        ],
+        "courses_taught": [
+          "Finance & Valuation",
+          "Due Diligence",
+          "Essentials of M&A"
+        ],
+        "academic_background": [
+          "Executive MBA (Kellogg-HKUST) (2020)",
+          "BSc International Relations (London School of Economics) (2006)"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 119252,
+      "slug": "kirstin-gallagher",
+      "member_type": "faculty",
+      "name": "Kirstin Gallagher",
+      "position": "Faculty",
+      "summary": "",
+      "biography_html": "",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/kirstin-gallagher-075273100/",
+      "profile_url": "https://imaa-institute.org/team/kirstin-gallagher/",
+      "programmes": [
+        "IM&A",
+        "LM&A",
+        "M&AP"
+      ],
+      "sort_order": 39,
+      "photo": "team/2024-08-Kirstin-Gallagher.png",
+      "profile_details": {
+        "courses_taught": [
+          "Commercial, Contract & Labor Law",
+          "Running a successful Practice & M&A Projects",
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "Georgetown University Law Center | Juris Doctor (J.D.) | 2001 – 2004",
+          "Duke University | Bachelor of Arts (B.A.), Public Policy Studies, English, Religion | 1997 – 2001"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116283,
+      "slug": "konrad-deiters",
+      "member_type": "faculty",
+      "name": "Konrad Deiters",
+      "position": "Faculty",
+      "summary": "Mercer’s Global Consulting Leader with 17+ years in M&A, HR strategy, and culture change.",
+      "biography_html": "<p>Konrad is Mercer&#8217;s Global Consulting Leader Career and the Leader of M&amp;A Transaction Services EuroPac. He has more than 17 years of experience developing and executing business strategy. Konrad works closely with senior executives at multinational clients and private equity firms on a variety of HR issues. He has particular expertise in The Future of Work and the Workforce, Digitization of HR, People and HR Strategy, Mergers &amp; Acquisitions, Rewards Pooling and Financing and Culture Change.</p><!-- hidden container 116283-a743c0f -->",
+      "location": "Germany",
+      "linkedin_url": "https://www.linkedin.com/in/konrad-f-deiters-8a804b5",
+      "profile_url": "https://imaa-institute.org/team/konrad-deiters/",
+      "programmes": [
+        "CPMI",
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 40,
+      "photo": "team/2024-07-Konrad-Deiters.png",
+      "profile_details": {
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Additional HR Issues in M6A",
+          "Due Diligence",
+          "Culture Change and Management",
+          "Functional Integration"
+        ],
+        "academic_background": [
+          "Babson College Business Administration and Management, General | 2002 – 2003"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116287,
+      "slug": "martin-howard",
+      "member_type": "faculty",
+      "name": "Martin Howard",
+      "position": "Faculty",
+      "summary": "Driving business transformation through IT in both start-ups and public companies for over 40 years",
+      "biography_html": "<p>Martin Howard is a Partner with Fortium Partners LP, a firm comprised of the world&#8217;s foremost C-level technology leaders. Martin uses IT to drive business transformation and profitable growth. Whether in a start-up or public company environment, he provides strong operational leadership to deliver secure, high-performing, scalable and cost-effective information platforms.</p>",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/martin-howard-cio",
+      "profile_url": "https://imaa-institute.org/team/martin-howard/",
+      "programmes": [
+        "CPMI",
+        "IM&A",
+        "SCDE"
+      ],
+      "sort_order": 41,
+      "photo": "team/2024-07-Martin-Howard-1.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Due Diligence",
+          "Joint Ventures",
+          "Post Merger Integration",
+          "Separation",
+          "Strategy"
+        ],
+        "functional_expertise": [
+          "Management Consulting"
+        ],
+        "courses_taught": [
+          "Essentials of M&A",
+          "Integration Governance & Project Management",
+          "Functional Integration",
+          "Culture Change and Management"
+        ],
+        "academic_background": [
+          "University of Chicago | BA, Social Sciences | 1975 – 1979"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 119232,
+      "slug": "michael-klawon",
+      "member_type": "faculty",
+      "name": "Michael Klawon",
+      "position": "Faculty",
+      "summary": "Founder of Smartmerger.com, specializing in M&A consulting.",
+      "biography_html": "<p>Michael Klawon is a Founder, Entrepreneur, and Project Manager with extensive experience in M&amp;A consulting and complex company transactions. As the Founder and Entrepreneur of smartmerger.com, he has developed a unique web-based online tool-suite for mergers &amp; acquisitions and outsourcing projects. With a background in General Management and Senior Executive functions, Michael brings expertise in Entrepreneurship, New Ventures, Start-Up Management, and PMO and DD for M&amp;A. He has a strong professional foundation with 8 years at Siemens, where he held various roles including Product Manager for IT services, Operations Manager for the Asia and South America regions, CIO of Siemens Business Services, and Global Portfolio Manager. Michael holds a LL.M Master of M&amp;A from Frankfurt School of Finance &amp; Management and a MBL Master of International Business Law from the University of St. Gallen &#8211; HSG.</p><!-- hidden container 119232-a743c0f -->",
+      "location": "Germany",
+      "linkedin_url": "https://www.linkedin.com/in/michaelklawon/",
+      "profile_url": "https://imaa-institute.org/team/michael-klawon/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 42,
+      "photo": "team/2024-08-Michael-Klawon-1.png",
+      "profile_details": {
+        "courses_taught": [
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "University of St.Gallen | M.B.L.-HSG, Master of international Business Law | 2007 – 2008",
+          "Frankfurt School of Finance & Management | LL.M., Master of Mergers and Acquisitions | 2010 – 2012"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116447,
+      "slug": "michelle-henriksen",
+      "member_type": "faculty",
+      "name": "Michelle Henriksen",
+      "position": "Faculty",
+      "summary": "HR leader with 25+ years of global experience in M&A, restructuring, and international operations. Founder of HG4 Advisory.",
+      "biography_html": "<p>A dynamic HR leader with 25+ years of global HR experience, advising clients in all aspects of the employee lifecycle with the goal of maximizing efficiencies, leveraging technology, and promoting equitable and consistent employee policies and practices. As a strategic partner to human resources professionals and executive leadership teams, Michelle have assisted organizations in raising performance levels by understanding and mitigating people issues associated with mergers and acquisitions, right sizing organizations through restructuring/turnaround events, and advising on human resources practices, statutory requirements, and culture when expanding operations internationally. She spent her career working in both industry and professional services at Accenture, Zulkie Partners, Huron Consulting Group, Walgreens USA, Grant Thornton, and FGMK. In 2022, she founded HG4 Advisory.</p><!-- hidden container 116447-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/michelle-henriksen-5548498",
+      "profile_url": "https://imaa-institute.org/team/michelle-henriksen/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 43,
+      "photo": "team/2024-07-Michelle-Henriksen.png",
+      "profile_details": {
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "Thunderbird School of Global Management Master of International Management, International Marketing & Cross Cultural Communications | 1989 – 1990",
+          "Emory University Bachelor of Arts, International Relations | 1984 – 1988"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 119260,
+      "slug": "mihai-c-tiplea",
+      "member_type": "faculty",
+      "name": "Mihai C. Tiplea",
+      "position": "Faculty",
+      "summary": "Finance professional with expertise in M&A, IPOs, and international business integration.",
+      "biography_html": "<p>Finance Professional and Business Partner with in-depth expertise in finance, accounting, strategy, and integration, Mihai is a financial expert with a wide range of experience spanning large companies like Boeing and Medtronic to small businesses and start-ups across various industries and stages of growth.</p><p>Mihai&#8217;s expertise encompasses Financial Restructuring and Integration, Mergers and Acquisitions, Process and Procedures Implementation, Financial Modeling and Analysis, Due Diligence Preparation, IPO Preparation, Cost Accounting, and International Expansion and Integration.</p><!-- hidden container 119260-a743c0f --><!-- hidden container 119260-b1ad86f --><!-- hidden container 119260-e569bbb -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/mihaitiplea/",
+      "profile_url": "https://imaa-institute.org/team/mihai-c-tiplea/",
+      "programmes": [],
+      "sort_order": 44,
+      "photo": "team/2024-08-Mihai-C.-Tiplea.png",
+      "profile_details": {
+        "academic_background": [
+          "Pepperdine Graziadio Business School | Master of Business Administration – MBA, Finance Emphasis",
+          "UCLA | Bachelor of Arts – BA, Major: Business-Economics, Minor: Accounting"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 119239,
+      "slug": "mohamed-khodeir",
+      "member_type": "faculty",
+      "name": "Mohamed Khodeir",
+      "position": "Faculty",
+      "summary": "Founder of Khodeir & Partners, advising on legal and investment matters in the MEA region.",
+      "biography_html": "<p>Mohamed Khodeir is the Founder and Managing Partner of Khodeir &amp; Partners and is a member of the advisory team. Mohamed is a renowned legal figure in the MEA, holding an unparalleled track record of over 22 years advising investors doing business in 4 jurisdictions, with a deal sheet exceeding 50 billion US$. Mohamed was the former CEO of the General Authority for Investment and Free Zones (“GAFI”) in Egypt, during a time of major reforms that included issuing of the new Investment Law which is one of the projects he led while serving public office.</p><p>Mohamed has demonstrated sound leadership skills throughout his career. Before founding Khodeir &amp; Partners, he was a partner in one of the largest firms in the Middle East and managed two major law offices of that firm in the region and has also overseen expansion in the region including founding its operations in Egypt. Mohamed has been consecutively recognized by legal rating agencies as one of the leading lawyers in the region.</p><!-- hidden container 119239-a743c0f -->",
+      "location": "Egypt",
+      "linkedin_url": "https://www.linkedin.com/in/mohamed-khodeir-%D9%85%D8%AD%D9%85%D8%AF-%D8%AE%D8%B6%D9%8A%D8%B1-a872ba6/",
+      "profile_url": "https://imaa-institute.org/team/mohamed-khodeir/",
+      "programmes": [
+        "LM&A"
+      ],
+      "sort_order": 45,
+      "photo": "team/2024-08-Mohamed-Khodeir.png",
+      "profile_details": {
+        "courses_taught": [
+          "Commercial, Contract & Labor Law"
+        ],
+        "academic_background": [
+          "Cairo University | LLB, Law | 1995 – 1999"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116450,
+      "slug": "mohand-al-ansari",
+      "member_type": "faculty",
+      "name": "Mohand Al-Ansari",
+      "position": "Faculty",
+      "summary": "Tax advisor with 15+ years in M&A and tax structuring for private equity and corporates.",
+      "biography_html": "<p>Mohand is part of the Middle East Deals Tax Practice with over 15 years of experience advising Private Equity houses, Sovereign Wealth Funds, regional and global alternative asset managers and large corporates on transactions within and outside the Middle East region.</p><p>Before moving to the Middle East 8 years ago, he worked in the Private Equity and M&amp;A Tax team in PwC London. In the Middle East, he has been driving the expansion of our regional Deals Tax offering and team, and leading the delivery of tax due diligence, tax structuring, SPA, tax modelling and other Deals Tax services to priority clients in the UAE, KSA, Kuwait and Bahrain.</p><!-- hidden container 116450-a743c0f -->",
+      "location": "United Arab Emirates",
+      "linkedin_url": "https://www.linkedin.com/in/mohand-al-ansari-27a30676/",
+      "profile_url": "https://imaa-institute.org/team/mohand-al-ansari/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 46,
+      "photo": "team/2024-07-1623509017327.png",
+      "profile_details": {
+        "courses_taught": [
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "Queen Mary, U. of London | BSc (Hons), Economics | 2003 – 2006"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116452,
+      "slug": "nadia-couper",
+      "member_type": "faculty",
+      "name": "Nadia Couper",
+      "position": "Faculty",
+      "summary": "Partner at EY Switzerland, focuses on cross-border M&A integrations and people matters.",
+      "biography_html": "<p>Nadia is a partner leading the HR Transactions practice for EY in Switzerland. She has over 12 years of experience in both acquisition and carveout projects across all sectors, with a special focus on people and HR topics. Nadia’s primary focus has been on complex cross-border integration and separation projects, in particular specializing in people matters such as HR functional topics (payroll/benefits setup, employee contract updates, etc.), cultural alignment, change and communications.</p><p>Before joining EY in December 2022, Nadia has had over 10 years of experience in Consulting across the M&amp;A lifecycle.</p><p>Nadia is a native English speaker, is fluent in French, has a BSc in Biochemistry, and is a member of the Chartered Institute of Management Accountants (CIMA).</p><!-- hidden container 116452-a743c0f -->",
+      "location": "Switzerland",
+      "linkedin_url": "https://www.linkedin.com/in/nadia-couper",
+      "profile_url": "https://imaa-institute.org/team/nadia-couper/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 47,
+      "photo": "team/2024-07-Nadia-Couper.png",
+      "profile_details": {
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Essentials of Post Merger Integration (PMI)",
+          "Due Diligence",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "University of Southampton | Bachelor of Science (BSc), Biochemistryy | 2005 – 2008"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116455,
+      "slug": "nikhil-uppal",
+      "member_type": "faculty",
+      "name": "Nikhil Uppal",
+      "position": "Faculty",
+      "summary": "Private equity and management consulting expert, advising senior leaders on business scaling.",
+      "biography_html": "<p>Nikhil currently sits on the board of multiple organizations and provide advise and direction to senior leaders / CXOs apart from helping these firms find product-market-fit, design and develop the GTM and pricing, become investor ready and scale via enterprise sales. Nikhil has ~ 20 years of experience in Private Equity, Entrepreneurship, Management Consulting and Hi-Tech industry.</p><!-- hidden container 116455-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/uppal-nikhil/",
+      "profile_url": "https://imaa-institute.org/team/nikhil-uppal/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 48,
+      "photo": "team/2024-07-Nikhil-Uppal.png",
+      "profile_details": {
+        "functional_expertise": [
+          "IT"
+        ],
+        "courses_taught": [
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "XLRI Jamshedpur | MBA, Finance and Marketing 2010 – 2011",
+          "University Visvesvaraya Technological University | BE, ELectrical and Electronics | 2000 – 2004"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116457,
+      "slug": "paran-puvanesan",
+      "member_type": "faculty",
+      "name": "Paran Puvanesan",
+      "position": "Faculty",
+      "summary": "Founder of AKINA, experienced in IPO advisory, restructuring, and due diligence across Asia and Europe.",
+      "biography_html": "<p>Prior to setting up AKINA, Paran was an Executive Director with PwC Malaysia and was with them for over 23 years. Paran has provided IPO related advisory, deal structuring, joint venture advisory, project managed a restructuring exercise of a public listed company, evaluated rescue schemes for ailing listed companies and advised on public to private exercises of listed companies in Malaysia. Paran spent 2 years with PwC in London, focusing on Private Equity clients and undertaking due diligence related work in Europe and Asia. Paran has been involved in originating and executing deals with a total value to date of more than RM1 billion.</p><p>Paran has had the experience of working as Chief Strategy Officer for the founder/entrepreneur of the largest money services business in Malaysia with Fintech presence and aspirations in the e-wallet/payments services business.</p><p>Paran was awarded the prestigious British Government’s Chevening Scholarship to pursue his undergraduate degree in the United Kingdom. Paran is a Chartered Accountant as he is a Fellow member of the Association of Chartered Certified Accountants (FCCA) as well as a member of the Malaysian Institute of Certified Public Accountants (MICPA). He is also a member of the Malaysian Institute of Accountants.</p><!-- hidden container 116457-a743c0f -->",
+      "location": "Malaysia",
+      "linkedin_url": "https://www.linkedin.com/in/paran-puvanesan-3815b328/?originalSubdomain=my",
+      "profile_url": "https://imaa-institute.org/team/paran-puvanesan/",
+      "programmes": [
+        "IM&A",
+        "LM&A",
+        "M&AP"
+      ],
+      "sort_order": 49,
+      "photo": "team/2024-07-Paran-Puvanesan.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Running a Successful M&A Practice",
+          "Essentials of M&A",
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "The University of Sheffield BA(Hons), Accounting and Financial Management | 1991 – 1994"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116460,
+      "slug": "patricia-aira",
+      "member_type": "faculty",
+      "name": "Patricia Aira",
+      "position": "Faculty",
+      "summary": "M&A lawyer, founder of Pactarialegal, specializing in cross-border transactions and banking law.",
+      "biography_html": "<p>Patricia is a highly accomplished lawyer with a Ph.D. in law, specializing in international banking, finance, and corporate law. With over 15 years of professional expertise, she has advised clients from diverse sectors, including banking, media, entertainment, technology, healthcare, and the public sector. Patricia is the founder of Pactarialegal, an M&amp;A legal boutique firm. Her specialized areas encompass M&amp;A, tax equity, cross-border transactions, project finance, public procurement, and comprehensive banking legal advisory services, including support for startups.</p>",
+      "location": "Spain",
+      "linkedin_url": "https://www.linkedin.com/in/patricia-aira-a251638/",
+      "profile_url": "https://imaa-institute.org/team/patricia-aira/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 50,
+      "photo": "team/2024-07-Patricia-Aira-1024x1024.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Due Diligence",
+          "Joint Ventures",
+          "Separation"
+        ],
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Commercial, Contract & Labor Law",
+          "Anti-Trust, Intellectual Property & Regulatory Affairs"
+        ],
+        "academic_background": [
+          "Doctor in International Law | National University of Distance Education (UNED) 2018",
+          "Master in International Law | Institute of Technology and Higher Studies of Monterrey (ITESM)"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116462,
+      "slug": "paul-pollock",
+      "member_type": "faculty",
+      "name": "Paul Pollock",
+      "position": "Faculty",
+      "summary": "M&A and corporate finance partner with expertise in private equity and healthcare transactions.",
+      "biography_html": "<p>Paul J. Pollock is a partner in the New York office of Crowell &amp; Moring and concentrates his practice on mergers and acquisitions and corporate finance. He provides ongoing representation to middle market private equity sponsors, family offices and their portfolio companies, as well as public and private companies that are not sponsor backed. Paul&#8217;s industry experience includes representing clients in financial services, manufacturing, telecommunications, fintech, software products, publishing and entertainment, with recent emphasis on the healthcare and biotech industries.</p><!-- hidden container 116462-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/ppollock/",
+      "profile_url": "https://imaa-institute.org/team/paul-pollock/",
+      "programmes": [
+        "IM&A",
+        "LM&A"
+      ],
+      "sort_order": 51,
+      "photo": "team/2024-07-Paul-Pollock.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Anti-Trust, Intellectual Property & Regulatory Affairs",
+          ""
+        ],
+        "academic_background": [
+          "Colgate University | Bachelor of Arts (B.A.), Economics | 1978 – 1982",
+          "Fordham University School of Law, J.D."
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116465,
+      "slug": "pramod-kumar",
+      "member_type": "faculty",
+      "name": "Pramod Kumar",
+      "position": "Faculty",
+      "summary": "Tax Director with 20+ years’ expertise in global tax law, M&A, and digital transformations, leveraging AI and cloud technologies.",
+      "biography_html": "<p>Tax Director with over two decades of experience in international tax law, finance, and digital transformations, including senior management roles at Big 4 and Fortune 500 in Asia, Europe &amp; North America Region. Experienced in M&amp;A, digital taxation, transfer pricing, and tax-efficient strategies. Proficient in Project Management, O365, Power BI, and Finance Digital Transformations. Actively integrates AI, IoT, and cloud technologies to revamp business processes. Critical thinker and effective communicator skilled in cross-cultural team collaboration.</p><!-- hidden container 116465-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/pramod-kumar-s/",
+      "profile_url": "https://imaa-institute.org/team/pramod-kumar/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 52,
+      "photo": "team/2024-07-Pramod-Kumar1.png",
+      "profile_details": {
+        "courses_taught": [
+          "Due Diligence"
+        ],
+        "academic_background": [
+          "UniversityTexas A&M University | Master of Jurisprudence, International Tax Law 2020",
+          "Bangalore UniversityGraduate, Business Administration and Management, Commerce | 1999"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 2515,
+      "slug": "prof-andrew-campbell",
+      "member_type": "faculty",
+      "name": "Prof. Andrew Campbell",
+      "position": "Faculty",
+      "summary": "Strategy expert, author, and Director at Ashridge Executive Education.",
+      "biography_html": "<p>Andrew Campbell is the Director of Ashridge Strategic Management Centre part of Ashridge Executive Education which is the executive education arm of Hult International Business School. Program Director for courses Advanced Organization Design and Designing Operating Models. Consultant to large and small companies around the world. Director of Sonae, Portugal&#8217;s largest privately owned company. Author of more than ten books on business strategy, corporate-level strategy, the role of corporate headquarters, decision making, organization design and, most recently, operating models.</p><!-- hidden container 2515-a743c0f -->",
+      "location": "London",
+      "linkedin_url": "https://www.linkedin.com/in/andrewstrategy/",
+      "profile_url": "https://imaa-institute.org/team/prof-andrew-campbell/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 53,
+      "photo": "team/2021-09-prof-andrew-campbell.png",
+      "profile_details": {
+        "courses_taught": [
+          "Essentials of M&A",
+          "Finance & Valuation"
+        ],
+        "academic_background": [
+          "Harvard Business School | MBA 1976 – 1977",
+          "The University of Edinburgh | MA, Economics and Statistics | 1969 – 1972"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 2513,
+      "slug": "prof-david-j-brophy-phd",
+      "member_type": "faculty",
+      "name": "Prof. David J. Brophy, PhD",
+      "position": "Faculty",
+      "summary": "Expert in private equity pricing and venture capital market interventions.",
+      "biography_html": "<p>David’s research focuses on pricing of private equity and initial public offerings of common stock and characteristics of the venture capital market. He also was the principal investigator on “Prospects for Small Business and Entrepreneurship in the 21st Century,” a White House Conference on Small Business. He also directs the longest running, university based venture capital market intervention for emerging growth comanies (The Midwest Growth Capital Symposium).</p><!-- hidden container 2513-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/david-brophy-2366b4/",
+      "profile_url": "https://imaa-institute.org/team/prof-david-j-brophy-phd/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 54,
+      "photo": "team/2021-09-David-Brophy.png",
+      "profile_details": {
+        "courses_taught": [
+          "Essentials of M&A",
+          "Finance & Valuation"
+        ],
+        "academic_background": [
+          "PhD The Ohio State University 1965",
+          "MBA University of Detroit 1959"
+        ]
+      },
+      "wordpress_profile_in_sitemap": false
+    },
+    {
+      "wordpress_id": 116468,
+      "slug": "robert-seber",
+      "member_type": "faculty",
+      "name": "Robert Seber",
+      "position": "Faculty",
+      "summary": "",
+      "biography_html": "<p>Robert Seber is head of our Investment Management practice. He is highly experienced in the full cycle of private equity funds – including fund formation, carry and equity arrangements, governance, investments, and exits – and has a profound knowledge of market trends. He has formed multiple energy and infrastructure funds with innovative terms that reflect the nuances of investments in these industries. Robert also represents companies and investors in financial services industries.</p><p>Robert is an adjunct professor of law at New York University School of Law, where he teaches a class on energy transition. He is a frequent panelist on private equity and energy policy topics.</p><!-- hidden container 116468-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/robert-seber-639b30159",
+      "profile_url": "https://imaa-institute.org/team/robert-seber/",
+      "programmes": [
+        "LM&A"
+      ],
+      "sort_order": 55,
+      "photo": "team/2024-07-Robert-Seber.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Commercial, Contract & Labor Law"
+        ],
+        "academic_background": [
+          "Yale Law School, J.S.D. (PhD in Law) 1984 – 1986",
+          "Vienna Law School, J.D. (Dr. iur.), Law | 1976 – 1981"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116470,
+      "slug": "roger-cooper",
+      "member_type": "faculty",
+      "name": "Roger Cooper",
+      "position": "Faculty",
+      "summary": "M&A litigation leader with expertise in corporate governance and disputes.",
+      "biography_html": "<p>Roger Cooper leads Cleary’s securities and M&amp;A litigation practice.<br> He has successfully litigated more than fifty shareholder, class action and derivative actions arising out of securities, M&amp;A, corporate governance, and other commercial disputes.<br> Roger is internationally recognized as a leader in corporate litigation by ranking publications including The Legal 500, Benchmark Litigation, and Chambers USA.</p><!-- hidden container 116470-a743c0f -->",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/roger-cooper-450106169/",
+      "profile_url": "https://imaa-institute.org/team/roger-cooper/",
+      "programmes": [
+        "LM&A"
+      ],
+      "sort_order": 56,
+      "photo": "team/2024-07-Roger-Cooper.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Anti-Trust, Intellectual Property & Regulatory Affairs"
+        ],
+        "academic_background": [
+          "Columbia Law School | J.D. | 2002",
+          "Duke University | Ph.D. | 1999"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 2550,
+      "slug": "roula-khaled",
+      "member_type": "faculty",
+      "name": "Roula Khaled",
+      "position": "Faculty",
+      "summary": "Senior legal counsel in Dubai, specializing in corporate law and M&A.",
+      "biography_html": "<p>Roula Khaled is a lawyer and regional senior legal counsel with Majid Al Futtaim Ventures in Dubai, UAE. She specializes in corporate, commercial, IP and litigation. Roula has 16 years of experience as a legal consultant with a diversified and strong background in internal and international business law. Roula has extensive knowledge in directing all external litigation matters and negotiating as well as advising on and drafting documentation in relation to high level transactions, including dispositions, mergers and acquisitions and the restructuring of companies.</p><!-- hidden container 2550-a743c0f -->",
+      "location": "United Arab Emirates",
+      "linkedin_url": "https://www.linkedin.com/in/roulakhaled/",
+      "profile_url": "https://imaa-institute.org/team/roula-khaled/",
+      "programmes": [
+        "LM&A"
+      ],
+      "sort_order": 57,
+      "photo": "team/2021-09-Roula-Khaled-1.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Legal"
+        ],
+        "courses_taught": [
+          "Commercial, Contract & Labor Law"
+        ],
+        "academic_background": [
+          "American University of Beirut | Essentials of Business, Finance, Money and Banking, Accounting I and Accounting II | 2006 – 2007",
+          "Lebanese University | Master in Internal and International Business Law | 2007 – 2008"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116474,
+      "slug": "sean-mei",
+      "member_type": "faculty",
+      "name": "Sean Mei",
+      "position": "Faculty",
+      "summary": "Principal at Mercer, specializes in M&A due diligence and integration.",
+      "biography_html": "<p>Sean is a Principal at Mercer’s HR M&amp;A services. He specializes in supporting clients through all stages of M&amp;A from due diligence to post merger integration. Prior to joining Mercer, Sean has 14 years of professional experiences in PwC, IBM, Shanghai Securities and Korn/Ferry International.</p><!-- hidden container 116474-a743c0f -->",
+      "location": "China",
+      "linkedin_url": "https://cn.linkedin.com/in/seanmei",
+      "profile_url": "https://imaa-institute.org/team/sean-mei/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 58,
+      "photo": "team/2024-07-Sean-Mei.png",
+      "profile_details": {
+        "functional_expertise": [
+          "HR"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Culture Change and Management",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "MBA, China Europe International Business School (CEIBS)",
+          "Bachelor in Life Sciences Fudan University"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 2559,
+      "slug": "seng-leong-teh",
+      "member_type": "faculty",
+      "name": "Seng Leong Teh",
+      "position": "Faculty",
+      "summary": "EY partner in Singapore, leading transaction diligence and real estate M&A.",
+      "biography_html": "<p>Seng Leong is a partner with Ernst &amp; Young in Singapore. He runs the ASEAN Transaction Diligence practice and is also EY&#8217;s Global Real Estate, Hospitality and Construction M&amp;A Leader. Seng Leong has been with Ernst &amp; Young Singapore for more than 20 years. He spent 3 years with the Ernst &amp; Young Transaction Advisory Services group in New York where he was involved in various real estate transactions including the merger of Hilton USA and Hilton PLC and the acquisition of a stake in Kerzner by lstithmar JSPC.</p><!-- hidden container 2559-a743c0f -->",
+      "location": "Singapore",
+      "linkedin_url": "https://www.linkedin.com/in/tsley/",
+      "profile_url": "https://imaa-institute.org/team/seng-leong-teh/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 59,
+      "photo": "team/2021-09-Seng-Leong-Teh.png",
+      "profile_details": {
+        "functional_expertise": [
+          "Corporate Finance"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Finance & Valuation"
+        ],
+        "academic_background": [
+          "Nanyang Technological University Singapore | B Acc, Accounting | 1993 – 1996"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116476,
+      "slug": "sheharyar-baig",
+      "member_type": "faculty",
+      "name": "Sheharyar Baig",
+      "position": "Faculty",
+      "summary": "Global M&A Manager at Zoetis. Expert in corporate strategy, synergies, and integration planning.",
+      "biography_html": "<p>Global M&amp;A and Business Integration Manager at Zoetis and based in Parsippany, New Jersey (right by NYC). Grew up in the middle east (Dubai, UAE) before moving to the US in 2015 for college. Areas of expertise include: corporate strategy, acquisition synergy value capture, post-merger integration planning &amp; execution, divestiture planning &amp; execution and project management/ management consulting.</p>",
+      "location": "United States",
+      "linkedin_url": "https://www.linkedin.com/in/sheharyar-baig/",
+      "profile_url": "https://imaa-institute.org/team/sheharyar-baig/",
+      "programmes": [
+        "CPMI"
+      ],
+      "sort_order": 60,
+      "photo": "team/2024-07-Sheharyar-Baig.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Due Diligence",
+          "Joint Ventures",
+          "Post Merger Integration",
+          "Separation",
+          "Strategy",
+          "Valuation"
+        ],
+        "functional_expertise": [
+          "Corporate Finance",
+          "Investment Banking",
+          "Management Consulting"
+        ],
+        "courses_taught": [
+          "Essentials of Post Merger Integration (PMI)",
+          "Functional Integration",
+          "Culture Change and Management",
+          "Integration Governance & Project Management"
+        ],
+        "academic_background": [
+          "Rutgers Business School | Bachelor of Science – BS, Finance | 2015 – 2019"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 119253,
+      "slug": "sue-frerichs",
+      "member_type": "faculty",
+      "name": "Sue Frerichs",
+      "position": "Faculty",
+      "summary": "Expert in business transformations, M&A integration, and financial strategy.",
+      "biography_html": "<p>Sue has over 20+ years’ experience leading and advising on Business Transformations and facilitating mergers and acquisition integration. She held leadership positions focused on sourcing and acquisitions for growth within Financial Management, Strategy &amp; Execution, Mergers &amp; Acquisition Integration, Financial Transformation &amp; IT Management and Strategy.</p><p>She has a proven track record working with companies to maximize shareholder value during critical phases of business change and extensive experience in integrated solutions, including technology enablement and risk management.</p><!-- hidden container 119253-a743c0f --><!-- hidden container 119253-b1ad86f --><!-- hidden container 119253-e569bbb -->",
+      "location": "Canada",
+      "linkedin_url": "https://www.linkedin.com/in/suefrerichs/",
+      "profile_url": "https://imaa-institute.org/team/sue-frerichs/",
+      "programmes": [],
+      "sort_order": 61,
+      "photo": "team/2024-08-Sue-Frerichs.png",
+      "profile_details": {
+        "academic_background": [
+          "University of Ottawa | BCom(hons)"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 116478,
+      "slug": "thomas-bouchez",
+      "member_type": "faculty",
+      "name": "Thomas Bouchez",
+      "position": "Faculty",
+      "summary": "Mercer’s leader for M&A and organizational transformation in Europe.",
+      "biography_html": "<p>Thomas Bouchez is a Partner leading Mercer’s M&amp;A and Org. Transformation practice for Europe and the DACH/GSA region. He advises clients on the people / HR issues in M&amp;A transactions &amp; org. transformation</p>",
+      "location": "Germany",
+      "linkedin_url": "https://www.linkedin.com/in/bouchezthomas/",
+      "profile_url": "https://imaa-institute.org/team/thomas-bouchez/",
+      "programmes": [
+        "HRM&A",
+        "IM&A"
+      ],
+      "sort_order": 62,
+      "photo": "team/2024-07-Thomas-Bouchez.png",
+      "profile_details": {
+        "deal_life_cycle": [
+          "Due Diligence",
+          "Joint Ventures",
+          "Post Merger Integration",
+          "Separation",
+          "Strategy",
+          "Valuation"
+        ],
+        "functional_expertise": [
+          "HR",
+          "Management Consulting"
+        ],
+        "courses_taught": [
+          "Due Diligence",
+          "Culture Change and Management",
+          "Additional HR Issues in M6A"
+        ],
+        "academic_background": [
+          "IE Business School | MBA / Master in Advanced Finance, Finance | 2011 – 2011",
+          "ESSCA | Dual Masters Degree, HR & Business Administration | 2000 – 2005"
+        ]
+      },
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 140685,
+      "slug": "thomas-gruber",
+      "member_type": "faculty",
+      "name": "Thomas Gruber",
+      "position": "Brand Ambassador & Faculty",
+      "summary": "Expert on M&A and Private Equity",
+      "biography_html": "<p>Thomas Gruber is Executive Director of Bancor International Limited and Fujin Impact Partners, where he steers the firms’ alternative‑asset strategy across Asia‑Pacific. Based between Seoul and Hong Kong, he leads Bancor’s private‑equity vertical focused on infrastructure, structuring growth and buy‑out transactions for mid‑market enterprises. Concurrently, he oversees the group’s impact‑investment arm in Malaysia, deploying catalytic capital into climate‑resilient infrastructure and inclusive‑finance initiatives that align with the UN Sustainable Development Goals.</p><p>Earlier appointments span buy‑side M&amp;A, leveraged buy‑outs and investment‑banking roles, giving him a comprehensive vantage on cross‑border capital markets and corporate‑finance advisory.</p><p>Thomas is a Chartered Member of the Chartered Institute for Securities &amp; Investment (CISI), a Certificated Professional Banker of the Chartered Banker Institute, and a Certified Portfolio Manager. He contributes frequently as a speaker, member and brand ambassador for the Institute for Mergers, Acquisitions and Alliances (IMAA) in Vienna and Zürich, where he advocates rigorous professional standards and responsible investment. His multilingual proficiency and deep regional expertise in North East Asia (South Korea, Japan) and ASEAN make him a sought‑after advisor at the intersection of private equity, impact finance and family‑office governance.</p><!-- hidden container 140685-a743c0f -->",
+      "location": "IM&A",
+      "linkedin_url": "https://www.linkedin.com/in/thomas-g-b9b587251/",
+      "profile_url": "https://imaa-institute.org/team/thomas-gruber/",
+      "programmes": [
+        "IM&A"
+      ],
+      "sort_order": 63,
+      "photo": "team/2025-05-Thomas-Gruber.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": true
+    },
+    {
+      "wordpress_id": 77273,
+      "slug": "prof-dr-christopher-kummer-staff",
+      "member_type": "staff",
+      "name": "Prof. Dr. Christopher Kummer",
+      "position": "CEO & Founder",
+      "summary": "",
+      "biography_html": "",
+      "location": "Zürich",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 1,
+      "photo": "team/2021-09-Prof.-Dr.-Christopher-Kummer.png",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 77271,
+      "slug": "caroline-kummer",
+      "member_type": "staff",
+      "name": "Caroline Kummer",
+      "position": "Chief Revenue Officer",
+      "summary": "",
+      "biography_html": "",
+      "location": "Vienna",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 2,
+      "photo": "team/2023-03-Caroline-Kummer.webp",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 115042,
+      "slug": "david-olsson-staff",
+      "member_type": "staff",
+      "name": "David Olsson",
+      "position": "Managing Director",
+      "summary": "",
+      "biography_html": "",
+      "location": "London",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 3,
+      "photo": "team/2022-03-DAvid-Olsson.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 158796,
+      "slug": "tobias-drogseth",
+      "member_type": "staff",
+      "name": "Tobias Drogseth",
+      "position": "Chief Commercial Officer",
+      "summary": "",
+      "biography_html": "",
+      "location": "Zurich",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 4,
+      "photo": "team/2026-09-edited-photo-49.png",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 77280,
+      "slug": "marko-markovic",
+      "member_type": "staff",
+      "name": "Marko Markovic",
+      "position": "Director of Program Management & Research",
+      "summary": "",
+      "biography_html": "",
+      "location": "Vienna",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 5,
+      "photo": "team/2023-03-Marko-Markovic.webp",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 77284,
+      "slug": "nicole-jokic",
+      "member_type": "staff",
+      "name": "Nicole Jokic",
+      "position": "Director Business Development AMERICAS & Team Lead Inbound Sales",
+      "summary": "",
+      "biography_html": "",
+      "location": "Vienna",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 6,
+      "photo": "team/2023-03-Nicole-Jokic.webp",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 77296,
+      "slug": "stephan-mor",
+      "member_type": "staff",
+      "name": "Stephan Mor",
+      "position": "Sales Manager EMEA",
+      "summary": "",
+      "biography_html": "",
+      "location": "Vienna",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 7,
+      "photo": "team/2023-03-Stephen-Mor.webp",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 77294,
+      "slug": "roberta-haas",
+      "member_type": "staff",
+      "name": "Roberta Haas",
+      "position": "Finance & Accounting",
+      "summary": "",
+      "biography_html": "",
+      "location": "Vienna",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 8,
+      "photo": "team/2023-03-Roberta-Haas.webp",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 115035,
+      "slug": "erin-tan",
+      "member_type": "staff",
+      "name": "Erin Tan",
+      "position": "Director Strategic Partnership & Alliances APAC",
+      "summary": "",
+      "biography_html": "",
+      "location": "Singapore",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 9,
+      "photo": "team/2024-07-T042A0NGX-U060DM785HV-ff64b43634c2-512.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 140799,
+      "slug": "nuray-alizada",
+      "member_type": "staff",
+      "name": "Nuray Alizada",
+      "position": "M&A Education & Project Manager",
+      "summary": "",
+      "biography_html": "",
+      "location": "London",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 10,
+      "photo": "team/2025-05-Nuray-Alizada.png",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 77293,
+      "slug": "ricky-martin-villafane",
+      "member_type": "staff",
+      "name": "Ricky Martin Villafane",
+      "position": "Sr. Multimedia Designer",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 11,
+      "photo": "team/2023-03-edited-photo-33.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 115032,
+      "slug": "maria-isabel-guerrero",
+      "member_type": "staff",
+      "name": "Maria Isabel Guerrero",
+      "position": "Accountant",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 12,
+      "photo": "team/2024-07-edited-photo-37.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 115031,
+      "slug": "anica-jahna-malimban",
+      "member_type": "staff",
+      "name": "Anica Jahna Malimban",
+      "position": "Web Designer & Front-End Developer",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 13,
+      "photo": "team/2024-07-edited-photo-45.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 136682,
+      "slug": "jose-maria-giron",
+      "member_type": "staff",
+      "name": "Jose Maria Giron",
+      "position": "Head of Marketing",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 14,
+      "photo": "team/2023-03-edited-photo-46.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 149260,
+      "slug": "glenn-denmer-ayap",
+      "member_type": "staff",
+      "name": "Glenn Denmer Ayap",
+      "position": "Pitch and Presentation Designer",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 15,
+      "photo": "team/2025-11-edited-photo-43.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 149261,
+      "slug": "ashley-tagacay",
+      "member_type": "staff",
+      "name": "Ashley Tagacay",
+      "position": "Sales Manager APAC",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 16,
+      "photo": "team/2025-11-edited-photo-35.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 158800,
+      "slug": "kristelle-anne-razon",
+      "member_type": "staff",
+      "name": "Kristelle Anne Razon",
+      "position": "Conference Manager",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 17,
+      "photo": "team/2026-09-edited-photo-47.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 158798,
+      "slug": "jan-andrie-melgar",
+      "member_type": "staff",
+      "name": "Jan Andrie Melgar",
+      "position": "Jr. Multimedia Designer",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 18,
+      "photo": "team/2026-09-edited-photo-34.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 158802,
+      "slug": "hazel-ann-moises",
+      "member_type": "staff",
+      "name": "Hazel Ann Moises",
+      "position": "Marketing and Product Communications Specialist",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 19,
+      "photo": "team/2026-09-edited-photo-44.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 158806,
+      "slug": "denise-vasquez",
+      "member_type": "staff",
+      "name": "Denise Vasquez",
+      "position": "HR Generalist",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 20,
+      "photo": "team/2026-09-edited-photo-41.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 158809,
+      "slug": "danielle-brodeth",
+      "member_type": "staff",
+      "name": "Danielle Brodeth",
+      "position": "Content Manager",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 21,
+      "photo": "team/2026-09-edited-photo-40.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 158808,
+      "slug": "elldie-de-guzman",
+      "member_type": "staff",
+      "name": "Elldie De Guzman",
+      "position": "Trust, Standards & Accreditation Manager",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 22,
+      "photo": "team/2026-09-edited-photo-42.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 158813,
+      "slug": "angela-francisco",
+      "member_type": "staff",
+      "name": "Angela Francisco",
+      "position": "Sales Assistant",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 23,
+      "photo": "team/2026-09-edited-photo-36.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    },
+    {
+      "wordpress_id": 158815,
+      "slug": "michaela-saballegue",
+      "member_type": "staff",
+      "name": "Michaela Saballegue",
+      "position": "Marketing and Events Operations Specialist",
+      "summary": "",
+      "biography_html": "",
+      "location": "Manila",
+      "linkedin_url": "",
+      "profile_url": "",
+      "programmes": [],
+      "sort_order": 24,
+      "photo": "team/2026-09-edited-photo-48.jpg",
+      "profile_details": {},
+      "wordpress_profile_in_sitemap": null
+    }
+  ],
+  "media": [
+    {
+      "key": "team/2021-09-Prof.-Dr.-Christopher-Kummer.png",
+      "file": "2021-09-Prof.-Dr.-Christopher-Kummer.png",
+      "sha256": "ea5dbd2b324ab420b4d0304c250bbf97695513196e36286c0e05c76ea8a501c2",
+      "width": 400,
+      "height": 400,
+      "alt": "Prof. Dr. Christopher Kummer",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Prof.-Dr.-Christopher-Kummer.png"
+    },
+    {
+      "key": "team/2021-09-prof-dr-aswath-damodaran.png",
+      "file": "2021-09-prof-dr-aswath-damodaran.png",
+      "sha256": "971d60062c293f92fec208d12cdf67f6f85d587ebce5068921df37c38361453e",
+      "width": 280,
+      "height": 280,
+      "alt": "Prof. Dr. Aswath Damodaran",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/prof-dr-aswath-damodaran.png"
+    },
+    {
+      "key": "team/2022-03-DAvid-Olsson.jpg",
+      "file": "2022-03-DAvid-Olsson.jpg",
+      "sha256": "6bcd17f33d79915dfe0d50c50c29343a24befd960465568b27a23bc963ffd8ad",
+      "width": 500,
+      "height": 500,
+      "alt": "David Olsson",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2022/03/DAvid-Olsson.jpg"
+    },
+    {
+      "key": "team/2024-07-Tom-Allen-BW2.png",
+      "file": "2024-07-Tom-Allen-BW2.png",
+      "sha256": "2c8fe19b65c0537fab8cfd739dc6701f031644bf2a0a720a2e08a3bbdb8b659b",
+      "width": 500,
+      "height": 500,
+      "alt": "Tom Allen",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Tom-Allen-BW2.png"
+    },
+    {
+      "key": "team/2026-10-Abderrahman-Benouhoud.webp",
+      "file": "2026-10-Abderrahman-Benouhoud.webp",
+      "sha256": "c22d687f4b11817f7ee81110e08a66845c62a6ab02f780119e8178e1dfb4087d",
+      "width": 1200,
+      "height": 1200,
+      "alt": "Abderrahman Benouhoud",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/10/Abderrahman-Benouhoud.webp"
+    },
+    {
+      "key": "team/2024-07-Ajit-Sane.png",
+      "file": "2024-07-Ajit-Sane.png",
+      "sha256": "b2ea68488a197824ddfed2baa5f71b966984d265ca678eb6c12be1ec14e80410",
+      "width": 400,
+      "height": 400,
+      "alt": "Ajit Sane",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Ajit-Sane.png"
+    },
+    {
+      "key": "team/2024-07-Alexis-DeBernardis.png",
+      "file": "2024-07-Alexis-DeBernardis.png",
+      "sha256": "6328d9dd550b5a9bee325be33767a9560bde845b0c2cba40c1f0704921afed0a",
+      "width": 283,
+      "height": 283,
+      "alt": "Alexis DeBernardis",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Alexis-DeBernardis.png"
+    },
+    {
+      "key": "team/2024-07-Alexis-Gilman.png",
+      "file": "2024-07-Alexis-Gilman.png",
+      "sha256": "4230b35b20239c3314e608baffbfaa27f6e2c0e7618d512685923f4ce404319a",
+      "width": 500,
+      "height": 500,
+      "alt": "Alexis Gilman",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Alexis-Gilman.png"
+    },
+    {
+      "key": "team/2024-07-Alisa-Choo.png",
+      "file": "2024-07-Alisa-Choo.png",
+      "sha256": "3fe43d68fc15d12f6fef0105503f9fb465722a72b95a5632546b435b75ad6a63",
+      "width": 500,
+      "height": 500,
+      "alt": "Alisa Choo",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Alisa-Choo.png"
+    },
+    {
+      "key": "team/2021-09-Andre-Gan.png",
+      "file": "2021-09-Andre-Gan.png",
+      "sha256": "98d874f85a968b8c893bc4be16386b3bbe02701b43bdf5c8aa31c21e8ec7b095",
+      "width": 298,
+      "height": 298,
+      "alt": "Andre Gan",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Andre-Gan.png"
+    },
+    {
+      "key": "team/2024-08-Anirvan-Sen-CPMI.png",
+      "file": "2024-08-Anirvan-Sen-CPMI.png",
+      "sha256": "299f0bc21b59ac6de6d9aa33444588a06859bd0db7b1c4d0f3598aeb06ed963a",
+      "width": 300,
+      "height": 300,
+      "alt": "Anirvan Sen, CPMI",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/08/Anirvan-Sen-CPMI.png"
+    },
+    {
+      "key": "team/2024-07-Anthony-Balzano.png",
+      "file": "2024-07-Anthony-Balzano.png",
+      "sha256": "10666316ed9bee5f006de74460a0c12eff11c516980fe94d02dc6c05aded73f5",
+      "width": 360,
+      "height": 360,
+      "alt": "Anthony Balzano",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Anthony-Balzano.png"
+    },
+    {
+      "key": "team/2024-07-Ashley-Linken.png",
+      "file": "2024-07-Ashley-Linken.png",
+      "sha256": "d5ac0bab50e2efc19b55061543b3d50873d1470c21005b5ffe0ef1c4b1cce5cb",
+      "width": 450,
+      "height": 450,
+      "alt": "Ashley Linken, MBA, GRP",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Ashley-Linken.png"
+    },
+    {
+      "key": "team/2024-07-Candy-Dai.png",
+      "file": "2024-07-Candy-Dai.png",
+      "sha256": "639c7327ac8bb9eb05c8f3fd323083f64194907206b567f05c9cff30674700dd",
+      "width": 450,
+      "height": 450,
+      "alt": "Candy Dai",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Candy-Dai.png"
+    },
+    {
+      "key": "team/2024-07-Caroline-Berube.png",
+      "file": "2024-07-Caroline-Berube.png",
+      "sha256": "65b24b60a94b6b0ceaafde13ace5538dffafcd8f5b68ccf34cbd8dacf6a49b67",
+      "width": 297,
+      "height": 297,
+      "alt": "Caroline Berube",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Caroline-Berube.png"
+    },
+    {
+      "key": "team/2024-07-Chirag-Shah.png",
+      "file": "2024-07-Chirag-Shah.png",
+      "sha256": "8f30141da4a40dd1c3f01a9c8cff7db4f73b34d5f60575c8e1fe218be0e4e3b2",
+      "width": 400,
+      "height": 400,
+      "alt": "Chirag Shah, MBA, CPA CA",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Chirag-Shah.png"
+    },
+    {
+      "key": "team/2022-03-ChrisMellen-1.png",
+      "file": "2022-03-ChrisMellen-1.png",
+      "sha256": "0aef76ff8c9d7074732a09a9e329b231265b3f62ea06eef6dd215258cda29755",
+      "width": 278,
+      "height": 278,
+      "alt": "Chris Mellen",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2022/03/ChrisMellen-1.png"
+    },
+    {
+      "key": "team/2024-08-christopher-young.png",
+      "file": "2024-08-christopher-young.png",
+      "sha256": "b896eeaf13e62ddb9d2b89c02515d117eaa84050c613314b59b6b736490c03cd",
+      "width": 298,
+      "height": 298,
+      "alt": "Christopher Young",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/08/christopher-young.png"
+    },
+    {
+      "key": "team/2024-07-Clemens-Leitner.png",
+      "file": "2024-07-Clemens-Leitner.png",
+      "sha256": "e968e4da1aff5cfe34b28e8ed2bad361c2ed6b26c7e72c16ad2315f5a713511b",
+      "width": 400,
+      "height": 400,
+      "alt": "Clemens Leitner, LL.M",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Clemens-Leitner.png"
+    },
+    {
+      "key": "team/2021-09-Darryl-Kinneally.png",
+      "file": "2021-09-Darryl-Kinneally.png",
+      "sha256": "87f2fdcffb4ce4d6606ee06d82988d54b72ee8b004cf3ac56a3a601f818253c5",
+      "width": 450,
+      "height": 450,
+      "alt": "Darryl Kinneally",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Darryl-Kinneally.png"
+    },
+    {
+      "key": "team/2024-07-Dave-Cummings1.png",
+      "file": "2024-07-Dave-Cummings1.png",
+      "sha256": "b4b128be5717595fa1aa30e45c665cec73b26aa6420930a9afd8de4827aaba54",
+      "width": 390,
+      "height": 390,
+      "alt": "Dave Cummings",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Dave-Cummings1.png"
+    },
+    {
+      "key": "team/2021-09-Dhruv-Mehra.png",
+      "file": "2021-09-Dhruv-Mehra.png",
+      "sha256": "dfaf75d134699b8c87a70d9121657d63a0f22562cbe8155b9cd88540bca6af0b",
+      "width": 450,
+      "height": 450,
+      "alt": "Dhruv Mehra",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Dhruv-Mehra.png"
+    },
+    {
+      "key": "team/2022-03-Don-Noble.png",
+      "file": "2022-03-Don-Noble.png",
+      "sha256": "c7223509b97f656a08967b41307f4223071286e09442f68c61c212087d1b1760",
+      "width": 353,
+      "height": 353,
+      "alt": "Donald H. Noble",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2022/03/Don-Noble.png"
+    },
+    {
+      "key": "team/2023-06-Alexander-Herzfeldt.png",
+      "file": "2023-06-Alexander-Herzfeldt.png",
+      "sha256": "5a1774d98cb57ea2c5c836dc6be6a6afdd8540dc67fd0c0a34154c3d863a499c",
+      "width": 450,
+      "height": 450,
+      "alt": "Dr. Alexander Herzfeldt",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/06/Alexander-Herzfeldt.png"
+    },
+    {
+      "key": "team/2023-08-Hermann-Ali-Hinderer.png",
+      "file": "2023-08-Hermann-Ali-Hinderer.png",
+      "sha256": "e3572a60358c65e6d3751e222ccb669775de88b3fe8eb1783697ece14c100e03",
+      "width": 400,
+      "height": 400,
+      "alt": "Dr. Hermann Ali Hinderer",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/08/Hermann-Ali-Hinderer.png"
+    },
+    {
+      "key": "team/2024-08-Dr.-Stefan-Gurmann.png",
+      "file": "2024-08-Dr.-Stefan-Gurmann.png",
+      "sha256": "7ac919cf405b2850b0b8b83f4ca3b94bff80cd37f28a820fe8f5315b95935793",
+      "width": 300,
+      "height": 300,
+      "alt": "Dr. Stefan Gurmann, M.B.L.-HSG",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/08/Dr.-Stefan-Gurmann.png"
+    },
+    {
+      "key": "team/2024-07-Ellen-Federman.png",
+      "file": "2024-07-Ellen-Federman.png",
+      "sha256": "e38e9973397ea2f68c3a2bc9db2ccffd332c54988e75121f4726a59bfe60b5bb",
+      "width": 400,
+      "height": 400,
+      "alt": "Ellen Federman",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Ellen-Federman.png"
+    },
+    {
+      "key": "team/2024-07-Gabe-Langerak.png",
+      "file": "2024-07-Gabe-Langerak.png",
+      "sha256": "6b813ea2f669fbcf2befa905f7aa1e2ce12ef058ef870cef9c335e57ab54ea44",
+      "width": 400,
+      "height": 400,
+      "alt": "Gabe Langerak",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Gabe-Langerak.png"
+    },
+    {
+      "key": "team/2024-09-Gregg-Clark.png",
+      "file": "2024-09-Gregg-Clark.png",
+      "sha256": "0279fc90e1b370aa944d3dfbcbc2c0a9ead7fbff18237baab9d34d9b65b5c14b",
+      "width": 300,
+      "height": 300,
+      "alt": "Gregg Clark",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/09/Gregg-Clark.png"
+    },
+    {
+      "key": "team/2024-07-Guilia-Vignolo.png",
+      "file": "2024-07-Guilia-Vignolo.png",
+      "sha256": "83ef7927407a35ebd7d350c41ed49f495e705954c1c1f401359e92860cf07723",
+      "width": 427,
+      "height": 427,
+      "alt": "Guilia Vignolo",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Guilia-Vignolo.png"
+    },
+    {
+      "key": "team/2024-07-Hanna-Heinz.png",
+      "file": "2024-07-Hanna-Heinz.png",
+      "sha256": "4d17e1280bd2dc375dc6deddafecfd999f6421c2653dfa85c6aa3572335ff14f",
+      "width": 450,
+      "height": 450,
+      "alt": "Hanna Heinz",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Hanna-Heinz.png"
+    },
+    {
+      "key": "team/2024-07-Haze-Zhang.png",
+      "file": "2024-07-Haze-Zhang.png",
+      "sha256": "a3769af9bcf809937d6988cf26892631be8cc40172fa0c9641dd5bc07c589220",
+      "width": 331,
+      "height": 331,
+      "alt": "Haze Zhang",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Haze-Zhang.png"
+    },
+    {
+      "key": "team/2024-07-Helen-Curtis.png",
+      "file": "2024-07-Helen-Curtis.png",
+      "sha256": "6e353a80107f3c8f5508fadb6fbeb858aeef08299c2b17e968f0d94597a7e1a8",
+      "width": 450,
+      "height": 450,
+      "alt": "Helen Curtis",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Helen-Curtis.png"
+    },
+    {
+      "key": "team/2024-07-Jad-Barakat.png",
+      "file": "2024-07-Jad-Barakat.png",
+      "sha256": "1799dbd20d987e299a27d5c296c4046f7d76f04e3ad0df121e541f1a84d8f528",
+      "width": 299,
+      "height": 299,
+      "alt": "Jad Barakat",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Jad-Barakat.png"
+    },
+    {
+      "key": "team/2025-08-Jalal-Nadeem.webp",
+      "file": "2025-08-Jalal-Nadeem.webp",
+      "sha256": "6d3781e06751a1aa091e0bf9e18fcf29fc53808c2165cbf972523158d3fc423a",
+      "width": 300,
+      "height": 300,
+      "alt": "Jalal Nadeem",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2025/08/Jalal-Nadeem.webp"
+    },
+    {
+      "key": "team/2024-07-Jennifer-Will-1.png",
+      "file": "2024-07-Jennifer-Will-1.png",
+      "sha256": "d5753eb6ba6b36b48fb6ffba50d7a42ab4a185668f3ecd8414ec658465d335c1",
+      "width": 452,
+      "height": 452,
+      "alt": "Jennifer Will",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Jennifer-Will-1.png"
+    },
+    {
+      "key": "team/2024-07-Jeremiah-Gurusamy-bnw.png",
+      "file": "2024-07-Jeremiah-Gurusamy-bnw.png",
+      "sha256": "644ec57f31fb2a41eed95155f40145a0835ffe4b1f1550c62f632a87e12ea2cb",
+      "width": 243,
+      "height": 243,
+      "alt": "Jeremiah Gurusamy",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Jeremiah-Gurusamy-bnw.png"
+    },
+    {
+      "key": "team/2024-07-Kelvin-Teo.png",
+      "file": "2024-07-Kelvin-Teo.png",
+      "sha256": "3b9e868a95d9e439464e637f95ffc797a23019054a1e7cfdc598e130e7bf36b9",
+      "width": 450,
+      "height": 450,
+      "alt": "Kelvin Teo",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Kelvin-Teo.png"
+    },
+    {
+      "key": "team/2024-08-Kirstin-Gallagher.png",
+      "file": "2024-08-Kirstin-Gallagher.png",
+      "sha256": "7338352bf0800df15d2fed71cd4d7abb07f06279a633aa68310095adb0eed4b6",
+      "width": 300,
+      "height": 300,
+      "alt": "Kirstin Gallagher",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/08/Kirstin-Gallagher.png"
+    },
+    {
+      "key": "team/2024-07-Konrad-Deiters.png",
+      "file": "2024-07-Konrad-Deiters.png",
+      "sha256": "607fd3eaa6285448adb51df2ee317c166e736b453d407cf95062a81cf98aedec",
+      "width": 337,
+      "height": 337,
+      "alt": "Konrad Deiters",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Konrad-Deiters.png"
+    },
+    {
+      "key": "team/2024-07-Martin-Howard-1.png",
+      "file": "2024-07-Martin-Howard-1.png",
+      "sha256": "57466bc27ce679ab943d752caf5210aa278a41e518784ca1c69297c3705184ae",
+      "width": 434,
+      "height": 434,
+      "alt": "Martin Howard",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Martin-Howard-1.png"
+    },
+    {
+      "key": "team/2024-08-Michael-Klawon-1.png",
+      "file": "2024-08-Michael-Klawon-1.png",
+      "sha256": "382cd61b0d221333fbc2b61209020166a76d1ee72c1a3af2f7816b8385af1c51",
+      "width": 300,
+      "height": 300,
+      "alt": "Michael Klawon",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/08/Michael-Klawon-1.png"
+    },
+    {
+      "key": "team/2024-07-Michelle-Henriksen.png",
+      "file": "2024-07-Michelle-Henriksen.png",
+      "sha256": "a25772c44d13a9ed3f1d912c6fa9b74c624222ece2199c55b16b23202568287e",
+      "width": 288,
+      "height": 288,
+      "alt": "Michelle Henriksen",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Michelle-Henriksen.png"
+    },
+    {
+      "key": "team/2024-08-Mihai-C.-Tiplea.png",
+      "file": "2024-08-Mihai-C.-Tiplea.png",
+      "sha256": "bc5b7d1163e08ef4e5a53690312e02263c83abde4881c4d6ce580b2e49387c18",
+      "width": 300,
+      "height": 300,
+      "alt": "Mihai C. Tiplea",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/08/Mihai-C.-Tiplea.png"
+    },
+    {
+      "key": "team/2024-08-Mohamed-Khodeir.png",
+      "file": "2024-08-Mohamed-Khodeir.png",
+      "sha256": "2826ebbe10bcaaaa305a9aebe6e074ac8d2e727be3e1283fede89715070854e2",
+      "width": 300,
+      "height": 300,
+      "alt": "Mohamed Khodeir",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/08/Mohamed-Khodeir.png"
+    },
+    {
+      "key": "team/2024-07-1623509017327.png",
+      "file": "2024-07-1623509017327.png",
+      "sha256": "85c29689d4e71e4dc3d5e8e9a107d776dca7517f1c5a9fbb8b9960f7dc66f933",
+      "width": 400,
+      "height": 400,
+      "alt": "Mohand Al-Ansari",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/1623509017327.png"
+    },
+    {
+      "key": "team/2024-07-Nadia-Couper.png",
+      "file": "2024-07-Nadia-Couper.png",
+      "sha256": "650324663473bbbe2642f6289f1bb598dcb3435301a24df0ec82b8ae8797153f",
+      "width": 400,
+      "height": 400,
+      "alt": "Nadia Couper",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Nadia-Couper.png"
+    },
+    {
+      "key": "team/2024-07-Nikhil-Uppal.png",
+      "file": "2024-07-Nikhil-Uppal.png",
+      "sha256": "1cce724651777e833fe19033f7495c8dde2253a6df2611657cf72369b0a621ff",
+      "width": 400,
+      "height": 400,
+      "alt": "Nikhil Uppal",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Nikhil-Uppal.png"
+    },
+    {
+      "key": "team/2024-07-Paran-Puvanesan.png",
+      "file": "2024-07-Paran-Puvanesan.png",
+      "sha256": "62c740a2340a29a68e9944e664e959ad46dd3e64105786deff3ff2c823fa0b55",
+      "width": 300,
+      "height": 300,
+      "alt": "Paran Puvanesan",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Paran-Puvanesan.png"
+    },
+    {
+      "key": "team/2024-07-Patricia-Aira-1024x1024.png",
+      "file": "2024-07-Patricia-Aira-1024x1024.png",
+      "sha256": "00d3868a122b3fef84f51ab4aee6c187b1ad43fb738ab7d26ac5c205ec9d426b",
+      "width": 1024,
+      "height": 1024,
+      "alt": "Patricia Aira",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Patricia-Aira-1024x1024.png"
+    },
+    {
+      "key": "team/2024-07-Paul-Pollock.png",
+      "file": "2024-07-Paul-Pollock.png",
+      "sha256": "51a7835e0da414cf6ea7e150fbb4ff1a5f02c2785e9b12548cff891c7dd0b3a2",
+      "width": 415,
+      "height": 415,
+      "alt": "Paul Pollock",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Paul-Pollock.png"
+    },
+    {
+      "key": "team/2024-07-Pramod-Kumar1.png",
+      "file": "2024-07-Pramod-Kumar1.png",
+      "sha256": "5434dd0c0036081d40fd7dccc65d253cc7b18146c87cbd02f0ae1df472ec6b04",
+      "width": 400,
+      "height": 400,
+      "alt": "Pramod Kumar",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Pramod-Kumar1.png"
+    },
+    {
+      "key": "team/2021-09-prof-andrew-campbell.png",
+      "file": "2021-09-prof-andrew-campbell.png",
+      "sha256": "44662e1306059ba2e7780ceed643e2eaf4c5400dc9715158a135fec60f7b80aa",
+      "width": 282,
+      "height": 282,
+      "alt": "Prof. Andrew Campbell",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/prof-andrew-campbell.png"
+    },
+    {
+      "key": "team/2021-09-David-Brophy.png",
+      "file": "2021-09-David-Brophy.png",
+      "sha256": "0d5a99e241179544d9ee931a6cc2370dc57de1929ba3af33fb0956734300fe0d",
+      "width": 300,
+      "height": 300,
+      "alt": "Prof. David J. Brophy, PhD",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/David-Brophy.png"
+    },
+    {
+      "key": "team/2024-07-Robert-Seber.png",
+      "file": "2024-07-Robert-Seber.png",
+      "sha256": "c2abfbe68dbc114364a94186bb68e8f81c79a0a5d8e6a728836913592ead5c27",
+      "width": 400,
+      "height": 399,
+      "alt": "Robert Seber",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Robert-Seber.png"
+    },
+    {
+      "key": "team/2024-07-Roger-Cooper.png",
+      "file": "2024-07-Roger-Cooper.png",
+      "sha256": "54f82a284985311bb7461eda474c5bf61c3f33da4d46e1316ae7cbafea823dbf",
+      "width": 400,
+      "height": 400,
+      "alt": "Roger Cooper",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Roger-Cooper.png"
+    },
+    {
+      "key": "team/2021-09-Roula-Khaled-1.png",
+      "file": "2021-09-Roula-Khaled-1.png",
+      "sha256": "28b438c63a6068e85048657d0b9f87de9d6b1b2f7121271884b691f545e4a124",
+      "width": 436,
+      "height": 436,
+      "alt": "Roula Khaled",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Roula-Khaled-1.png"
+    },
+    {
+      "key": "team/2024-07-Sean-Mei.png",
+      "file": "2024-07-Sean-Mei.png",
+      "sha256": "e1f8ee533c2f9337207d0e4d9ed4202214a4e6873612a14f72c815e1853a78c6",
+      "width": 400,
+      "height": 400,
+      "alt": "Sean Mei",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Sean-Mei.png"
+    },
+    {
+      "key": "team/2021-09-Seng-Leong-Teh.png",
+      "file": "2021-09-Seng-Leong-Teh.png",
+      "sha256": "c6a4c0f2f940ed5eb6a53dcd8fd37a9b3294e142345917d2682f8b3348395ba0",
+      "width": 450,
+      "height": 450,
+      "alt": "Seng Leong Teh",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Seng-Leong-Teh.png"
+    },
+    {
+      "key": "team/2024-07-Sheharyar-Baig.png",
+      "file": "2024-07-Sheharyar-Baig.png",
+      "sha256": "28dd5f4951c279f4c03f5b70251508d2ade66e09ead28b8faa3f4a32d11e75e3",
+      "width": 400,
+      "height": 400,
+      "alt": "Sheharyar Baig",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Sheharyar-Baig.png"
+    },
+    {
+      "key": "team/2024-08-Sue-Frerichs.png",
+      "file": "2024-08-Sue-Frerichs.png",
+      "sha256": "cb8855e1b4ede80a18d4d37e8ff58652c9b5ed2b1e3351c1877a80e4db01d25a",
+      "width": 300,
+      "height": 300,
+      "alt": "Sue Frerichs",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/08/Sue-Frerichs.png"
+    },
+    {
+      "key": "team/2024-07-Thomas-Bouchez.png",
+      "file": "2024-07-Thomas-Bouchez.png",
+      "sha256": "47f4206522f1eb6da2d249806dcbec98a7ff28583eb8a6f03eac4e23a15e9e27",
+      "width": 608,
+      "height": 608,
+      "alt": "Thomas Bouchez",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Thomas-Bouchez.png"
+    },
+    {
+      "key": "team/2025-05-Thomas-Gruber.jpg",
+      "file": "2025-05-Thomas-Gruber.jpg",
+      "sha256": "2ad6325e04e5f198dd3abb64d93c61d59fe28754c217071ac8fcc5de449c925e",
+      "width": 380,
+      "height": 378,
+      "alt": "Picture of Thomas Gruber",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2025/05/Thomas-Gruber.jpg"
+    },
+    {
+      "key": "team/2023-03-Caroline-Kummer.webp",
+      "file": "2023-03-Caroline-Kummer.webp",
+      "sha256": "41fc8be1fb8a0b36c6cbab426030921a675196bb522e874a665da17790178c62",
+      "width": 306,
+      "height": 307,
+      "alt": "Caroline Kummer",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/03/Caroline-Kummer.webp"
+    },
+    {
+      "key": "team/2026-09-edited-photo-49.png",
+      "file": "2026-09-edited-photo-49.png",
+      "sha256": "75f2be7f938fe793f31da720e571d6ec64b51625083385466ef80fd287733dc0",
+      "width": 800,
+      "height": 800,
+      "alt": "Tobias Drogseth",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/09/edited-photo-49.png"
+    },
+    {
+      "key": "team/2023-03-Marko-Markovic.webp",
+      "file": "2023-03-Marko-Markovic.webp",
+      "sha256": "af4213b943589b44848386658e4646fe8dde5f6bd9bb282e81ca0d21b1e3c577",
+      "width": 306,
+      "height": 307,
+      "alt": "Marko Markovic",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/03/Marko-Markovic.webp"
+    },
+    {
+      "key": "team/2023-03-Nicole-Jokic.webp",
+      "file": "2023-03-Nicole-Jokic.webp",
+      "sha256": "4bcc8c5f8488d1d92ed4e6fb87a10010484ff593d95ee58d911f8c6310edacd2",
+      "width": 306,
+      "height": 306,
+      "alt": "Nicole Jokic",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/03/Nicole-Jokic.webp"
+    },
+    {
+      "key": "team/2023-03-Stephen-Mor.webp",
+      "file": "2023-03-Stephen-Mor.webp",
+      "sha256": "3828b5b037e79e57f12ee73aca81d863897647562aa61694765c6a475f7f27ab",
+      "width": 306,
+      "height": 305,
+      "alt": "Stephan Mor",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/03/Stephen-Mor.webp"
+    },
+    {
+      "key": "team/2023-03-Roberta-Haas.webp",
+      "file": "2023-03-Roberta-Haas.webp",
+      "sha256": "dea8c8329dc4d6493bf9d168e3e2720b6ab88f6d73b1b0b1583a2159f6119aee",
+      "width": 306,
+      "height": 305,
+      "alt": "Roberta Haas",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/03/Roberta-Haas.webp"
+    },
+    {
+      "key": "team/2024-07-T042A0NGX-U060DM785HV-ff64b43634c2-512.jpg",
+      "file": "2024-07-T042A0NGX-U060DM785HV-ff64b43634c2-512.jpg",
+      "sha256": "35b3d9e514435a377ac10f38f24276714ddb5233a4848a4af839f10d09c67f7b",
+      "width": 479,
+      "height": 479,
+      "alt": "Erin Tan",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/T042A0NGX-U060DM785HV-ff64b43634c2-512.jpg"
+    },
+    {
+      "key": "team/2025-05-Nuray-Alizada.png",
+      "file": "2025-05-Nuray-Alizada.png",
+      "sha256": "984906215cac574a49a16d9259c5adb53228024071fdda9d946f3d9c5418c4c9",
+      "width": 300,
+      "height": 300,
+      "alt": "Nuray Alizada",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2025/05/Nuray-Alizada.png"
+    },
+    {
+      "key": "team/2023-03-edited-photo-33.jpg",
+      "file": "2023-03-edited-photo-33.jpg",
+      "sha256": "0b14076acc55f06abb807f308a859f2c2754cd388a5d7a1871546527a2fccf19",
+      "width": 350,
+      "height": 350,
+      "alt": "Ricky Martin Villafane",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/03/edited-photo-33.jpg"
+    },
+    {
+      "key": "team/2024-07-edited-photo-37.jpg",
+      "file": "2024-07-edited-photo-37.jpg",
+      "sha256": "cda8569d7f707fd8c4e6ad4a0b1d0e644ddb5f486d0da492ce9adbabc06acd7d",
+      "width": 350,
+      "height": 350,
+      "alt": "Maria Isabel Guerrero",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/edited-photo-37.jpg"
+    },
+    {
+      "key": "team/2024-07-edited-photo-45.jpg",
+      "file": "2024-07-edited-photo-45.jpg",
+      "sha256": "cdf73ebff37129a03804cde00369777e04b5bc5cca4fb1eeb58de1ecb961ba28",
+      "width": 350,
+      "height": 350,
+      "alt": "Anica Jahna Malimban",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/edited-photo-45.jpg"
+    },
+    {
+      "key": "team/2023-03-edited-photo-46.jpg",
+      "file": "2023-03-edited-photo-46.jpg",
+      "sha256": "b37e3a03e18d21b693ff7f1df0162746f307e83cb337583214e1e0ba1b18346a",
+      "width": 350,
+      "height": 350,
+      "alt": "Jose Maria Giron",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2023/03/edited-photo-46.jpg"
+    },
+    {
+      "key": "team/2025-11-edited-photo-43.jpg",
+      "file": "2025-11-edited-photo-43.jpg",
+      "sha256": "f6ff0e3e573d682e1090292d0b5c86ed9ddf5d3b39cb90d925fcb7f8cda80373",
+      "width": 350,
+      "height": 350,
+      "alt": "Glenn Denmer Ayap",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2025/11/edited-photo-43.jpg"
+    },
+    {
+      "key": "team/2025-11-edited-photo-35.jpg",
+      "file": "2025-11-edited-photo-35.jpg",
+      "sha256": "6e4875b02968527450dd08f26caa7b3099a5b21c128e415470cc54f9d02ddcf8",
+      "width": 350,
+      "height": 350,
+      "alt": "Ashley Tagacay",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2025/11/edited-photo-35.jpg"
+    },
+    {
+      "key": "team/2026-09-edited-photo-47.jpg",
+      "file": "2026-09-edited-photo-47.jpg",
+      "sha256": "2605dd49b468890584b512c72af9e74779c9970669542e2402187019d0e4f51e",
+      "width": 350,
+      "height": 350,
+      "alt": "Kristelle Anne Razon",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/09/edited-photo-47.jpg"
+    },
+    {
+      "key": "team/2026-09-edited-photo-34.jpg",
+      "file": "2026-09-edited-photo-34.jpg",
+      "sha256": "2025f0644f54e8750e8a66bbb3d34a00b4d2cbae8c48efc58e8b6c11afb5997b",
+      "width": 350,
+      "height": 350,
+      "alt": "Jan Andrie Melgar",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/09/edited-photo-34.jpg"
+    },
+    {
+      "key": "team/2026-09-edited-photo-44.jpg",
+      "file": "2026-09-edited-photo-44.jpg",
+      "sha256": "428df8d64fe62fb65139129e3e71081f48a69d697827c05fad754625b52da732",
+      "width": 350,
+      "height": 350,
+      "alt": "Hazel Ann Moises",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/09/edited-photo-44.jpg"
+    },
+    {
+      "key": "team/2026-09-edited-photo-41.jpg",
+      "file": "2026-09-edited-photo-41.jpg",
+      "sha256": "cd89ce33759d80bc0c17de17980fa52707fd66f18310b306e1ee04ba2ff582e1",
+      "width": 350,
+      "height": 350,
+      "alt": "Denise Vasquez",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/09/edited-photo-41.jpg"
+    },
+    {
+      "key": "team/2026-09-edited-photo-40.jpg",
+      "file": "2026-09-edited-photo-40.jpg",
+      "sha256": "97a9d057b9b78da5be935a3672812a6f7fef5ddcf503ccdb8c73153c1fb1009c",
+      "width": 350,
+      "height": 350,
+      "alt": "Danielle Brodeth",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/09/edited-photo-40.jpg"
+    },
+    {
+      "key": "team/2026-09-edited-photo-42.jpg",
+      "file": "2026-09-edited-photo-42.jpg",
+      "sha256": "756170eb28277fb6a55de9f8bb5d9e7631840a2500b3c80de517b82b7d6c7164",
+      "width": 350,
+      "height": 350,
+      "alt": "Elldie De Guzman",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/09/edited-photo-42.jpg"
+    },
+    {
+      "key": "team/2026-09-edited-photo-36.jpg",
+      "file": "2026-09-edited-photo-36.jpg",
+      "sha256": "f02294f7825e7f86f8391191ad85a011630f487f768e717642baecd3757340a7",
+      "width": 350,
+      "height": 350,
+      "alt": "Angela Francisco",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/09/edited-photo-36.jpg"
+    },
+    {
+      "key": "team/2026-09-edited-photo-48.jpg",
+      "file": "2026-09-edited-photo-48.jpg",
+      "sha256": "6adabc410aee3aeba3e8f968e7351af0f4842fd8aff5da80182b4272a015fa69",
+      "width": 350,
+      "height": 350,
+      "alt": "Michaela Saballegue",
+      "role": "team photo",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2026/09/edited-photo-48.jpg"
+    },
+    {
+      "key": "about/2024-07-ima-1.png",
+      "file": "2024-07-IMA-1.png",
+      "sha256": "4e405ee6ee0aa390372426fa67333f5f4b6a2dc2f3691444931e06e7efdea1e5",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/IMA-1.png"
+    },
+    {
+      "key": "about/2024-07-cpmi-1.png",
+      "file": "2024-07-CPMI-1.png",
+      "sha256": "98884127da17c8378eb221ec3d311a788fc1c65a1949964abcec510a7bb1858a",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/CPMI-1.png"
+    },
+    {
+      "key": "about/2024-07-map-1.png",
+      "file": "2024-07-MAP-1.png",
+      "sha256": "2f99c1a36c03fc236884f020a614bc4f8df71d78a2d80e66e408c7ec80c4c9ac",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/MAP-1.png"
+    },
+    {
+      "key": "about/2024-07-lma.png",
+      "file": "2024-07-LMA.png",
+      "sha256": "c586237112fff4e5222dc3a52eabd46f08884f5a9e3fa02348aa29555da22c6f",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/LMA.png"
+    },
+    {
+      "key": "about/2024-07-hrma.png",
+      "file": "2024-07-HRMA.png",
+      "sha256": "2fd1d09b82d5ef3c89c3c043c1cfee701fc54d78ff99bdb54f3cb83a6b5021ec",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/HRMA.png"
+    },
+    {
+      "key": "about/2024-07-scde1.png",
+      "file": "2024-07-SCDE1.png",
+      "sha256": "ee9314d960da04ecd55b2893669fd5d20bea6c822efbae74331be632bc36a7b6",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/SCDE1.png"
+    },
+    {
+      "key": "about/2024-07-valuation.png",
+      "file": "2024-07-Valuation.png",
+      "sha256": "18d7a9826d05a2f95a506ccde32af8e67b31a96717207f39ac0a9c752a1bbb43",
+      "width": 530,
+      "height": 363,
+      "alt": "",
+      "role": "programme image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Valuation.png"
+    },
+    {
+      "key": "about/2024-07-usa.webp",
+      "file": "2024-07-USA.webp",
+      "sha256": "a769a800e67d73e14a98588230d6ef67628a92ae7eb0a46e2176ecbe13a896e2",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/USA.webp"
+    },
+    {
+      "key": "about/2024-07-switzerland.webp",
+      "file": "2024-07-Switzerland.webp",
+      "sha256": "8aa548667c2a6ae9241f297e3c980874b439a3d423c8e6297f97ff85bab5446e",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Switzerland.webp"
+    },
+    {
+      "key": "about/2024-07-austria.webp",
+      "file": "2024-07-Austria.webp",
+      "sha256": "79ebcbbe56b4cce4a84daf033380d7ec95040a356c00b1afc6b3291aa1546247",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Austria.webp"
+    },
+    {
+      "key": "about/2024-07-uk.webp",
+      "file": "2024-07-UK.webp",
+      "sha256": "3dad62a7213ce5b95bd4ea02ca607d390e534c4bf9b8068e64c9d4ca5b70da85",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/UK.webp"
+    },
+    {
+      "key": "about/2024-07-singapore.webp",
+      "file": "2024-07-Singapore.webp",
+      "sha256": "68b9859707b667efd3a095a6a586ed64fabcb6e294c879d0d1b036ead1b03007",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Singapore.webp"
+    },
+    {
+      "key": "about/2024-07-ph.webp",
+      "file": "2024-07-PH.webp",
+      "sha256": "d24071bc10da6197e44de2e1bdc63dc71c874d66cbe01a09e67e5bd67b36470b",
+      "width": 1080,
+      "height": 1080,
+      "alt": "",
+      "role": "office image",
+      "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/PH.webp"
+    }
+  ],
+  "content_sha256": "ceabe26f2589ea442865672d9494e5d5f17b0606a649be942d44b1dc5bb92959",
+  "source": {
+    "url": "https://imaa-institute.org/our-team/",
+    "wordpress_page_id": 1982,
+    "wordpress_modified_gmt": "2025-11-27T06:40:56",
+    "retrieved_at": "2026-10-10",
+    "profiles": "https://imaa-institute.org/team/<slug>/ (63 faculty pages)",
+    "note": "The team post type is not exposed in the WordPress REST API; records come from the rendered page and profile pages."
+  },
+  "migration_notes": [
+    "87 WordPress team posts on the page: 63 faculty (team-type 'ma-experts-faculty') and 24 staff (team-type 'staff'). The page shows 184 cards because faculty repeat under each programme tab; each post is one record here with all its programmes.",
+    "Faculty order: the four people WordPress shows first under ALL (Kummer, Damodaran, Olsson, Allen), then the rest in the page's alphabetical order. Staff order as on the page.",
+    "Prof. Dr. Christopher Kummer and David Olsson are separate WordPress posts in both sections (faculty and staff); both appearances are kept as separate records.",
+    "Faculty cards show a one-line tagline ('summary'); biographies come from the WordPress profile pages. Staff cards have no profile link, biography or LinkedIn on WordPress.",
+    "Faculty 'Bio' links point to imaa-institute.org/team/<slug>/ until profile pages are migrated; 'profile_details' (expertise, courses, academic background) is kept for that future route.",
+    "Photos: the original WordPress uploads (WordPress's 1024px rendition when the original is larger than 1200px). Alt text is the person's name (WordPress has alt text for 2 photos only).",
+    "The 'Available Programs' carousel and 'Contact Us' offices are identical to the About page's and use the same image files.",
+    "FOR REVIEW: the hero mentions an advisory board, but the page has no advisory-board section.",
+    "FOR REVIEW: Christopher Young and Kirstin Gallagher have no biography on their profile pages; Tom Allen, Christopher Young, Kirstin Gallagher and Robert Seber have no card tagline.",
+    "FOR REVIEW: Christopher Young, Jalal Nadeem, Mihai C. Tiplea and Sue Frerichs are linked to no programme, so they appear only under ALL.",
+    "FOR REVIEW: locations as on WordPress: 'Zürich' and 'Zurich' for staff; one faculty profile gives 'London' instead of a country.",
+    "FOR REVIEW: the intro says 'more than 60 professors'; the page lists 63 faculty."
+  ]
+}
