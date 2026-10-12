@@ -1,3 +1,4 @@
+from django import forms
 from django.contrib import admin
 
 from .models import (
@@ -12,19 +13,63 @@ from .models import (
 )
 
 
+class NewsletterCategoryAdminForm(forms.ModelForm):
+    class Meta:
+        model = NewsletterCategory
+        fields = "__all__"
+
+    def clean_name(self):
+        # The live-name constraint is conditional on deletion_state, which is
+        # never a form field, so Django skips it during form validation. Check
+        # it here so a duplicate is a form error rather than a database error.
+        name = self.cleaned_data["name"]
+        duplicates = NewsletterCategory.objects.filter(name=name).exclude(
+            deletion_state=NewsletterCategory.DeletionState.DELETED
+        )
+        if self.instance.pk:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if duplicates.exists():
+            raise forms.ValidationError("Newsletter category with this Name already exists.")
+        return name
+
+
 @admin.register(NewsletterCategory)
 class NewsletterCategoryAdmin(admin.ModelAdmin):
+    """Permanent deletion runs only through the Marketing Hub delete endpoint,
+    which also deletes the Mautic segment. Here the lifecycle fields are never
+    editable, and a deleted (or deletion-pending) list is view-only and cannot
+    be removed, so it can be neither reactivated nor stripped of its history.
+    """
+
+    form = NewsletterCategoryAdminForm
     list_display = (
         "name",
         "slug",
         "is_active",
+        "deletion_state",
         "mautic_segment_id",
         "updated_at",
     )
-    list_filter = ("is_active",)
+    list_filter = ("is_active", "deletion_state")
     search_fields = ("name", "slug", "mautic_segment_id")
-    readonly_fields = ("created_at", "updated_at")
+    readonly_fields = (
+        "deletion_state",
+        "deleted_at",
+        "deleted_by",
+        "created_at",
+        "updated_at",
+    )
     prepopulated_fields = {"slug": ("name",)}
+
+    def has_change_permission(self, request, obj=None):
+        if obj is not None and obj.deletion_started:
+            return False
+        return super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        if obj is not None and obj.deletion_started:
+            return False
+        return super().has_delete_permission(request, obj)
 
 
 @admin.register(NewsletterAudience)

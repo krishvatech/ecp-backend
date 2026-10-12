@@ -12,7 +12,22 @@ from django.db import models
 
 
 class NewsletterCategory(models.Model):
-    name = models.CharField(max_length=120, unique=True)
+    """One ECP Subscription List.
+
+    Deactivate (``is_active=False``) is reversible. Permanent deletion is a
+    separate, one-way lifecycle tracked by ``deletion_state``: the row itself is
+    kept so PROTECTed consent history, sync events and broadcast audiences stay
+    readable, but it never returns to any operational workflow.
+    """
+
+    class DeletionState(models.TextChoices):
+        NONE = "", "Not deleted"
+        # Hidden and inactive locally; the linked Mautic segment deletion has
+        # not been confirmed yet. Retrying the delete resumes from here.
+        DELETING = "deleting", "Deletion pending"
+        DELETED = "deleted", "Deleted"
+
+    name = models.CharField(max_length=120)
     slug = models.SlugField(max_length=140, unique=True)
     description = models.TextField(blank=True, default="")
     is_active = models.BooleanField(default=True, db_index=True)
@@ -22,11 +37,43 @@ class NewsletterCategory(models.Model):
         default="",
         help_text="External Mautic segment ID. Unused until Mautic sync is enabled.",
     )
+    deletion_state = models.CharField(
+        max_length=16,
+        choices=DeletionState.choices,
+        blank=True,
+        default=DeletionState.NONE,
+        db_index=True,
+    )
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deleted_newsletter_categories",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            # A deleted list keeps its name for history without blocking a new
+            # list from reusing it. Slugs stay globally unique (URL identity).
+            models.UniqueConstraint(
+                fields=["name"],
+                condition=~models.Q(deletion_state="deleted"),
+                name="newsletter_category_live_name_uniq",
+            ),
+        ]
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.deletion_state == self.DeletionState.DELETED
+
+    @property
+    def deletion_started(self) -> bool:
+        return self.deletion_state != self.DeletionState.NONE
 
     def __str__(self):
         return self.name

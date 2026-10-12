@@ -92,6 +92,7 @@ from .mautic_analytics_views import (
     NewsletterAdminAnalyticsSegmentsView,
 )
 from .mautic_diagnostics_views import NewsletterAdminMauticDiagnosticsView
+from .category_delete_views import NewsletterAdminCategoryDeleteView
 from .contact_delete_views import (
     NewsletterAdminContactDeleteCancelView,
     NewsletterAdminContactDeleteDetailView,
@@ -635,6 +636,11 @@ urlpatterns = [
         "newsletter/admin/categories/<slug:slug>/sync-mautic/",
         NewsletterAdminCategorySyncMauticView.as_view(),
         name="newsletter-admin-category-sync-mautic",
+    ),
+    path(
+        "newsletter/admin/categories/<slug:slug>/delete/",
+        NewsletterAdminCategoryDeleteView.as_view(),
+        name="newsletter-admin-category-delete",
     ),
     path(
         "newsletter/admin/mautic/segments/",

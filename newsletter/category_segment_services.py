@@ -113,7 +113,11 @@ def find_segment_by_exact_alias(client, alias):
 
 
 def mapped_category_for_segment(segment_id, *, exclude_category=None):
-    qs = NewsletterCategory.objects.filter(mautic_segment_id=str(segment_id))
+    # A permanently deleted list keeps its historical segment id but no longer
+    # owns (or protects) that segment.
+    qs = NewsletterCategory.objects.filter(mautic_segment_id=str(segment_id)).exclude(
+        deletion_state=NewsletterCategory.DeletionState.DELETED
+    )
     if exclude_category is not None:
         qs = qs.exclude(pk=exclude_category.pk)
     return qs.first()
@@ -187,7 +191,14 @@ def ensure_category_segment(category, *, client=None):
     Order of preference: keep a mapping the provider still honours, otherwise
     adopt an exact-alias segment that is safe to adopt, otherwise create one.
     Raises rather than guessing whenever ownership is ambiguous.
+
+    Never runs for a list whose permanent deletion has started: its segment is
+    being (or has been) deleted on purpose and must not be adopted or recreated.
     """
+    if category.deletion_started:
+        raise PermanentMauticError(
+            "Subscription List has been deleted; its Mautic segment is not recreated."
+        )
     client = client or MauticClient()
     segment_id = str(category.mautic_segment_id or "").strip()
     if segment_id:
@@ -260,7 +271,7 @@ def repair_campaign_audience_segments(campaign, *, client=None):
                 .filter(pk=category_id)
                 .first()
             )
-            if category is None:
+            if category is None or category.deletion_started:
                 continue
 
             _, changed = ensure_category_segment(category, client=client)
