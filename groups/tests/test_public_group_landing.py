@@ -73,6 +73,7 @@ class PublicGroupLandingTests(APITransactionTestCase):
                 "id",
                 "name",
                 "slug",
+                "short_description",
                 "description",
                 "visibility",
                 "join_policy",

@@ -126,6 +126,7 @@ from .category_segment_services import (
     segment_payload_for_category as _segment_payload_for_category,
     segments_from_response as _segments_from_response,
 )
+from .category_delete_services import live_categories as _live_categories
 
 logger = logging.getLogger(__name__)
 
@@ -209,8 +210,37 @@ def _ensure_native_segment_is_not_managed(segment_id):
 def _mapped_categories_by_segment_id():
     return {
         str(category.mautic_segment_id): category
-        for category in NewsletterCategory.objects.exclude(mautic_segment_id="")
+        for category in _live_categories().exclude(mautic_segment_id="")
     }
+
+
+def _get_manageable_category(slug):
+    """Return (category, error_response) for a Subscription List admin write.
+
+    A permanently deleted list no longer exists for management (404). A list
+    whose deletion is pending can only be finished through the delete endpoint,
+    so edit, deactivate, reactivate, link and sync are refused (409); otherwise
+    a sync could recreate the segment that is being deleted.
+    """
+    try:
+        category = NewsletterCategory.objects.get(slug=slug)
+    except NewsletterCategory.DoesNotExist:
+        raise Http404
+    if category.is_deleted:
+        raise Http404
+    if category.deletion_started:
+        return None, Response(
+            {
+                "detail": (
+                    "This Subscription List is being deleted. Retry Delete "
+                    "List to finish removing it."
+                ),
+                "code": "deletion_pending",
+                "deletion_state": category.deletion_state,
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+    return category, None
 
 
 def _segment_count(segment, *field_names):
@@ -1816,7 +1846,7 @@ class NewsletterAdminCategoryListView(APIView):
             else NewsletterCategoryPublicSerializer
         )
         serializer = serializer_class(
-            NewsletterCategory.objects.all().order_by("name"),
+            _live_categories().order_by("name"),
             many=True,
         )
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -2041,10 +2071,9 @@ class NewsletterAdminCategoryDetailView(APIView):
     permission_classes = [HasMarketingHubAccess]
 
     def patch(self, request, slug):
-        try:
-            category = NewsletterCategory.objects.get(slug=slug)
-        except NewsletterCategory.DoesNotExist:
-            raise Http404
+        category, blocked = _get_manageable_category(slug)
+        if blocked is not None:
+            return blocked
 
         serializer = NewsletterAdminCategorySerializer(
             category, data=request.data, partial=True
@@ -2083,10 +2112,9 @@ class NewsletterAdminCategoryDetailView(APIView):
         return Response(NewsletterAdminCategorySerializer(category).data)
 
     def delete(self, request, slug):
-        try:
-            category = NewsletterCategory.objects.get(slug=slug)
-        except NewsletterCategory.DoesNotExist:
-            raise Http404
+        category, blocked = _get_manageable_category(slug)
+        if blocked is not None:
+            return blocked
 
         segment_id = str(category.mautic_segment_id or "").strip()
 
@@ -2119,10 +2147,9 @@ class NewsletterAdminCategoryLinkMauticSegmentView(APIView):
 
     def post(self, request, slug):
         """Link a Mautic segment to a newsletter category."""
-        try:
-            category = NewsletterCategory.objects.get(slug=slug)
-        except NewsletterCategory.DoesNotExist:
-            raise Http404
+        category, blocked = _get_manageable_category(slug)
+        if blocked is not None:
+            return blocked
 
         segment_id = request.data.get('mautic_segment_id', '').strip()
         if not segment_id:
@@ -2548,10 +2575,9 @@ class NewsletterAdminCategorySyncMauticView(APIView):
     permission_classes = [HasMarketingHubAccess]
 
     def post(self, request, slug):
-        try:
-            category = NewsletterCategory.objects.get(slug=slug)
-        except NewsletterCategory.DoesNotExist:
-            raise Http404
+        category, blocked = _get_manageable_category(slug)
+        if blocked is not None:
+            return blocked
 
         if not _mautic_enabled():
             return Response(

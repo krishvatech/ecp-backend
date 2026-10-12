@@ -19,7 +19,7 @@ from realtime.urls import urlpatterns as realtime_urls
 from users.views import UserViewSet, RegisterView, LinkedInAuthURL, LinkedInCallback, GoogleAuthURL, GoogleCallback
 from community.views import CommunityViewSet
 from events.views import EventViewSet
-from ecp_backend.views import index, health, live_health, public_event_meta
+from ecp_backend.views import index, health, live_health, public_event_meta, public_group_meta
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenVerifyView,
@@ -69,6 +69,8 @@ urlpatterns = [
         {"page_type": "landing"},
         name="landing-event-meta",
     ),
+    # HTML social-preview metadata; the JSON API stays at /api/groups/public/<slug>/
+    path("groups/public/<slug:slug>/", public_group_meta, name="public-group-meta"),
     path("api/health/", health, name="health"),
     path("api/live/health/", live_health, name="live-health"),
     path("admin/", admin.site.urls),
