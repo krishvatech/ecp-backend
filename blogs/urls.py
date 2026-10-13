@@ -7,6 +7,7 @@ URL patterns for the blogs app, included under ``/api/blogs/``.
 from django.urls import include, path
 from rest_framework.routers import SimpleRouter
 
+from .public_sections import PublicSectionPostViewSet
 from .views import (
     BlogCategoryAdminViewSet,
     BlogPostAdminViewSet,
@@ -26,6 +27,12 @@ admin_router.register(r"", BlogPostAdminViewSet, basename="admin-post")
 public_router = SimpleRouter()
 public_router.register(r"", BlogPostViewSet, basename="post")
 
+section_list = PublicSectionPostViewSet.as_view({"get": "list"})
+section_detail = PublicSectionPostViewSet.as_view({"get": "retrieve"})
+
 urlpatterns = [
     path("admin/", include(admin_router.urls)),
+    # Public website sections (anonymous): In The News and M&A Publications (blogs/public_sections.py).
+    path("public/<slug:section>/", section_list, name="public-section-list"),
+    path("public/<slug:section>/<slug:slug>/", section_detail, name="public-section-detail"),
 ] + public_router.urls

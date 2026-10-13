@@ -27,6 +27,7 @@ from . import cache as blog_cache
 from .content_chunks import content_chunks
 from .models import BlogCategory, BlogImportRun, BlogPost, BlogTag
 from .permissions import IsSuperuser
+from .public_sections import public_section_category_slugs
 from .serializers import (
     BlogAdminSerializer,
     BlogCategorySerializer,
@@ -101,7 +102,9 @@ class BlogPostViewSet(BlogPostQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     lookup_value_regex = r"[-a-zA-Z0-9_]+"
 
     def get_queryset(self):
-        queryset = self.base_queryset().filter(status=BlogPost.STATUS_PUBLISHED)
+        # In The News and M&A Publications are public website sections, not member Blogs.
+        queryset = (self.base_queryset().filter(status=BlogPost.STATUS_PUBLISHED)
+                    .exclude(categories__slug__in=public_section_category_slugs()))
         if self.action == "list":
             queryset = self.apply_term_filters(queryset)
         return queryset.order_by(*READER_ORDERING)

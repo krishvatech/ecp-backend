@@ -335,6 +335,15 @@ class Testimonial(models.Model):
         help_text="The testimonial's full page (imaa-institute.org until /testimonials/ is migrated).",
     )
     wordpress_id = models.PositiveIntegerField(null=True, blank=True, unique=True, editable=False)
+    # Testimonials archive (/testimonials/): programme filters, newest-first order and visibility.
+    programmes = models.ManyToManyField(
+        "cms.Programme", blank=True, related_name="testimonials",
+        help_text="Programmes this testimonial is filed under on the Testimonials page.",
+    )
+    published_at = models.DateTimeField(
+        null=True, blank=True, db_index=True, help_text="Orders the Testimonials page (newest first)."
+    )
+    is_public = models.BooleanField(default=True, help_text="Untick to hide this testimonial from the Testimonials page.")
 
     panels = [
         FieldPanel("name"),
@@ -342,9 +351,15 @@ class Testimonial(models.Model):
         FieldPanel("role"),
         FieldPanel("company"),
         FieldPanel("programme"),
+        FieldPanel("programmes", widget=forms.CheckboxSelectMultiple),
         FieldPanel("photo"),
         FieldPanel("quote"),
         FieldPanel("url"),
+        FieldPanel("published_at"),
+        FieldPanel(
+            "is_public",
+            help_text="Saving a testimonial updates the public pages immediately (testimonials have no draft step).",
+        ),
     ]
 
     class Meta:
@@ -461,6 +476,62 @@ class TeamPage(CmsSoftDeletePageMixin, Page):
             [FieldPanel("staff_heading"), FieldPanel("staff_subheading"), FieldPanel("staff_intro"), FieldPanel("staff_button")],
             heading="Staff",
         ),
+        FieldPanel("sections", heading="Page sections"),
+    ]
+
+    parent_page_types = ["cms.HomePage"]
+    subpage_types = []
+    max_count = 1
+
+
+class TestimonialsPage(CmsSoftDeletePageMixin, Page):
+    """The public Testimonials archive: page texts here; the testimonials are Testimonial snippets."""
+
+    hero_title = models.CharField(max_length=160, blank=True)
+    hero_intro = models.TextField(blank=True)
+    # Ordered sections after the testimonials (logo strip, programme carousel, ...), as on About.
+    sections = StreamField(SECTION_BLOCKS, blank=True, use_json_field=True)
+
+    content_panels = Page.content_panels + [
+        MultiFieldPanel([FieldPanel("hero_title"), FieldPanel("hero_intro")], heading="Hero"),
+        FieldPanel("sections", heading="Page sections"),
+    ]
+
+    parent_page_types = ["cms.HomePage"]
+    subpage_types = []
+    max_count = 1
+
+
+class ContactPage(CmsSoftDeletePageMixin, Page):
+    """The public Contact Us page: texts, the enquiry form's wording, statistics and sections.
+
+    Submissions are e-mailed (cms.contact); recipients come from settings, not from the page.
+    """
+
+    hero_title = models.CharField(max_length=160, blank=True)
+    hero_intro = models.TextField(blank=True)
+    form_heading = models.CharField(max_length=160, blank=True)
+    form_intro = RichTextField(blank=True, features=RICH_TEXT_FEATURES)
+    consent_text = RichTextField(
+        blank=True, features=RICH_TEXT_FEATURES,
+        help_text="Shown beside the required consent checkbox (link the Privacy Policy).",
+    )
+    success_message = models.TextField(blank=True, help_text="Shown after a message was sent.")
+    form_image = models.ForeignKey(
+        "wagtailimages.Image", null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
+        help_text="Shown beside the form.",
+    )
+    stats = StreamField(STAT_BLOCKS, blank=True, use_json_field=True, max_num=4)
+    sections = StreamField(SECTION_BLOCKS, blank=True, use_json_field=True)
+
+    content_panels = Page.content_panels + [
+        MultiFieldPanel([FieldPanel("hero_title"), FieldPanel("hero_intro")], heading="Hero"),
+        MultiFieldPanel(
+            [FieldPanel("form_heading"), FieldPanel("form_intro"), FieldPanel("consent_text"),
+             FieldPanel("success_message"), FieldPanel("form_image")],
+            heading="Enquiry form",
+        ),
+        FieldPanel("stats", heading="Statistics"),
         FieldPanel("sections", heading="Page sections"),
     ]
 

@@ -20,11 +20,17 @@ settings of the target environment's storage (the S3 bucket). Runbook: docs/team
   (``_if_none_match``). A 412/409 stops the run without overwriting anything. CacheControl as the
   project's storage settings; each upload is verified afterwards (size and MD5 ETag). Nothing is
   deleted or renamed.
+* Local development (cms.local_safety: PostgreSQL on this machine, local file storage, not the
+  production settings; with the dev settings run with ``AWS_BUCKET_NAME=``): --apply copies the
+  missing originals into the local media folder instead, each created exclusively (``O_EXCL``, the
+  local equivalent of ``If-None-Match: *``) and verified by SHA-256 afterwards. Any other storage
+  that is not S3 is refused.
 """
 
 import hashlib
 import json
 import mimetypes
+import os
 from contextlib import contextmanager
 from io import BytesIO
 
@@ -35,6 +41,7 @@ from django.core.files.storage import storages
 from django.core.management.base import BaseCommand, CommandError
 from willow.image import Image as WillowImage
 
+from cms.local_safety import LOCAL_STORAGE_CLASSES, local_environment_problems
 from cms.team_page_content import IMAGES_DIR, TeamContentError, load_team_content
 
 STORAGE_FOLDER = "original_images"
@@ -63,6 +70,18 @@ def _if_none_match(client):
 
 class Command(BaseCommand):
     help = "Inventory (and, with --apply, upload) the Our Team original images in the media storage."
+    label = "Our Team"
+    token_prefix = "team-media"
+
+    # Extension points (batch3_media_transfer reuses this command for other content packages).
+    def load_content(self):
+        try:
+            return load_team_content()  # the local files must be the approved ones
+        except TeamContentError as exc:
+            raise CommandError(f"The approved files are not available or do not match team.json; nothing was uploaded: {exc}") from exc
+
+    def media_path(self, item):
+        return IMAGES_DIR / item["file"]
 
     def add_arguments(self, parser):
         mode = parser.add_mutually_exclusive_group()
@@ -78,13 +97,10 @@ class Command(BaseCommand):
         storage = storages["default"]
         bucket = getattr(storage, "bucket_name", None)
         region = getattr(storage, "region_name", None) or getattr(settings, "AWS_S3_REGION_NAME", None)
-        self.stdout.write(self.style.MIGRATE_HEADING(f"Our Team originals: {'UPLOAD' if apply else 'DRY RUN (read-only)'}"))
+        self.stdout.write(self.style.MIGRATE_HEADING(f"{self.label} originals: {'UPLOAD' if apply else 'DRY RUN (read-only)'}"))
         self.stdout.write(f"Storage: {type(storage).__name__}{' bucket ' + bucket if bucket else ''}{' region ' + region if region and bucket else ''}"
                           f"{' prefix ' + repr(storage.location) if getattr(storage, 'location', '') else ''}")
-        try:
-            content = load_team_content()  # the local files must be the approved ones
-        except TeamContentError as exc:
-            raise CommandError(f"The approved files are not available or do not match team.json; nothing was uploaded: {exc}") from exc
+        content = self.load_content()
 
         manifest = [self._inventory(storage, item) for item in content["media"]]
         token = self._token(manifest, f"{bucket}@{region}" if bucket else None, content)
@@ -104,28 +120,32 @@ class Command(BaseCommand):
         if not apply:
             if counts[MISSING]:
                 self.stdout.write(f"Review the manifest. To upload the {counts[MISSING]} missing originals: "
-                                  f"python manage.py team_media_transfer --apply --confirm {token}")
+                                  f"python manage.py {self.__module__.rsplit('.', 1)[-1]} --apply --confirm {token}")
             else:
                 self.stdout.write(self.style.SUCCESS("All originals are present; nothing to upload."))
             return
         if options["confirm"] != token:
             raise CommandError("Refused: the token does not match this storage and inventory (run the dry run again); nothing was uploaded.")
-        if not hasattr(storage, "connection") or not bucket:
-            raise CommandError("Refused: uploads are only supported to S3 storage; nothing was uploaded.")
+        local = isinstance(storage, LOCAL_STORAGE_CLASSES) and hasattr(storage, "path")
+        if local:
+            problems = local_environment_problems()
+            if problems:
+                raise CommandError(f"Refused: not a local development environment ({'; '.join(problems)}); nothing was copied.")
+        elif not hasattr(storage, "connection") or not bucket:
+            raise CommandError("Refused: uploads are only supported to S3 storage or local development media; nothing was uploaded.")
         uploaded = 0
         for entry in manifest:
             if entry["status"] == MISSING:
-                self._upload(storage, entry)
+                (self._store_local if local else self._upload)(storage, entry)
                 uploaded += 1
-                self.stdout.write(f"  uploaded + verified  {entry['key']}")
+                self.stdout.write(f"  {'copied' if local else 'uploaded'} + verified  {entry['key']}")
         self.stdout.write(self.style.SUCCESS(f"Uploaded {uploaded} originals; {counts[PRESENT]} were already present."))
 
-    @staticmethod
-    def _inventory(storage, item):
-        data = (IMAGES_DIR / item["file"]).read_bytes()
+    def _inventory(self, storage, item):
+        data = self.media_path(item).read_bytes()
         size = WillowImage.open(BytesIO(data)).get_size()
         if size != (item["width"], item["height"]):
-            raise CommandError(f"{item['file']} is {size[0]}x{size[1]}, team.json says {item['width']}x{item['height']}; nothing was uploaded.")
+            raise CommandError(f"{item['file']} is {size[0]}x{size[1]}, the approved content says {item['width']}x{item['height']}; nothing was uploaded.")
         key = f"{STORAGE_FOLDER}/{item['file']}"
         entry = {"key": key, "file": item["file"], "sha256": item["sha256"], "bytes": len(data),
                  "md5": hashlib.md5(data).hexdigest()}
@@ -136,16 +156,31 @@ class Command(BaseCommand):
                 entry["status"] = PRESENT if hashlib.sha256(fh.read()).hexdigest() == item["sha256"] else CONFLICT
         return entry
 
-    @staticmethod
-    def _token(manifest, bucket, content):
+    def _token(self, manifest, bucket, content):
         state = json.dumps([bucket, content["content_sha256"], [(e["key"], e["sha256"], e["status"]) for e in manifest]])
-        return f"team-media-{hashlib.sha256(state.encode()).hexdigest()[:16]}"
+        return f"{self.token_prefix}-{hashlib.sha256(state.encode()).hexdigest()[:16]}"
 
-    @staticmethod
-    def _upload(storage, entry):
+    def _store_local(self, storage, entry):
+        """Local development media: create the file exclusively (never overwrite) and verify it."""
+        data = self.media_path(entry).read_bytes()
+        if hashlib.sha256(data).hexdigest() != entry["sha256"]:
+            raise CommandError(f"{entry['file']} changed since the inventory; stopped.")
+        target = storage.path(entry["key"])
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError as exc:
+            raise CommandError(f"{entry['key']}: a file appeared at this path; it was not overwritten. Stopped.") from exc
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        with storage.open(entry["key"], "rb") as fh:
+            if hashlib.sha256(fh.read()).hexdigest() != entry["sha256"]:
+                raise CommandError(f"Verification failed for {entry['key']} after copying; stopped.")
+
+    def _upload(self, storage, entry):
         client = storage.connection.meta.client
         cache_control = (getattr(settings, "AWS_S3_OBJECT_PARAMETERS", {}) or {}).get("CacheControl", "max-age=86400")
-        data = (IMAGES_DIR / entry["file"]).read_bytes()
+        data = self.media_path(entry).read_bytes()
         if hashlib.sha256(data).hexdigest() != entry["sha256"]:
             raise CommandError(f"{entry['file']} changed since the inventory; stopped.")
         try:

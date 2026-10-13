@@ -539,7 +539,7 @@ class TeamMediaTransferTests(TestCase):
         content = load_team_content(verify_files=False)
         content["media"][0]["width"] += 1
         with mock.patch.object(transfer_module, "load_team_content", return_value=content):
-            with self.assertRaisesMessage(CommandError, "team.json says"):
+            with self.assertRaisesMessage(CommandError, "the approved content says"):
                 self.transfer()
         self.assertEqual(self.s3.puts, [])
 
@@ -547,3 +547,65 @@ class TeamMediaTransferTests(TestCase):
         (content_module.IMAGES_DIR / self.missing[0]).write_bytes(b"changed")
         with self.assertRaisesMessage(CommandError, "do not match team.json"):
             self.transfer()
+
+
+class LocalMediaTransferTests(TestCase):
+    """--apply on local development media: exclusive copies, verified; refused outside local development."""
+
+    def setUp(self):
+        from django.core.files.storage import FileSystemStorage
+
+        content_file, images, self.content, self.originals = write_generated_package(Path(self.enterContext(tempfile.TemporaryDirectory())))
+        self.enterContext(mock.patch.object(content_module, "CONTENT_FILE", content_file))
+        self.enterContext(mock.patch.object(content_module, "IMAGES_DIR", images))
+        self.enterContext(mock.patch.object(transfer_module, "IMAGES_DIR", images))
+        self.media = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        files = list(self.originals)
+        self.present = files[:5]
+        (self.media / "original_images").mkdir()
+        for name in self.present:
+            (self.media / "original_images" / name).write_bytes(self.originals[name])
+        self.storage = FileSystemStorage(location=str(self.media))
+        self.enterContext(mock.patch.object(transfer_module, "storages", {"default": self.storage}))
+
+    def transfer(self, *args):
+        out = StringIO()
+        call_command("team_media_transfer", *args, stdout=out, stderr=StringIO())
+        return out.getvalue()
+
+    def token(self):
+        return re.search(r"Confirmation token: (team-media-[0-9a-f]{16})", self.transfer()).group(1)
+
+    def test_missing_originals_are_copied_once_and_verified(self):
+        before = {n: (self.media / "original_images" / n).stat().st_mtime_ns for n in self.present}
+        with mock.patch.object(transfer_module, "local_environment_problems", return_value=[]):
+            output = self.transfer("--apply", "--confirm", self.token())
+        self.assertIn(f"Uploaded {len(self.originals) - 5} originals; 5 were already present.", output)
+        for name, data in self.originals.items():
+            self.assertEqual((self.media / "original_images" / name).read_bytes(), data)
+        self.assertEqual({n: (self.media / "original_images" / n).stat().st_mtime_ns for n in self.present}, before,
+                         "present files are never rewritten")
+        self.assertIn("0 missing (to upload)", self.transfer())
+
+    def test_refused_outside_local_development(self):
+        token = self.token()
+        with mock.patch.object(transfer_module, "local_environment_problems", return_value=["the database host is 'rds', not this machine"]):
+            with self.assertRaisesMessage(CommandError, "not a local development environment"):
+                self.transfer("--apply", "--confirm", token)
+        self.assertEqual(len(list((self.media / "original_images").iterdir())), 5, "nothing was copied")
+
+    def test_an_existing_file_is_never_overwritten(self):
+        token = self.token()
+        name = next(n for n in self.originals if n not in self.present)
+        real_open = transfer_module.os.open
+
+        def racing_open(path, flags, mode=0o777):  # another process creates the file after the inventory
+            if path.endswith(name) and not Path(path).exists():
+                Path(path).write_bytes(b"someone else")
+            return real_open(path, flags, mode)
+
+        with mock.patch.object(transfer_module, "local_environment_problems", return_value=[]), \
+                mock.patch.object(transfer_module.os, "open", side_effect=racing_open):
+            with self.assertRaisesMessage(CommandError, "it was not overwritten"):
+                self.transfer("--apply", "--confirm", token)
+        self.assertEqual((self.media / "original_images" / name).read_bytes(), b"someone else")

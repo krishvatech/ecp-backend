@@ -37,12 +37,12 @@ from rest_framework.views import APIView
 from wagtail.contrib.redirects.models import Redirect
 from wagtail.models import Page, Site
 
-from cms.models import AboutPage, EventsLandingPage, HomePage, StandardPage, TeamPage
+from cms.models import AboutPage, ContactPage, EventsLandingPage, HomePage, StandardPage, TeamPage, TestimonialsPage
 from cms.public_page_content import PUBLIC_PAGE_SLUGS
 
 # Page types the public website knows how to render. Plain ``wagtailcore.Page`` rows
 # (for example Wagtail's default "Welcome" page) are deliberately not exposed.
-SUPPORTED_PAGE_TYPES = (StandardPage, HomePage, AboutPage, EventsLandingPage, TeamPage)
+SUPPORTED_PAGE_TYPES = (StandardPage, HomePage, AboutPage, EventsLandingPage, TeamPage, TestimonialsPage, ContactPage)
 
 MAX_PATH_LENGTH = 512
 # Wagtail's default slug alphabet (``allow_unicode`` is off for these page types).

@@ -147,22 +147,27 @@ class Progress:
 
 
 # ------------------------------------------------------------------- run --
-def execute_import_run(run, *, client=None, media_store=None, storage=None, post_ids=None):
+def execute_import_run(run, *, client=None, media_store=None, storage=None, post_ids=None, category_id=None, category_slug=None):
     """Run the full sync for `run`. Returns the final status. Never raises for
     per-post/per-media problems; raises WordPressBlogAPIError/ImportAborted for
     source-level failures so the task can decide about retries.
 
     `post_ids` limits the run to selected WordPress posts (operations/sample
-    verification only; the admin API and Celery task always run everything)."""
+    verification only; the admin API and Celery task always run everything).
+
+    `category_id`/`category_slug` select another WordPress category (the public website sections
+    In The News and Publications, blogs/public_sections.py); by default the configured Blog
+    category, exactly as before."""
     try:
-        return _execute_import_run(run, client=client, media_store=media_store, storage=storage, post_ids=post_ids)
+        return _execute_import_run(run, client=client, media_store=media_store, storage=storage, post_ids=post_ids,
+                                   category_id=category_id, category_slug=category_slug)
     finally:
         # Media and link phases write with .update() (no signals), and a failed
         # run may still have changed posts: always drop cached reader responses.
         blog_cache.invalidate()
 
 
-def _execute_import_run(run, *, client, media_store, storage, post_ids):
+def _execute_import_run(run, *, client, media_store, storage, post_ids, category_id=None, category_slug=None):
     started = time.monotonic()
     client = client or WordPressBlogClient.from_settings(authenticated=True)
     hosts = allowed_media_hosts(client.base_url)
@@ -171,7 +176,8 @@ def _execute_import_run(run, *, client, media_store, storage, post_ids):
     progress.set(force=True, status=BlogImportRun.STATUS_RUNNING, current_step="fetching",
                  started_at=run.started_at or timezone.now(), error_message="")
 
-    importer = WordPressBlogImporter(client, commit=True, allow_bulk=True, editorial=True)
+    importer = WordPressBlogImporter(client, commit=True, allow_bulk=True, editorial=True,
+                                     category_id=category_id, expected_category_slug=category_slug)
     category = importer.validate_category()
     raw_posts, fetch_errors, known_slugs = importer.collect(post_ids=post_ids)
 
@@ -258,8 +264,10 @@ def _execute_import_run(run, *, client, media_store, storage, post_ids):
 
     # Phase D: Blog-to-Blog links, once every target exists.
     progress.set(force=True, current_step="rewriting_links")
-    # Only Blogs readers can open in ECP (Published) become /blogs/ link targets.
-    rows = BlogPost.objects.filter(wp_post_id__isnull=False).values_list("wp_post_id", "wp_source_url", "slug", "status")
+    # Only Blogs readers can open in ECP (Published) become /blogs/ link targets, and only posts of
+    # this run's category: public-section articles (news, publications) are never /blogs/ targets.
+    rows = (BlogPost.objects.filter(wp_post_id__isnull=False, categories__slug=importer.expected_category_slug)
+            .values_list("wp_post_id", "wp_source_url", "slug", "status").distinct())
     published, unpublished = blog_link_targets(
         rows, base_url=client.base_url, known_blog_slugs=known_slugs,
         wp_slugs={p.wp_post_id: source_slug(p) for p in parsed},

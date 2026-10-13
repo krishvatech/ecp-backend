@@ -1,0 +1,2519 @@
+{
+ "format_version": 1,
+ "page": {
+  "slug": "testimonials",
+  "title": "Testimonials",
+  "seo_title": "Testimonials Archive - IMAA – Institute for Mergers, Acquisitions, and Alliances",
+  "search_description": "",
+  "hero_title": "Testimonials",
+  "hero_intro": "",
+  "sections": [
+   {
+    "type": "logo_strip",
+    "heading": "We’re trusted by",
+    "logos": [
+     {
+      "image": "about/2024-06-au-img-logo-04.webp",
+      "name": "Givaudan"
+     },
+     {
+      "image": "about/2024-06-au-img-logo-02.png",
+      "name": "Amazon"
+     },
+     {
+      "image": "about/2024-06-au-img-logo-02a.webp",
+      "name": "Citibank"
+     },
+     {
+      "image": "about/2024-06-au-img-logo-03a.webp",
+      "name": "Credit Suisse"
+     },
+     {
+      "image": "about/2024-06-au-img-logo-05.webp",
+      "name": "KPMG"
+     },
+     {
+      "image": "about/2024-06-au-img-logo-06.webp",
+      "name": "The Coca-Cola Company"
+     },
+     {
+      "image": "about/2024-06-au-img-logo-07.webp",
+      "name": "Continental"
+     },
+     {
+      "image": "about/2024-06-au-img-logo-08.webp",
+      "name": "Hewlett Packard"
+     },
+     {
+      "image": "about/2024-06-au-img-logo-09.webp",
+      "name": "Walt Disney"
+     },
+     {
+      "image": "about/2024-06-au-img-logo-10.webp",
+      "name": "UBS"
+     },
+     {
+      "image": "about/2024-06-au-img-logo-11.webp",
+      "name": "Daimler"
+     },
+     {
+      "image": "about/2024-06-au-img-logo-12.webp",
+      "name": "Deloitte"
+     }
+    ],
+    "button": {
+     "label": "SEE FULL LIST",
+     "url": "/references",
+     "wordpress_url": "/references/"
+    }
+   },
+   {
+    "type": "card_group",
+    "layout": "carousel",
+    "heading": "Available Programs",
+    "cards": [
+     {
+      "image": "about/2024-07-ima-1.png",
+      "title": "International M&A Expert",
+      "text": "This course dives deep into the entire M&A process- from strategy and valuation to execution and post merger integration (PMI).",
+      "link": {
+       "label": "LEARN MORE",
+       "url": "https://imaa-institute.org/m-and-a-trainings/international-m-and-a/",
+       "wordpress_url": "/m-and-a-trainings/international-m-and-a/"
+      }
+     },
+     {
+      "image": "about/2024-07-cpmi-1.png",
+      "title": "Certified Post Merger Integration Expert",
+      "text": "CPMI prepares you for integration issues post -merger, starting with integration planning, up to governance and project management to implement the integration.",
+      "link": {
+       "label": "LEARN MORE",
+       "url": "https://imaa-institute.org/m-and-a-trainings/post-merger-integration/",
+       "wordpress_url": "/m-and-a-trainings/post-merger-integration/"
+      }
+     },
+     {
+      "image": "about/2024-07-map-1.png",
+      "title": "Mergers & Acquisitions Professional Expert",
+      "text": "The certification dives into the nuts and bolts of the transaction journey—auditing, consulting, deal advisory, and including insights into running a successful M&A practice.",
+      "link": {
+       "label": "LEARN MORE",
+       "url": "https://imaa-institute.org/m-and-a-trainings/m-and-a-professional/",
+       "wordpress_url": "/m-and-a-trainings/m-and-a-professional/"
+      }
+     },
+     {
+      "image": "about/2024-07-lma.png",
+      "title": "Legal Mergers & Acquisition Expert",
+      "text": "This certification covers the legal aspects of M&A, including best practices, legal contracts, tax considerations, and deal structuring in different geographies and jurisdictions .",
+      "link": {
+       "label": "LEARN MORE",
+       "url": "https://imaa-institute.org/m-and-a-trainings/legal-mergers-acquisitions-certification-training/",
+       "wordpress_url": "/m-and-a-trainings/legal-mergers-acquisitions-certification-training/"
+      }
+     },
+     {
+      "image": "about/2024-07-hrma.png",
+      "title": "HR Mergers & Acquisition Expert",
+      "text": "HRM&A covers all aspects of the transaction process relevant to human resources, including strategy, due diligence, Post Merger Integration, and compensation benefits.",
+      "link": {
+       "label": "LEARN MORE",
+       "url": "https://imaa-institute.org/m-and-a-trainings/human-resources-mergers-acquisitions-certification-training/",
+       "wordpress_url": "/m-and-a-trainings/human-resources-mergers-acquisitions-certification-training/"
+      }
+     },
+     {
+      "image": "about/2024-07-scde1.png",
+      "title": "Certified Separation, Carve-Out and Divestment Expert",
+      "text": "This training covers the entire divestment life cycle, from analyzing key business drivers and structuring the Transition Services Agreement to executing and implementing separations.",
+      "link": {
+       "label": "LEARN MORE",
+       "url": "https://imaa-institute.org/m-and-a-trainings/certified-separation-carve-out-and-divestment-expert-scde/",
+       "wordpress_url": "/m-and-a-trainings/certified-separation-carve-out-and-divestment-expert-scde/"
+      }
+     },
+     {
+      "image": "about/2024-07-valuation.png",
+      "title": "Valuation Training with Prof. Aswath Damodaran",
+      "text": "This training will provide you with the fundamentals of each approach to valuation, with limitations and caveats on the use of each, as well as extended examples in application.",
+      "link": {
+       "label": "LEARN MORE",
+       "url": "https://imaa-institute.org/m-and-a-trainings/valuation-damodaran/",
+       "wordpress_url": "/m-and-a-trainings/valuation-damodaran/"
+      }
+     }
+    ],
+    "prompt": "",
+    "button": null
+   }
+  ]
+ },
+ "programmes": [
+  {
+   "code": "IM&A",
+   "slug": "ima",
+   "sort_order": 1
+  },
+  {
+   "code": "CPMI",
+   "slug": "cpmi",
+   "sort_order": 2
+  },
+  {
+   "code": "M&AP",
+   "slug": "map",
+   "sort_order": 3
+  },
+  {
+   "code": "LM&A",
+   "slug": "lma",
+   "sort_order": 4
+  },
+  {
+   "code": "HRM&A",
+   "slug": "hrma",
+   "sort_order": 5
+  },
+  {
+   "code": "SCDE",
+   "slug": "scde",
+   "sort_order": 6
+  },
+  {
+   "code": "VALUATION",
+   "slug": "valuation",
+   "sort_order": 7
+  },
+  {
+   "code": "FM&BV",
+   "slug": "fmbv",
+   "sort_order": 8
+  }
+ ],
+ "testimonials": [
+  {
+   "wordpress_id": 157372,
+   "slug": "aniruddha-sulake",
+   "name": "Aniruddha Sulake",
+   "role": "IT Consulting Leader",
+   "company": "",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p>I came to the IMAA Post-Merger Integration program with several years of experience advising on M&amp;A and divestiture transactions, looking for a way to formalize that experience through a credible, recognized credential.</p>\n<p>The program helped me consolidate what I’d learned in practice — particularly around integration planning, cultural change management, and synergy tracking — into clearer, more consistent frameworks I can draw on going forward.</p>\n<p>Earning the certification has been a meaningful addition to my professional profile. It offers an independent, recognized benchmark of expertise in an area that’s central to whether a deal ultimately delivers value — which adds a helpful layer of credibility alongside hands-on experience.</p>\n<p>I’d recommend the program to any experienced M&amp;A professional who wants a structured, credible way to formalize their expertise.</p>",
+   "published_at": "2026-07-27T07:34:26+00:00",
+   "url": "https://imaa-institute.org/testimonials/aniruddha-sulake/",
+   "photo": "testimonials/aniruddha-sulake",
+   "archive_position": 1,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 155844,
+   "slug": "dr-saeed-ahmed-al-gailani",
+   "name": "Dr. Saeed Ahmed Al-Gailani",
+   "role": "",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>I am pleased to share that I have successfully completed the International Mergers &amp; Acquisitions Expert (IM&amp;A) program and received my designation.</p>\n<p>One aspect I particularly valued was the opportunity to earn CPD credits. This program is designed to equip professionals with the practical skills needed to manage the entire M&amp;A deal lifecycle.</p>\n<p>The journey was both enriching and professionally transformative, allowing me to immediately apply many of the concepts and frameworks within my own field.</p>\n<p>I would also like to thank the faculty and the broader IMAA team for their support and expertise throughout the program.</p>\n<p>I am proud to be an IMAA Charterholder and grateful to be part of such a well-regarded global M&amp;A community. IMAA was the perfect choice for me!</p>\n<p><strong>Dr. Saeed Ahmed Al-Gailani</strong></p>",
+   "published_at": "2026-05-26T03:26:09+00:00",
+   "url": "https://imaa-institute.org/testimonials/dr-saeed-ahmed-al-gailani/",
+   "photo": "testimonials/dr-saeed-ahmed-al-gailani",
+   "archive_position": 2,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 147695,
+   "slug": "mohamed-shouman",
+   "name": "Mohamed Shouman",
+   "role": "General Manager, Group Corporate Banking",
+   "company": "Kuwait Finance House",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>I am proud to be an IM&amp;A charterholder, having successfully completed the professional certification program and received my qualification in March 2021. The IMAA program provided me with a highly valuable and robust set of M&amp;A skills. The comprehensive curriculum covers the entire M&amp;A lifecycle, from strategy and valuation and due diligence right through to the final acquisition process, making this certification essential for anyone looking to excel in an M&amp;A career. I was able to immediately apply this knowledge in the field, specifically by leveraging my skills during the KFH (Kuwait) acquisition of AUB (Bahrain)—one of the largest M&amp;A transactions in the region. The certification training was directly applicable and instrumental to my success on this landmark deal.</p>",
+   "published_at": "2025-10-24T03:31:53+00:00",
+   "url": "https://imaa-institute.org/testimonials/mohamed-shouman/",
+   "photo": "testimonials/mohamed-shouman",
+   "archive_position": 3,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 124643,
+   "slug": "onzelo-om-markum-iii-mba",
+   "name": "Onzelo Markum III (“OM”), Prosci",
+   "role": "Principal",
+   "company": "The Markum Group, LLC",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p>I recently completed the online Certified Post Merger Integration Expert course from the Institute of Mergers, Acquisitions and Alliances, and it has been a transformative experience for me. The course provided a comprehensive overview of the M&amp;A process and equipped me with the skills necessary for successful post-merger integration.</p>\n<p><strong>Three key aspects to a successful post-merger integration include:</strong></p>\n<ol>\n<li><strong>Effective Communication:</strong> Clear, transparent communication is critical to align all stakeholders and ensure smooth transitions. The course provided me with practical strategies and tools for crafting and delivering effective communication plans, helping me understand how to address concerns and foster collaboration among teams.</li>\n<li><strong>Strategic Planning and Execution:</strong> The course emphasized the importance of detailed planning and the need for a structured approach to integration. It helped me develop my ability to create and execute strategic plans by offering frameworks and methodologies that are crucial for integrating processes, systems, and cultures effectively.</li>\n<li><strong>Cultural Integration:</strong> Successfully merging organizational cultures can make or break the integration process. The training offered valuable insights into assessing cultural compatibility and managing change, allowing me to better address and integrate the differing cultures of merging entities.</li>\n</ol>\n<p>Overall, this course was instrumental in helping me identify and enhance these critical skills. I now feel more confident in my ability to manage complex integrations and contribute to the overall success of M&amp;A transactions. I highly recommend this course to anyone looking to excel in post-merger integration.</p>",
+   "published_at": "2025-03-10T05:45:07+00:00",
+   "url": "https://imaa-institute.org/testimonials/onzelo-om-markum-iii-mba/",
+   "photo": "testimonials/onzelo-om-markum-iii-mba",
+   "archive_position": 4,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 87382,
+   "slug": "michael-reed",
+   "name": "Michael Reed",
+   "role": "Senior Consultant",
+   "company": "Smith Reed Partners",
+   "programme": "CPMI, IM&A, LM&A, M&AP",
+   "programmes": [
+    "ima",
+    "cpmi",
+    "map",
+    "lma"
+   ],
+   "quote_html": "<p>In 2022, I decided to formalize my M&amp;A experience and memorialize my expertise with either an advanced degree or certification. I spent months investigating all the programs on offer and, after a detailed analysis, decided to engage IMAA and pursue one of their certifications. The process of getting the information I need to make the decision, securing my registration, and going through the program was extraordinary. So extraordinary that I pursued and earned three more certifications through IMAA. I am proud to be an IMAA Charterholder and thrilled to hold certifications associated with this great organization. The educational experience was first rate and I have achieved my goal of complimenting my “street” wisdom with a formal M&amp;A educational background. IMAA was the perfect choice for me!</p>",
+   "published_at": "2025-03-03T03:45:15+00:00",
+   "url": "https://imaa-institute.org/testimonials/michael-reed/",
+   "photo": "testimonials/michael-reed",
+   "archive_position": 5,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 96047,
+   "slug": "aline-soghomonian",
+   "name": "Aline Soghomonian",
+   "role": "Legal professional",
+   "company": "TAQA Group",
+   "programme": "IM&A, LM&A",
+   "programmes": [
+    "ima",
+    "lma"
+   ],
+   "quote_html": "<p>I always had the passion to discover about the M&amp;A world. IMAA fulfilled my wish with the most relevant aspects of the M&amp;A covered in just one course out of the New York City. With great content, lots of interactive work, mostly hands on course and insightful discussions, it was so enjoyable to receive a wealth of knowledge about the subject. Martin, a great mentor who made it fun and engaging for all, and with the examples from his extensive experiences, he made it absolutely unforgettable experience for us, and although there was a lot to learn, it was so light and easy to follow for everyone. I would highly recommend the IMAA course to anyone wanting to get into the industry.   </p>\n<p>Special thanks to Nicole for making this course so complete with her daily super support to all of the attendees and the fantastic food she arranged for us throughout each of the days of the training.</p>",
+   "published_at": "2025-02-25T09:05:30+00:00",
+   "url": "https://imaa-institute.org/testimonials/aline-soghomonian/",
+   "photo": "testimonials/aline-soghomonian",
+   "archive_position": 6,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 87384,
+   "slug": "christian-muntean",
+   "name": "Christian Muntean",
+   "role": "President, Advisor to owners, executives & boards",
+   "company": "Vantage Consulting",
+   "programme": "IM&A, M&AP",
+   "programmes": [
+    "ima",
+    "map"
+   ],
+   "quote_html": "<p>I recently completed my IM&amp;A (in-person) and M&amp;AP (online) certifications. Both experiences were incredibly rewarding. The instructors had the depth of knowledge and personal experience you’d expect. The class was full of high-caliber, whip-smart, and friendly people. I learned from everyone. What I appreciated most about IMAA and the instructors (both in person and online) was often repeated notes of humility and ethics. I’d recommend attending the in-person course if possible but both were valuable.</p>",
+   "published_at": "2025-02-20T03:48:52+00:00",
+   "url": "https://imaa-institute.org/testimonials/christian-muntean/",
+   "photo": "testimonials/christian-muntean",
+   "archive_position": 7,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 87380,
+   "slug": "shaune-lim",
+   "name": "Shaune Lim",
+   "role": "CEO",
+   "company": "Assured Asset Management",
+   "programme": "Financial Modeling and Business Valuation, IM&A",
+   "programmes": [
+    "ima",
+    "fmbv"
+   ],
+   "quote_html": "<p>I had the privilege of taking the IM&amp;A and Financial Modeling and Business Valuation Course with Trainer Rohit Pratap in an online format. Even though the course was conducted completely virtually, Rohit did an exceptional job of keeping students engaged and explaining complex integration, merger, acquisitions, and financial concepts in a clear, understandable way.</p>\n<p>Rohit structured the course thoughtfully, with relevant real-world examples and case studies that helped reinforce key learnings. He made effective use of interactive tools and discussions during our virtual lectures to promote student participation.</p>\n<p>One aspect that really stood out was Rohit’s dedication to ensuring students grasped the material. He patiently answered questions, provided valuable feedback on assignments, and made himself available outside of class. I appreciated that he customized his teaching style to suit the virtual delivery method.</p>\n<p>Overall, this was one of the most well-organized, enriching online courses I’ve taken. Kudos to IMAA in delivering such a great and seamless user experience. I gained invaluable financial knowledge and skills that I can apply directly in my career. Rohit is a phenomenal educator, and I highly recommend this IM&amp;A and Financial Modeling and Business Valuation Course to other students looking to expand their business acumen.</p>",
+   "published_at": "2025-02-15T08:54:17+00:00",
+   "url": "https://imaa-institute.org/testimonials/shaune-lim/",
+   "photo": "testimonials/shaune-lim",
+   "archive_position": 8,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 90120,
+   "slug": "ezinne-q-joshua",
+   "name": "Ezinne Q. Joshua",
+   "role": "Associate Portfolio Manager",
+   "company": "Aquamore Finance",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>As a part of my MBA program, I enrolled in the Entrepreneurial Finance course. The assessment process required a role-play exercise in which my group represented the buy-side while the target group represented the sell-side in the acquisition of a company. This novel and challenging process made me curious about the overall concept of mergers and acquisitions (M&amp;A) and its complete scope. In my research, IMAA was featured many times, and I enrolled in the program. After completing two courses, I can attest that every experience has provided me with new perspectives on how to approach deals and a shift in my understanding of stakeholder engagement/management. The valuation class helped me improve my financial modelling skills, while the IM&amp;A course provided me with knowledge on deal processing, strategy, due diligence and commonly overlooked aspects of a deal that could either make or break the process – before and after a merger. I highly recommend the IM&amp;A course to anyone seeking deeper insights and understanding into the complete end-to-end cycle of mergers and acquisitions. The program has equipped me with the necessary knowledge and skills to manage the intricacies of M&amp;A transactions effectively, and I am confident that it will do the same for anyone who enrols.</p>",
+   "published_at": "2025-02-10T02:05:17+00:00",
+   "url": "https://imaa-institute.org/testimonials/ezinne-q-joshua/",
+   "photo": "testimonials/ezinne-q-joshua",
+   "archive_position": 9,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 87386,
+   "slug": "chuck-adams",
+   "name": "Chuck Adams",
+   "role": "Managing Partner",
+   "company": "Coeptis Consulting Group",
+   "programme": "IM&A, M&AP",
+   "programmes": [
+    "ima",
+    "map"
+   ],
+   "quote_html": "<p>I was looking for a program that helped develop my M&amp;A skills &amp; knowledge to help better serve our clients and was pointed in IMAA’s direction for our needs. We were very impressed by the professionalism and rigor of the M&amp;AP and IM&amp;A paths, and we have already provided better value to our clients through what I learned through the program. Plus, the online, self-paced format was attractive and critical for a working M&amp;A professional like myself; I highly recommend the program and paths provided by the IMAA for those new or looking to sharpen their skills in M&amp;A.</p>",
+   "published_at": "2025-02-05T03:51:13+00:00",
+   "url": "https://imaa-institute.org/testimonials/chuck-adams/",
+   "photo": "testimonials/chuck-adams",
+   "archive_position": 10,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 87399,
+   "slug": "kenneth-penn-cpa",
+   "name": "Kenneth Penn, CPA",
+   "role": "Managing Partner & CEO",
+   "company": "The Pantera Group, LLC",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>In June 2023, I had the opportunity to participate in the Institute for Mergers, Acquisitions &amp; Alliances’ IM&amp;A Cohort in New York City, which consisted of an incredibly diverse group of professionals from a wide range of backgrounds. The cohort was well-structured and gave me the knowledge, skills, and a better understanding of what I needed to succeed. The instructors/practitioners were knowledgeable, supportive, and relatable, and the cohort was filled with real-world examples and applications.  I particularly appreciated the in-person format and networking with my fellow professionals before and after the class day.</p>\n<p>I am more than glad I participated and am more confident when operating in the M&amp;A arena as an advisor and acquirer of businesses.</p>",
+   "published_at": "2025-01-30T05:43:22+00:00",
+   "url": "https://imaa-institute.org/testimonials/kenneth-penn-cpa/",
+   "photo": "testimonials/kenneth-penn-cpa",
+   "archive_position": 11,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 96036,
+   "slug": "emmanuel-kolade-ima-map",
+   "name": "Emmanuel Kolade",
+   "role": "Director, Finance & Controller",
+   "company": "Omnify",
+   "programme": "IM&A, M&AP",
+   "programmes": [
+    "ima",
+    "map"
+   ],
+   "quote_html": "<p>“I recently completed IM&amp;A program virtually and M&amp;AP program online.</p>\n<p>These programs were expertly crafted by industry leaders and seasoned practitioners, and they provided an in-depth understanding of the intricacies involved in M&amp;A transactions. From business valuation and due diligence to post-merger integration, every aspect was covered in detail.</p>\n<p>The collaborative nature of the program facilitated networking with fellow executives and professionals from diverse industries. Engaging in discussions and sharing experiences not only broadened my professional network but also enriched my learning experience through different perspectives.</p>\n<p>I highly recommend this program to executives and professionals aspiring to excel in the field of M&amp;A. It has been an enriching experience that has not only added a valuable credential to my profile but has also empowered me with the necessary tools to make strategic and informed decisions in the ever-evolving world of business.”</p>",
+   "published_at": "2025-01-25T08:43:15+00:00",
+   "url": "https://imaa-institute.org/testimonials/emmanuel-kolade-ima-map/",
+   "photo": "testimonials/emmanuel-kolade-ima-map",
+   "archive_position": 12,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 96048,
+   "slug": "claudia-senties",
+   "name": "Claudia Senties",
+   "role": "Senior Associate",
+   "company": "EY Parthenon",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>I took IMAA’s IM&amp;A certificate program as I wanted to fill a gap in my skill set on transitioning from the integration team to the deal team. Therefore, participating in IMAA’s on-site IM&amp;A certificate program was a very enriching experience that provided me the space and the right network to discuss, share experiences, and learn from both IMAA’s faculty and M&amp;A professionals with diverse backgrounds. Moreover, IMAA’s on-site comprehensive curriculum and access to an online learning platform and library helped me deepen my understanding of M&amp;A instilling the ability to ask the right questions at the right time, and also equipped me with the necessary practical finance &amp; valuation skills crucial for success in this transition in my career. The real-world case studies and interactive learning modules were particularly valuable, allowing me to apply theoretical knowledge to actual scenarios. Furthermore, IMAA’s global recognition opened doors to new opportunities and bolstered my credibility in the M&amp;A field. I am truly grateful for the supportive community of experts and peers who fostered a collaborative learning environment, enriching my networking capabilities, and instilling confidence in my strategic decision-making abilities.</p>",
+   "published_at": "2025-01-20T09:10:52+00:00",
+   "url": "https://imaa-institute.org/testimonials/claudia-senties/",
+   "photo": "testimonials/claudia-senties",
+   "archive_position": 13,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 87401,
+   "slug": "dwayne-thomas",
+   "name": "Dwayne Thomas",
+   "role": "Attorney At Law",
+   "company": "",
+   "programme": "LM&A",
+   "programmes": [
+    "lma"
+   ],
+   "quote_html": "<p>When I was searching for training in M&amp;A, the Institute for Mergers, Acquisitions and Alliance (IMAA) was first on the list of training providers. The Legal Mergers and Acquisition course was an easy choice as it brings a deep and solid foundation of all the legal and regulatory aspects of the M&amp;A deal. The virtual live format was structured to help busy professionals gain quality education from experts in the field. The sessions were very engaging and impactful.  Hearing and learning from the personal experiences of the lecturers solidified that I made the right choice in choosing IMAA. The LM&amp;A certificate gave me insight into identifying and managing the complexities of the M&amp;A process.</p>",
+   "published_at": "2023-10-03T05:57:58+00:00",
+   "url": "https://imaa-institute.org/testimonials/dwayne-thomas/",
+   "photo": "testimonials/dwayne-thomas",
+   "archive_position": 14,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 87394,
+   "slug": "carlos-aizpurua",
+   "name": "Carlos Aizpurúa",
+   "role": "Executive Vice President",
+   "company": "CEO Advisors",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "<p>I decided to take the valuation training because I wanted to expand my knowledge in this matter, and to reintroduce myself into the world of M&amp;A, since I had been doing consulting mainly in strategic planning and financial analysis. To accomplish this, I trusted the combination of the Institute for Mergers, Acquisitions and Alliances (IMAA) and Prof. Aswath Damodaran, known as the “Dean of Valuation”. The virtual classroom format was appropriate, since it allowed me to receive the knowledge of and carry out live interactions with prof. Damodaran, without having to travel and from the comfort of my home. After the live sessions, I was able to review the recorded classes. Definitively, I do recommend this training to any professional who wants to expand their knowledge of valuations. In the course, I learned the following: 1) valuations should be simple; 2) valuations should follow a narrative; and 3) try to eliminate biases and preconceptions when making assumptions in valuations.</p>",
+   "published_at": "2023-10-03T05:26:54+00:00",
+   "url": "https://imaa-institute.org/testimonials/carlos-aizpurua/",
+   "photo": "testimonials/carlos-aizpurua",
+   "archive_position": 15,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 87389,
+   "slug": "brad-albert",
+   "name": "Brad Albert",
+   "role": "Manager, M&A Integration",
+   "company": "Salesforce",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "<p>I participated in Prof. Aswath Damodoran’s valuation training in May 2023. The course was a practical deep dive into various valuation methods and a breath of fresh air, addressing a range of topics from what makes up a good valuation (e.g. narrative AND numbers), the key drivers of value (e.g. cash flows, growth, risk) and how the internet age as defined by zero distribution/marginal costs has changed the way we need to look at valuing companies in the modern world. Prof. Damodaran’s engaging teaching style, iconoclastic perspectives, and hands-on learning made this week-long training an entertaining and can’t miss seminar. Overall, the course was an enriching experience that stepped outside of classroom theories, zeroing-in on real-world valuation scenarios from early stage private ventures to mature, Fortune 500 public companies undergoing digital transformation. If you’re new to valuation and looking to develop your own framework, open to challenging conventional wisdom, or are simply interested in how Prof. Damodoran cooks up engaging content that adds spice to important topics in corporate finance, his materials extend well beyond the conventional training program and would highly recommend to others looking for the same. </p>",
+   "published_at": "2023-10-03T03:54:17+00:00",
+   "url": "https://imaa-institute.org/testimonials/brad-albert/",
+   "photo": "testimonials/brad-albert",
+   "archive_position": 16,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 87377,
+   "slug": "rachel-zhang",
+   "name": "Rachel Zhang",
+   "role": "Founder & CEO",
+   "company": "Kalalau Capital",
+   "programme": "LM&A",
+   "programmes": [
+    "lma"
+   ],
+   "quote_html": "<p>I am truly delighted to share my testimonial after completing the “Legal Mergers &amp; Acquisitions” Certification with the Institute for Mergers, Acquisitions &amp; Alliances (IMAA) and becoming a LM&amp;A Expert Charterholder. </p>\n<p>One might wonder why someone with 13 years of experience in investment banking and M&amp;A, like myself, would decide to embark on this certification. The answer is quite simple – continuous improvement. In an ever-evolving industry, staying at the forefront of knowledge is essential. The legal aspects of M&amp;A transactions are an integral part of the process, and my desire to gain a deeper understanding of this critical component led me to IMAA’s LM&amp;A certification program. It has added a new layer of expertise to my skill set, making me a more comprehensive and effective M&amp;A advisor.</p>\n<p>The online learning format offered by IMAA was nothing short of exceptional. As a seasoned industry veteran running my own M&amp;A advisory business, <a href=\"https://www.kalalaucapital.com/\">Kalalau Capital</a>, my work schedule is demanding and unpredictable. The flexibility of the online format allowed me to learn at my own pace and seamlessly integrate my studies into my professional life. It provided me with the freedom to access course materials and engage in discussions when it suited me best. This adaptability was invaluable, and I found the quality of the course content to be top-notch. The practical knowledge gained from the program has equipped me with the legal acumen necessary to navigate the intricacies of M&amp;A transactions more effectively.</p>\n<p>Without a doubt, I would recommend the IMAA’s LM&amp;A certification program to my peers and advisors in the M&amp;A industry. For anyone looking to provide comprehensive services in and around M&amp;A execution, this program is an indispensable resource. The well-structured curriculum, coupled with the convenience of online learning, makes it accessible to professionals with diverse schedules and commitments. It’s a valuable investment in one’s career, and I believe it will continue to play a significant role in shaping the future of M&amp;A experts.</p>",
+   "published_at": "2023-10-03T03:32:52+00:00",
+   "url": "https://imaa-institute.org/testimonials/rachel-zhang/",
+   "photo": "testimonials/rachel-zhang",
+   "archive_position": 17,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 87365,
+   "slug": "corbin-metz",
+   "name": "Corbin Metz",
+   "role": "Managing Partner",
+   "company": "Coeptis Consulting Group",
+   "programme": "IM&A, M&AP",
+   "programmes": [
+    "ima",
+    "map"
+   ],
+   "quote_html": "<p>The M&amp;AP and IM&amp;A online, self-paced courses allowed me to balance my professional commitments with my desire to expand my knowledge in mergers and acquisitions. While I found the course content comprehensive and up-to-date, there were occasional challenges with the user interface, particularly in tracking progress and navigation across different device platforms. The convenience of online learning and the accessibility of course materials from anywhere were definite strengths of the programs, however.</p>\n<p>In general, IMAA’s M&amp;AP and IM&amp;A certification programs provide valuable knowledge and flexibility for professionals seeking to excel in mergers and acquisitions. Despite some interface challenges, the content and support offered by IMAA make these certifications a worthwhile investment in one’s career. Thank you, IMAA, for helping me advance my expertise in M&amp;A!</p>",
+   "published_at": "2023-10-03T03:27:16+00:00",
+   "url": "https://imaa-institute.org/testimonials/corbin-metz/",
+   "photo": "testimonials/corbin-metz",
+   "archive_position": 18,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 87397,
+   "slug": "dr-roland-yap",
+   "name": "Dr. Roland Yap",
+   "role": "",
+   "company": "",
+   "programme": "CPMI, IM&A",
+   "programmes": [
+    "ima",
+    "cpmi"
+   ],
+   "quote_html": "<p>The learning journey towards the International Mergers &amp; Acquisitions (IM&amp;A) Expert and Certified Post-Mergers Integration (CPMI) Expert in July and August 2022 has been inspirational and rewarding.</p>\n<p>My decision to commit to this high value professional certification were on several decision consideration. First, the international professional standing and purpose of the Institute for Mergers, Acquisitions, and Alliances (IMAA). Second, the need for professional best practices and networking to further strengthen my prior experiences with M&amp;As in excess of US$88 billion within the energy, pharmaceuticals, life sciences and medical devices from 2011 to 2018. Third, the well-resourced learning platform which ranges from virtual to face-to-face curated for learners enable learners to benefit from a good balance between theories, practices and integrated strategic, financial, socio-cultural perspectives.</p>\n<p>Overall, the knowledge and skills ensured business and functional leaders to leverage on pragmatic principles to address the pre and post integration process through robust consideration on relevant financial and valuation formula(s). I would recommend the IM&amp;A, CPMI and other related functional due diligence domain areas and valuation certifications to industry leaders who aspire to contribute effectively in the M&amp;A process in multiple industry sectors. It is my opinion that any forward-looking organization(s) with the fortune to attract professional experts who graduated from IMAA will henceforth be well compensated for so doing.</p>",
+   "published_at": "2023-10-02T05:36:35+00:00",
+   "url": "https://imaa-institute.org/testimonials/dr-roland-yap/",
+   "photo": "testimonials/dr-roland-yap",
+   "archive_position": 19,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 83505,
+   "slug": "retina-moore-mba-msf-cfei",
+   "name": "ReTina Moore, MBA, MSF, CFEI",
+   "role": "CFO and Project Manager",
+   "company": "Coins2Capital",
+   "programme": "IM&A, M&AP",
+   "programmes": [
+    "ima",
+    "map"
+   ],
+   "quote_html": "<p>As a CFO and Project Manager professional with some M&amp;A experience in the corporate banking and Bio-Pharmaceutical industries, I wanted to expand my knowledge as I further develop my own corporate financial advisory in the global markets. After researching other programs, I decided to take the IM&amp;A and M&amp;AP program with IMAA as it offered not only a Cohort based learning with real world applications and ongoing access to e-library resources, but it also further offered the “Running a Successful Practice” option which is very beneficial for my company as well as the international designation and recognition not currently offered with other programs. The assigned lecturers were very knowledgeable, and Nicole is just wonderful to work with at IMAA. I would absolutely recommend this program to my peers and colleagues.</p>",
+   "published_at": "2023-07-24T09:49:08+00:00",
+   "url": "https://imaa-institute.org/testimonials/retina-moore-mba-msf-cfei/",
+   "photo": "testimonials/retina-moore-mba-msf-cfei",
+   "archive_position": 20,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 83500,
+   "slug": "joshua-sugar",
+   "name": "Joshua Sugar",
+   "role": "President",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>I am so happy to have completed the virtual IM&amp;A course, the course instructors were great, it was nice to meet participants from all over the world and increase my network of M&amp;A professionals. Special thanks to Nicole Jokic for encouraging me to get past my procrastination in the self study course and commit to the 2 week virtual – completely worth it and a great experience!</p>",
+   "published_at": "2023-07-24T09:42:47+00:00",
+   "url": "https://imaa-institute.org/testimonials/joshua-sugar/",
+   "photo": "testimonials/joshua-sugar",
+   "archive_position": 21,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 76130,
+   "slug": "catherine-chong",
+   "name": "Catherine Chong",
+   "role": "Consultant",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>Rohit is an expert in corporate finance, business valuation and financial modelling. I attended the IM&amp;A programme and Rohit brought us through the business component of the programme. His teaching approach is based on extensive technical knowledge and practical experience. Having knowledge about the core concepts is crucial but knowing how to apply them is more important than that. Rohit brought us through the valuation concepts and going through the practical aspects on the computation to value a business in an M&amp;A exercise. I also had the opportunity to attend Rohit’s financial modelling online class. Apart from the tools to applying the theoretical knowledge to practical case studies, Rohit, being an expert in financial modelling, highlighted various areas of potential pitfalls, and shared practical tips in preparing better and clearer financial models.</p>",
+   "published_at": "2023-02-27T11:44:08+00:00",
+   "url": "https://imaa-institute.org/testimonials/catherine-chong/",
+   "photo": "testimonials/catherine-chong",
+   "archive_position": 22,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 73466,
+   "slug": "james-goodnow",
+   "name": "James Goodnow",
+   "role": "CEO (Managing Partner)",
+   "company": "FENNEMORE.",
+   "programme": "IM&A, M&AP",
+   "programmes": [
+    "ima",
+    "map"
+   ],
+   "quote_html": "<p>The M&amp;A programs I participated in at the IMAA were outstanding. The topics covered were diverse and universally valuable. From the “hard skills” of refining a discounted cash-flow analysis to the “soft skills” of post-merger integration, the program covers the critical elements of a successful M&amp;A transaction. As a lawyer, I broadened my skillset beyond the mechanics of inking a deal — looking at deals more holistically and thinking about the practical implications of decisions and approaches. Kudos to everyone at IMAA for putting together an exceptional program.</p>",
+   "published_at": "2023-01-13T08:50:22+00:00",
+   "url": "https://imaa-institute.org/testimonials/james-goodnow/",
+   "photo": "testimonials/james-goodnow",
+   "archive_position": 23,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 65467,
+   "slug": "charles-ladas",
+   "name": "Charles Ladas",
+   "role": "Value Advisory Partner at Auxilium",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>As accountants and business advisors with clients who are business owners in a variety of industries and in various locations throughout the world, my business partners and I at Auxilium thought it would be beneficial for us to obtain more in-depth training in M&amp;A. When we came across the M&amp;A training offered by IMAA, we knew it would be a perfect fit for us. I enrolled in the International Mergers &amp; Acquisitions Expert (IM&amp;A) online program and successfully completed it in about 3 months. The online program was great as I was able to complete the modules at my own pace and really take time to absorb the content of the materials provided.  Overall, the IM&amp;A program is an excellent overview of the entire M&amp;A process, and it provides a practical and actionable framework for M&amp;A advisors to follow. I highly recommend the IM&amp;A program to anyone looking to enhance their expertise and status in the M&amp;A world.</p>",
+   "published_at": "2022-08-18T09:40:55+00:00",
+   "url": "https://imaa-institute.org/testimonials/charles-ladas/",
+   "photo": "testimonials/charles-ladas",
+   "archive_position": 24,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 62984,
+   "slug": "manisha-sabnani",
+   "name": "Manisha Sabnani",
+   "role": "SVP Finance",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>I took the program as I wanted to fill a gap in my skill set on the way to becoming a CFO. The live virtual classroom format was very easy and allowed for flexibility and a more diverse group of classmates. The program was thorough, and the presenters provided comprehensive information and resources. There was enough time for Q&amp;A and interaction. The e-book library is also a great resource.</p>",
+   "published_at": "2022-08-08T09:41:11+00:00",
+   "url": "https://imaa-institute.org/testimonials/manisha-sabnani/",
+   "photo": "testimonials/manisha-sabnani",
+   "archive_position": 25,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 59462,
+   "slug": "gary-gadson",
+   "name": "Gary Gadson",
+   "role": "Managing Partner & CEO",
+   "company": "Norval LLC",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p><em>Before my CPMI certification, I participated in several integration efforts; however, the process didn’t feel very well organized, and I participated without fully understanding the drivers of the acquisition.  I felt like a better structure or roadmap had to exist to merge two companies more efficiently.  The CPMI training has equipped me with the framework to effectively implement an integration plan.  The instructors at IMAA are practitioners with real world experience who can relate to the variety of issues surrounding post-merger integration efforts.  This was a very worthwhile training that will add tremendous value to me as an executive and investor</em>.</p>",
+   "published_at": "2022-05-19T08:22:45+00:00",
+   "url": "https://imaa-institute.org/testimonials/gary-gadson/",
+   "photo": "testimonials/gary-gadson",
+   "archive_position": 26,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 58296,
+   "slug": "anna-schwartzur",
+   "name": "Anna Schwartzur",
+   "role": "Chief of Staff to the CFO & Head of Strategic Initiatives",
+   "company": "Sterling",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p>Knowing how critical integration is to the success of M&amp;A and wanting to learn more, I embarked on a process to find a program that offered a wide selection of instructors with years of real-life experiences, a good selection of topics covered, and a professionally built portal for a virtual experience. IMAA was at the top of the list! The team was incredibly responsive during my selection process and helped make a decision to enroll a no brainer. The actual classes were even better than I anticipated. The instructors were able to offer real world examples and brought topics to life. The collaborative set up of learning through a case study offered an opportunity for the classmates to interact, debate, and build a strong integration process together. I highly recommend this program to anyone interested in learning more about the Integration part of M&amp;A. You will learn a tremendous amount in the time together and meet others tackling similar challenges.</p>",
+   "published_at": "2022-04-08T10:41:38+00:00",
+   "url": "https://imaa-institute.org/testimonials/anna-schwartzur/",
+   "photo": "testimonials/anna-schwartzur",
+   "archive_position": 27,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 57747,
+   "slug": "sean-janelle",
+   "name": "Sean Janelle",
+   "role": "Founder",
+   "company": "Montview Global Consulting",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p><em>As someone who has worked in M&amp;A but wanted to expand my knowledge in the M&amp;A lifecycle, I looked at many organizations to take a Post Close Integration class. I landed with IMAA because I trusted their worldwide acclaim, their professional partners, and their world-renowned speakers. The virtual classroom was very beneficial for our class. We were spread across seven time zones, and we could collaborate from our homes or offices and meet many people from various backgrounds and geographies. We had several breakout sessions which did not take time to gather and allowed effective one-on-one times with each other. I would recommend this class to anyone who wants to gain a comprehensive understanding of the M&amp;A lifecycle from world-leading experts in the field and through an organization highly sought after across the globe. </em></p>",
+   "published_at": "2022-03-24T10:27:11+00:00",
+   "url": "https://imaa-institute.org/testimonials/sean-janelle/",
+   "photo": "testimonials/sean-janelle",
+   "archive_position": 28,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 57379,
+   "slug": "meghna-verma",
+   "name": "Meghna Verma",
+   "role": "Sr. Business Analysis People Leader",
+   "company": "Salesforce",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p>The curriculum for the CPMI program is well designed. Expertise of instructors and examples provided are helpful to understand the complex context of M&amp;A. Exercises and Case Studies assignments compel you to think hard and provide an immersive experience.</p>",
+   "published_at": "2022-03-11T14:34:47+00:00",
+   "url": "https://imaa-institute.org/testimonials/meghna-verma/",
+   "photo": "testimonials/meghna-verma",
+   "archive_position": 29,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 57377,
+   "slug": "kathy-miller",
+   "name": "Kathy Miller",
+   "role": "Senior Director, M&A Integrations",
+   "company": "",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p>The CPMI certification helped me ramp up quickly for a new role in M&amp;A.</p>\n<p>The online content was easy to follow, pragmatic and well presented by experts in the field with real world experience. The various topics were aligned and instructors often reinforced principles introduced in earlier sections. The examples and comparisons of actual deals were particularly informative. The flexible online format worked well for me rather than a fixed schedule. Support is available if you need it from the imaa staff and they are quick to respond.</p>\n<p>I have recommended the course to a few of my colleagues and one has already completed it. My overall experience with imaa has been very positive.</p>",
+   "published_at": "2022-03-11T14:15:57+00:00",
+   "url": "https://imaa-institute.org/testimonials/kathy-miller/",
+   "photo": "testimonials/kathy-miller",
+   "archive_position": 30,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 57372,
+   "slug": "sultan-alrammah",
+   "name": "Sultan Alrammah",
+   "role": "Project Management | Mergers and Acquisitions",
+   "company": "Saudi Aramco",
+   "programme": "M&AP",
+   "programmes": [
+    "map"
+   ],
+   "quote_html": "<p>I decided to join this course when I shifted my career from Project Management to Mergers and Acquisitions Department in Saudi Aramco. The course served as a cornerstone for my M&amp;A knowledge. It was great to interact with high-caliber M&amp;A professionals; hearing their stories and how they guided/evolved their personal experiences into published guidelines, rules of thumb, and know how’s. I even used IMAA’s published statistics to generate a rough trend for certain multiples that would aid in internal working-level discussions. The M&amp;A world remains relatively new and is in constant change; raising the importance of IMAA and its mission to increase awareness among M&amp;A professionals worldwide. I strongly recommend this course to all M&amp;A professionals.</p>",
+   "published_at": "2022-03-11T13:41:28+00:00",
+   "url": "https://imaa-institute.org/testimonials/sultan-alrammah/",
+   "photo": "testimonials/sultan-alrammah",
+   "archive_position": 31,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 52554,
+   "slug": "wail-selfo",
+   "name": "Wa’il Selfo",
+   "role": "Supply Chain Management Consultant",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>I decided to enroll in the program due to my new role in M&amp;A activities in the company.  The support team at IMAA were very helpful during the onboarding stage and throughout the course.  The virtual course featured many seasoned veterans who shared both the theoretical aspects of the M&amp;A process and also their practical experience.  The format was very interactive and I gained a lot of from this course.  I highly recommend this course for anyone just getting into the field as it will provide a solid foundation of knowledge.</p>",
+   "published_at": "2021-11-25T14:08:18+00:00",
+   "url": "https://imaa-institute.org/testimonials/wail-selfo/",
+   "photo": "testimonials/wail-selfo",
+   "archive_position": 32,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 52556,
+   "slug": "christian-b-waegt",
+   "name": "Christian B. Waegt",
+   "role": "Program Lead M&A ERP",
+   "company": "Novartis",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p>When I was searching a training to widen my knowledge in post-merger integrations, the CPMI course at IMAA has been recommended to me. This course was an easy choice as it brings a deep and solid foundation of all aspects around the planning and execution of PMI projects, but also comes with a unique possibility to get real-life experience. Not only the good conversations with the lecturers, but also the active exchange with my course fellows widened my perspective and gave good practical hints on what works and what doesn’t. I can strongly recommend this course to all who are supposed to start an integration project or plan to take a leading role.</p>",
+   "published_at": "2021-11-22T10:03:35+00:00",
+   "url": "https://imaa-institute.org/testimonials/christian-b-waegt/",
+   "photo": "testimonials/christian-b-waegt",
+   "archive_position": 33,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 52558,
+   "slug": "lauren-gerow",
+   "name": "Lauren Gerow",
+   "role": "Manager, Corporate Projects and Communications",
+   "company": "",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p>After detailed research on M&amp;A continuing education in the marketplace, selecting IMAA’s Post Merger Integration Certification was an easy choice. The CPMI program offers relevant courses, knowledgeable professors and flexibility. The interactive virtual environment allowed for the opportunity to learn from experts from across the globe and network with industry professionals. This program gave me the confidence to facilitate complex integration discussions, practical resources and the ability for me to support my organization in achieving their growth objectives. I would highly recommend this investment to anyone who is responsible for overall M&amp;A strategy, function integration or change management considering professional development- a great virtual classroom experience!</p>",
+   "published_at": "2021-11-10T18:04:57+00:00",
+   "url": "https://imaa-institute.org/testimonials/lauren-gerow/",
+   "photo": "testimonials/lauren-gerow",
+   "archive_position": 34,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 406,
+   "slug": "dr-jurg-stucker",
+   "name": "Dr. Jürg Stucker",
+   "role": "Partner",
+   "company": "Oaklins",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-23T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/dr-jurg-stucker/",
+   "photo": "testimonials/dr-jurg-stucker",
+   "archive_position": 35,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 410,
+   "slug": "paolo-buiatti",
+   "name": "Paolo Buiatti",
+   "role": "Senior Manager M&A",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-23T10:20:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/paolo-buiatti/",
+   "photo": "testimonials/paolo-buiatti",
+   "archive_position": 36,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 404,
+   "slug": "rodrigo-tona",
+   "name": "Rodrigo Tona",
+   "role": "CEO at Termo Packaging",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-22T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/rodrigo-tona/",
+   "photo": "testimonials/rodrigo-tona",
+   "archive_position": 37,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 375,
+   "slug": "enrique-g-chavez-montes",
+   "name": "Enrique G. Chavez Montes",
+   "role": "Management Consultant",
+   "company": "",
+   "programme": "M&AP",
+   "programmes": [
+    "map"
+   ],
+   "quote_html": "<p>I decided to enroll in the M&amp;AP program because I wanted to deepen my knowledge of all the processes involved in an M&amp;A transaction as well as learn about global best practices in these processes, in the same way, to hear the various practical experiences of other participants. The course was very complete, addressed with the necessary depth for each of the topics. Its virtual modality was for me, a great advantage, since knowing that if I could not attend a live session, it was possible to watch the recording, without losing the interventions and exchange of experiences with other participants was very important. I recommend this course to all those professionals interested in improving their skills in M&amp;A to provide a solid specialized consultancy. The designation obtained as a M&amp;A Professional has given me as an endorsement of a globally recognized entity (IMAA) in front of my clients.</p>",
+   "published_at": "2021-09-22T09:25:03+00:00",
+   "url": "https://imaa-institute.org/testimonials/enrique-g-chavez-montes/",
+   "photo": "testimonials/enrique-g-chavez-montes",
+   "archive_position": 38,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 402,
+   "slug": "martha-ross-cpa",
+   "name": "Martha Ross, CPA",
+   "role": "Chief Financial Officer, Housing Authority of the City of Austin",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-21T10:15:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/martha-ross-cpa/",
+   "photo": "testimonials/martha-ross-cpa",
+   "archive_position": 39,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 365,
+   "slug": "kumar-s",
+   "name": "Kumar S",
+   "role": "Vice President",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>I thoroughly enjoyed the IM&amp;A Virtual Classroom program. IMAA had really good professional experts who practice M&amp;A as faculties to bring in very wide experience and cover every scope of the M&amp;A activities . Though it was virtual, it was an engaging one with very good and active participation from the colleagues who joined the session. Their training material and the case studies were quite in depth and very insightful.</p>\n<p>I would strongly recommend this course for every senior leader and finance professionals as it gives a complete overview of the various aspects of mergers and acquisitions in a short span of time.</p>",
+   "published_at": "2021-09-21T09:32:03+00:00",
+   "url": "https://imaa-institute.org/testimonials/kumar-s/",
+   "photo": "testimonials/kumar-s",
+   "archive_position": 40,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 361,
+   "slug": "sebastian-foo",
+   "name": "Sebastian Foo",
+   "role": "Head of HR, ASM Technology Singapore",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>This training provided me the opportunity to expand my M&amp;A perspectives beyond that of HR in my usual course of work and the coaching and feedback from the faculty members were invaluable – especially insights and know-how from practical experience.This training provided me the opportunity to expand my M&amp;A perspectives beyond that of HR in my usual course of work and the coaching and feedback from the faculty members were invaluable – especially insights and know-how from practical experience.</p>",
+   "published_at": "2021-09-20T17:30:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/sebastian-foo/",
+   "photo": "testimonials/sebastian-foo",
+   "archive_position": 41,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 408,
+   "slug": "samuel-buma",
+   "name": "Samuel Buma",
+   "role": "President at B. E. Capital Group",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-20T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/samuel-buma/",
+   "photo": "testimonials/samuel-buma",
+   "archive_position": 42,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 400,
+   "slug": "brian-kenet",
+   "name": "Brian Kenet",
+   "role": "Senior Business Advisor",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-19T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/brian-kenet/",
+   "photo": "testimonials/brian-kenet",
+   "archive_position": 43,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 359,
+   "slug": "andre-hamilton",
+   "name": "Andre Hamilton",
+   "role": "Fund Accountant",
+   "company": "",
+   "programme": "M&AP",
+   "programmes": [
+    "map"
+   ],
+   "quote_html": "<p>I chose to pursue the IM&amp;A and M&amp;AP programs in order to gain knowledge that would allow me to better identify the tools necessary to enhance the value-add components of the merger and acquisition process. I wanted to sharpen my vantage point of the entire acquisition process from both a macro and micro level. These programs have given me the roadmap to discovering the integral intangibles, that are often times overlooked, which I will utilize in all of my future business endeavors. I decided to take the courses online due to the inherent accessibility and convenience of being able to receive the same world renown, quality education from the comfort of my home. I found that the online content was strategically constructed in a way that was digestible and relatable which allowed me to view the concepts from various perspectives. I felt strongly that by completing the IM&amp;A and M&amp;AP programs I could then leverage the knowledge accumulated for value-add purposes within my current industry. I would most definitely recommend this course to my peers and colleagues.</p>",
+   "published_at": "2021-09-18T17:05:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/andre-hamilton/",
+   "photo": "testimonials/andre-hamilton",
+   "archive_position": 44,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 398,
+   "slug": "putrinina-aritonang-nina",
+   "name": "Putrinina Aritonang (Nina)",
+   "role": "Investment Banker",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-18T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/putrinina-aritonang-nina/",
+   "photo": "testimonials/putrinina-aritonang-nina",
+   "archive_position": 45,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 396,
+   "slug": "janette-kolega",
+   "name": "Janette Kolega",
+   "role": "Marketing Strategist",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-17T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/janette-kolega/",
+   "photo": "testimonials/janette-kolega",
+   "archive_position": 46,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 351,
+   "slug": "carlos-gutierrez-frm",
+   "name": "Carlos Gutiérrez, FRM",
+   "role": "Head of Equity",
+   "company": "Dunas Capital",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "<p>I have been following Prof. Damodaran for a long time, reading some of his books, his blog and papers. I think that Prof. Damodaran has a “gift” for everything to make sense within a valuation, while keeping it simple and transparent. During my career of more than 20 years as a fundamental institutional investor, I have dealt with extreme scenarios like the 2000 Internet bubble, 2007/2008 GFC, QE, negative interest rates, COVID-19, etc. I think it is convenient to come back to fundamental basics, from time to time.</p>\n<p>The online classroom was quite dynamic, with different profiles and interesting discussions. Prof. Damodaran is an excellent communicator and perfectly manages the time and attention to capture the audience. I found the course useful. I was afraid it was too basic but, on the contrary, it is quite actual, and it helped us to better undertake valuations of non-traditional businesses and startups, always from a fundamental and common-sense perspective.</p>\n<p>I strongly recommend the course, both to junior practitioners to strengthen the basic pillars of valuation, and to senior professionals as a healthy upgrade of the valuation foundations and its application to new businesses.</p>",
+   "published_at": "2021-09-16T18:08:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/carlos-gutierrez-frm/",
+   "photo": "testimonials/carlos-gutierrez-frm",
+   "archive_position": 47,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 394,
+   "slug": "subhasis-roy",
+   "name": "Subhasis Roy",
+   "role": "Chief Operating Officer",
+   "company": "Novaremed",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-16T10:05:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/subhasis-roy/",
+   "photo": "testimonials/subhasis-roy",
+   "archive_position": 48,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 357,
+   "slug": "ronaldi-wisastra",
+   "name": "Ronaldi Wisastra",
+   "role": "Deloitte Consulting",
+   "company": "",
+   "programme": "M&AP",
+   "programmes": [
+    "map"
+   ],
+   "quote_html": "<p>The course content is wonderful. The assignments, case studies, stretched me to dig deep into the work I did in the past or the current client I am working with and have put a different lens on the learning and the work I do. The contents are recently updated and relevant to the current situation. The course has been very beneficial in helping me in my current role such as enlarge my horizons on different facets of M&amp;A, the actors involved, the type of activities and also the nuances behind a transaction. The program helped me in the getting resources and also perspectives on M&amp;A that helped me in my work.</p>",
+   "published_at": "2021-09-15T17:11:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/ronaldi-wisastra/",
+   "photo": "testimonials/ronaldi-wisastra",
+   "archive_position": 49,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 392,
+   "slug": "peter-huber",
+   "name": "Peter Huber",
+   "role": "Chief Financial Officer at Uster Technologies",
+   "company": "",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-15T09:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/peter-huber/",
+   "photo": "testimonials/peter-huber",
+   "archive_position": 50,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 390,
+   "slug": "lorenzo-brandi",
+   "name": "Lorenzo Brandi",
+   "role": "Project Leader Business Development",
+   "company": "Oerlikon",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-14T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/lorenzo-brandi/",
+   "photo": "testimonials/lorenzo-brandi",
+   "archive_position": 51,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 349,
+   "slug": "walt-bowman",
+   "name": "Walt Bowman",
+   "role": "Director/Senior Client Adviser",
+   "company": "",
+   "programme": "M&AP",
+   "programmes": [
+    "map"
+   ],
+   "quote_html": "<p>After researching for on-line certification courses, I came across IMAA. I was very impressed with the credentials of the instructors and the employment backgrounds of certificate holders who supplied testimonials. It also provides a holistic approach to Mergers and Acquisitions worldwide.</p>\n<p>I found the on-line content to be excellent and very convenient for me to utilize with my work schedule.</p>\n<p>My certification from a quality group of instructors will be extremely helpful and impressive to my future clients. It shows my commitment to bring them value by my putting forth the effort to prepare with an institute with a highly qualified staff.</p>\n<p>I found the support staff to be extremely helpful during process and consider them to be not only support staff, but friends.</p>\n<p>I highly recommend certifications from this institute as the institute provides excellent study material to allow for growth in knowledge of the Mergers and Acquisitions industry.</p>",
+   "published_at": "2021-09-13T22:44:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/walt-bowman/",
+   "photo": "testimonials/walt-bowman",
+   "archive_position": 52,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 388,
+   "slug": "dr-stephan-zwerschke",
+   "name": "Dr. Stephan Zwerschke",
+   "role": "Director Marketing M&A",
+   "company": "Robert Bosch GmbH",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-13T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/dr-stephan-zwerschke/",
+   "photo": "testimonials/dr-stephan-zwerschke",
+   "archive_position": 53,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 386,
+   "slug": "thomas-hartzsch",
+   "name": "Thomas Hartzsch",
+   "role": "Private Equity at Freemont Management",
+   "company": "",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-12T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/thomas-hartzsch/",
+   "photo": "testimonials/thomas-hartzsch",
+   "archive_position": 54,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 384,
+   "slug": "juergen-lanzer-cfa",
+   "name": "Juergen Lanzer, CFA",
+   "role": "Property Project Manager",
+   "company": "",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-11T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/juergen-lanzer-cfa/",
+   "photo": "testimonials/juergen-lanzer-cfa",
+   "archive_position": 55,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 347,
+   "slug": "soheyl-baban",
+   "name": "Soheyl B.",
+   "role": "Global Business Development Director",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>I attended the onsite IM&amp;A training and was pleasantly surprised with its high level. The training was superbly organized; Chris Kummer is a fascinating speaker and lecturer with a massive body of knowledge in strategy and finance. The 5 day training was well organized to cover all aspects of M&amp;A and utilized world known experts for specialized sections. I am very content that I decided to attend this training as it significantly enhanced my M&amp;A knowledge needed for my role.</p>",
+   "published_at": "2021-09-10T22:39:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/soheyl-baban/",
+   "photo": "testimonials/soheyl-baban",
+   "archive_position": 56,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 382,
+   "slug": "sebastian-schink",
+   "name": "Sebastian Schink",
+   "role": "Pension Asset Management and M&A Valuation",
+   "company": "Infineon",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-10T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/sebastian-schink/",
+   "photo": "testimonials/sebastian-schink",
+   "archive_position": 57,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 345,
+   "slug": "rohit-surana",
+   "name": "Rohit Surana",
+   "role": "Partner at RSPA & Associates",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>As a practising Chartered Accountant having done quite a few M&amp;A deals, I felt a need for International perspective and hence IM&amp;A training. An onsite course gives you an opportunity to meet and interact with people across the globe. The course was very practical oriented and hands on and was inundated with global illustrations. Having graduated from this program equipped me with more capabilities that I can apply with client projects.</p>",
+   "published_at": "2021-09-09T22:34:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/rohit-surana/",
+   "photo": "testimonials/rohit-surana",
+   "archive_position": 58,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 380,
+   "slug": "prof-aswath-damodaran",
+   "name": "Prof. Aswath Damodaran",
+   "role": "Professor of Finance at NYU",
+   "company": "",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-09T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/prof-aswath-damodaran/",
+   "photo": "testimonials/prof-aswath-damodaran",
+   "archive_position": 59,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 378,
+   "slug": "andre-lopez-mejia",
+   "name": "Andrea Lopez Mejia",
+   "role": "Financial Consultant",
+   "company": "",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "",
+   "published_at": "2021-09-08T10:25:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/andre-lopez-mejia/",
+   "photo": "testimonials/andre-lopez-mejia",
+   "archive_position": 60,
+   "is_public": false
+  },
+  {
+   "wordpress_id": 373,
+   "slug": "colleen-murray",
+   "name": "Colleen Murray",
+   "role": "Associate General Counsel & Chief Counsel M&A and HSSE",
+   "company": "Massy",
+   "programme": "IM&A, M&AP",
+   "programmes": [
+    "ima",
+    "map"
+   ],
+   "quote_html": "<p>I was in a search of M&amp;A training to enhance my overall knowledge on all aspects of M&amp;A from the stage of initial business strategy to post merger integration. I was impressed with the course contents of the IM&amp;A and M&amp;AP programs, the collection of data on global M&amp;As and the access to resources via the e-library during and now after completion of the programs.</p>\n<p>The course content for each module was presented in a very structured, easy to follow and yet comprehensive manner. The case studies and other assignments were practical and an effective means to ensure transfer of knowledge<strong>. </strong>The course content was indeed helpful to my current profession as well as useful in attaining greater understanding of the roles played by other professional disciplines within the M&amp;A process. I would recommend the programme to my peers and colleagues.</p>",
+   "published_at": "2021-07-20T07:16:03+00:00",
+   "url": "https://imaa-institute.org/testimonials/colleen-murray/",
+   "photo": "testimonials/colleen-murray",
+   "archive_position": 61,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 371,
+   "slug": "jelena-brdar",
+   "name": "Jelena Brdar",
+   "role": "Manager M&A and Investments",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>I thoroughly enjoyed the International Merger &amp; Acquisition Expert program. Challenging topic and content. It made me think about how I can link different elements of my lesson and progressing this into further M&amp;A career and learning. It was logical well-structured and well researched content with many practical case studies, ideas and resources for improving practice. I have added a very useful M&amp;A knowledge related to financial evaluation, due diligence and post-merger integration process.</p>\n<p>This was the first time I have taken a course program in an online format, and I was delighted with it and look forward to coming back to IMAA for more classes in the future. I consider this a great course, with a well – experienced tutor and I would strongly recommend it to my peers and colleagues!</p>",
+   "published_at": "2021-06-24T12:13:03+00:00",
+   "url": "https://imaa-institute.org/testimonials/jelena-brdar/",
+   "photo": "testimonials/jelena-brdar",
+   "archive_position": 62,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 369,
+   "slug": "sebastien-perroud",
+   "name": "Sébastien Perroud",
+   "role": "Entrepreneur & C-Level Executive",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>I am an entrepreneur, with strong operational and management experience, having successfully closed the financing of my Management Buy-In fund. However, during the first discussions on potential transactions with the team of Novastone Capital Advisors, my lead co-investor, I quickly realized that I needed to develop my M&amp;A skills, in order to better prepare myself for this journey. I decided to take the IM&amp;A program, as the content of the 4 modules perfectly matched my needs and the online self-study allowed me to start immediately and follow the program at my own pace. The content exceeds the expectations I had and the platform is very comfortable to use. The training was practical with the freedom to work on cases that helped me better understand the different aspects of M&amp;A transactions in my industry. I would definitely recommend this program to my colleagues and peers who are looking to acquire a company in a Management Buy-In or Buy-Out transactions.</p>",
+   "published_at": "2021-05-26T09:57:03+00:00",
+   "url": "https://imaa-institute.org/testimonials/sebastien-perroud/",
+   "photo": "testimonials/sebastien-perroud",
+   "archive_position": 63,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 367,
+   "slug": "hannah-barber",
+   "name": "Hannah Barber",
+   "role": "VP Product Management",
+   "company": "",
+   "programme": "M&AP",
+   "programmes": [
+    "map"
+   ],
+   "quote_html": "<p>I decided to enroll in the M&amp;AP program to further my knowledge and skill set in the entire transaction process of mergers &amp; acquisitions. By having a certification in M&amp;A from a recognized program like IMAA has helped me by gaining a better understanding how to manage the complexities of the M&amp;A process in terms of determining a rationale, plus how to select and value acquisition targets in the future. The online format was structured to help busy professional work at their own pace, while gaining quality education from faculty experts in the M&amp;A field. I highly recommend this program, as you and your peers will gain new insights into why M&amp;A strategy is related to all elements of the process, including valuation, deal structure, due diligence, an integration. The faculty discussions, case studies, and real-world M&amp;A simulations enable you to gain experience in successfully navigating a transaction while dealing with a wide array of issues.</p>",
+   "published_at": "2021-05-26T09:49:03+00:00",
+   "url": "https://imaa-institute.org/testimonials/hannah-barber/",
+   "photo": "testimonials/hannah-barber",
+   "archive_position": 64,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 363,
+   "slug": "navdeep-singh",
+   "name": "Navdeep Singh",
+   "role": "Manager - Engineering Applications, Bombardier Rail",
+   "company": "",
+   "programme": "M&AP",
+   "programmes": [
+    "map"
+   ],
+   "quote_html": "<p>Integration is a critical activity in M&amp;A, which can either create unprecedented value for an organization or can lead to negative value creation. I found the course from IMAA, to be a complete package covering all aspects of integration. For an Integration lead, it is crucial to realize that integration success is not only limited to recognizing success drivers or implementing best practices, but knowing the ways to monitor various influences, threats, challenges that may contribute to M&amp;A failure. I strongly recommend taking this course from IMAA.</p>",
+   "published_at": "2020-12-07T17:05:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/navdeep-singh/",
+   "photo": "testimonials/navdeep-singh",
+   "archive_position": 65,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 355,
+   "slug": "awais-dilawer",
+   "name": "Awais Dilawer",
+   "role": "Senior Consultant",
+   "company": "",
+   "programme": "M&AP",
+   "programmes": [
+    "map"
+   ],
+   "quote_html": "<p>I wanted to have a formal certification in M&amp;A provided by a recognised Institute like IMAA. The course content was quite informative and really helps me in my projects. I got rich information related to the due diligence, processes for merging or acquiring other firms, financial valuation of companies and finally how to successfully integrate the operations after the merger. The tutors are well-experienced and shared their experience and case studies. Doing the course online enabled me not to compromise my regular work. I would surely recommend this course to my peers and colleagues.</p>",
+   "published_at": "2020-12-07T17:00:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/awais-dilawer/",
+   "photo": "testimonials/awais-dilawer",
+   "archive_position": 66,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 353,
+   "slug": "eric-vega",
+   "name": "Eric Vega",
+   "role": "CFO & Partner at Urb. La Colonia",
+   "company": "",
+   "programme": "M&AP",
+   "programmes": [
+    "map"
+   ],
+   "quote_html": "<p>Because of the M&amp;A business complexity, it was critical to find a program with a strong concentration of experienced professionals, as well as a program structure that covers insider business knowledge. After analyzing many options, I was convinced that IMAA had what I needed. The program has helped me to better understand the M&amp;A processes so I can apply it in my own company, as well as building a better consulting practice for future clients.</p>\n<p>I chose the M&amp;A Professional Certificate because I was looking for a certification in M&amp;A to deepen my knowledge in this highly complex field of corporate finance, as well as a program that showed not only the M&amp;A processes, but M&amp;A consulting practice in other areas of the globe. The online program was also the best way for me to combine a high-quality education program with a busy business life. At the end of the program, I could say that my expectations were achieved.</p>",
+   "published_at": "2020-06-11T13:39:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/eric-vega/",
+   "photo": "testimonials/eric-vega",
+   "archive_position": 67,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 343,
+   "slug": "neda-vaseghi",
+   "name": "Neda Vaseghi",
+   "role": "Director of Mergers & Acquisitions North America",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>I would like to thank IMAA for the fantastic M&amp;A course that I attended in New York. The agenda, instructors, subject matter experts, attendees exceeded expectations. I have walked away energized with a number of ideas for our M&amp;A program.</p>",
+   "published_at": "2019-02-27T22:14:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/neda-vaseghi/",
+   "photo": "testimonials/neda-vaseghi",
+   "archive_position": 68,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 341,
+   "slug": "muhammad-muzaffar",
+   "name": "Muhammad Muzaffar",
+   "role": "Managing Consultant",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>Very relevant and Interesting Case-Studies with practical guidelines from Professor Kummer made this certification really valuable to me. Course content was thorough, current and well-organized</p>",
+   "published_at": "2019-02-27T22:10:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/muhammad-muzaffar/",
+   "photo": "testimonials/muhammad-muzaffar",
+   "archive_position": 69,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 339,
+   "slug": "marco-freidl",
+   "name": "Marco Freidl",
+   "role": "Senior Project Manager M&A",
+   "company": "",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p>I very much appreciated the direct interactions and active discussions with other participants each with a different background. In addition, learning from and discussing with the experienced professionals who were leading the course was highly valuable. It was also great to look at PMI from different but at the same time often interlinked perspectives which in the course of the program increasingly became part of an overall framework.</p>",
+   "published_at": "2019-02-27T11:28:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/marco-freidl/",
+   "photo": "testimonials/marco-freidl",
+   "archive_position": 70,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 337,
+   "slug": "rui-jorge",
+   "name": "Rui Jorge",
+   "role": "Senior Manager Finance",
+   "company": "",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p>The CPMI course was a great event, really a pleasure to be part of it. You cannot have any better than the Post Merger Integration training by IMAA. The quality of the material and subjects covered were comprehensive and exceptionally well deployed. The share of experiences of real-life situations from such bright trainers, as well as trainees,  have enriched the content and enlengthening the minds. It is a privilege to be a CPMI Charterholder and to continue having access the extensive library, the course and additional materials, that document many years of experience and research on the knowledge areas of Post-Merger Integrations.</p>",
+   "published_at": "2019-02-27T11:22:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/rui-jorge/",
+   "photo": "testimonials/rui-jorge",
+   "archive_position": 71,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 335,
+   "slug": "john-oneill",
+   "name": "John O’Neill",
+   "role": "Chief Financial Officer",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>We chose the IM&amp;A program based on the relevant and full course content from initial targeting to post close integration. Our decision to send a team of four participants proved to be well founded. All of us came away with valuable insights and have subsequently been able to build significant inhouse capability. The course instructors demonstrated exceptional knowledge and were able to effectively present topics in a clear and energetic way. Discussion was encouraged amongst all attendees which benefitted from multiple industry exposure. I highly recommend the program and Institute, very well done.</p>",
+   "published_at": "2019-02-27T11:12:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/john-oneill/",
+   "photo": "testimonials/john-oneill",
+   "archive_position": 72,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 333,
+   "slug": "johannes-krainer",
+   "name": "Johannes Krainer",
+   "role": "Partner",
+   "company": "Aracon Consulting",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "<p>This training gives us an insight how to cover upcoming question or upcoming issues in valuation and within transactions. We can be credible to our clients that we are using the latest know-how within our projects.</p>",
+   "published_at": "2019-02-27T11:06:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/johannes-krainer/",
+   "photo": "testimonials/johannes-krainer",
+   "archive_position": 73,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 331,
+   "slug": "haytham-wehbe",
+   "name": "Haytham Wehbe",
+   "role": "Group Head - Internal Audit, Mergers & Acquisitions (M&A) at Advanced Construction Technology Services",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>The certificate program provided lots of valuable M&amp;A information. The whole program adopted including practical case studies and various valuation methods gave us a deep understanding of inorganic growth challenges by bridging theory to practice.</p>",
+   "published_at": "2019-02-27T10:47:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/haytham-wehbe/",
+   "photo": "testimonials/haytham-wehbe",
+   "archive_position": 74,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 329,
+   "slug": "evgeni-kanev-phd",
+   "name": "Evgeni Kanev, PhD",
+   "role": "Managing Partner at Maconis LLC",
+   "company": "",
+   "programme": "Valuation",
+   "programmes": [
+    "valuation"
+   ],
+   "quote_html": "<p>It is important to us because it gives us lots of insights as to how value for example companies in difficult situations, companies that are expected to generate synergies when we acquire them, how to estimate synergies, not to double count for certain aspects of valuation.</p>",
+   "published_at": "2019-02-27T10:36:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/evgeni-kanev-phd/",
+   "photo": "testimonials/evgeni-kanev-phd",
+   "archive_position": 75,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 327,
+   "slug": "austin-cooke",
+   "name": "Austin Cooke",
+   "role": "former Global M&A Director for Kentucky Fried Chicken",
+   "company": "",
+   "programme": "IM&A",
+   "programmes": [
+    "ima"
+   ],
+   "quote_html": "<p>The course content is well put together, and the flexible approach to assignment style also allows you to tackle the set problems in your own way. There are lots of relevant, cross sector examples to refer to, and which reinforce the practicality of the content.</p>",
+   "published_at": "2019-02-27T10:27:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/austin-cooke/",
+   "photo": "testimonials/austin-cooke",
+   "archive_position": 76,
+   "is_public": true
+  },
+  {
+   "wordpress_id": 325,
+   "slug": "bethany-beckham",
+   "name": "Bethany Beckham",
+   "role": "Lead M&A Integration Specialist",
+   "company": "",
+   "programme": "CPMI",
+   "programmes": [
+    "cpmi"
+   ],
+   "quote_html": "<p>I had the pleasure to attend the onsite training for the CPMI certification program. It was one of the best experiences to network and gather best practices from practitioners around the globe. What I appreciate the most is the small class size that allows more collaboration amongst the attendees and the facilitators. Real world, international experiences that were shared were invaluable and motivated me to continue on my career path.</p>",
+   "published_at": "2019-02-26T15:43:01+00:00",
+   "url": "https://imaa-institute.org/testimonials/bethany-beckham/",
+   "photo": "testimonials/bethany-beckham",
+   "archive_position": 77,
+   "is_public": true
+  }
+ ],
+ "media": [
+  {
+   "key": "testimonials/aniruddha-sulake",
+   "file": "2026-07-edited-photo-2.webp",
+   "sha256": "3cc28d1f7cc6a5b8c64a47f301b9207965d9b3568d09198f294c003c94250b8a",
+   "width": 1032,
+   "height": 1032,
+   "alt": "Aniruddha Sulake",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2026/07/edited-photo-2.webp",
+   "shared_with": "about"
+  },
+  {
+   "key": "testimonials/dr-saeed-ahmed-al-gailani",
+   "file": "2026-05-Dr.-Saeed-Ahmed-Al-Gailani-Participant-Testimonital-KV-1.webp",
+   "sha256": "27396d064461acaf591908ce33c59bfee89ede8a14c89b4cd1dff05a375f36dd",
+   "width": 300,
+   "height": 300,
+   "alt": "Dr. Saeed Ahmed Al-Gailani",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2026/05/Dr.-Saeed-Ahmed-Al-Gailani-Participant-Testimonital-KV-1.webp",
+   "shared_with": "about"
+  },
+  {
+   "key": "testimonials/mohamed-shouman",
+   "file": "2025-10-Mo-shouman-1.webp",
+   "sha256": "37e194dc516f032de79916164db6d9c0eec377a98e7e2679e63f6d811e7a1f44",
+   "width": 408,
+   "height": 408,
+   "alt": "Mohamed Shouman",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2025/10/Mo-shouman-1.webp",
+   "shared_with": "about"
+  },
+  {
+   "key": "testimonials/onzelo-om-markum-iii-mba",
+   "file": "2024-09-Onzelo-Markum-III-MBA.png",
+   "sha256": "818775fa056a84abdd6ce903d1e65a843d8f6576a48667f94568cb0014f3e3ba",
+   "width": 300,
+   "height": 300,
+   "alt": "Onzelo Markum III (“OM”), Prosci",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/09/Onzelo-Markum-III-MBA.png",
+   "shared_with": "about"
+  },
+  {
+   "key": "testimonials/michael-reed",
+   "file": "2023-10-Michael-Reed-Black-and-White.jpg",
+   "sha256": "94fc4123e00b216178da54f8402e1b4e53b244b71f2b1dfcd98e902446692547",
+   "width": 400,
+   "height": 400,
+   "alt": "Michael Reed",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Michael-Reed-Black-and-White.jpg",
+   "shared_with": "about"
+  },
+  {
+   "key": "testimonials/aline-soghomonian",
+   "file": "2024-01-Aline-Soghomonian-1024x1024.png",
+   "sha256": "08465df3e699e7ebb61917073809266c671afa1b76aaace5d0438ebd4ae5644d",
+   "width": 1024,
+   "height": 1024,
+   "alt": "Aline Soghomonian",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/01/Aline-Soghomonian-1024x1024.png",
+   "shared_with": "about"
+  },
+  {
+   "key": "testimonials/christian-muntean",
+   "file": "2023-10-Christian-Muntean-black-and-white.png",
+   "sha256": "23d45a97f69fdc1eb9041b097cbf5870109b349bba07e01595fb8fee5f0da3a2",
+   "width": 1200,
+   "height": 1200,
+   "alt": "Christian Muntean",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Christian-Muntean-black-and-white.png",
+   "shared_with": "about"
+  },
+  {
+   "key": "testimonials/shaune-lim",
+   "file": "2023-10-Shaune-Lim-black-and-white.jpg",
+   "sha256": "a8edccdf893055e69deaab7ac5f2ae639649428939d7163e259f376da14c6c61",
+   "width": 400,
+   "height": 400,
+   "alt": "Shaune Lim",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Shaune-Lim-black-and-white.jpg"
+  },
+  {
+   "key": "testimonials/ezinne-q-joshua",
+   "file": "2023-11-Ezinne-Joshua1-1-1024x1024.jpg",
+   "sha256": "51539b3f38cd4a1dcbb07d4728d369d3565767a2f71d03f48ca08ed291845ab2",
+   "width": 1024,
+   "height": 1024,
+   "alt": "Ezinne Q. Joshua",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/11/Ezinne-Joshua1-1-1024x1024.jpg",
+   "shared_with": "about"
+  },
+  {
+   "key": "testimonials/chuck-adams",
+   "file": "2023-10-Chuck-Adams-black-and-white.jpg",
+   "sha256": "b97cce35d98b8ab3a7fd09e7035c1c6a71f8f1648ecb0e4b06509f2f48beaad8",
+   "width": 800,
+   "height": 800,
+   "alt": "Chuck Adams",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Chuck-Adams-black-and-white.jpg",
+   "shared_with": "about"
+  },
+  {
+   "key": "testimonials/kenneth-penn-cpa",
+   "file": "2023-10-Kenneth-Penn-black-and-white-1024x1024.jpg",
+   "sha256": "df1c9a3b282b233debde99d90036c7c619bc3267414cebcd353efa39553edce2",
+   "width": 1024,
+   "height": 1024,
+   "alt": "Kenneth Penn, CPA",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Kenneth-Penn-black-and-white-1024x1024.jpg",
+   "shared_with": "about"
+  },
+  {
+   "key": "testimonials/emmanuel-kolade-ima-map",
+   "file": "2024-01-Emmanuel-Kolade-1024x1024.png",
+   "sha256": "4d148ec5cef07ebbfa4e10b14182f7f1c4850ce71cc97f4525f55b024db52b6d",
+   "width": 1024,
+   "height": 1024,
+   "alt": "Emmanuel Kolade",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/01/Emmanuel-Kolade-1024x1024.png"
+  },
+  {
+   "key": "testimonials/claudia-senties",
+   "file": "2024-01-Claudia-Senties-1024x1024.png",
+   "sha256": "df99db43f96cb4029a85e6ac4f2d1b7b4e3d1323247f237790b01a7c9da9690d",
+   "width": 1024,
+   "height": 1024,
+   "alt": "Claudia Senties",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/01/Claudia-Senties-1024x1024.png"
+  },
+  {
+   "key": "testimonials/dwayne-thomas",
+   "file": "2023-10-Dwayne-Thomas-black-and-white.jpg",
+   "sha256": "87d830177f2f14dee37cd56f237146c49a3084a4a847188ee982696093ad3aa2",
+   "width": 208,
+   "height": 208,
+   "alt": "Dwayne Thomas",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Dwayne-Thomas-black-and-white.jpg"
+  },
+  {
+   "key": "testimonials/carlos-aizpurua",
+   "file": "2023-10-Carlos-Aizpurua-black-and-white-e1696310914770-1024x1024.jpg",
+   "sha256": "88400753a661de13ab2dd829645155349bd9956be032f64f7f763c50e30ca0b8",
+   "width": 1024,
+   "height": 1024,
+   "alt": "Carlos Aizpurúa",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Carlos-Aizpurua-black-and-white-e1696310914770-1024x1024.jpg"
+  },
+  {
+   "key": "testimonials/brad-albert",
+   "file": "2023-10-Brad-Albert-black-and-white-e1696305346374.jpg",
+   "sha256": "c20902d7d5cfd08d1b8a3f164ebaca1b42ac5981870059be4652d0bba557b172",
+   "width": 526,
+   "height": 526,
+   "alt": "Brad Albert",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Brad-Albert-black-and-white-e1696305346374.jpg"
+  },
+  {
+   "key": "testimonials/rachel-zhang",
+   "file": "2023-10-Rachel-Zhang-bw-e1696303907941-1024x1024.jpg",
+   "sha256": "e9bf891ddfc4f558738830e9cecdf074e88ae67af03043dd55ff3511c0915211",
+   "width": 1024,
+   "height": 1024,
+   "alt": "Rachel Zhang",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Rachel-Zhang-bw-e1696303907941-1024x1024.jpg"
+  },
+  {
+   "key": "testimonials/corbin-metz",
+   "file": "2023-10-Corbin-Metz-black-and-white.jpg",
+   "sha256": "628b1d2410309eee78a01325f3c1c1b2b91107565cd5e0ef79401f8f7f40a359",
+   "width": 800,
+   "height": 800,
+   "alt": "Corbin Metz",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Corbin-Metz-black-and-white.jpg"
+  },
+  {
+   "key": "testimonials/dr-roland-yap",
+   "file": "2023-10-Roland-Yap-black-and-white.jpg",
+   "sha256": "d7a6d510b36015fbf247854b41ee95d06b9635bfe5a647c1ad68b57c5333f7b9",
+   "width": 675,
+   "height": 675,
+   "alt": "Dr. Roland Yap",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/10/Roland-Yap-black-and-white.jpg"
+  },
+  {
+   "key": "testimonials/retina-moore-mba-msf-cfei",
+   "file": "2023-07-Retina-Moore-1024x1024.png",
+   "sha256": "34d070aee7d561d97b5a34d02ca6e9658b1fc7c0e0c24f55de1ad1ff90d516d1",
+   "width": 1024,
+   "height": 1024,
+   "alt": "ReTina Moore, MBA, MSF, CFEI",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/07/Retina-Moore-1024x1024.png"
+  },
+  {
+   "key": "testimonials/joshua-sugar",
+   "file": "2023-07-JoshSugar-1024x1024.png",
+   "sha256": "eb34b5c1c7a3bbe713e58272f9186701e6d2a9986089d5704384e25a075aed6f",
+   "width": 1024,
+   "height": 1024,
+   "alt": "Joshua Sugar",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/07/JoshSugar-1024x1024.png"
+  },
+  {
+   "key": "testimonials/catherine-chong",
+   "file": "2023-02-Catherine-Chong-1024x1024.png",
+   "sha256": "46607f447a628060fa4ece2b1c8be764bec057b065075077639b5e7ea836d2e8",
+   "width": 1024,
+   "height": 1024,
+   "alt": "Catherine Chong",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/02/Catherine-Chong-1024x1024.png"
+  },
+  {
+   "key": "testimonials/james-goodnow",
+   "file": "2023-01-james-goodnow.png",
+   "sha256": "806c4e942890b6a6099b08701d0662b6ac15be98c9332f1caeb29095017593b8",
+   "width": 833,
+   "height": 833,
+   "alt": "James Goodnow",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2023/01/james-goodnow.png"
+  },
+  {
+   "key": "testimonials/charles-ladas",
+   "file": "2022-08-Charles-Ladas-1024x731.png",
+   "sha256": "cfa7446bdad4b04c5f8f3ef90d80428e577bcdf49c10563dc30f6fb06b4b59f9",
+   "width": 1024,
+   "height": 731,
+   "alt": "Charles Ladas",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2022/08/Charles-Ladas-1024x731.png"
+  },
+  {
+   "key": "testimonials/manisha-sabnani",
+   "file": "2022-08-manisha-bw.png",
+   "sha256": "56e24a7ed20dbf40dcdc694f4459a7a94a52067ec55878a057a7d6163cd6d94c",
+   "width": 200,
+   "height": 200,
+   "alt": "Manisha Sabnani",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2022/08/manisha-bw.png"
+  },
+  {
+   "key": "testimonials/gary-gadson",
+   "file": "2022-05-Gary-Gadson-2.jpg",
+   "sha256": "56ecedaf7194a075beaf47905a670357b32f35ea86f97c60c3d3e842fbf79cce",
+   "width": 360,
+   "height": 360,
+   "alt": "Gary Gadson",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2022/05/Gary-Gadson-2.jpg"
+  },
+  {
+   "key": "testimonials/anna-schwartzur",
+   "file": "2022-04-anna-schwartzur.jpg",
+   "sha256": "d3b54ca49a149344c9a52644d7825da9b09dc4e48b786f57c5f2205161af0fde",
+   "width": 652,
+   "height": 663,
+   "alt": "Anna Schwartzur",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2022/04/anna-schwartzur.jpg"
+  },
+  {
+   "key": "testimonials/sean-janelle",
+   "file": "2022-03-sean-janelle.jpg",
+   "sha256": "1c2c6670485cc78496a9bf76e61d91b71bad68b623836ceb57de8404ca02b3b1",
+   "width": 300,
+   "height": 300,
+   "alt": "Sean Janelle",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2022/03/sean-janelle.jpg"
+  },
+  {
+   "key": "testimonials/meghna-verma",
+   "file": "2022-03-meghna-e1647008995462.jpg",
+   "sha256": "8e8445bfbc9f48e497c3f28adebe434df70dd612ef5c7bb8738732983e8702b0",
+   "width": 300,
+   "height": 311,
+   "alt": "Meghna Verma",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2022/03/meghna-e1647008995462.jpg"
+  },
+  {
+   "key": "testimonials/kathy-miller",
+   "file": "2022-03-head-shot-2-2022-BW.jpg",
+   "sha256": "0ea4f27a4c6c98a4bd30139f2ca7d56c78c9a45eedd8c2b8fc104f40d396f947",
+   "width": 1060,
+   "height": 1191,
+   "alt": "Kathy Miller",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2022/03/head-shot-2-2022-BW.jpg"
+  },
+  {
+   "key": "testimonials/sultan-alrammah",
+   "file": "2022-03-sultan3-e1647005848598.jpg",
+   "sha256": "6537ba12c8ebf9405c4bfe8967accfb51527998ec52374a2437b5104bdda47d3",
+   "width": 300,
+   "height": 284,
+   "alt": "Sultan Alrammah",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2022/03/sultan3-e1647005848598.jpg"
+  },
+  {
+   "key": "testimonials/wail-selfo",
+   "file": "2022-01-wail-selfo.jpg",
+   "sha256": "01b636895c35bd9915515c03f6d6d0247bdcbd2216d827e4c066638e3c0a73ec",
+   "width": 240,
+   "height": 240,
+   "alt": "Wa’il Selfo",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2022/01/wail-selfo.jpg"
+  },
+  {
+   "key": "testimonials/christian-b-waegt",
+   "file": "2022-01-christian-waegt.jpg",
+   "sha256": "cc1d4c667360dd828f383be928d1031065dc4ef70fbd79b7774f5aeb324c4452",
+   "width": 300,
+   "height": 300,
+   "alt": "Christian B. Waegt",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2022/01/christian-waegt.jpg"
+  },
+  {
+   "key": "testimonials/lauren-gerow",
+   "file": "2022-01-lauren-gerow.jpg",
+   "sha256": "c86cda385e1856b80d2a90a419d5cfcfc7fbf21e39674320f512df3107aa35cb",
+   "width": 330,
+   "height": 319,
+   "alt": "Lauren Gerow",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2022/01/lauren-gerow.jpg"
+  },
+  {
+   "key": "testimonials/dr-jurg-stucker",
+   "file": "2021-09-juerg-stucker_oaklins-valuation_260-1024x1024.jpg",
+   "sha256": "63b4a579445002f89c4aaf9a609c233cd313ec052adab61d6d72c9ca2b5f3140",
+   "width": 1024,
+   "height": 1024,
+   "alt": "Dr. Jürg Stucker",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/juerg-stucker_oaklins-valuation_260-1024x1024.jpg"
+  },
+  {
+   "key": "testimonials/paolo-buiatti",
+   "file": "2021-09-Paolo-Buiatti_Testimonial_bw_260.jpg",
+   "sha256": "6bff54a8126335aee8e1d739108e07ca94360b6a1ee02ab831a4fcc326cb88e1",
+   "width": 1056,
+   "height": 1056,
+   "alt": "Paolo Buiatti",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Paolo-Buiatti_Testimonial_bw_260.jpg"
+  },
+  {
+   "key": "testimonials/rodrigo-tona",
+   "file": "2021-09-Rodrigo_Tona_testimonial-m-and-a-certification_260.jpg",
+   "sha256": "ab582d928d6145489e5c186b19e51611f6fc03a428f329e1b952140917302323",
+   "width": 260,
+   "height": 260,
+   "alt": "Rodrigo Tona",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Rodrigo_Tona_testimonial-m-and-a-certification_260.jpg"
+  },
+  {
+   "key": "testimonials/enrique-g-chavez-montes",
+   "file": "2021-09-EnriqueChavez.jpg",
+   "sha256": "8d7436b99ccaa5e3c46b35139e221a3d43ac8812d47e58e7432992fe8706befd",
+   "width": 615,
+   "height": 590,
+   "alt": "Enrique G. Chavez Montes",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/EnriqueChavez.jpg"
+  },
+  {
+   "key": "testimonials/martha-ross-cpa",
+   "file": "2021-09-Martha_Ross_testimonial-mergers-acquisitions-certificate_260.jpg",
+   "sha256": "0f75f216c7fd64af72da04a0322c6a90e3d868562184a2ebbaa03c0f8bba2029",
+   "width": 260,
+   "height": 260,
+   "alt": "Martha Ross, CPA",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Martha_Ross_testimonial-mergers-acquisitions-certificate_260.jpg"
+  },
+  {
+   "key": "testimonials/kumar-s",
+   "file": "2021-09-KumarS.jpg",
+   "sha256": "040619b30c37418b5c85f7658527fa2e0022e75ed7af8074e2fb6d068654a89a",
+   "width": 800,
+   "height": 800,
+   "alt": "Kumar S",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/KumarS.jpg"
+  },
+  {
+   "key": "testimonials/sebastian-foo",
+   "file": "2021-09-Sebastian_Foo.jpg",
+   "sha256": "c7731eae87aa5c2d9f80baa418feeebcf0fb9afde7e46335c42bed4121ec0351",
+   "width": 440,
+   "height": 405,
+   "alt": "Sebastian Foo",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Sebastian_Foo.jpg"
+  },
+  {
+   "key": "testimonials/samuel-buma",
+   "file": "2021-09-Samuel-Buma_Testimonial_bw_260-1024x1024.jpg",
+   "sha256": "4081b2d3bce044796e5515228d5cffb4668af4234ce778606f912934d469eeab",
+   "width": 1024,
+   "height": 1024,
+   "alt": "Samuel Buma",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Samuel-Buma_Testimonial_bw_260-1024x1024.jpg"
+  },
+  {
+   "key": "testimonials/brian-kenet",
+   "file": "2021-09-Brian_Kenet_testimonial-mergers-acquisitions-training_260.jpg",
+   "sha256": "c42237e70e84945dc134d200921011c97505bfec86d352dc43097fa0e5f271f5",
+   "width": 260,
+   "height": 260,
+   "alt": "Brian Kenet",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Brian_Kenet_testimonial-mergers-acquisitions-training_260.jpg"
+  },
+  {
+   "key": "testimonials/andre-hamilton",
+   "file": "2021-09-Andre-Hamilton-Headshot.jpg",
+   "sha256": "dd9e084cf6e23dfa1ef81d0759060e2d1f6729b92d89b5dfb79acfcabacec50a",
+   "width": 640,
+   "height": 640,
+   "alt": "Andre Hamilton",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Andre-Hamilton-Headshot.jpg"
+  },
+  {
+   "key": "testimonials/putrinina-aritonang-nina",
+   "file": "2021-09-putrinina-aritonang_international-mergers-acquisitions-training_260_bw.jpg",
+   "sha256": "7d277b5f27f3d45fdebaaeb9434c5cf8699a6e3e8765df4f25e40ed3d62db590",
+   "width": 260,
+   "height": 260,
+   "alt": "Putrinina Aritonang (Nina)",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/putrinina-aritonang_international-mergers-acquisitions-training_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/janette-kolega",
+   "file": "2021-09-janette-kolega_internationa-m-and-a-certificate_260_bw.jpg",
+   "sha256": "c1d9c599e0b90a2667cffaabfed1ce855d679a9c5f1e6498a9ff0f1154007979",
+   "width": 260,
+   "height": 260,
+   "alt": "Janette Kolega",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/janette-kolega_internationa-m-and-a-certificate_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/carlos-gutierrez-frm",
+   "file": "2021-09-Carlos_Gutiérrez.jpg",
+   "sha256": "f4cc23bb592ce2136da2dee9a0b309af5e6c714a659f09ac9ede31d63cff22ea",
+   "width": 500,
+   "height": 500,
+   "alt": "Carlos Gutiérrez, FRM",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Carlos_Gutiérrez.jpg"
+  },
+  {
+   "key": "testimonials/subhasis-roy",
+   "file": "2021-09-subhasis-roy_valuation-training-damodaran_260_bw.jpg",
+   "sha256": "0973a08561916229ad74f9a8bd10a323f04b44a010010a713d7a391d7c9bef1a",
+   "width": 260,
+   "height": 260,
+   "alt": "Subhasis Roy",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/subhasis-roy_valuation-training-damodaran_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/ronaldi-wisastra",
+   "file": "2021-09-Ronaldi_Headshot.jpg",
+   "sha256": "f7eedb50842f5a13df909287d6ae769454003210810fee9e8f42a29ad7cc4109",
+   "width": 207,
+   "height": 207,
+   "alt": "Ronaldi Wisastra",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Ronaldi_Headshot.jpg"
+  },
+  {
+   "key": "testimonials/peter-huber",
+   "file": "2021-09-peter-huber_valuation-training-damodaran_260_bw.jpg",
+   "sha256": "946e5c01537ffdbc2591e998ceab151575d829a8d1d17f2b876f6c12b571b547",
+   "width": 260,
+   "height": 260,
+   "alt": "Peter Huber",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/peter-huber_valuation-training-damodaran_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/lorenzo-brandi",
+   "file": "2021-09-lorenzo-brandi_valuation-training-damodaran_260_bw.jpg",
+   "sha256": "83582f9bd84b375e59f790fa64e60a5e4ee7f59b3d4398ea0e80ae94d41cdf20",
+   "width": 260,
+   "height": 259,
+   "alt": "Lorenzo Brandi",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/lorenzo-brandi_valuation-training-damodaran_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/walt-bowman",
+   "file": "2021-09-walt-bowman_nergers-acquisitions-professional-certificate_260_bw.jpg",
+   "sha256": "8c0b8302c99e41b9a72a75413ab36f975f615e997159c55826162b9e00e29e6b",
+   "width": 269,
+   "height": 269,
+   "alt": "Walt Bowman",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/walt-bowman_nergers-acquisitions-professional-certificate_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/dr-stephan-zwerschke",
+   "file": "2021-09-stephan-zwerschke_valuation-training-damodaran_260_bw.jpg",
+   "sha256": "ca2894d40f2fad417412bdffd017d7250ca81b03ca8d0dfaf2da25d6b3a8191e",
+   "width": 260,
+   "height": 260,
+   "alt": "Dr. Stephan Zwerschke",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/stephan-zwerschke_valuation-training-damodaran_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/thomas-hartzsch",
+   "file": "2021-09-thomas-hartzsch_valuation-training-damodaran_260_bw.jpg",
+   "sha256": "5e69cf41e6ab64a7eb43b45531fa706bf7ebb743e4de6b3cf3ffac1927c9d000",
+   "width": 260,
+   "height": 260,
+   "alt": "Thomas Hartzsch",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/thomas-hartzsch_valuation-training-damodaran_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/juergen-lanzer-cfa",
+   "file": "2021-09-juergen-lanzer_valuation-training-damodaran_260_bw.jpg",
+   "sha256": "80111bf39fbde7b2fee6eafcb8669c7dc95d400f48bb10ed39ec4ed6ee9a91ab",
+   "width": 260,
+   "height": 260,
+   "alt": "Juergen Lanzer, CFA",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/juergen-lanzer_valuation-training-damodaran_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/soheyl-baban",
+   "file": "2021-09-soheyl-baban_mergers-and-acquisitions-certificate_260_bw.jpg",
+   "sha256": "af84a8b54226bf16c9f7af1b51e2f5ea7ad0dad1c7f5b52725785f32ce22eec9",
+   "width": 260,
+   "height": 260,
+   "alt": "Soheyl B.",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/soheyl-baban_mergers-and-acquisitions-certificate_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/sebastian-schink",
+   "file": "2021-09-sebastian-schink_valuation-training-damodaran_260_bw.jpg",
+   "sha256": "416b7042fc8879703ba96f3249461726a071817890ed51d6421a2e18f2fc0c5b",
+   "width": 260,
+   "height": 260,
+   "alt": "Sebastian Schink",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/sebastian-schink_valuation-training-damodaran_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/rohit-surana",
+   "file": "2021-09-rohit-surana_international-m-and-a-certificate_260_bw.jpg",
+   "sha256": "caf893da2e64f884fb008f7b38c4982ee696b572754027a2241bd78f2e957fdc",
+   "width": 260,
+   "height": 259,
+   "alt": "Rohit Surana",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/rohit-surana_international-m-and-a-certificate_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/prof-aswath-damodaran",
+   "file": "2021-09-aswath-damodaran_valuation-training_260_bw.jpg",
+   "sha256": "9a1cbebe6c71efeefbf067780559d9d06f793f242db6ba9f443e9cfa85b91ca4",
+   "width": 260,
+   "height": 260,
+   "alt": "Prof. Aswath Damodaran",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/aswath-damodaran_valuation-training_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/andre-lopez-mejia",
+   "file": "2021-09-Andre-Lopez-Mejia_Valuation-Damodaran_260_bw.jpg",
+   "sha256": "4ea605e8e4afd3e77dfeefd89faacefa8c1d4445946ff23d725f2102bf8334ae",
+   "width": 260,
+   "height": 260,
+   "alt": "Andrea Lopez Mejia",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Andre-Lopez-Mejia_Valuation-Damodaran_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/colleen-murray",
+   "file": "2021-09-Colleen_Murray.png",
+   "sha256": "90aae3d272d57a7791581fa37cdf326fb29663136f8620aa5d3a8bb906b2a261",
+   "width": 330,
+   "height": 319,
+   "alt": "Colleen Murray",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Colleen_Murray.png"
+  },
+  {
+   "key": "testimonials/jelena-brdar",
+   "file": "2021-09-Jelena_Brdar_IMA_headshot-1-1.jpg",
+   "sha256": "6cd00e399ab75d4b1cd467e89a132c1e4f6194f25da7869bb2c3d9fe3948187e",
+   "width": 404,
+   "height": 507,
+   "alt": "Jelena Brdar",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Jelena_Brdar_IMA_headshot-1-1.jpg"
+  },
+  {
+   "key": "testimonials/sebastien-perroud",
+   "file": "2021-09-Sebastien-Perroud_IMA_headshot.jpg",
+   "sha256": "9e681219f8282de5cd7199acf39bb72e059fd456618dd4e7f66dc0a15aa73806",
+   "width": 841,
+   "height": 758,
+   "alt": "Sébastien Perroud",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Sebastien-Perroud_IMA_headshot.jpg"
+  },
+  {
+   "key": "testimonials/hannah-barber",
+   "file": "2021-09-Hannah-Barber_MAP_headshot.jpeg",
+   "sha256": "9c781e24ea607f59fc00e0e3c3a6534e20996be409265ef913469931267737c9",
+   "width": 800,
+   "height": 800,
+   "alt": "Hannah Barber",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Hannah-Barber_MAP_headshot.jpeg"
+  },
+  {
+   "key": "testimonials/navdeep-singh",
+   "file": "2021-09-Navdeep-Singh.jpg",
+   "sha256": "4f1e4e67d4283f0f0b82371945912e789ae2b9cef9c5a68d290361179c7c56bb",
+   "width": 250,
+   "height": 250,
+   "alt": "Navdeep Singh",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Navdeep-Singh.jpg"
+  },
+  {
+   "key": "testimonials/awais-dilawer",
+   "file": "2021-09-Awais-Pic.jpg",
+   "sha256": "cbac1ef5ea9700819992ac4405593a814e730dca0000a1790dfd2d66a79ae3a7",
+   "width": 210,
+   "height": 211,
+   "alt": "Awais Dilawer",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Awais-Pic.jpg"
+  },
+  {
+   "key": "testimonials/eric-vega",
+   "file": "2021-09-eric_vega.jpg",
+   "sha256": "6f1fae9db597d9539c5e7240e885fed9c27594636f9ceb4430d9b352d53a3552",
+   "width": 260,
+   "height": 260,
+   "alt": "Eric Vega",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/eric_vega.jpg"
+  },
+  {
+   "key": "testimonials/neda-vaseghi",
+   "file": "2021-09-neda-vaseghi_international-m-and-a-training_260_bw.jpg",
+   "sha256": "d75d21654bf0ab1e8aa2e6298f21a78fa9f6fb8f8827f394a9679556302d43d9",
+   "width": 260,
+   "height": 260,
+   "alt": "Neda Vaseghi",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/neda-vaseghi_international-m-and-a-training_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/muhammad-muzaffar",
+   "file": "2021-09-muhammad-nuzaffar_internatoinal-mergers-and-accquisitions-certificate_26.jpg",
+   "sha256": "47fae102e12baee6f33d560aa0b317f1b698068608ff947d9f21c11d1f7e28c7",
+   "width": 260,
+   "height": 260,
+   "alt": "Muhammad Muzaffar",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/muhammad-nuzaffar_internatoinal-mergers-and-accquisitions-certificate_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/marco-freidl",
+   "file": "2021-09-marco-freidl_post-merger-integration-certification-training_260_bw.jpg",
+   "sha256": "7165f1657eade2de67c7fee08f8bf2d2ab6094f29e16359e30f7090a446fcfa3",
+   "width": 260,
+   "height": 260,
+   "alt": "Marco Freidl",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/marco-freidl_post-merger-integration-certification-training_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/rui-jorge",
+   "file": "2021-09-jorge-rui_post-merger-integration-training_260_bw.jpg",
+   "sha256": "043ded1ba97bd9c394a8ecfe9b49e65467ba2235a8efffb716f2eaaae1a8c5c8",
+   "width": 260,
+   "height": 260,
+   "alt": "Rui Jorge",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/jorge-rui_post-merger-integration-training_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/john-oneill",
+   "file": "2021-09-John-ONeill_international-m-and-a-certificate_260_bw.jpg",
+   "sha256": "56013ae395b65ade454a96e4e023aa162f564ea76145d88cf2dfc5bfe6126b5f",
+   "width": 260,
+   "height": 260,
+   "alt": "John O’Neill",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/John-ONeill_international-m-and-a-certificate_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/johannes-krainer",
+   "file": "2021-09-Johannes-Krainer_Valuation-Training-Damodaran_260_bw.jpg",
+   "sha256": "734e32a4c79f23f35ec956f1a3bab7cd014a61b3e363176e6f5f8120393c71ea",
+   "width": 260,
+   "height": 260,
+   "alt": "Johannes Krainer",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Johannes-Krainer_Valuation-Training-Damodaran_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/haytham-wehbe",
+   "file": "2021-09-Haytham-Wehbe_International-Mergers-Acquisitions-Certificate_260_bw.jpg",
+   "sha256": "a0b42dfc37f4d252e27634225ba168e54da937089572274f59021d6e4005e794",
+   "width": 260,
+   "height": 260,
+   "alt": "Haytham Wehbe",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Haytham-Wehbe_International-Mergers-Acquisitions-Certificate_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/evgeni-kanev-phd",
+   "file": "2021-09-Evgeni-Kanev_Valuation-Damoaran_260_bw.jpg",
+   "sha256": "800661128b18952b6b81effc11007896f35f81ccd8db61d2050d08c81490e2ff",
+   "width": 260,
+   "height": 260,
+   "alt": "Evgeni Kanev, PhD",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Evgeni-Kanev_Valuation-Damoaran_260_bw.jpg"
+  },
+  {
+   "key": "testimonials/austin-cooke",
+   "file": "2021-09-Austin-Cooke_International-Mergers-Acquisitions_260.jpg",
+   "sha256": "c9d60b626231b41af487c55f7b404c60067df40ef0fa4b94338b2953dcf72d95",
+   "width": 260,
+   "height": 260,
+   "alt": "Austin Cooke",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Austin-Cooke_International-Mergers-Acquisitions_260.jpg"
+  },
+  {
+   "key": "testimonials/bethany-beckham",
+   "file": "2021-09-Bethany-Beckham_Post-Merger-Integration-Certificate_260_bw.jpg",
+   "sha256": "a4e9071cb3d1771693e55d6dfbda661a9156707e922a24119f4e53451b44a033",
+   "width": 260,
+   "height": 260,
+   "alt": "Bethany Beckham",
+   "role": "testimonial photo",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2021/09/Bethany-Beckham_Post-Merger-Integration-Certificate_260_bw.jpg"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-04.webp",
+   "file": "2024-06-au-img-logo-04.webp",
+   "sha256": "ef058ea3ad1b53ba4b24c0c5dbc80b3489bb358350269259cf7535299b20393b",
+   "width": 163,
+   "height": 36,
+   "alt": "Givaudan",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-04.webp",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-02.png",
+   "file": "2023-08-au-img-logo-02.png",
+   "sha256": "0b2bd0169759fbae56f68e094d65bb35df4ac652a8fb27f8f7d17493c7790f59",
+   "width": 81,
+   "height": 31,
+   "alt": "Amazon",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-02.png",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-02a.webp",
+   "file": "2024-06-au-img-logo-02a.webp",
+   "sha256": "7aa7c42a87b8afd6a7e82e18827cbf6aaca5250f194ee480503987e717255b01",
+   "width": 131,
+   "height": 33,
+   "alt": "Citibank",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-02a.webp",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-03a.webp",
+   "file": "2024-06-au-img-logo-03a.webp",
+   "sha256": "7bc94158a3f4aa2f03dddcf7702a90b90eaa51bb86d5e5815e5a5b212aab73d8",
+   "width": 159,
+   "height": 38,
+   "alt": "Credit Suisse",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-03a.webp",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-05.webp",
+   "file": "2024-06-au-img-logo-05.webp",
+   "sha256": "924c99a24ef38f21ba242940df9cf79866167ddf9d997ec43d6eed06f01e8aa0",
+   "width": 93,
+   "height": 33,
+   "alt": "KPMG",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-05.webp",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-06.webp",
+   "file": "2024-06-au-img-logo-06.webp",
+   "sha256": "493e8f168fa2d1a7a348dfe24c87ac7dc3f2dfa5c8f5b02c5bde9efcff286119",
+   "width": 165,
+   "height": 27,
+   "alt": "The Coca-Cola Company",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-06.webp",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-07.webp",
+   "file": "2024-06-au-img-logo-07.webp",
+   "sha256": "70fcd16b923c665bcc19935c38fda64e1b18794ea63fe475b8f8e9fa03e929e3",
+   "width": 150,
+   "height": 28,
+   "alt": "Continental",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-07.webp",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-08.webp",
+   "file": "2024-06-au-img-logo-08.webp",
+   "sha256": "28f7c6c8eeaa74658750b62e3867b480a55152335d185a7db9d9e4944ebf8325",
+   "width": 143,
+   "height": 38,
+   "alt": "Hewlett Packard",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-08.webp",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-09.webp",
+   "file": "2024-06-au-img-logo-09.webp",
+   "sha256": "5cb3f2bc361ed581c553f65ec98dd70540347d7059a350fb6261ebec0103ff72",
+   "width": 137,
+   "height": 34,
+   "alt": "Walt Disney",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-09.webp",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-10.webp",
+   "file": "2024-06-au-img-logo-10.webp",
+   "sha256": "16fe3188c59bc3f09ca530f9685df1337fc5ef3d5f08f18e10c3d18b384bba38",
+   "width": 99,
+   "height": 38,
+   "alt": "UBS",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-10.webp",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-11.webp",
+   "file": "2024-06-au-img-logo-11.webp",
+   "sha256": "a358b0bb857ebfaa48da76c9dabd263c908052dc23b95eced4618b7e66fd023b",
+   "width": 141,
+   "height": 19,
+   "alt": "Daimler",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-11.webp",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-06-au-img-logo-12.webp",
+   "file": "2024-06-au-img-logo-12.webp",
+   "sha256": "0ed0e28596eef61a84c557cc381e1489187cb014742ddf117a81ce49d9a9d789",
+   "width": 153,
+   "height": 30,
+   "alt": "Deloitte",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/06/au-img-logo-12.webp",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-07-ima-1.png",
+   "file": "2024-07-IMA-1.png",
+   "sha256": "4e405ee6ee0aa390372426fa67333f5f4b6a2dc2f3691444931e06e7efdea1e5",
+   "width": 530,
+   "height": 363,
+   "alt": "",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/IMA-1.png",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-07-cpmi-1.png",
+   "file": "2024-07-CPMI-1.png",
+   "sha256": "98884127da17c8378eb221ec3d311a788fc1c65a1949964abcec510a7bb1858a",
+   "width": 530,
+   "height": 363,
+   "alt": "",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/CPMI-1.png",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-07-map-1.png",
+   "file": "2024-07-MAP-1.png",
+   "sha256": "2f99c1a36c03fc236884f020a614bc4f8df71d78a2d80e66e408c7ec80c4c9ac",
+   "width": 530,
+   "height": 363,
+   "alt": "",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/MAP-1.png",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-07-lma.png",
+   "file": "2024-07-LMA.png",
+   "sha256": "c586237112fff4e5222dc3a52eabd46f08884f5a9e3fa02348aa29555da22c6f",
+   "width": 530,
+   "height": 363,
+   "alt": "",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/LMA.png",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-07-hrma.png",
+   "file": "2024-07-HRMA.png",
+   "sha256": "2fd1d09b82d5ef3c89c3c043c1cfee701fc54d78ff99bdb54f3cb83a6b5021ec",
+   "width": 530,
+   "height": 363,
+   "alt": "",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/HRMA.png",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-07-scde1.png",
+   "file": "2024-07-SCDE1.png",
+   "sha256": "ee9314d960da04ecd55b2893669fd5d20bea6c822efbae74331be632bc36a7b6",
+   "width": 530,
+   "height": 363,
+   "alt": "",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/SCDE1.png",
+   "role": "section image",
+   "shared_with": "about"
+  },
+  {
+   "key": "about/2024-07-valuation.png",
+   "file": "2024-07-Valuation.png",
+   "sha256": "18d7a9826d05a2f95a506ccde32af8e67b31a96717207f39ac0a9c752a1bbb43",
+   "width": 530,
+   "height": 363,
+   "alt": "",
+   "source_url": "https://imaa-institute.org/wp-content/uploads/2024/07/Valuation.png",
+   "role": "section image",
+   "shared_with": "about"
+  }
+ ],
+ "source": "https://imaa-institute.org/testimonials/ (WordPress testimonial post type, 77 items; extracted 2026-10-12)",
+ "migration_notes": [
+  "Order: newest WordPress post date first (published_at), as on the WordPress archive.",
+  "Role and company as displayed on the WordPress cards; about 15 legacy entries combine both in 'role' (FOR REVIEW).",
+  "FOR REVIEW: 'Financial Modeling and Business Valuation' (1 testimonial) is a new programme FM&BV; WordPress shows no filter for it.",
+  "FOR REVIEW: the WordPress filter offers IM&A, CPMI, M&AP, LM&A, VALUATION; this page shows every programme with at least one public testimonial.",
+  "Dr. Saeed Ahmed Al-Gailani's quote embedded a branded image on WordPress; it is not migrated (the text and signature are).",
+  "The 10 testimonials already created by the About import are matched by WordPress ID and reuse About's photos.",
+  "FOR REVIEW: 17 legacy testimonials have no quote text on WordPress (the card and detail page show only name, role, company and photo). They are imported hidden (is_public false); add a quote and tick Public to show them."
+ ],
+ "content_sha256": "53ac895fd9024d701b62e1fa26ecee4fadbec3282756873539573054b3bb1371"
+}

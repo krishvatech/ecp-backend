@@ -16,6 +16,7 @@ from wagtail.rich_text import RichText
 
 from cms.about_page_api import about_page_extras
 from cms.team_page_api import team_page_extras
+from cms.batch3_api import contact_page_extras, testimonials_page_extras
 from cms.email_template_registry import get_template_metadata
 from cms.models import EmailTemplate, TEMPLATE_KEY_CHOICES
 from cms.serializers import (
@@ -163,6 +164,9 @@ def build_cms_page_data(request, page, specific):
     data.update(about_page_extras(request, specific))
     # TeamPage texts, programme filters and public people (no-op for other page types).
     data.update(team_page_extras(request, specific))
+    # TestimonialsPage and ContactPage fields (no-op for other page types).
+    data.update(testimonials_page_extras(request, specific))
+    data.update(contact_page_extras(request, specific))
 
     if hasattr(specific, "left_column"):
         data["left_column"] = [
