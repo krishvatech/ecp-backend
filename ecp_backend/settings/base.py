@@ -866,6 +866,16 @@ SECURE_AUTH_ALLOWED_ORIGINS = [
 ]
 SECURE_AUTH_SESSION_THROTTLE_RATE = os.getenv("SECURE_AUTH_SESSION_THROTTLE_RATE", "30/min")
 
+# --- Disposable email domains for new accounts (users/disposable_email.py) ---
+# Django-side only. The Cognito Pre Sign-up Lambda is configured separately and
+# keeps enforcing until it is detached from the user pool.
+DISPOSABLE_EMAIL_VALIDATION_ENABLED = env_bool("DISPOSABLE_EMAIL_VALIDATION_ENABLED", True)
+# Also refuse to create a local user for a brand-new Cognito identity.
+DISPOSABLE_EMAIL_BLOCK_COGNITO_JIT = env_bool("DISPOSABLE_EMAIL_BLOCK_COGNITO_JIT", True)
+# Extra allowed domains, comma-separated (the reviewed list is allowlist.conf).
+DISPOSABLE_EMAIL_ALLOWLIST = os.getenv("DISPOSABLE_EMAIL_ALLOWLIST", "")
+SIGNUP_EMAIL_CHECK_THROTTLE_RATE = os.getenv("SIGNUP_EMAIL_CHECK_THROTTLE_RATE") or "30/min"
+
 # ============================================================================
 # PERFORMANCE OPTIMIZATION SETTINGS
 # ============================================================================

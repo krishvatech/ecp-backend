@@ -146,8 +146,50 @@ def _split_full_name(full_name: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def _is_cognito_assigned_federated_username(claims: dict, provider_username: str) -> bool:
+    """
+    True only for a federated user whose username ("<Provider>_<subject>") was
+    assigned by Cognito, as confirmed by the token's own signed `identities`
+    claim. Native Cognito usernames are chosen by whoever signs up, so they can
+    never prove ownership of an existing account with the same username.
+    """
+    identities = claims.get("identities")
+    if isinstance(identities, str):
+        try:
+            identities = json.loads(identities)
+        except Exception:
+            return False
+    if not isinstance(identities, list) or not identities or not isinstance(identities[0], dict):
+        return False
+    provider_name = str(identities[0].get("providerName") or "").strip().lower()
+    raw = str(provider_username or "")
+    prefix = raw.split("_", 1)[0].strip().lower() if "_" in raw else ""
+    return bool(provider_name) and provider_name == prefix
+
+
 def _is_imaa_wordpress_oauth_provider(provider: str) -> bool:
     return str(provider or "").strip().lower() == "imaawordpressoauth"
+
+
+def _reject_new_disposable_account(email: str, provider: str) -> None:
+    """
+    Backstop for signups that reach Cognito directly: refuse to create a local
+    user for a brand-new identity with a disposable domain. Only called on the
+    paths that create a user, so existing users are never affected. IMAA
+    WordPress SSO is exempt because those are existing IMAA member accounts;
+    both IdP names match the Lambda's EXEMPT_EXTERNAL_PROVIDERS default.
+    """
+    if str(provider or "").strip().lower() in {"imaawordpress", "imaawordpressoauth"}:
+        return
+    from .disposable_email import DISPOSABLE_EMAIL_CODE, DISPOSABLE_EMAIL_MESSAGE, blocks_new_cognito_account
+
+    if blocks_new_cognito_account(email):
+        logger.warning(
+            "Refused local account creation for new %s identity with disposable domain %s",
+            provider,
+            email.rsplit("@", 1)[-1],
+        )
+        raise AuthenticationFailed(DISPOSABLE_EMAIL_MESSAGE, code=DISPOSABLE_EMAIL_CODE)
 
 
 def _email_local_part(email: str) -> str:
@@ -437,6 +479,8 @@ class CognitoJWTAuthentication(BaseAuthentication):
 
                 # ✅ 2) If verified email exists, reuse existing DB user ATOMICALLY
                 if email and email_verified:
+                    if not User.objects.filter(email__iexact=email).exists():
+                        _reject_new_disposable_account(email, provider)
                     user, created = User.objects.get_or_create(
                         email__iexact=email,
                         defaults={
@@ -452,19 +496,36 @@ class CognitoJWTAuthentication(BaseAuthentication):
                             user.save(update_fields=["password"])
                         logger.info(f"Created new user for verified email {email}")
 
-                # ✅ 3) Backward compatibility: if we previously stored provider_username as DB username
-                if not user and provider_username:
+                # ✅ 3) Backward compatibility: if we previously stored provider_username as DB username.
+                # Only for Cognito-assigned federated usernames: a native username is
+                # user-chosen and must not select someone else's account.
+                if not user and provider_username and _is_cognito_assigned_federated_username(claims, provider_username):
                     user = User.objects.filter(username__iexact=provider_username).order_by("id").first()
 
                 # ✅ 4) If still not found, create a new DB user (atomic)
                 if not user:
+                    # Never attach a new Cognito identity to an existing account by an
+                    # UNVERIFIED email (verified emails were handled in step 2).
+                    if email and not email_verified and User.objects.filter(email__iexact=email).exists():
+                        logger.warning(
+                            "Refused to attach new %s identity to an existing account by unverified email (domain %s)",
+                            provider,
+                            email.rsplit("@", 1)[-1],
+                        )
+                        raise AuthenticationFailed(
+                            "An account with this email already exists. Please sign in with your existing sign-in method.",
+                            code="email_not_verified",
+                        )
+                    if email and not User.objects.filter(email__iexact=email).exists():
+                        _reject_new_disposable_account(email, provider)
                     base = email.split("@")[0] if email else (provider_username or "user")
                     username = _unique_username(base)
 
                     try:
                         with transaction.atomic():
                             # Double-check inside transaction to prevent race condition
-                            user = User.objects.filter(email__iexact=email).first() if email else None
+                            # (only a verified email may select an existing account).
+                            user = User.objects.filter(email__iexact=email).first() if email and email_verified else None
 
                             if not user:
                                 user = User(
@@ -479,8 +540,8 @@ class CognitoJWTAuthentication(BaseAuthentication):
                                 logger.info(f"Created new user {user.id} with email {email}")
                     except Exception as e:
                         logger.warning(f"Error creating user for {email}: {e}")
-                        # Final fallback: try to get existing user
-                        user = User.objects.filter(email__iexact=email).first() if email else None
+                        # Final fallback: try to get existing user (verified email only)
+                        user = User.objects.filter(email__iexact=email).first() if email and email_verified else None
                         if not user:
                             raise AuthenticationFailed(f"Failed to create user: {str(e)}")
 

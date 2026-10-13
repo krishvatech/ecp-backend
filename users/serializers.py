@@ -33,6 +33,7 @@ from .validators import (
     validate_email_smart,      # kept for direct use if needed
     validate_email_strict,     # new shared validator used below
 )
+from .disposable_email import validate_signup_email_domain
 
 from .models import UserProfile
 from activity_feed.models import FeedItem
@@ -437,9 +438,11 @@ class RegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Username cannot be an email address.")
         return v
 
-    # strict email validator
+    # strict email validator; new accounts may not use a disposable domain
     def validate_email(self, value: str) -> str:
-        return validate_email_strict(value)
+        email = validate_email_strict(value)
+        validate_signup_email_domain(email)
+        return email
 
     def validate(self, attrs):
         # confirm passwords match

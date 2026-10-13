@@ -29,6 +29,11 @@ from users.cache_utils import (
 )
 from users.email_utils import get_support_email, send_platform_email
 from users.public_profile_privacy import redact_public_profile
+from users.disposable_email import (
+    DISPOSABLE_EMAIL_CODE,
+    DISPOSABLE_EMAIL_MESSAGE,
+    is_disposable_signup_email,
+)
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
@@ -2297,6 +2302,19 @@ class CSRFCookieView(APIView):
         return Response({"detail": "CSRF cookie set"}, status=status.HTTP_200_OK)
 
 
+def _disposable_new_account_response(email, existing_user_qs):
+    """
+    Legacy OAuth callbacks create a local user on first login. Refuse that for a
+    disposable domain, but never for a user who already exists.
+    """
+    if email and is_disposable_signup_email(email) and not existing_user_qs.exists():
+        return Response(
+            {"error": DISPOSABLE_EMAIL_CODE, "detail": DISPOSABLE_EMAIL_MESSAGE},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return None
+
+
 class LinkedInAuthURL(APIView):
     permission_classes = [permissions.AllowAny]
     def get(self, request):
@@ -2441,6 +2459,9 @@ class LinkedInCallback(APIView):
         from django.contrib.auth.models import User
 
         if email:
+            blocked = _disposable_new_account_response(email, User.objects.filter(username=email))
+            if blocked:
+                return blocked
             user, created = User.objects.get_or_create(
                 username=email,
                 defaults={"email": email},
@@ -2614,6 +2635,9 @@ class GoogleCallback(APIView):
         picture_url = info.get("picture")  # Google's picture URL
 
         from django.contrib.auth.models import User
+        blocked = _disposable_new_account_response(email, User.objects.filter(email=email))
+        if blocked:
+            return blocked
         user, created = User.objects.get_or_create(
             email=email,
             defaults={
