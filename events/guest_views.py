@@ -781,6 +781,18 @@ class GuestRegisterView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        from users.disposable_email import (
+            DISPOSABLE_EMAIL_CODE,
+            DISPOSABLE_EMAIL_MESSAGE,
+            is_disposable_signup_email,
+        )
+
+        if is_disposable_signup_email(email):
+            return Response(
+                {"error": DISPOSABLE_EMAIL_MESSAGE, "code": DISPOSABLE_EMAIL_CODE},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         # Keep guest record synchronized with submitted data before conversion
         guest.first_name = first_name
         guest.last_name = last_name

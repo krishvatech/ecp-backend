@@ -56,6 +56,7 @@ from .views import (
 from .views import LinkedInProfileImportPreviewView, LinkedInProfileImportConfirmView
 from .wordpress_webhook import WordPressWebhookView, WordPressUserSyncView, WordPressProfileSyncAuthenticatedView
 from .account_login_status import AccountLoginStatusView
+from .signup_email_check import ValidateSignupEmailView
 from .secure_session_views import SecureSessionEstablishView, SecureSessionRefreshView, SecureSessionLogoutView
 
 # ---- NEW: Router for logged-in user's Education & Experience ----
@@ -112,6 +113,7 @@ urlpatterns = [
     # Registration & password flows
     path("register/", RegisterView.as_view(), name="register"),
     path("check-email/", CheckEmailExistsView.as_view(), name="check-email"),
+    path("validate-signup-email/", ValidateSignupEmailView.as_view(), name="validate-signup-email"),
     path("login-status/", AccountLoginStatusView.as_view(), name="login-status"),
     path("admin/merge-users/", AdminMergeDuplicateUsersView.as_view(), name="admin-merge-users"),
     path("cognito/bootstrap/", CognitoBootstrapView.as_view(), name="cognito-bootstrap"),

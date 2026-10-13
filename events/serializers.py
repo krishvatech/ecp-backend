@@ -3397,7 +3397,7 @@ class MyEventCardSerializer(serializers.ModelSerializer):
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
             "preview_image", "cover_image", "waiting_room_image", "location", "location_city",
-            "location_country", "category", "is_live", "recording_url", "replay_available",
+            "location_country", "category", "format", "is_live", "recording_url", "replay_available",
             "replay_visible_to_participants", "price", "price_label", "currency", "is_free",
             "registration_type", "allow_guest_applications", "waiting_room_enabled", "waiting_room_grace_period_minutes",
             "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
@@ -3444,7 +3444,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         model = Event
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
-            "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country", "category", "is_live", "recording_url", "replay_available", "replay_availability_duration", "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type", "allow_guest_applications",
+            "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country", "category", "format", "is_live", "recording_url", "replay_available", "replay_availability_duration", "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type", "allow_guest_applications",
             "preapproval_code_enabled", "preapproval_allowlist_enabled", "attendee_marker_enabled", "attendee_marker_label",
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer",
@@ -3581,7 +3581,7 @@ class EventListSerializer(serializers.ModelSerializer):
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
             "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country",
-            "category", "is_live", "recording_url", "replay_available", "replay_availability_duration",
+            "category", "format", "is_live", "recording_url", "replay_available", "replay_availability_duration",
             "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type", "allow_guest_applications",
             "preapproval_code_enabled", "preapproval_allowlist_enabled", "attendee_marker_enabled", "attendee_marker_label",
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room",
