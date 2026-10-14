@@ -290,7 +290,10 @@ class NetworkingMeetingAvailabilityView(views.APIView):
 
         try:
             duration = int(duration_str)
-            recipient_reg = EventRegistration.objects.get(id=recipient_id, event=event)
+            # Participants who opted out of the Companion are not bookable.
+            recipient_reg = EventRegistration.objects.get(
+                id=recipient_id, event=event, hide_from_companion=False
+            )
         except (ValueError, EventRegistration.DoesNotExist):
             return Response(
                 {"detail": "Invalid recipient_registration_id or duration_minutes."},
@@ -371,9 +374,11 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
         start_time = serializer.validated_data['start_time']
         message = serializer.validated_data.get('message', '')
 
-        # Get recipient registration
+        # Get recipient registration (opted-out participants are not bookable)
         try:
-            recipient_reg = EventRegistration.objects.get(id=recipient_id, event=event)
+            recipient_reg = EventRegistration.objects.get(
+                id=recipient_id, event=event, hide_from_companion=False
+            )
         except EventRegistration.DoesNotExist:
             return Response(
                 {"detail": "Recipient registration not found."},

@@ -7978,6 +7978,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "user_email": reg.user.email or "",
                 "source": "registration",
                 "status": reg.status,
+                "hide_from_companion": reg.hide_from_companion,
                 "can_assign_labels": True,
                 "badge_labels": [
                     {"id": label.id, "name": label.name, "color": label.color}
@@ -8263,10 +8264,13 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=403
             )
 
-        # Fetch registrations (only registered status, exclude superusers)
+        # Fetch registrations (only registered status, exclude superusers and
+        # participants who opted out of this event's Companion). A participant
+        # who opted out still sees their own card, flagged as hidden.
         qs = (
             EventRegistration.objects
             .filter(event=event, status='registered')
+            .filter(Q(hide_from_companion=False) | Q(user=user))
             .exclude(user__is_superuser=True)
             .select_related("user", "user__profile")
             .prefetch_related("badge_labels")
@@ -8345,6 +8349,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 "badge_labels": custom_badges,
                 "roles": roles,
                 "registered_at": registration.registered_at,
+                "hidden_from_companion": registration.hide_from_companion,
             })
 
         # Add virtual speakers to participants
@@ -13135,6 +13140,74 @@ class EventRegistrationViewSet(viewsets.ModelViewSet):
         page = self.paginate_queryset(qs)
         ser = EventRegistrationLiteSerializer(page or qs, many=True)
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+
+    @staticmethod
+    def _companion_opt_out_registrations(user):
+        """My registrations whose Event Companion visibility I can still change:
+        in-person events (the only format with a Companion) that are published
+        or live and have not ended yet."""
+        now = timezone.now()
+        return (
+            EventRegistration.objects
+            .filter(
+                user=user,
+                status="registered",
+                event__format="in_person",
+                event__status__in=["published", "live"],
+            )
+            .filter(Q(event__end_time__isnull=True) | Q(event__end_time__gte=now))
+            .select_related("event")
+            .order_by("event__start_time", "id")
+        )
+
+    @staticmethod
+    def _companion_visibility_row(reg):
+        event = reg.event
+        return {
+            "registration_id": reg.id,
+            "hide_from_companion": reg.hide_from_companion,
+            "event": {
+                "id": event.id,
+                "title": event.title,
+                "slug": event.slug,
+                "start_time": event.start_time,
+                "end_time": event.end_time,
+                "timezone": event.timezone,
+                "location": event.location or event.location_city or "",
+                "status": event.status,
+            },
+        }
+
+    @action(detail=False, methods=["get"], url_path="companion-visibility")
+    def companion_visibility(self, request):
+        """List my current in-person registrations with their Companion opt-out flag."""
+        if getattr(request.user, "is_guest", False):
+            return Response([])
+        regs = self._companion_opt_out_registrations(request.user)
+        return Response([self._companion_visibility_row(reg) for reg in regs])
+
+    @action(detail=True, methods=["post"], url_path="companion-visibility")
+    def set_companion_visibility(self, request, pk=None):
+        """Opt in/out of being listed in one event's Companion directory.
+
+        Body: {"hide_from_companion": true|false}. Only the registrant can change
+        it, and only for an eligible (current, in-person) registration.
+        """
+        if getattr(request.user, "is_guest", False):
+            return Response({"detail": "Not authorized."}, status=403)
+        reg = self._companion_opt_out_registrations(request.user).filter(pk=pk).first()
+        if reg is None:
+            return Response(
+                {"detail": "Companion visibility can only be changed for your current in-person event registrations."},
+                status=404,
+            )
+        value = request.data.get("hide_from_companion")
+        if not isinstance(value, bool):
+            return Response({"hide_from_companion": "Must be true or false."}, status=400)
+        if reg.hide_from_companion != value:
+            reg.hide_from_companion = value
+            reg.save(update_fields=["hide_from_companion"])
+        return Response(self._companion_visibility_row(reg))
 
     @action(detail=True, methods=["post"], url_path="cancel_request")
     def cancel_request(self, request, pk=None):

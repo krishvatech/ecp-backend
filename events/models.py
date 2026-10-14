@@ -1270,6 +1270,10 @@ class EventRegistration(models.Model):
         default=False,
         help_text='Whether contact details can be shared with other attendees'
     )
+    hide_from_companion = models.BooleanField(
+        default=False,
+        help_text="Participant opted out of being listed in this event's Companion directory"
+    )
     photo_video_consent = models.CharField(
         max_length=20,
         choices=[
