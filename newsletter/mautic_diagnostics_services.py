@@ -31,6 +31,12 @@ from .task_heartbeats import (
     periodic_task_health,
     task_stale_after_seconds,
 )
+from .scheduler_monitoring import (
+    build_scheduler_monitoring,
+    fetch_mautic_background_report,
+    legacy_beat_status,
+    scheduler_warnings,
+)
 from .webhooks import EVENT_TYPE_MAP
 
 logger = logging.getLogger(__name__)
@@ -71,6 +77,13 @@ def get_mautic_diagnostics(request=None) -> dict:
     background = _background_processing_status(worker)
     native_broadcasts = _native_broadcast_status()
     broadcast_sends = _broadcast_send_status()
+    scheduler_monitoring = build_scheduler_monitoring(
+        redis_probe=redis_probe,
+        worker_probe=worker,
+        scheduled_processing=scheduled_processing,
+        **_mautic_background_evidence(config, marketing_bridge),
+        now=checked_at,
+    )
     health = _health_summary(
         redis_probe,
         worker,
@@ -78,6 +91,7 @@ def get_mautic_diagnostics(request=None) -> dict:
         broadcast_sends,
         native_broadcasts,
         now=checked_at,
+        beat=legacy_beat_status(scheduler_monitoring["components"]["celery_beat"]),
     )
     identity = _identity_status(request, marketing_bridge)
     warnings = _warnings(config, rest, marketing_bridge, campaign_bridge, webhook, sync)
@@ -88,6 +102,10 @@ def get_mautic_diagnostics(request=None) -> dict:
             "Broadcast sends have no confirmed outcome; check them in Mautic."
         )
     warnings.extend(health["warnings"])
+    # Redis, worker and task-run problems are already warned about above.
+    warnings.extend(
+        scheduler_warnings(scheduler_monitoring, only=("celery_beat", "mautic_cron", "mautic_worker"))
+    )
     warnings.extend(identity["warnings"])
 
     return {
@@ -112,12 +130,39 @@ def get_mautic_diagnostics(request=None) -> dict:
         "native_broadcasts": native_broadcasts,
         "broadcast_sends": broadcast_sends,
         "health": health["components"],
+        "scheduler_monitoring": scheduler_monitoring,
         "identity": identity,
         "diagnostics": {
             "status": "Healthy" if not warnings else "Degraded",
             "warnings": warnings,
         },
     }
+
+
+def collect_scheduler_monitoring(*, include_mautic: bool = True) -> dict:
+    """Scheduler monitoring alone, for check_background_health and other
+    observers outside the request path. Same probes and bounds as the
+    diagnostics endpoint; read-only."""
+    now = timezone.now()
+    redis_probe = _redis_status()
+    mautic = {"mautic_report": None, "mautic_error": "not_checked"}
+    if include_mautic:
+        config = _configuration_status()
+        mautic = (
+            {"mautic_report": None, "mautic_error": "not_configured"}
+            if not config["configured"]
+            else dict(zip(
+                ("mautic_report", "mautic_error"),
+                fetch_mautic_background_report(client_factory=MauticClient),
+            ))
+        )
+    return build_scheduler_monitoring(
+        redis_probe=redis_probe,
+        worker_probe=_worker_status(broker=redis_probe),
+        scheduled_processing=periodic_task_health(now=now),
+        **mautic,
+        now=now,
+    )
 
 
 def _identity_status(request=None, marketing_bridge: dict | None = None) -> dict:
@@ -504,7 +549,21 @@ def _overdue_ecp_schedules(now) -> int:
     )
 
 
-def _health_summary(redis_probe, worker, scheduled_processing, broadcast_sends, native, *, now) -> dict:
+def _mautic_background_evidence(config: dict, marketing_bridge: dict) -> dict:
+    """Mautic cron/worker evidence for scheduler monitoring. Skips the request
+    when Mautic is not configured or the bridge already proved unreachable, so
+    an outage costs one timeout, not two."""
+    if not config["configured"]:
+        return {"mautic_report": None, "mautic_error": "not_configured"}
+    if not marketing_bridge.get("available"):
+        return {"mautic_report": None, "mautic_error": "mautic_unavailable"}
+    report, error = fetch_mautic_background_report(marketing_bridge, client_factory=MauticClient)
+    return {"mautic_report": report, "mautic_error": error}
+
+
+def _health_summary(
+    redis_probe, worker, scheduled_processing, broadcast_sends, native, *, now, beat=None
+) -> dict:
     """One status per signal, each meaning exactly what its evidence proves."""
     sync_enabled = bool(getattr(settings, "MAUTIC_SYNC_ENABLED", False))
     warnings = []
@@ -538,7 +597,8 @@ def _health_summary(redis_probe, worker, scheduled_processing, broadcast_sends, 
     components = {
         "redis": redis_probe,
         "celery_worker": worker,
-        "celery_beat": {
+        # Beat's own publish records (scheduler_monitoring), when available.
+        "celery_beat": beat or {
             "status": NOT_VERIFIED,
             "reason": "no_independent_signal",
             "detail": (

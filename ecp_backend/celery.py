@@ -6,6 +6,7 @@ discovers tasks by inspecting any `tasks.py` modules in installed apps.
 """
 import os
 from celery import Celery
+from celery.signals import beat_init
 
 # Set default Django settings for Celery to pick configuration from settings
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "ecp_backend.settings.dev")
@@ -28,3 +29,11 @@ app.autodiscover_tasks([
     'newsletter',
     'blogs',
 ])
+
+@beat_init.connect
+def _record_beat_activity(sender=None, **kwargs):
+    """Beat process only: record its start and every task it publishes, so
+    diagnostics can tell a stopped Beat from a stopped worker (B10)."""
+    from newsletter.scheduler_monitoring import on_beat_init
+
+    on_beat_init(sender=sender, **kwargs)

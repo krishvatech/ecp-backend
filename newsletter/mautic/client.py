@@ -178,14 +178,14 @@ class MauticClient:
             raise TemporaryMauticError(message)
         raise PermanentMauticError(message)
 
-    def _request(self, method: str, path: str, **kwargs):
+    def _request(self, method: str, path: str, *, timeout=None, **kwargs):
         url = f"{self.base_url}/api/{path.lstrip('/')}"
         try:
             response = self.session.request(
                 method,
                 url,
                 auth=HTTPBasicAuth(self.username, self.password),
-                timeout=self.timeout,
+                timeout=timeout or self.timeout,
                 **kwargs,
             )
         except (requests.Timeout, requests.ConnectionError) as exc:
@@ -2913,6 +2913,17 @@ class MauticClient:
             raise TemporaryMauticError(
                 "Mautic marketing bridge capabilities returned invalid capabilities"
             )
+        return data
+
+    def get_background_health(self, timeout=None) -> dict[str, Any]:
+        """Read-only cron run records and messenger backlog from the ECP bridge.
+
+        ``timeout`` lets diagnostics use a shorter budget than ordinary calls.
+        """
+        response = self._request("GET", "ecp/background-health", timeout=timeout)
+        data = self._json_object(response, "Mautic background health")
+        if not isinstance(data.get("cron"), dict) or not isinstance(data.get("messenger"), dict):
+            raise TemporaryMauticError("Mautic background health returned an invalid report")
         return data
 
     def get_field_type_capabilities(self) -> dict[str, Any]:

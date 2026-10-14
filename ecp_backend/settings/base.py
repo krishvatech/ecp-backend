@@ -226,6 +226,19 @@ MAUTIC_SYNC_PROCESSING_TIMEOUT_SECONDS = int(
 NEWSLETTER_BACKGROUND_HEALTH_ENABLED = os.getenv(
     "NEWSLETTER_BACKGROUND_HEALTH_ENABLED", "true"
 ).strip().lower() in {"1", "true", "yes", "on"}
+# Scheduler monitoring thresholds (newsletter.scheduler_monitoring). Unset
+# means derived from the schedule: Beat warns after 2x its shortest interval
+# + 60 s and is unhealthy after 5x + 300 s (180 s / 600 s for a 1-minute
+# schedule); a fresh Beat start gets 1x + 60 s of grace.
+SCHEDULER_MONITOR_BEAT_WARNING_SECONDS = os.getenv("SCHEDULER_MONITOR_BEAT_WARNING_SECONDS") or None
+SCHEDULER_MONITOR_BEAT_UNHEALTHY_SECONDS = os.getenv("SCHEDULER_MONITOR_BEAT_UNHEALTHY_SECONDS") or None
+SCHEDULER_MONITOR_STARTUP_GRACE_SECONDS = os.getenv("SCHEDULER_MONITOR_STARTUP_GRACE_SECONDS") or None
+# Mautic messenger messages waiting this long warn / are unhealthy (only for
+# Doctrine transports; sync transports have no queue).
+MAUTIC_WORKER_BACKLOG_WARNING_SECONDS = int(os.getenv("MAUTIC_WORKER_BACKLOG_WARNING_SECONDS", "300"))
+MAUTIC_WORKER_BACKLOG_UNHEALTHY_SECONDS = int(os.getenv("MAUTIC_WORKER_BACKLOG_UNHEALTHY_SECONDS", "900"))
+# Short budget for the Mautic background-health read in diagnostics.
+MAUTIC_BACKGROUND_HEALTH_TIMEOUT_SECONDS = float(os.getenv("MAUTIC_BACKGROUND_HEALTH_TIMEOUT_SECONDS", "5"))
 # Redis response cache for the Mautic-backed Marketing Hub analytics and
 # dashboard (see newsletter.marketing_cache). The enable flag is a kill switch.
 MARKETING_RESPONSE_CACHE_ENABLED = os.getenv(
