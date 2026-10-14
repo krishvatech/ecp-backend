@@ -31,7 +31,8 @@ from newsletter.tests.marketing_actors import grant_marketing_access
 
 User = get_user_model()
 
-READ_METHODS = {"get_email", "count_email_stats", "get_latest_email_send"}
+# All GETs. get_email_send_evidence is the B11 per-attempt evidence read.
+READ_METHODS = {"get_email", "count_email_stats", "get_latest_email_send", "get_email_send_evidence"}
 BEAT = {"dispatch": {"task": "newsletter.dispatch_due_scheduled_campaigns",
                      "schedule": timedelta(minutes=1)}}
 
@@ -56,6 +57,13 @@ def provider(*, sent=0, recorded=None, failed=0, published=True, publish_up=None
     client.get_latest_email_send.return_value = (
         {"date_sent": "2026-10-08 08:34:02"} if recorded else None
     )
+    client.get_email_send_evidence.return_value = {
+        "generated_at": "2026-10-08T08:40:00Z",
+        "email": {"id": 77, "email_type": "list", "sent_count": sent, "related_email_ids": []},
+        "stats": {"total": recorded, "before_since": 0, "since": recorded, "failed": failed},
+        "pending": 0,
+        "queued": 0,
+    }
     return client
 
 

@@ -237,6 +237,11 @@ SCHEDULER_MONITOR_STARTUP_GRACE_SECONDS = os.getenv("SCHEDULER_MONITOR_STARTUP_G
 # Doctrine transports; sync transports have no queue).
 MAUTIC_WORKER_BACKLOG_WARNING_SECONDS = int(os.getenv("MAUTIC_WORKER_BACKLOG_WARNING_SECONDS", "300"))
 MAUTIC_WORKER_BACKLOG_UNHEALTHY_SECONDS = int(os.getenv("MAUTIC_WORKER_BACKLOG_UNHEALTHY_SECONDS", "900"))
+# Send Now outcome resolution (newsletter.send_outcome_resolution): a send
+# whose response was lost can be resolved only after this long, because a
+# Mautic web request's PHP time limit does not bound network/database waits.
+NEWSLETTER_SEND_OUTCOME_SETTLE_SECONDS = int(os.getenv("NEWSLETTER_SEND_OUTCOME_SETTLE_SECONDS", "3600"))
+NEWSLETTER_SEND_EVIDENCE_TIMEOUT_SECONDS = float(os.getenv("NEWSLETTER_SEND_EVIDENCE_TIMEOUT_SECONDS", "5"))
 # Short budget for the Mautic background-health read in diagnostics.
 MAUTIC_BACKGROUND_HEALTH_TIMEOUT_SECONDS = float(os.getenv("MAUTIC_BACKGROUND_HEALTH_TIMEOUT_SECONDS", "5"))
 # Redis response cache for the Mautic-backed Marketing Hub analytics and

@@ -38,6 +38,7 @@ from .native_broadcast_reconciliation import (
     classify_native_delivery,
     classify_provider_error,
 )
+from .send_outcome_resolution import ResolutionRefused, investigate, record_refusal, resolve
 from .task_heartbeats import task_stale_after_seconds
 
 AUDIT_HISTORY_LIMIT = 10
@@ -213,7 +214,8 @@ def inspect_broadcast_delivery(campaign, *, client=None, now=None) -> dict:
 
     provider = {"checked": False}
     if email_id:
-        provider = _read_provider(client or MauticClient(), email_id)
+        client = client or MauticClient()
+        provider = _read_provider(client, email_id)
 
     native_state = ""
     if native and email_id:
@@ -301,7 +303,56 @@ def inspect_broadcast_delivery(campaign, *, client=None, now=None) -> dict:
             "guidance": GUIDANCE[category],
         },
         "audit": audit,
+        # B11: evidence-based classification of an unresolved Send Now.
+        "send_outcome": investigate(
+            campaign, event, client=client, now=now,
+            provider_unavailable=provider.get("error") == "unavailable",
+        ),
     }
+
+
+class NewsletterAdminCampaignSendOutcomeResolveView(APIView):
+    """POST: close an unresolved Send Now on Mautic's own evidence.
+
+    Never sends. The decision must match what fresh evidence supports at
+    submit time, and is applied to the original send event only.
+    """
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def post(self, request, uuid):
+        campaign = NewsletterCampaign.objects.filter(uuid=uuid).first()
+        if campaign is None:
+            raise Http404
+        if request.data.get("confirm") is not True:
+            return Response(
+                {"code": "confirmation_required", "detail": "Confirm the decision to resolve this send."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        event = NewsletterCampaignSendEvent.objects.filter(campaign=campaign).first()
+        try:
+            result = resolve(
+                campaign,
+                user=request.user,
+                event_uuid=request.data.get("event_uuid"),
+                resolution=request.data.get("resolution"),
+                note=request.data.get("note", ""),
+            )
+        except ResolutionRefused as exc:
+            record_refusal(request.user, campaign, event, exc.code, exc.detail)
+            campaign.refresh_from_db()
+            # Fresh state for the operator, except when Mautic is down: that
+            # would only wait out the same timeouts again.
+            inspection = None if exc.code == "evidence_unavailable" else inspect_broadcast_delivery(campaign)
+            return Response(
+                {"code": exc.code, "detail": exc.detail, "inspection": inspection},
+                status=exc.http_status,
+            )
+        campaign.refresh_from_db()
+        return Response(
+            {"result": result, "inspection": inspect_broadcast_delivery(campaign)},
+            status=status.HTTP_200_OK,
+        )
 
 
 class NewsletterAdminCampaignDeliveryInspectionView(APIView):

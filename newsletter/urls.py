@@ -108,7 +108,10 @@ from .contact_import_views import (
     NewsletterAdminContactImportStartView,
     NewsletterAdminContactImportValidateView,
 )
-from .broadcast_delivery_inspection import NewsletterAdminCampaignDeliveryInspectionView
+from .broadcast_delivery_inspection import (
+    NewsletterAdminCampaignDeliveryInspectionView,
+    NewsletterAdminCampaignSendOutcomeResolveView,
+)
 from .mautic_identity_views import (
     NewsletterAdminMauticConnectionActivateView,
     NewsletterAdminMauticConnectionDeactivateView,
@@ -200,6 +203,11 @@ urlpatterns = [
         "newsletter/admin/campaigns/<uuid:uuid>/delivery-inspection/",
         NewsletterAdminCampaignDeliveryInspectionView.as_view(),
         name="newsletter-admin-campaign-delivery-inspection",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/send-outcome/resolve/",
+        NewsletterAdminCampaignSendOutcomeResolveView.as_view(),
+        name="newsletter-admin-campaign-send-outcome-resolve",
     ),
     path(
         "newsletter/admin/campaigns/<uuid:uuid>/test-email/",

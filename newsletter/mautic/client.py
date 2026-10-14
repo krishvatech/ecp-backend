@@ -8,6 +8,7 @@ Those responsibilities are added in later newsletter integration phases.
 from __future__ import annotations
 
 import json
+from datetime import timezone as dt_timezone
 from typing import Any
 
 import requests
@@ -2924,6 +2925,28 @@ class MauticClient:
         data = self._json_object(response, "Mautic background health")
         if not isinstance(data.get("cron"), dict) or not isinstance(data.get("messenger"), dict):
             raise TemporaryMauticError("Mautic background health returned an invalid report")
+        return data
+
+    def get_email_send_evidence(
+        self, email_id: int | str, *, since=None, due_before=None, timeout=None
+    ) -> dict[str, Any]:
+        """Read-only send evidence for one segment email from the ECP bridge:
+        stats (split at ``since``), Mautic's own pending count for members
+        who joined its segments before ``due_before`` (default ``since``), and
+        queued messages."""
+        email_id = str(email_id or "").strip()
+        if not email_id:
+            raise PermanentMauticError("Mautic email ID is required")
+        params = {}
+        for name, moment in (("since", since), ("due_before", due_before)):
+            if moment is not None:
+                params[name] = moment.astimezone(dt_timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        response = self._request(
+            "GET", f"ecp/emails/{email_id}/send-evidence", params=params or None, timeout=timeout
+        )
+        data = self._json_object(response, "Mautic email send evidence")
+        if not isinstance(data.get("email"), dict) or not isinstance(data.get("stats"), dict):
+            raise TemporaryMauticError("Mautic email send evidence returned an invalid report")
         return data
 
     def get_field_type_capabilities(self) -> dict[str, Any]:
