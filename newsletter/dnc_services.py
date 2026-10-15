@@ -237,6 +237,9 @@ def clear_email_suppression_if_older(user, observed_at) -> bool:
     older than a later unsubscribe or bounce leaves the suppression in place.
     Equal times cannot be ordered and keep it too; the explicit re-subscribe
     flow can still resolve that against Mautic's live state.
+
+    Only voluntary unsubscribes are reversible. Bounce, manual and unknown
+    suppressions remain blocked even when a newer contactable event arrives.
     Returns True when a row was removed."""
     with transaction.atomic():
         suppression = (
@@ -245,6 +248,8 @@ def clear_email_suppression_if_older(user, observed_at) -> bool:
             .first()
         )
         if suppression is None:
+            return False
+        if not suppression.is_reversible:
             return False
         if observed_at <= suppression.suppressed_at:
             return False

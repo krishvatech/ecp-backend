@@ -370,6 +370,95 @@ class MauticDncWebhookConsentTests(TestCase):
         self.assertFalse(MauticEmailSuppression.objects.exists())
         self.assertTrue(self.preference()["subscribed"])
 
+    def test_newer_contactable_never_clears_non_reversible_suppression(self):
+        """Bounce, manual and unknown DNC blocks must fail closed."""
+        cases = (
+            ("bounced", MauticEmailSuppression.Reason.BOUNCED),
+            ("manual", MauticEmailSuppression.Reason.MANUAL),
+            ("quarantined", MauticEmailSuppression.Reason.UNKNOWN),
+        )
+
+        for status, expected_reason in cases:
+            with self.subTest(status=status):
+                MauticEmailSuppression.objects.filter(
+                    user=self.user
+                ).delete()
+
+                initial = self.post_channel_event(
+                    new_status=status,
+                    timestamp="2026-09-22T10:00:00+00:00",
+                )
+
+                self.assertEqual(initial.status_code, 200)
+                self.assertEqual(initial.data["consent_synced"], 1)
+
+                before = MauticEmailSuppression.objects.get(
+                    user=self.user
+                )
+
+                self.assertEqual(before.reason, expected_reason)
+                self.assertFalse(before.is_reversible)
+
+                response = self.post_channel_event(
+                    new_status="contactable",
+                    old_status=status,
+                    timestamp="2026-09-22T10:05:00+00:00",
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data["consent_synced"], 0)
+
+                after = MauticEmailSuppression.objects.get(
+                    user=self.user
+                )
+
+                self.assertEqual(after.reason, expected_reason)
+                self.assertEqual(
+                    after.suppressed_at,
+                    before.suppressed_at,
+                )
+                self.assertFalse(after.is_reversible)
+                self.assertFalse(self.preference()["subscribed"])
+
+                self.subscription.refresh_from_db()
+                self.assertTrue(self.subscription.is_subscribed)
+
+    def test_equal_or_older_contactable_keeps_voluntary_unsubscribe(self):
+        """Only a strictly newer contactable change may clear an opt-out."""
+        response = self.post_channel_event(
+            new_status="unsubscribed",
+            timestamp="2026-09-22T10:00:00+00:00",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            MauticEmailSuppression.objects.filter(
+                user=self.user
+            ).exists()
+        )
+
+        for timestamp in (
+            "2026-09-22T09:55:00+00:00",
+            "2026-09-22T10:00:00+00:00",
+        ):
+            with self.subTest(timestamp=timestamp):
+                response = self.post_channel_event(
+                    new_status="contactable",
+                    old_status="unsubscribed",
+                    timestamp=timestamp,
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data["consent_synced"], 0)
+
+                suppression = MauticEmailSuppression.objects.get(
+                    user=self.user
+                )
+                self.assertEqual(
+                    suppression.reason,
+                    MauticEmailSuppression.Reason.UNSUBSCRIBED,
+                )
+
     def test_malformed_event_does_not_break_the_endpoint(self):
         response = self.signed_post(
             {"mautic.lead_channel_subscription_changed": [{"channel": "email"}]}
