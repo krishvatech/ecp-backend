@@ -214,7 +214,14 @@ def inspect_broadcast_delivery(campaign, *, client=None, now=None) -> dict:
 
     provider = {"checked": False}
     if email_id:
-        client = client or MauticClient()
+        if client is None:
+            client = MauticClient()
+            # Read-only diagnosis: each GET gets the short evidence budget, not
+            # the 15 s default, so a slow Mautic cannot hold the page for a
+            # minute across several reads.
+            budget = float(getattr(settings, "NEWSLETTER_SEND_EVIDENCE_TIMEOUT_SECONDS", 5))
+            current = getattr(client, "timeout", None)
+            client.timeout = min(current, budget) if isinstance(current, (int, float)) else budget
         provider = _read_provider(client, email_id)
 
     native_state = ""

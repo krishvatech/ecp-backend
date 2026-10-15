@@ -21,8 +21,8 @@ Classifications (administrator-facing, not new statuses):
   nothing queued, counters agree -> may be resolved to the existing
   SUCCEEDED / SENT outcome.
 * still_processing: too recent to judge; Mautic may still be sending.
-* uncertain: e.g. no sends recorded, a partial send, nobody eligible,
-  messages queued.
+* uncertain: e.g. no sends recorded (with or without anyone now due), a
+  partial send, messages queued.
 * conflicting: evidence does not belong to this attempt alone.
 * evidence_unavailable: Mautic could not be read or cannot answer.
 
@@ -103,10 +103,11 @@ EXPLANATIONS = {
         "Mautic recorded some sends, but contacts who were in the segments when sending started "
         "are still due. The send did not complete. It will not be resent automatically."
     ),
-    "no_eligible_recipients": (
-        "Mautic recorded no sends and nobody is due. Either nobody was eligible or the request "
-        "never ran; both mean no email was sent, but the evidence cannot tell which. This is left "
-        "unresolved."
+    "no_sends_none_due": (
+        "Mautic has recorded no send for this email and nobody in its segments is due now. That "
+        "does not show the original audience was empty or that nothing will be sent: "
+        "contacts may have left the segments since, and a delayed request could still send to "
+        "current members. It stays protected and is never resent."
     ),
     "messages_queued": (
         "Mautic has messages for this email waiting in its message queue, so delivery is not "
@@ -267,7 +268,9 @@ def classify(campaign, event, evidence, *, evidence_error="", now=None, tracking
     if tracking_events > 0:
         return result(CONFLICTING, "tracking_without_sends")
     if pending == 0:
-        return result(UNCERTAIN, "no_eligible_recipients")
+        # "Nobody due now" says nothing about who was due when the request
+        # ran, or about a request that has not run yet.
+        return result(UNCERTAIN, "no_sends_none_due")
     # Absence of activity is never proof that the request will not send.
     return result(UNCERTAIN, "no_sends_recorded")
 

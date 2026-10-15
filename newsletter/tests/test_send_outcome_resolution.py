@@ -156,14 +156,14 @@ class ClassificationTests(Fixture, TestCase):
         # the outcome less certain, never "not sent".
         decision = self.classify(evidence(total=0, pending=0))
         self.assertEqual((decision["classification"], decision["reason"]),
-                         (outcome.UNCERTAIN, "no_eligible_recipients"))
+                         (outcome.UNCERTAIN, "no_sends_none_due"))
         partial = self.classify(evidence(total=1, pending=1))
         self.assertEqual(partial["reason"], "partially_sent")
 
     def test_unresolvable_cases_offer_no_resolution(self):
         cases = {
             "partially_sent": evidence(total=2, pending=1),
-            "no_eligible_recipients": evidence(total=0, pending=0),
+            "no_sends_none_due": evidence(total=0, pending=0),
             "messages_queued": evidence(total=2, queued=1),
             "stats_before_send": evidence(total=3, before=1),
             "sent_count_mismatch": evidence(total=2, sent_count=5),
@@ -606,6 +606,111 @@ class ResolveApiTests(Fixture, TestCase):
             self.assertEqual(self.client.post(self.url, self.body(), format="json").status_code, 403)
         self.assertEqual(self.state(), ("processing", "sending"))
         self.assertFalse(MauticIdentityAuditLog.objects.filter(action=outcome.AUDIT_ACTION).exists())
+
+
+@override_settings(**SETTINGS)
+class B12ZeroSendMatrixTests(Fixture, TestCase):
+    """B12: zero-send and uncertain cases stay protected; the reason never
+    claims more than the evidence proves. Scenario IDs match the B12 plan."""
+
+    def setUp(self):
+        self.make_send()
+
+    def test_matrix(self):
+        cases = {
+            "B12-01 zero sends, recipients due": (evidence(total=0, pending=3), outcome.UNCERTAIN, "no_sends_recorded"),
+            "B12-02 zero sends, nobody due": (evidence(total=0, pending=0), outcome.UNCERTAIN, "no_sends_none_due"),
+            "B12-03 zero sends, queued": (evidence(total=0, pending=0, queued=2), outcome.UNCERTAIN, "messages_queued"),
+            "B12-04 partial delivery": (evidence(total=2, pending=3), outcome.UNCERTAIN, "partially_sent"),
+            "B12-05 full completion": (evidence(total=5, pending=0), outcome.CONFIRMED_SENT, outcome.CONFIRMED_SENT),
+            "B12-06 sends before boundary": (evidence(total=5, before=2), outcome.CONFLICTING, "stats_before_send"),
+            "B12-07 counter mismatch": (evidence(total=3, sent_count=4), outcome.CONFLICTING, "sent_count_mismatch"),
+            "B12-08 counter without stats": (evidence(total=0, sent_count=2, pending=1), outcome.CONFLICTING,
+                                             "counter_without_stats"),
+            "B12-10 variants": (evidence(related=[91, 92]), outcome.CONFLICTING, "related_emails"),
+            "B12-11 template email": (evidence(email_type="template"), outcome.CONFLICTING, "not_a_segment_email"),
+        }
+        for name, (report, classification, reason) in cases.items():
+            with self.subTest(name):
+                decision = outcome.classify(self.campaign, self.event, report)
+                self.assertEqual((decision["classification"], decision["reason"]), (classification, reason))
+                expected = outcome.CONFIRMED_SENT if classification == outcome.CONFIRMED_SENT else None
+                self.assertEqual(decision["allowed_resolution"], expected)
+
+    def test_b12_09_tracking_with_zero_sends_is_conflicting_whether_or_not_anyone_is_due(self):
+        for pending in (0, 3):
+            decision = outcome.classify(self.campaign, self.event, evidence(total=0, pending=pending), tracking_events=2)
+            self.assertEqual(decision["reason"], "tracking_without_sends")
+            self.assertIsNone(decision["allowed_resolution"])
+
+    def test_b12_14_recent_request_is_still_processing_for_every_zero_send_shape(self):
+        NewsletterCampaignSendEvent.objects.filter(pk=self.event.pk).update(
+            provider_send_started_at=timezone.now() - timedelta(seconds=30)
+        )
+        self.event.refresh_from_db()
+        for report in (evidence(total=0, pending=0), evidence(total=0, pending=3), evidence(total=3, pending=0)):
+            self.assertEqual(outcome.classify(self.campaign, self.event, report)["classification"],
+                             outcome.STILL_PROCESSING)
+
+    def test_b12_26_malformed_or_partial_evidence_never_confirms(self):
+        broken = []
+        for path in (("pending",), ("queued",), ("stats", "since"), ("stats", "before_since"),
+                     ("email", "sent_count")):
+            report = evidence(total=3)
+            target = report
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = None
+            broken.append(report)
+        broken += [{"email": [], "stats": {}}, {"email": {"id": 88}, "stats": "x"}, {}]
+        for report in broken:
+            decision = outcome.classify(self.campaign, self.event, report)
+            self.assertIsNone(decision["allowed_resolution"], report)
+            self.assertNotEqual(decision["classification"], outcome.CONFIRMED_SENT)
+
+    def test_zero_send_explanations_claim_nothing_the_evidence_cannot_prove(self):
+        for reason in ("no_sends_recorded", "no_sends_none_due"):
+            text = outcome.EXPLANATIONS[reason].lower()
+            for claim in ("no email was sent", "nobody was eligible", "never ran", "not sent"):
+                self.assertNotIn(claim, text, reason)
+            self.assertIn("never resent", text)
+
+    def test_inspection_reads_use_the_short_evidence_budget(self):
+        from newsletter import broadcast_delivery_inspection as inspection
+
+        built = MauticClient()
+        self.assertEqual(built.timeout, 15)
+        with patch.object(inspection, "MauticClient", return_value=built), \
+                override_settings(NEWSLETTER_SEND_EVIDENCE_TIMEOUT_SECONDS=4), \
+                patch.object(MauticClient, "_request", side_effect=TemporaryMauticError("slow")):
+            result = inspection.inspect_broadcast_delivery(self.campaign)
+        self.assertEqual(built.timeout, 4)
+        self.assertEqual(result["send_outcome"]["classification"], outcome.EVIDENCE_UNAVAILABLE)
+        self.assertEqual(self.state(), ("processing", "sending"))
+
+    def test_b12_25_native_scheduled_broadcast_with_zero_sends_is_never_completed(self):
+        from newsletter import broadcast_delivery_inspection as inspection
+
+        campaign = NewsletterCampaign.objects.create(
+            name="Native zero", subject="x", status=NewsletterCampaign.Status.SCHEDULED,
+            schedule_owner=NewsletterCampaign.ScheduleOwner.MAUTIC, mautic_email_id="92",
+            scheduled_at=timezone.now() - timedelta(hours=3),
+        )
+        client = Mock(spec=MauticClient)
+        client.get_email.return_value = {
+            "id": 92, "emailType": "list", "isPublished": True, "sentCount": 0,
+            "publishUp": (timezone.now() - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S"),
+            "publishDown": None,
+        }
+        client.count_email_stats.return_value = 0
+        client.get_latest_email_send.return_value = None
+        result = inspection.inspect_broadcast_delivery(campaign, client=client)
+        self.assertEqual(result["delivery"]["category"], inspection.NATIVE_DUE_NO_SENDS_RECORDED)
+        self.assertFalse(result["delivery"]["completion_provable"])
+        self.assertFalse(result["send_outcome"]["applicable"])
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, NewsletterCampaign.Status.SCHEDULED)
+        client.get_email_send_evidence.assert_not_called()
 
 
 @override_settings(**SETTINGS)
