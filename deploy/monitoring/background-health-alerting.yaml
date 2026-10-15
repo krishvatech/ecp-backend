@@ -1,0 +1,312 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  REVIEW ONLY - not applied. Independent alerting for ECP Marketing Hub
+  background health (B14). EventBridge Scheduler runs the read-only
+  publish_background_health Django command on the backend Auto Scaling Group
+  through SSM Run Command; the command publishes CloudWatch metrics; alarms
+  notify an existing SNS topic on state changes only. Independent of Celery
+  Beat. See deploy/monitoring/README.md.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedPattern: "^[A-Za-z0-9._-]{1,64}$"
+    Description: Value of the Environment metric dimension (HEALTH_ALERTING_ENVIRONMENT on the backend).
+  BackendAutoScalingGroupName:
+    Type: String
+    Description: Name of the backend ASG. Instances are found by its aws:autoscaling:groupName tag, never by instance id.
+  BackendContainerName:
+    Type: String
+    Default: ecp-backend
+    AllowedPattern: "^[a-z0-9][a-z0-9_.-]{0,62}$"
+    Description: Docker container that runs Django on each backend instance.
+  BackendInstanceRoleName:
+    Type: String
+    Description: Existing IAM role of the backend instances; gets only cloudwatch:PutMetricData in this namespace.
+  AlarmTopicArn:
+    Type: String
+    AllowedPattern: "^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+$"
+    Description: REQUIRED existing SNS topic for alarms and recoveries. Not created here; no recipient is assumed.
+  Namespace:
+    Type: String
+    Default: ECP/MarketingHub
+  ScheduleExpression:
+    Type: String
+    Default: rate(1 minute)
+  UnhealthyMinutes:
+    Type: Number
+    Default: 3
+    Description: Consecutive minutes a component must be Unhealthy before alarming (absorbs brief blips).
+  WarningMinutes:
+    Type: Number
+    Default: 10
+  UnknownMinutes:
+    Type: Number
+    Default: 15
+  MissingSampleMinutes:
+    Type: Number
+    Default: 10
+    Description: Minutes without any monitor sample before the monitor itself is considered down.
+
+Resources:
+  # --- Execution ----------------------------------------------------------
+  HealthCommandDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      Content:
+        schemaVersion: "2.2"
+        description: Publish ECP Marketing Hub background health (read-only checks).
+        parameters:
+          containerName:
+            type: String
+            allowedPattern: "^[a-z0-9][a-z0-9_.-]{0,62}$"
+        mainSteps:
+          - action: aws:runShellScript
+            name: publishBackgroundHealth
+            inputs:
+              timeoutSeconds: "110"
+              runCommand:
+                - "set -u"
+                # Health results 0-3 are outcomes, not failures: the metrics carry them.
+                # Only a publish failure (4), a timeout (124) or a missing container fails the run.
+                - "timeout 100 docker exec '{{ containerName }}' python manage.py publish_background_health; rc=$?"
+                - "echo \"publish_background_health exit=$rc\""
+                - "if [ \"$rc\" -le 3 ]; then exit 0; fi; exit \"$rc\""
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: send-health-command
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/${HealthCommandDocument}"
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+                Condition:
+                  StringEquals:
+                    "ssm:resourceTag/aws:autoscaling:groupName": !Ref BackendAutoScalingGroupName
+
+  HealthSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Independent of Celery Beat - runs even when Beat is stopped.
+      ScheduleExpression: !Ref ScheduleExpression
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: arn:aws:scheduler:::aws-sdk:ssm:sendCommand
+        RoleArn: !GetAtt SchedulerRole.Arn
+        RetryPolicy: { MaximumRetryAttempts: 0 }
+        Input: !Sub |
+          {
+            "DocumentName": "${HealthCommandDocument}",
+            "Targets": [{"Key": "tag:aws:autoscaling:groupName", "Values": ["${BackendAutoScalingGroupName}"]}],
+            "Parameters": {"containerName": ["${BackendContainerName}"]},
+            "MaxConcurrency": "100%",
+            "MaxErrors": "100%",
+            "TimeoutSeconds": 120,
+            "Comment": "ECP Marketing Hub background health"
+          }
+
+  InstancePublishPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: ecp-background-health-metrics
+      Roles: [!Ref BackendInstanceRoleName]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: cloudwatch:PutMetricData
+            Resource: "*"
+            Condition:
+              StringEquals: { "cloudwatch:namespace": !Ref Namespace }
+
+  # --- Alarms (notify on state change only: no repeat per minute) ----------
+  MonitorMissingAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ecp-${Environment}-background-health-monitor-missing"
+      AlarmDescription: No health sample arrived - the monitor (scheduler, SSM, container or publish) stopped. Missing data is breaching, never Healthy.
+      Namespace: !Ref Namespace
+      MetricName: MonitorSample
+      Dimensions: [{ Name: Environment, Value: !Ref Environment }]
+      Statistic: SampleCount
+      Period: 60
+      EvaluationPeriods: !Ref MissingSampleMinutes
+      DatapointsToAlarm: !Ref MissingSampleMinutes
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlarmTopicArn]
+      OKActions: [!Ref AlarmTopicArn]
+
+  CeleryBeatUnhealthyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ecp-${Environment}-celery-beat-unhealthy"
+      AlarmDescription: Celery Beat stopped publishing scheduled tasks (B10 celery_beat Unhealthy).
+      Namespace: !Ref Namespace
+      MetricName: ComponentUnhealthy
+      Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: celery_beat }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: !Ref UnhealthyMinutes
+      DatapointsToAlarm: !Ref UnhealthyMinutes
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      # Missing data is the MonitorMissing alarm's job: hold the current state
+      # (no false recovery, and no burst of OK messages when samples resume).
+      TreatMissingData: ignore
+      AlarmActions: [!Ref AlarmTopicArn]
+      OKActions: [!Ref AlarmTopicArn]
+
+  ScheduledTasksUnhealthyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ecp-${Environment}-scheduled-tasks-unhealthy"
+      AlarmDescription: Scheduled newsletter tasks are not executing (published but not run, stale or failing).
+      Namespace: !Ref Namespace
+      MetricName: ComponentUnhealthy
+      Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: scheduled_tasks }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: !Ref UnhealthyMinutes
+      DatapointsToAlarm: !Ref UnhealthyMinutes
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: ignore
+      AlarmActions: [!Ref AlarmTopicArn]
+      OKActions: [!Ref AlarmTopicArn]
+
+  CeleryWorkerUnhealthyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ecp-${Environment}-celery-worker-unhealthy"
+      AlarmDescription: No Celery worker answered a ping.
+      Namespace: !Ref Namespace
+      MetricName: ComponentUnhealthy
+      Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: celery_worker }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: !Ref UnhealthyMinutes
+      DatapointsToAlarm: !Ref UnhealthyMinutes
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: ignore
+      AlarmActions: [!Ref AlarmTopicArn]
+      OKActions: [!Ref AlarmTopicArn]
+
+  RedisBrokerUnhealthyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ecp-${Environment}-redis-broker-unhealthy"
+      AlarmDescription: The Celery broker (Redis) is unreachable from the backend.
+      Namespace: !Ref Namespace
+      MetricName: ComponentUnhealthy
+      Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: redis_broker }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: !Ref UnhealthyMinutes
+      DatapointsToAlarm: !Ref UnhealthyMinutes
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: ignore
+      AlarmActions: [!Ref AlarmTopicArn]
+      OKActions: [!Ref AlarmTopicArn]
+
+  MauticCronUnhealthyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ecp-${Environment}-mautic-cron-unhealthy"
+      AlarmDescription: A Mautic cron job is overdue, failing or not finishing.
+      Namespace: !Ref Namespace
+      MetricName: ComponentUnhealthy
+      Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: mautic_cron }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: !Ref UnhealthyMinutes
+      DatapointsToAlarm: !Ref UnhealthyMinutes
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: ignore
+      AlarmActions: [!Ref AlarmTopicArn]
+      OKActions: [!Ref AlarmTopicArn]
+
+  MauticWorkerUnhealthyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ecp-${Environment}-mautic-worker-unhealthy"
+      AlarmDescription: Mautic messenger messages are not being consumed. Reports 0 while transports are sync (Disabled).
+      Namespace: !Ref Namespace
+      MetricName: ComponentUnhealthy
+      Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: mautic_worker }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: !Ref UnhealthyMinutes
+      DatapointsToAlarm: !Ref UnhealthyMinutes
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: ignore
+      AlarmActions: [!Ref AlarmTopicArn]
+      OKActions: [!Ref AlarmTopicArn]
+
+  AnyComponentWarningAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ecp-${Environment}-background-health-warning"
+      AlarmDescription: A component has been Warning or worse for a sustained period. Stays in ALARM while a warning escalates to Unhealthy, so OK means recovered.
+      Metrics:
+        - Id: anyDegraded
+          Expression: MAX([beat, tasks, worker, redis, cron, mworker])
+          Label: Any component Warning or worse
+          ReturnData: true
+        - { Id: beat, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentDegraded, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: celery_beat }] } } }
+        - { Id: tasks, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentDegraded, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: scheduled_tasks }] } } }
+        - { Id: worker, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentDegraded, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: celery_worker }] } } }
+        - { Id: redis, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentDegraded, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: redis_broker }] } } }
+        - { Id: cron, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentDegraded, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: mautic_cron }] } } }
+        - { Id: mworker, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentDegraded, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: mautic_worker }] } } }
+      EvaluationPeriods: !Ref WarningMinutes
+      DatapointsToAlarm: !Ref WarningMinutes
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: ignore
+      AlarmActions: [!Ref AlarmTopicArn]
+      OKActions: [!Ref AlarmTopicArn]
+
+  AnyComponentUnknownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ecp-${Environment}-background-health-unknown"
+      AlarmDescription: Evidence for a component has been unavailable for a sustained period (not a confirmed failure, not Healthy either).
+      Metrics:
+        - Id: anyUnknown
+          Expression: MAX([beat, tasks, worker, redis, cron, mworker])
+          Label: Any component Unknown
+          ReturnData: true
+        - { Id: beat, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentUnknown, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: celery_beat }] } } }
+        - { Id: tasks, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentUnknown, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: scheduled_tasks }] } } }
+        - { Id: worker, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentUnknown, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: celery_worker }] } } }
+        - { Id: redis, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentUnknown, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: redis_broker }] } } }
+        - { Id: cron, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentUnknown, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: mautic_cron }] } } }
+        - { Id: mworker, ReturnData: false, MetricStat: { Period: 60, Stat: Maximum, Metric: { Namespace: !Ref Namespace, MetricName: ComponentUnknown, Dimensions: [{ Name: Environment, Value: !Ref Environment }, { Name: Component, Value: mautic_worker }] } } }
+      EvaluationPeriods: !Ref UnknownMinutes
+      DatapointsToAlarm: !Ref UnknownMinutes
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: ignore
+      AlarmActions: [!Ref AlarmTopicArn]
+      OKActions: [!Ref AlarmTopicArn]

@@ -237,6 +237,12 @@ SCHEDULER_MONITOR_STARTUP_GRACE_SECONDS = os.getenv("SCHEDULER_MONITOR_STARTUP_G
 # Doctrine transports; sync transports have no queue).
 MAUTIC_WORKER_BACKLOG_WARNING_SECONDS = int(os.getenv("MAUTIC_WORKER_BACKLOG_WARNING_SECONDS", "300"))
 MAUTIC_WORKER_BACKLOG_UNHEALTHY_SECONDS = int(os.getenv("MAUTIC_WORKER_BACKLOG_UNHEALTHY_SECONDS", "900"))
+# Independent background-health alerting (newsletter.health_alerting): the
+# publish_background_health command sends these CloudWatch metrics; see
+# deploy/monitoring/README.md. Nothing is sent unless that command runs.
+HEALTH_ALERTING_NAMESPACE = os.getenv("HEALTH_ALERTING_NAMESPACE", "ECP/MarketingHub")
+HEALTH_ALERTING_ENVIRONMENT = os.getenv("HEALTH_ALERTING_ENVIRONMENT", "development")
+HEALTH_ALERTING_AWS_REGION = os.getenv("HEALTH_ALERTING_AWS_REGION", "")
 # Send Now outcome resolution (newsletter.send_outcome_resolution): a send
 # whose response was lost can be resolved only after this long, because a
 # Mautic web request's PHP time limit does not bound network/database waits.
