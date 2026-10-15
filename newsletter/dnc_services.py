@@ -200,11 +200,19 @@ def record_email_suppression(
         if suppression.is_reversible and not is_reversible_reason(reason):
             # Escalate: a bounce or manual block outranks a voluntary opt-out.
             suppression.reason = reason
-            suppression.suppressed_at = occurred_at
+            # Never moved back: a delayed older bounce keeps the newer time.
+            suppression.suppressed_at = max(suppression.suppressed_at, occurred_at)
             update_fields += ["reason", "suppressed_at"]
             if comments:
                 suppression.comments = str(comments)[:255]
                 update_fields.append("comments")
+
+        elif occurred_at > suppression.suppressed_at:
+            # A newer suppressing event (e.g. an unsubscribe after a bounce):
+            # the contact has been suppressed since then, and a "contactable"
+            # change older than it must not lift the suppression.
+            suppression.suppressed_at = occurred_at
+            update_fields.append("suppressed_at")
 
         if mautic_contact_id and not suppression.mautic_contact_id:
             suppression.mautic_contact_id = str(mautic_contact_id)[:64]
@@ -218,6 +226,30 @@ def clear_email_suppression(user) -> bool:
     """Drop the suppression row. Returns True when a row was removed."""
     deleted, _ = MauticEmailSuppression.objects.filter(user=user).delete()
     return bool(deleted)
+
+
+def clear_email_suppression_if_older(user, observed_at) -> bool:
+    """Drop the suppression only if it predates ``observed_at``, the provider
+    time of a "contactable" change.
+
+    ``suppressed_at`` is the provider time of the latest suppressing event
+    (record_email_suppression advances it), so a delayed or replayed change
+    older than a later unsubscribe or bounce leaves the suppression in place.
+    Equal times cannot be ordered and keep it too; the explicit re-subscribe
+    flow can still resolve that against Mautic's live state.
+    Returns True when a row was removed."""
+    with transaction.atomic():
+        suppression = (
+            MauticEmailSuppression.objects.select_for_update()
+            .filter(user=user)
+            .first()
+        )
+        if suppression is None:
+            return False
+        if observed_at <= suppression.suppressed_at:
+            return False
+        suppression.delete()
+        return True
 
 
 class SuppressionReconciliation:

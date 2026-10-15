@@ -21,7 +21,11 @@ from newsletter.models import (
 User = get_user_model()
 
 
-@override_settings(MAUTIC_WEBHOOK_SECRET="webhook-secret")
+@override_settings(
+    MAUTIC_WEBHOOK_SECRET="webhook-secret",
+    # Delivery observations are cached: keep them out of the shared Redis.
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "webhook-receiver-tests"}},
+)
 class MauticNewsletterWebhookReceiverTests(TestCase):
     def setUp(self):
         self.client = APIClient()

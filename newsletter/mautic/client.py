@@ -2927,6 +2927,17 @@ class MauticClient:
             raise TemporaryMauticError("Mautic background health returned an invalid report")
         return data
 
+    def list_webhooks(self, *, timeout=None) -> list[dict[str, Any]]:
+        """Native Mautic webhooks (``GET /api/hooks``), read-only."""
+        response = self._request("GET", "hooks", params={"limit": 200}, timeout=timeout)
+        data = self._json_object(response, "Mautic webhook list")
+        hooks = data.get("hooks")
+        if isinstance(hooks, dict):
+            hooks = list(hooks.values())
+        if not isinstance(hooks, list):
+            raise TemporaryMauticError("Mautic webhook list returned an invalid response")
+        return [hook for hook in hooks if isinstance(hook, dict)]
+
     def get_email_send_evidence(
         self, email_id: int | str, *, since=None, due_before=None, timeout=None
     ) -> dict[str, Any]:

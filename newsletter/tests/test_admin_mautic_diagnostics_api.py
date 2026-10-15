@@ -201,6 +201,7 @@ class NewsletterAdminMauticDiagnosticsAPITests(TestCase):
             "decisions": [],
             "connectionRestrictions": {},
         }
+        client_cls.return_value.list_webhooks.side_effect = PermanentMauticError("HTTP 403")
         campaign = NewsletterCampaign.objects.create(name="Legacy", mautic_email_id="8")
         NewsletterCampaignTrackingEvent.objects.create(
             campaign=campaign,

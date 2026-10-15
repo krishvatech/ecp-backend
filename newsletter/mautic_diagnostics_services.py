@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import logging
 import threading
 from datetime import timedelta
@@ -37,7 +39,7 @@ from .scheduler_monitoring import (
     legacy_beat_status,
     scheduler_warnings,
 )
-from .webhooks import EVENT_TYPE_MAP
+from .webhooks import EVENT_TYPE_MAP, webhook_observations
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +71,7 @@ def get_mautic_diagnostics(request=None) -> dict:
     rest = _rest_status(config)
     marketing_bridge = _marketing_bridge_status(config)
     campaign_bridge = _campaign_builder_bridge_status(config)
-    webhook = _webhook_status(request)
+    webhook = _webhook_status(request, config=config, marketing_bridge=marketing_bridge)
     sync = _sync_status()
     redis_probe = _redis_status()
     worker = _worker_status(broker=redis_probe)
@@ -331,20 +333,114 @@ def _bridge_unavailable(status: str, detail: str) -> dict:
     }
 
 
-def _webhook_status(request=None) -> dict:
-    secret_configured = bool(str(getattr(settings, "MAUTIC_WEBHOOK_SECRET", "") or ""))
+def _webhook_status(request=None, *, config=None, marketing_bridge=None) -> dict:
+    secret = str(getattr(settings, "MAUTIC_WEBHOOK_SECRET", "") or "")
+    secret_configured = bool(secret)
     latest = NewsletterCampaignTrackingEvent.objects.filter(source="mautic").order_by("-created_at").first()
     path = reverse("newsletter-mautic-webhook")
+    observations = webhook_observations()
+    registration = _webhook_registration(path, secret, config, marketing_bridge)
     return {
         "receiver": "Ready" if secret_configured else "Not Configured",
         "endpoint_configured": secret_configured,
         "endpoint_path": path,
         "endpoint_url": request.build_absolute_uri(path) if request is not None else path,
-        "registration": "Not Verifiable",
+        "registration": registration.pop("status"),
         "last_received_at": latest.created_at if latest else None,
         "last_processing_status": "Received" if latest else "Never Received",
         "supported_event_types": sorted(EVENT_TYPE_MAP.keys()),
+        # B15: what Mautic is configured to do, and what deliveries showed.
+        **registration,
+        "deliveries": {
+            "observed": observations.get("available", False),
+            "last_accepted": observations.get("accepted"),
+            "last_rejected": observations.get("rejected"),
+            "last_failed": observations.get("failed"),
+        },
     }
+
+
+def _is_private_host(host: str) -> bool:
+    if not host or host == "localhost" or host.endswith(".local") or host.endswith(".internal"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_private or address.is_loopback or address.is_link_local
+
+
+def _webhook_registration(path, secret, config, marketing_bridge) -> dict:
+    """Whether Mautic has a webhook pointing at this receiver, read from
+    Mautic's own webhook list. Read-only; the secret is compared, never
+    returned. Anything that cannot be read is Not Verifiable, never assumed."""
+    result = {
+        "status": "Not Verifiable",
+        "registration_detail": "",
+        "registered_events": [],
+        "missing_events": [],
+        "secret_matches": None,
+        "delivery_host": None,
+        "delivery_host_private": None,
+        "matching_hooks": 0,
+    }
+    if not (config or {}).get("configured"):
+        result["registration_detail"] = "Mautic is not configured."
+        return result
+    if not (marketing_bridge or {}).get("available"):
+        result["registration_detail"] = "Mautic could not be reached."
+        return result
+    try:
+        timeout = float(getattr(settings, "NEWSLETTER_SEND_EVIDENCE_TIMEOUT_SECONDS", 5))
+        hooks = MauticClient().list_webhooks(timeout=timeout)
+    except (PermanentMauticError, TemporaryMauticError) as exc:
+        result["registration_detail"] = (
+            "Mautic does not allow this account to read webhooks."
+            if "HTTP 403" in str(exc) else "Mautic's webhook list could not be read."
+        )
+        return result
+
+    wanted = path.rstrip("/")
+    matches = [
+        hook for hook in hooks
+        if isinstance(hook, dict) and urlparse(str(hook.get("webhookUrl") or "")).path.rstrip("/") == wanted
+    ]
+    result["matching_hooks"] = len(matches)
+    if not matches:
+        result.update(status="Not Registered", registration_detail="No Mautic webhook points at this receiver.")
+        return result
+
+    published = [hook for hook in matches if hook.get("isPublished") is True]
+    hook = (published or matches)[0]
+    triggers = hook.get("triggers") or []
+    subscribed = {
+        str(trigger.get("eventType") if isinstance(trigger, dict) else trigger)
+        for trigger in (triggers.values() if isinstance(triggers, dict) else triggers)
+    }
+    supported = set(EVENT_TYPE_MAP)
+    host = urlparse(str(hook.get("webhookUrl") or "")).hostname or ""
+    hook_secret = str(hook.get("secret") or "")
+    result.update(
+        registered_events=sorted(subscribed & supported),
+        missing_events=sorted(supported - subscribed),
+        secret_matches=(
+            hmac.compare_digest(hook_secret.encode(), secret.encode())
+            if hook_secret and secret else None
+        ),
+        delivery_host=host or None,
+        delivery_host_private=_is_private_host(host) if host else None,
+    )
+    if published:
+        result.update(status="Registered", registration_detail=(
+            "A published Mautic webhook points at this receiver."
+            if len(published) == 1 else "Several published Mautic webhooks point at this receiver."
+        ))
+    else:
+        result.update(status="Disabled in Mautic", registration_detail=(
+            "A Mautic webhook points at this receiver but is unpublished; Mautic unpublishes "
+            "webhooks itself after repeated delivery failures."
+        ))
+    return result
 
 
 def _sync_status() -> dict:
@@ -649,6 +745,17 @@ def _warnings(config, rest, marketing_bridge, campaign_bridge, webhook, sync) ->
         warnings.append("ECP Marketing Bridge is unavailable.")
     if campaign_bridge["status"] != "Healthy":
         warnings.append("Campaign Builder Bridge is unavailable.")
+    if webhook["registration"] in ("Not Registered", "Disabled in Mautic"):
+        warnings.append(f"Mautic webhook: {webhook['registration']}.")
+    if webhook.get("secret_matches") is False:
+        warnings.append("The Mautic webhook secret does not match ECP's; deliveries will be rejected.")
+    if webhook.get("missing_events") and webhook["registration"] == "Registered":
+        warnings.append("The Mautic webhook is not subscribed to every supported event.")
+    if webhook.get("delivery_host_private"):
+        warnings.append(
+            "The Mautic webhook delivers to a private address, which Mautic refuses unless it is "
+            "allowlisted in webhook_allowed_private_addresses."
+        )
     if webhook["last_received_at"] is None:
         warnings.append("Webhook receiver has not recorded a Mautic event yet.")
     if sync.get("current_warning"):

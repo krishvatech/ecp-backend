@@ -162,7 +162,11 @@ class MauticEmailSuppressionRecordTests(TestCase):
         )
 
 
-@override_settings(MAUTIC_WEBHOOK_SECRET="webhook-secret")
+@override_settings(
+    MAUTIC_WEBHOOK_SECRET="webhook-secret",
+    # Delivery observations are cached: keep them out of the shared Redis.
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "webhook-consent-tests"}},
+)
 class MauticDncWebhookConsentTests(TestCase):
     """Mautic -> ECP: a DNC change must reach ECP consent."""
 
@@ -354,9 +358,12 @@ class MauticDncWebhookConsentTests(TestCase):
         self.post_channel_event(new_status="unsubscribed")
         self.assertTrue(MauticEmailSuppression.objects.exists())
 
+        # Mautic stamps each change with when it happened; the return to
+        # contactable comes later than the unsubscribe it reverses.
         response = self.post_channel_event(
             new_status="contactable",
             old_status="unsubscribed",
+            timestamp="2026-09-22T10:05:00+00:00",
         )
 
         self.assertEqual(response.status_code, 200)

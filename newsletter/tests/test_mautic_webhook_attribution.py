@@ -30,7 +30,11 @@ SECRET = "webhook-secret"
 DNC = "mautic.lead_channel_subscription_changed"
 
 
-@override_settings(MAUTIC_WEBHOOK_SECRET=SECRET)
+@override_settings(
+    MAUTIC_WEBHOOK_SECRET=SECRET,
+    # Delivery observations are cached: keep them out of the shared Redis.
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "webhook-attribution-tests"}},
+)
 class WebhookBroadcastAttributionTests(TestCase):
     def setUp(self):
         self.client = APIClient()

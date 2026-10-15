@@ -243,6 +243,10 @@ MAUTIC_WORKER_BACKLOG_UNHEALTHY_SECONDS = int(os.getenv("MAUTIC_WORKER_BACKLOG_U
 HEALTH_ALERTING_NAMESPACE = os.getenv("HEALTH_ALERTING_NAMESPACE", "ECP/MarketingHub")
 HEALTH_ALERTING_ENVIRONMENT = os.getenv("HEALTH_ALERTING_ENVIRONMENT", "development")
 HEALTH_ALERTING_AWS_REGION = os.getenv("HEALTH_ALERTING_AWS_REGION", "")
+# Mautic webhook receiver bounds (newsletter.webhooks); Mautic sends at most
+# webhook_limit (default 10) events per request.
+MAUTIC_WEBHOOK_MAX_BODY_BYTES = int(os.getenv("MAUTIC_WEBHOOK_MAX_BODY_BYTES", str(1024 * 1024)))
+MAUTIC_WEBHOOK_MAX_EVENTS = int(os.getenv("MAUTIC_WEBHOOK_MAX_EVENTS", "500"))
 # Send Now outcome resolution (newsletter.send_outcome_resolution): a send
 # whose response was lost can be resolved only after this long, because a
 # Mautic web request's PHP time limit does not bound network/database waits.
