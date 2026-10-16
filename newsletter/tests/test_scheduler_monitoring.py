@@ -440,6 +440,7 @@ def healthy_jobs(now=NOW, **overrides):
         "campaigns_trigger": job(120, now=now),
         "broadcasts_send": job(30, now=now),
         "contact_import": job(30, now=now),
+        "webhooks_process": job(30, now=now),
     }
     jobs.update(overrides)
     return jobs
@@ -454,6 +455,72 @@ class MauticCronHealthTests(SimpleTestCase):
         self.assertEqual(component["status"], HEALTHY)
         self.assertEqual(set(component["jobs"]), set(monitoring.DEFAULT_MAUTIC_CRON_JOBS))
         self.assertEqual(component["jobs"]["broadcasts_send"]["command"], "mautic:broadcasts:send")
+
+
+    def test_webhooks_process_is_monitored_every_minute(self):
+        self.assertEqual(
+            monitoring.DEFAULT_MAUTIC_CRON_JOBS["webhooks_process"],
+            ("mautic:webhooks:process", 60),
+        )
+        component = self.cron(cron_report(healthy_jobs()))
+        webhook = component["jobs"]["webhooks_process"]
+        self.assertEqual(component["status"], HEALTHY)
+        self.assertEqual(webhook["status"], HEALTHY)
+        self.assertEqual(webhook["expected_cadence_seconds"], 60)
+        self.assertEqual(webhook["last_exit_code"], 0)
+
+    def test_webhooks_process_delayed_and_overdue(self):
+        warning = self.cron(cron_report(healthy_jobs(
+            webhooks_process=job(200),
+        )))
+        self.assertEqual(warning["status"], WARNING)
+        self.assertEqual(
+            warning["jobs"]["webhooks_process"]["reason"],
+            "delayed",
+        )
+
+        unhealthy = self.cron(cron_report(healthy_jobs(
+            webhooks_process=job(500),
+        )))
+        self.assertEqual(unhealthy["status"], UNHEALTHY)
+        self.assertEqual(
+            unhealthy["jobs"]["webhooks_process"]["reason"],
+            "overdue",
+        )
+
+    def test_webhooks_process_failure_is_unhealthy(self):
+        component = self.cron(cron_report(healthy_jobs(
+            webhooks_process=job(
+                30,
+                outcome="failure",
+                success=600,
+                failure=28,
+                exit_code=255,
+            ),
+        )))
+        webhook = component["jobs"]["webhooks_process"]
+        self.assertEqual(component["status"], UNHEALTHY)
+        self.assertEqual(webhook["reason"], "last_run_failed")
+        self.assertEqual(webhook["last_exit_code"], 255)
+
+    def test_webhooks_process_recovers_after_failure(self):
+        component = self.cron(cron_report(healthy_jobs(
+            webhooks_process=job(30, failure=600),
+        )))
+        webhook = component["jobs"]["webhooks_process"]
+        self.assertEqual(component["status"], HEALTHY)
+        self.assertEqual(webhook["status"], HEALTHY)
+        self.assertEqual(webhook["last_outcome"], "success")
+
+    def test_missing_webhooks_process_record_is_unknown(self):
+        jobs = healthy_jobs()
+        del jobs["webhooks_process"]
+        component = self.cron(cron_report(jobs))
+        self.assertEqual(component["status"], UNKNOWN)
+        self.assertEqual(
+            component["jobs"]["webhooks_process"]["reason"],
+            "no_run_recorded",
+        )
 
     def test_cron_stopped_is_overdue(self):
         # Nothing has started for 40 minutes: past 2 x 900 s + 300 s for the

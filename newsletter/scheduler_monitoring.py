@@ -509,6 +509,7 @@ DEFAULT_MAUTIC_CRON_JOBS = {
     "campaigns_trigger": ("mautic:campaigns:trigger", 900),
     "broadcasts_send": ("mautic:broadcasts:send", 60),
     "contact_import": ("mautic:import", 60),
+    "webhooks_process": ("mautic:webhooks:process", 60),
 }
 
 
