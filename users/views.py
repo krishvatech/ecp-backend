@@ -1758,8 +1758,40 @@ class CheckEmailExistsView(APIView):
     """
     Check if an email is already registered.
     GET /auth/check-email/?email=user@example.com
+
+    Returns {email, exists, indeterminate}. Accounts are created in AWS Cognito
+    first, and the Django user row is created lazily on first authenticated
+    request, so a real account can exist in Cognito while absent from auth_user.
+    This view therefore checks Django AND Cognito. `indeterminate` is true when
+    Cognito could not be consulted (misconfigured or a lookup error) and Django
+    had no match — callers must NOT treat that as "new"; they should retry or
+    offer sign-in. The response exposes only an existence boolean (no
+    confirmed/unconfirmed status or any account detail).
     """
     permission_classes = [permissions.AllowAny]
+
+    def _cognito_has_email(self, email):
+        """Read-only Cognito lookup by email. Returns True/False, or None when
+        the check could not be performed (not configured or API error)."""
+        region = getattr(settings, "COGNITO_REGION", "") or ""
+        pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
+        if not region or not pool_id:
+            return None
+        # Guard against filter injection; a valid email never contains a quote.
+        if '"' in email:
+            return False
+        try:
+            import boto3
+            client = boto3.client("cognito-idp", region_name=region)
+            resp = client.list_users(
+                UserPoolId=pool_id,
+                Filter=f'email = "{email}"',
+                Limit=1,
+            )
+            return len(resp.get("Users", [])) > 0
+        except Exception as e:
+            logger.warning("check-email Cognito lookup failed: %s", e.__class__.__name__)
+            return None
 
     def get(self, request):
         email = request.query_params.get('email', '').strip().lower()
@@ -1770,13 +1802,17 @@ class CheckEmailExistsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Check if email exists in auth_user
-        exists = User.objects.filter(email__iexact=email).exists()
+        # Django first (cheap, authoritative when present).
+        if User.objects.filter(email__iexact=email).exists():
+            return Response({'email': email, 'exists': True, 'indeterminate': False})
 
-        return Response({
-            'email': email,
-            'exists': exists
-        })
+        # Not in Django — consult Cognito, where the account may exist first.
+        cognito_result = self._cognito_has_email(email)
+        if cognito_result is None:
+            # Could not confirm. Do not report a false "new user".
+            return Response({'email': email, 'exists': False, 'indeterminate': True})
+
+        return Response({'email': email, 'exists': cognito_result, 'indeterminate': False})
 
 class EmailTokenObtainPairView(TokenObtainPairView):
     """

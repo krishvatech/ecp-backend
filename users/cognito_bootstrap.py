@@ -28,6 +28,11 @@ class CognitoBootstrapView(APIView):
         last_name = (data.get("lastName") or data.get("last_name") or "").strip()
         company = (data.get("company") or "").strip()
         job_title = (data.get("job_title") or data.get("jobTitle") or "").strip()
+        # Country / Region. Event application submission requires a non-empty
+        # profile.location (lead-gen validation), so a newly registered guest
+        # applicant must be able to seed it at bootstrap time. Accept both the
+        # snake_case and camelCase spellings the frontend may send.
+        location = (data.get("location") or data.get("country") or "").strip()
 
         # Safety: don't allow spoofing someone else's identity
         if email and user.email and email != (user.email or "").lower():
@@ -75,6 +80,13 @@ class CognitoBootstrapView(APIView):
         if profile.job_title != job_title:
             profile.job_title = job_title
             profile_update_fields.append("job_title")
+
+        # Only fill location when a value is supplied and the profile does not
+        # already have one, mirroring the "initialize missing fields" intent of
+        # bootstrap. This never clears or overwrites an existing location.
+        if location and not (profile.location or "").strip():
+            profile.location = location[:255]
+            profile_update_fields.append("location")
 
         tz = (data.get("timezone") or "").strip()
         if tz and tz in pytz.all_timezones and profile.timezone != tz:
