@@ -1,7 +1,11 @@
+from datetime import datetime, timezone as datetime_timezone
+
 from django.test import TestCase
 
 from newsletter.mautic.payloads import (
     build_campaign_email_payload,
+    build_cancelled_schedule_email_payload,
+    build_scheduled_campaign_email_payload,
     build_test_email_payload,
 )
 from newsletter.models import NewsletterCampaign, NewsletterCategory
@@ -14,6 +18,7 @@ class CampaignMauticPayloadTests(TestCase):
             subject="September updates",
             from_name="IMAA Connect",
             from_email="newsletter@example.test",
+            preview_text="Deals of the month",
             html_content="<p>Hello</p>",
             plain_text="Hello",
         )
@@ -37,6 +42,7 @@ class CampaignMauticPayloadTests(TestCase):
             {
                 "name": "September Newsletter",
                 "subject": "September updates",
+                "preheaderText": "Deals of the month",
                 "fromName": "IMAA Connect",
                 "fromAddress": "newsletter@example.test",
                 "plainText": "Hello",
@@ -67,6 +73,7 @@ class CampaignMauticPayloadTests(TestCase):
 
         self.assertEqual(payload["name"], "September Newsletter - Test")
         self.assertEqual(payload["subject"], "September updates")
+        self.assertEqual(payload["preheaderText"], "Deals of the month")
         self.assertEqual(payload["fromName"], "IMAA Connect")
         self.assertEqual(payload["fromAddress"], "newsletter@example.test")
         self.assertEqual(payload["plainText"], "Hello")
@@ -74,3 +81,19 @@ class CampaignMauticPayloadTests(TestCase):
         self.assertEqual(payload["emailType"], "template")
         self.assertIs(payload["isPublished"], True)
         self.assertNotIn("lists", payload)
+
+    def test_preheader_is_carried_by_every_broadcast_payload(self):
+        scheduled = build_scheduled_campaign_email_payload(
+            self.campaign,
+            scheduled_at=datetime(2026, 11, 2, 9, 30, tzinfo=datetime_timezone.utc),
+        )
+        cancelled = build_cancelled_schedule_email_payload(self.campaign)
+
+        self.assertEqual(scheduled["preheaderText"], "Deals of the month")
+        self.assertEqual(cancelled["preheaderText"], "Deals of the month")
+
+    def test_empty_preview_text_clears_the_mautic_preheader(self):
+        self.campaign.preview_text = ""
+
+        self.assertEqual(build_campaign_email_payload(self.campaign)["preheaderText"], "")
+        self.assertEqual(build_test_email_payload(self.campaign)["preheaderText"], "")

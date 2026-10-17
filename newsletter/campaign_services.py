@@ -12,6 +12,7 @@ from .campaign_send_events import (
     create_campaign_send_event,
     dispatch_campaign_send_event_safely,
 )
+from .email_design_services import copy_campaign_design, save_campaign_design
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.exceptions import MauticBridgeRejectedError
 from .mautic.payloads import (
@@ -485,6 +486,7 @@ def deliver_temporary_test_email(payload, recipient, *, provider_client, send_cl
 @transaction.atomic
 def create_campaign(validated_data, *, user):
     audience_slugs = validated_data.pop("audience_slugs", [])
+    email_design = validated_data.pop("email_design", None)
     campaign = NewsletterCampaign.objects.create(
         **validated_data,
         status=NewsletterCampaign.Status.DRAFT,
@@ -492,6 +494,8 @@ def create_campaign(validated_data, *, user):
         updated_by=user,
     )
     campaign.audiences.set(_categories_from_slugs(audience_slugs))
+    if email_design is not None:
+        save_campaign_design(campaign, email_design, user=user)
     return campaign
 
 
@@ -527,6 +531,9 @@ def duplicate_campaign(source, *, user):
         updated_by=user,
     )
     duplicate.audiences.set(source.audiences.filter(is_active=True))
+    # An independent copy of the editable design, only if it still matches the
+    # copied HTML; otherwise the duplicate is HTML-only like its source.
+    copy_campaign_design(source, duplicate, user=user)
     return duplicate
 
 
@@ -549,6 +556,7 @@ def update_campaign(campaign, validated_data, *, user):
     _ensure_campaign_can_change(campaign, action="edited")
 
     audience_slugs = validated_data.pop("audience_slugs", None)
+    email_design = validated_data.pop("email_design", None)
     for field, value in validated_data.items():
         setattr(campaign, field, value)
     campaign.updated_by = user
@@ -557,6 +565,9 @@ def update_campaign(campaign, validated_data, *, user):
     categories = _categories_from_slugs(audience_slugs)
     if categories is not None:
         campaign.audiences.set(categories)
+    # Same transaction and row lock as the HTML it produced: both commit or neither.
+    if email_design is not None:
+        save_campaign_design(campaign, email_design, user=user)
     return campaign
 
 

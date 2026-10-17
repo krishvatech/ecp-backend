@@ -272,8 +272,11 @@ class NewsletterAdminCampaignAPITests(TestCase):
                 "last_error",
                 "created_at",
                 "updated_at",
+                # Read-only visual-builder state; the list carries a status only.
+                "visual_design",
             },
         )
+        self.assertEqual(list_response.data[0]["visual_design"], {"status": "none"})
         self.assertEqual(
             list_response.data[0]["audiences"][0]["slug"],
             "imaa-deal-alert",

@@ -1,5 +1,11 @@
 from rest_framework import serializers
 
+from .email_design_services import (
+    campaign_design_row,
+    design_state,
+    html_fingerprint,
+    prepare_email_design,
+)
 from .models import NewsletterAudience, NewsletterCampaign, NewsletterCategory
 
 
@@ -58,6 +64,11 @@ class NewsletterCampaignSerializer(serializers.ModelSerializer):
         required=False,
         allow_empty=True,
     )
+    # Visual builder: the design is stored by ECP only, and html_content is
+    # compiled here from the submitted MJML (never taken from the client).
+    design = serializers.JSONField(write_only=True, required=False)
+    mjml = serializers.CharField(write_only=True, required=False, trim_whitespace=False)
+    visual_design = serializers.SerializerMethodField()
 
     class Meta:
         model = NewsletterCampaign
@@ -73,6 +84,9 @@ class NewsletterCampaignSerializer(serializers.ModelSerializer):
             "status",
             "audiences",
             "audience_slugs",
+            "design",
+            "mjml",
+            "visual_design",
             "scheduled_at",
             "schedule_owner",
             "send_started_at",
@@ -123,6 +137,33 @@ class NewsletterCampaignSerializer(serializers.ModelSerializer):
         if not value or not value.strip():
             raise serializers.ValidationError("Campaign name is required.")
         return value.strip()
+
+    def validate(self, attrs):
+        has_design = "design" in attrs
+        has_mjml = "mjml" in attrs
+        if not has_design and not has_mjml:
+            return attrs
+        if has_design != has_mjml:
+            raise serializers.ValidationError(
+                {"design": "A visual design needs both design and mjml."}
+            )
+        try:
+            prepared = prepare_email_design(attrs.pop("design"), attrs.pop("mjml"))
+        except ValueError as exc:
+            raise serializers.ValidationError({"design": str(exc)}) from exc
+        attrs["html_content"] = prepared.html
+        # Consumed by create_campaign/update_campaign, never a model field.
+        attrs["email_design"] = prepared
+        return attrs
+
+    def get_visual_design(self, obj):
+        row = campaign_design_row(obj)
+        if self.context.get("design_summary_only"):
+            # List view: the design JSON is deferred, so compare fingerprints only.
+            if row is None:
+                return {"status": "none"}
+            return {"status": "in_sync" if row.html_sha256 == html_fingerprint(obj.html_content) else "stale"}
+        return design_state(row, obj.html_content)
 
     def get_mautic_email_id(self, obj):
         return obj.mautic_email_id or None

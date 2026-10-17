@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import math
+import re
 from typing import Any
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
+from django.db import DatabaseError
 from django.http import Http404
 from rest_framework import status
 from rest_framework.response import Response
@@ -12,7 +15,18 @@ from rest_framework.views import APIView
 
 from . import marketing_cache
 from .campaign_services import deliver_temporary_test_email
+from .email_design_services import (
+    TemplateSaveInProgress,
+    copy_template_design,
+    delete_template_design,
+    html_fingerprint,
+    prepare_email_design,
+    save_template_design,
+    template_design_state,
+    template_save_lock,
+)
 from .marketing_permissions import HasMarketingHubAccess
+from .models import NewsletterEmailDesign
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.operations import (
@@ -24,6 +38,8 @@ from .mautic.operations import (
 )
 from .mautic_identity_execution import run_interactive_mutation
 
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_TOKENS = [
     {
@@ -189,6 +205,120 @@ def _parse_template_payload(data, *, partial: bool = False) -> dict[str, Any]:
     return payload
 
 
+# Visual-builder fields: handled by ECP, never forwarded to Mautic.
+_VISUAL_FIELDS = ("design", "mjml", "baseFingerprint")
+_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class TemplateChangedError(Exception):
+    """The Template's HTML in Mautic is not the version the editor loaded."""
+
+
+def _split_visual_fields(data) -> tuple[dict[str, Any], dict[str, Any]]:
+    plain = {key: data.get(key) for key in data.keys() if key not in _VISUAL_FIELDS}
+    visual = {key: data.get(key) for key in _VISUAL_FIELDS if key in data}
+    return plain, visual
+
+
+def _prepare_visual_design(visual: dict[str, Any], plain: dict[str, Any]):
+    """Validate + compile a submitted visual design, or None for HTML-mode saves."""
+    if "design" not in visual and "mjml" not in visual:
+        return None
+    if "design" not in visual or "mjml" not in visual:
+        raise ValueError("A visual design needs both design and mjml.")
+    if "customHtml" in plain:
+        raise ValueError(
+            "customHtml is generated from the visual design; send one or the other."
+        )
+    return prepare_email_design(visual["design"], visual["mjml"])
+
+
+def _parse_base_fingerprint(visual: dict[str, Any], *, required: bool):
+    value = visual.get("baseFingerprint")
+    if value in (None, ""):
+        if required:
+            raise ValueError(
+                "baseFingerprint is required to save a visual design over an existing Template."
+            )
+        return None
+    if not isinstance(value, str) or not _FINGERPRINT_RE.match(value):
+        raise ValueError("baseFingerprint must be a SHA-256 hex digest.")
+    return value
+
+
+def _design_payload(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": state["status"],
+        "design": state["design"],
+        "htmlFingerprint": state["html_fingerprint"],
+        "updatedAt": state["updated_at"],
+    }
+
+
+def _template_with_design(template: dict[str, Any]) -> dict[str, Any]:
+    """The normalized Template plus the state of its ECP visual design."""
+    if template.get("id"):
+        state = template_design_state(template["id"], template["customHtml"])
+        template["visualDesign"] = _design_payload(state)
+    return template
+
+
+def _design_not_saved_response(template: dict[str, Any], *, created: bool) -> Response:
+    # Mautic and PostgreSQL are separate systems: the Template change is real,
+    # only the editable design is missing. Say so instead of reporting success.
+    action = "created" if created else "saved"
+    return Response(
+        {
+            "detail": (
+                f"The Template was {action} in Mautic, but its visual design could not "
+                "be stored. Its HTML is safe; reopen it to continue in HTML mode, or "
+                "save the visual design again."
+            ),
+            "code": "design_not_saved",
+            "designSaved": False,
+            "template": template,
+        },
+        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
+def _store_template_design(request, template_id, prepared, *, fallback_email, created):
+    """Persist the design against the HTML Mautic actually stored.
+
+    Mautic normalizes HTML on save, so the fingerprint is taken from a fresh
+    read, never from the submitted HTML.
+    """
+    try:
+        stored = _normalize_template(MauticClient().get_email_template(template_id))
+    except (TemporaryMauticError, PermanentMauticError):
+        logger.warning(
+            "Could not read back Mautic template id=%s to store its visual design",
+            template_id,
+            exc_info=True,
+        )
+        return _design_not_saved_response(
+            _template_with_design(_normalize_template(fallback_email)),
+            created=created,
+        )
+    try:
+        save_template_design(template_id, prepared, stored["customHtml"], user=request.user)
+    except DatabaseError:
+        logger.exception("Could not store the visual design of Mautic template id=%s", template_id)
+        return _design_not_saved_response(_template_with_design(stored), created=created)
+    return Response(
+        _template_with_design(stored),
+        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+    )
+
+
+def _update_template_if_unchanged(client, template_id, payload, base_fingerprint):
+    if base_fingerprint is not None:
+        current = _normalize_template(MauticClient().get_email_template(template_id))
+        if html_fingerprint(current["customHtml"]) != base_fingerprint:
+            raise TemplateChangedError
+    return client.update_email_template(template_id, payload)
+
+
 def _collection_values(value) -> list[dict[str, Any]]:
     if isinstance(value, dict):
         rows = value.values()
@@ -310,13 +440,17 @@ class NewsletterAdminTemplateListCreateView(APIView):
         )
 
     def post(self, request):
+        plain, visual = _split_visual_fields(request.data)
         try:
-            payload = _parse_template_payload(request.data)
+            prepared = _prepare_visual_design(visual, plain)
+            payload = _parse_template_payload(plain)
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if prepared is not None:
+            payload["customHtml"] = prepared.html
 
         try:
             email, error_response = run_interactive_mutation(
@@ -331,8 +465,16 @@ class NewsletterAdminTemplateListCreateView(APIView):
         if error_response is not None:
             return error_response
 
+        if prepared is not None:
+            return _store_template_design(
+                request,
+                str(email.get("id")),
+                prepared,
+                fallback_email=email,
+                created=True,
+            )
         return Response(
-            _normalize_template(email),
+            _template_with_design(_normalize_template(email)),
             status=status.HTTP_201_CREATED,
         )
 
@@ -349,35 +491,75 @@ class NewsletterAdminTemplateDetailView(APIView):
             return _provider_error_response(exc)
 
         return Response(
-            _normalize_template(email),
+            _template_with_design(_normalize_template(email)),
             status=status.HTTP_200_OK,
         )
 
     def patch(self, request, template_id):
+        plain, visual = _split_visual_fields(request.data)
         try:
-            payload = _parse_template_payload(request.data, partial=True)
+            prepared = _prepare_visual_design(visual, plain)
+            # A visual save may change nothing but the design itself.
+            payload = (
+                _parse_template_payload(plain, partial=True)
+                if plain or prepared is None
+                else {}
+            )
+            base_fingerprint = _parse_base_fingerprint(visual, required=prepared is not None)
         except ValueError as exc:
             return Response(
                 {"detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if prepared is not None:
+            payload["customHtml"] = prepared.html
 
         try:
-            email, error_response = run_interactive_mutation(
-                request,
-                action=TEMPLATE_UPDATE,
-                resource="template",
-                resource_id=template_id,
-                mutate=lambda client: client.update_email_template(template_id, payload),
-                client_factory=MauticClient,
+            with template_save_lock(template_id):
+                email, error_response = run_interactive_mutation(
+                    request,
+                    action=TEMPLATE_UPDATE,
+                    resource="template",
+                    resource_id=template_id,
+                    mutate=lambda client: _update_template_if_unchanged(
+                        client, template_id, payload, base_fingerprint
+                    ),
+                    client_factory=MauticClient,
+                )
+                if error_response is not None:
+                    return error_response
+                if prepared is not None:
+                    return _store_template_design(
+                        request,
+                        template_id,
+                        prepared,
+                        fallback_email=email,
+                        created=False,
+                    )
+        except TemplateSaveInProgress:
+            return Response(
+                {
+                    "detail": "This Template is being saved by another request. Try again in a moment.",
+                    "code": "template_save_in_progress",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        except TemplateChangedError:
+            return Response(
+                {
+                    "detail": (
+                        "This Template was changed since you opened it. Your changes were "
+                        "not saved; reopen it to see the current version."
+                    ),
+                    "code": "template_changed",
+                },
+                status=status.HTTP_409_CONFLICT,
             )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
-        if error_response is not None:
-            return error_response
 
         return Response(
-            _normalize_template(email),
+            _template_with_design(_normalize_template(email)),
             status=status.HTTP_200_OK,
         )
 
@@ -396,6 +578,8 @@ class NewsletterAdminTemplateDetailView(APIView):
         if error_response is not None:
             return error_response
 
+        # Only after Mautic confirmed the deletion.
+        delete_template_design(template_id)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -427,7 +611,40 @@ class NewsletterAdminTemplateDuplicateView(APIView):
         if error_response is not None:
             return error_response
 
-        return Response(_normalize_template(email), status=status.HTTP_201_CREATED)
+        duplicate = _normalize_template(email)
+        duplicate["designCopied"] = _copy_duplicate_design(request, template_id, duplicate)
+        return Response(_template_with_design(duplicate), status=status.HTTP_201_CREATED)
+
+
+def _copy_duplicate_design(request, source_id, duplicate: dict[str, Any]) -> bool:
+    """Copy an in-sync source design to the duplicate. The duplicate exists
+    regardless; a failed copy only leaves it HTML-only."""
+    if not duplicate.get("id"):
+        return False
+    if not NewsletterEmailDesign.objects.filter(mautic_email_id=str(source_id)).exists():
+        return False
+    try:
+        client = MauticClient()
+        source = _normalize_template(client.get_email_template(source_id))
+        # Fingerprint the duplicate as Mautic stored it.
+        target = _normalize_template(client.get_email_template(duplicate["id"]))
+        duplicate["customHtml"] = target["customHtml"]
+        copied = copy_template_design(
+            source_id,
+            source["customHtml"],
+            duplicate["id"],
+            target["customHtml"],
+            user=request.user,
+        )
+    except (TemporaryMauticError, PermanentMauticError, DatabaseError):
+        logger.warning(
+            "Could not copy the visual design of Mautic template id=%s to id=%s",
+            source_id,
+            duplicate.get("id"),
+            exc_info=True,
+        )
+        return False
+    return copied is not None
 
 
 class NewsletterAdminTemplatePreviewView(APIView):
@@ -439,7 +656,7 @@ class NewsletterAdminTemplatePreviewView(APIView):
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error_response(exc)
 
-        template = _normalize_template(email)
+        template = _template_with_design(_normalize_template(email))
         return Response(
             {
                 "type": "raw_html",
