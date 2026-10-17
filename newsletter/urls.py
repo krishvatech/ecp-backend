@@ -64,6 +64,7 @@ from .point_views import (
     NewsletterAdminPointActionListCreateView,
     NewsletterAdminPointActionTypesView,
 )
+from .email_design_views import NewsletterAdminEmailDesignCompileView
 from .template_views import (
     NewsletterAdminTemplateCategoriesView,
     NewsletterAdminTemplateDetailView,
@@ -361,6 +362,11 @@ urlpatterns = [
         "newsletter/admin/categories/",
         NewsletterAdminCategoryListView.as_view(),
         name="newsletter-admin-category-list",
+    ),
+    path(
+        "newsletter/admin/email-designs/compile/",
+        NewsletterAdminEmailDesignCompileView.as_view(),
+        name="newsletter-admin-email-design-compile",
     ),
     path(
         "newsletter/admin/templates/",

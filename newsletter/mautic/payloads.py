@@ -27,6 +27,9 @@ def build_campaign_email_payload(
     return {
         "name": campaign.name,
         "subject": campaign.subject,
+        # Mautic's Email field for inbox preview text; ECP stores it as
+        # preview_text. Sent every time so clearing it in ECP clears it in Mautic.
+        "preheaderText": campaign.preview_text,
         "fromName": campaign.from_name,
         "fromAddress": campaign.from_email,
         "plainText": campaign.plain_text,
@@ -43,6 +46,7 @@ def build_test_email_payload(campaign) -> dict[str, Any]:
     return {
         "name": f"{campaign.name} - Test",
         "subject": campaign.subject,
+        "preheaderText": campaign.preview_text,
         "fromName": campaign.from_name,
         "fromAddress": campaign.from_email,
         "plainText": campaign.plain_text,

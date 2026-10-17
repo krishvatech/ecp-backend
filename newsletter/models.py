@@ -323,6 +323,72 @@ class NewsletterCampaign(models.Model):
         return self.name
 
 
+class NewsletterEmailDesign(models.Model):
+    """Editable visual design (Templatical JSON + MJML) for one marketing email.
+
+    Editing metadata only: the delivered content is always the HTML held by the
+    owner (a Mautic Template's ``customHtml``, or a Broadcast's
+    ``html_content``). ``html_sha256`` fingerprints the owner's HTML as it was
+    when this design produced it, so an edit made elsewhere (HTML mode, the
+    Mautic UI) is detected and the design is not shown as authoritative.
+
+    Exactly one owner: a Mautic Template email ID, or an ECP Broadcast.
+    """
+
+    mautic_email_id = models.CharField(max_length=64, null=True, blank=True)
+    campaign = models.OneToOneField(
+        NewsletterCampaign,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="email_design",
+    )
+    design_json = models.JSONField()
+    mjml = models.TextField()
+    html_sha256 = models.CharField(max_length=64)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_newsletter_email_designs",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_newsletter_email_designs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(mautic_email_id__isnull=False, campaign__isnull=True)
+                    | models.Q(mautic_email_id__isnull=True, campaign__isnull=False)
+                ),
+                name="newsletter_email_design_one_owner",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(mautic_email_id__isnull=True) | ~models.Q(mautic_email_id=""),
+                name="newsletter_email_design_mautic_id_not_blank",
+            ),
+            models.UniqueConstraint(
+                fields=["mautic_email_id"],
+                condition=models.Q(mautic_email_id__isnull=False),
+                name="newsletter_email_design_mautic_email_uniq",
+            ),
+        ]
+
+    def __str__(self):
+        owner = f"template:{self.mautic_email_id}" if self.mautic_email_id else f"broadcast:{self.campaign_id}"
+        return f"Email design {owner}"
+
+
 class NewsletterCampaignSendEvent(models.Model):
     """One durable, single-use send request for a newsletter campaign.
 

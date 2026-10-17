@@ -629,7 +629,15 @@ class NewsletterAdminCampaignListCreateView(APIView):
     permission_classes = [HasMarketingHubAccess]
 
     def get(self, request):
-        serializer = NewsletterCampaignSerializer(list_campaigns(), many=True)
+        campaigns = list_campaigns().select_related("email_design").defer(
+            "email_design__design_json",
+            "email_design__mjml",
+        )
+        serializer = NewsletterCampaignSerializer(
+            campaigns,
+            many=True,
+            context={"design_summary_only": True},
+        )
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):

@@ -335,6 +335,16 @@ class GuestJoinView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Same email rules as signup: a valid address, no disposable domain.
+        from users.disposable_email import check_new_participant_email
+
+        email_check = check_new_participant_email(email)
+        if not email_check.allowed:
+            return Response(
+                {"error": email_check.message, "code": email_check.code},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         # 3. Check if email already has CONVERTED account for this event
         existing = GuestAttendee.objects.filter(event=event, email=email).first()
         if existing and existing.converted_at:
