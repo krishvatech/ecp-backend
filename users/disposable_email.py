@@ -271,6 +271,23 @@ def is_disposable_signup_email(email) -> bool:
     return check_signup_email(email).is_disposable
 
 
+def check_new_participant_email(email) -> EmailDomainCheck:
+    """
+    Check an email that admits someone without a full signup (guest join,
+    event applications). It uses the same rules as signup, so a malformed
+    address or a disposable domain is refused. An email that already belongs
+    to a registered user is always allowed, matching the signup rule that
+    existing accounts keep working.
+    """
+    result = check_signup_email(email)
+    if result.is_disposable:
+        from django.contrib.auth import get_user_model
+
+        if get_user_model().objects.filter(email__iexact=str(email).strip()).exists():
+            return EmailDomainCheck(allowed=True, code=ALLOWED_CODE, domain=result.domain)
+    return result
+
+
 def validate_signup_email_domain(email) -> None:
     """Raise a Django ValidationError when ``email`` uses a disposable domain."""
     if is_disposable_signup_email(email):

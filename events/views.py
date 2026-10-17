@@ -3951,6 +3951,20 @@ class EventViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
+        # Same email rules as signup: a valid address, no disposable domain.
+        from users.disposable_email import check_new_participant_email
+
+        email_check = check_new_participant_email(data.get('email') or '')
+        if not email_check.allowed:
+            return Response(
+                {
+                    'detail': email_check.message,
+                    'code': email_check.code,
+                    'email': [email_check.message],
+                },
+                status=400
+            )
+
         # ✅ For authenticated users, validate lead-generation fields
         if is_registered_user:
             is_lead_gen_complete, missing_fields = self._get_missing_lead_gen_fields(request.user)
