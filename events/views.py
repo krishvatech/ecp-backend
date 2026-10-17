@@ -3981,6 +3981,36 @@ class EventViewSet(viewsets.ModelViewSet):
         track_applications_payload = data.get('track_applications') or []
         application_track = None
 
+        # IPDT-771: An application may select only ONE track. Validate the raw
+        # submitted payload here — before legacy/array branch resolution and
+        # before any records are created — so an invalid multi-track request
+        # cannot produce a parent application, child track rows, registrations,
+        # event-role assignments, acceptance side effects, or notification
+        # emails. This restriction applies only to new submissions; historical
+        # multi-track applications are untouched (no model/DB constraint added).
+        has_legacy_track = track_id is not None or bool((track_key or '').strip())
+        if track_applications_payload:
+            if has_legacy_track:
+                # Scenario D: mixed legacy + modern input. Reject rather than
+                # silently discarding the track_applications array.
+                return Response(
+                    {
+                        'detail': (
+                            'Submit your application track using one selection '
+                            'format only: either track_id/track_key or '
+                            'track_applications, not both.'
+                        )
+                    },
+                    status=400,
+                )
+            if len(track_applications_payload) > 1:
+                # Scenario B (multiple tracks) and Scenario C (same track twice,
+                # which would otherwise raise a unique-constraint IntegrityError).
+                return Response(
+                    {'detail': 'Only one application track may be selected.'},
+                    status=400,
+                )
+
         if not track_id and not track_key and not track_applications_payload:
             if len(open_tracks) == 1:
                 application_track = open_tracks[0]

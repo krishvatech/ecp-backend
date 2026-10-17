@@ -17,10 +17,25 @@ from rest_framework.test import APIClient
 from rest_framework import status
 from events.models import (
     Event, EventApplicationTrack, EventApplication, EventApplicationTrackApplication,
-    TrackPricingTier, EventRegistration
+    TrackPricingTier, EventRegistration, EventPlatform, EventPublication
 )
+from community.models import Community
 
 User = get_user_model()
+
+
+def _grant_imaa_visibility(event):
+    """Non-admin API requests only see events published to imaa_connect
+    (EventViewSet.get_queryset), so apply/register endpoints 404 without this."""
+    platform, _ = EventPlatform.objects.update_or_create(
+        slug="imaa_connect",
+        defaults={"name": "IMAA Connect", "is_active": True},
+    )
+    EventPublication.objects.get_or_create(
+        event=event,
+        platform=platform,
+        defaults={"is_enabled": True},
+    )
 
 
 class TrackApplicationCreationTest(TestCase):
@@ -31,6 +46,17 @@ class TrackApplicationCreationTest(TestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(username='testuser', email='test@example.com', password='pass')
         self.client.force_authenticate(user=self.user)
+        lead_gen_patcher = patch(
+            "events.views.EventViewSet._get_missing_lead_gen_fields",
+            return_value=(True, {}),
+        )
+        lead_gen_patcher.start()
+        self.addCleanup(lead_gen_patcher.stop)
+        self.community = Community.objects.create(
+            name='Fix1 Test Community',
+            slug='fix1-test-community',
+            owner=self.user,
+        )
 
         # Create event
         self.event = Event.objects.create(
@@ -39,10 +65,12 @@ class TrackApplicationCreationTest(TestCase):
             format='virtual',
             start_time=timezone.now() + timedelta(days=10),
             end_time=timezone.now() + timedelta(days=11),
-            organizer_id=self.user.id,
+            community=self.community,
+            created_by=self.user,
             registration_type='apply',
             status='published'
         )
+        _grant_imaa_visibility(self.event)
 
         # Create application tracks
         self.speaker_track = EventApplicationTrack.objects.create(
@@ -90,6 +118,8 @@ class TrackApplicationCreationTest(TestCase):
             'first_name': 'John',
             'last_name': 'Doe',
             'email': 'john@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'track_id': self.speaker_track.id,
             'submission_mode': 'self_submission'
         }
@@ -113,12 +143,15 @@ class TrackApplicationCreationTest(TestCase):
         self.assertEqual(track_app.track, self.speaker_track)
         self.assertEqual(track_app.submission_mode, 'self_submission')
 
-    def test_multiple_tracks_creates_multiple_applications(self):
-        """Test: Multiple tracks create multiple EventApplicationTrackApplication records."""
+    def test_multiple_tracks_are_rejected(self):
+        """IPDT-771: submitting more than one track is rejected (400) and
+        creates no records. (Previously this accepted multiple tracks.)"""
         data = {
             'first_name': 'Jane',
             'last_name': 'Smith',
             'email': 'jane@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'submission_mode': 'self_submission',
             'track_applications': [
                 {'track_id': self.speaker_track.id},
@@ -128,24 +161,17 @@ class TrackApplicationCreationTest(TestCase):
 
         response = self.client.post(f'/api/events/{self.event.id}/apply/', data, format='json')
 
-        # Verify response
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('one application track', response.data['detail'].lower())
 
-        # Verify EventApplication created
-        app = EventApplication.objects.get(email='jane@example.com')
-        self.assertEqual(app.event, self.event)
-
-        # CRITICAL: Verify multiple EventApplicationTrackApplication records created
-        track_apps = list(app.track_applications.all().order_by('track_id'))
-        self.assertEqual(len(track_apps), 2)
-
-        # Check first track application
-        self.assertEqual(track_apps[0].track, self.speaker_track)
-        self.assertEqual(track_apps[0].submission_mode, 'self_submission')
-
-        # Check second track application
-        self.assertEqual(track_apps[1].track, self.startup_track)
-        self.assertEqual(track_apps[1].submission_mode, 'self_submission')
+        # No parent application and no child track applications created.
+        self.assertFalse(EventApplication.objects.filter(email='jane@example.com').exists())
+        self.assertFalse(
+            EventApplicationTrackApplication.objects.filter(
+                track__in=[self.speaker_track, self.startup_track],
+                application__email='jane@example.com',
+            ).exists()
+        )
 
     def test_track_application_stores_form_answers_and_files(self):
         """Test: Form answers and files are stored in track application."""
@@ -162,6 +188,8 @@ class TrackApplicationCreationTest(TestCase):
             'first_name': 'Bob',
             'last_name': 'Johnson',
             'email': 'bob@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'track_id': self.speaker_track.id,
             'submission_mode': 'self_submission',
             'form_answers': form_answers,
@@ -189,7 +217,8 @@ class TrackApplicationCreationTest(TestCase):
             format='virtual',
             start_time=timezone.now() + timedelta(days=20),
             end_time=timezone.now() + timedelta(days=21),
-            organizer_id=self.user.id,
+            community=self.community,
+            created_by=self.user,
             registration_type='apply',
             status='published'
         )
@@ -207,6 +236,8 @@ class TrackApplicationCreationTest(TestCase):
             'first_name': 'Alice',
             'last_name': 'Wonder',
             'email': 'alice@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'track_id': other_track.id,
             'submission_mode': 'self_submission'
         }
@@ -234,6 +265,8 @@ class TrackApplicationCreationTest(TestCase):
             'first_name': 'Eve',
             'last_name': 'Green',
             'email': 'eve@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'track_id': track.id,
             'submission_mode': 'third_party_nomination',
             'nominator_name': 'Someone',
@@ -271,6 +304,8 @@ class TrackApplicationCreationTest(TestCase):
             'first_name': 'Charlie',
             'last_name': 'Brown',
             'email': 'charlie@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'track_id': self.speaker_track.id,
             'submission_mode': 'self_submission',
             'tier_preference': other_tier.id  # Wrong tier
@@ -300,6 +335,11 @@ class TrackApplicationCreationTest(TestCase):
         )
 
         data = {
+            'first_name': 'Nominee',
+            'last_name': 'Name',
+            'email': 'nominee@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'track_id': track.id,
             'submission_mode': 'third_party_nomination',
             'nominator_name': 'Nominator Name',
@@ -330,13 +370,15 @@ class TrackApplicationCreationTest(TestCase):
             key='closed',
             label='Closed',
             status='closed',
-            is_active=False
+            is_active=True
         )
 
         data = {
             'first_name': 'David',
             'last_name': 'Gray',
             'email': 'david@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'track_id': closed_track.id,
             'submission_mode': 'self_submission'
         }
@@ -355,14 +397,18 @@ class TrackApplicationCreationTest(TestCase):
             format='virtual',
             start_time=timezone.now() + timedelta(days=10),
             end_time=timezone.now() + timedelta(days=11),
-            organizer_id=self.user.id,
+            community=self.community,
+            created_by=self.user,
             registration_type='apply',
             status='published'
         )
+        _grant_imaa_visibility(event)
         data = {
             'first_name': 'No',
             'last_name': 'Tracks',
             'email': 'no-tracks@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'submission_mode': 'self_submission'
         }
 
@@ -386,10 +432,12 @@ class TrackApplicationCreationTest(TestCase):
             format='virtual',
             start_time=timezone.now() + timedelta(days=10),
             end_time=timezone.now() + timedelta(days=11),
-            organizer_id=self.user.id,
+            community=self.community,
+            created_by=self.user,
             registration_type='apply',
             status='published'
         )
+        _grant_imaa_visibility(event)
         track = EventApplicationTrack.objects.create(
             event=event,
             key='general',
@@ -401,7 +449,9 @@ class TrackApplicationCreationTest(TestCase):
         data = {
             'first_name': 'Single',
             'last_name': 'Track',
-            'email': 'single-track@example.com'
+            'email': 'single-track@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
         }
 
         response = self.client.post(f'/api/events/{event.id}/apply/', data, format='json')
@@ -424,6 +474,8 @@ class TrackApplicationCreationTest(TestCase):
             'first_name': 'Multi',
             'last_name': 'Track',
             'email': 'multi-track@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'submission_mode': 'self_submission'
         }
 
@@ -441,10 +493,12 @@ class TrackApplicationCreationTest(TestCase):
             format='virtual',
             start_time=timezone.now() + timedelta(days=10),
             end_time=timezone.now() + timedelta(days=11),
-            organizer_id=self.user.id,
+            community=self.community,
+            created_by=self.user,
             registration_type='apply',
             status='published'
         )
+        _grant_imaa_visibility(event)
         EventApplicationTrack.objects.create(
             event=event,
             key='closed',
@@ -465,6 +519,8 @@ class TrackApplicationCreationTest(TestCase):
             'first_name': 'Closed',
             'last_name': 'Tracks',
             'email': 'closed-tracks@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'submission_mode': 'self_submission'
         }
 
@@ -485,10 +541,12 @@ class TrackApplicationCreationTest(TestCase):
             format='virtual',
             start_time=timezone.now() + timedelta(days=10),
             end_time=timezone.now() + timedelta(days=11),
-            organizer_id=self.user.id,
+            community=self.community,
+            created_by=self.user,
             registration_type='open',
             status='published'
         )
+        _grant_imaa_visibility(event)
 
         response = self.client.post(f'/api/events/{event.id}/register/', {}, format='json')
 
@@ -507,6 +565,18 @@ class ReviewQueueDisplayTest(TestCase):
         self.user.is_superuser = True
         self.user.save()
         self.client.force_authenticate(user=self.user)
+        lead_gen_patcher = patch(
+            "events.views.EventViewSet._get_missing_lead_gen_fields",
+            return_value=(True, {}),
+        )
+        lead_gen_patcher.start()
+        self.addCleanup(lead_gen_patcher.stop)
+
+        self.community = Community.objects.create(
+            name='Fix1 Review Community',
+            slug='fix1-review-community',
+            owner=self.user,
+        )
 
         # Create event
         self.event = Event.objects.create(
@@ -515,10 +585,12 @@ class ReviewQueueDisplayTest(TestCase):
             format='virtual',
             start_time=timezone.now() + timedelta(days=10),
             end_time=timezone.now() + timedelta(days=11),
-            organizer_id=self.user.id,
+            community=self.community,
+            created_by=self.user,
             registration_type='apply',
             status='published'
         )
+        _grant_imaa_visibility(self.event)
 
         # Create track
         self.track = EventApplicationTrack.objects.create(
@@ -535,6 +607,8 @@ class ReviewQueueDisplayTest(TestCase):
             'first_name': 'Applicant',
             'last_name': 'Person',
             'email': 'applicant@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'track_id': self.track.id,
             'submission_mode': 'self_submission'
         }
@@ -557,7 +631,7 @@ class ReviewQueueDisplayTest(TestCase):
 
         # Verify track application data
         track_app = results[0]
-        self.assertEqual(track_app['track']['id'], self.track.id)
+        self.assertEqual(track_app['track_id'], self.track.id)
         self.assertEqual(track_app['submission_mode'], 'self_submission')
 
 
@@ -569,17 +643,30 @@ class EventApplicationTrackConsistencyTest(TestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(username='user1', email='user1@example.com', password='pass')
         self.client.force_authenticate(user=self.user)
+        lead_gen_patcher = patch(
+            "events.views.EventViewSet._get_missing_lead_gen_fields",
+            return_value=(True, {}),
+        )
+        lead_gen_patcher.start()
+        self.addCleanup(lead_gen_patcher.stop)
 
+        self.community = Community.objects.create(
+            name='Fix1 Consistency Community',
+            slug='fix1-consistency-community',
+            owner=self.user,
+        )
         self.event = Event.objects.create(
             title='Consistency Test',
             slug='consistency',
             format='hybrid',
             start_time=timezone.now() + timedelta(days=10),
             end_time=timezone.now() + timedelta(days=11),
-            organizer_id=self.user.id,
+            community=self.community,
+            created_by=self.user,
             registration_type='apply',
             status='published'
         )
+        _grant_imaa_visibility(self.event)
 
         self.track = EventApplicationTrack.objects.create(
             event=self.event,
@@ -592,10 +679,22 @@ class EventApplicationTrackConsistencyTest(TestCase):
 
     def test_submission_mode_consistent(self):
         """Test: submission_mode is same in EventApplication and EventApplicationTrackApplication."""
+        # Confirmed mode now requires pre-approval (code or allowlist), so
+        # allowlist the applicant email for this event.
+        from events.models import EventPreApprovalAllowlist
+        self.event.preapproval_allowlist_enabled = True
+        self.event.save(update_fields=['preapproval_allowlist_enabled'])
+        EventPreApprovalAllowlist.objects.create(
+            event=self.event,
+            email='test@example.com',
+            is_active=True,
+        )
         data = {
             'first_name': 'Test',
             'last_name': 'User',
             'email': 'test@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'track_id': self.track.id,
             'submission_mode': 'confirmed',
             'sponsor_organization': 'Test Org'
@@ -617,6 +716,8 @@ class EventApplicationTrackConsistencyTest(TestCase):
             'first_name': 'Status',
             'last_name': 'Test',
             'email': 'status@example.com',
+            'job_title': 'Engineer',
+            'company_name': 'Acme Inc',
             'track_id': self.track.id,
             'submission_mode': 'self_submission'
         }

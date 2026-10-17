@@ -18,14 +18,15 @@ class EventApplicationTrackApplicationModelTests(TestCase):
     """Test EventApplicationTrackApplication model."""
 
     def setUp(self):
-        self.community = Community.objects.create(
-            name="Test Community",
-            slug="test-community"
-        )
         self.user = User.objects.create_user(
             username="testuser",
             email="test@example.com",
             password="testpass123"
+        )
+        self.community = Community.objects.create(
+            name="Test Community",
+            slug="test-community",
+            owner=self.user,
         )
         self.event = Event.objects.create(
             community=self.community,
@@ -201,14 +202,15 @@ class EventApplicationTrackApplicationSerializerTests(TestCase):
     """Test EventApplicationTrackApplicationSerializer."""
 
     def setUp(self):
-        self.community = Community.objects.create(
-            name="Test Community",
-            slug="test-community"
-        )
         self.user = User.objects.create_user(
             username="testuser",
             email="test@example.com",
             password="testpass123"
+        )
+        self.community = Community.objects.create(
+            name="Test Community",
+            slug="test-community",
+            owner=self.user,
         )
         self.event = Event.objects.create(
             community=self.community,
@@ -284,14 +286,15 @@ class MultiTrackApplicationAPITests(APITestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.community = Community.objects.create(
-            name="Test Community",
-            slug="test-community"
-        )
         self.admin_user = User.objects.create_user(
             username="admin",
             email="admin@example.com",
             password="adminpass123"
+        )
+        self.community = Community.objects.create(
+            name="Test Community",
+            slug="test-community",
+            owner=self.admin_user,
         )
         self.event = Event.objects.create(
             community=self.community,

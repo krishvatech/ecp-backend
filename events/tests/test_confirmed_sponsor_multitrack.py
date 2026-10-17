@@ -9,7 +9,8 @@ from django.test import TestCase
 from django.contrib.auth.models import User
 from events.models import (
     Event, EventApplicationTrack, Community,
-    EventPreApprovalCode, EventApplication
+    EventPreApprovalCode, EventApplication,
+    EventPlatform, EventPublication
 )
 from rest_framework.test import APITestCase
 from rest_framework import status
@@ -20,21 +21,34 @@ class ConfirmedSponsorMultitrackTests(APITestCase):
 
     def setUp(self):
         """Set up test data."""
-        self.community = Community.objects.create(
-            name="Test Community",
-            slug="test-community"
-        )
         self.user = User.objects.create_user(
             username="testuser",
             email="test@example.com"
+        )
+        self.community = Community.objects.create(
+            name="Test Community",
+            slug="test-community",
+            owner=self.user,
         )
         self.event = Event.objects.create(
             community=self.community,
             title="Test Event",
             slug="test-event",
             registration_type='apply',
+            status='published',
             created_by=self.user,
             preapproval_code_enabled=True
+        )
+        # Non-admin API requests only see events published to imaa_connect
+        # (EventViewSet.get_queryset), so the apply endpoint 404s without this.
+        platform, _ = EventPlatform.objects.update_or_create(
+            slug="imaa_connect",
+            defaults={"name": "IMAA Connect", "is_active": True},
+        )
+        EventPublication.objects.get_or_create(
+            event=self.event,
+            platform=platform,
+            defaults={"is_enabled": True},
         )
 
         # Create two tracks: one confirmed, one self_submission
@@ -61,12 +75,16 @@ class ConfirmedSponsorMultitrackTests(APITestCase):
             created_by=self.user
         )
 
-    def test_multitrack_confirmed_with_sponsor_org_in_track_applications(self):
-        """Test multi-track application with sponsor_organization in track_applications."""
+    def test_confirmed_with_sponsor_org_in_track_applications(self):
+        """IPDT-771: single confirmed track carries sponsor_organization and
+        pre_approval_code inside track_applications. (Previously this test
+        submitted two tracks; single-track preserves the sponsor coverage.)"""
         payload = {
             'first_name': 'John',
             'last_name': 'Sponsor',
             'email': 'sponsor@example.com',
+            'job_title': 'Manager',
+            'company_name': 'Acme Corp',
             'preapproved_code': 'SPONSOR123',
             'track_applications': [
                 {
@@ -74,12 +92,6 @@ class ConfirmedSponsorMultitrackTests(APITestCase):
                     'submission_mode': 'confirmed',
                     'sponsor_organization': 'Acme Corp',
                     'pre_approval_code': 'SPONSOR123',
-                    'form_answers': {},
-                    'file_uploads': {}
-                },
-                {
-                    'track_id': self.track_regular.id,
-                    'submission_mode': 'self_submission',
                     'form_answers': {},
                     'file_uploads': {}
                 }
@@ -98,21 +110,13 @@ class ConfirmedSponsorMultitrackTests(APITestCase):
         # Verify application was created
         app = EventApplication.objects.get(email='sponsor@example.com')
         self.assertEqual(app.sponsor_organization, 'Acme Corp')
-        self.assertTrue(app.is_preapproved)
 
-        # Verify both track applications were created
+        # Verify the single confirmed track application was created and pre-approved
         track_apps = app.track_applications.all()
-        self.assertEqual(track_apps.count(), 2)
-
-        # Verify confirmed track application
+        self.assertEqual(track_apps.count(), 1)
         confirmed_app = track_apps.get(track=self.track_confirmed)
         self.assertEqual(confirmed_app.submission_mode, 'confirmed')
         self.assertEqual(confirmed_app.status, 'pre_approved')
-
-        # Verify regular track application
-        regular_app = track_apps.get(track=self.track_regular)
-        self.assertEqual(regular_app.submission_mode, 'self_submission')
-        self.assertEqual(regular_app.status, 'pending')
 
     def test_multitrack_confirmed_missing_sponsor_org_fails(self):
         """Test that confirmed mode fails without sponsor_organization in track_applications."""
@@ -120,6 +124,8 @@ class ConfirmedSponsorMultitrackTests(APITestCase):
             'first_name': 'John',
             'last_name': 'Sponsor',
             'email': 'sponsor@example.com',
+            'job_title': 'Manager',
+            'company_name': 'Acme Corp',
             'preapproved_code': 'SPONSOR123',
             'track_applications': [
                 {
@@ -149,6 +155,8 @@ class ConfirmedSponsorMultitrackTests(APITestCase):
             'first_name': 'John',
             'last_name': 'Sponsor',
             'email': 'sponsor@example.com',
+            'job_title': 'Manager',
+            'company_name': 'Acme Corp',
             'sponsor_organization': 'Acme Corp',  # At root level
             'preapproved_code': 'SPONSOR123',
             'track_applications': [
@@ -179,6 +187,8 @@ class ConfirmedSponsorMultitrackTests(APITestCase):
             'first_name': 'John',
             'last_name': 'Sponsor',
             'email': 'sponsor@example.com',
+            'job_title': 'Manager',
+            'company_name': 'Acme Corp',
             'sponsor_organization': 'Root Corp',  # At root level
             'preapproved_code': 'SPONSOR123',
             'track_applications': [

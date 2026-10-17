@@ -4,7 +4,13 @@ from unittest.mock import patch
 from rest_framework.test import APITestCase
 
 from community.models import Community
-from events.models import Event, EventApplication, EventApplicationTrack
+from events.models import (
+    Event,
+    EventApplication,
+    EventApplicationTrack,
+    EventPlatform,
+    EventPublication,
+)
 
 
 User = get_user_model()
@@ -29,6 +35,18 @@ class GuestApplicationSettingTests(APITestCase):
             registration_type="apply",
             status="published",
             created_by=self.owner,
+        )
+        # Non-admin requests only see events published to the imaa_connect
+        # platform (EventViewSet.get_queryset), so the apply endpoint 404s
+        # without this publication.
+        self.platform, _ = EventPlatform.objects.update_or_create(
+            slug="imaa_connect",
+            defaults={"name": "IMAA Connect", "is_active": True},
+        )
+        EventPublication.objects.get_or_create(
+            event=self.event,
+            platform=self.platform,
+            defaults={"is_enabled": True},
         )
         self.track = EventApplicationTrack.objects.create(
             event=self.event,
