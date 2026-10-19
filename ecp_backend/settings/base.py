@@ -786,6 +786,9 @@ REST_FRAMEWORK = {
         # Public website CMS pages (cms.public_pages). Fetched server-side by the Next.js
         # frontend, so one server IP makes all the requests: the anon default would throttle it.
         "cms_public": os.getenv("DRF_THROTTLE_CMS_PUBLIC", "300/min"),
+
+        # IPDT-773 prototype: signup-proof issuance (disabled-by-default view).
+        "signup_proof": os.getenv("DRF_THROTTLE_SIGNUP_PROOF", "10/min"),
     },
     
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
@@ -1298,3 +1301,31 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
     "baggage",
     "sentry-trace",
 ]
+
+
+# ============================================================================
+# IPDT-773 — CAPTCHA (Cloudflare Turnstile) — PROTOTYPE, DISABLED BY DEFAULT
+# ============================================================================
+# Phase 1 is an isolated prototype. Nothing here enforces CAPTCHA on live
+# signup or event applications until CAPTCHA_PROTOTYPE_ENABLED is explicitly
+# turned on in a non-production environment. The Turnstile secret and the
+# signup-proof signing key are backend-only and must never be exposed to the
+# frontend (no VITE_* equivalent of the secret).
+CAPTCHA_PROTOTYPE_ENABLED = os.getenv("CAPTCHA_PROTOTYPE_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+# Cloudflare Turnstile server-side verification.
+TURNSTILE_SECRET = os.getenv("TURNSTILE_SECRET", "")
+TURNSTILE_VERIFY_URL = os.getenv(
+    "TURNSTILE_VERIFY_URL", "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+)
+# Optional: when set, siteverify's returned hostname must match.
+TURNSTILE_EXPECTED_HOSTNAME = os.getenv("TURNSTILE_EXPECTED_HOSTNAME", "").strip()
+TURNSTILE_TIMEOUT_SECONDS = float(os.getenv("TURNSTILE_TIMEOUT_SECONDS", "5"))
+
+# Signup proof (future Pre-Sign-up Lambda enforcement). HMAC key is shared with
+# the Lambda out of band. There is deliberately NO fallback to SECRET_KEY:
+# proof issuance requires a dedicated secret and fails closed without one.
+# Left blank when the prototype is disabled — startup must not depend on it.
+SIGNUP_PROOF_SECRET = os.getenv("SIGNUP_PROOF_SECRET", "")
+SIGNUP_PROOF_TTL_SECONDS = int(os.getenv("SIGNUP_PROOF_TTL_SECONDS", "300"))

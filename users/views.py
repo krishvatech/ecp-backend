@@ -10,6 +10,7 @@ from django.template.loader import render_to_string
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework import mixins, permissions, status, viewsets, filters
 from rest_framework.pagination import LimitOffsetPagination
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -1753,6 +1754,53 @@ class RegisterView(APIView):
             "refresh": str(refresh),
         })
         return Response(payload, status=status.HTTP_201_CREATED)
+
+class IssueSignupProofView(APIView):
+    """IPDT-773 PROTOTYPE — disabled by default.
+
+    When CAPTCHA_PROTOTYPE_ENABLED is on (non-production only), verifies a
+    Cloudflare Turnstile token server-side and returns a short-lived signed
+    signup proof for the future Pre-Sign-up Lambda enforcement. It does NOT
+    call Cognito and does NOT create accounts. While the flag is off it 404s,
+    so it is inert in shared environments.
+
+    POST /api/auth/signup-proof/  { token, email, operation? }
+    """
+    permission_classes = [permissions.AllowAny]
+    throttle_scope = "signup_proof"
+    throttle_classes = [ScopedRateThrottle]
+
+    def post(self, request):
+        if not getattr(settings, "CAPTCHA_PROTOTYPE_ENABLED", False):
+            # Inert in shared/production environments.
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        from users.captcha import verify_turnstile
+        from users.signup_proof import issue_signup_proof, SignupProofConfigError
+
+        data = request.data or {}
+        token = (data.get("token") or "").strip()
+        email = (data.get("email") or "").strip().lower()
+        operation = (data.get("operation") or "signup").strip() or "signup"
+
+        if not email:
+            return Response({"detail": "email_required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        remoteip = request.META.get("HTTP_CF_CONNECTING_IP") or request.META.get("REMOTE_ADDR")
+        result = verify_turnstile(token, remoteip=remoteip)
+        if not result.success:
+            return Response({"detail": "captcha_failed", "reason": result.reason},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        client_id = getattr(settings, "COGNITO_APP_CLIENT_ID", "") or getattr(settings, "COGNITO_CLIENT_ID", "") or ""
+        try:
+            proof = issue_signup_proof(email, operation=operation, client_id=client_id)
+        except SignupProofConfigError:
+            # Dedicated signing secret missing — fail closed, no insecure proof.
+            logger.error("Signup-proof requested but SIGNUP_PROOF_SECRET is not configured.")
+            return Response({"detail": "proof_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({"proof": proof})
+
 
 class CheckEmailExistsView(APIView):
     """

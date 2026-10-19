@@ -12,6 +12,7 @@ from .views import WagtailSessionFromCognitoView, OpenAPIDocsSessionView, Wagtai
 from .views import (
     RegisterView,
     CheckEmailExistsView,
+    IssueSignupProofView,
     AdminMergeDuplicateUsersView,
     ChangePasswordView,
     ForgotPasswordView,
@@ -113,6 +114,8 @@ urlpatterns = [
     # Registration & password flows
     path("register/", RegisterView.as_view(), name="register"),
     path("check-email/", CheckEmailExistsView.as_view(), name="check-email"),
+    # IPDT-773 prototype (disabled by default via CAPTCHA_PROTOTYPE_ENABLED).
+    path("signup-proof/", IssueSignupProofView.as_view(), name="signup-proof"),
     path("validate-signup-email/", ValidateSignupEmailView.as_view(), name="validate-signup-email"),
     path("login-status/", AccountLoginStatusView.as_view(), name="login-status"),
     path("admin/merge-users/", AdminMergeDuplicateUsersView.as_view(), name="admin-merge-users"),
