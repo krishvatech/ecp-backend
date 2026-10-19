@@ -32,11 +32,12 @@ def _stub_overview_client(client):
     client.list_emails.return_value = {
         "total": 2,
         "emails": [
-            {"id": 8, "name": "Digest", "sentCount": 10},
-            {"id": 9, "name": "Launch", "sentCount": 5},
+            {"id": 8, "name": "Digest", "emailType": "template", "sentCount": 10, "readCount": 1},
+            {"id": 9, "name": "Launch", "emailType": "list", "sentCount": 5, "readCount": 1},
         ],
     }
-    client.get_email_stats.return_value = {"data": [{"lead_id": 1, "is_read": True}]}
+    client.list_stat_rows.return_value = ([], 0)
+    client.count_stat_rows.return_value = 0
     client.list_segments.return_value = {"total": 3, "lists": []}
 
 
@@ -106,8 +107,9 @@ class MarketingAnalyticsCacheTests(MarketingCacheTestCase):
         self.assertEqual(refreshed["X-Marketing-Cache"], "MISS")
         self.assertEqual(after["X-Marketing-Cache"], "HIT")
         self.assertEqual(client_cls.return_value.list_emails.call_count, 2)
-        # Refresh also drops cached per-email stats.
-        self.assertEqual(client_cls.return_value.get_email_stats.call_count, 4)
+        # Both builds read the page hits, tracked links and Do Not Contact
+        # aggregates from Mautic.
+        self.assertEqual(client_cls.return_value.list_stat_rows.call_count, 6)
 
     @patch("newsletter.mautic_analytics_services.MauticClient")
     def test_provider_error_is_not_cached(self, client_cls):
@@ -123,15 +125,16 @@ class MarketingAnalyticsCacheTests(MarketingCacheTestCase):
         self.assertEqual(recovered["X-Marketing-Cache"], "MISS")
 
     @patch("newsletter.mautic_analytics_services.MauticClient")
-    def test_email_stats_are_shared_between_pages(self, client_cls):
+    def test_emails_page_has_its_own_cache_entry(self, client_cls):
         _stub_overview_client(client_cls.return_value)
 
         self.client.get(self.overview_url)
         emails = self.client.get(self.emails_url)
+        again = self.client.get(self.emails_url)
 
         self.assertEqual(emails.status_code, 200)
         self.assertEqual(emails["X-Marketing-Cache"], "MISS")
-        self.assertEqual(client_cls.return_value.get_email_stats.call_count, 2)
+        self.assertEqual(again["X-Marketing-Cache"], "HIT")
         self.assertEqual(emails.data["results"][0]["opened"], 1)
 
     @patch("newsletter.admin_views.MauticClient")
