@@ -325,7 +325,8 @@ class DuplicateViewTests(TestCase):
 
         self.assertEqual(response.status_code, 201, response.data)
         new_id = response.data["id"]
-        self.assertEqual(response.data, {"id": new_id, "name": "Spring nurture Copy", "isPublished": False, "sourceId": "88"})
+        self.assertEqual(response.data, {"id": new_id, "name": "Spring nurture Copy", "isPublished": False, "sourceId": "88",
+                                         "emailTypeUnresolved": []})
         self.assertEqual(fake.campaigns["88"], before, "the source is untouched")
         copy_ = fake.campaigns[new_id]
         self.assertFalse(copy_["isPublished"])

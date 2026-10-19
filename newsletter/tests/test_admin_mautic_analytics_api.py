@@ -8,6 +8,7 @@ from rest_framework.test import APIClient
 from newsletter.mautic import TemporaryMauticError
 from newsletter.mautic_analytics_services import _count_new_contacts
 from newsletter.tests.marketing_actors import grant_marketing_access
+from newsletter.tests.test_mautic_analytics_accuracy import FakeStats, dnc, page_hit
 
 
 User = get_user_model()
@@ -62,14 +63,16 @@ class NewsletterAdminMauticAnalyticsAPITests(TestCase):
         }
         client.list_emails.return_value = {
             "total": 1,
-            "emails": [{"id": 8, "name": "Digest", "sentCount": 10, "readCount": 4}],
+            "emails": [{"id": 8, "name": "Digest", "emailType": "template", "sentCount": 10, "readCount": 4}],
         }
-        client.get_email_stats.return_value = {
-            "data": [
-                {"lead_id": 1, "is_read": True, "clicked": True},
-                {"lead_id": 2, "is_read": False, "is_failed": True},
-            ]
-        }
+        # Mautic 7.1.3 sources: template unique clicks from email page hits
+        # (one per contact per link), bounces as email-attributed DNC records.
+        stats = FakeStats({
+            "page_hits": [page_hit(8, 1, 1), page_hit(8, 1, 1), page_hit(8, 1, 1)],
+            "lead_donotcontact": [dnc(2, 8, 2)],
+        })
+        client.list_stat_rows.side_effect = stats.list_stat_rows
+        client.count_stat_rows.side_effect = stats.count_stat_rows
         client.list_segments.return_value = {"total": 3, "lists": []}
         self._authenticate()
 
@@ -83,7 +86,7 @@ class NewsletterAdminMauticAnalyticsAPITests(TestCase):
         self.assertEqual(metrics["total_contacts"]["value"], 50)
         self.assertEqual(metrics["new_contacts"]["value"], 7)
         self.assertEqual(metrics["published_campaigns"]["value"], 1)
-        self.assertEqual(metrics["opens"]["value"], 1)
+        self.assertEqual(metrics["opens"]["value"], 4)  # the email's readCount
         self.assertEqual(metrics["clicks"]["value"], 1)
         self.assertEqual(metrics["bounces"]["value"], 1)
         self.assertEqual(metrics["new_contacts"]["scope"], "date_range")
@@ -151,14 +154,13 @@ class NewsletterAdminMauticAnalyticsAPITests(TestCase):
         client.list_emails.return_value = {
             "total": 2,
             "emails": [
-                {"id": 5, "name": "Launch", "isPublished": True, "sentCount": 10},
-                {"id": 6, "name": "Draft", "isPublished": False, "sentCount": 0},
+                {"id": 5, "name": "Launch", "emailType": "template", "isPublished": True, "sentCount": 10, "readCount": 1},
+                {"id": 6, "name": "Draft", "emailType": "template", "isPublished": False, "sentCount": 0, "readCount": 0},
             ],
         }
-        client.get_email_stats.side_effect = [
-            {"data": [{"is_read": True}, {"clicked": True}]},
-            {"data": [{"is_read": True}]},
-        ]
+        stats = FakeStats({"page_hits": [page_hit(5, 1, 1), page_hit(5, 1, 1)]})
+        client.list_stat_rows.side_effect = stats.list_stat_rows
+        client.count_stat_rows.side_effect = stats.count_stat_rows
         self._authenticate()
 
         response = self.client.get(self.emails_url)

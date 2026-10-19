@@ -247,11 +247,11 @@ class MauticClient:
         self._request("GET", "contacts", params={"limit": 1})
         return True
 
-    def get_contact(self, contact_id) -> dict[str, Any]:
+    def get_contact(self, contact_id, *, timeout=None) -> dict[str, Any]:
         normalized = str(contact_id or "").strip()
         if not normalized:
             raise PermanentMauticError("Mautic contact id is required")
-        response = self._request("GET", f"contacts/{normalized}")
+        response = self._request("GET", f"contacts/{normalized}", timeout=timeout)
         data = self._json_object(response, "Mautic contact detail")
         contact = data.get("contact")
         if not isinstance(contact, dict):
@@ -2110,6 +2110,56 @@ class MauticClient:
             raise TemporaryMauticError(
                 "Mautic email statistics lookup returned an invalid total"
             ) from exc
+
+    @staticmethod
+    def _stats_where_params(filters) -> dict[str, Any]:
+        """``[(column, expr, value)]`` as Mautic stats ``where`` params.
+
+        ``value`` is ignored for column-only expressions (``isNotNull``); ``in``
+        takes a comma-separated string, as Mautic's CsvHelper parses it.
+        """
+        params: dict[str, Any] = {}
+        for index, (column, expr, value) in enumerate(filters or []):
+            params[f"where[{index}][col]"] = column
+            params[f"where[{index}][expr]"] = expr
+            if value is not None:
+                params[f"where[{index}][val]"] = value
+        return params
+
+    def list_stat_rows(
+        self,
+        table: str,
+        filters=None,
+        *,
+        start: int = 0,
+        limit: int = 100,
+        order: tuple[str, str] | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """One page of a Mautic stats table and the provider's exact total."""
+        params = self._stats_where_params(filters)
+        params["start"] = int(start)
+        params["limit"] = int(limit)
+        if order:
+            params["order[0][col]"], params["order[0][dir]"] = order
+        response = self._request("GET", f"stats/{table}", params=params)
+        data = self._json_object(response, f"Mautic {table} statistics lookup")
+        try:
+            total = int(data["total"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TemporaryMauticError(
+                f"Mautic {table} statistics lookup returned an invalid response"
+            ) from exc
+        rows = data.get("stats")
+        if isinstance(rows, dict):
+            rows = list(rows.values())
+        if not isinstance(rows, list):
+            rows = []
+        return [row for row in rows if isinstance(row, dict)], total
+
+    def count_stat_rows(self, table: str, filters=None) -> int:
+        """Exact row count of a filtered Mautic stats table (one request)."""
+        _, total = self.list_stat_rows(table, filters, limit=1)
+        return total
 
     def get_latest_email_send(self, email_id: int | str) -> dict[str, Any] | None:
         """Most recent successful send row for one email, or None."""

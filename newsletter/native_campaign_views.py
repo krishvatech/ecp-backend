@@ -10,6 +10,16 @@ from rest_framework.views import APIView
 
 from . import marketing_cache
 from . import mautic_campaign_duplicate as duplicate_service
+from .campaign_email_types import (
+    CONFIRMATION_FIELD as _EMAIL_TYPE_CONFIRMATION_FIELD,
+    TransactionalEmailConfirmationRequired,
+    UnresolvedEmailTypes,
+    apply_email_type_policy,
+    request_has_email_send_action,
+    require_resolved_email_types,
+    stored_email_types,
+    unresolved_email_send_actions,
+)
 from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
@@ -646,6 +656,7 @@ def _parse_builder_events(
             "triggerDate",
             "parent",
             "decisionPath",
+            _EMAIL_TYPE_CONFIRMATION_FIELD,
         ):
             if field in item:
                 event[field] = item.get(field)
@@ -726,6 +737,7 @@ def _parse_events(
             "triggerDate",
             "parent",
             "decisionPath",
+            _EMAIL_TYPE_CONFIRMATION_FIELD,
         )
         for field in optional_fields:
             if field in item:
@@ -990,6 +1002,7 @@ def _parse_campaign_payload(
     *,
     partial: bool = False,
     capabilities: dict[str, Any] | None = None,
+    stored_email_send_types: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not hasattr(data, "keys"):
         raise ValueError("Native Mautic Campaign payload must be an object.")
@@ -1034,9 +1047,12 @@ def _parse_campaign_payload(
             )
 
     if "events" in data:
-        payload["events"] = _parse_events(
-            data.get("events"),
-            capabilities=capabilities,
+        payload["events"] = apply_email_type_policy(
+            _parse_events(
+                data.get("events"),
+                capabilities=capabilities,
+            ),
+            stored=stored_email_send_types,
         )
 
     if "canvasSettings" in data:
@@ -1183,6 +1199,37 @@ def _provider_error_response(exc):
     )
 
 
+def _payload_error_response(exc: ValueError) -> Response:
+    body = {"detail": str(exc)}
+    if isinstance(exc, (TransactionalEmailConfirmationRequired, UnresolvedEmailTypes)):
+        body["code"] = exc.code
+        body["events"] = exc.events
+    return Response(body, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _requests_publish(data) -> bool:
+    return hasattr(data, "get") and "isPublished" in data and _provider_bool(data.get("isPublished"))
+
+
+def _workflow_going_live(payload, stored_campaign, stored_active_events):
+    """The Send email actions a request puts into service, or None.
+
+    A request puts its workflow into service when it publishes (or re-publishes)
+    the campaign, or changes the events of a campaign that stays published.
+    Unpublishing and editing a draft never do, and neither does a change that
+    leaves the events alone on a published campaign (name, description).
+    """
+    publishing = payload.get("isPublished") is True
+    stays_published = (
+        "isPublished" not in payload
+        and isinstance(stored_campaign, dict)
+        and _provider_bool(stored_campaign.get("isPublished"))
+    )
+    if "events" in payload:
+        return payload["events"] if publishing or stays_published else None
+    return stored_active_events if publishing else None
+
+
 class NewsletterAdminMauticCampaignListCreateView(APIView):
     """Staff-only native Mautic Campaign list and create API."""
 
@@ -1266,11 +1313,10 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
                 request.data,
                 capabilities=capabilities,
             )
+            if payload.get("isPublished") is True:
+                require_resolved_email_types(payload.get("events"))
         except ValueError as exc:
-            return Response(
-                {"detail": str(exc)},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return _payload_error_response(exc)
 
         try:
             campaign = client.create_campaign(payload)
@@ -1438,6 +1484,9 @@ class NewsletterAdminMauticCampaignDuplicateView(APIView):
                     "name": copy.get("name"),
                     "isPublished": False,
                     "sourceId": str(source.get("id")),
+                    # Copied verbatim from the source: these must be given an
+                    # email type before the copy can be published.
+                    "emailTypeUnresolved": unresolved_email_send_actions(copy_events),
                 },
                 status=status.HTTP_201_CREATED,
             ),
@@ -1630,6 +1679,39 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
                 if _request_uses_builder_events(request.data)
                 else None
             )
+            # Which Send email actions are already saved, and with which type:
+            # a saved action keeps its classification unless one is chosen. A
+            # publish request also needs the stored workflow it would put live.
+            requests_publish = _requests_publish(request.data)
+            stored_campaign = (
+                client.get_campaign(campaign_id)
+                if requests_publish
+                or (
+                    hasattr(request.data, "get")
+                    and request_has_email_send_action(request.data.get("events"))
+                )
+                else None
+            )
+            stored_types = (
+                stored_email_types(stored_campaign) if stored_campaign is not None else None
+            )
+            stored_active_events = None
+            if requests_publish and "events" not in request.data:
+                try:
+                    stored_active_events = duplicate_service.active_events(
+                        stored_campaign,
+                        client.get_campaign_event_states(campaign_id).get("activeEventIds"),
+                    )
+                except duplicate_service.DuplicateBlocked:
+                    # Without the live workflow its Send email types cannot be
+                    # checked, so the campaign is not published blind.
+                    return Response(
+                        {
+                            "detail": "Mautic did not report this campaign's active steps, "
+                            "so it cannot be checked before publishing. Try again."
+                        },
+                        status=status.HTTP_502_BAD_GATEWAY,
+                    )
         except MauticIdentityError as exc:
             record_identity_failure(
                 action=action,
@@ -1648,12 +1730,13 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
                 request.data,
                 partial=True,
                 capabilities=capabilities,
+                stored_email_send_types=stored_types,
             )
+            going_live = _workflow_going_live(payload, stored_campaign, stored_active_events)
+            if going_live is not None:
+                require_resolved_email_types(going_live)
         except ValueError as exc:
-            return Response(
-                {"detail": str(exc)},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return _payload_error_response(exc)
 
         try:
             campaign = client.update_campaign(

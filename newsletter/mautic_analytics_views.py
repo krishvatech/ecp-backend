@@ -11,11 +11,13 @@ from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import PermanentMauticError, TemporaryMauticError
 from .mautic_analytics_services import (
+    email_page_is_complete,
     get_contact_analytics,
     get_overview_analytics,
     list_campaign_analytics,
     list_email_analytics,
     list_segment_analytics,
+    overview_is_complete,
     parse_date_range,
 )
 from .provider_errors import provider_error_response
@@ -45,6 +47,8 @@ class NewsletterAdminAnalyticsOverviewView(APIView):
                 "analytics-overview",
                 lambda: get_overview_analytics(date_range),
                 ttl=marketing_cache.analytics_ttl(),
+                # A metric Mautic could not return is not cached as if final.
+                cacheable=overview_is_complete,
             )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error(exc)
@@ -75,6 +79,7 @@ class NewsletterAdminAnalyticsEmailsView(APIView):
                 "analytics-emails",
                 lambda: list_email_analytics(request.query_params),
                 ttl=marketing_cache.analytics_ttl(),
+                cacheable=email_page_is_complete,
             )
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error(exc)

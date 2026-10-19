@@ -424,7 +424,13 @@ class NewsletterAdminMauticCampaignsAPITests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         called_event = client.create_campaign.call_args.args[0]["events"][0]
-        self.assertEqual(called_event["properties"], {"email": "23"})
+        # A new Send email action is saved as marketing (see
+        # test_campaign_email_type_policy): Mautic runs a missing type as
+        # transactional.
+        self.assertEqual(
+            called_event["properties"],
+            {"email": "23", "email_type": "marketing"},
+        )
         client.get_campaign_builder_capabilities.assert_called_once_with()
 
     @patch("newsletter.native_campaign_views.MauticClient")
@@ -536,6 +542,12 @@ class NewsletterAdminMauticCampaignsAPITests(TestCase):
             name="Updated Native Workflow",
             isPublished=True,
         )
+        # Publishing reads the stored workflow to check its Send email steps;
+        # this one has none.
+        client_cls.return_value.get_campaign.return_value = self._campaign()
+        client_cls.return_value.get_campaign_event_states.return_value = {
+            "activeEventIds": [5, 6],
+        }
         self._authenticate(self.staff)
 
         response = self.client.patch(
@@ -793,6 +805,21 @@ class NewsletterAdminMauticCampaignMultiEventTests(TestCase):
         client_cls.return_value.get_campaign_builder_capabilities.return_value = (
             self._capabilities()
         )
+        # The stored campaign the view reads for saved Send email actions: each
+        # event with a provider ID exists in Mautic exactly as submitted.
+        client_cls.return_value.get_campaign.return_value = {
+            "id": 7,
+            "events": [
+                {
+                    "id": int(event["id"]),
+                    "type": event["key"],
+                    "eventType": event["eventType"],
+                    "properties": dict(event["properties"]),
+                }
+                for event in events
+                if str(event.get("id", "")).isdigit()
+            ],
+        }
         client_cls.return_value.update_campaign.return_value = {
             "id": 7,
             "name": "QA Provider Schema Campaign",
