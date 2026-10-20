@@ -609,11 +609,17 @@ class PostDueActionGuardTests(Base):
     def test_changes_are_refused_in_the_final_minute_without_a_provider_read(self):
         # The next whole minute: always inside the one-minute cutoff, never yet
         # the provider send minute, so no read is needed to refuse the change.
-        next_minute = timezone.now().replace(second=0, microsecond=0) + timedelta(minutes=1)
+        # The guard reads the clock itself, so it is frozen 10 s into a minute:
+        # with the real clock, a minute boundary passing between building the
+        # campaign and the request made the guard (correctly) read Mautic.
+        frozen = timezone.now().replace(second=10, microsecond=0)
+        next_minute = frozen.replace(second=0) + timedelta(minutes=1)
         campaign = self.campaign(scheduled_at=next_minute)
         client = self.provider()
 
-        response = self.guarded(client, lambda: self.schedule(campaign))
+        with patch("newsletter.native_broadcast_reconciliation.timezone", wraps=timezone) as clock:
+            clock.now.return_value = frozen
+            response = self.guarded(client, lambda: self.schedule(campaign))
 
         self.assertEqual(response.status_code, 409)
         client.get_email.assert_not_called()
@@ -919,3 +925,54 @@ class DiagnosticsTests(Base):
         self.assertEqual(
             _native_broadcast_status(), {"scheduled": 3, "due": 2, "needs_attention": 1}
         )
+
+
+class NativeChangeWindowBoundaryTests(TestCase):
+    """The existing cutoff rules at exact boundaries, with an explicit clock."""
+
+    DUE = datetime(2026, 10, 1, 10, 15, 0, tzinfo=dt_timezone.utc)
+
+    def campaign(self, scheduled_at):
+        return NewsletterCampaign(status=STATUS.SCHEDULED, schedule_owner=OWNER.MAUTIC,
+                                  mautic_email_id="77", scheduled_at=scheduled_at)
+
+    def test_window_opens_exactly_one_minute_before_the_send_minute(self):
+        from newsletter.native_broadcast_reconciliation import native_delivery_window_started
+
+        campaign = self.campaign(self.DUE + timedelta(seconds=42))  # seconds dropped by Mautic
+        for now, started in (
+            (self.DUE - timedelta(minutes=1, microseconds=1), False),   # future
+            (self.DUE - timedelta(minutes=1), True),                    # current-minute cutoff
+            (self.DUE - timedelta(microseconds=1), True),               # final instant before send
+            (self.DUE, True),                                           # send minute
+            (self.DUE + timedelta(hours=2), True),                      # past
+        ):
+            with self.subTest(now=now):
+                self.assertEqual(native_delivery_window_started(campaign, now=now), started)
+        self.assertFalse(native_delivery_window_started(self.campaign(self.DUE + timedelta(days=1)), now=self.DUE))
+
+    def test_timezone_aware_schedules_use_the_same_utc_minute(self):
+        from zoneinfo import ZoneInfo
+        from newsletter.native_broadcast_reconciliation import native_delivery_window_started
+
+        kolkata = self.DUE.astimezone(ZoneInfo("Asia/Kolkata"))  # 15:45 IST
+        campaign = self.campaign(kolkata)
+        self.assertFalse(native_delivery_window_started(campaign, now=self.DUE - timedelta(minutes=2)))
+        self.assertTrue(native_delivery_window_started(campaign, now=self.DUE - timedelta(seconds=30)))
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    def test_provider_is_read_only_from_the_send_minute(self):
+        from newsletter import native_broadcast_reconciliation as reconciliation
+
+        campaign = self.campaign(self.DUE)
+        for now, reads in (
+            (self.DUE - timedelta(seconds=50), False),  # inside the cutoff: refuse without a read
+            (self.DUE, True),                           # send minute: read to pick the refusal
+            (self.DUE + timedelta(minutes=10), True),   # delayed/past
+        ):
+            with self.subTest(now=now), patch.object(reconciliation, "reconcile_native_campaign",
+                                                     return_value="pending") as reconcile:
+                with self.assertRaises(reconciliation.CampaignNativeDeliveryStarted):
+                    reconciliation.guard_native_schedule_change(campaign, now=now)
+                self.assertEqual(reconcile.called, reads)
+
