@@ -65,6 +65,16 @@ from .point_views import (
     NewsletterAdminPointActionTypesView,
 )
 from .email_design_views import NewsletterAdminEmailDesignCompileView
+from .form_views import (
+    NewsletterAdminFormBuilderMetadataView,
+    NewsletterAdminFormDetailView,
+    NewsletterAdminFormFieldDetailView,
+    NewsletterAdminFormFieldListCreateView,
+    NewsletterAdminFormFieldReorderView,
+    NewsletterAdminFormListCreateView,
+    NewsletterAdminFormPublishView,
+    NewsletterAdminFormUnpublishView,
+)
 from .template_views import (
     NewsletterAdminTemplateCategoriesView,
     NewsletterAdminTemplateDetailView,
@@ -367,6 +377,47 @@ urlpatterns = [
         "newsletter/admin/email-designs/compile/",
         NewsletterAdminEmailDesignCompileView.as_view(),
         name="newsletter-admin-email-design-compile",
+    ),
+    path(
+        "newsletter/admin/forms/",
+        NewsletterAdminFormListCreateView.as_view(),
+        name="newsletter-admin-form-list",
+    ),
+    # Static "builder/" ranks above "<form_id>/".
+    path(
+        "newsletter/admin/forms/builder/",
+        NewsletterAdminFormBuilderMetadataView.as_view(),
+        name="newsletter-admin-form-builder-metadata",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/fields/",
+        NewsletterAdminFormFieldListCreateView.as_view(),
+        name="newsletter-admin-form-field-list",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/fields/reorder/",
+        NewsletterAdminFormFieldReorderView.as_view(),
+        name="newsletter-admin-form-field-reorder",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/fields/<str:field_id>/",
+        NewsletterAdminFormFieldDetailView.as_view(),
+        name="newsletter-admin-form-field-detail",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/",
+        NewsletterAdminFormDetailView.as_view(),
+        name="newsletter-admin-form-detail",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/publish/",
+        NewsletterAdminFormPublishView.as_view(),
+        name="newsletter-admin-form-publish",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/unpublish/",
+        NewsletterAdminFormUnpublishView.as_view(),
+        name="newsletter-admin-form-unpublish",
     ),
     path(
         "newsletter/admin/templates/",

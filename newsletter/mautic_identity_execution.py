@@ -72,6 +72,8 @@ def run_interactive_mutation(
     mutate: Callable[[MauticClient], Any],
     client_factory=MauticClient,
     audit_and_reraise: tuple = (),
+    resource_id_from_result: Callable[[Any], Any] | None = None,
+    detail: str = "",
 ):
     """Run one interactive Mautic mutation and audit who did it.
 
@@ -81,6 +83,10 @@ def run_interactive_mutation(
     current behaviour and unrelated application errors are not reclassified as
     identity failures. Callers opt in explicitly for the provider errors their
     own service layer raises.
+
+    ``resource_id_from_result`` names the resource in the success record when
+    its id only exists afterwards (a create); ``detail`` is a short safe note
+    for that record. Both default to the previous behaviour.
     """
     correlation_id = correlation_id_for_request(request)
     try:
@@ -133,6 +139,11 @@ def run_interactive_mutation(
         )
         raise
 
+    if resource_id_from_result is not None:
+        try:
+            resource_id = resource_id_from_result(result) or resource_id
+        except Exception:  # auditing must never break the operation
+            pass
     record_identity_audit(
         action=action,
         status=MauticIdentityAuditLog.Status.SUCCEEDED,
@@ -143,5 +154,6 @@ def run_interactive_mutation(
         auth_mode=auth_mode_label(client),
         correlation_id=correlation_id,
         assertion_jti=assertion_jti(client),
+        detail=detail,
     )
     return result, None

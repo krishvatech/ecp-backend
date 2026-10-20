@@ -75,6 +75,16 @@ STAGE_UPDATE = "stage.update"
 STAGE_DELETE = "stage.delete"
 STAGE_CONTACT_ADD = "stage.contact.add"
 STAGE_CONTACT_REMOVE = "stage.contact.remove"
+# Basic Form settings and publication only (EcpBridgeFormApiController). Fields
+# and submit actions are never sent through these operations.
+FORM_CREATE = "form.create"
+FORM_UPDATE = "form.update"
+FORM_PUBLISH = "form.publish"
+FORM_UNPUBLISH = "form.unpublish"
+# Supported Form fields: add, change and re-order (never delete).
+FORM_FIELD_CREATE = "form.field.create"
+FORM_FIELD_UPDATE = "form.field.update"
+FORM_FIELD_REORDER = "form.field.reorder"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
@@ -136,5 +146,12 @@ ASSERTABLE_OPERATIONS = frozenset(
         STAGE_DELETE,
         STAGE_CONTACT_ADD,
         STAGE_CONTACT_REMOVE,
+        FORM_CREATE,
+        FORM_UPDATE,
+        FORM_PUBLISH,
+        FORM_UNPUBLISH,
+        FORM_FIELD_CREATE,
+        FORM_FIELD_UPDATE,
+        FORM_FIELD_REORDER,
     }
 )
