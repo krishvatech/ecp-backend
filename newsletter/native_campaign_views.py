@@ -491,6 +491,39 @@ def _schema_field_label(path: list[str], metadata: Any) -> str:
     return ".".join(path)
 
 
+#: Mautic 7.1.3 "Clicks email" decision (EmailBundle CampaignSubscriber::
+#: onCampaignTriggerDecision): with ``urls.list`` empty or absent it matches a
+#: click on ANY tracked link of the parent Send email; otherwise only clicks
+#: whose URL contains one of the entries (UrlMatcher::hasMatch).
+_CLICK_DECISION = ("decision", "email.click")
+
+#: Events whose empty provider form is a real native configuration rather than
+#: a step that does nothing.
+_EMPTY_CONFIGURATION_IS_NATIVE = frozenset({_CLICK_DECISION})
+
+
+def _validate_click_urls(event_index: int, properties: dict[str, Any]) -> None:
+    """Reject "Limit to URLs" values Mautic would mis-handle at runtime: it
+    passes each entry to a ``string``-typed matcher, and a blank entry matches
+    every URL — so a list must hold non-blank text only."""
+    if "urls" not in properties or properties.get("urls") is None:
+        return
+    urls = properties.get("urls")
+    if not isinstance(urls, dict):
+        raise ValueError(
+            f"Native Mautic Campaign event #{event_index} urls must be an object with a list."
+        )
+    value = urls.get("list")
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return  # no limit: any tracked link of the email
+    entries = value if isinstance(value, list) else [value]
+    if any(not isinstance(entry, str) or not entry.strip() for entry in entries):
+        raise ValueError(
+            f"Native Mautic Campaign event #{event_index} Limit to Urls contains must "
+            "list non-empty text only."
+        )
+
+
 def _validate_builder_properties(
     *,
     event_index: int,
@@ -530,10 +563,20 @@ def _validate_builder_properties(
         if _is_configured_property(metadata, *_get_property(properties, path))
     ]
 
+    if (str(capability.get("eventType") or "").strip(), _event_key(capability)) == _CLICK_DECISION:
+        _validate_click_urls(event_index, properties)
+
     # An event whose provider form has no required field still has to be told what
     # to do — an "add or remove tags" action with neither set, for instance, would
-    # be saved as a step that does nothing.
-    if all_fields and not required_fields and not configured_fields:
+    # be saved as a step that does nothing. The exception is an event whose empty
+    # form is itself a native configuration (see _EMPTY_CONFIGURATION_IS_NATIVE).
+    if (
+        all_fields
+        and not required_fields
+        and not configured_fields
+        and (str(capability.get("eventType") or "").strip(), _event_key(capability))
+        not in _EMPTY_CONFIGURATION_IS_NATIVE
+    ):
         options = ", ".join(
             _schema_field_label(path, metadata) for path, metadata in all_fields
         )

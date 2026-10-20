@@ -14,12 +14,19 @@ Consent rules (fail closed):
   read for, or changed by, reconciliation; nothing here subscribes anyone.
 * A correction that adds or strengthens a restriction is safe: create the
   mirror when Mautic has a DNC, escalate an opt-out to a bounce/manual block.
-* A restriction is lifted only when it is a voluntary opt-out, Mautic was read
-  completely and reports no email DNC at all, the row did not change since it
-  was read, and a second Mautic read just before the change still agrees.
-* A bounce, manual or unknown mirror Mautic no longer reports, a reason
-  "downgrade", a contact-id conflict, a missing contact and every provider
-  error are reported for manual review and never changed.
+* Nothing is ever lifted here. Mautic reporting no DNC is not evidence of a
+  resubscribe: Mautic's contact merge (a known contact submitting a Form
+  without a tracking cookie) deleted the merged contact's DNC rows before the
+  bridge plugin preserved them, and Mautic keeps no usable history of why a
+  DNC disappeared. Legitimate resubscribes clear the mirror through their own
+  evidenced paths (a timestamped "contactable" webhook newer than the
+  suppression, or ECP's re-subscribe flow). A voluntary opt-out Mautic no
+  longer reports is therefore manual review, like a bounce, manual or unknown
+  mirror Mautic no longer reports, a reason "downgrade", a contact-id
+  conflict, a missing contact and every provider error.
+* A mapping whose Mautic contact was merged away still reads the survivor
+  (Mautic resolves retired IDs); it is flagged so the identity reconciliation
+  (``reconcile_mautic_contact_identities``) can re-point it.
 """
 
 from __future__ import annotations
@@ -58,11 +65,11 @@ NOT_CHECKED = "not_checked"
 NONE = "none"
 CREATE = "create_suppression"
 ESCALATE = "escalate_suppression"
-CLEAR = "clear_suppression"
 MANUAL_REVIEW = "manual_review"
 SKIP = "skip"
 
-SAFE_ACTIONS = {CREATE, ESCALATE, CLEAR}
+#: Only corrections that add or strengthen a restriction are ever applied.
+SAFE_ACTIONS = {CREATE, ESCALATE}
 
 #: Most to least restrictive, for picking the mirror reason from several DNCs.
 RESTRICTIVE_ORDER = (
@@ -99,6 +106,7 @@ class Finding:
     target_reason: str | None = None
     outcome: str = ""
     detail: str = ""
+    survivor_contact_id: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -110,8 +118,9 @@ def classify(ecp_reason: str | None, mautic_reasons: list[str]) -> tuple[str, st
     if not mautic_reasons:
         if ecp_reason is None:
             return IN_SYNC, NONE, None
+        # No DNC is not proof of consent (see module docstring).
         if is_reversible_reason(ecp_reason):
-            return STALE_OPT_OUT, CLEAR, None
+            return STALE_OPT_OUT, MANUAL_REVIEW, None
         return STALE_RESTRICTION, MANUAL_REVIEW, None
 
     target = restrictive[0] if restrictive else MauticEmailSuppression.Reason.UNSUBSCRIBED
@@ -155,6 +164,8 @@ class Reconciler:
         self.findings: list[Finding] = []
         self.batches = 0
         self.batch_errors: list[dict[str, Any]] = []
+        # contact_id -> the ID Mautic answered with (differs after a merge).
+        self.answered_ids: dict[str, str] = {}
 
     # -- provider --------------------------------------------------------------
     def _provider_stopped(self) -> bool:
@@ -183,6 +194,7 @@ class Reconciler:
         self.consecutive_errors = 0
         if not isinstance(contact, dict) or not isinstance(contact.get("doNotContact"), list):
             raise ProviderUnavailable(PROVIDER_INCOMPLETE, "contact has no doNotContact list")
+        self.answered_ids[str(contact_id)] = str(contact.get("id") or "")
         return sorted(set(email_dnc_reasons(contact)))
 
     # -- scope -----------------------------------------------------------------
@@ -241,6 +253,11 @@ class Reconciler:
                 continue
             status, action, target = classify(ecp_reason, reasons)
             finding = Finding(user_id, contact_id, status, action, ecp_reason, reasons, target)
+            survivor = self.answered_ids.get(contact_id, "")
+            if survivor and survivor != contact_id:
+                finding.survivor_contact_id = survivor
+                finding.detail = ("Mautic merged this contact into another; its retired ID resolves to the "
+                                  "survivor. Run reconcile_mautic_contact_identities.")
             if self.apply and action in SAFE_ACTIONS:
                 self._apply(finding, row)
             self.findings.append(finding)
@@ -254,8 +271,6 @@ class Reconciler:
         try:
             if finding.action in (CREATE, ESCALATE):
                 self._strengthen(finding, before)
-            elif finding.action == CLEAR:
-                self._clear(finding, before)
         except Exception as exc:  # noqa: BLE001 - reported per record
             finding.outcome = "failed"
             finding.detail = type(exc).__name__
@@ -277,31 +292,6 @@ class Reconciler:
             )
         finding.outcome = "applied"
         self._audit(finding, MauticIdentityAuditLog.Status.SUCCEEDED)
-
-    def _clear(self, finding: Finding, before) -> None:
-        with transaction.atomic():
-            current = MauticEmailSuppression.objects.select_for_update().filter(user_id=finding.user_id).first()
-            if current is None:
-                finding.outcome = "already_clear"
-                return
-            if self._snapshot(current) != before or not current.is_reversible:
-                finding.outcome = "skipped_concurrent_change"
-                return
-            # Re-read Mautic just before lifting anything.
-            try:
-                again = self.live_reasons(finding.contact_id)
-            except ProviderUnavailable as exc:
-                finding.outcome = "skipped_provider_unavailable"
-                finding.detail = exc.detail
-                return
-            if again:
-                finding.outcome = "skipped_provider_changed"
-                finding.mautic_reasons = again
-                return
-            current.delete()
-        finding.outcome = "applied"
-        self._audit(finding, MauticIdentityAuditLog.Status.SUCCEEDED,
-                    extra=f"removed unsubscribed mirror (suppressed_at {before[1].isoformat()})")
 
     def _audit(self, finding: Finding, status, extra: str = "") -> None:
         detail = (f"{finding.action}: ecp={finding.ecp_reason or 'none'} "

@@ -18,6 +18,7 @@ from urllib3.exceptions import NewConnectionError
 
 from .exceptions import (
     MauticBridgeRejectedError,
+    MauticIdentityConfigurationError,
     MauticRequestNotSentError,
     PermanentMauticError,
     TemporaryMauticError,
@@ -47,6 +48,13 @@ from .operations import (
     FIELD_CREATE,
     FIELD_DELETE,
     FIELD_UPDATE,
+    FORM_CREATE,
+    FORM_FIELD_CREATE,
+    FORM_FIELD_REORDER,
+    FORM_FIELD_UPDATE,
+    FORM_PUBLISH,
+    FORM_UNPUBLISH,
+    FORM_UPDATE,
     NEWSLETTER_TEST_SEND,
     POINT_ACTION_CREATE,
     POINT_ACTION_DELETE,
@@ -2808,6 +2816,106 @@ class MauticClient:
         if not isinstance(forms, (dict, list)):
             raise TemporaryMauticError("Mautic form list returned an invalid response")
         return data
+
+    @staticmethod
+    def _form_from_response(response, context: str) -> dict[str, Any]:
+        form = MauticClient._json_object(response, context).get("form")
+        if not isinstance(form, dict) or not form.get("id"):
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return form
+
+    def get_form(self, form_id) -> dict[str, Any]:
+        normalized = str(form_id or "").strip()
+        if not normalized.isdigit():
+            raise PermanentMauticError("Mautic form id must be numeric")
+        response = self._request("GET", f"forms/{normalized}")
+        return self._form_from_response(response, "Mautic form detail")
+
+    def _form_bridge_request(self, method: str, path: str, *, operation: str, context: str, **kwargs):
+        # Form writes are attributed to a human Mautic user or not made at
+        # all: there is deliberately no service-account fallback.
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError(
+                "Mautic Form changes require per-user Mautic identity"
+            )
+        response = self._bridge_request(method, path, operation=operation, **kwargs)
+        return self._form_from_response(response, context)
+
+    def create_form(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create an unpublished Form from basic settings only (the bridge
+        refuses fields, actions and publication)."""
+        if not isinstance(payload, dict) or not payload.get("name"):
+            raise PermanentMauticError("Mautic form name is required")
+        return self._form_bridge_request(
+            "POST",
+            "ecp/bridge/forms/new",
+            operation=FORM_CREATE,
+            context="Mautic form creation",
+            data=self._email_form_data(payload),
+        )
+
+    def update_form(self, form_id, payload: dict[str, Any]) -> dict[str, Any]:
+        """Partially update a Form's basic settings (native PATCH semantics:
+        fields and actions are never sent, so they are left untouched)."""
+        normalized = str(form_id or "").strip()
+        if not normalized.isdigit():
+            raise PermanentMauticError("Mautic form id must be numeric")
+        if not isinstance(payload, dict) or not payload:
+            raise PermanentMauticError("Mautic form update payload is required")
+        return self._form_bridge_request(
+            "PATCH",
+            f"ecp/bridge/forms/{normalized}/edit",
+            operation=FORM_UPDATE,
+            context="Mautic form update",
+            data=self._email_form_data(payload),
+        )
+
+    @staticmethod
+    def _numeric_id(value, label: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized.isdigit():
+            raise PermanentMauticError(f"Mautic {label} id must be numeric")
+        return normalized
+
+    def create_form_field(self, form_id, field: dict[str, Any], position: int | None = None) -> dict[str, Any]:
+        """Add one field. The bridge re-sends every existing field so their
+        order and settings stay as they are."""
+        form = self._numeric_id(form_id, "form")
+        body: dict[str, Any] = {"field": field}
+        if position is not None:
+            body["position"] = int(position)
+        return self._form_bridge_request(
+            "POST", f"ecp/bridge/forms/{form}/fields/new",
+            operation=FORM_FIELD_CREATE, context="Mautic form field creation", json=body,
+        )
+
+    def update_form_field(self, form_id, field_id, changes: dict[str, Any]) -> dict[str, Any]:
+        form = self._numeric_id(form_id, "form")
+        field = self._numeric_id(field_id, "form field")
+        return self._form_bridge_request(
+            "PATCH", f"ecp/bridge/forms/{form}/fields/{field}/edit",
+            operation=FORM_FIELD_UPDATE, context="Mautic form field update", json={"field": changes},
+        )
+
+    def reorder_form_fields(self, form_id, order: list) -> dict[str, Any]:
+        form = self._numeric_id(form_id, "form")
+        return self._form_bridge_request(
+            "POST", f"ecp/bridge/forms/{form}/fields/reorder",
+            operation=FORM_FIELD_REORDER, context="Mautic form field reorder",
+            json={"order": [int(self._numeric_id(item, "form field")) for item in order]},
+        )
+
+    def set_form_published(self, form_id, published: bool) -> dict[str, Any]:
+        normalized = str(form_id or "").strip()
+        if not normalized.isdigit():
+            raise PermanentMauticError("Mautic form id must be numeric")
+        action = "publish" if published else "unpublish"
+        return self._form_bridge_request(
+            "POST",
+            f"ecp/bridge/forms/{normalized}/{action}",
+            operation=FORM_PUBLISH if published else FORM_UNPUBLISH,
+            context=f"Mautic form {action}",
+        )
 
     def get_campaign_builder_capabilities(self) -> dict[str, Any]:
         response = self._request("GET", "ecp/campaign-builder/capabilities")

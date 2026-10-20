@@ -14,6 +14,7 @@ from django.utils.html import strip_tags
 from django.views.decorators.http import require_safe
 
 from events.models import Event
+from events.social_image import get_event_og_image
 from groups.models import Group
 from ecp_backend.health_checks import get_health_status
 from events.services.live_instance_state import heartbeat_instance
@@ -76,12 +77,25 @@ def public_event_meta(request, slug, page_type="events"):
         description = "Join this event."
 
     image_url = ""
-    image_field = event.cover_image or event.preview_image
-    if image_field:
+    image_type = ""
+    image_width = image_height = None
+    # Prefer the small 1200x630 derivative; fall back to the original until it exists.
+    og_image = get_event_og_image(event)
+    if og_image:
         try:
-            image_url = request.build_absolute_uri(image_field.url)
+            image_url = request.build_absolute_uri(default_storage.url(og_image["key"]))
+            image_type = og_image["type"]
+            image_width, image_height = og_image["width"], og_image["height"]
         except Exception:
             image_url = ""
+    if not image_url:
+        image_field = event.cover_image or event.preview_image
+        if image_field:
+            try:
+                image_url = request.build_absolute_uri(image_field.url)
+                image_type = _image_mime_type(image_url)
+            except Exception:
+                image_url = ""
 
     frontend_base = (settings.FRONTEND_URL or "").rstrip("/")
     event_url = (
@@ -94,6 +108,9 @@ def public_event_meta(request, slug, page_type="events"):
         "title": title,
         "description": description,
         "image_url": image_url,
+        "image_type": image_type,
+        "image_width": image_width,
+        "image_height": image_height,
         "event_url": event_url,
     }
     return TemplateResponse(request, "public_event_meta.html", context)

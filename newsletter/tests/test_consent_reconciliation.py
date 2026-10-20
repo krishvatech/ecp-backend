@@ -23,8 +23,10 @@ User = get_user_model()
 R = MauticEmailSuppression.Reason
 
 
-def contact(*reasons):
-    return {"id": 1, "doNotContact": [{"id": i, "channel": "email", "reason": r, "channelId": None}
+def contact(*reasons, contact_id=None):
+    # No "id" unless given: Mautic answering with another ID means a merge.
+    data = {} if contact_id is None else {"id": contact_id}
+    return {**data, "doNotContact": [{"id": i, "channel": "email", "reason": r, "channelId": None}
                                       for i, r in enumerate(reasons, start=1)]}
 
 
@@ -56,7 +58,8 @@ class ClassifyTests(SimpleTestCase):
             (R.UNSUBSCRIBED, [R.UNSUBSCRIBED], (rec.IN_SYNC, rec.NONE)),
             (R.UNSUBSCRIBED, [R.BOUNCED], (rec.ESCALATION, rec.ESCALATE)),
             (R.UNSUBSCRIBED, [R.UNSUBSCRIBED, R.MANUAL], (rec.ESCALATION, rec.ESCALATE)),
-            (R.UNSUBSCRIBED, [], (rec.STALE_OPT_OUT, rec.CLEAR)),
+            # No DNC in Mautic is not evidence of a resubscribe (merges lost DNC).
+            (R.UNSUBSCRIBED, [], (rec.STALE_OPT_OUT, rec.MANUAL_REVIEW)),
             (R.BOUNCED, [], (rec.STALE_RESTRICTION, rec.MANUAL_REVIEW)),
             (R.MANUAL, [], (rec.STALE_RESTRICTION, rec.MANUAL_REVIEW)),
             (R.UNKNOWN, [], (rec.STALE_RESTRICTION, rec.MANUAL_REVIEW)),
@@ -113,7 +116,7 @@ class ReconcilerTests(TestCase):
         self.assertEqual(list(MauticEmailSuppression.objects.order_by("user_id").values()), before)
         self.assertFalse(self.audits().exists())
 
-    def test_apply_creates_missing_and_clears_stale_opt_out_with_audit(self):
+    def test_apply_strengthens_but_never_lifts_a_stale_opt_out(self):
         self.member("missing", 11)
         self.member("stale", 12, reason=R.UNSUBSCRIBED)
         self.member("escalate", 13, reason=R.UNSUBSCRIBED)
@@ -122,12 +125,35 @@ class ReconcilerTests(TestCase):
             {"11": contact(1), "12": contact(), "13": contact(2)}, apply=True)
 
         self.assertEqual(self.suppressed("missing").reason, R.UNSUBSCRIBED)
-        self.assertIsNone(self.suppressed("stale"))
+        self.assertEqual(self.suppressed("stale").reason, R.UNSUBSCRIBED)
+        self.assertEqual((findings[self.users["stale"].pk].status, findings[self.users["stale"].pk].action),
+                         (rec.STALE_OPT_OUT, rec.MANUAL_REVIEW))
         self.assertEqual(self.suppressed("escalate").reason, R.BOUNCED)
-        self.assertEqual(summary["outcomes"], {"applied": 3})
-        self.assertEqual(self.audits().filter(status="succeeded").count(), 3)
-        # The clear re-read Mautic before lifting anything.
-        self.assertEqual([call[0] for call in fake.calls].count("12"), 2)
+        self.assertEqual(summary["outcomes"], {"applied": 2})
+        self.assertEqual(self.audits().filter(status="succeeded").count(), 2)
+        self.assertEqual([call[0] for call in fake.calls].count("12"), 1)
+
+    def test_dnc_lost_in_a_contact_merge_never_clears_the_suppression(self):
+        # Mautic merged each contact into a survivor and (before the plugin fix)
+        # dropped its DNC: the retired ID answers with the survivor and no DNC.
+        members = {reason: self.member(f"merged-{reason}", 150 + n, reason=reason)
+                   for n, reason in enumerate((R.UNSUBSCRIBED, R.BOUNCED, R.MANUAL))}
+        answers = {str(150 + n): contact(contact_id=900 + n) for n in range(3)}
+
+        findings, summary, _ = self.run_rec(answers, apply=True)
+
+        self.assertEqual(summary["outcomes"], {})
+        for n, (reason, user) in enumerate(members.items()):
+            finding = findings[user.pk]
+            self.assertEqual(finding.action, rec.MANUAL_REVIEW)
+            self.assertEqual(finding.survivor_contact_id, str(900 + n))
+            self.assertIn("reconcile_mautic_contact_identities", finding.detail)
+            self.assertEqual(self.suppressed(f"merged-{reason}").reason, reason)
+
+    def test_merged_contact_with_preserved_dnc_is_in_sync_and_flagged(self):
+        user = self.member("kept", 16, reason=R.UNSUBSCRIBED)
+        findings, _, _ = self.run_rec({"16": contact(1, contact_id=98)}, apply=True)
+        self.assertEqual((findings[user.pk].status, findings[user.pk].survivor_contact_id), (rec.IN_SYNC, "98"))
 
     # 4
     def test_independent_ecp_opt_out_is_never_touched(self):
@@ -164,7 +190,7 @@ class ReconcilerTests(TestCase):
         return {"contact": {"id": int(contact_id)}, "channel": "email", "old_status": old,
                 "new_status": new, "timestamp": at.isoformat()}
 
-    def test_older_unsubscribe_after_newer_contactable_is_corrected(self):
+    def test_older_unsubscribe_after_newer_contactable_is_reported_not_lifted(self):
         self.member("x", 20)
         t1, t2 = timezone.now() - timedelta(minutes=10), timezone.now() - timedelta(minutes=5)
         _sync_email_suppression(self._event(20, "unsubscribed", "contactable", t2))  # newer, delivered first
@@ -173,8 +199,11 @@ class ReconcilerTests(TestCase):
 
         findings, _, _ = self.run_rec({"20": contact()}, apply=True)
 
+        # Over-restrictive, so safe: without positive resubscribe evidence the
+        # mirror stays and the member is listed for manual review.
         self.assertEqual(findings[self.users["x"].pk].status, rec.STALE_OPT_OUT)
-        self.assertIsNone(self.suppressed("x"))
+        self.assertEqual(findings[self.users["x"].pk].action, rec.MANUAL_REVIEW)
+        self.assertIsNotNone(self.suppressed("x"))
 
     def test_older_contactable_after_newer_unsubscribe_stays_suppressed(self):
         self.member("y", 21)
@@ -246,7 +275,8 @@ class ReconcilerTests(TestCase):
         audits = self.audits().count()
         findings, summary, _ = self.run_rec(dict(answers), apply=True)
 
-        self.assertEqual(summary["statuses"], {rec.IN_SYNC: 2})
+        self.assertEqual(summary["statuses"], {rec.IN_SYNC: 1, rec.STALE_OPT_OUT: 1})
+        self.assertEqual(summary["outcomes"], {})
         self.assertEqual(self.audits().count(), audits)
 
     # 14
@@ -255,23 +285,18 @@ class ReconcilerTests(TestCase):
 
         def webhook_lands_meanwhile():
             MauticEmailSuppression.objects.filter(user=user).update(suppressed_at=timezone.now())
-            return contact()
+            return contact(2)
 
         findings, _, _ = self.run_rec({"70": webhook_lands_meanwhile}, apply=True)
         self.assertEqual(findings[user.pk].outcome, "skipped_concurrent_change")
-        self.assertIsNotNone(self.suppressed("race"))
+        self.assertEqual(self.suppressed("race").reason, R.UNSUBSCRIBED)
 
-    def test_provider_change_between_reads_cancels_the_clear(self):
+    def test_a_stale_opt_out_is_read_once_and_left_alone(self):
         user = self.member("flip", 71, reason=R.UNSUBSCRIBED)
-        findings, _, fake = self.run_rec({"71": [contact(), contact(1)]}, apply=True)
-        self.assertEqual(findings[user.pk].outcome, "skipped_provider_changed")
+        findings, _, fake = self.run_rec({"71": [contact(), TemporaryMauticError("down")]}, apply=True)
+        self.assertEqual((findings[user.pk].action, findings[user.pk].outcome), (rec.MANUAL_REVIEW, ""))
+        self.assertEqual(len(fake.calls), 1)
         self.assertIsNotNone(self.suppressed("flip"))
-
-    def test_provider_failure_on_second_read_cancels_the_clear(self):
-        user = self.member("down", 72, reason=R.UNSUBSCRIBED)
-        findings, _, _ = self.run_rec({"72": [contact(), TemporaryMauticError("down")]}, apply=True)
-        self.assertEqual(findings[user.pk].outcome, "skipped_provider_unavailable")
-        self.assertIsNotNone(self.suppressed("down"))
 
     def test_bounded_scope_cursor_and_timeout(self):
         for i in range(5):
@@ -318,4 +343,4 @@ class CommandTests(TestCase):
         with patch.object(rec, "MauticClient", return_value=FakeMautic({"6": contact()})):
             call_command("reconcile_mautic_consent", "--apply", stdout=out)
         self.assertIn("APPLY", out.getvalue())
-        self.assertFalse(MauticEmailSuppression.objects.filter(user=user).exists())
+        self.assertTrue(MauticEmailSuppression.objects.filter(user=user).exists())

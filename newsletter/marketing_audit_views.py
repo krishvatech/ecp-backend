@@ -30,6 +30,7 @@ DOMAIN_DEFINITIONS = {
     "points": ("Points", ("point.",)),
     "tags": ("Tags", ("tag.",)),
     "fields": ("Fields", ("field.",)),
+    "forms": ("Forms", ("form.",)),
     "delivery": ("Delivery", ("newsletter.",)),
     "access": ("Access", ("connection.",)),
 }
@@ -86,6 +87,21 @@ def _parse_datetime_filter(value, *, end_of_day=False):
 
 def _valid_values(enum_cls):
     return {choice.value for choice in enum_cls}
+
+
+# Audited actions recorded outside the model's Action choices (adding them
+# there would need a migration). The filter accepts them like any other.
+EXTRA_FILTER_ACTIONS = frozenset(
+    {
+        "form.create",
+        "form.update",
+        "form.publish",
+        "form.unpublish",
+        "form.field.create",
+        "form.field.update",
+        "form.field.reorder",
+    }
+)
 
 
 def _domain_action_q(domain_key):
@@ -184,7 +200,7 @@ class NewsletterAdminMarketingAuditView(APIView):
                 queryset = queryset.filter(**{field: value})
 
         action = str(request.query_params.get("action", "") or "").strip()
-        valid_actions = _valid_values(MauticIdentityAuditLog.Action)
+        valid_actions = _valid_values(MauticIdentityAuditLog.Action) | EXTRA_FILTER_ACTIONS
         if action:
             if action not in valid_actions:
                 errors["action"] = "Unsupported action."

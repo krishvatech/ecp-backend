@@ -18,9 +18,9 @@ class Command(BaseCommand):
     help = (
         "Compare ECP's mirror of Mautic email suppression (MauticEmailSuppression) with "
         "live Mautic Do Not Contact state for linked members. Read-only unless --apply. "
-        "--apply only adds or strengthens a suppression Mautic reports, or removes a "
-        "voluntary opt-out Mautic no longer reports (re-checked under a row lock); bounce, "
-        "manual and ambiguous cases are reported for manual review. Newsletter list "
+        "--apply only adds or strengthens a suppression Mautic reports (re-checked under a "
+        "row lock); it never lifts one. A suppression Mautic no longer reports, and every "
+        "ambiguous case, is reported for manual review. Newsletter list "
         "choices are never read or changed. Output contains IDs only, no contact data."
     )
 
