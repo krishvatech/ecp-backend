@@ -602,3 +602,39 @@ def invalidate_participant_counts_for_parent_application(sender, instance, creat
     from .cache_utils import invalidate_event_list_caches
     event_id = instance.event_id
     transaction.on_commit(lambda: invalidate_event_list_caches(event_id))
+
+
+# Social-preview image derivative: rebuild only when the source image changes.
+@receiver(pre_save, sender=Event)
+def mark_previous_event_images(sender, instance, **kwargs):
+    if not instance.pk:
+        instance._previous_event_images = None
+        return
+    instance._previous_event_images = (
+        Event.objects.filter(pk=instance.pk)
+        .values_list("cover_image", "preview_image")
+        .first()
+    )
+
+
+@receiver(post_save, sender=Event)
+def generate_event_og_image_signal(sender, instance, created, **kwargs):
+    if kwargs.get("raw"):
+        return
+    current = (instance.cover_image.name or "", instance.preview_image.name or "")
+    if not any(current):
+        return
+    previous = getattr(instance, "_previous_event_images", None)
+    previous = tuple(name or "" for name in previous) if previous else None
+    if not created and previous == current:
+        return
+
+    def enqueue():
+        try:
+            from .tasks import generate_event_og_image
+
+            generate_event_og_image.delay(instance.pk)
+        except Exception:
+            logger.warning("Could not enqueue OG image for event %s", instance.pk, exc_info=True)
+
+    transaction.on_commit(enqueue)

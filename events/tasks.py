@@ -2711,3 +2711,14 @@ def heartbeat_live_instance():
     logger.info("Live instance heartbeat recorded: %s", result)
     return result
 
+
+
+@shared_task(name="events.generate_event_og_image")
+def generate_event_og_image(event_id, force=False):
+    """Build the 1200x630 social-preview derivative for one event."""
+    from .social_image import ensure_event_og_image
+
+    event = Event.objects.filter(pk=event_id).first()
+    if not event:
+        return ""
+    return ensure_event_og_image(event, force=force)
