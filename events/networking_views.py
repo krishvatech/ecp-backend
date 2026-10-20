@@ -29,6 +29,7 @@ from events.serializers import (
     NetworkingMeetingCreateSerializer,
     NetworkingMeetingSuggestSerializer,
 )
+from events.services.companion_access import get_networking_registration
 from events.services.networking_meetings import (
     get_available_networking_slots,
     check_duplicate_pending_meeting,
@@ -255,28 +256,19 @@ class NetworkingMeetingAvailabilityView(views.APIView):
     def get(self, request, event_id):
         event = get_object_or_404(Event, id=event_id)
 
-        # Check if event has started
-        if event.start_time and timezone.now() < event.start_time:
+        # IPDT-769: Eligible participants may plan 1:1 meetings before the event
+        # starts (the former event-start block was removed). Require a genuine
+        # registration; never auto-create one from a networking call — that would
+        # let an unauthorized account silently self-enroll in the event.
+        requester_reg = get_networking_registration(request.user, event)
+        if requester_reg is None:
             return Response(
                 {
-                    "code": "EVENT_NOT_STARTED",
-                    "detail": "1:1 meetings open when the event starts.",
-                    "event_start_time": event.start_time.isoformat(),
-                    "server_time": timezone.now().isoformat(),
+                    "code": "NOT_NETWORKING_ELIGIBLE",
+                    "detail": "You must be a registered event participant to use networking.",
                 },
                 status=status.HTTP_403_FORBIDDEN
             )
-
-        # Get current user's registration (or create temporary one for non-registered users)
-        requester_reg, created = EventRegistration.objects.get_or_create(
-            event=event,
-            user=request.user,
-            defaults={'status': 'registered'}
-        )
-        # Auto-assign Participant badge if registration has no badges
-        if created and not requester_reg.badge_labels.exists():
-            participant_badge = event.get_or_create_participant_badge()
-            requester_reg.badge_labels.add(participant_badge)
 
         # Get query params
         recipient_id = request.query_params.get('recipient_registration_id')
@@ -292,7 +284,7 @@ class NetworkingMeetingAvailabilityView(views.APIView):
             duration = int(duration_str)
             # Participants who opted out of the Companion are not bookable.
             recipient_reg = EventRegistration.objects.get(
-                id=recipient_id, event=event, hide_from_companion=False
+                id=recipient_id, event=event, status='registered', hide_from_companion=False
             )
         except (ValueError, EventRegistration.DoesNotExist):
             return Response(
@@ -342,28 +334,19 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
         event_id = self.kwargs.get('event_id')
         event = get_object_or_404(Event, id=event_id)
 
-        # Check if event has started
-        if event.start_time and timezone.now() < event.start_time:
+        # IPDT-769: Eligible participants may request 1:1 meetings before the event
+        # starts (the former event-start block was removed). Require a genuine
+        # registration; never auto-create one from a networking call — that would
+        # let an unauthorized account silently self-enroll in the event.
+        requester_reg = get_networking_registration(request.user, event)
+        if requester_reg is None:
             return Response(
                 {
-                    "code": "EVENT_NOT_STARTED",
-                    "detail": "1:1 meetings open when the event starts.",
-                    "event_start_time": event.start_time.isoformat(),
-                    "server_time": timezone.now().isoformat(),
+                    "code": "NOT_NETWORKING_ELIGIBLE",
+                    "detail": "You must be a registered event participant to use networking.",
                 },
                 status=status.HTTP_403_FORBIDDEN
             )
-
-        # Get or create requester registration (allow non-registered users)
-        requester_reg, created = EventRegistration.objects.get_or_create(
-            event=event,
-            user=request.user,
-            defaults={'status': 'registered'}
-        )
-        # Auto-assign Participant badge if registration has no badges
-        if created and not requester_reg.badge_labels.exists():
-            participant_badge = event.get_or_create_participant_badge()
-            requester_reg.badge_labels.add(participant_badge)
 
         serializer = NetworkingMeetingCreateSerializer(data=request.data)
         if not serializer.is_valid():
@@ -377,7 +360,7 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
         # Get recipient registration (opted-out participants are not bookable)
         try:
             recipient_reg = EventRegistration.objects.get(
-                id=recipient_id, event=event, hide_from_companion=False
+                id=recipient_id, event=event, status='registered', hide_from_companion=False
             )
         except EventRegistration.DoesNotExist:
             return Response(
@@ -512,16 +495,9 @@ class NetworkingMeetingMyView(views.APIView):
     def get(self, request, event_id):
         event = get_object_or_404(Event, id=event_id)
 
-        # Get or create registration (allow non-registered users to view their meetings)
-        registration, created = EventRegistration.objects.get_or_create(
-            event=event,
-            user=request.user,
-            defaults={'status': 'registered'}
-        )
-        # Auto-assign Participant badge if registration has no badges
-        if created and not registration.badge_labels.exists():
-            participant_badge = event.get_or_create_participant_badge()
-            registration.badge_labels.add(participant_badge)
+        # IPDT-769: Listing a user's own meetings must never create a registration.
+        # The query below is scoped to request.user, so no registration object is
+        # needed; a non-participant simply has no meetings to list.
 
         # Get all meetings where user is involved
         from django.db.models import Q
@@ -546,17 +522,8 @@ class NetworkingMeetingAcceptView(views.APIView):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
         event = meeting.event
 
-        # Check if event has started
-        if event.start_time and timezone.now() < event.start_time:
-            return Response(
-                {
-                    "code": "EVENT_NOT_STARTED",
-                    "detail": "1:1 meetings open when the event starts.",
-                    "event_start_time": event.start_time.isoformat(),
-                    "server_time": timezone.now().isoformat(),
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # IPDT-769: 1:1 meetings may be planned before the event starts.
+        # (Scheduling still happens within the event's configured networking slots.)
 
         # Only recipient can accept
         if meeting.recipient.user_id != request.user.id:
@@ -694,17 +661,8 @@ class NetworkingMeetingDeclineView(views.APIView):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
         event = meeting.event
 
-        # Check if event has started
-        if event.start_time and timezone.now() < event.start_time:
-            return Response(
-                {
-                    "code": "EVENT_NOT_STARTED",
-                    "detail": "1:1 meetings open when the event starts.",
-                    "event_start_time": event.start_time.isoformat(),
-                    "server_time": timezone.now().isoformat(),
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # IPDT-769: 1:1 meetings may be planned before the event starts.
+        # (Scheduling still happens within the event's configured networking slots.)
 
         # Only recipient can decline
         if meeting.recipient.user_id != request.user.id:
@@ -768,17 +726,8 @@ class NetworkingMeetingSuggestView(views.APIView):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
         event = meeting.event
 
-        # Check if event has started
-        if event.start_time and timezone.now() < event.start_time:
-            return Response(
-                {
-                    "code": "EVENT_NOT_STARTED",
-                    "detail": "1:1 meetings open when the event starts.",
-                    "event_start_time": event.start_time.isoformat(),
-                    "server_time": timezone.now().isoformat(),
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # IPDT-769: 1:1 meetings may be planned before the event starts.
+        # (Scheduling still happens within the event's configured networking slots.)
 
         # Requester or recipient can suggest
         user_is_requester = meeting.requester.user_id == request.user.id
@@ -951,17 +900,8 @@ class NetworkingMeetingRescheduleView(views.APIView):
         meeting = get_object_or_404(NetworkingMeeting, id=meeting_id)
         event = meeting.event
 
-        # Check if event has started
-        if event.start_time and timezone.now() < event.start_time:
-            return Response(
-                {
-                    "code": "EVENT_NOT_STARTED",
-                    "detail": "1:1 meetings open when the event starts.",
-                    "event_start_time": event.start_time.isoformat(),
-                    "server_time": timezone.now().isoformat(),
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # IPDT-769: 1:1 meetings may be planned before the event starts.
+        # (Scheduling still happens within the event's configured networking slots.)
 
         # Requester or recipient can reschedule
         user_is_requester = meeting.requester.user_id == request.user.id

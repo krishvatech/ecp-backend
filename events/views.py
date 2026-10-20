@@ -8296,17 +8296,11 @@ class EventViewSet(viewsets.ModelViewSet):
         if not (is_registered or is_approved or is_event_manager):
             return Response({"detail": "Forbidden. You must be registered or approved to access the companion directory."}, status=403)
 
-        # Block regular users before event start (but allow event managers to preview)
-        if event.start_time and timezone.now() < event.start_time and not is_event_manager:
-            return Response(
-                {
-                    "code": "COMPANION_NOT_OPEN",
-                    "detail": "Participant Directory will open when the event starts.",
-                    "event_start_time": event.start_time.isoformat(),
-                    "server_time": timezone.now().isoformat(),
-                },
-                status=403
-            )
+        # IPDT-769: Eligible participants (registered / approved application) and
+        # event managers may view the Participant Directory BEFORE the event starts.
+        # Access remains gated by the registered/approved/manager check above; only
+        # the former event-start restriction was removed here. Live rooms and
+        # livestreams stay separately gated and are not affected by this change.
 
         # Fetch registrations (only registered status, exclude superusers and
         # participants who opted out of this event's Companion). A participant
