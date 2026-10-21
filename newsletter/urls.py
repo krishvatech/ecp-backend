@@ -66,6 +66,10 @@ from .point_views import (
 )
 from .email_design_views import NewsletterAdminEmailDesignCompileView
 from .form_views import (
+    NewsletterAdminFormActionDetailView,
+    NewsletterAdminFormActionListCreateView,
+    NewsletterAdminFormActionMetadataView,
+    NewsletterAdminFormActionReorderView,
     NewsletterAdminFormBuilderMetadataView,
     NewsletterAdminFormDetailView,
     NewsletterAdminFormFieldDetailView,
@@ -73,7 +77,10 @@ from .form_views import (
     NewsletterAdminFormFieldReorderView,
     NewsletterAdminFormListCreateView,
     NewsletterAdminFormPublishView,
+    NewsletterAdminFormSubmissionDetailView,
+    NewsletterAdminFormSubmissionListView,
     NewsletterAdminFormUnpublishView,
+    NewsletterAdminFormUsageView,
 )
 from .template_views import (
     NewsletterAdminTemplateCategoriesView,
@@ -388,6 +395,41 @@ urlpatterns = [
         "newsletter/admin/forms/builder/",
         NewsletterAdminFormBuilderMetadataView.as_view(),
         name="newsletter-admin-form-builder-metadata",
+    ),
+    path(
+        "newsletter/admin/forms/actions/metadata/",
+        NewsletterAdminFormActionMetadataView.as_view(),
+        name="newsletter-admin-form-action-metadata",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/actions/",
+        NewsletterAdminFormActionListCreateView.as_view(),
+        name="newsletter-admin-form-action-list",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/actions/reorder/",
+        NewsletterAdminFormActionReorderView.as_view(),
+        name="newsletter-admin-form-action-reorder",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/actions/<str:action_id>/",
+        NewsletterAdminFormActionDetailView.as_view(),
+        name="newsletter-admin-form-action-detail",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/submissions/",
+        NewsletterAdminFormSubmissionListView.as_view(),
+        name="newsletter-admin-form-submission-list",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/submissions/<str:submission_id>/",
+        NewsletterAdminFormSubmissionDetailView.as_view(),
+        name="newsletter-admin-form-submission-detail",
+    ),
+    path(
+        "newsletter/admin/forms/<str:form_id>/usage/",
+        NewsletterAdminFormUsageView.as_view(),
+        name="newsletter-admin-form-usage",
     ),
     path(
         "newsletter/admin/forms/<str:form_id>/fields/",

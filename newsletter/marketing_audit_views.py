@@ -100,6 +100,10 @@ EXTRA_FILTER_ACTIONS = frozenset(
         "form.field.create",
         "form.field.update",
         "form.field.reorder",
+        "form.action.create",
+        "form.action.update",
+        "form.action.reorder",
+        "form.submission.view",
     }
 )
 

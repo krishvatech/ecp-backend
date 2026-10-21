@@ -28,6 +28,19 @@ from . import marketing_cache
 from .marketing_permissions import HasMarketingHubAccess
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.exceptions import MauticIdentityConfigurationError, MauticRequestNotSentError
+from .form_actions import (
+    ActionPolicyError,
+    TAGS,
+    action_matches,
+    action_type_catalogue,
+    normalize_action,
+    ordered_actions,
+    parse_action_order,
+    plan_action_update,
+    plan_new_action,
+    tag_catalogue,
+    unexpected_changes as unexpected_action_changes,
+)
 from .form_fields import (
     FieldPolicyError,
     contact_field_choices,
@@ -42,6 +55,9 @@ from .form_fields import (
     unexpected_changes,
 )
 from .mautic.operations import (
+    FORM_ACTION_CREATE,
+    FORM_ACTION_REORDER,
+    FORM_ACTION_UPDATE,
     FORM_CREATE,
     FORM_FIELD_CREATE,
     FORM_FIELD_REORDER,
@@ -51,7 +67,8 @@ from .mautic.operations import (
     FORM_UPDATE,
 )
 from .mautic_identity_execution import run_interactive_mutation
-from .models import NewsletterCategory
+from .mautic_identity_audit import record_identity_audit
+from .models import MauticIdentityAuditLog, NewsletterCategory
 
 NAME_MAX_LENGTH = 191
 DESCRIPTION_MAX_LENGTH = 2000
@@ -249,19 +266,12 @@ FORM_TYPE_NOTE = (
 def normalize_form_detail(form: dict[str, Any], protected: set[str]) -> dict[str, Any]:
     lock = fields_lock_reason(form)
     fields = [normalize_field(field, locked=lock) for field in _ordered(_collection(form.get("fields")))]
+    raw_actions = _ordered(_collection(form.get("actions")))
+    catalogue = _tag_catalogue() if any(str(a.get("type")) == TAGS for a in raw_actions) else {}
     actions = []
-    for action in _ordered(_collection(form.get("actions"))):
+    for action in raw_actions:
         policy, reason = _action_policy(action, protected)
-        actions.append(
-            {
-                "id": str(action.get("id") or ""),
-                "name": str(action.get("name") or ""),
-                "type": str(action.get("type") or ""),
-                "order": action.get("order"),
-                "policy": policy,
-                "policyReason": reason,
-            }
-        )
+        actions.append(normalize_action(action, catalogue, policy=policy, policy_reason=reason))
     blockers = publish_blockers(form, protected)
     return {
         **normalize_form_summary(form),
@@ -796,15 +806,15 @@ def _field_target(form_id, field_id=None):
     return normalized, form, field, None
 
 
-def _run_field_write(request, *, action, form_id, resource_id, detail, mutate, verify):
-    """Run one bridged field write as the acting admin, then confirm Mautic's
-    stored Form shows exactly the intended change."""
+def _run_field_write(request, *, action, form_id, resource_id, detail, mutate, verify, kind="field"):
+    """Run one bridged field (or submit-action) write as the acting admin,
+    then confirm Mautic's stored Form shows exactly the intended change."""
     protected = subscription_list_segment_ids()
     try:
         result, error_response = run_interactive_mutation(
             request,
             action=action,
-            resource="form_field",
+            resource=f"form_{kind}",
             resource_id=resource_id,
             mutate=lambda client: mutate(_asserted(client)),
             client_factory=MauticClient,
@@ -817,8 +827,8 @@ def _run_field_write(request, *, action, form_id, resource_id, detail, mutate, v
     except TemporaryMauticError:
         return _verified_state_response(
             form_id, protected,
-            "Mautic did not confirm the field change. The Form's current saved state is shown; check it before trying again.",
-            code="form_field_write_uncertain",
+            f"Mautic did not confirm the {kind} change. The Form's current saved state is shown; check it before trying again.",
+            code=f"form_{kind}_write_uncertain",
         )
     except PermanentMauticError as exc:
         return _provider_error_response(exc)
@@ -828,20 +838,20 @@ def _run_field_write(request, *, action, form_id, resource_id, detail, mutate, v
     stored, read_error = _read_form(form_id)
     if read_error is not None:
         return _error(
-            "Mautic accepted the field change but the Form could not be read back. Reload it to check.",
-            code="form_field_write_unconfirmed",
+            f"Mautic accepted the {kind} change but the Form could not be read back. Reload it to check.",
+            code=f"form_{kind}_write_unconfirmed",
             http_status=status.HTTP_502_BAD_GATEWAY,
         )
     problems, field_ref = verify(stored, stored)
     if problems:
         return _error(
             "Mautic's saved Form does not match the requested change: " + "; ".join(problems) + ". Review it in Mautic.",
-            code="form_field_write_mismatch",
+            code=f"form_{kind}_write_mismatch",
             http_status=status.HTTP_409_CONFLICT,
             form=normalize_form_detail(stored, protected),
         )
     body = normalize_form_detail(stored, protected)
-    body["fieldId"] = field_ref.split(":")[-1] if ":" in (field_ref or "") else None
+    body[f"{kind}Id"] = field_ref.split(":")[-1] if ":" in (field_ref or "") else None
     return Response(body)
 
 
@@ -998,3 +1008,342 @@ class NewsletterAdminFormFieldReorderView(APIView):
             mutate=lambda client: client.reorder_form_fields(normalized, order),
             verify=verify,
         )
+
+
+# Submit actions -------------------------------------------------------------------
+
+TAG_CATALOGUE_LIMIT = 1000
+
+
+def _tag_catalogue() -> dict[str, str]:
+    """``{tag_id: name}`` straight from Mautic (never cached: a stale list
+    could map a stored tag name to the wrong ID)."""
+    try:
+        data = MauticClient().list_tags(limit=TAG_CATALOGUE_LIMIT)
+    except (TemporaryMauticError, PermanentMauticError):
+        return {}
+    return tag_catalogue(data.get("tags") if isinstance(data, dict) else [])
+
+
+def _action_policy_response(exc: ActionPolicyError) -> Response:
+    return _error(str(exc), code=exc.code, http_status=status.HTTP_400_BAD_REQUEST, field=exc.field)
+
+
+def _action_target(form_id, action_id=None):
+    normalized = _form_id(form_id)
+    if normalized is None:
+        return None, None, None, _invalid_id_response()
+    if action_id is not None and _form_id(action_id) is None:
+        return None, None, None, _error("Action links use a numeric Mautic action ID.", code="invalid_form_action_id",
+                                        http_status=status.HTTP_400_BAD_REQUEST)
+    form, error = _read_form(normalized)
+    if error is not None:
+        return None, None, None, error
+    action = None
+    if action_id is not None:
+        action = next((a for a in ordered_actions(form) if str(a.get("id")) == str(action_id)), None)
+        if action is None:
+            return None, None, None, _error("Submit action not found in Mautic.", code="form_action_not_found",
+                                            http_status=status.HTTP_404_NOT_FOUND)
+    return normalized, form, action, None
+
+
+class NewsletterAdminFormActionMetadataView(APIView):
+    """Submit action types ECP manages, and Mautic's tags to choose from."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request):
+        catalogue = _tag_catalogue()
+        return Response({
+            "actionTypes": action_type_catalogue(),
+            "tags": sorted(({"id": tag_id, "name": name} for tag_id, name in catalogue.items()), key=lambda t: t["name"].lower()),
+            "tagLimit": TAG_CATALOGUE_LIMIT,
+            "policyNote": (
+                "Forms can tag contacts or adjust their points. Actions that lift Do Not Contact, "
+                "send email to the contact or change segment membership are not offered."
+            ),
+        })
+
+
+class NewsletterAdminFormActionListCreateView(APIView):
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, form_id):
+        normalized = _form_id(form_id)
+        if normalized is None:
+            return _invalid_id_response()
+        form, error = _read_form(normalized)
+        if error is not None:
+            return error
+        return Response({"actions": normalize_form_detail(form, subscription_list_segment_ids())["actions"]})
+
+    def post(self, request, form_id):
+        normalized, form, _, error = _action_target(form_id)
+        if error is not None:
+            return error
+        catalogue = _tag_catalogue()
+        try:
+            native, position = plan_new_action(request.data, form, catalogue)
+        except ActionPolicyError as exc:
+            return _action_policy_response(exc)
+
+        before_ids = [str(a.get("id")) for a in ordered_actions(form)]
+
+        def verify(saved, _stored):
+            new = [a for a in ordered_actions(saved) if str(a.get("id")) not in before_ids]
+            if len(new) != 1:
+                return ["the new action was not saved exactly once"], ""
+            new_id = str(new[0].get("id"))
+            expected = list(before_ids)
+            expected.insert(len(before_ids) if position is None else position, new_id)
+            problems = unexpected_action_changes(form, saved, target_id=None, expected_order=expected)
+            if not action_matches(new[0], native, catalogue):
+                problems.append("the new action's settings differ from the request")
+            return problems, f"{normalized}:{new_id}"
+
+        response = _run_field_write(
+            request,
+            action=FORM_ACTION_CREATE,
+            form_id=normalized,
+            resource_id=normalized,
+            detail=f"added {native['type']} action",
+            mutate=lambda client: client.create_form_action(normalized, native, position),
+            verify=verify,
+            kind="action",
+        )
+        if response.status_code == status.HTTP_200_OK:
+            response.status_code = status.HTTP_201_CREATED
+        return response
+
+
+class NewsletterAdminFormActionDetailView(APIView):
+    permission_classes = [HasMarketingHubAccess]
+
+    def patch(self, request, form_id, action_id):
+        normalized, form, action, error = _action_target(form_id, action_id)
+        if error is not None:
+            return error
+        catalogue = _tag_catalogue()
+        try:
+            native = plan_action_update(request.data, action, catalogue)
+        except ActionPolicyError as exc:
+            return _action_policy_response(exc)
+        target = str(action.get("id"))
+        if not native:
+            return Response({**normalize_form_detail(form, subscription_list_segment_ids()), "actionId": target, "unchanged": True})
+        order = [str(a.get("id")) for a in ordered_actions(form)]
+
+        def verify(saved, _stored):
+            problems = unexpected_action_changes(form, saved, target_id=target, expected_order=order)
+            stored = next((a for a in ordered_actions(saved) if str(a.get("id")) == target), None)
+            if stored is None or not action_matches({**stored}, {**native, "type": action.get("type")}, catalogue):
+                problems.append("the action's saved settings differ from the request")
+            elif "properties" not in native and stored.get("properties") != action.get("properties"):
+                problems.append("the action's settings changed")
+            return problems, f"{normalized}:{target}"
+
+        return _run_field_write(
+            request,
+            action=FORM_ACTION_UPDATE,
+            form_id=normalized,
+            resource_id=f"{normalized}:{target}",
+            detail="changed: " + ", ".join(sorted(native)),
+            mutate=lambda client: client.update_form_action(normalized, target, native),
+            verify=verify,
+            kind="action",
+        )
+
+
+class NewsletterAdminFormActionReorderView(APIView):
+    permission_classes = [HasMarketingHubAccess]
+
+    def post(self, request, form_id):
+        normalized, form, _, error = _action_target(form_id)
+        if error is not None:
+            return error
+        try:
+            order = parse_action_order(request.data, form)
+        except ActionPolicyError as exc:
+            return _action_policy_response(exc)
+        if order == [str(a.get("id")) for a in ordered_actions(form)]:
+            return Response({**normalize_form_detail(form, subscription_list_segment_ids()), "unchanged": True})
+
+        def verify(saved, _stored):
+            return unexpected_action_changes(form, saved, target_id="", expected_order=order), normalized
+
+        return _run_field_write(
+            request,
+            action=FORM_ACTION_REORDER,
+            form_id=normalized,
+            resource_id=normalized,
+            detail="order: " + ",".join(order)[:200],
+            mutate=lambda client: client.reorder_form_actions(normalized, order),
+            verify=verify,
+            kind="action",
+        )
+
+
+# Submissions (read-only, personal data) ---------------------------------------------
+
+SUBMISSION_PAGE_SIZE = 25
+SUBMISSION_MAX_PAGE_SIZE = 50
+SUBMISSION_TIMEOUT = 10
+MASKED_FIELD_TYPES = {"password"}
+NON_VALUE_FIELD_TYPES = {"button", "freetext", "freehtml", "pagebreak", "captcha"}
+# Columns Mautic adds to every results row; they are not submitted values.
+NATIVE_RESULT_COLUMNS = {"form_id", "submission_id"}
+
+
+def _private(response: Response) -> Response:
+    """Submission data is personal: never stored by browsers or proxies."""
+    response["Cache-Control"] = "no-store, private"
+    response["Pragma"] = "no-cache"
+    return response
+
+
+def _submission_contact(submission: dict[str, Any]) -> dict[str, Any] | None:
+    lead = submission.get("lead") if isinstance(submission.get("lead"), dict) else None
+    if not lead or not lead.get("id"):
+        return None
+    # Only what identifies the contact; the rest of the profile stays in Mautic.
+    return {"id": str(lead["id"]), "email": str(lead.get("email") or "")}
+
+
+def _submission_values(submission: dict[str, Any], form: dict[str, Any]) -> list[dict[str, Any]]:
+    results = submission.get("results") if isinstance(submission.get("results"), dict) else {}
+    values, seen = [], set()
+    for field in _ordered(_collection(form.get("fields"))):
+        alias = str(field.get("alias") or "")
+        field_type = str(field.get("type") or "")
+        if not alias or field_type in NON_VALUE_FIELD_TYPES:
+            continue
+        seen.add(alias)
+        raw = results.get(alias)
+        masked = field_type in MASKED_FIELD_TYPES
+        values.append({
+            "alias": alias,
+            "label": str(field.get("label") or alias),
+            "type": field_type,
+            "value": None if masked else ("" if raw is None else str(raw)),
+            "masked": masked,
+        })
+    # Values of fields removed from the Form since: shown by alias only.
+    for alias, raw in results.items():
+        if alias not in seen and alias not in NATIVE_RESULT_COLUMNS:
+            values.append({"alias": str(alias), "label": str(alias), "type": "", "value": "" if raw is None else str(raw),
+                           "masked": False, "removedField": True})
+    return values
+
+
+def _submission_form_matches(submission: dict[str, Any], form_id: str) -> bool:
+    form = submission.get("form") if isinstance(submission.get("form"), dict) else {}
+    return str(form.get("id") or "") == str(form_id)
+
+
+class NewsletterAdminFormSubmissionListView(APIView):
+    """Native submissions of one Form, newest first. Read-only, uncached."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, form_id):
+        normalized = _form_id(form_id)
+        if normalized is None:
+            return _private(_invalid_id_response())
+        page = max(1, _int_param(request, "page", 1))
+        page_size = max(1, min(_int_param(request, "page_size", SUBMISSION_PAGE_SIZE), SUBMISSION_MAX_PAGE_SIZE))
+        form, error = _read_form(normalized)
+        if error is not None:
+            return _private(error)
+        try:
+            data = MauticClient().list_form_submissions(
+                normalized, start=(page - 1) * page_size, limit=page_size, timeout=SUBMISSION_TIMEOUT)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _private(_provider_error_response(exc))
+        rows = _collection(data.get("submissions"))
+        try:
+            total = max(0, int(data.get("total", len(rows))))
+        except (TypeError, ValueError):
+            total = len(rows)
+        results = []
+        for submission in rows:
+            if not _submission_form_matches(submission, normalized):
+                continue
+            values = [v for v in _submission_values(submission, form) if not v["masked"] and v["value"]]
+            results.append({
+                "id": str(submission.get("id") or ""),
+                "dateSubmitted": submission.get("dateSubmitted"),
+                "contact": _submission_contact(submission),
+                "preview": [{"label": v["label"], "value": v["value"][:120]} for v in values[:2]],
+            })
+        return _private(Response({
+            "form": {"id": normalized, "name": str(form.get("name") or "")},
+            "count": total,
+            "page": page,
+            "page_size": page_size,
+            "num_pages": math.ceil(total / page_size) if total else 0,
+            "results": results,
+        }))
+
+
+class NewsletterAdminFormSubmissionDetailView(APIView):
+    """One native submission with its field values. Viewing is audited (IDs only)."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, form_id, submission_id):
+        normalized = _form_id(form_id)
+        submission_ref = _form_id(submission_id)
+        if normalized is None or submission_ref is None:
+            return _private(_error("Submission links use numeric Mautic IDs.", code="invalid_form_submission_id",
+                                   http_status=status.HTTP_400_BAD_REQUEST))
+        form, error = _read_form(normalized)
+        if error is not None:
+            return _private(error)
+        try:
+            submission = MauticClient().get_form_submission(normalized, submission_ref, timeout=SUBMISSION_TIMEOUT)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            if isinstance(exc, PermanentMauticError) and "HTTP 404" in str(exc):
+                return _private(_error("Submission not found for this Form.", code="form_submission_not_found",
+                                       http_status=status.HTTP_404_NOT_FOUND))
+            return _private(_provider_error_response(exc))
+        # Mautic resolves the submission by its own ID: refuse one of another Form.
+        if not _submission_form_matches(submission, normalized):
+            return _private(_error("Submission not found for this Form.", code="form_submission_not_found",
+                                   http_status=status.HTTP_404_NOT_FOUND))
+        record_identity_audit(
+            action="form.submission.view",
+            status=MauticIdentityAuditLog.Status.SUCCEEDED,
+            actor=request.user,
+            resource="form_submission",
+            resource_id=f"{normalized}:{submission_ref}",
+            auth_mode="service_account",
+        )
+        return _private(Response({
+            "form": {"id": normalized, "name": str(form.get("name") or "")},
+            "id": str(submission.get("id")),
+            "dateSubmitted": submission.get("dateSubmitted"),
+            "contact": _submission_contact(submission),
+            "values": _submission_values(submission, form),
+        }))
+
+
+class NewsletterAdminFormUsageView(APIView):
+    """Read-only: Campaigns and point actions using the Form, and its stored submissions."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, form_id):
+        normalized = _form_id(form_id)
+        if normalized is None:
+            return _invalid_id_response()
+        try:
+            usage = MauticClient().get_form_usage(normalized, timeout=SUBMISSION_TIMEOUT)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+        return Response({
+            "campaignSources": _collection(usage.get("campaignSources")),
+            "campaignEvents": _collection(usage.get("campaignEvents")),
+            "pointActions": _collection(usage.get("pointActions")),
+            "submissions": usage.get("submissions") if isinstance(usage.get("submissions"), dict) else {"total": 0, "latest": None},
+        })

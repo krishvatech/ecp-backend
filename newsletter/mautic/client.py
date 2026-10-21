@@ -48,6 +48,9 @@ from .operations import (
     FIELD_CREATE,
     FIELD_DELETE,
     FIELD_UPDATE,
+    FORM_ACTION_CREATE,
+    FORM_ACTION_REORDER,
+    FORM_ACTION_UPDATE,
     FORM_CREATE,
     FORM_FIELD_CREATE,
     FORM_FIELD_REORDER,
@@ -2904,6 +2907,64 @@ class MauticClient:
             operation=FORM_FIELD_REORDER, context="Mautic form field reorder",
             json={"order": [int(self._numeric_id(item, "form field")) for item in order]},
         )
+
+    def create_form_action(self, form_id, action: dict[str, Any], position: int | None = None) -> dict[str, Any]:
+        """Add one submit action; the bridge re-sends every existing action."""
+        form = self._numeric_id(form_id, "form")
+        body: dict[str, Any] = {"action": action}
+        if position is not None:
+            body["position"] = int(position)
+        return self._form_bridge_request(
+            "POST", f"ecp/bridge/forms/{form}/actions/new",
+            operation=FORM_ACTION_CREATE, context="Mautic form action creation", json=body,
+        )
+
+    def update_form_action(self, form_id, action_id, changes: dict[str, Any]) -> dict[str, Any]:
+        form = self._numeric_id(form_id, "form")
+        action = self._numeric_id(action_id, "form action")
+        return self._form_bridge_request(
+            "PATCH", f"ecp/bridge/forms/{form}/actions/{action}/edit",
+            operation=FORM_ACTION_UPDATE, context="Mautic form action update", json={"action": changes},
+        )
+
+    def reorder_form_actions(self, form_id, order: list) -> dict[str, Any]:
+        form = self._numeric_id(form_id, "form")
+        return self._form_bridge_request(
+            "POST", f"ecp/bridge/forms/{form}/actions/reorder",
+            operation=FORM_ACTION_REORDER, context="Mautic form action reorder",
+            json={"order": [int(self._numeric_id(item, "form action")) for item in order]},
+        )
+
+    def get_form_usage(self, form_id, *, timeout=None) -> dict[str, Any]:
+        """Read-only: Campaigns and point actions that reference the Form, and
+        its stored submission count (no contact data)."""
+        form = self._numeric_id(form_id, "form")
+        response = self._request("GET", f"ecp/bridge/forms/{form}/usage", timeout=timeout)
+        usage = self._json_object(response, "Mautic form usage").get("usage")
+        if not isinstance(usage, dict):
+            raise TemporaryMauticError("Mautic form usage returned an invalid response")
+        return usage
+
+    def list_form_submissions(self, form_id, *, start: int = 0, limit: int = 25, timeout=None) -> dict[str, Any]:
+        form = self._numeric_id(form_id, "form")
+        response = self._request(
+            "GET", f"forms/{form}/submissions",
+            params={"start": int(start), "limit": int(limit), "orderBy": "s.id", "orderByDir": "DESC"},
+            timeout=timeout,
+        )
+        data = self._json_object(response, "Mautic form submissions")
+        if not isinstance(data.get("submissions"), (list, dict)):
+            raise TemporaryMauticError("Mautic form submissions returned an invalid response")
+        return data
+
+    def get_form_submission(self, form_id, submission_id, *, timeout=None) -> dict[str, Any]:
+        form = self._numeric_id(form_id, "form")
+        submission = self._numeric_id(submission_id, "form submission")
+        response = self._request("GET", f"forms/{form}/submissions/{submission}", timeout=timeout)
+        data = self._json_object(response, "Mautic form submission").get("submission")
+        if not isinstance(data, dict) or not data.get("id"):
+            raise TemporaryMauticError("Mautic form submission returned an invalid response")
+        return data
 
     def set_form_published(self, form_id, published: bool) -> dict[str, Any]:
         normalized = str(form_id or "").strip()

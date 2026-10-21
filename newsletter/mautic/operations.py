@@ -85,6 +85,10 @@ FORM_UNPUBLISH = "form.unpublish"
 FORM_FIELD_CREATE = "form.field.create"
 FORM_FIELD_UPDATE = "form.field.update"
 FORM_FIELD_REORDER = "form.field.reorder"
+# Supported submit actions (tags, points): add, change and re-order.
+FORM_ACTION_CREATE = "form.action.create"
+FORM_ACTION_UPDATE = "form.action.update"
+FORM_ACTION_REORDER = "form.action.reorder"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
@@ -153,5 +157,8 @@ ASSERTABLE_OPERATIONS = frozenset(
         FORM_FIELD_CREATE,
         FORM_FIELD_UPDATE,
         FORM_FIELD_REORDER,
+        FORM_ACTION_CREATE,
+        FORM_ACTION_UPDATE,
+        FORM_ACTION_REORDER,
     }
 )
