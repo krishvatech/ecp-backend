@@ -42,6 +42,10 @@ def _capabilities():
     }
 
 
+def marked_segment(segment_id, *, alias="ecp-subscription-lists", published=True):
+    return {"id": int(segment_id), "isPublished": published, "category": {"id": 1, "alias": alias} if alias else None}
+
+
 def gate(event_id="c1", segments=(LIST_SEGMENT,), **extra):
     return {"id": event_id, "key": "lead.segments", "type": "lead.segments", "eventType": "condition", "name": "Subscribed?",
             "properties": {"segments": list(segments)}, "parent": None, "triggerMode": "immediate", **extra}
@@ -106,6 +110,11 @@ class ConsentApiTests(TestCase):
         patcher = patch("newsletter.native_campaign_views.MauticClient")
         self.client_cls = patcher.start()
         self.addCleanup(patcher.stop)
+        # Segments as Mautic reports them when ECP confirms the consent marker.
+        self.segments = {LIST_SEGMENT: marked_segment(LIST_SEGMENT)}
+        reader = patch("newsletter.form_campaign_consent._read_segment", side_effect=lambda sid: self.segments[str(sid)])
+        self.reader = reader.start()
+        self.addCleanup(reader.stop)
         self.mautic = self.client_cls.return_value
         self.mautic.get_campaign_builder_capabilities.return_value = _capabilities()
         self.mautic.create_campaign.return_value = {"id": 7, "name": "Journey", "events": []}
@@ -186,3 +195,18 @@ class ConsentApiTests(TestCase):
         self.stored([gate("11", segments=[61]), send("12", parent={"id": 11})], published=False)
         NewsletterCategory.objects.filter(mautic_segment_id=LIST_SEGMENT).update(is_active=False)
         self.assert_refused(self.api.patch(self.detail_url, {"isPublished": True}, format="json"), NOT_SUBSCRIPTION_LIST)
+
+    def test_publish_is_refused_while_the_list_segment_lacks_the_mautic_consent_marker(self):
+        # The plugin only accepts published segments in the Subscription List category when it sends.
+        for segment in (marked_segment(LIST_SEGMENT, alias=None), marked_segment(LIST_SEGMENT, alias="other"),
+                        marked_segment(LIST_SEGMENT, published=False)):
+            with self.subTest(segment=segment):
+                self.segments[LIST_SEGMENT] = segment
+                self.assert_refused(self.create([gate("new_1"), send("new_2", parent="new_1")]), "subscription_list_not_marked")
+        self.mautic.create_campaign.assert_not_called()
+
+    def test_marker_lookup_failure_fails_closed(self):
+        from newsletter.mautic.exceptions import TemporaryMauticError
+
+        self.reader.side_effect = TemporaryMauticError("down")
+        self.assert_refused(self.create([gate("new_1"), send("new_2", parent="new_1")]), "unverifiable")

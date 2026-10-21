@@ -13,7 +13,7 @@ from .dnc_services import (
     reconcile_email_suppression_for_resubscribe,
     suppression_state,
 )
-from .models import NewsletterCategory, NewsletterSubscription
+from .models import NewsletterCategory, NewsletterSubscription, NewsletterSyncEvent
 from .sync_events import create_newsletter_sync_event
 
 
@@ -91,6 +91,27 @@ def _dispatch_newsletter_sync_event_safely(event_id: int) -> None:
             "durable event remains pending",
             event_id,
         )
+
+
+def _apply_withdrawal_now(event_id: int) -> None:
+    """Remove a withdrawn member from the Subscription List segment now.
+
+    Mautic only sees consent through that segment, so until the removal lands
+    a Campaign could still treat the member as subscribed. If Mautic cannot be
+    reached the durable event keeps its retry schedule and is also handed to
+    the worker; the preference change itself has already been saved."""
+    try:
+        from .processor import process_newsletter_sync_event as process_now
+
+        if process_now(event_id).get("status") == NewsletterSyncEvent.Status.SUCCEEDED:
+            return
+    except Exception:
+        logger.warning(
+            "Newsletter withdrawal event_id=%s could not be applied to Mautic immediately; "
+            "it stays queued for retry",
+            event_id,
+        )
+    _dispatch_newsletter_sync_event_safely(event_id)
 
 
 def _reconcile_suppression_for_opt_in(
@@ -224,10 +245,12 @@ def update_user_preferences(
                 continue
 
             event = create_newsletter_sync_event(subscription)
-            transaction.on_commit(
-                lambda event_id=event.pk: _dispatch_newsletter_sync_event_safely(
-                    event_id
-                )
+            # A withdrawal is applied to Mautic before the response returns, so
+            # a stale Subscription List membership cannot authorise a marketing
+            # email in the meantime; a subscribe can wait for the worker.
+            dispatch = (
+                _apply_withdrawal_now if not desired else _dispatch_newsletter_sync_event_safely
             )
+            transaction.on_commit(lambda event_id=event.pk, dispatch=dispatch: dispatch(event_id))
 
     return list_user_preferences(user)

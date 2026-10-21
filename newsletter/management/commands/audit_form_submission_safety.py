@@ -4,9 +4,12 @@ from django.core.management.base import BaseCommand, CommandError
 
 from newsletter.form_campaign_consent import (
     form_source_ids,
+    segment_is_marked,
     subscription_list_consent_segment_ids,
+    unmarked_gate_steps,
     unsafe_email_steps,
 )
+from newsletter.models import NewsletterCategory
 from newsletter.form_views import _public_base_url, submit_address_status
 from newsletter.mautic import MauticClient
 from newsletter.mautic.exceptions import PermanentMauticError, TemporaryMauticError
@@ -41,12 +44,15 @@ class Command(BaseCommand):
         )
         parser.add_argument("--skip-forms", action="store_true", help="Do not check Forms.")
         parser.add_argument("--skip-campaigns", action="store_true", help="Do not check Campaigns.")
+        parser.add_argument("--skip-lists", action="store_true", help="Do not check Subscription List consent markers.")
         parser.add_argument("--json", action="store_true", help="Print one JSON document instead of text.")
 
     def handle(self, *args, **options):
         client = MauticClient()
-        report = {"mode": "read-only", "publicUrl": _public_base_url(), "forms": [], "campaigns": []}
+        report = {"mode": "read-only", "publicUrl": _public_base_url(), "forms": [], "campaigns": [], "subscriptionLists": []}
         try:
+            if not options.get("skip_lists"):
+                report["subscriptionLists"] = self._list_rows(client)
             if not options.get("skip_forms"):
                 for form_id in options.get("form_ids") or self._ids(client.list_forms, "forms"):
                     report["forms"].append(self._form_row(client.get_form(form_id)))
@@ -65,6 +71,7 @@ class Command(BaseCommand):
             "forms_unverified": [row["id"] for row in report["forms"] if row["status"] != "match" and row["status"] != "mismatch"],
             "form_sourced_campaigns": len(report["campaigns"]),
             "campaigns_with_unsafe_email": [row["id"] for row in report["campaigns"] if row["unsafeSteps"]],
+            "subscription_lists_without_consent_marker": [row["slug"] for row in report["subscriptionLists"] if not row["marked"]],
         }
         if options.get("json"):
             self.stdout.write(json.dumps(report, indent=2, default=str))
@@ -82,6 +89,9 @@ class Command(BaseCommand):
                 f"  campaign #{row['id']} {row['name'][:60]!r} {'published' if row['published'] else 'unpublished'} "
                 f"forms={row['forms']} unsafe email steps={[(s['id'], s['reason']) for s in row['unsafeSteps']]}"
             ))
+        for row in report["subscriptionLists"]:
+            style = self.style.SUCCESS if row["marked"] else self.style.ERROR
+            self.stdout.write(style(f"  list {row['slug']!r} segment #{row['segment']} consent marker={'yes' if row['marked'] else 'MISSING'}"))
         self.stdout.write(f"Summary: {report['summary']}")
 
     def _ids(self, lister, key):
@@ -107,6 +117,19 @@ class Command(BaseCommand):
         }
 
     @staticmethod
+    def _list_rows(client):
+        """Active Subscription Lists whose Mautic segment the bridge plugin would
+        not accept as consent evidence when it sends (no category marker)."""
+        rows = []
+        for category in NewsletterCategory.objects.filter(is_active=True, deletion_state="").exclude(mautic_segment_id="").order_by("slug"):
+            try:
+                marked = segment_is_marked(client.get_segment(category.mautic_segment_id))
+            except (TemporaryMauticError, PermanentMauticError):
+                marked = False
+            rows.append({"slug": category.slug, "segment": category.mautic_segment_id, "marked": marked})
+        return rows
+
+    @staticmethod
     def _campaign_row(client, campaign_id, segments):
         campaign = client.get_campaign(campaign_id)
         forms = form_source_ids(campaign.get("forms"))
@@ -115,6 +138,8 @@ class Command(BaseCommand):
         try:
             events = active_events(campaign, client.get_campaign_event_states(campaign_id).get("activeEventIds"))
             unsafe, verified = unsafe_email_steps(events, segments), True
+            if not unsafe:
+                unsafe = unmarked_gate_steps(events, reader=client.get_segment)
         except (DuplicateBlocked, TemporaryMauticError, PermanentMauticError):
             unsafe, verified = [{"id": "", "name": "Campaign", "reason": "unverifiable"}], False
         return {
@@ -125,4 +150,6 @@ class Command(BaseCommand):
             "segments": form_source_ids(campaign.get("lists")),
             "activeEventsVerified": verified,
             "unsafeSteps": unsafe,
+            # What the bridge plugin's send-time check does to these steps.
+            "runtimeEffect": "email steps refused at send time" if unsafe else "sends to current Subscription List members only",
         }

@@ -23,7 +23,7 @@ import logging
 
 from django.db import transaction
 
-from .mautic import MauticClient, PermanentMauticError
+from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .models import NewsletterCategory, NewsletterSubscription
 from .sync_events import create_newsletter_sync_event
 
@@ -82,7 +82,46 @@ def segment_is_static(segment):
     return not bool(segment_filters(segment))
 
 
-def segment_payload_for_category(category, *, include_alias=False):
+#: Mautic segment category marking ECP Subscription List segments. The bridge
+#: plugin treats only published segments in this category as marketing-consent
+#: evidence (EcpFormSourceEmailPolicy::CONSENT_CATEGORY_ALIAS must match).
+CONSENT_CATEGORY_ALIAS = "ecp-subscription-lists"
+
+
+def consent_category_id(reader=None) -> int | None:
+    """The Mautic category that marks Subscription List segments, or None.
+
+    The category is created once in Mautic by an administrator (bundle
+    "segment", alias CONSENT_CATEGORY_ALIAS). Read-only lookup; without it no
+    segment is marked and the plugin sends no Form-sourced marketing email."""
+    reader = reader or MauticClient()
+    start, page = 0, 100
+    try:
+        while True:
+            # Mautic's category search does not match on alias, so page and compare.
+            data = reader.list_categories(start=start, limit=page)
+            rows = data.get("categories") if isinstance(data, dict) else None
+            rows = list(rows.values()) if isinstance(rows, dict) else rows if isinstance(rows, list) else []
+            for row in rows:
+                if (
+                    isinstance(row, dict)
+                    and str(row.get("alias") or "") == CONSENT_CATEGORY_ALIAS
+                    and str(row.get("bundle") or "") == "segment"
+                ):
+                    try:
+                        return int(row["id"])
+                    except (KeyError, TypeError, ValueError):
+                        return None
+            start += page
+            if not rows or start >= int(data.get("total") or 0):
+                return None
+    except (TemporaryMauticError, PermanentMauticError, TypeError, ValueError):
+        logger.warning("Could not look up the Mautic Subscription List category")
+        return None
+    return None
+
+
+def segment_payload_for_category(category, *, include_alias=False, consent_category=None):
     payload = {
         "name": category.name,
         "description": category.description,
@@ -92,6 +131,11 @@ def segment_payload_for_category(category, *, include_alias=False):
     }
     if include_alias:
         payload["alias"] = category.slug
+    marker = consent_category if consent_category is not None else consent_category_id()
+    if marker is not None:
+        # Marks the segment as consent evidence for the bridge plugin. Left out
+        # when the category cannot be found, so an existing marker is kept.
+        payload["category"] = marker
     return payload
 
 

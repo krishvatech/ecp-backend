@@ -279,6 +279,43 @@ def _resolve_mautic_contact(
     return contact_id, created
 
 
+def _withdrawn_during_add(subscription):
+    """The subscription, if the member unsubscribed while this add was in flight.
+
+    The supersession check above runs before the provider call. A newer
+    unsubscribe can be saved (and even synced) while the add is in progress, and
+    the add would then restore Subscription List membership the member had
+    withdrawn: stale consent evidence in Mautic. Re-read after the add."""
+    current = NewsletterSubscription.objects.filter(pk=subscription.pk).first()
+    if current is None or current.is_subscribed:
+        return None
+    return current
+
+
+def _undo_superseded_add(event, client, segment_id, contact_id, subscription) -> dict:
+    """Remove membership added for a withdrawn subscription. If Mautic cannot be
+    reached, a durable unsubscribe event is queued so recovery removes it."""
+    try:
+        client.remove_contact_from_segment(segment_id, contact_id)
+        note = "Superseded by a newer unsubscribe during sync; membership removed again"
+    except (TemporaryMauticError, PermanentMauticError) as exc:
+        from .sync_events import create_newsletter_sync_event
+
+        follow_up = create_newsletter_sync_event(subscription)
+        note = (
+            "Superseded by a newer unsubscribe during sync; removal failed "
+            f"({type(exc).__name__}), queued as event {follow_up.pk}"
+        )
+        logger.warning("Newsletter sync event_id=%s: %s", event.pk, note)
+    _finish(event.pk, NewsletterSyncEvent.Status.SKIPPED, note)
+    return {
+        "event_id": event.pk,
+        "status": NewsletterSyncEvent.Status.SKIPPED,
+        "processed": True,
+        "reason": "superseded_after_add",
+    }
+
+
 def process_newsletter_sync_event(event_id: int) -> dict:
     """Synchronously process one durable NewsletterSyncEvent."""
     if not getattr(settings, "MAUTIC_SYNC_ENABLED", False):
@@ -390,6 +427,9 @@ def process_newsletter_sync_event(event_id: int) -> dict:
         if contact_id is not None:
             if event.desired_subscribed:
                 client.add_contact_to_segment(segment_id, contact_id)
+                withdrawn = _withdrawn_during_add(subscription)
+                if withdrawn is not None:
+                    return _undo_superseded_add(event, client, segment_id, contact_id, withdrawn)
             else:
                 client.remove_contact_from_segment(segment_id, contact_id)
     except TemporaryMauticError as exc:

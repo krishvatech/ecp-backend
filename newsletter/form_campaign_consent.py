@@ -28,8 +28,14 @@ The check runs when ECP puts a workflow into service (publishing, or changing
 the events or sources of a published Campaign). A Campaign with a Form source
 is checked as a whole, whatever other sources it has, because Mautic does not
 record which source brought a contact in. Existing Campaigns are never changed
-here. Mautic itself does not enforce any of this: a Campaign edited directly in
-Mautic can still send to Form submitters.
+here.
+
+At send time the bridge plugin enforces the same rule inside Mautic
+(EcpFormSourceEmailPolicy / EcpFormSourceEmailConsentSubscriber), including for
+Campaigns built or published in Mautic itself, and re-reads Subscription List
+membership when the email is sent. It only accepts segments in the Mautic
+category CONSENT_CATEGORY_ALIAS, which ECP's list sync assigns, so the publish
+check also confirms that marker (``unmarked_gate_steps``).
 """
 
 from __future__ import annotations
@@ -41,10 +47,17 @@ from .campaign_email_types import (
     STATE_MARKETING,
     classify_email_type,
 )
+from .category_segment_services import CONSENT_CATEGORY_ALIAS
+from .mautic import MauticClient
+from .mautic.exceptions import PermanentMauticError, TemporaryMauticError
 from .mautic_campaign_canvas_audit import _event_parent
 from .models import NewsletterCategory
 
 CONSENT_CONDITION = "lead.segments"
+#: Marketing Messages re-dispatch as a Send email step whose properties carry no
+#: email type, so Mautic runs them as transactional; never put into service in a
+#: Form-sourced Campaign (the plugin refuses them at send time too).
+MARKETING_MESSAGE_EVENT = "message.send"
 CONSENT_REQUIRED_CODE = "form_source_marketing_consent_required"
 
 NOT_MARKETING = "not_marketing"
@@ -52,6 +65,7 @@ NOT_GATED = "not_gated"
 NO_PATH = "no_path"
 NOT_SUBSCRIPTION_LIST = "not_subscription_list"
 DELAYED = "delayed"
+NOT_MARKED = "subscription_list_not_marked"
 UNVERIFIABLE = "unverifiable"
 
 REASONS = {
@@ -63,6 +77,10 @@ REASONS = {
     NO_PATH: "it is on the NO path of the Subscription List condition",
     NOT_SUBSCRIPTION_LIST: "its condition checks segments that are not active Subscription Lists",
     DELAYED: "it is delayed after the Subscription List check. Put the delay on the condition instead",
+    NOT_MARKED: (
+        "its Subscription List segment is not marked for consent in Mautic yet (sync the Subscription List), so "
+        "Mautic would not send it"
+    ),
     UNVERIFIABLE: "Mautic did not report the Campaign's active steps, so they could not be checked",
 }
 
@@ -132,6 +150,9 @@ def unsafe_email_steps(events: Any, consent_segments: set[str]) -> list[dict[str
     by_id = {str(event.get("id")): event for event in events}
     unsafe = []
     for event in events:
+        if _key(event) == MARKETING_MESSAGE_EVENT:
+            unsafe.append({"id": str(event.get("id") or ""), "name": str(event.get("name") or ""), "reason": NOT_MARKETING})
+            continue
         if _key(event) != EMAIL_SEND_EVENT:
             continue
         parent = by_id.get(_event_parent(event) or "")
@@ -151,6 +172,45 @@ def unsafe_email_steps(events: Any, consent_segments: set[str]) -> list[dict[str
     return unsafe
 
 
+def _read_segment(segment_id: str) -> dict[str, Any]:
+    return MauticClient().get_segment(segment_id)
+
+
+def segment_is_marked(segment: Any) -> bool:
+    """What the bridge plugin requires of a consent segment when it sends:
+    published and in the Subscription List category."""
+    if not isinstance(segment, dict):
+        return False
+    category = segment.get("category")
+    alias = category.get("alias") if isinstance(category, dict) else None
+    return segment.get("isPublished") in (True, 1, "1") and alias == CONSENT_CATEGORY_ALIAS
+
+
+def unmarked_gate_steps(events: Any, reader=None) -> list[dict[str, str]]:
+    """Gated Send email steps whose Subscription List segment Mautic would not
+    accept as consent evidence (EcpFormSourceEmailPolicy at send time)."""
+    reader = reader or _read_segment
+    events = _collection(events)
+    by_id = {str(event.get("id")): event for event in events}
+    checked: dict[str, str | None] = {}
+    steps = []
+    for event in events:
+        if _key(event) != EMAIL_SEND_EVENT:
+            continue
+        parent = by_id.get(_event_parent(event) or "")
+        reason = None
+        for segment_id in sorted(_segment_ids((parent or {}).get("properties"))):
+            if segment_id not in checked:
+                try:
+                    checked[segment_id] = None if segment_is_marked(reader(segment_id)) else NOT_MARKED
+                except (TemporaryMauticError, PermanentMauticError):
+                    checked[segment_id] = UNVERIFIABLE
+            reason = reason or checked[segment_id]
+        if reason:
+            steps.append({"id": str(event.get("id") or ""), "name": str(event.get("name") or ""), "reason": reason})
+    return steps
+
+
 def require_form_source_consent(events: Any, forms: Any) -> None:
     """Refuse to put a Form-sourced workflow with an unsafe Send email step into
     service. ``events`` is None when the live workflow could not be read."""
@@ -161,3 +221,8 @@ def require_form_source_consent(events: Any, forms: Any) -> None:
     unsafe = unsafe_email_steps(events, subscription_list_consent_segment_ids())
     if unsafe:
         raise FormSourceConsentRequired(unsafe)
+    # Structurally safe: also confirm Mautic will accept the segments when it
+    # sends, so a publish never looks fine while every email is refused.
+    unmarked = unmarked_gate_steps(events)
+    if unmarked:
+        raise FormSourceConsentRequired(unmarked)
