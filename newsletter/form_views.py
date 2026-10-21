@@ -1347,3 +1347,173 @@ class NewsletterAdminFormUsageView(APIView):
             "pointActions": _collection(usage.get("pointActions")),
             "submissions": usage.get("submissions") if isinstance(usage.get("submissions"), dict) else {"total": 0, "latest": None},
         })
+
+
+# Native preview and embedding (read-only) -----------------------------------------
+#
+# Mautic renders a Form once per save into `cachedHtml` and serves that HTML at
+# its public routes: /form/{id} (full page), /form/generate.js?id={id} (the
+# recommended JavaScript embed) and /form/embed/{id}. All three answer only for
+# published Forms. Mautic's own draft preview (/s/forms/preview/{id}) needs a
+# Mautic login session, which ECP admins do not have, so a draft is previewed
+# from its saved `cachedHtml` in a fully sandboxed frame: native markup and
+# styles, no scripts, no network, no submission. Nothing here publishes a Form
+# or writes to Mautic.
+
+PREVIEW_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'"
+_SCRIPT_TAGS = re.compile(r"<script\b[^>]*>.*?</script\s*>|<script\b[^>]*/?>", re.IGNORECASE | re.DOTALL)
+_SUBMIT_ACTION = re.compile(r'<form\b[^>]*\baction="(https?://[^"\s<>]+?)/form/submit\?formId=(\d+)"', re.IGNORECASE)
+
+
+def validate_public_url(value) -> str | None:
+    """Mautic's configured public base URL, or None when it is not a plain
+    http(s) address (no credentials, query, fragment or markup characters)."""
+    text = str(value or "").strip().rstrip("/")
+    if not text or len(text) > 255 or any(char in text for char in "\"'<> \t\r\n\\`"):
+        return None
+    try:
+        parts = urlsplit(text)
+        parts.port  # noqa: B018 - raises on an invalid port
+    except ValueError:
+        return None
+    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
+        return None
+    if parts.query or parts.fragment:
+        return None
+    return text
+
+
+def _public_base_url() -> str | None:
+    try:
+        capabilities = marketing_cache.cached_value(
+            "mautic-bridge-capabilities", [], lambda: MauticClient().get_marketing_bridge_capabilities(),
+            ttl=marketing_cache.reference_ttl(),
+        )
+    except (TemporaryMauticError, PermanentMauticError):
+        return None
+    return validate_public_url(capabilities.get("publicUrl") if isinstance(capabilities, dict) else None)
+
+
+def _is_live(form: dict[str, Any]) -> bool:
+    """Published and inside its publish window: what Mautic's public routes require."""
+    if not _provider_bool(form.get("isPublished")):
+        return False
+    now = timezone.now()
+
+    def moment(value):
+        parsed = parse_datetime(str(value or ""))
+        if parsed is not None and timezone.is_naive(parsed):
+            parsed = timezone.make_aware(parsed, dt_timezone.utc)  # Mautic stores UTC
+        return parsed
+
+    up, down = moment(form.get("publishUp")), moment(form.get("publishDown"))
+    return not (up and up > now) and not (down and down <= now)
+
+
+def native_submit_base(html: str, form_id: str) -> str | None:
+    match = _SUBMIT_ACTION.search(html or "")
+    return match.group(1) if match and match.group(2) == str(form_id) else None
+
+
+def preview_document(html: str) -> str:
+    """Mautic's saved Form HTML as a self-contained, inert document."""
+    body = _SCRIPT_TAGS.sub("", html or "")
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<meta http-equiv=\"Content-Security-Policy\" content=\"{PREVIEW_CSP}\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<style>body{margin:16px;font-family:Arial,Helvetica,sans-serif;color:#1B2A4A;background:#fff}</style>"
+        f"</head><body>{body}</body></html>"
+    )
+
+
+def embed_snippets(base: str, form_id: str) -> list[dict[str, str]]:
+    """Mautic's own "automatic" embed codes (FormBundle details.html.twig)."""
+    return [
+        {
+            "method": "javascript",
+            "label": "JavaScript (recommended)",
+            "code": f'<script type="text/javascript" src="{base}/form/generate.js?id={form_id}"></script>',
+            "help": "Paste where the Form should appear. Later changes in Mautic show automatically.",
+        },
+        {
+            "method": "iframe",
+            "label": "iframe",
+            "code": (
+                f'<iframe src="{base}/form/{form_id}" width="300" height="300" title="Embedded form">'
+                "<p>Your browser does not support iframes.</p></iframe>"
+            ),
+            "help": "Adjust the width and height so the Form fits.",
+        },
+    ]
+
+
+class NewsletterAdminFormPreviewView(APIView):
+    """The saved native Form as Mautic renders it, for a sandboxed frame."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, form_id):
+        normalized = _form_id(form_id)
+        if normalized is None:
+            return _private(_invalid_id_response())
+        form, error = _read_form(normalized)
+        if error is not None:
+            return _private(error)
+        html = str(form.get("cachedHtml") or "")
+        if "<form" not in html.lower():
+            return _private(_error("Mautic has not rendered this Form yet. Save it once, then preview again.",
+                                   code="form_preview_unavailable", http_status=status.HTTP_409_CONFLICT))
+        live = _is_live(form)
+        base = _public_base_url()
+        return _private(Response({
+            "formId": normalized,
+            "name": str(form.get("name") or ""),
+            "isPublished": _provider_bool(form.get("isPublished")),
+            "isLive": live,
+            "savedAt": form.get("dateModified") or form.get("dateAdded"),
+            "document": preview_document(html),
+            "liveUrl": f"{base}/form/{normalized}" if live and base else None,
+            "note": (
+                "This is the last saved version, rendered by Mautic. Unsaved changes in the editor are not included."
+            ),
+        }))
+
+
+class NewsletterAdminFormEmbedView(APIView):
+    """Native embed codes for a Form, built from Mautic's configured public URL."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, form_id):
+        normalized = _form_id(form_id)
+        if normalized is None:
+            return _invalid_id_response()
+        form, error = _read_form(normalized)
+        if error is not None:
+            return error
+        base = _public_base_url()
+        if base is None:
+            return _error("Mautic's public address is not available, so embed codes cannot be generated.",
+                          code="form_public_url_unavailable", http_status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        live = _is_live(form)
+        submit_base = native_submit_base(str(form.get("cachedHtml") or ""), normalized)
+        warnings = []
+        if not live:
+            warnings.append("This Form is not published, so the embed codes will show nothing until it is published.")
+        if submit_base and submit_base != base:
+            warnings.append(
+                f"Mautic stored this Form's submit address as {submit_base}, which differs from its public address "
+                f"{base}. Mautic takes that address from the request that last saved the Form; visitors submit to it."
+            )
+        return Response({
+            "formId": normalized,
+            "name": str(form.get("name") or ""),
+            "isPublished": _provider_bool(form.get("isPublished")),
+            "isLive": live,
+            "publicUrl": base,
+            "formUrl": f"{base}/form/{normalized}",
+            "submitBase": submit_base,
+            "methods": embed_snippets(base, normalized),
+            "warnings": warnings,
+        })
