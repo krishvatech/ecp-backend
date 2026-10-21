@@ -18,6 +18,7 @@ from datetime import timedelta, timezone as dt_timezone
 from typing import Any
 from urllib.parse import urlsplit
 
+from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
@@ -285,7 +286,27 @@ def normalize_form_detail(form: dict[str, Any], protected: set[str]) -> dict[str
         "fieldsLockReason": lock,
         "campaignSource": True,
         "formTypeNote": FORM_TYPE_NOTE,
+        "submitAddress": submit_address_status(form),
     }
+
+
+def _written_response(stored: dict[str, Any], protected: set[str], *, http_status=status.HTTP_200_OK, **extra) -> Response:
+    """Report an ECP write that Mautic confirmed. A published Form whose stored
+    submit address is not Mautic's public address is an explicit error: the
+    change is saved, but visitors could not complete a submission."""
+    body = {**normalize_form_detail(stored, protected), **extra}
+    if body["submitAddress"]["status"] == "mismatch" and _provider_bool(stored.get("isPublished")):
+        return _error(
+            "The change was saved, but Mautic stored a submit address that is not its public address "
+            f"({body['submitAddress']['stored']} instead of {body['submitAddress']['expected']}). Visitors may not "
+            "see the success message or reach Mautic. Check the Mautic plugin version and site_url before using "
+            "this Form.",
+            code="form_submit_address_mismatch",
+            http_status=status.HTTP_409_CONFLICT,
+            saved=True,
+            form=body,
+        )
+    return Response(body, status=http_status)
 
 
 def _structure(form: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -588,7 +609,7 @@ class NewsletterAdminFormListCreateView(APIView):
                 http_status=status.HTTP_502_BAD_GATEWAY,
                 form={"id": str(form.get("id"))},
             )
-        return Response(normalize_form_detail(stored, protected), status=status.HTTP_201_CREATED)
+        return _written_response(stored, protected, http_status=status.HTTP_201_CREATED)
 
     @staticmethod
     def _uncertain_create(name: str, started) -> Response:
@@ -685,7 +706,7 @@ class NewsletterAdminFormDetailView(APIView):
                 http_status=status.HTTP_409_CONFLICT,
                 form=normalize_form_detail(stored, protected),
             )
-        return Response(normalize_form_detail(stored, protected))
+        return _written_response(stored, protected)
 
 
 def _verified_state_response(form_id: str, protected: set[str], message: str, *, code: str) -> Response:
@@ -761,7 +782,7 @@ class _FormPublicationView(APIView):
                 http_status=status.HTTP_409_CONFLICT,
                 form=normalize_form_detail(stored, protected),
             )
-        return Response(normalize_form_detail(stored, protected))
+        return _written_response(stored, protected)
 
 
 class NewsletterAdminFormPublishView(_FormPublicationView):
@@ -850,9 +871,7 @@ def _run_field_write(request, *, action, form_id, resource_id, detail, mutate, v
             http_status=status.HTTP_409_CONFLICT,
             form=normalize_form_detail(stored, protected),
         )
-    body = normalize_form_detail(stored, protected)
-    body[f"{kind}Id"] = field_ref.split(":")[-1] if ":" in (field_ref or "") else None
-    return Response(body)
+    return _written_response(stored, protected, **{f"{kind}Id": field_ref.split(":")[-1] if ":" in (field_ref or "") else None})
 
 
 class NewsletterAdminFormBuilderMetadataView(APIView):
@@ -1365,9 +1384,17 @@ _SCRIPT_TAGS = re.compile(r"<script\b[^>]*>.*?</script\s*>|<script\b[^>]*/?>", r
 _SUBMIT_ACTION = re.compile(r'<form\b[^>]*\baction="(https?://[^"\s<>]+?)/form/submit\?formId=(\d+)"', re.IGNORECASE)
 
 
-def validate_public_url(value) -> str | None:
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def validate_public_url(value, *, require_https: bool | None = None) -> str | None:
     """Mautic's configured public base URL, or None when it is not a plain
-    http(s) address (no credentials, query, fragment or markup characters)."""
+    http(s) address (no credentials, query, fragment or markup characters).
+
+    Visitors submit Forms to this address, so outside DEBUG it must be https;
+    plain http is accepted for loopback hosts (local development) only."""
+    if require_https is None:
+        require_https = not settings.DEBUG
     text = str(value or "").strip().rstrip("/")
     if not text or len(text) > 255 or any(char in text for char in "\"'<> \t\r\n\\`"):
         return None
@@ -1380,7 +1407,48 @@ def validate_public_url(value) -> str | None:
         return None
     if parts.query or parts.fragment:
         return None
+    if require_https and parts.scheme != "https" and parts.hostname not in LOOPBACK_HOSTS:
+        return None
     return text
+
+
+def _base_key(value: str | None) -> tuple | None:
+    """Scheme, host, effective port and path: two spellings of one address compare equal."""
+    if not value:
+        return None
+    try:
+        parts = urlsplit(value)
+        port = parts.port or {"http": 80, "https": 443}.get(parts.scheme)
+    except ValueError:
+        return None
+    return parts.scheme.lower(), (parts.hostname or "").lower(), port, parts.path.rstrip("/")
+
+
+SUBMIT_ADDRESS_MESSAGES = {
+    "match": "Visitors submit to Mautic's public address.",
+    "mismatch": (
+        "Mautic stored a different submit address for this Form than its public address. Submissions may be "
+        "saved while visitors see no success message or redirect, or may not reach Mautic at all. Saving any "
+        "change to the Form through ECP stores the public address again."
+    ),
+    "missing": "Mautic has not rendered this Form's submit address yet. Save the Form once.",
+    "public_url_unavailable": "Mautic's public address is not available, so the submit address cannot be checked.",
+}
+
+
+def submit_address_status(form: dict[str, Any]) -> dict[str, Any]:
+    """Compare the submit address in Mautic's stored Form HTML with Mautic's
+    trusted public address (site_url, from the plugin). Read-only."""
+    form_id = str(form.get("id") or "")
+    stored = native_submit_base(str(form.get("cachedHtml") or ""), form_id)
+    expected = _public_base_url()
+    if expected is None:
+        state = "public_url_unavailable"
+    elif stored is None:
+        state = "missing"
+    else:
+        state = "match" if _base_key(stored) == _base_key(expected) else "mismatch"
+    return {"status": state, "stored": stored, "expected": expected, "message": SUBMIT_ADDRESS_MESSAGES[state]}
 
 
 def _public_base_url() -> str | None:
@@ -1497,14 +1565,16 @@ class NewsletterAdminFormEmbedView(APIView):
             return _error("Mautic's public address is not available, so embed codes cannot be generated.",
                           code="form_public_url_unavailable", http_status=status.HTTP_503_SERVICE_UNAVAILABLE)
         live = _is_live(form)
-        submit_base = native_submit_base(str(form.get("cachedHtml") or ""), normalized)
+        submit = submit_address_status(form)
+        submit_base = submit["stored"]
         warnings = []
         if not live:
             warnings.append("This Form is not published, so the embed codes will show nothing until it is published.")
-        if submit_base and submit_base != base:
+        if submit["status"] == "mismatch":
             warnings.append(
                 f"Mautic stored this Form's submit address as {submit_base}, which differs from its public address "
-                f"{base}. Mautic takes that address from the request that last saved the Form; visitors submit to it."
+                f"{base}. Submissions may be saved while visitors see no success message or redirect, or may not "
+                "reach Mautic at all. Saving any change to the Form through ECP stores the public address again."
             )
         return Response({
             "formId": normalized,
@@ -1514,6 +1584,7 @@ class NewsletterAdminFormEmbedView(APIView):
             "publicUrl": base,
             "formUrl": f"{base}/form/{normalized}",
             "submitBase": submit_base,
+            "submitAddress": submit,
             "methods": embed_snippets(base, normalized),
             "warnings": warnings,
         })

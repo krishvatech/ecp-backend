@@ -20,6 +20,11 @@ from .campaign_email_types import (
     stored_email_types,
     unresolved_email_send_actions,
 )
+from .form_campaign_consent import (
+    FormSourceConsentRequired,
+    form_source_ids,
+    require_form_source_consent,
+)
 from .marketing_permissions import HasMarketingHubAccess
 
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
@@ -1247,7 +1252,25 @@ def _payload_error_response(exc: ValueError) -> Response:
     if isinstance(exc, (TransactionalEmailConfirmationRequired, UnresolvedEmailTypes)):
         body["code"] = exc.code
         body["events"] = exc.events
+    if isinstance(exc, FormSourceConsentRequired):
+        body["code"] = exc.code
+        body["events"] = exc.steps
     return Response(body, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _record_consent_denial(request, exc: ValueError, *, action, resource_id, correlation_id) -> None:
+    """Audit a refused Form-source consent check: step ids and reasons only."""
+    if isinstance(exc, FormSourceConsentRequired):
+        record_identity_audit(
+            action=action,
+            status=MauticIdentityAuditLog.Status.DENIED,
+            actor=request.user,
+            resource="campaign",
+            resource_id=resource_id or "",
+            correlation_id=correlation_id,
+            error_code=exc.code,
+            detail=", ".join(f"{step['id'] or '-'}:{step['reason']}" for step in exc.steps)[:255],
+        )
 
 
 def _requests_publish(data) -> bool:
@@ -1271,6 +1294,41 @@ def _workflow_going_live(payload, stored_campaign, stored_active_events):
     if "events" in payload:
         return payload["events"] if publishing or stays_published else None
     return stored_active_events if publishing else None
+
+
+def _requested_form_sources(data):
+    """The Form sources a request sets (top-level ``forms`` or ``sources.forms``), or None."""
+    if not hasattr(data, "get"):
+        return None
+    sources = data.get("sources")
+    if isinstance(sources, dict) and "forms" in sources:
+        return sources.get("forms")
+    return data.get("forms") if "forms" in data else None
+
+
+def _check_form_source_consent(payload, stored_campaign, stored_active_events) -> None:
+    """Form-source marketing consent for the workflow a request puts into
+    service: when it publishes, or changes the events or sources of a Campaign
+    that stays published. Drafts, unpublishing and metadata edits are not checked,
+    so existing Campaigns keep working until they are changed."""
+    publishing = payload.get("isPublished") is True
+    stays_published = (
+        "isPublished" not in payload
+        and isinstance(stored_campaign, dict)
+        and _provider_bool(stored_campaign.get("isPublished"))
+    )
+    if not (publishing or (stays_published and ("events" in payload or "forms" in payload))):
+        return
+    forms = payload["forms"] if "forms" in payload else (
+        stored_campaign.get("forms") if isinstance(stored_campaign, dict) else None
+    )
+    events = stored_active_events
+    if "events" in payload:
+        # Mautic's PATCH merges events by id into the stored workflow.
+        merged = {str(event.get("id")): event for event in (stored_active_events or [])}
+        merged.update({str(event.get("id")): event for event in payload["events"]})
+        events = None if stored_active_events is None else list(merged.values())
+    require_form_source_consent(events, forms)
 
 
 class NewsletterAdminMauticCampaignListCreateView(APIView):
@@ -1358,7 +1416,9 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
             )
             if payload.get("isPublished") is True:
                 require_resolved_email_types(payload.get("events"))
+                require_form_source_consent(payload.get("events"), payload.get("forms"))
         except ValueError as exc:
+            _record_consent_denial(request, exc, action=action, resource_id="", correlation_id=correlation_id)
             return _payload_error_response(exc)
 
         try:
@@ -1726,9 +1786,14 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
             # a saved action keeps its classification unless one is chosen. A
             # publish request also needs the stored workflow it would put live.
             requests_publish = _requests_publish(request.data)
+            requested_forms = _requested_form_sources(request.data)
+            changes_forms = requested_forms is not None
+            changes_events = hasattr(request.data, "get") and "events" in request.data
             stored_campaign = (
                 client.get_campaign(campaign_id)
                 if requests_publish
+                or changes_forms
+                or changes_events
                 or (
                     hasattr(request.data, "get")
                     and request_has_email_send_action(request.data.get("events"))
@@ -1739,7 +1804,23 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
                 stored_email_types(stored_campaign) if stored_campaign is not None else None
             )
             stored_active_events = None
-            if requests_publish and "events" not in request.data:
+            # A PATCH merges events into the stored workflow (only PUT deletes
+            # missing ones), so the consent check needs the live workflow too.
+            live_change = (
+                (changes_forms or changes_events)
+                and isinstance(stored_campaign, dict)
+                and _provider_bool(stored_campaign.get("isPublished"))
+            )
+            form_sourced = bool(
+                form_source_ids(
+                    requested_forms
+                    if changes_forms
+                    else (stored_campaign.get("forms") if isinstance(stored_campaign, dict) else None)
+                )
+            )
+            if (requests_publish and not changes_events) or (
+                form_sourced and (requests_publish or live_change)
+            ):
                 try:
                     stored_active_events = duplicate_service.active_events(
                         stored_campaign,
@@ -1778,7 +1859,9 @@ class NewsletterAdminMauticCampaignDetailView(APIView):
             going_live = _workflow_going_live(payload, stored_campaign, stored_active_events)
             if going_live is not None:
                 require_resolved_email_types(going_live)
+            _check_form_source_consent(payload, stored_campaign, stored_active_events)
         except ValueError as exc:
+            _record_consent_denial(request, exc, action=action, resource_id=campaign_id, correlation_id=correlation_id)
             return _payload_error_response(exc)
 
         try:
