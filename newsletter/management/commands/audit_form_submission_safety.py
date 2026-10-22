@@ -2,7 +2,11 @@ import json
 
 from django.core.management.base import BaseCommand, CommandError
 
+from newsletter.authoritative_consent import ConsentLookupUnavailable, protected_step_scope
 from newsletter.form_campaign_consent import (
+    DELAYED,
+    email_consent_scope,
+    form_contact_autoresponders,
     form_source_ids,
     segment_is_marked,
     subscription_list_consent_segment_ids,
@@ -75,6 +79,8 @@ class Command(BaseCommand):
             "campaigns_with_unsafe_email": [row["id"] for row in report["campaigns"] if row["unsafeSteps"]],
             "campaigns_adding_to_subscription_lists": [row["id"] for row in report["campaigns"] if row["subscriptionListWrites"]],
             "forms_adding_to_subscription_lists": [row["id"] for row in report["forms"] if row["subscriptionListWrites"]],
+            # Native "Send email to contact" actions: sent with ignoreDNC (autoresponder policy pending).
+            "forms_with_contact_autoresponders": [row["id"] for row in report["forms"] if row["contactAutoresponders"]],
             "subscription_lists_without_consent_marker": [row["slug"] for row in report["subscriptionLists"] if not row["marked"]],
         }
         if options.get("json"):
@@ -123,6 +129,7 @@ class Command(BaseCommand):
                 [{**action, "key": action.get("type")} for action in (form.get("actions") or []) if isinstance(action, dict)],
                 subscription_list_segment_ids(),
             ),
+            "contactAutoresponders": form_contact_autoresponders(form.get("actions")),
         }
 
     @staticmethod
@@ -146,15 +153,29 @@ class Command(BaseCommand):
         list_writes = subscription_list_writes(campaign.get("events"), subscription_list_segment_ids())
         if not forms and not list_writes:
             return None
-        unsafe, verified = [], True
+        unsafe, verified, scope = [], True, []
         if forms:
             try:
                 events = active_events(campaign, client.get_campaign_event_states(campaign_id).get("activeEventIds"))
                 unsafe = unsafe_email_steps(events, segments)
+                # Which Subscription Lists each email's consent condition checks.
+                scope = email_consent_scope(events, dict(
+                    NewsletterCategory.objects.exclude(mautic_segment_id="").values_list("mautic_segment_id", "slug")
+                ))
                 if not unsafe:
                     unsafe = unmarked_gate_steps(events, reader=client.get_segment)
+                # What ECP's send-time verification would decide for each email
+                # step, before any contact: the authorising list or the refusal.
+                for row in scope:
+                    try:
+                        step_scope = protected_step_scope(client, int(campaign_id), int(row["step"]))
+                        row["ecpScope"] = {"list": step_scope.category.slug if step_scope.category else None, "refusal": step_scope.reason}
+                    except (ConsentLookupUnavailable, ValueError):
+                        row["ecpScope"] = {"list": None, "refusal": "unverifiable"}
             except (DuplicateBlocked, TemporaryMauticError, PermanentMauticError):
                 unsafe, verified = [{"id": "", "name": "Campaign", "reason": "unverifiable"}], False
+        # The delay rule only stops ECP publishing; at send time ECP re-checks consent.
+        refused = [step for step in unsafe if step["reason"] != DELAYED] + [row for row in scope if row.get("ecpScope", {}).get("refusal")]
         return {
             "id": str(campaign.get("id") or campaign_id),
             "name": str(campaign.get("name") or ""),
@@ -164,6 +185,7 @@ class Command(BaseCommand):
             "activeEventsVerified": verified,
             "unsafeSteps": unsafe,
             "subscriptionListWrites": list_writes,
+            "consentScope": scope,
             # What the bridge plugin's send-time check does to these steps.
-            "runtimeEffect": "email steps refused at send time" if unsafe else "sends to current Subscription List members only",
+            "runtimeEffect": "email steps refused at send time" if refused else "sends only to contacts ECP verifies as currently subscribed",
         }

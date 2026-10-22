@@ -164,11 +164,18 @@ from .tag_views import (
     NewsletterAdminTagDetailView,
     NewsletterAdminTagDirectoryView,
 )
+from .consent_verify_views import consent_verify_view
 from .views import NewsletterPreferencesView
 from .webhooks import MauticNewsletterWebhookView
 
 
 urlpatterns = [
+    # Mautic -> ECP marketing-consent verification (signed service requests only).
+    path(
+        "marketing/internal/consent/verify/",
+        consent_verify_view,
+        name="marketing-internal-consent-verify",
+    ),
     path(
         "newsletter/preferences/",
         NewsletterPreferencesView.as_view(),

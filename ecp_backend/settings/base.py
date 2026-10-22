@@ -295,6 +295,15 @@ ECP_MAUTIC_IDENTITY_ISSUER = os.getenv("ECP_MAUTIC_IDENTITY_ISSUER", "ecp").stri
 ECP_MAUTIC_IDENTITY_AUDIENCE = os.getenv("ECP_MAUTIC_IDENTITY_AUDIENCE", "ecp-mautic").strip()
 ECP_MAUTIC_IDENTITY_TTL_SECONDS = os.getenv("ECP_MAUTIC_IDENTITY_TTL_SECONDS", "90").strip()
 
+# Mautic -> ECP marketing-consent verification (newsletter.consent_service_auth).
+# PUBLIC Ed25519 keys only: JSON {"<kid>": "<base64 raw 32-byte public key>"};
+# several keys overlap during rotation, revoked key ids always lose. No keys
+# configured means every verification request is refused (fail closed).
+ECP_CONSENT_VERIFY_KEYS = os.getenv("ECP_CONSENT_VERIFY_KEYS", "")
+ECP_CONSENT_REVOKED_KEY_IDS = os.getenv("ECP_CONSENT_REVOKED_KEY_IDS", "")
+ECP_CONSENT_CLOCK_SKEW_SECONDS = os.getenv("ECP_CONSENT_CLOCK_SKEW_SECONDS", "30").strip()
+ECP_CONSENT_MAX_REQUESTS_PER_MINUTE = os.getenv("ECP_CONSENT_MAX_REQUESTS_PER_MINUTE", "1200").strip()
+
 # Phase 2 feature flag. When false (the default) every Mautic call keeps using
 # the shared service account exactly as before. When true, ONLY manual campaign
 # create/update from the Marketing Hub execute as the mapped Mautic user, via

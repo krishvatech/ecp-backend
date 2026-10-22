@@ -219,6 +219,45 @@ def require_no_subscription_list_writes(events: Any) -> None:
         raise SubscriptionListWriteForbidden(steps)
 
 
+def email_consent_scope(events: Any, list_slug_by_segment: dict[str, str]) -> list[dict[str, Any]]:
+    """For each Send email step, the Subscription Lists its consent condition
+    checks: today the only link between a marketing email and the consent that
+    authorises it. Read-only reporting; it decides nothing."""
+    events = _collection(events)
+    by_id = {str(event.get("id")): event for event in events}
+    scope = []
+    for event in events:
+        if _key(event) != EMAIL_SEND_EVENT:
+            continue
+        parent = by_id.get(_event_parent(event) or "")
+        gated = parent is not None and _key(parent) == CONSENT_CONDITION and str(event.get("decisionPath") or "") == "yes"
+        segments = sorted(_segment_ids((parent or {}).get("properties"))) if gated else []
+        properties = event.get("properties") if isinstance(event.get("properties"), dict) else {}
+        scope.append({
+            "step": str(event.get("id") or ""),
+            "email": str(properties.get("email") or ""),
+            "lists": sorted(list_slug_by_segment[segment] for segment in segments if segment in list_slug_by_segment),
+            "otherSegments": [segment for segment in segments if segment not in list_slug_by_segment],
+        })
+    return scope
+
+
+#: Native Form submit actions that email the submitter. Mautic sends them with
+#: ignoreDNC and offers no email type, so they are transactional by construction.
+FORM_CONTACT_EMAIL_ACTION = "email.send.lead"
+
+
+def form_contact_autoresponders(actions: Any) -> list[dict[str, str]]:
+    """Native "Send email to contact" actions on a Form (read-only reporting)."""
+    found = []
+    for action in _collection(actions):
+        if str(action.get("type") or "") != FORM_CONTACT_EMAIL_ACTION:
+            continue
+        properties = action.get("properties") if isinstance(action.get("properties"), dict) else {}
+        found.append({"id": str(action.get("id") or ""), "name": str(action.get("name") or ""), "email": str(properties.get("email") or "")})
+    return found
+
+
 def _read_segment(segment_id: str) -> dict[str, Any]:
     return MauticClient().get_segment(segment_id)
 
