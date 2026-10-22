@@ -32,6 +32,8 @@ def _capabilities():
              "formTypeOptions": {"email": {"required": True}}},
             {"key": "lead.changepoints", "type": "lead.changepoints", "eventType": "action", "label": "Points",
              "formTypeOptions": {"points": {"required": False}}},
+            {"key": "lead.changelist", "type": "lead.changelist", "eventType": "action", "label": "Modify segments",
+             "formTypeOptions": {}},
         ],
         "conditions": [
             {"key": "lead.segments", "type": "lead.segments", "eventType": "condition", "label": "Contact segments",
@@ -98,7 +100,7 @@ class ConsentRuleTests(TestCase):
         self.assertEqual(self.reasons([points(), gate(), points("p2")]), [])
 
 
-class ConsentApiTests(TestCase):
+class ConsentApiBase(TestCase):
     def setUp(self):
         NewsletterCategory.objects.create(name="Updates", slug="updates", mautic_segment_id=LIST_SEGMENT, is_active=True)
         self.api = APIClient()
@@ -139,6 +141,8 @@ class ConsentApiTests(TestCase):
         self.assertEqual([step["reason"] for step in response.data["events"]], [reason])
         self.assertIn("does not automatically subscribe a Contact to marketing emails", response.data["detail"])
 
+
+class ConsentApiTests(ConsentApiBase):
     def test_publishing_a_form_sourced_ungated_marketing_email_is_refused_and_audited(self):
         response = self.create([send(parent=None, path=None)])
         self.assert_refused(response, NOT_GATED)
@@ -210,3 +214,39 @@ class ConsentApiTests(TestCase):
 
         self.reader.side_effect = TemporaryMauticError("down")
         self.assert_refused(self.create([gate("new_1"), send("new_2", parent="new_1")]), "unverifiable")
+
+
+def change_lists(event_id="l1", add=(), remove=()):
+    return {"id": event_id, "key": "lead.changelist", "type": "lead.changelist", "eventType": "action", "name": "Segments",
+            "properties": {"addToLists": list(add), "removeFromLists": list(remove)}, "parent": None, "triggerMode": "immediate"}
+
+
+class SubscriptionListWriteTests(ConsentApiBase):
+    """Any Campaign adding contacts to a Subscription List forges consent."""
+
+    def assert_write_refused(self, response):
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["code"], "subscription_list_write_forbidden")
+        self.assertIn("only the member's choice in ECP may set it", response.data["detail"])
+
+    def test_adding_to_a_subscription_list_is_refused_with_or_without_a_form_source(self):
+        self.assert_write_refused(self.create([change_lists("new_1", add=[LIST_SEGMENT])]))
+        self.assert_write_refused(self.create([change_lists("new_1", add=[LIST_SEGMENT])], forms=(), segments=[10]))
+        self.mautic.create_campaign.assert_not_called()
+        self.assertTrue(MauticIdentityAuditLog.objects.filter(error_code="subscription_list_write_forbidden").exists())
+
+    def test_archived_lists_are_protected_too(self):
+        NewsletterCategory.objects.create(name="Old", slug="old", mautic_segment_id="62", is_active=False)
+        self.assert_write_refused(self.create([change_lists("new_1", add=["62"])], forms=(), segments=[10]))
+
+    def test_removing_from_a_list_and_ordinary_segments_are_allowed(self):
+        self.assertEqual(self.create([change_lists("new_1", remove=[LIST_SEGMENT])], forms=(), segments=[10]).status_code, 201)
+        self.assertEqual(self.create([change_lists("new_1", add=["7"])], forms=(), segments=[10]).status_code, 201)
+
+    def test_drafts_are_not_checked(self):
+        self.assertEqual(self.create([change_lists("new_1", add=[LIST_SEGMENT])], published=False).status_code, 201)
+
+    def test_live_workflow_change_is_checked_against_the_merged_workflow(self):
+        self.stored([gate("11", segments=[61]), send("12", parent={"id": 11})], published=True)
+        response = self.api.patch(self.detail_url, {"events": [change_lists("new_1", add=[LIST_SEGMENT])]}, format="json")
+        self.assert_write_refused(response)

@@ -172,6 +172,53 @@ def unsafe_email_steps(events: Any, consent_segments: set[str]) -> list[dict[str
     return unsafe
 
 
+SEGMENT_CHANGE_ACTION = "lead.changelist"
+LIST_WRITE_FORBIDDEN_CODE = "subscription_list_write_forbidden"
+
+
+class SubscriptionListWriteForbidden(ValueError):
+    """A workflow would add contacts to an ECP Subscription List segment from
+    Mautic. Membership is consent evidence; only ECP writes it."""
+
+    code = LIST_WRITE_FORBIDDEN_CODE
+
+    def __init__(self, steps: list[dict[str, str]]):
+        self.steps = steps
+        names = ", ".join(step["name"] or step["id"] for step in steps)
+        super().__init__(
+            "A Campaign step cannot add contacts to a Subscription List: membership of a Subscription List is a "
+            "member's own marketing consent, and only the member's choice in ECP may set it. Mautic also undoes "
+            f"such additions when they run. Remove the Subscription List from: {names}."
+        )
+
+
+def subscription_list_writes(events: Any, list_segments: set[str]) -> list[dict[str, str]]:
+    """``lead.changelist`` steps that would add contacts to Subscription List
+    segments (any lifecycle state). Removing contacts is not refused."""
+    steps = []
+    for event in _collection(events):
+        if _key(event) != SEGMENT_CHANGE_ACTION:
+            continue
+        properties = event.get("properties") if isinstance(event.get("properties"), dict) else {}
+        added = _segment_ids({"segments": properties.get("addToLists") or []})
+        if added & list_segments:
+            steps.append({"id": str(event.get("id") or ""), "name": str(event.get("name") or ""), "reason": LIST_WRITE_FORBIDDEN_CODE})
+    return steps
+
+
+def require_no_subscription_list_writes(events: Any) -> None:
+    """Refuse to put into service a workflow that adds to Subscription Lists.
+    ``events`` None (workflow unavailable) is not checked here: the bridge
+    plugin undoes such additions at run time whatever the workflow says."""
+    if events is None:
+        return
+    from .form_views import subscription_list_segment_ids
+
+    steps = subscription_list_writes(events, subscription_list_segment_ids())
+    if steps:
+        raise SubscriptionListWriteForbidden(steps)
+
+
 def _read_segment(segment_id: str) -> dict[str, Any]:
     return MauticClient().get_segment(segment_id)
 

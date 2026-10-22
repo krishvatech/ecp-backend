@@ -6,9 +6,11 @@ from newsletter.form_campaign_consent import (
     form_source_ids,
     segment_is_marked,
     subscription_list_consent_segment_ids,
+    subscription_list_writes,
     unmarked_gate_steps,
     unsafe_email_steps,
 )
+from newsletter.form_views import subscription_list_segment_ids
 from newsletter.models import NewsletterCategory
 from newsletter.form_views import _public_base_url, submit_address_status
 from newsletter.mautic import MauticClient
@@ -71,6 +73,8 @@ class Command(BaseCommand):
             "forms_unverified": [row["id"] for row in report["forms"] if row["status"] != "match" and row["status"] != "mismatch"],
             "form_sourced_campaigns": len(report["campaigns"]),
             "campaigns_with_unsafe_email": [row["id"] for row in report["campaigns"] if row["unsafeSteps"]],
+            "campaigns_adding_to_subscription_lists": [row["id"] for row in report["campaigns"] if row["subscriptionListWrites"]],
+            "forms_adding_to_subscription_lists": [row["id"] for row in report["forms"] if row["subscriptionListWrites"]],
             "subscription_lists_without_consent_marker": [row["slug"] for row in report["subscriptionLists"] if not row["marked"]],
         }
         if options.get("json"):
@@ -114,6 +118,11 @@ class Command(BaseCommand):
             "status": status["status"],
             "stored": status["stored"],
             "expected": status["expected"],
+            # Native "Modify contact's segments" submit actions adding to a Subscription List.
+            "subscriptionListWrites": subscription_list_writes(
+                [{**action, "key": action.get("type")} for action in (form.get("actions") or []) if isinstance(action, dict)],
+                subscription_list_segment_ids(),
+            ),
         }
 
     @staticmethod
@@ -133,15 +142,19 @@ class Command(BaseCommand):
     def _campaign_row(client, campaign_id, segments):
         campaign = client.get_campaign(campaign_id)
         forms = form_source_ids(campaign.get("forms"))
-        if not forms:
+        # Any Campaign may add contacts to a Subscription List (forged consent).
+        list_writes = subscription_list_writes(campaign.get("events"), subscription_list_segment_ids())
+        if not forms and not list_writes:
             return None
-        try:
-            events = active_events(campaign, client.get_campaign_event_states(campaign_id).get("activeEventIds"))
-            unsafe, verified = unsafe_email_steps(events, segments), True
-            if not unsafe:
-                unsafe = unmarked_gate_steps(events, reader=client.get_segment)
-        except (DuplicateBlocked, TemporaryMauticError, PermanentMauticError):
-            unsafe, verified = [{"id": "", "name": "Campaign", "reason": "unverifiable"}], False
+        unsafe, verified = [], True
+        if forms:
+            try:
+                events = active_events(campaign, client.get_campaign_event_states(campaign_id).get("activeEventIds"))
+                unsafe = unsafe_email_steps(events, segments)
+                if not unsafe:
+                    unsafe = unmarked_gate_steps(events, reader=client.get_segment)
+            except (DuplicateBlocked, TemporaryMauticError, PermanentMauticError):
+                unsafe, verified = [{"id": "", "name": "Campaign", "reason": "unverifiable"}], False
         return {
             "id": str(campaign.get("id") or campaign_id),
             "name": str(campaign.get("name") or ""),
@@ -150,6 +163,7 @@ class Command(BaseCommand):
             "segments": form_source_ids(campaign.get("lists")),
             "activeEventsVerified": verified,
             "unsafeSteps": unsafe,
+            "subscriptionListWrites": list_writes,
             # What the bridge plugin's send-time check does to these steps.
             "runtimeEffect": "email steps refused at send time" if unsafe else "sends to current Subscription List members only",
         }

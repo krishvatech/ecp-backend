@@ -22,8 +22,10 @@ from .campaign_email_types import (
 )
 from .form_campaign_consent import (
     FormSourceConsentRequired,
+    SubscriptionListWriteForbidden,
     form_source_ids,
     require_form_source_consent,
+    require_no_subscription_list_writes,
 )
 from .marketing_permissions import HasMarketingHubAccess
 
@@ -1252,7 +1254,7 @@ def _payload_error_response(exc: ValueError) -> Response:
     if isinstance(exc, (TransactionalEmailConfirmationRequired, UnresolvedEmailTypes)):
         body["code"] = exc.code
         body["events"] = exc.events
-    if isinstance(exc, FormSourceConsentRequired):
+    if isinstance(exc, (FormSourceConsentRequired, SubscriptionListWriteForbidden)):
         body["code"] = exc.code
         body["events"] = exc.steps
     return Response(body, status=status.HTTP_400_BAD_REQUEST)
@@ -1260,7 +1262,7 @@ def _payload_error_response(exc: ValueError) -> Response:
 
 def _record_consent_denial(request, exc: ValueError, *, action, resource_id, correlation_id) -> None:
     """Audit a refused Form-source consent check: step ids and reasons only."""
-    if isinstance(exc, FormSourceConsentRequired):
+    if isinstance(exc, (FormSourceConsentRequired, SubscriptionListWriteForbidden)):
         record_identity_audit(
             action=action,
             status=MauticIdentityAuditLog.Status.DENIED,
@@ -1329,6 +1331,8 @@ def _check_form_source_consent(payload, stored_campaign, stored_active_events) -
         merged.update({str(event.get("id")): event for event in payload["events"]})
         events = None if stored_active_events is None else list(merged.values())
     require_form_source_consent(events, forms)
+    # Any Campaign, Form-sourced or not: adding to a Subscription List forges consent.
+    require_no_subscription_list_writes(events if events is not None else payload.get("events"))
 
 
 class NewsletterAdminMauticCampaignListCreateView(APIView):
@@ -1417,6 +1421,7 @@ class NewsletterAdminMauticCampaignListCreateView(APIView):
             if payload.get("isPublished") is True:
                 require_resolved_email_types(payload.get("events"))
                 require_form_source_consent(payload.get("events"), payload.get("forms"))
+                require_no_subscription_list_writes(payload.get("events"))
         except ValueError as exc:
             _record_consent_denial(request, exc, action=action, resource_id="", correlation_id=correlation_id)
             return _payload_error_response(exc)
