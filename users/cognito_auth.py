@@ -674,26 +674,15 @@ class CognitoJWTAuthentication(BaseAuthentication):
                 elif current_is_placeholder and not incoming_is_placeholder:
                     user.email = incoming_email
                     updated = True
-            if _is_imaa_wordpress_oauth_provider(provider):
-                if first_name and (
-                    not user.first_name
-                    or _is_placeholder_name(user.first_name, email, provider_username)
-                ):
-                    user.first_name = first_name
-                    updated = True
-                if last_name and (
-                    not user.last_name
-                    or _is_placeholder_name(user.last_name, email, provider_username)
-                ):
-                    user.last_name = last_name
-                    updated = True
-            else:
-                if first_name and user.first_name != first_name:
-                    user.first_name = first_name
-                    updated = True
-                if last_name and user.last_name != last_name:
-                    user.last_name = last_name
-                    updated = True
+            # The DB name is the source of truth once set (admin edits, approved
+            # name changes). Token names only fill an empty/placeholder value;
+            # otherwise every Google/Cognito login would revert an admin rename.
+            if first_name and _is_placeholder_name(user.first_name, email, provider_username):
+                user.first_name = first_name
+                updated = True
+            if last_name and _is_placeholder_name(user.last_name, email, provider_username):
+                user.last_name = last_name
+                updated = True
 
             if updated:
                 user.save(update_fields=["email", "first_name", "last_name"])

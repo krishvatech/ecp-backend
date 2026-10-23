@@ -3295,7 +3295,7 @@ class AdminMembershipDocumentViewSet(AdminTargetUserMixin, ProfileDocumentSoftDe
         serializer.save(membership=membership)
 
     
-from .email_utils import send_admin_credentials_email, delete_cognito_user, create_cognito_user
+from .email_utils import send_admin_credentials_email, delete_cognito_user, create_cognito_user, update_cognito_user_names
 from .cognito_groups import sync_staff_group, add_user_to_group, remove_user_from_group
 
 
@@ -3449,6 +3449,7 @@ class StaffUserViewSet(viewsets.ModelViewSet):
         user = self.get_object()
         old_is_staff = user.is_staff
         old_is_superuser = user.is_superuser
+        old_names = (user.first_name, user.last_name)
         new_is_superuser = serializer.validated_data.get("is_superuser", old_is_superuser)
         saleor_token = None
 
@@ -3461,6 +3462,17 @@ class StaffUserViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("You cannot modify a superuser.")
 
         updated_user = serializer.save()
+
+        # Sync name -> Cognito, otherwise Cognito login overwrites the DB name
+        # with the stale given_name/family_name.
+        if (updated_user.first_name, updated_user.last_name) != old_names:
+            cognito_usernames = [
+                identity.cognito_sub
+                for identity in updated_user.cognito_identities.all().order_by("-email_verified", "id")
+            ] + [updated_user.username, updated_user.email]
+            update_cognito_user_names(
+                cognito_usernames, updated_user.first_name, updated_user.last_name
+            )
 
         # Sync Staff
         if old_is_staff != updated_user.is_staff:
