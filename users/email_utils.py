@@ -418,6 +418,54 @@ def update_cognito_user_email(username, email):
         return False
 
 
+def update_cognito_user_names(usernames, first_name, last_name):
+    """
+    Update given_name/family_name of an existing Cognito user.
+
+    Args:
+        usernames: Candidate Cognito identifiers (sub, username, email), tried in order
+        first_name: New given_name
+        last_name: New family_name
+
+    Returns:
+        bool: True if names updated successfully, False otherwise
+    """
+    region = getattr(settings, "COGNITO_REGION", "") or ""
+    pool_id = getattr(settings, "COGNITO_USER_POOL_ID", "") or ""
+
+    if not region or not pool_id:
+        logger.warning("Cognito not configured; skipping name update")
+        return False
+
+    candidates = list(dict.fromkeys(u for u in usernames if u))
+    try:
+        client = boto3.client("cognito-idp", region_name=region)
+    except Exception as e:
+        logger.error(f"Failed to create Cognito client for name update: {e}")
+        return False
+
+    for username in candidates:
+        try:
+            client.admin_update_user_attributes(
+                UserPoolId=pool_id,
+                Username=username,
+                UserAttributes=[
+                    {"Name": "given_name", "Value": first_name},
+                    {"Name": "family_name", "Value": last_name},
+                ]
+            )
+            logger.info(f"Updated Cognito user names: username={username}")
+            return True
+        except client.exceptions.UserNotFoundException:
+            continue
+        except Exception as e:
+            logger.error(f"Failed to update Cognito user names for {username}: {e}")
+            return False
+
+    logger.warning(f"Cognito user not found for name update; tried identifiers={candidates}")
+    return False
+
+
 def set_cognito_user_password(username, password, aliases=None):
     """
     Set/reset an existing Cognito user's password as permanent.

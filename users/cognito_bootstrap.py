@@ -7,6 +7,7 @@ from rest_framework import status
 
 from django.contrib.auth import get_user_model
 from users.models import UserProfile
+from users.cognito_auth import _is_placeholder_name
 
 User = get_user_model()
 
@@ -48,13 +49,19 @@ class CognitoBootstrapView(APIView):
             user.email = email
             update_fields.append("email")
 
-        if first_name and user.first_name != first_name:
+        # Names only fill an empty/placeholder value. Social login calls this on
+        # every sign-in with the provider's name, which must not revert an
+        # admin rename or approved name change.
+        names_changed = False
+        if first_name and _is_placeholder_name(user.first_name, user.email, user.username):
             user.first_name = first_name
             update_fields.append("first_name")
+            names_changed = True
 
-        if last_name and user.last_name != last_name:
+        if last_name and _is_placeholder_name(user.last_name, user.email, user.username):
             user.last_name = last_name
             update_fields.append("last_name")
+            names_changed = True
 
         user.last_login = timezone.now()
         update_fields.append("last_login")
@@ -67,17 +74,21 @@ class CognitoBootstrapView(APIView):
 
         profile_update_fields = []
 
-        # Set full_name from user's first_name + last_name
-        full_name = f"{user.first_name} {user.last_name}".strip()
-        if full_name and profile.full_name != full_name:
+        # Set full_name from first + middle + last only when names were just
+        # filled or full_name is still empty.
+        parts = [user.first_name, profile.middle_name, user.last_name]
+        full_name = " ".join([p.strip() for p in parts if p and p.strip()])
+        if full_name and (names_changed or not (profile.full_name or "").strip()) and profile.full_name != full_name:
             profile.full_name = full_name
             profile_update_fields.append("full_name")
 
-        if profile.company != company:
+        # Only apply supplied values; social login sends neither, and must not
+        # wipe an existing company/job title.
+        if company and profile.company != company:
             profile.company = company
             profile_update_fields.append("company")
 
-        if profile.job_title != job_title:
+        if job_title and profile.job_title != job_title:
             profile.job_title = job_title
             profile_update_fields.append("job_title")
 

@@ -993,12 +993,21 @@ class StaffUserSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         profile_data = validated_data.pop("profile", {}) or {}
         can_edit_profiles = profile_data.pop("can_edit_profiles", None)
+        old_names = (instance.first_name, instance.last_name)
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
         profile, _ = UserProfile.objects.get_or_create(user=instance)
+
+        # Profile page and KYC name match read profile.full_name, so keep it in
+        # step with an admin rename (otherwise the old name keeps showing).
+        if (instance.first_name, instance.last_name) != old_names:
+            parts = [instance.first_name, profile.middle_name, instance.last_name]
+            profile.full_name = " ".join([p.strip() for p in parts if p and p.strip()])
+            profile.save(update_fields=["full_name"])
+
         if not instance.is_staff:
             profile.can_edit_profiles = False
             profile.save(update_fields=["can_edit_profiles"])
