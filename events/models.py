@@ -5513,3 +5513,55 @@ class EventFormCustomization(models.Model):
         """Remove a custom question by ID."""
         self.custom_questions = [q for q in self.custom_questions if q.get('id') != question_id]
         self.save()
+
+
+# IPDT-778: Event-specific sponsor and partner logo showcase.
+# Sponsor categories are reusable across events; changing a label updates
+# presentation consistently without changing historical event assignments.
+class EventSupporterCategory(models.Model):
+    KIND_SPONSOR = "sponsor"
+    KIND_PARTNER = "partner"
+    KIND_CHOICES = [(KIND_SPONSOR, "Sponsor"), (KIND_PARTNER, "Partner")]
+
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES)
+    name = models.CharField(max_length=100)
+    display_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("kind", "display_order", "name", "id")
+        constraints = [
+            models.UniqueConstraint(fields=("kind", "name"), name="unique_event_supporter_category_kind_name"),
+        ]
+
+    def __str__(self):
+        return f"{self.get_kind_display()}: {self.name}"
+
+
+def event_supporter_logo_upload_to(instance, filename):
+    # Only a server-generated filename is persisted; never trust client path.
+    ext = os.path.splitext(filename or "")[1].lower()
+    return f"events/supporters/{instance.event_id}/{uuid.uuid4().hex}{ext}"
+
+
+class EventSupporter(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="supporters")
+    category = models.ForeignKey(
+        EventSupporterCategory,
+        on_delete=models.PROTECT,
+        related_name="supporters",
+    )
+    name = models.CharField(max_length=200)
+    logo = models.ImageField(upload_to=event_supporter_logo_upload_to)
+    website_url = models.URLField(blank=True)
+    display_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("category__display_order", "display_order", "name", "id")
+
+    def __str__(self):
+        return f"{self.event.title}: {self.name} ({self.category.name})"

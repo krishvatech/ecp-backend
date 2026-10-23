@@ -10,7 +10,8 @@ from .models import (
     SharedQuestionCategory, SharedQuestion, FormField,
     EventApplicationTrackApplication, EventAttendeeOrigin,
     PostAcceptanceFormTemplate, PostAcceptanceFormAssignment, ExternalEventMapping, ExternalParticipantMapping,
-    EventPlatform, EventPublication, PlatformSyncJob, EventSeries, EventBadgeLabel, NetworkingTable
+    EventPlatform, EventPublication, PlatformSyncJob, EventSeries, EventBadgeLabel, NetworkingTable,
+    EventSupporter, EventSupporterCategory,
 )
 
 
@@ -1144,3 +1145,18 @@ class ParticipantInformationFormManager(PostAcceptanceFormAssignmentAdmin):
 # Register admin classes
 admin.site.register(PostAcceptanceFormAssignment, PostAcceptanceFormAssignmentAdmin)
 admin.site.register(PostAcceptanceFormTemplate)
+
+
+@admin.register(EventSupporterCategory)
+class EventSupporterCategoryAdmin(admin.ModelAdmin):
+    list_display = ("name", "kind", "display_order", "is_active")
+    list_filter = ("kind", "is_active")
+    search_fields = ("name",)
+
+
+@admin.register(EventSupporter)
+class EventSupporterAdmin(admin.ModelAdmin):
+    list_display = ("name", "event", "category", "display_order")
+    list_filter = ("category__kind", "category", "event")
+    search_fields = ("name", "event__title")
+    autocomplete_fields = ("event",)

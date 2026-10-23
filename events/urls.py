@@ -1,4 +1,8 @@
 from django.urls import path
+from .event_supporters import (
+    SupporterCategoryListCreateView, SupporterCategoryDetailView,
+    EventSupporterListCreateView, EventSupporterDetailView,
+)
 from rest_framework.routers import DefaultRouter
 from .views import (
     EventViewSet,
@@ -100,6 +104,11 @@ router.register(r"post-acceptance-form-assignments", PostAcceptanceFormAssignmen
 
 
 urlpatterns = [
+    # IPDT-778: public event logo showcase and authenticated management.
+    path("events/supporter-categories/", SupporterCategoryListCreateView.as_view(), name="event-supporter-categories"),
+    path("events/supporter-categories/<int:pk>/", SupporterCategoryDetailView.as_view(), name="event-supporter-category-detail"),
+    path("events/<int:event_id>/supporters/", EventSupporterListCreateView.as_view(), name="event-supporters"),
+    path("events/<int:event_id>/supporters/<int:pk>/", EventSupporterDetailView.as_view(), name="event-supporter-detail"),
     # MANDA event integration endpoints
     path("integrations/manda/events/upsert/", MandaEventUpsertView.as_view(), name="manda-event-upsert"),
     path("integrations/manda/events/disable/", MandaEventDisableView.as_view(), name="manda-event-disable"),
