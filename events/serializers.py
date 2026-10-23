@@ -4308,9 +4308,10 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
     applicant_company = serializers.CharField(source='application.company_name', read_only=True)
     applicant_linkedin = serializers.CharField(source='application.linkedin_url', read_only=True, required=False)
 
-    # Pre-approval info
-    is_preapproved = serializers.CharField(source='application.is_preapproved', read_only=True)
-    preapproval_source = serializers.CharField(source='application.preapproval_source', read_only=True)
+    # Pre-approval info (resolved per track; see get_preapproval_info)
+    is_preapproved = serializers.SerializerMethodField()
+    preapproval_source = serializers.SerializerMethodField()
+    preapproval_code = serializers.SerializerMethodField()
 
     # Third-party nomination fields
     nominator_name = serializers.CharField(source='application.nominator_name', read_only=True, required=False)
@@ -4345,7 +4346,7 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
             'tier_preference_id', 'tier_label', 'accepted_tier_label', 'form_answers', 'file_uploads',
             'applicant_email', 'applicant_first_name', 'applicant_last_name',
             'applicant_job_title', 'applicant_company', 'applicant_linkedin',
-            'is_preapproved', 'preapproval_source',
+            'is_preapproved', 'preapproval_source', 'preapproval_code',
             'nominator_name', 'nominator_email', 'nominee_name', 'nominee_email',
             'sponsor_organization', 'attendee_marker_value',
             'reviewed_by_user', 'registration_id', 'reviewed_at', 'created_at', 'updated_at',
@@ -4362,6 +4363,15 @@ class EventApplicationTrackApplicationDetailSerializer(serializers.ModelSerializ
             'third_party_nomination': 'Third-Party Nomination',
         }
         return mode_labels.get(obj.submission_mode, obj.submission_mode)
+
+    def get_is_preapproved(self, obj):
+        return obj.get_preapproval_info()[0] != EventApplication.PREAPPROVAL_SOURCE_NONE
+
+    def get_preapproval_source(self, obj):
+        return obj.get_preapproval_info()[0]
+
+    def get_preapproval_code(self, obj):
+        return obj.get_preapproval_info()[1] or None
 
     def get_reviewed_by_user(self, obj):
         if obj.reviewed_by:

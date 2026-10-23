@@ -4327,6 +4327,24 @@ class EventApplicationTrackApplication(models.Model):
         help_text='Reason for cancellation'
     )
 
+    # Per-track pre-approval record. The parent EventApplication fields are only
+    # set by the legacy single-track path, so the code actually used for this
+    # track is stored here for admin display and export.
+    preapproval_source = models.CharField(
+        max_length=20,
+        choices=EventApplication.PREAPPROVAL_SOURCE_CHOICES,
+        default=EventApplication.PREAPPROVAL_SOURCE_NONE,
+        help_text='How this track application was pre-approved (code, email allowlist, or none)'
+    )
+    preapproval_code = models.ForeignKey(
+        EventPreApprovalCode,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='track_applications',
+        help_text='Pre-approval code used for this track application'
+    )
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -4368,6 +4386,29 @@ class EventApplicationTrackApplication(models.Model):
 
     def __str__(self):
         return f"{self.application.email} → {self.track.label} ({self.get_status_display()})"
+
+    def get_preapproval_info(self):
+        """
+        Return (source, code) describing how this track application was pre-approved.
+
+        Prefers the per-track record; falls back to the parent application's legacy
+        single-track fields only when they belong to this track. Parent
+        ``is_preapproved`` alone (e.g. admin invite auto-approval) is not treated
+        as code/allowlist pre-approval.
+        """
+        none = EventApplication.PREAPPROVAL_SOURCE_NONE
+        if self.preapproval_source and self.preapproval_source != none:
+            return self.preapproval_source, (self.preapproval_code.code if self.preapproval_code_id else '')
+
+        parent = self.application
+        if (
+            parent.preapproval_source
+            and parent.preapproval_source != none
+            and parent.application_track_id in (None, self.track_id)
+        ):
+            return parent.preapproval_source, (parent.preapproval_code.code if parent.preapproval_code_id else '')
+
+        return none, ''
 
     def soft_delete(self, *, user=None, reason=""):
         """Hide this track application while retaining its audit/history row."""

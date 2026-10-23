@@ -4807,6 +4807,8 @@ class EventViewSet(viewsets.ModelViewSet):
                     file_uploads=file_uploads,
                     reviewed_at=track_reviewed_at,
                     reviewed_by=track_reviewed_by,
+                    preapproval_source=track_preapproval_source,
+                    preapproval_code=track_preapproval_code_obj,
                 )
                 track_app_objects.append(track_app)
                 logger.info(f"Created EventApplicationTrackApplication {track_app.id} for track {track.id} with mode={track_submission_mode}")
@@ -5370,14 +5372,19 @@ class EventViewSet(viewsets.ModelViewSet):
             'track',
             'track__event',
             'tier_preference',
-            'reviewed_by'
+            'reviewed_by',
+            'preapproval_code',
+            'application__preapproval_code',
         ).only(
             # Exclude large JSON fields from list view (form_answers, file_uploads)
             'id', 'application_id', 'track_id', 'status',
             'submission_mode', 'tier_preference_id', 'accepted_tier_id',
             'reviewed_by_id', 'reviewed_at', 'created_at', 'updated_at',
+            'preapproval_source', 'preapproval_code__id', 'preapproval_code__code',
             'application__id', 'application__email', 'application__first_name',
             'application__last_name', 'application__user_id', 'application__attendee_marker_value',
+            'application__preapproval_source', 'application__application_track_id',
+            'application__preapproval_code__id', 'application__preapproval_code__code',
             'application__user__id', 'application__user__username', 'application__user__email',
             'track__id', 'track__label', 'track__key',
             'track__event__id', 'track__event__title',
@@ -5490,7 +5497,8 @@ class EventViewSet(viewsets.ModelViewSet):
         qs = EventApplicationTrackApplication.objects.filter(
             track__event=event
         ).select_related(
-            'application', 'track', 'tier_preference', 'reviewed_by', 'accepted_tier'
+            'application', 'track', 'tier_preference', 'reviewed_by', 'accepted_tier',
+            'preapproval_code', 'application__preapproval_code',
         )
 
         # Apply same filters
@@ -5547,10 +5555,16 @@ class EventViewSet(viewsets.ModelViewSet):
             writer.writerow([
                 'ID', 'Applicant Email', 'Applicant Name', 'Track', 'Submission Mode',
                 'Status', 'Tier Preference', 'Accepted Tier', 'Company', 'Job Title',
-                'Reviewed By', 'Reviewed At', 'Created At', 'Pre-approved'
+                'Reviewed By', 'Reviewed At', 'Created At', 'Pre-approved',
+                'Pre-approval Source', 'Pre-approved Code'
             ])
+            preapproval_source_labels = {
+                EventApplication.PREAPPROVAL_SOURCE_CODE: 'Code',
+                EventApplication.PREAPPROVAL_SOURCE_EMAIL: 'Email allowlist',
+            }
 
             for track_app in qs:
+                preapproval_source, preapproval_code = track_app.get_preapproval_info()
                 writer.writerow([
                     track_app.id,
                     track_app.application.email,
@@ -5565,7 +5579,9 @@ class EventViewSet(viewsets.ModelViewSet):
                     track_app.reviewed_by.username if track_app.reviewed_by else '',
                     track_app.reviewed_at.isoformat() if track_app.reviewed_at else '',
                     track_app.created_at.isoformat(),
-                    'Yes' if track_app.application.is_preapproved else 'No',
+                    'Yes' if preapproval_source in preapproval_source_labels else 'No',
+                    preapproval_source_labels.get(preapproval_source, ''),
+                    preapproval_code,
                 ])
 
             response = HttpResponse(output.getvalue(), content_type='text/csv')
