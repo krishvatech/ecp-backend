@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
+from django.conf import settings
+from django.core.cache import cache
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
@@ -28,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 32 * 1024
 AUDIT_ACTION = "consent.verify"
+#: Unauthenticated failures are written to the audit table at most this many
+#: times per minute per reason code (shared Redis counter); the rest are logged.
+AUTH_FAILURE_AUDIT_PER_MINUTE = 30
+AUTH_FAILURE_COUNTER = "ecp-consent-auth-failure-audit:{code}:{window}"
 _TOP_LEVEL = {"campaign_id", "event_id", "contacts"}
 _CONTACT = {"id", "merged_ids"}
 
@@ -74,6 +81,28 @@ def parse_request(body: bytes) -> dict:
     }
 
 
+def _audit_auth_failure(code: str) -> None:
+    """A refused, unauthenticated request. Anyone can send these, so the audit
+    table only takes a bounded number per minute; every one is logged with its
+    fixed reason code (never the token, key id or body)."""
+    logger.warning("Consent verification refused: unauthenticated (%s)", code)
+    try:
+        budget = int(getattr(settings, "ECP_CONSENT_AUTH_FAILURE_AUDIT_PER_MINUTE", AUTH_FAILURE_AUDIT_PER_MINUTE))
+    except (TypeError, ValueError):
+        budget = AUTH_FAILURE_AUDIT_PER_MINUTE
+    key = AUTH_FAILURE_COUNTER.format(code=code, window=int(time.time() // 60))
+    try:
+        cache.add(key, 0, timeout=70)
+        count = cache.incr(key)
+    except Exception:  # no shared counter: do not let unauthenticated traffic write rows
+        logger.warning("Consent verification: auth-failure audit budget unavailable; not recorded in the audit table")
+        return
+    if count <= budget:
+        _audit(MauticIdentityAuditLog.Status.DENIED, error_code=f"auth:{code}"[:64])
+    elif count == budget + 1:
+        logger.warning("Consent verification: more than %s unauthenticated refusals this minute (%s); further ones are logged only", budget, code)
+
+
 def _error(status: int, code: str) -> JsonResponse:
     return JsonResponse({"error": code}, status=status)
 
@@ -107,7 +136,7 @@ def consent_verify_view(request):
     try:
         caller = authenticate(method=request.method, path=request.path, body=body, token=request.headers.get(HEADER))
     except ConsentAuthError as exc:
-        _audit(MauticIdentityAuditLog.Status.DENIED, error_code=f"auth:{exc.code}"[:64])
+        _audit_auth_failure(exc.code)
         return _error(401, exc.code)
     except ConsentAuthUnavailable as exc:
         logger.error("Consent verification unavailable: %s", exc.code)

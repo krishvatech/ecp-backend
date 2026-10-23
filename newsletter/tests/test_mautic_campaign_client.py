@@ -248,3 +248,49 @@ class MauticCampaignClientTests(SimpleTestCase):
 
         with self.assertRaises(TemporaryMauticError):
             client.get_campaign_event_states(7)
+
+
+@override_settings(**MAUTIC_SETTINGS)
+class ConsentStepClientTests(SimpleTestCase):
+    """The bridge plugin's consent-step endpoint: only a complete, well-formed
+    answer is returned; anything else is a temporary failure (never a decision)."""
+
+    GOOD = {"campaign": {"id": 7, "forms": [{"id": 31}]}, "events": [{"id": 12, "type": "email.send"}],
+            "email": {"id": 5, "category": {"alias": "ecp-list-1"}}, "merged": {"400": 501, "401": None}}
+
+    def call(self, status=200, payload=None, merged_ids=(400, 401)):
+        session = Mock()
+        session.request.return_value = response(status, payload)
+        return MauticClient(session=session).get_consent_step(7, 12, list(merged_ids)), session
+
+    def test_well_formed_answer_is_returned_from_one_post(self):
+        data, session = self.call(payload=self.GOOD)
+        self.assertEqual(data, self.GOOD)
+        method, url = session.request.call_args.args
+        self.assertEqual((method, url), ("POST", "http://mautic.local/api/ecp/consent/campaigns/7/events/12"))
+        self.assertEqual(session.request.call_args.kwargs["json"], {"merged_ids": [400, 401]})
+
+    def test_older_plugin_without_the_route_is_none(self):
+        self.assertIsNone(self.call(status=404)[0])
+
+    def test_refusals_and_outages_are_errors_not_fallbacks(self):
+        with self.assertRaises(PermanentMauticError):
+            self.call(status=403)
+        with self.assertRaises(TemporaryMauticError):
+            self.call(status=503)
+
+    def test_malformed_answers_are_temporary_failures(self):
+        bad = [
+            {**self.GOOD, "merged": {"400": 501}},  # a claim left unanswered
+            {**self.GOOD, "merged": {"400": "501", "401": None}},
+            {**self.GOOD, "merged": {"400": True, "401": None}},
+            {**self.GOOD, "merged": {"400": 501, "401": None, "999": 1}},  # an answer nobody asked for
+            {**self.GOOD, "events": [{"type": "email.send"}]},
+            {**self.GOOD, "events": {"12": {}}},
+            {**self.GOOD, "campaign": {"id": 7}},
+            {**self.GOOD, "email": "5"},
+            {"events": []},
+        ]
+        for payload in bad:
+            with self.subTest(payload=payload), self.assertRaises(TemporaryMauticError):
+                self.call(payload=payload)

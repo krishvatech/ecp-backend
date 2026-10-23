@@ -46,6 +46,7 @@ MAX_TOKEN_BYTES = 4096
 MAX_VALIDITY_SECONDS = 60
 MAX_CLOCK_SKEW_SECONDS = 30
 REPLAY_KEY = "ecp-consent-replay:{kid}:{jti}"
+REPLAY_EPOCH_KEY = "ecp-consent-replay-epoch"
 RATE_KEY = "ecp-consent-rate:{kid}:{window}"
 
 _KID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -123,12 +124,35 @@ def _clock_skew() -> int:
     return max(0, min(skew, MAX_CLOCK_SKEW_SECONDS))
 
 
+#: Cache backends whose ``add`` is atomic and shared by every ECP process and
+#: instance. Anything else (local memory, dummy, files, database) is refused.
+SHARED_REPLAY_BACKENDS = frozenset({
+    "django.core.cache.backends.redis.RedisCache",
+    "django_redis.cache.RedisCache",
+    "django.core.cache.backends.memcached.PyMemcacheCache",
+    "django.core.cache.backends.memcached.PyLibMCCache",
+})
+
+
+def _in_django_test_environment() -> bool:
+    # django.test.utils.setup_test_environment() installs mail.outbox; nothing
+    # else does. A settings file alone can therefore never enable the override.
+    from django.core import mail
+
+    return hasattr(mail, "outbox")
+
+
 def _require_shared_replay_store() -> None:
-    """Replay protection only works when every ECP process sees the same store."""
+    """Replay protection only works when every ECP process sees the same store.
+
+    ``ECP_CONSENT_ALLOW_PROCESS_LOCAL_REPLAY_STORE`` exists for the test suite
+    only and is ignored outside Django's test environment."""
     backend = str(settings.CACHES.get("default", {}).get("BACKEND", ""))
-    local = any(name in backend for name in ("LocMemCache", "DummyCache"))
-    if local and not getattr(settings, "ECP_CONSENT_ALLOW_PROCESS_LOCAL_REPLAY_STORE", False):
-        raise ConsentAuthUnavailable("replay_store_not_shared")
+    if backend in SHARED_REPLAY_BACKENDS:
+        return
+    if getattr(settings, "ECP_CONSENT_ALLOW_PROCESS_LOCAL_REPLAY_STORE", False) and _in_django_test_environment():
+        return
+    raise ConsentAuthUnavailable("replay_store_not_shared")
 
 
 def authenticate(*, method: str, path: str, body: bytes, token: str | None) -> ConsentCaller:
@@ -189,15 +213,36 @@ def authenticate(*, method: str, path: str, body: bytes, token: str | None) -> C
         raise ConsentAuthError("body_mismatch")
 
     _require_shared_replay_store()
-    ttl = max(1, exp + skew - int(time.time()) + 1)
+    now = int(time.time())
+    ttl = max(1, exp + skew - now + 1)
     try:
+        # A replay store that lost its keys (restart without persistence, flush,
+        # eviction of everything) cannot know which earlier tokens were used:
+        # refuse every token issued up to the second it (re)started. The caller
+        # retries with a fresh token.
+        if iat <= _replay_epoch(now):
+            raise ConsentAuthError("issued_before_replay_store")
         first_use = cache.add(REPLAY_KEY.format(kid=kid, jti=jti), 1, timeout=ttl)
+    except ConsentAuthError:
+        raise
     except Exception as exc:  # the store itself is down: never accept unchecked
         raise ConsentAuthUnavailable("replay_store_unavailable") from exc
     if not first_use:
         raise ConsentAuthError("replayed")
     _enforce_rate_limit(kid)
     return ConsentCaller(key_id=kid, jti=jti)
+
+
+def _replay_epoch(now: int) -> int:
+    """When the replay store started remembering: set once, never expires, so it
+    disappears only together with the replay keys it vouches for."""
+    epoch = cache.get(REPLAY_EPOCH_KEY)
+    if epoch is None:
+        cache.add(REPLAY_EPOCH_KEY, now, timeout=None)
+        epoch = cache.get(REPLAY_EPOCH_KEY)
+    if not isinstance(epoch, int):
+        raise ConsentAuthUnavailable("replay_store_unavailable")
+    return epoch
 
 
 def _enforce_rate_limit(kid: str) -> None:

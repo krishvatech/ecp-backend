@@ -51,6 +51,20 @@ class NewsletterAdminCampaignAPITests(TestCase):
         )
         self.list_url = reverse("newsletter-admin-campaign-list")
         self.categories_url = reverse("newsletter-admin-category-list")
+        # The Subscription List consent marker is looked up in Mautic with its own
+        # client (category_segment_services); never let it reach the developer's Mautic.
+        # Default: Mautic holds other categories but no consent marker.
+        patcher = patch("newsletter.category_segment_services.MauticClient")
+        self.category_reader = patcher.start().return_value
+        self.addCleanup(patcher.stop)
+        self.mautic_categories = [
+            {"id": 3, "alias": "newsletters", "bundle": "segment"},
+            {"id": 4, "alias": "ecp-subscription-lists", "bundle": "email"},  # same alias, other bundle
+        ]
+        self.category_reader.list_categories.side_effect = lambda start=0, limit=100: {
+            "total": len(self.mautic_categories),
+            "categories": {str(c["id"]): c for c in self.mautic_categories[start:start + limit]},
+        }
 
     def _authenticate(self, user):
         self.client.force_authenticate(user=user)
@@ -730,6 +744,40 @@ class NewsletterAdminCampaignAPITests(TestCase):
                 "filters": [],
             },
         )
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_segment_is_marked_only_with_the_mautic_consent_category(self, client_cls):
+        client = client_cls.return_value
+        client.list_segments.return_value = {"lists": {}}
+        client.create_segment.return_value = {"id": 45}
+        client.get_segment.return_value = {"id": 1, "filters": []}
+        client.update_segment.return_value = {"id": 1}
+        self.mautic_categories.append({"id": 31, "alias": "ecp-subscription-lists", "bundle": "segment"})
+        self._authenticate(self.staff)
+
+        self.assertEqual(self.client.post(self.categories_url, {"name": "Board Updates"}, format="json").status_code, 201)
+        self.assertEqual(client.create_segment.call_args.args[0]["category"], 31)
+
+        self.category.mautic_segment_id = "1"
+        self.category.save(update_fields=["mautic_segment_id"])
+        response = self.client.patch(reverse("newsletter-admin-category-detail", args=[self.category.slug]),
+                                     {"description": "Updated."}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(client.update_segment.call_args.args[1]["category"], 31)
+
+    @override_settings(MAUTIC_SYNC_ENABLED=True)
+    @patch("newsletter.admin_views.MauticClient")
+    def test_unreadable_consent_category_leaves_the_existing_marker_alone(self, client_cls):
+        from newsletter.mautic import TemporaryMauticError
+        client = client_cls.return_value
+        client.list_segments.return_value = {"lists": {}}
+        client.create_segment.return_value = {"id": 46}
+        self.category_reader.list_categories.side_effect = TemporaryMauticError("down")
+        self._authenticate(self.staff)
+
+        self.assertEqual(self.client.post(self.categories_url, {"name": "Board Updates"}, format="json").status_code, 201)
+        self.assertNotIn("category", client.create_segment.call_args.args[0])
 
     @override_settings(MAUTIC_SYNC_ENABLED=True)
     @patch("newsletter.admin_views.MauticClient")

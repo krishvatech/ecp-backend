@@ -7,6 +7,7 @@ from newsletter.form_campaign_consent import (
     DELAYED,
     email_consent_scope,
     form_contact_autoresponders,
+    form_contact_facing_actions,
     form_source_ids,
     segment_is_marked,
     subscription_list_consent_segment_ids,
@@ -55,7 +56,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         client = MauticClient()
-        report = {"mode": "read-only", "publicUrl": _public_base_url(), "forms": [], "campaigns": [], "subscriptionLists": []}
+        report = {"mode": "read-only", "publicUrl": _public_base_url(), "forms": [], "campaigns": [], "subscriptionLists": [],
+                  "consentVerification24h": self._verification_outcomes()}
         try:
             if not options.get("skip_lists"):
                 report["subscriptionLists"] = self._list_rows(client)
@@ -81,6 +83,8 @@ class Command(BaseCommand):
             "forms_adding_to_subscription_lists": [row["id"] for row in report["forms"] if row["subscriptionListWrites"]],
             # Native "Send email to contact" actions: sent with ignoreDNC (autoresponder policy pending).
             "forms_with_contact_autoresponders": [row["id"] for row in report["forms"] if row["contactAutoresponders"]],
+            # All submit actions that email the submitter or lift Do Not Contact (Form action guard policy).
+            "forms_with_contact_facing_actions": [row["id"] for row in report["forms"] if row["contactFacingActions"]],
             "subscription_lists_without_consent_marker": [row["slug"] for row in report["subscriptionLists"] if not row["marked"]],
         }
         if options.get("json"):
@@ -103,6 +107,19 @@ class Command(BaseCommand):
             style = self.style.SUCCESS if row["marked"] else self.style.ERROR
             self.stdout.write(style(f"  list {row['slug']!r} segment #{row['segment']} consent marker={'yes' if row['marked'] else 'MISSING'}"))
         self.stdout.write(f"Summary: {report['summary']}")
+
+    @staticmethod
+    def _verification_outcomes():
+        """Refused, failed and unauthenticated consent-verification requests of the
+        last 24 hours by outcome (ECP's audit log; allowed requests are only logged)."""
+        from django.db.models import Count
+        from django.utils import timezone
+        from datetime import timedelta
+        from newsletter.models import MauticIdentityAuditLog
+
+        rows = (MauticIdentityAuditLog.objects.filter(action="consent.verify", created_at__gte=timezone.now() - timedelta(hours=24))
+                .values("status", "error_code").annotate(count=Count("id")).order_by("status", "error_code"))
+        return [{"status": row["status"], "error": row["error_code"] or "", "count": row["count"]} for row in rows]
 
     def _ids(self, lister, key):
         ids, start = [], 0
@@ -130,6 +147,7 @@ class Command(BaseCommand):
                 subscription_list_segment_ids(),
             ),
             "contactAutoresponders": form_contact_autoresponders(form.get("actions")),
+            "contactFacingActions": form_contact_facing_actions(form.get("actions")),
         }
 
     @staticmethod

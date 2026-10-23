@@ -3071,6 +3071,43 @@ class MauticClient:
             )
         return data
 
+    def get_consent_step(
+        self, campaign_id: int, event_id: int, merged_ids: list[int]
+    ) -> dict[str, Any] | None:
+        """One Campaign step as the bridge plugin reads it now, for consent
+        decisions: the Campaign's Form sources, its active events, the step's
+        Email category and how Mautic resolves each merged contact id.
+
+        ``None`` when the plugin predates this endpoint (Mautic answers 404 for
+        the route; the endpoint itself reports a missing Campaign as
+        ``{"campaign": null}``), so callers can read the same facts the long way.
+        """
+        try:
+            response = self._request(
+                "POST",
+                f"ecp/consent/campaigns/{int(campaign_id)}/events/{int(event_id)}",
+                json={"merged_ids": [int(m) for m in merged_ids]},
+            )
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                return None
+            raise
+        data = self._json_object(response, "Mautic consent step")
+        campaign, events, email, merged = (data.get(key) for key in ("campaign", "events", "email", "merged"))
+        valid_id = lambda value: isinstance(value, int) and not isinstance(value, bool) and value > 0  # noqa: E731
+        if (
+            not (campaign is None or (isinstance(campaign, dict) and isinstance(campaign.get("forms"), list)))
+            or not isinstance(events, list)
+            or not all(isinstance(event, dict) and valid_id(event.get("id")) for event in events)
+            or not (email is None or isinstance(email, dict))
+            or not isinstance(merged, dict)
+            # Every merge claim asked about is answered, with a contact id or null.
+            or set(merged) != {str(int(m)) for m in merged_ids}
+            or not all(value is None or valid_id(value) for value in merged.values())
+        ):
+            raise TemporaryMauticError("Mautic consent step returned an invalid response")
+        return data
+
     def delete_campaign_event(
         self,
         campaign_id: int | str,

@@ -258,6 +258,35 @@ def form_contact_autoresponders(actions: Any) -> list[dict[str, str]]:
     return found
 
 
+#: Native submit actions that reach the submitter outside any consent check,
+#: with the reason the bridge plugin's Form action guard gives for each
+#: (EcpFormEmailActionPolicy; enforced only in its "enforce" mode).
+CONTACT_FACING_ACTIONS = {
+    FORM_CONTACT_EMAIL_ACTION: "autoresponder (sent with ignoreDNC; approved acknowledgments only)",
+    "form.email": "form results copied to the contact (no Do Not Contact check)",
+    "lead.remove_do_not_contact": "the submission removes the contact's Do Not Contact",
+}
+
+
+def form_contact_facing_actions(actions: Any) -> list[dict[str, str]]:
+    """Native submit actions that email the submitter or lift their Do Not
+    Contact (read-only reporting). "Send form results" counts only with its
+    copy-to-contact option on."""
+    found = []
+    for action in _collection(actions):
+        kind = str(action.get("type") or "")
+        properties = action.get("properties") if isinstance(action.get("properties"), dict) else {}
+        if kind not in CONTACT_FACING_ACTIONS or (kind == "form.email" and not _truthy(properties.get("copy_lead"))):
+            continue
+        found.append({"id": str(action.get("id") or ""), "name": str(action.get("name") or ""), "type": kind,
+                      "risk": CONTACT_FACING_ACTIONS[kind]})
+    return found
+
+
+def _truthy(value: Any) -> bool:
+    return value is True or str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _read_segment(segment_id: str) -> dict[str, Any]:
     return MauticClient().get_segment(segment_id)
 

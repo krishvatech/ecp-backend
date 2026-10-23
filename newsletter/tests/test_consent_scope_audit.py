@@ -7,7 +7,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
 
-from newsletter.form_campaign_consent import email_consent_scope, form_contact_autoresponders
+from newsletter.form_campaign_consent import email_consent_scope, form_contact_autoresponders, form_contact_facing_actions
 from newsletter.models import NewsletterCategory
 
 
@@ -35,6 +35,16 @@ class ConsentScopeTests(SimpleTestCase):
         self.assertEqual(form_contact_autoresponders(actions), [{"id": "1", "name": "Thanks", "email": "12"}])
 
 
+    def test_every_submit_action_reaching_the_submitter_is_reported(self):
+        actions = [{"id": 1, "type": "email.send.lead", "name": "Thanks", "properties": {"email": 12}},
+                   {"id": 2, "type": "form.email", "name": "Copy", "properties": {"copy_lead": "1", "to": "team@example.test"}},
+                   {"id": 3, "type": "form.email", "name": "Team", "properties": {"copy_lead": False, "to": "team@example.test"}},
+                   {"id": 4, "type": "lead.remove_do_not_contact", "name": "Resubscribe", "properties": {}},
+                   {"id": 5, "type": "email.send.user", "properties": {"useremail": {"email": 3}}}]
+        self.assertEqual([(a["id"], a["type"]) for a in form_contact_facing_actions(actions)],
+                         [("1", "email.send.lead"), ("2", "form.email"), ("4", "lead.remove_do_not_contact")])
+
+
 class AuditCommandScopeTests(TestCase):
     def audit(self, events, email_alias):
         with patch("newsletter.management.commands.audit_form_submission_safety.MauticClient") as client_cls, \
@@ -48,6 +58,7 @@ class AuditCommandScopeTests(TestCase):
             client.get_campaign_event_states.return_value = {"activeEventIds": [e["id"] for e in events]}
             client.get_segment.return_value = {"isPublished": True, "category": {"alias": "ecp-subscription-lists"}}
             client.get_email.return_value = {"id": 5, "category": {"alias": email_alias} if email_alias else None}
+            client.get_consent_step.return_value = None  # plugin without the consent-step endpoint: legacy reads
             out = StringIO()
             call_command("audit_form_submission_safety", "--json", "--form-id", "31", "--campaign-id", "5", "--skip-lists", stdout=out)
         written = [name for name, *_ in client.method_calls if not name.startswith(("list_", "get_"))]
@@ -61,6 +72,19 @@ class AuditCommandScopeTests(TestCase):
                                                                    "ecpScope": {"list": "updates", "refusal": None}}])
         self.assertEqual(report["campaigns"][0]["runtimeEffect"], "sends only to contacts ECP verifies as currently subscribed")
         self.assertEqual(report["summary"]["forms_with_contact_autoresponders"], ["31"])
+        self.assertEqual(report["summary"]["forms_with_contact_facing_actions"], ["31"])
+
+    def test_consent_verification_outcomes_of_the_last_day_are_summarised(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from newsletter.models import MauticIdentityAuditLog as Log
+        for status, code in (("denied", "auth:unknown_key"), ("denied", "auth:unknown_key"), ("failed", "campaign_read_failed")):
+            Log.objects.create(action="consent.verify", status=status, error_code=code)
+        old = Log.objects.create(action="consent.verify", status="failed", error_code="old")
+        Log.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=2))
+        report = self.audit([gate("1", [61]), send("2", "1")], None)
+        self.assertEqual(report["consentVerification24h"], [{"status": "denied", "error": "auth:unknown_key", "count": 2},
+                                                           {"status": "failed", "error": "campaign_read_failed", "count": 1}])
 
     def test_email_without_list_scope_is_reported_as_refused_at_send_time(self):
         NewsletterCategory.objects.create(name="Updates", slug="updates", mautic_segment_id="61", is_active=True)
