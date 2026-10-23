@@ -14,6 +14,7 @@ UNLINKED = "unlinked"                    # Mautic contact not linked to any ECP 
 INACTIVE_LIST = "inactive_list"          # list archived/deleted in ECP; segment still has members
 MISSING = "missing_in_mautic"            # subscribed in ECP; not (yet) in Mautic's segment
 MAPPING_STALE = "mapping_stale_after_merge"  # ECP link points at a merged-away contact (identity reconciliation)
+SEGMENT_MISSING = "segment_missing_in_mautic"  # active list whose Mautic segment no longer exists
 
 
 class Command(BaseCommand):
@@ -77,7 +78,22 @@ class Command(BaseCommand):
         return str(resolved) if resolved is not None else None
 
     def _compare(self, client, category):
-        members = self._members(client, category.mautic_segment_id)
+        active = bool(category.is_active) and not category.deletion_state
+        try:
+            members = self._members(client, category.mautic_segment_id)
+        except PermanentMauticError as exc:
+            if "HTTP 404" not in str(exc):
+                raise
+            # A permanently deleted list's segment is gone by design; an active list's must exist.
+            return {
+                "slug": category.slug,
+                "segment": category.mautic_segment_id,
+                "active": active,
+                "mauticMembers": None,
+                "ecpSubscribed": NewsletterSubscription.objects.filter(category=category, is_subscribed=True).count(),
+                "segmentExists": False,
+                "issues": {SEGMENT_MISSING: [{"segment": category.mautic_segment_id}] if active else []},
+            }
         mappings = dict(MauticContactMapping.objects.filter(
             user_id__in=NewsletterSubscription.objects.filter(category=category).values("user_id")
         ).values_list("user_id", "mautic_contact_id"))
@@ -98,7 +114,6 @@ class Command(BaseCommand):
             .values_list("user_id", flat=True)
         )
         issues = {STALE_WITHDRAWN: [], NO_ECP_CONSENT: [], UNLINKED: [], INACTIVE_LIST: [], MISSING: [], MAPPING_STALE: stale_links}
-        active = bool(category.is_active) and not category.deletion_state
         for contact_id in sorted(members, key=int):
             user_id = links.get(contact_id)
             entry = {"contact": contact_id, "user": user_id, "syncPending": str(user_id) in pending if user_id else False}
@@ -121,5 +136,6 @@ class Command(BaseCommand):
             "active": active,
             "mauticMembers": len(members),
             "ecpSubscribed": sum(1 for value in subscriptions.values() if value),
+            "segmentExists": True,
             "issues": issues,
         }

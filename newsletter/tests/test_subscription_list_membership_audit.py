@@ -74,3 +74,36 @@ class MembershipAuditTests(TestCase):
             client_cls.return_value.list_segment_contacts_via_bridge.side_effect = TemporaryMauticError("down")
             with self.assertRaises(CommandError):
                 call_command("audit_subscription_list_membership", stdout=StringIO())
+
+    def test_a_missing_segment_is_reported_per_list_without_stopping_the_audit(self):
+        from newsletter.mautic import PermanentMauticError
+
+        deleted = NewsletterCategory.objects.create(name="Old", slug="old-list", mautic_segment_id="77", is_active=False, deletion_state="deleted")
+        gone = NewsletterCategory.objects.create(name="Gone", slug="gone-list", mautic_segment_id="88", is_active=True)
+
+        def members(segment_id, start=0, limit=200):
+            if str(segment_id) in ("77", "88"):
+                raise PermanentMauticError("Mautic API request failed (HTTP 404): Segment not found.")
+            return {"total": 1, "contacts": [{"id": "101"}]}
+
+        with patch("newsletter.management.commands.audit_subscription_list_membership.MauticClient") as client_cls:
+            client_cls.return_value.list_segment_contacts_via_bridge.side_effect = members
+            client_cls.return_value.get_contact.side_effect = lambda cid: {"id": cid}
+            out = StringIO()
+            call_command("audit_subscription_list_membership", "--json", stdout=out)
+        rows = {row["slug"]: row for row in json.loads(out.getvalue())["lists"]}
+        self.assertEqual(set(rows), {"updates", "old-list", "gone-list"}, "one missing segment does not hide the others")
+        self.assertEqual((rows["old-list"]["segmentExists"], rows["old-list"]["issues"]), (False, {"segment_missing_in_mautic": []}),
+                         "a permanently deleted list's segment is gone by design")
+        self.assertEqual(rows["gone-list"]["issues"]["segment_missing_in_mautic"], [{"segment": "88"}], "an active list without its segment is an issue")
+        self.assertTrue(rows["updates"]["segmentExists"])
+        self.assertTrue(deleted.pk and gone.pk)
+
+    def test_other_permanent_errors_still_stop_the_audit(self):
+        from django.core.management.base import CommandError
+        from newsletter.mautic import PermanentMauticError
+
+        with patch("newsletter.management.commands.audit_subscription_list_membership.MauticClient") as client_cls:
+            client_cls.return_value.list_segment_contacts_via_bridge.side_effect = PermanentMauticError("Mautic API request failed (HTTP 403)")
+            with self.assertRaises(CommandError):
+                call_command("audit_subscription_list_membership", stdout=StringIO())
