@@ -97,6 +97,7 @@ EXTRA_FILTER_ACTIONS = frozenset(
         "form.update",
         "form.publish",
         "form.unpublish",
+        "form.delete",
         "form.field.create",
         "form.field.update",
         "form.field.reorder",
