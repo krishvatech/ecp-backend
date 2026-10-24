@@ -18,6 +18,7 @@ from django.utils.dateparse import parse_datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .models import Event, EventParticipant
+from .rich_content import sanitize_event_description
 from community.models import Community
 
 User = get_user_model()
@@ -51,8 +52,8 @@ def _clean_description(wp_event: Dict[str, Any]) -> str:
     """Extract description; keep HTML but sanitize."""
     desc_obj = wp_event.get("description", {})
     if isinstance(desc_obj, dict):
-        return desc_obj.get("rendered", "") or desc_obj.get("raw", "")
-    return str(desc_obj or "")
+        return sanitize_event_description(desc_obj.get("rendered", "") or desc_obj.get("raw", ""))
+    return sanitize_event_description(str(desc_obj or ""))
 
 
 def _normalize_timezone(tz_name: str) -> str:

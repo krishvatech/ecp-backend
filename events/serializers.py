@@ -2934,7 +2934,8 @@ class EventSerializer(serializers.ModelSerializer):
         # Allow blank/None, but if provided it cannot be purely numeric
         if value and value.isdigit():
             raise serializers.ValidationError("Description cannot be only numbers.")
-        return value
+        from .rich_content import sanitize_event_description
+        return sanitize_event_description(value)
     
     def validate_timezone(self, value):
         tz_value = value or settings.TIME_ZONE

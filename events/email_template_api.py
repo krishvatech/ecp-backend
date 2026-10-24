@@ -14,6 +14,7 @@ from cms.models import EmailTemplate
 from users.email_utils import format_event_time_for_email, get_support_email, send_platform_email
 
 from .models import EventEmailTemplate
+from .rich_content import plain_event_description
 
 
 EVENT_EMAIL_TEMPLATE_KEYS = {key for key, _label in EventEmailTemplate.TEMPLATE_KEY_CHOICES}
@@ -66,7 +67,7 @@ def build_event_email_sample_context(event, template_key, user=None):
         "applicant_name": "Taylor Morgan",
         "event_title": event.title,
         "event_name": event.title,
-        "event_description": getattr(event, "description", "") or "",
+        "event_description": plain_event_description(getattr(event, "description", "")),
         "event_date": time_info.get("start_time_in_tz"),
         "event_start": time_info.get("start_time_in_tz"),
         "event_end": time_info.get("end_time_in_tz"),

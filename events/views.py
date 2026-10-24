@@ -2804,6 +2804,35 @@ class EventViewSet(viewsets.ModelViewSet):
             from rest_framework.permissions import IsAuthenticated
             return [IsAuthenticated()]
         return super().get_permissions()
+
+    @action(detail=False, methods=["post"], url_path="upload-description-image")
+    def upload_description_image(self, request):
+        """Store a validated public event-content image using configured media storage."""
+        from io import BytesIO
+        from uuid import uuid4
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+        from PIL import Image, UnidentifiedImageError
+
+        user = request.user
+        if not (getattr(user, "is_superuser", False) or user.community.exists()):
+            raise PermissionDenied("Community membership is required to upload event images.")
+        upload = request.FILES.get("image")
+        if not upload or upload.size > 5 * 1024 * 1024:
+            return Response({"image": "Upload an image smaller than 5 MB."}, status=400)
+        data = upload.read()
+        try:
+            with Image.open(BytesIO(data)) as image:
+                image.verify()
+                image_format = image.format
+        except (UnidentifiedImageError, OSError, ValueError):
+            return Response({"image": "Invalid image file."}, status=400)
+        extension = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp", "GIF": "gif"}.get(image_format)
+        if not extension:
+            return Response({"image": "Use a JPEG, PNG, WebP or GIF image."}, status=400)
+        path = default_storage.save(f"event-content/{uuid4().hex}.{extension}", ContentFile(data))
+        url = default_storage.url(path)
+        return Response({"url": request.build_absolute_uri(url) if url.startswith("/") else url}, status=201)
     # ---------------------- Object Lookup ----------------------
     def get_object(self):
         """

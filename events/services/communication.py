@@ -9,6 +9,7 @@ from urllib.parse import quote, urlencode
 
 from django.conf import settings
 from django.utils import timezone
+from events.rich_content import plain_event_description
 from users.email_utils import send_template_email, format_event_time_for_email, get_support_email
 
 logger = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ def build_email_context(track_application, outcome=None, tier=None):
 
         # Event info
         'event_name': event.title,
-        'event_description': event.description or '',
+        'event_description': plain_event_description(event.description),
         'event_location': event.location or '',
         'event_timezone': event.timezone,
         'event_start_str': event_times.get('event_start_str', ''),

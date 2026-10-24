@@ -6,6 +6,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.utils import timezone
 from .models import Event
+from .rich_content import plain_event_description
 from community.models import Community
 
 logger = logging.getLogger(__name__)
@@ -788,7 +789,7 @@ def json_description(text):
 
     data = {
         "time": 1600000000000,
-        "blocks": [{"type": "paragraph", "data": {"text": text}}],
+        "blocks": [{"type": "paragraph", "data": {"text": plain_event_description(text)}}],
         "version": "2.18.0"
     }
     return json.dumps(data)
@@ -805,7 +806,7 @@ def json_description_dict(text):
         return None
     return {
         "time": 1600000000000,
-        "blocks": [{"type": "paragraph", "data": {"text": text}}],
+        "blocks": [{"type": "paragraph", "data": {"text": plain_event_description(text)}}],
         "version": "2.18.0"
     }
 
