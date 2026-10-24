@@ -60,6 +60,7 @@ from .mautic.operations import (
     FORM_ACTION_REORDER,
     FORM_ACTION_UPDATE,
     FORM_CREATE,
+    FORM_DELETE,
     FORM_FIELD_CREATE,
     FORM_FIELD_REORDER,
     FORM_FIELD_UPDATE,
@@ -639,8 +640,29 @@ class NewsletterAdminFormListCreateView(APIView):
         )
 
 
+def campaign_users(usage: dict[str, Any]) -> list[dict[str, Any]]:
+    """Campaigns that start from the Form or name it in a decision/condition."""
+    campaigns: dict[str, str] = {}
+    for source in _collection(usage.get("campaignSources")):
+        campaigns[str(source.get("id"))] = str(source.get("name") or "")
+    for event in _collection(usage.get("campaignEvents")):
+        campaigns.setdefault(str(event.get("campaignId")), str(event.get("campaignName") or ""))
+    return [{"id": cid, "name": name} for cid, name in sorted(campaigns.items(), key=lambda item: int(item[0]) if item[0].isdigit() else 0)]
+
+
+def _form_gone(form_id: str) -> bool | None:
+    """True once Mautic reports the Form missing, False while it exists, None when unknown."""
+    try:
+        MauticClient().get_form(form_id)
+    except PermanentMauticError as exc:
+        return True if "HTTP 404" in str(exc) else None
+    except TemporaryMauticError:
+        return None
+    return False
+
+
 class NewsletterAdminFormDetailView(APIView):
-    """Read a Form (fields and actions read-only) and edit its basic settings."""
+    """Read a Form (fields and actions read-only), edit its basic settings, or delete it."""
 
     permission_classes = [HasMarketingHubAccess]
 
@@ -707,6 +729,79 @@ class NewsletterAdminFormDetailView(APIView):
                 form=normalize_form_detail(stored, protected),
             )
         return _written_response(stored, protected)
+
+    def delete(self, request, form_id):
+        """Delete as the acting admin: Mautic decides who may (own/other
+        against Created by). Refused while a Campaign uses the Form. Mautic's
+        single delete keeps the stored submissions."""
+        normalized = _form_id(form_id)
+        if normalized is None:
+            return _invalid_id_response()
+        current, error = _read_form(normalized)
+        if error is not None:
+            return error
+        try:
+            usage = MauticClient().get_form_usage(normalized, timeout=SUBMISSION_TIMEOUT)
+        except (TemporaryMauticError, PermanentMauticError):
+            return _error(
+                "Could not check where this Form is used; nothing was deleted. Try again.",
+                code="form_usage_unavailable",
+                http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        campaigns = campaign_users(usage)
+        if campaigns:
+            return _error(
+                "This Form is used by a Campaign. Remove it from these Campaigns before deleting it.",
+                code="form_in_use",
+                http_status=status.HTTP_409_CONFLICT,
+                campaigns=campaigns,
+            )
+        submissions = usage.get("submissions") if isinstance(usage.get("submissions"), dict) else {}
+
+        try:
+            _, error_response = run_interactive_mutation(
+                request,
+                action=FORM_DELETE,
+                resource="form",
+                resource_id=normalized,
+                mutate=lambda client: _asserted(client).delete_form(normalized),
+                client_factory=MauticClient,
+                audit_and_reraise=(TemporaryMauticError, PermanentMauticError),
+                detail=f"name: {str(current.get('name') or '')[:NAME_MAX_LENGTH]}",
+            )
+        except MauticRequestNotSentError as exc:
+            return _provider_error_response(exc)
+        except TemporaryMauticError:
+            if _form_gone(normalized) is not True:
+                return _error(
+                    "Mautic did not confirm the delete. Reload the Form list to check before trying again.",
+                    code="form_delete_uncertain",
+                    http_status=status.HTTP_502_BAD_GATEWAY,
+                )
+            return _deleted_response(normalized, current, submissions)
+        except PermanentMauticError as exc:
+            if "HTTP 409" in str(exc):
+                return _error(_provider_message(exc), code="form_in_use", http_status=status.HTTP_409_CONFLICT)
+            return _provider_error_response(exc)
+        if error_response is not None:
+            return error_response
+
+        if _form_gone(normalized) is not True:
+            return _error(
+                "Mautic accepted the delete but the Form can still be read. Reload the Form list to check.",
+                code="form_delete_unconfirmed",
+                http_status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return _deleted_response(normalized, current, submissions)
+
+
+def _deleted_response(form_id: str, form: dict[str, Any], submissions: dict[str, Any]) -> Response:
+    return Response({
+        "deleted": True,
+        "id": form_id,
+        "name": form.get("name") or "",
+        "submissionsKept": int(submissions.get("total") or 0),
+    })
 
 
 def _verified_state_response(form_id: str, protected: set[str], message: str, *, code: str) -> Response:

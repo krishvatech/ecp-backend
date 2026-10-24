@@ -17,6 +17,7 @@ from newsletter.mautic.exceptions import (
 from newsletter.mautic.operations import (
     ASSERTABLE_OPERATIONS,
     FORM_CREATE,
+    FORM_DELETE,
     FORM_PUBLISH,
     FORM_UNPUBLISH,
     FORM_UPDATE,
@@ -62,10 +63,10 @@ def native_form(**overrides):
 class FormOperationContractTests(SimpleTestCase):
     def test_form_operations_are_assertable_and_match_the_bridge(self):
         self.assertEqual(
-            (FORM_CREATE, FORM_UPDATE, FORM_PUBLISH, FORM_UNPUBLISH),
-            ("form.create", "form.update", "form.publish", "form.unpublish"),
+            (FORM_CREATE, FORM_UPDATE, FORM_PUBLISH, FORM_UNPUBLISH, FORM_DELETE),
+            ("form.create", "form.update", "form.publish", "form.unpublish", "form.delete"),
         )
-        for operation in (FORM_CREATE, FORM_UPDATE, FORM_PUBLISH, FORM_UNPUBLISH):
+        for operation in (FORM_CREATE, FORM_UPDATE, FORM_PUBLISH, FORM_UNPUBLISH, FORM_DELETE):
             self.assertIn(operation, ASSERTABLE_OPERATIONS)
 
 
@@ -159,6 +160,7 @@ class FormClientTests(SimpleTestCase):
             lambda: client.update_form(31, {"name": "F"}),
             lambda: client.set_form_published(31, True),
             lambda: client.set_form_published(31, False),
+            lambda: client.delete_form(31),
         ):
             with self.assertRaises(MauticIdentityConfigurationError):
                 call()
@@ -186,6 +188,20 @@ class FormClientTests(SimpleTestCase):
         create_data = dict(session.request.call_args_list[0].kwargs["data"])
         self.assertEqual(create_data, {"name": "F", "postAction": "message", "postActionProperty": "T"})
         self.assertNotIn("data", session.request.call_args_list[2].kwargs)
+
+    def test_delete_uses_the_bridge_and_accepts_the_id_less_native_reply(self):
+        session = Mock()
+        session.request.return_value = response(200, {"form": {"id": None, "name": "F"}})
+        provider = Mock(return_value="signed.jwt")
+        client = MauticClient(session=session, assertion_provider=provider)
+
+        self.assertEqual(client.delete_form(31)["name"], "F")
+
+        [call] = session.request.call_args_list
+        self.assertEqual((call.args[0], call.args[1].split("/api/")[1]), ("DELETE", "ecp/bridge/forms/31/delete"))
+        provider.assert_called_once_with(FORM_DELETE)
+        with self.assertRaises(PermanentMauticError):
+            client.delete_form("../contacts")
 
     def test_get_form_requires_a_numeric_id(self):
         client = MauticClient(session=Mock())
@@ -546,9 +562,92 @@ class FormsPublicationApiTests(_FormsApiBase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("no submit button", response.json()["detail"])
 
-    def test_no_delete_route_exists(self):
-        self.assertEqual(self.api.delete(self.detail_url).status_code, 405)
-        self.assertNotIn("delete_form", dir(MauticClient))
+
+NOT_FOUND = PermanentMauticError("Mautic API request failed (HTTP 404): Item was not found.")
+UNUSED = {"campaignSources": [], "campaignEvents": [], "pointActions": [], "submissions": {"total": 4, "latest": None}}
+
+
+@override_settings(**PER_USER_ON)
+class FormsDeleteApiTests(_FormsApiBase):
+    def setUp(self):
+        super().setUp()
+        self.service.get_form_usage.return_value = UNUSED
+        self.service.get_form.side_effect = [native_form(), NOT_FOUND]
+        self.asserted.delete_form.return_value = {"id": None, "name": "Training Inquiry"}
+
+    def test_delete_runs_as_the_admin_and_confirms_the_form_is_gone(self):
+        response = self.api.delete(self.detail_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"deleted": True, "id": "31", "name": "Training Inquiry", "submissionsKept": 4})
+        self.asserted.delete_form.assert_called_once_with("31")
+        self.service.delete_form.assert_not_called()
+        [entry] = self.audit()
+        self.assertEqual((entry.action, entry.resource_id, entry.mautic_user_id), (FORM_DELETE, "31", 6))
+
+    def test_a_form_used_by_a_campaign_is_not_deleted(self):
+        self.service.get_form.side_effect = None
+        for usage in (
+            {**UNUSED, "campaignSources": [{"id": 4, "name": "Welcome", "published": True}]},
+            {**UNUSED, "campaignEvents": [{"id": 9, "type": "form.submit", "campaignId": 5, "campaignName": "Nurture"}]},
+        ):
+            with self.subTest(usage=usage):
+                self.service.get_form_usage.return_value = usage
+                response = self.api.delete(self.detail_url)
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.json()["code"], "form_in_use")
+                self.assertEqual(len(response.json()["campaigns"]), 1)
+        self.asserted.delete_form.assert_not_called()
+
+    def test_point_actions_do_not_block_delete(self):
+        self.service.get_form_usage.return_value = {**UNUSED, "pointActions": [{"id": 2, "name": "Submit points"}]}
+        self.assertEqual(self.api.delete(self.detail_url).status_code, 200)
+
+    def test_unreadable_usage_fails_closed(self):
+        self.service.get_form_usage.side_effect = TemporaryMauticError("timeout")
+        response = self.api.delete(self.detail_url)
+        self.assertEqual((response.status_code, response.json()["code"]), (503, "form_usage_unavailable"))
+        self.asserted.delete_form.assert_not_called()
+
+    def test_mautic_permission_refusal_is_shown(self):
+        self.asserted.delete_form.side_effect = MauticBridgeRejectedError("Mautic API request failed (HTTP 403)")
+        response = self.api.delete(self.detail_url)
+        self.assertEqual((response.status_code, response.json()["code"]), (403, "mautic_permission_denied"))
+        self.assertEqual(self.audit()[0].status, "denied")
+
+    def test_bridge_campaign_conflict_is_shown(self):
+        self.asserted.delete_form.side_effect = PermanentMauticError(
+            "Mautic API request failed (HTTP 409): The Form is used by Campaign(s): Welcome (#4). Remove it from them first."
+        )
+        response = self.api.delete(self.detail_url)
+        self.assertEqual((response.status_code, response.json()["code"]), (409, "form_in_use"))
+        self.assertIn("Welcome (#4)", response.json()["detail"])
+
+    def test_a_form_still_readable_after_delete_is_not_success(self):
+        self.service.get_form.side_effect = [native_form(), native_form()]
+        response = self.api.delete(self.detail_url)
+        self.assertEqual((response.status_code, response.json()["code"]), (502, "form_delete_unconfirmed"))
+
+    def test_uncertain_delete_checks_mautic(self):
+        self.asserted.delete_form.side_effect = TemporaryMauticError("read timeout")
+        self.assertEqual(self.api.delete(self.detail_url).status_code, 200)
+
+        self.service.get_form.side_effect = [native_form(), native_form()]
+        response = self.api.delete(self.detail_url)
+        self.assertEqual((response.status_code, response.json()["code"]), (502, "form_delete_uncertain"))
+        self.assertEqual(self.service.get_form.call_count, 4)
+
+    def test_missing_form_is_not_found_and_invalid_ids_are_rejected(self):
+        self.service.get_form.side_effect = NOT_FOUND
+        self.assertEqual(self.api.delete(self.detail_url).status_code, 404)
+        self.assertEqual(self.api.delete(reverse("newsletter-admin-form-detail", args=["x1"])).status_code, 400)
+        self.asserted.delete_form.assert_not_called()
+
+    def test_non_marketing_users_cannot_delete(self):
+        normal = APIClient()
+        normal.force_authenticate(User.objects.create_user(username="forms-del-normal", email="d@example.test", password="x"))
+        self.assertIn(normal.delete(self.detail_url).status_code, (401, 403))
+        self.asserted.delete_form.assert_not_called()
 
 
 class FormsAuditFilterTests(TestCase):

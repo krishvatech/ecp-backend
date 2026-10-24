@@ -52,6 +52,7 @@ from .operations import (
     FORM_ACTION_REORDER,
     FORM_ACTION_UPDATE,
     FORM_CREATE,
+    FORM_DELETE,
     FORM_FIELD_CREATE,
     FORM_FIELD_REORDER,
     FORM_FIELD_UPDATE,
@@ -2977,6 +2978,22 @@ class MauticClient:
             operation=FORM_PUBLISH if published else FORM_UNPUBLISH,
             context=f"Mautic form {action}",
         )
+
+    def delete_form(self, form_id) -> dict[str, Any]:
+        """Delete a Form as the acting admin. Mautic's own delete permissions
+        (own/other, against Created by) decide; the bridge refuses a Form a
+        Campaign uses. Mautic keeps the Form's stored submissions."""
+        form = self._numeric_id(form_id, "form")
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError(
+                "Mautic Form changes require per-user Mautic identity"
+            )
+        response = self._bridge_request("DELETE", f"ecp/bridge/forms/{form}/delete", operation=FORM_DELETE)
+        # The native delete returns the removed Form without its id.
+        deleted = self._json_object(response, "Mautic form deletion").get("form")
+        if not isinstance(deleted, dict):
+            raise TemporaryMauticError("Mautic form deletion returned an invalid response")
+        return deleted
 
     def get_campaign_builder_capabilities(self) -> dict[str, Any]:
         response = self._request("GET", "ecp/campaign-builder/capabilities")

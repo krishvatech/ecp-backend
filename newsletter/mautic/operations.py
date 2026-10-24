@@ -81,6 +81,8 @@ FORM_CREATE = "form.create"
 FORM_UPDATE = "form.update"
 FORM_PUBLISH = "form.publish"
 FORM_UNPUBLISH = "form.unpublish"
+# Whole-Form delete; Mautic's delete permissions decide, Campaign use refuses it.
+FORM_DELETE = "form.delete"
 # Supported Form fields: add, change and re-order (never delete).
 FORM_FIELD_CREATE = "form.field.create"
 FORM_FIELD_UPDATE = "form.field.update"
@@ -154,6 +156,7 @@ ASSERTABLE_OPERATIONS = frozenset(
         FORM_UPDATE,
         FORM_PUBLISH,
         FORM_UNPUBLISH,
+        FORM_DELETE,
         FORM_FIELD_CREATE,
         FORM_FIELD_UPDATE,
         FORM_FIELD_REORDER,
