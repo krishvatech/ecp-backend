@@ -150,6 +150,19 @@ class Event(models.Model):
         default="",
         help_text="Optional display label (e.g. 'By application only', 'GBP 500'). Informational only — does not trigger payment."
     )
+    # IPDT-776: Optional event-specific Attend CTAs. Blank URL retains existing flows.
+    attend_primary_button_text = models.CharField(
+        max_length=80, blank=True, default="Register Here",
+        help_text="Label of the external guaranteed-seat registration button.",
+    )
+    attend_primary_button_url = models.URLField(
+        max_length=500, blank=True, default="",
+        help_text="Optional HTTPS registration link used before Saleor pricing is active.",
+    )
+    attend_secondary_button_text = models.CharField(
+        max_length=80, blank=True, default="",
+        help_text="Label of the existing application button; its application action is unchanged.",
+    )
     price_display_label = models.CharField(
         max_length=200,
         blank=True,

@@ -1638,7 +1638,7 @@ class EventSerializer(serializers.ModelSerializer):
             "venue_name",
             "venue_address",
             "price",
-            "price_label",
+            "price_label", "attend_primary_button_text", "attend_primary_button_url", "attend_secondary_button_text",
             "currency",
             "is_free",
             "registration_type",
@@ -1856,6 +1856,17 @@ class EventSerializer(serializers.ModelSerializer):
                     "min": now_local,
                 })
                 self.fields[fname].style = style
+
+    def validate_attend_primary_button_url(self, value):
+        """Keep public CTA destinations restricted to ordinary secure web links."""
+        from urllib.parse import urlsplit
+        url = (value or "").strip()
+        if not url:
+            return ""
+        parsed = urlsplit(url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise serializers.ValidationError("Enter a valid HTTPS registration URL without embedded credentials.")
+        return url
 
     def validate_status(self, value):
         """Force lifecycle transitions through audited, sync-safe endpoints."""
@@ -3192,7 +3203,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
             "start_time", "end_time", "timezone",
             "status", "is_live", "category", "format",
             "location", "location_city", "location_country",
-            "price", "price_label", "price_display_label", "allow_manual_price_display", "currency", "is_free",
+            "price", "price_label", "attend_primary_button_text", "attend_primary_button_url", "attend_secondary_button_text", "price_display_label", "allow_manual_price_display", "currency", "is_free",
             "preview_image", "cover_image", "attending_count", "confirmed_registered_count",
             "created_at", "sessions", "speakers",
             "featured_participants", "featured_participants_total",
@@ -3398,7 +3409,7 @@ class MyEventCardSerializer(serializers.ModelSerializer):
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
             "preview_image", "cover_image", "waiting_room_image", "location", "location_city",
             "location_country", "category", "format", "is_live", "recording_url", "replay_available",
-            "replay_visible_to_participants", "price", "price_label", "currency", "is_free",
+            "replay_visible_to_participants", "price", "price_label", "attend_primary_button_text", "attend_primary_button_url", "attend_secondary_button_text", "currency", "is_free",
             "registration_type", "allow_guest_applications", "waiting_room_enabled", "waiting_room_grace_period_minutes",
             "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer", "lounge_enabled_after", "lounge_after_buffer",
@@ -3444,7 +3455,7 @@ class EventLiteSerializer(serializers.ModelSerializer):
         model = Event
         fields = (
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
-            "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country", "category", "format", "is_live", "recording_url", "replay_available", "replay_availability_duration", "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type", "allow_guest_applications",
+            "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country", "category", "format", "is_live", "recording_url", "replay_available", "replay_availability_duration", "replay_visible_to_participants", "price", "price_label", "attend_primary_button_text", "attend_primary_button_url", "attend_secondary_button_text", "currency", "is_free", "registration_type", "allow_guest_applications",
             "preapproval_code_enabled", "preapproval_allowlist_enabled", "attendee_marker_enabled", "attendee_marker_label",
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room", "networking_tables_enabled_waiting_room", "auto_admit_seconds",
             "lounge_enabled_before", "lounge_before_buffer",
@@ -3582,7 +3593,7 @@ class EventListSerializer(serializers.ModelSerializer):
             "id", "slug", "title", "start_time", "end_time", "timezone", "status", "live_ended_at",
             "preview_image", "cover_image", "waiting_room_image", "location", "location_city", "location_country",
             "category", "format", "is_live", "recording_url", "replay_available", "replay_availability_duration",
-            "replay_visible_to_participants", "price", "price_label", "currency", "is_free", "registration_type", "allow_guest_applications",
+            "replay_visible_to_participants", "price", "price_label", "attend_primary_button_text", "attend_primary_button_url", "attend_secondary_button_text", "currency", "is_free", "registration_type", "allow_guest_applications",
             "preapproval_code_enabled", "preapproval_allowlist_enabled", "attendee_marker_enabled", "attendee_marker_label",
             "waiting_room_enabled", "waiting_room_grace_period_minutes", "lounge_enabled_waiting_room",
             "networking_tables_enabled_waiting_room", "auto_admit_seconds",
@@ -3622,7 +3633,7 @@ class EventLandingSerializer(serializers.ModelSerializer):
         fields = (
             "id", "slug", "title", "description", "start_time", "end_time", "timezone", "status",
             "preview_image", "cover_image", "location", "location_city", "location_country",
-            "category", "format", "event_type", "price", "price_label", "currency", "is_free",
+            "category", "format", "event_type", "price", "price_label", "attend_primary_button_text", "attend_primary_button_url", "attend_secondary_button_text", "currency", "is_free",
             "registration_type", "allow_guest_applications", "is_pinned", "pin_priority", "pinned_at", "is_featured",
         )
 
