@@ -17,6 +17,7 @@ DEFAULT_SUBJECTS = {
     "password_changed": "Your {{ app_name }} password was changed",
     "speaker_credentials": "Your {{ app_name }} Speaker Account - Login Credentials",
     "admin_credentials": "Welcome to {{ app_name }} - Your Admin Credentials",
+    "attendee_account_credentials": "Your {{ app_name }} account",
     "event_confirmation": "You're Confirmed as {{ role }} - {{ event_title }}",
     "event_cancelled": "Update: '{{ event_title }}' has been cancelled",
     "event_invite": "You're invited to '{{ event_title }}' on {{ app_name }}",

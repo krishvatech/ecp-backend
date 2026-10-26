@@ -719,6 +719,36 @@ def send_admin_credentials_email(user, frontend_url=None):
         fail_silently=False,
     )
 
+
+def send_attendee_account_email(user, temp_password, event=None):
+    """
+    Email the temporary password of an account created by the bulk attendee
+    import. Only sends: the caller has already set the password in Cognito and
+    Django. Uses its own editable template (not the admin credentials one).
+
+    Returns:
+        bool: True if sent
+    """
+    frontend_base = getattr(settings, 'FRONTEND_URL', '')
+    ctx = {
+        "app_name": "IMAA Connect",
+        "first_name": user.first_name or user.username or "there",
+        "username": user.username,
+        "email": user.email,
+        "temporary_password": temp_password,
+        "event_title": event.title if event else "",
+        "login_url": f"{frontend_base}/login",
+        "support_email": get_support_email(),
+    }
+
+    return send_template_email(
+        template_key="attendee_account_credentials",
+        to_email=user.email,
+        context=ctx,
+        subject_override=f"Your {ctx['app_name']} account",
+        fail_silently=False,
+    )
+
 def send_event_cancelled_email(event):
     """
     Send email to all participants (registered, cancellation_requested) when an event is cancelled.

@@ -2722,3 +2722,11 @@ def generate_event_og_image(event_id, force=False):
     if not event:
         return ""
     return ensure_event_og_image(event, force=force)
+
+
+@shared_task(name="events.run_attendee_import")
+def run_attendee_import_task(job_id):
+    """Apply a bulk attendee import job (see events/services/attendee_import.py)."""
+    from .services.attendee_import import run_job
+
+    run_job(job_id)

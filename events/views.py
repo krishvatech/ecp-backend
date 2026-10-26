@@ -3272,6 +3272,75 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         })
 
+    # ---- Bulk attendee import (superusers only) ----
+    # Looked up by pk directly: superusers import into any event, draft or not.
+    def _attendee_import_event(self, request, pk):
+        if not request.user.is_superuser:
+            return None, Response({"detail": "Only superusers can import attendees."}, status=403)
+        return get_object_or_404(Event, pk=pk), None
+
+    # GET /api/events/{id}/attendee-import/template/
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated], url_path="attendee-import/template")
+    def attendee_import_template(self, request, pk=None):
+        from events.services.attendee_import import template_csv
+
+        event, denied = self._attendee_import_event(request, pk)
+        if denied:
+            return denied
+        response = HttpResponse(template_csv(), content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="attendee-import-template.csv"'
+        return response
+
+    # POST /api/events/{id}/attendee-import/preview/   multipart: file, track_id?
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="attendee-import/preview",
+            parser_classes=[MultiPartParser, FormParser])
+    def attendee_import_preview(self, request, pk=None):
+        from events.services.attendee_import import ImportFileError, build_preview
+
+        event, denied = self._attendee_import_event(request, pk)
+        if denied:
+            return denied
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response({"detail": "Upload a .csv or .xlsx file.", "code": "file_required"}, status=400)
+        try:
+            preview = build_preview(event, upload, request.data.get("track_id"), request.user)
+        except ImportFileError as exc:
+            return Response({"detail": str(exc), "code": exc.code}, status=400)
+        return Response(preview)
+
+    # POST /api/events/{id}/attendee-import/apply/   {"plan_id": "..."}
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="attendee-import/apply",
+            parser_classes=[JSONParser])
+    def attendee_import_apply(self, request, pk=None):
+        from events.services.attendee_import import ImportFileError, start_job
+
+        event, denied = self._attendee_import_event(request, pk)
+        if denied:
+            return denied
+        plan_id = str(request.data.get("plan_id") or "").strip()
+        if not plan_id:
+            return Response({"detail": "plan_id is required.", "code": "plan_required"}, status=400)
+        try:
+            job_id = start_job(event, plan_id, request.user)
+        except ImportFileError as exc:
+            return Response({"detail": str(exc), "code": exc.code}, status=400)
+        return Response({"job_id": job_id, "status": "queued"}, status=202)
+
+    # GET /api/events/{id}/attendee-import/status/{job_id}/
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated],
+            url_path=r"attendee-import/status/(?P<job_id>[0-9a-f]{32})")
+    def attendee_import_status(self, request, pk=None, job_id=None):
+        from events.services.attendee_import import get_job
+
+        event, denied = self._attendee_import_event(request, pk)
+        if denied:
+            return denied
+        job = get_job(event, job_id)
+        if not job:
+            return Response({"detail": "Import job not found or expired.", "code": "job_not_found"}, status=404)
+        return Response(job)
+
 
     # GET/PATCH /api/events/{id}/saleor-product/
     @action(detail=True, methods=["get", "patch"], permission_classes=[IsCreatorOrReadOnly], url_path="saleor-product")

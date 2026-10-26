@@ -49,6 +49,16 @@ SAMPLE_CONTEXTS = {
         "login_url": "https://example.com/login",
         "support_email": "support@example.com",
     },
+    "attendee_account_credentials": {
+        "app_name": "IMAA Connect",
+        "first_name": "Alex",
+        "username": "alex.smith",
+        "email": "alex@example.com",
+        "temporary_password": "TempP@ss123",
+        "event_title": "M&A Innovation Summit 2026",
+        "login_url": "https://example.com/login",
+        "support_email": "support@example.com",
+    },
     "event_confirmation": {
         "app_name": "IMAA Connect",
         "first_name": "Alex",

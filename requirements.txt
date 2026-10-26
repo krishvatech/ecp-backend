@@ -60,3 +60,4 @@ phonenumbers>=8.13,<10
 # MJML compilation (used for email templates in cms/api.py)
 mrml
 sentry-sdk>=2,<3
+openpyxl==3.1.5
