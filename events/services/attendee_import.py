@@ -16,7 +16,8 @@ Per row:
   accept it via accept_track_application (roles, origins, tier, forms), with the
   acceptance email turned off.
 - Both: add the type badge label; "Paid Attendee" is marked paid offline; send the
-  registration confirmation email.
+  registration confirmation email. Besides the built-in types, any active badge
+  label of the event is accepted as a Type (label only).
 """
 import csv
 import io
@@ -49,16 +50,22 @@ JOB_CACHE_KEY = "attendee_import:job:{}"
 TYPE_ATTENDEE = "attendee"
 TYPE_SPONSOR = "sponsor"
 TYPE_PAID_ATTENDEE = "paid_attendee"
+TYPE_SPONSORED_GUEST = "sponsored_guest"
 TYPE_LABELS = {
     TYPE_ATTENDEE: "Attendee",
     TYPE_SPONSOR: "Sponsor",
     TYPE_PAID_ATTENDEE: "Paid Attendee",
+    TYPE_SPONSORED_GUEST: "Sponsored Guest",
 }
 TYPE_LABEL_COLORS = {
     TYPE_ATTENDEE: "#6366f1",
     TYPE_SPONSOR: "#f59e0b",
     TYPE_PAID_ATTENDEE: "#10b981",
+    TYPE_SPONSORED_GUEST: "#ec4899",
 }
+# Any active badge label of the event is also accepted as a Type (label only)
+TYPE_EVENT_LABEL = "event_label"
+EVENT_LABEL_COLOR = "#9CA3AF"
 
 REQUIRED_COLUMNS = ("email", "first_name", "last_name", "type")
 OPTIONAL_COLUMNS = ("job_title", "company", "country", "payment_reference")
@@ -118,6 +125,40 @@ def _normalize_header(value):
 def _normalize_type(value):
     key = "_".join(str(value or "").strip().lower().replace("-", " ").split())
     return key if key in TYPE_LABELS else None
+
+
+def _label_key(name):
+    return " ".join(str(name or "").split()).lower()
+
+
+def event_type_labels(event):
+    """The event's active badge label names, usable as a Type besides the built-in types."""
+    from events.models import EventBadgeLabel
+
+    return list(
+        EventBadgeLabel.objects.filter(event=event, is_active=True).order_by("name").values_list("name", flat=True)
+    )
+
+
+def resolve_event_types(rows, event):
+    """Match a Type that is not built in against the event's active badge labels."""
+    labels = {_label_key(name): name for name in event_type_labels(event)}
+    for row in rows:
+        if row["type"] or not row["type_raw"]:
+            continue
+        name = labels.get(_label_key(row["type_raw"]))
+        if name:
+            row["type"] = TYPE_EVENT_LABEL
+            row["type_label"] = name
+    return rows
+
+
+def type_options(event):
+    """Every Type value the event accepts: built-in types, then its own badge labels."""
+    options = list(TYPE_LABELS.values())
+    known = {_label_key(name) for name in options}
+    options += [name for name in event_type_labels(event) if _label_key(name) not in known]
+    return options
 
 
 def _read_table(upload):
@@ -191,6 +232,7 @@ def parse_file(upload):
         row["email"] = row["email"].lower()
         row["type_raw"] = row.pop("type")
         row["type"] = _normalize_type(row["type_raw"])
+        row["type_label"] = TYPE_LABELS.get(row["type"], "")
         rows.append(row)
     return rows
 
@@ -350,7 +392,7 @@ def _serialize_plan_row(row, plan):
         "first_name": row["first_name"],
         "last_name": row["last_name"],
         "type": row["type"],
-        "type_label": TYPE_LABELS.get(row["type"], row.get("type_raw", "")),
+        "type_label": row.get("type_label") or row.get("type_raw", ""),
         "action": plan["action"],
         "account": plan["account"],
         "application": plan["application"],
@@ -404,7 +446,7 @@ def build_preview(event, upload, track_id, admin):
     """Parse, validate and plan the file; cache the plan. Returns the preview payload."""
     check_event(event)
     track = resolve_track(event, track_id)
-    rows = validate_rows(parse_file(upload))
+    rows = validate_rows(resolve_event_types(parse_file(upload), event))
 
     serialized = [_serialize_plan_row(row, plan_row(event, row, track)) for row in rows]
     summary = _summarize(serialized)
@@ -431,6 +473,7 @@ def build_preview(event, upload, track_id, admin):
         },
         "summary": summary,
         "capacity_warning": capacity_warning(event, summary["register"] + summary["accept_application"]),
+        "type_options": type_options(event),
         "rows": serialized,
     }
 
@@ -560,13 +603,14 @@ def _fill_profile(user, row, new_account=False):
         profile.save(update_fields=changed)
 
 
-def _add_type_label(event, registration, import_type):
+def _add_type_label(event, registration, row):
     from events.models import EventBadgeLabel
 
-    name = TYPE_LABELS[import_type]
+    name = row["type_label"]
     label = EventBadgeLabel.objects.filter(event=event, name__iexact=name).first()
     if label is None:
-        label = EventBadgeLabel.objects.create(event=event, name=name, color=TYPE_LABEL_COLORS[import_type])
+        color = TYPE_LABEL_COLORS.get(row["type"], EVENT_LABEL_COLOR)
+        label = EventBadgeLabel.objects.create(event=event, name=name, color=color)
     elif not label.is_active:
         label.is_active = True
         label.deactivated_at = None
@@ -597,7 +641,7 @@ def _accept_application(event, user, row, track, admin):
     from events.services.application_decisions import accept_track_application
 
     now = timezone.now()
-    note = f"Imported by {admin.email or admin.username} on {now:%Y-%m-%d} (type: {TYPE_LABELS[row['type']]})"
+    note = f"Imported by {admin.email or admin.username} on {now:%Y-%m-%d} (type: {row['type_label']})"
 
     application = EventApplication.objects.filter(event=event, email__iexact=row["email"]).first()
     if application is None:
@@ -682,7 +726,7 @@ def apply_row(event, row, track, admin):
                 registration = _register_open_event(event, user, admin)
             else:
                 registration = _accept_application(event, user, row, track, admin)
-            _add_type_label(event, registration, row["type"])
+            _add_type_label(event, registration, row)
             if row["type"] == TYPE_PAID_ATTENDEE:
                 if track:
                     _confirm_paid_origins(registration, track, admin, row["payment_reference"])

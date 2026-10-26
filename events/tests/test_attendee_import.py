@@ -364,6 +364,42 @@ class OpenEventImportTests(AttendeeImportBase):
         self.assertEqual(registration.payment_reference, "INV-2026-01")
         self.assertIn("Paid Attendee", registration.badge_labels.values_list("name", flat=True))
 
+    def test_sponsored_guest_gets_label_and_is_not_marked_paid(self):
+        preview, job = self.run_import(csv_upload([["guest@example.com", "Guest", "Person", "Sponsored Guest"]]))
+
+        self.assertEqual(preview["rows"][0]["type_label"], "Sponsored Guest")
+        self.assertEqual(job["summary"]["errors"], 0)
+        registration = EventRegistration.objects.get(event=self.event, user__email="guest@example.com")
+        self.assertIsNone(registration.marked_paid_at)
+        self.assertIn("Sponsored Guest", registration.badge_labels.values_list("name", flat=True))
+
+    def test_event_badge_label_is_accepted_as_type(self):
+        label = EventBadgeLabel.objects.create(event=self.event, name="Media Partner", color="#123456")
+        preview, job = self.run_import(csv_upload([["media@example.com", "Me", "Dia", "  media   PARTNER "]]))
+
+        self.assertEqual(preview["rows"][0]["type_label"], "Media Partner")
+        self.assertIn("Media Partner", preview["type_options"])
+        self.assertEqual(job["summary"]["errors"], 0)
+        registration = EventRegistration.objects.get(event=self.event, user__email="media@example.com")
+        self.assertIn(label.id, registration.badge_labels.values_list("id", flat=True))
+        self.assertIsNone(registration.marked_paid_at)
+        self.assertEqual(EventBadgeLabel.objects.filter(event=self.event, name__iexact="Media Partner").count(), 1)
+
+    def test_inactive_or_other_event_label_is_not_a_type(self):
+        EventBadgeLabel.objects.create(event=self.event, name="Retired Label", is_active=False)
+        other = Event.objects.create(
+            community=self.community, title="Other", slug="other-event", status="published",
+            start_time=self.event.start_time, end_time=self.event.end_time, created_by=self.admin,
+        )
+        EventBadgeLabel.objects.create(event=other, name="Other Event Label")
+        response = self.preview(csv_upload([
+            ["a@example.com", "A", "B", "Retired Label"],
+            ["b@example.com", "A", "B", "Other Event Label"],
+        ]))
+        self.assertEqual([row["reason"] for row in response.data["rows"]], ["invalid_type", "invalid_type"])
+        self.assertNotIn("Retired Label", response.data["type_options"])
+        self.assertNotIn("Other Event Label", response.data["type_options"])
+
     def test_import_may_exceed_max_participants(self):
         Event.objects.filter(pk=self.event.pk).update(max_participants=1)
         preview, job = self.run_import(csv_upload([
