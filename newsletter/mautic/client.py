@@ -60,6 +60,14 @@ from .operations import (
     FORM_UNPUBLISH,
     FORM_UPDATE,
     NEWSLETTER_TEST_SEND,
+    PAGE_CREATE,
+    PAGE_DELETE,
+    PAGE_DUPLICATE,
+    PAGE_TRANSLATION_CREATE,
+    PAGE_UPDATE,
+    PAGE_VARIANT_CREATE,
+    PAGE_VARIANT_UPDATE,
+    PAGE_VARIANT_WINNER,
     POINT_ACTION_CREATE,
     POINT_ACTION_DELETE,
     POINT_ACTION_UPDATE,
@@ -2994,6 +3002,144 @@ class MauticClient:
         if not isinstance(deleted, dict):
             raise TemporaryMauticError("Mautic form deletion returned an invalid response")
         return deleted
+
+    # Landing pages ------------------------------------------------------------
+
+    def list_pages(self, **params) -> dict[str, Any]:
+        response = self._request("GET", "pages", params=params or None)
+        data = self._json_object(response, "Mautic page list")
+        if not isinstance(data.get("pages"), (dict, list)):
+            raise TemporaryMauticError("Mautic page list returned an invalid response")
+        return data
+
+    @staticmethod
+    def _page_from_response(response, context: str, *, require_id: bool = True) -> dict[str, Any]:
+        page = MauticClient._json_object(response, context).get("page")
+        if not isinstance(page, dict) or (require_id and not page.get("id")):
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return page
+
+    def get_page(self, page_id) -> dict[str, Any]:
+        page = self._numeric_id(page_id, "page")
+        response = self._request("GET", f"pages/{page}")
+        return self._page_from_response(response, "Mautic page detail")
+
+    def _page_bridge_request(self, method: str, path: str, *, operation: str, context: str, **kwargs):
+        # Page writes are attributed to a human Mautic user or not made at
+        # all: there is deliberately no service-account fallback.
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError(
+                "Mautic landing page changes require per-user Mautic identity"
+            )
+        response = self._bridge_request(method, path, operation=operation, **kwargs)
+        return self._page_from_response(response, context, require_id=method != "DELETE")
+
+    def create_page(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create an unpublished landing page (the bridge refuses scripts and
+        preference-center pages)."""
+        if not isinstance(payload, dict) or not payload.get("title"):
+            raise PermanentMauticError("Mautic page title is required")
+        return self._page_bridge_request(
+            "POST",
+            "ecp/bridge/pages/new",
+            operation=PAGE_CREATE,
+            context="Mautic page creation",
+            data=self._email_form_data(payload),
+        )
+
+    def update_page(self, page_id, payload: dict[str, Any]) -> dict[str, Any]:
+        """Partially update a landing page (native PATCH semantics)."""
+        page = self._numeric_id(page_id, "page")
+        if not isinstance(payload, dict) or not payload:
+            raise PermanentMauticError("Mautic page update payload is required")
+        return self._page_bridge_request(
+            "PATCH",
+            f"ecp/bridge/pages/{page}/edit",
+            operation=PAGE_UPDATE,
+            context="Mautic page update",
+            data=self._email_form_data(payload),
+        )
+
+    def duplicate_page(self, page_id, *, title: str | None = None) -> dict[str, Any]:
+        page = self._numeric_id(page_id, "page")
+        return self._page_bridge_request(
+            "POST",
+            f"ecp/bridge/pages/{page}/duplicate",
+            operation=PAGE_DUPLICATE,
+            context="Mautic page duplicate",
+            data={"title": title} if title else {},
+        )
+
+    def delete_page(self, page_id) -> dict[str, Any]:
+        """Delete as the acting admin. Mautic's own delete permissions decide;
+        the bridge refuses a page that Campaigns or preference-center Emails
+        name, or that has variants or translations."""
+        page = self._numeric_id(page_id, "page")
+        # The native delete returns the removed page without its id.
+        return self._page_bridge_request(
+            "DELETE",
+            f"ecp/bridge/pages/{page}/delete",
+            operation=PAGE_DELETE,
+            context="Mautic page deletion",
+        )
+
+    def create_page_variant(self, page_id, *, weight: int, winner_criteria: str, title: str | None = None) -> dict[str, Any]:
+        """Add an unpublished A/B variant (a copy of the main page's content)."""
+        page = self._numeric_id(page_id, "page")
+        data = {"weight": int(weight), "winnerCriteria": winner_criteria}
+        if title:
+            data["title"] = title
+        return self._page_bridge_request(
+            "POST", f"ecp/bridge/pages/{page}/variants/new", operation=PAGE_VARIANT_CREATE, context="Mautic page variant creation", data=data
+        )
+
+    def update_page_variant(self, page_id, *, weight: int | None = None, winner_criteria: str | None = None) -> dict[str, Any]:
+        """Change a variant's weight and/or the whole test's winner criteria."""
+        page = self._numeric_id(page_id, "page")
+        data: dict[str, Any] = {}
+        if weight is not None:
+            data["weight"] = int(weight)
+        if winner_criteria is not None:
+            data["winnerCriteria"] = winner_criteria
+        if not data:
+            raise PermanentMauticError("Mautic page variant update payload is required")
+        return self._page_bridge_request(
+            "PATCH", f"ecp/bridge/pages/{page}/variant/edit", operation=PAGE_VARIANT_UPDATE, context="Mautic page variant update", data=data
+        )
+
+    def make_page_variant_winner(self, page_id) -> dict[str, Any]:
+        """Make a variant the main page (Mautic's own conversion)."""
+        page = self._numeric_id(page_id, "page")
+        return self._page_bridge_request(
+            "POST", f"ecp/bridge/pages/{page}/winner", operation=PAGE_VARIANT_WINNER, context="Mautic page variant winner"
+        )
+
+    def create_page_translation(self, page_id, *, language: str, title: str | None = None) -> dict[str, Any]:
+        """Add an unpublished translation (a copy of the main page in another language)."""
+        page = self._numeric_id(page_id, "page")
+        data = {"language": language}
+        if title:
+            data["title"] = title
+        return self._page_bridge_request(
+            "POST", f"ecp/bridge/pages/{page}/translations/new", operation=PAGE_TRANSLATION_CREATE,
+            context="Mautic page translation creation", data=data,
+        )
+
+    def get_page_abtest(self, page_id, *, timeout=None) -> dict[str, Any]:
+        page = self._numeric_id(page_id, "page")
+        response = self._request("GET", f"ecp/bridge/pages/{page}/abtest", timeout=timeout)
+        test = self._json_object(response, "Mautic page A/B test").get("abTest")
+        if not isinstance(test, dict) or not isinstance(test.get("versions"), list):
+            raise TemporaryMauticError("Mautic page A/B test returned an invalid response")
+        return test
+
+    def get_page_usage(self, page_id, *, timeout=None) -> dict[str, Any]:
+        page = self._numeric_id(page_id, "page")
+        response = self._request("GET", f"ecp/bridge/pages/{page}/usage", timeout=timeout)
+        usage = self._json_object(response, "Mautic page usage").get("usage")
+        if not isinstance(usage, dict):
+            raise TemporaryMauticError("Mautic page usage returned an invalid response")
+        return usage
 
     def get_campaign_builder_capabilities(self) -> dict[str, Any]:
         response = self._request("GET", "ecp/campaign-builder/capabilities")

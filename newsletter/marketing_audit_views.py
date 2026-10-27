@@ -31,6 +31,7 @@ DOMAIN_DEFINITIONS = {
     "tags": ("Tags", ("tag.",)),
     "fields": ("Fields", ("field.",)),
     "forms": ("Forms", ("form.",)),
+    "pages": ("Landing Pages", ("page.",)),
     "delivery": ("Delivery", ("newsletter.",)),
     "access": ("Access", ("connection.",)),
 }
@@ -105,6 +106,14 @@ EXTRA_FILTER_ACTIONS = frozenset(
         "form.action.update",
         "form.action.reorder",
         "form.submission.view",
+        "page.create",
+        "page.update",
+        "page.delete",
+        "page.duplicate",
+        "page.variant.create",
+        "page.variant.update",
+        "page.variant.winner",
+        "page.translation.create",
     }
 )
 

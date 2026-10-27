@@ -84,6 +84,19 @@ from .form_views import (
     NewsletterAdminFormUnpublishView,
     NewsletterAdminFormUsageView,
 )
+from .page_views import (
+    NewsletterAdminPageAbTestView,
+    NewsletterAdminPageCategoriesView,
+    NewsletterAdminPageDetailView,
+    NewsletterAdminPageDuplicateView,
+    NewsletterAdminPageListCreateView,
+    NewsletterAdminPagePublishView,
+    NewsletterAdminPageUnpublishView,
+    NewsletterAdminPageTranslationCreateView,
+    NewsletterAdminPageUsageView,
+    NewsletterAdminPageVariantCreateView,
+    NewsletterAdminPageWinnerView,
+)
 from .template_views import (
     NewsletterAdminTemplateCategoriesView,
     NewsletterAdminTemplateDetailView,
@@ -393,6 +406,62 @@ urlpatterns = [
         "newsletter/admin/email-designs/compile/",
         NewsletterAdminEmailDesignCompileView.as_view(),
         name="newsletter-admin-email-design-compile",
+    ),
+    path(
+        "newsletter/admin/pages/",
+        NewsletterAdminPageListCreateView.as_view(),
+        name="newsletter-admin-page-list",
+    ),
+    # Static "categories/" ranks above "<page_id>/".
+    path(
+        "newsletter/admin/pages/categories/",
+        NewsletterAdminPageCategoriesView.as_view(),
+        name="newsletter-admin-page-categories",
+    ),
+    path(
+        "newsletter/admin/pages/<str:page_id>/",
+        NewsletterAdminPageDetailView.as_view(),
+        name="newsletter-admin-page-detail",
+    ),
+    path(
+        "newsletter/admin/pages/<str:page_id>/publish/",
+        NewsletterAdminPagePublishView.as_view(),
+        name="newsletter-admin-page-publish",
+    ),
+    path(
+        "newsletter/admin/pages/<str:page_id>/unpublish/",
+        NewsletterAdminPageUnpublishView.as_view(),
+        name="newsletter-admin-page-unpublish",
+    ),
+    path(
+        "newsletter/admin/pages/<str:page_id>/duplicate/",
+        NewsletterAdminPageDuplicateView.as_view(),
+        name="newsletter-admin-page-duplicate",
+    ),
+    path(
+        "newsletter/admin/pages/<str:page_id>/variants/",
+        NewsletterAdminPageVariantCreateView.as_view(),
+        name="newsletter-admin-page-variants",
+    ),
+    path(
+        "newsletter/admin/pages/<str:page_id>/abtest/",
+        NewsletterAdminPageAbTestView.as_view(),
+        name="newsletter-admin-page-abtest",
+    ),
+    path(
+        "newsletter/admin/pages/<str:page_id>/winner/",
+        NewsletterAdminPageWinnerView.as_view(),
+        name="newsletter-admin-page-winner",
+    ),
+    path(
+        "newsletter/admin/pages/<str:page_id>/translations/",
+        NewsletterAdminPageTranslationCreateView.as_view(),
+        name="newsletter-admin-page-translations",
+    ),
+    path(
+        "newsletter/admin/pages/<str:page_id>/usage/",
+        NewsletterAdminPageUsageView.as_view(),
+        name="newsletter-admin-page-usage",
     ),
     path(
         "newsletter/admin/forms/",

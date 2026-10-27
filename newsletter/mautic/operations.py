@@ -91,6 +91,16 @@ FORM_FIELD_REORDER = "form.field.reorder"
 FORM_ACTION_CREATE = "form.action.create"
 FORM_ACTION_UPDATE = "form.action.update"
 FORM_ACTION_REORDER = "form.action.reorder"
+# Landing pages (EcpBridgePageApiController): never scripts or preference centers.
+PAGE_CREATE = "page.create"
+PAGE_UPDATE = "page.update"
+PAGE_DELETE = "page.delete"
+PAGE_DUPLICATE = "page.duplicate"
+# A/B variants and translations of a main page.
+PAGE_VARIANT_CREATE = "page.variant.create"
+PAGE_VARIANT_UPDATE = "page.variant.update"
+PAGE_VARIANT_WINNER = "page.variant.winner"
+PAGE_TRANSLATION_CREATE = "page.translation.create"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
@@ -163,5 +173,13 @@ ASSERTABLE_OPERATIONS = frozenset(
         FORM_ACTION_CREATE,
         FORM_ACTION_UPDATE,
         FORM_ACTION_REORDER,
+        PAGE_CREATE,
+        PAGE_UPDATE,
+        PAGE_DELETE,
+        PAGE_DUPLICATE,
+        PAGE_VARIANT_CREATE,
+        PAGE_VARIANT_UPDATE,
+        PAGE_VARIANT_WINNER,
+        PAGE_TRANSLATION_CREATE,
     }
 )
