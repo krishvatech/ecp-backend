@@ -132,6 +132,15 @@ from .contact_delete_views import (
     NewsletterAdminContactDeleteExecuteView,
     NewsletterAdminContactDeletePrepareView,
 )
+from .marketing_notification_views import (
+    NewsletterAdminMarketingNotificationListView,
+    NewsletterAdminMarketingNotificationReadView,
+)
+from .contact_export_views import (
+    NewsletterAdminContactExportDetailView,
+    NewsletterAdminContactExportDownloadView,
+    NewsletterAdminContactExportListCreateView,
+)
 from .contact_import_views import (
     NewsletterAdminContactImportDetailView,
     NewsletterAdminContactImportErrorsView,
@@ -611,6 +620,32 @@ urlpatterns = [
     ),
     # CSV imports. Declared before contacts/<mautic_contact_id>/ so "imports"
     # is never read as a contact ID.
+    path(
+        "newsletter/admin/notifications/",
+        NewsletterAdminMarketingNotificationListView.as_view(),
+        name="newsletter-admin-marketing-notifications",
+    ),
+    path(
+        "newsletter/admin/notifications/read/",
+        NewsletterAdminMarketingNotificationReadView.as_view(),
+        name="newsletter-admin-marketing-notifications-read",
+    ),
+    # Static "exports/" ranks above "<mautic_contact_id>/".
+    path(
+        "newsletter/admin/contacts/exports/",
+        NewsletterAdminContactExportListCreateView.as_view(),
+        name="newsletter-admin-contact-export-list",
+    ),
+    path(
+        "newsletter/admin/contacts/exports/<str:job_id>/",
+        NewsletterAdminContactExportDetailView.as_view(),
+        name="newsletter-admin-contact-export-detail",
+    ),
+    path(
+        "newsletter/admin/contacts/exports/<str:job_id>/download/",
+        NewsletterAdminContactExportDownloadView.as_view(),
+        name="newsletter-admin-contact-export-download",
+    ),
     path(
         "newsletter/admin/contacts/imports/",
         NewsletterAdminContactImportListView.as_view(),

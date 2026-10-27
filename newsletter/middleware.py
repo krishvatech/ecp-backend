@@ -4,6 +4,11 @@ MARKETING_ADMIN_PATH_PREFIX = "/api/newsletter/admin/"
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Refused before any view code ran, so nothing in Mautic can have changed.
 UNCHANGED_STATUS_CODES = frozenset({401, 403, 405})
+# Writes that only touch ECP state (exports read Mautic; notifications are ECP's).
+NON_MAUTIC_WRITE_PREFIXES = (
+    f"{MARKETING_ADMIN_PATH_PREFIX}notifications/",
+    f"{MARKETING_ADMIN_PATH_PREFIX}contacts/exports/",
+)
 
 
 class MarketingCacheInvalidationMiddleware:
@@ -21,6 +26,7 @@ class MarketingCacheInvalidationMiddleware:
         if (
             request.method in WRITE_METHODS
             and request.path_info.startswith(MARKETING_ADMIN_PATH_PREFIX)
+            and not request.path_info.startswith(NON_MAUTIC_WRITE_PREFIXES)
             and response.status_code not in UNCHANGED_STATUS_CODES
         ):
             marketing_cache.invalidate()

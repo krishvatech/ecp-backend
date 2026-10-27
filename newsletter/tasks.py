@@ -84,3 +84,19 @@ def dispatch_due_newsletter_sync_events(batch_size: int = 100):
 
     with task_heartbeat("newsletter.dispatch_due_sync_events"):
         return dispatch_due_sync_events(batch_size=batch_size)
+
+
+# Contact export: well past the 5-minute default, because a large export reads
+# Mautic page by page (about 200 contacts a second; at most the export cap).
+@shared_task(name="newsletter.run_contact_export", time_limit=1800, soft_time_limit=1740)
+def run_contact_export(job_id: str):
+    from .contact_export_services import run_export
+
+    run_export(job_id)
+
+
+@shared_task(name="newsletter.purge_contact_exports")
+def purge_contact_exports():
+    from .contact_export_services import purge_expired_files
+
+    return purge_expired_files()

@@ -980,6 +980,17 @@ if MAUTIC_SYNC_ENABLED:
         },
     })
 
+# Marketing Hub contact exports hold personal data: stored files are deleted
+# once they are older than the retention period (newsletter.contact_export_services).
+NEWSLETTER_CONTACT_EXPORT_RETENTION_HOURS = int(os.getenv("NEWSLETTER_CONTACT_EXPORT_RETENTION_HOURS", "24"))
+NEWSLETTER_CONTACT_EXPORT_MAX_ROWS = int(os.getenv("NEWSLETTER_CONTACT_EXPORT_MAX_ROWS", "100000"))
+CELERY_BEAT_SCHEDULE.update({
+    "purge-newsletter-contact-exports": {
+        "task": "newsletter.purge_contact_exports",
+        "schedule": timedelta(hours=1),
+    },
+})
+
 # OPTIMIZATION: Reduced frequency for 100+ concurrent user scalability
 CELERY_BEAT_SCHEDULE.update({
     "dispatch_suggestion_digest_local_9am": {

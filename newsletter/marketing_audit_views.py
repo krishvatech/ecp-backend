@@ -114,6 +114,9 @@ EXTRA_FILTER_ACTIONS = frozenset(
         "page.variant.update",
         "page.variant.winner",
         "page.translation.create",
+        "contact.export.create",
+        "contact.export.download",
+        "contact.export.delete",
     }
 )
 
