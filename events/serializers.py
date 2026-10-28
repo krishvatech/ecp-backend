@@ -5061,10 +5061,8 @@ class EventNetworkingSettingsSerializer(serializers.ModelSerializer):
         except Exception:
             event_tz = pytz_timezone('UTC')
 
-        if not event.start_time or not event.end_time:
-            raise serializers.ValidationError({
-                'allowed_windows': 'Event must have start_time and end_time set.'
-            })
+        # Windows may fall before, during or after the event (pre/post-event
+        # networking), so they are not bounded by event start/end time.
 
         # Helper to parse time in HH:MM or HH:MM AM/PM format
         def parse_time_str(time_str):
@@ -5079,11 +5077,6 @@ class EventNetworkingSettingsSerializer(serializers.ModelSerializer):
                 except ValueError:
                     pass
             raise ValueError(f"Invalid time format: {time_str}")
-
-        # Format event time for error messages
-        event_start_str = event.start_time.strftime('%b %d, %Y, %I:%M %p')
-        event_end_str = event.end_time.strftime('%I:%M %p')
-        event_time_display = f"{event_start_str} – {event_end_str}"
 
         # Validate each window
         errors = {}
@@ -5104,16 +5097,6 @@ class EventNetworkingSettingsSerializer(serializers.ModelSerializer):
                 # Combine into timezone-aware datetimes
                 window_start_dt = event_tz.localize(datetime.combine(window_date, window_start_time))
                 window_end_dt = event_tz.localize(datetime.combine(window_date, window_end_time))
-
-                # Check window is within event date bounds
-                if window_date < event.start_time.date() or window_date > event.end_time.date():
-                    errors[f'window_{i}'] = f"Window {i + 1} must be within event time: {event_time_display}."
-                    continue
-
-                # Check window times are within event bounds
-                if window_start_dt < event.start_time or window_end_dt > event.end_time:
-                    errors[f'window_{i}'] = f"Window {i + 1} must be within event time: {event_time_display}."
-                    continue
 
                 # Check end > start
                 if window_end_dt <= window_start_dt:

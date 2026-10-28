@@ -5102,11 +5102,8 @@ class NetworkingMeeting(models.Model):
             if self.start_time < timezone.now():
                 raise ValidationError("Cannot create a meeting in the past.")
 
-        # Event bounds check
-        if self.event.start_time and self.start_time < self.event.start_time:
-            raise ValidationError("Meeting must start after event begins.")
-        if self.event.end_time and self.end_time > self.event.end_time:
-            raise ValidationError("Meeting must end before event ends.")
+        # No event start/end bounds check: meetings may be booked in pre-event
+        # or post-event networking windows configured by the admin.
 
     def __str__(self):
         return f"Meeting: {self.requester.user.username} + {self.recipient.user.username} - {self.event.title}"
