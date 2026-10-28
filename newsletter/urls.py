@@ -136,6 +136,7 @@ from .marketing_notification_views import (
     NewsletterAdminMarketingNotificationListView,
     NewsletterAdminMarketingNotificationReadView,
 )
+from .contact_bulk_views import NewsletterAdminContactBulkActionView, NewsletterAdminContactOwnersView
 from .contact_export_views import (
     NewsletterAdminContactExportDetailView,
     NewsletterAdminContactExportDownloadView,
@@ -629,6 +630,17 @@ urlpatterns = [
         "newsletter/admin/notifications/read/",
         NewsletterAdminMarketingNotificationReadView.as_view(),
         name="newsletter-admin-marketing-notifications-read",
+    ),
+    # Static "bulk/" and "owners/" rank above "<mautic_contact_id>/".
+    path(
+        "newsletter/admin/contacts/bulk/",
+        NewsletterAdminContactBulkActionView.as_view(),
+        name="newsletter-admin-contact-bulk-action",
+    ),
+    path(
+        "newsletter/admin/contacts/owners/",
+        NewsletterAdminContactOwnersView.as_view(),
+        name="newsletter-admin-contact-owners",
     ),
     # Static "exports/" ranks above "<mautic_contact_id>/".
     path(

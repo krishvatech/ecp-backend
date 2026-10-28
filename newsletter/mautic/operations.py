@@ -92,6 +92,9 @@ FORM_ACTION_CREATE = "form.action.create"
 FORM_ACTION_UPDATE = "form.action.update"
 FORM_ACTION_REORDER = "form.action.reorder"
 # Landing pages (EcpBridgePageApiController): never scripts or preference centers.
+# Manual Campaign membership (EcpBridgeAudienceApiController).
+CAMPAIGN_CONTACT_ADD = "campaign.contact.add"
+CAMPAIGN_CONTACT_REMOVE = "campaign.contact.remove"
 PAGE_CREATE = "page.create"
 PAGE_UPDATE = "page.update"
 PAGE_DELETE = "page.delete"
@@ -173,6 +176,8 @@ ASSERTABLE_OPERATIONS = frozenset(
         FORM_ACTION_CREATE,
         FORM_ACTION_UPDATE,
         FORM_ACTION_REORDER,
+        CAMPAIGN_CONTACT_ADD,
+        CAMPAIGN_CONTACT_REMOVE,
         PAGE_CREATE,
         PAGE_UPDATE,
         PAGE_DELETE,

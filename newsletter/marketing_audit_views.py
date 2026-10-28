@@ -117,6 +117,8 @@ EXTRA_FILTER_ACTIONS = frozenset(
         "contact.export.create",
         "contact.export.download",
         "contact.export.delete",
+        "campaign.contact.add",
+        "campaign.contact.remove",
     }
 )
 

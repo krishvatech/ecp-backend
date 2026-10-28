@@ -190,6 +190,29 @@ def _dict_values(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
     return []
 
 
+def _contact_owner(contact: dict[str, Any]) -> dict[str, Any] | None:
+    """The contact's owner (a Mautic user), or None."""
+    owner = contact.get("owner")
+    if isinstance(owner, dict) and owner.get("id") not in (None, ""):
+        name = " ".join(str(owner.get(key) or "").strip() for key in ("firstName", "lastName")).strip()
+        return {
+            "id": str(owner.get("id")),
+            "name": name or str(owner.get("username") or owner.get("email") or f"User #{owner.get('id')}"),
+            "email": str(owner.get("email") or ""),
+        }
+    return None
+
+
+def _normalize_owner_id(value) -> int | str:
+    """A Mautic user ID, or "" to clear the owner."""
+    if value in (None, "", 0, "0"):
+        return ""
+    text = str(value).strip()
+    if isinstance(value, bool) or not text.isdigit() or int(text) <= 0:
+        raise ValueError("owner must be a Mautic user ID, or empty for no owner.")
+    return int(text)
+
+
 def _contact_stage(contact: dict[str, Any]) -> dict[str, Any] | None:
     stage = contact.get("stage")
     if not isinstance(stage, dict):
@@ -328,6 +351,7 @@ def get_admin_contact(mautic_contact_id) -> dict[str, Any]:
         "location": _contact_location(contact),
         "points": points,
         "current_stage": _contact_stage(contact),
+        "owner": _contact_owner(contact),
         "last_active_at": (
             contact.get("lastActive")
             or contact.get("last_active")
@@ -370,7 +394,7 @@ def _custom_field_values(contact: dict[str, Any]) -> dict[str, Any]:
 def _normalize_contact_payload(payload: dict[str, Any], *, partial: bool) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Contact payload must be an object.")
-    allowed = CORE_CONTACT_FIELDS | {"custom_fields"}
+    allowed = CORE_CONTACT_FIELDS | {"custom_fields", "owner"}
     unsupported = sorted(set(payload.keys()) - allowed)
     if unsupported:
         raise ValueError("Unsupported contact field(s): " + ", ".join(unsupported))
@@ -379,6 +403,9 @@ def _normalize_contact_payload(payload: dict[str, Any], *, partial: bool) -> dic
     for field in CORE_CONTACT_FIELDS:
         if field in payload:
             data[field] = str(payload.get(field) or "").strip()
+
+    if "owner" in payload:
+        data["owner"] = _normalize_owner_id(payload.get("owner"))
 
     if not partial and not data.get("email"):
         raise ValueError("email is required.")
@@ -803,17 +830,33 @@ def _normalize_stage_filter(stage_id) -> str:
 
 
 def _stage_contact_filter_params(stage_id) -> dict[str, Any]:
-    normalized = _normalize_stage_filter(stage_id)
+    return contact_filter_params(stage_id=stage_id)
+
+
+def _normalize_owner_filter(owner_id) -> str:
+    normalized = str(owner_id or "").strip()
     if not normalized:
-        return {}
-    params = {
-        "where[0][col]": "stage_id",
-    }
-    if normalized == "none":
-        params["where[0][expr]"] = "isNull"
-    else:
-        params["where[0][expr]"] = "eq"
-        params["where[0][val]"] = normalized
+        return ""
+    if normalized.lower() == "none":
+        return "none"
+    if not normalized.isdigit() or int(normalized) <= 0:
+        raise ValueError("owner_id must be a positive integer or 'none'.")
+    return str(int(normalized))
+
+
+def contact_filter_params(*, stage_id="", owner_id="") -> dict[str, Any]:
+    """Mautic `where` filters for the stage and owner filters, numbered from 0."""
+    conditions = []
+    for column, value in (("stage_id", _normalize_stage_filter(stage_id)), ("owner_id", _normalize_owner_filter(owner_id))):
+        if not value:
+            continue
+        conditions.append((column, "isNull", None) if value == "none" else (column, "eq", value))
+    params: dict[str, Any] = {}
+    for index, (column, expr, value) in enumerate(conditions):
+        params[f"where[{index}][col]"] = column
+        params[f"where[{index}][expr]"] = expr
+        if value is not None:
+            params[f"where[{index}][val]"] = value
     return params
 
 
@@ -823,6 +866,7 @@ def list_admin_contacts(
     page_size: int = 25,
     search: str = "",
     stage_id: str = "",
+    owner_id: str = "",
 ) -> dict[str, Any]:
     """List all Mautic contacts and enrich mapped contacts with ECP state."""
     page = max(1, int(page))
@@ -836,7 +880,7 @@ def list_admin_contacts(
     normalized_search = str(search or "").strip()
     if normalized_search:
         params["search"] = normalized_search
-    params.update(_stage_contact_filter_params(stage_id))
+    params.update(contact_filter_params(stage_id=stage_id, owner_id=owner_id))
 
     provider_data = MauticClient().list_contacts(**params)
     provider_contacts = _contacts_from_response(provider_data)
@@ -896,6 +940,7 @@ def list_admin_contacts(
                 "location": _contact_location(contact),
                 "points": points,
                 "current_stage": _contact_stage(contact),
+                "owner": _contact_owner(contact),
                 "last_active_at": (
                     contact.get("lastActive")
                     or contact.get("last_active")

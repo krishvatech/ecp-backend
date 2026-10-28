@@ -39,6 +39,7 @@ from .contact_services import (
     _contact_stage,
     _contacts_from_response,
     _stage_contact_filter_params,
+    contact_filter_params,
 )
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .models import MauticContactMapping, NewsletterSubscription
@@ -167,11 +168,19 @@ def parse_request(data) -> dict[str, Any]:
 
     search = str(data.get("search") or "").strip()[:500]
     stage_id = str(data.get("stage_id") or "").strip()
+    owner_id = str(data.get("owner_id") or "").strip()
     try:
         _stage_contact_filter_params(stage_id)
     except ValueError as exc:
         raise ContactExportError(str(exc), code="invalid_stage") from exc
-    return {"format": fmt, "scope": "filter", "contact_ids": [], "filters": {"search": search, "stage_id": stage_id}}
+    try:
+        contact_filter_params(owner_id=owner_id)
+    except ValueError as exc:
+        raise ContactExportError(str(exc), code="invalid_owner") from exc
+    filters = {"search": search, "stage_id": stage_id}
+    if owner_id:
+        filters["owner_id"] = owner_id
+    return {"format": fmt, "scope": "filter", "contact_ids": [], "filters": filters}
 
 
 def create_job(user, options: dict[str, Any]) -> dict[str, Any]:
@@ -350,8 +359,8 @@ def iter_contacts(job: dict[str, Any], client: MauticClient, *, on_total=None) -
     base: dict[str, Any] = {"limit": PAGE_SIZE, "orderBy": "id", "orderByDir": "ASC"}
     if filters.get("search"):
         base["search"] = filters["search"]
-    base.update(_stage_contact_filter_params(filters.get("stage_id")))
-    cursor_index = 1 if "where[0][col]" in base else 0
+    base.update(contact_filter_params(stage_id=filters.get("stage_id"), owner_id=filters.get("owner_id")))
+    cursor_index = sum(1 for key in base if key.endswith("][col]"))
     last_id = 0
     first = True
     while True:

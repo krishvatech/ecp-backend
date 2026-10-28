@@ -60,6 +60,8 @@ def _describe(job: dict) -> str:
         parts.append("search set")
     if filters.get("stage_id"):
         parts.append(f"stage {filters['stage_id']}")
+    if filters.get("owner_id"):
+        parts.append(f"owner {filters['owner_id']}")
     return ", ".join(parts)
 
 

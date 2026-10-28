@@ -1061,6 +1061,7 @@ class NewsletterAdminContactListView(APIView):
         page_size = max(1, min(page_size, self.max_page_size))
         search = str(request.query_params.get("search", "") or "").strip()
         stage_id = str(request.query_params.get("stage_id", "") or "").strip()
+        owner_id = str(request.query_params.get("owner_id", "") or "").strip()
 
         try:
             data = list_admin_contacts(
@@ -1068,6 +1069,7 @@ class NewsletterAdminContactListView(APIView):
                 page_size=page_size,
                 search=search,
                 stage_id=stage_id,
+                owner_id=owner_id,
             )
         except ValueError as exc:
             return Response(

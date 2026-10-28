@@ -27,6 +27,8 @@ from .operations import (
     EMAIL_CREATE,
     EMAIL_DELETE,
     EMAIL_UPDATE,
+    CAMPAIGN_CONTACT_ADD,
+    CAMPAIGN_CONTACT_REMOVE,
     CAMPAIGN_CREATE,
     CAMPAIGN_DELETE,
     CAMPAIGN_EVENT_DELETE,
@@ -2593,6 +2595,53 @@ class MauticClient:
             raise TemporaryMauticError(
                 "Mautic campaign list returned invalid campaigns"
             )
+        return data
+
+    def get_contact_segment_ids(self, contact_id) -> set[str]:
+        contact = self._numeric_id(contact_id, "contact")
+        data = self._json_object(self._request("GET", f"contacts/{contact}/segments"), "Mautic contact segments")
+        rows = data.get("lists")
+        rows = rows.values() if isinstance(rows, dict) else rows if isinstance(rows, list) else []
+        return {str(row.get("id")) for row in rows if isinstance(row, dict) and row.get("id") is not None}
+
+    def get_contact_campaigns(self, contact_id) -> list[dict[str, Any]]:
+        """Every Campaign the contact is in, published or not (ECP plugin).
+
+        The native contacts/{id}/campaigns lists published Campaigns only,
+        while Mautic keeps membership of unpublished ones as well."""
+        contact = self._numeric_id(contact_id, "contact")
+        data = self._json_object(
+            self._request("GET", f"ecp/contacts/{contact}/campaign-memberships"), "Mautic contact campaigns"
+        )
+        rows = data.get("campaigns")
+        if not isinstance(rows, list):
+            raise TemporaryMauticError("Mautic contact campaigns returned an invalid response")
+        return [row for row in rows if isinstance(row, dict) and row.get("id") is not None]
+
+    def get_contact_campaign_ids(self, contact_id) -> set[str]:
+        return {str(row["id"]) for row in self.get_contact_campaigns(contact_id)}
+
+    def _campaign_contact_bridge(self, action: str, campaign_id, contact_id, operation: str) -> None:
+        # Manual Campaign membership is attributed to a human Mautic user or
+        # not changed at all: there is deliberately no service-account fallback.
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError(
+                "Mautic Campaign membership changes require per-user Mautic identity"
+            )
+        campaign = self._numeric_id(campaign_id, "campaign")
+        contact = self._numeric_id(contact_id, "contact")
+        self._bridge_request("POST", f"ecp/bridge/campaigns/{campaign}/contact/{contact}/{action}", operation=operation)
+
+    def add_contact_to_campaign(self, campaign_id, contact_id) -> None:
+        self._campaign_contact_bridge("add", campaign_id, contact_id, CAMPAIGN_CONTACT_ADD)
+
+    def remove_contact_from_campaign(self, campaign_id, contact_id) -> None:
+        self._campaign_contact_bridge("remove", campaign_id, contact_id, CAMPAIGN_CONTACT_REMOVE)
+
+    def list_users(self, **params) -> dict[str, Any]:
+        data = self._json_object(self._request("GET", "users", params=params or None), "Mautic user list")
+        if not isinstance(data.get("users"), (dict, list)):
+            raise TemporaryMauticError("Mautic user list returned an invalid response")
         return data
 
     def get_campaign(self, campaign_id: int | str) -> dict[str, Any]:
