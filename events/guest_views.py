@@ -160,6 +160,30 @@ def generate_otp_code():
     return ''.join([str(random.randint(0, 9)) for _ in range(6)])
 
 
+def guest_otp_block_response(event, email):
+    """Return a 409 Response when no guest OTP should be sent, else ``None``.
+
+    Guest OTP only grants access to an event's live room, so it is refused for
+    in-person events (there is no live room) and for an email that already holds
+    a member registration for the event (that person signs in instead).
+    """
+    if event.format == "in_person":
+        return Response({
+            "error": "in_person_event",
+            "message": "Guest access is not available for in-person events. Please sign in to view your registration.",
+        }, status=status.HTTP_409_CONFLICT)
+
+    if EventRegistration.objects.filter(
+        event=event, user__email__iexact=email, status="registered"
+    ).exists():
+        return Response({
+            "error": "account_exists",
+            "message": "You are already registered for this event. Please sign in.",
+        }, status=status.HTTP_409_CONFLICT)
+
+    return None
+
+
 def send_guest_otp(event, email, guest_name, max_attempts=5, rate_limit_seconds=60):
     """
     Send an OTP code to a guest's email for event access verification.
@@ -334,6 +358,11 @@ class GuestJoinView(APIView):
                 {"error": "email is required."},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        blocked = guest_otp_block_response(event, email)
+        if blocked is not None:
+            logger.info(f"[GuestJoin] Guest OTP refused for {email} on event {event.id}: {blocked.data['error']}")
+            return blocked
 
         # Same email rules as signup: a valid address, no disposable domain.
         from users.disposable_email import check_new_participant_email
@@ -693,6 +722,11 @@ class ResendGuestOTPView(APIView):
                 {"error": "email is required."},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        blocked = guest_otp_block_response(event, email)
+        if blocked is not None:
+            logger.info(f"[GuestResendOTP] Guest OTP refused for {email} on event {event.id}: {blocked.data['error']}")
+            return blocked
 
         # 3. Invalidate all prior unused OTPs for this email/event
         GuestEmailOTP.objects.filter(
