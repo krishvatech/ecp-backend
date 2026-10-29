@@ -120,6 +120,10 @@ EXTRA_FILTER_ACTIONS = frozenset(
         "campaign.contact.add",
         "campaign.contact.remove",
         "contact.merge",
+        "template.variant.create",
+        "template.variant.update",
+        "template.variant.winner",
+        "template.translation.create",
     }
 )
 

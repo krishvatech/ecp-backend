@@ -46,6 +46,11 @@ TEMPLATE_CREATE = "template.create"
 TEMPLATE_UPDATE = "template.update"
 TEMPLATE_DELETE = "template.delete"
 TEMPLATE_DUPLICATE = "template.duplicate"
+# A/B variants and translations of a template (EcpBridgeTemplateApiController).
+TEMPLATE_VARIANT_CREATE = "template.variant.create"
+TEMPLATE_VARIANT_UPDATE = "template.variant.update"
+TEMPLATE_VARIANT_WINNER = "template.variant.winner"
+TEMPLATE_TRANSLATION_CREATE = "template.translation.create"
 # Segment/broadcast emails (emailType="list"). Deliberately distinct from
 # template.* so an assertion minted for a reusable template can never mutate a
 # broadcast, or the reverse.
@@ -141,6 +146,10 @@ ASSERTABLE_OPERATIONS = frozenset(
         TEMPLATE_UPDATE,
         TEMPLATE_DELETE,
         TEMPLATE_DUPLICATE,
+        TEMPLATE_VARIANT_CREATE,
+        TEMPLATE_VARIANT_UPDATE,
+        TEMPLATE_VARIANT_WINNER,
+        TEMPLATE_TRANSLATION_CREATE,
         EMAIL_CREATE,
         EMAIL_UPDATE,
         EMAIL_DELETE,

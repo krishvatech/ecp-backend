@@ -101,6 +101,10 @@ from .operations import (
     TEMPLATE_CREATE,
     TEMPLATE_DELETE,
     TEMPLATE_DUPLICATE,
+    TEMPLATE_TRANSLATION_CREATE,
+    TEMPLATE_VARIANT_CREATE,
+    TEMPLATE_VARIANT_UPDATE,
+    TEMPLATE_VARIANT_WINNER,
     TEMPLATE_UPDATE,
 )
 
@@ -2348,10 +2352,14 @@ class MauticClient:
                 data,
                 "Mautic email template list",
             )
+            # Mautic's list leaves out A/B variants but not translations;
+            # both are reached through their main template.
             templates.extend(
                 row
                 for row in rows
                 if str(row.get("emailType") or "").strip() == "template"
+                and not row.get("translationParent")
+                and not row.get("variantParent")
             )
 
             provider_start += len(rows)
@@ -2481,6 +2489,70 @@ class MauticClient:
             )
         self.get_email_template(email_id)
         return self.delete_email(email_id)
+
+    def _template_family_request(self, method: str, path: str, *, operation: str, context: str, data=None) -> dict[str, Any]:
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError(f"{context} requires per-user Mautic identity")
+        kwargs = {"data": self._email_form_data(data)} if data else {}
+        return self._json_object(self._bridge_request(method, path, operation=operation, **kwargs), context)
+
+    def create_template_variant(self, template_id, *, weight: int, winner_criteria: str, name: str | None = None) -> dict[str, Any]:
+        """Add an unpublished A/B variant (a copy of the main template's content)."""
+        template = self._numeric_id(template_id, "template")
+        data = {"weight": int(weight), "winnerCriteria": winner_criteria, **({"name": name} if name else {})}
+        response = self._template_family_request(
+            "POST", f"ecp/bridge/templates/{template}/variants/new", operation=TEMPLATE_VARIANT_CREATE,
+            context="Mautic template variant creation", data=data,
+        )
+        return self._require_template_email(self._email_payload(response, "Mautic template variant creation"), "Created Mautic email")
+
+    def update_template_variant(self, template_id, *, weight: int | None = None, winner_criteria: str | None = None) -> dict[str, Any]:
+        """Change a variant's weight and/or the whole test's winner criteria."""
+        template = self._numeric_id(template_id, "template")
+        data: dict[str, Any] = {}
+        if weight is not None:
+            data["weight"] = int(weight)
+        if winner_criteria is not None:
+            data["winnerCriteria"] = winner_criteria
+        if not data:
+            raise PermanentMauticError("Mautic template variant update payload is required")
+        return self._template_family_request(
+            "PATCH", f"ecp/bridge/templates/{template}/variant/edit", operation=TEMPLATE_VARIANT_UPDATE,
+            context="Mautic template variant update", data=data,
+        )
+
+    def make_template_variant_winner(self, template_id) -> dict[str, Any]:
+        """End the test: variants switched off, the winner's content copied onto the main template."""
+        template = self._numeric_id(template_id, "template")
+        return self._template_family_request(
+            "POST", f"ecp/bridge/templates/{template}/winner", operation=TEMPLATE_VARIANT_WINNER,
+            context="Mautic template variant winner",
+        )
+
+    def create_template_translation(self, template_id, *, language: str, name: str | None = None) -> dict[str, Any]:
+        """Add an unpublished translation (a copy of the main template in another language)."""
+        template = self._numeric_id(template_id, "template")
+        data = {"language": language, **({"name": name} if name else {})}
+        response = self._template_family_request(
+            "POST", f"ecp/bridge/templates/{template}/translations/new", operation=TEMPLATE_TRANSLATION_CREATE,
+            context="Mautic template translation creation", data=data,
+        )
+        return self._require_template_email(self._email_payload(response, "Mautic template translation creation"), "Created Mautic email")
+
+    def get_template_abtest(self, template_id, *, timeout=None) -> dict[str, Any]:
+        template = self._numeric_id(template_id, "template")
+        response = self._request("GET", f"ecp/bridge/templates/{template}/abtest", timeout=timeout)
+        test = self._json_object(response, "Mautic template A/B test").get("abTest")
+        if not isinstance(test, dict) or not isinstance(test.get("versions"), list):
+            raise TemporaryMauticError("Mautic template A/B test returned an invalid response")
+        return test
+
+    @staticmethod
+    def _email_payload(data: dict[str, Any], context: str) -> dict[str, Any]:
+        email = data.get("email")
+        if not isinstance(email, dict) or email.get("id") is None:
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return email
 
     def duplicate_email_template(
         self,

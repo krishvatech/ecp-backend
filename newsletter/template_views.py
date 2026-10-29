@@ -34,7 +34,11 @@ from .mautic.operations import (
     TEMPLATE_CREATE,
     TEMPLATE_DELETE,
     TEMPLATE_DUPLICATE,
+    TEMPLATE_TRANSLATION_CREATE,
     TEMPLATE_UPDATE,
+    TEMPLATE_VARIANT_CREATE,
+    TEMPLATE_VARIANT_UPDATE,
+    TEMPLATE_VARIANT_WINNER,
 )
 from .mautic_identity_execution import run_interactive_mutation
 
@@ -65,7 +69,13 @@ _TEMPLATE_FIELDS = {
     "isPublished",
     "category",
     "template",
+    "language",
 }
+
+# Two-letter languages only: Mautic 7.1.3 matches a contact's locale by its
+# first two letters, so longer codes (fil_PH) never reach anyone.
+_LANGUAGE_RE = re.compile(r"^[a-z]{2}(?:_[A-Z]{2})?$")
+WINNER_CRITERIA = {"email.openrate": "Open rate", "email.clickthrough": "Click-through rate"}
 
 
 def _provider_bool(value) -> bool:
@@ -124,6 +134,37 @@ def _normalize_template(email: dict[str, Any]) -> dict[str, Any]:
         "dateModified": email.get("dateModified"),
         "sentCount": email.get("sentCount"),
         "readCount": email.get("readCount"),
+        **_family_fields(email),
+    }
+
+
+def _related_id(value) -> str | None:
+    if isinstance(value, dict):
+        value = value.get("id")
+    return str(value) if value not in (None, "") else None
+
+
+def _family_member(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(row.get("id")),
+        "name": str(row.get("name") or ""),
+        "language": str(row.get("language") or ""),
+        "isPublished": _provider_bool(row.get("isPublished", False)),
+    }
+
+
+def _family_fields(email: dict[str, Any]) -> dict[str, Any]:
+    """Where the template sits in its A/B and language family."""
+    variant_parent = _related_id(email.get("variantParent"))
+    translation_parent = _related_id(email.get("translationParent"))
+    role = "variant" if variant_parent else "translation" if translation_parent else "main"
+    return {
+        "language": str(email.get("language") or ""),
+        "role": role,
+        "variantParentId": variant_parent,
+        "translationParentId": translation_parent,
+        "variants": [_family_member(row) for row in _collection_values(email.get("variantChildren"))],
+        "translations": [_family_member(row) for row in _collection_values(email.get("translationChildren"))],
     }
 
 
@@ -189,6 +230,12 @@ def _parse_template_payload(data, *, partial: bool = False) -> dict[str, Any]:
                     "Newsletter Template category must be a Mautic Category ID."
                 )
             payload["category"] = category_id
+
+    if "language" in data:
+        language = str(data.get("language") or "").strip()
+        if not _LANGUAGE_RE.match(language):
+            raise ValueError("Language must be a locale code such as en, fr or fr_CA.")
+        payload["language"] = language
 
     if "isPublished" in data:
         payload["isPublished"] = _parse_bool(
@@ -513,6 +560,10 @@ class NewsletterAdminTemplateDetailView(APIView):
             )
         if prepared is not None:
             payload["customHtml"] = prepared.html
+        if "language" in payload:
+            conflict = _language_conflict(template_id, payload["language"])
+            if conflict is not None:
+                return conflict
 
         try:
             with template_save_lock(template_id):
@@ -574,7 +625,8 @@ class NewsletterAdminTemplateDetailView(APIView):
                 client_factory=MauticClient,
             )
         except (TemporaryMauticError, PermanentMauticError) as exc:
-            return _provider_error_response(exc)
+            # A main template with variants or translations is refused (409).
+            return _family_refusal(exc)
         if error_response is not None:
             return error_response
 
@@ -873,3 +925,270 @@ class NewsletterAdminTemplateUsageView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+# ---------------------------------------------------------------------------
+# A/B variants and translations (native Mautic email families).
+#
+# A variant gets a share of the main template's sends; a translation is sent
+# to contacts whose preferred locale matches. Both are unpublished copies of
+# the main template, edited like any template. Ending a test copies the
+# winner's content onto the main template, whose id Campaigns keep using.
+
+
+def _family_error(message: str, *, code: str, http_status=status.HTTP_409_CONFLICT) -> Response:
+    return Response({"detail": message, "code": code}, status=http_status)
+
+
+def _language_conflict(template_id, language: str) -> Response | None:
+    """Mautic picks a translation by the contact's locale and never offers the
+    main template's own language: keep every member of a family on its own
+    language, and translations off the main template's two-letter language."""
+    try:
+        client = MauticClient()
+        current = _normalize_template(client.get_email_template(template_id))
+        if current["role"] == "variant":
+            return None
+        main = current if current["role"] == "main" else _normalize_template(
+            client.get_email_template(current["translationParentId"])
+        )
+    except (TemporaryMauticError, PermanentMauticError) as exc:
+        return _provider_error_response(exc)
+    translations = [row for row in main["translations"] if row["id"] != str(template_id)]
+    if current["role"] == "main":
+        if any(row["language"][:2] == language[:2] for row in translations):
+            return _family_error(
+                f"A translation already uses {language[:2]}. Pick another language for the main template.",
+                code="template_language_taken",
+            )
+        return None
+    if language[:2] == main["language"][:2] or any(row["language"] == language for row in translations):
+        return _family_error(f"Another version of this template already uses {language}.", code="template_language_taken")
+    return None
+
+
+def _parse_weight(value) -> int:
+    if isinstance(value, bool) or str(value).strip() != str(value).strip().lstrip("+") or not str(value).strip().isdigit():
+        raise ValueError("Weight must be a whole number from 1 to 100.")
+    weight = int(str(value).strip())
+    if not 1 <= weight <= 100:
+        raise ValueError("Weight must be a whole number from 1 to 100.")
+    return weight
+
+
+def _parse_criteria(value) -> str:
+    criteria = str(value or "").strip()
+    if criteria not in WINNER_CRITERIA:
+        raise ValueError("Choose how the winner is judged: open rate or click-through rate.")
+    return criteria
+
+
+def _optional_name(data) -> str:
+    name = str(data.get("name") or "").strip() if hasattr(data, "get") else ""
+    if len(name) > 190:
+        raise ValueError("Newsletter Template name cannot exceed 190 characters.")
+    return name
+
+
+def _family_refusal(exc) -> Response:
+    """The plugin's 409s explain themselves; pass them on as conflicts."""
+    message = str(exc)
+    if isinstance(exc, PermanentMauticError) and "HTTP 409" in message:
+        detail = message.split(": ", 1)[1] if ": " in message else message
+        return _family_error(detail, code="template_family_conflict")
+    return _provider_error_response(exc)
+
+
+def _create_family_member(request, template_id, *, action, mutate):
+    try:
+        main = _normalize_template(MauticClient().get_email_template(template_id))
+    except (TemporaryMauticError, PermanentMauticError) as exc:
+        return _provider_error_response(exc)
+    if main["role"] != "main":
+        return _family_error(
+            "Variants and translations can only be added to a main template, not to another variant or translation.",
+            code="template_not_main",
+        )
+    try:
+        created, error_response = run_interactive_mutation(
+            request,
+            action=action,
+            resource="template",
+            resource_id=str(template_id),
+            mutate=mutate,
+            client_factory=MauticClient,
+            audit_and_reraise=(TemporaryMauticError, PermanentMauticError),
+        )
+    except (TemporaryMauticError, PermanentMauticError) as exc:
+        return _family_refusal(exc)
+    if error_response is not None:
+        return error_response
+
+    member = _normalize_template(created)
+    member["designCopied"] = _copy_duplicate_design(request, template_id, member)
+    return Response(_template_with_design(member), status=status.HTTP_201_CREATED)
+
+
+class NewsletterAdminTemplateVariantCreateView(APIView):
+    """Add an unpublished A/B variant (a copy of the main template) with its share of sends."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def post(self, request, template_id):
+        try:
+            weight = _parse_weight(request.data.get("weight"))
+            criteria = _parse_criteria(request.data.get("winnerCriteria"))
+            name = _optional_name(request.data)
+        except ValueError as exc:
+            return Response({"detail": str(exc), "code": "invalid_setting"}, status=status.HTTP_400_BAD_REQUEST)
+        return _create_family_member(
+            request, template_id, action=TEMPLATE_VARIANT_CREATE,
+            mutate=lambda client: client.create_template_variant(template_id, weight=weight, winner_criteria=criteria, name=name or None),
+        )
+
+
+class NewsletterAdminTemplateTranslationCreateView(APIView):
+    """Add an unpublished translation (a copy of the main template in another language)."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def post(self, request, template_id):
+        language = str(request.data.get("language") or "").strip()
+        try:
+            if not _LANGUAGE_RE.match(language):
+                raise ValueError("Language must be a locale code such as fr or fr_CA.")
+            name = _optional_name(request.data)
+        except ValueError as exc:
+            return Response({"detail": str(exc), "code": "invalid_setting"}, status=status.HTTP_400_BAD_REQUEST)
+        return _create_family_member(
+            request, template_id, action=TEMPLATE_TRANSLATION_CREATE,
+            mutate=lambda client: client.create_template_translation(template_id, language=language, name=name or None),
+        )
+
+
+def normalize_template_abtest(test: dict[str, Any]) -> dict[str, Any]:
+    winners = {str(winner) for winner in test.get("winners") or []}
+    criteria = str(test.get("criteria") or "")
+    versions = []
+    for version in _collection_values(test.get("versions")):
+        version_id = str(version.get("id"))
+        versions.append(
+            {
+                "id": version_id,
+                "name": str(version.get("name") or ""),
+                "subject": str(version.get("subject") or ""),
+                "isMain": bool(version.get("isMain")),
+                "isPublished": bool(version.get("isPublished")),
+                "weight": int(version.get("weight") or 0),
+                "winnerCriteria": str(version.get("winnerCriteria") or ""),
+                "sent": int(version.get("sent") or 0),
+                "opened": int(version.get("opened") or 0),
+                "clicked": int(version.get("clicked") or 0),
+                "openRate": float(version.get("openRate") or 0),
+                "clickRate": float(version.get("clickRate") or 0),
+                "isLeading": version_id in winners,
+            }
+        )
+    return {
+        "parentId": str(test.get("parentId")),
+        "criteria": criteria,
+        "criteriaLabel": WINNER_CRITERIA.get(criteria, criteria),
+        "mixedCriteria": bool(test.get("mixedCriteria")),
+        "criteriaOptions": [{"value": key, "label": label} for key, label in WINNER_CRITERIA.items()],
+        "startedAt": test.get("startedAt"),
+        "running": any(not v["isMain"] and v["isPublished"] and v["weight"] > 0 for v in versions),
+        "versions": versions,
+    }
+
+
+class NewsletterAdminTemplateAbTestView(APIView):
+    """Read a template's A/B test, or change a variant's weight or the test's criteria."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, template_id):
+        try:
+            test = MauticClient().get_template_abtest(template_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+        return Response(normalize_template_abtest(test))
+
+    def patch(self, request, template_id):
+        data = request.data if hasattr(request.data, "keys") else {}
+        if not data or set(data.keys()) - {"weight", "winnerCriteria"}:
+            return Response({"detail": "Send a weight and/or winner criteria only.", "code": "invalid_payload"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            weight = _parse_weight(data["weight"]) if "weight" in data else None
+            criteria = _parse_criteria(data["winnerCriteria"]) if "winnerCriteria" in data else None
+        except ValueError as exc:
+            return Response({"detail": str(exc), "code": "invalid_setting"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            _, error_response = run_interactive_mutation(
+                request,
+                action=TEMPLATE_VARIANT_UPDATE,
+                resource="template",
+                resource_id=str(template_id),
+                mutate=lambda client: client.update_template_variant(template_id, weight=weight, winner_criteria=criteria),
+                client_factory=MauticClient,
+                audit_and_reraise=(TemporaryMauticError, PermanentMauticError),
+                detail=", ".join(part for part in (f"weight {weight}" if weight is not None else "", f"criteria {criteria}" if criteria else "") if part),
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _family_refusal(exc)
+        if error_response is not None:
+            return error_response
+        return self.get(request, template_id)
+
+
+class NewsletterAdminTemplateWinnerView(APIView):
+    """End the A/B test: the winner's content takes over the main template; every variant is switched off."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def post(self, request, template_id):
+        try:
+            winner = _normalize_template(MauticClient().get_email_template(template_id))
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+        if winner["role"] != "variant":
+            return _family_error("Only a variant can be made the winner.", code="template_not_variant")
+        main_id = winner["variantParentId"]
+
+        try:
+            with template_save_lock(main_id):
+                _, error_response = run_interactive_mutation(
+                    request,
+                    action=TEMPLATE_VARIANT_WINNER,
+                    resource="template",
+                    resource_id=str(template_id),
+                    mutate=lambda client: client.make_template_variant_winner(template_id),
+                    client_factory=MauticClient,
+                    audit_and_reraise=(TemporaryMauticError, PermanentMauticError),
+                    detail=f"main template #{main_id}",
+                )
+        except TemplateSaveInProgress:
+            return _family_error("The main template is being saved. Try again in a moment.", code="template_save_in_progress")
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _family_refusal(exc)
+        if error_response is not None:
+            return error_response
+
+        try:
+            main = _normalize_template(MauticClient().get_email_template(main_id))
+        except (TemporaryMauticError, PermanentMauticError):
+            return _family_error("Mautic did not confirm the winner. Reload the template to check.",
+                                 code="template_winner_unconfirmed", http_status=status.HTTP_502_BAD_GATEWAY)
+        main["designCopied"] = _take_over_design(request, winner, main)
+        return Response({"template": _template_with_design(main), "winnerId": str(template_id)})
+
+
+def _take_over_design(request, winner: dict[str, Any], main: dict[str, Any]) -> bool:
+    """The main template now holds the winner's HTML: give it the winner's
+    visual design too, or none (it opens in HTML mode) if the winner has none."""
+    try:
+        delete_template_design(main["id"])
+        return copy_template_design(winner["id"], winner["customHtml"], main["id"], main["customHtml"], user=request.user) is not None
+    except DatabaseError:
+        logger.warning("Could not move the visual design of template id=%s to id=%s", winner["id"], main["id"], exc_info=True)
+        return False

@@ -107,6 +107,10 @@ from .template_views import (
     NewsletterAdminTemplateThemesView,
     NewsletterAdminTemplateTokensView,
     NewsletterAdminTemplateUsageView,
+    NewsletterAdminTemplateAbTestView,
+    NewsletterAdminTemplateTranslationCreateView,
+    NewsletterAdminTemplateVariantCreateView,
+    NewsletterAdminTemplateWinnerView,
 )
 from .native_campaign_views import (
     NewsletterAdminMauticCampaignBuilderView,
@@ -583,6 +587,26 @@ urlpatterns = [
         "newsletter/admin/templates/themes/",
         NewsletterAdminTemplateThemesView.as_view(),
         name="newsletter-admin-template-themes",
+    ),
+    path(
+        "newsletter/admin/templates/<str:template_id>/variants/",
+        NewsletterAdminTemplateVariantCreateView.as_view(),
+        name="newsletter-admin-template-variants",
+    ),
+    path(
+        "newsletter/admin/templates/<str:template_id>/translations/",
+        NewsletterAdminTemplateTranslationCreateView.as_view(),
+        name="newsletter-admin-template-translations",
+    ),
+    path(
+        "newsletter/admin/templates/<str:template_id>/abtest/",
+        NewsletterAdminTemplateAbTestView.as_view(),
+        name="newsletter-admin-template-abtest",
+    ),
+    path(
+        "newsletter/admin/templates/<str:template_id>/winner/",
+        NewsletterAdminTemplateWinnerView.as_view(),
+        name="newsletter-admin-template-winner",
     ),
     path(
         "newsletter/admin/templates/<str:template_id>/duplicate/",

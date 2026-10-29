@@ -444,10 +444,12 @@ def update_admin_contact(
     if not contact_id:
         raise ValueError("Mautic contact ID is required.")
     client = client or MauticClient()
-    client.update_contact(
-        contact_id,
-        _normalize_contact_payload(payload, partial=True),
-    )
+    data = _normalize_contact_payload(payload, partial=True)
+    # Mautic's PATCH ignores blank field values unless told otherwise; an
+    # explicit blank here is a deliberate clear (e.g. Preferred locale).
+    if any(value == "" for key, value in data.items() if key != "owner"):
+        data["overwriteWithBlank"] = 1
+    client.update_contact(contact_id, data)
     return get_admin_contact(contact_id)
 
 
